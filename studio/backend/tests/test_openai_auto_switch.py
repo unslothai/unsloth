@@ -14068,14 +14068,7 @@ def test_unindexed_alias_target_reuses_a_resident_already_running_it(
 def test_alias_launch_reuses_the_runtime_it_started_whatever_the_loader_normalized(monkeypatch):
     # load_model normalizes some settings at launch (an Engram table, tensor on one GPU or none), so
     # its comparison can miss a runtime this alias started; the recorded launch must not.
-    launch_satisfied = inference_route._alias_launch_satisfied
-    backend, rec = _wire_alias_config(monkeypatch)
-    monkeypatch.setattr(inference_route, "_alias_launch_satisfied", launch_satisfied)
-    backend.is_diffusion = False
-    backend.load_intent_satisfied = lambda intent: False
-    monkeypatch.setattr(inference_route, "_active_gguf_intent", lambda *a, **k: None)
-    monkeypatch.setattr(inference_route, "_resolve_parallel_slots", lambda *a: 1)
-
+    backend, rec = _alias_runtime_never_compares(monkeypatch)
     _switch_alias(_ALIAS_LONG)
     _switch_alias(_ALIAS_LONG)
     assert len(rec.calls) == 1
@@ -14088,6 +14081,60 @@ def test_alias_launch_reuses_the_runtime_it_started_whatever_the_loader_normaliz
     )
     _switch_alias(_ALIAS_FAST)
     assert len(rec.calls) == 3
+
+
+def _alias_runtime_never_compares(monkeypatch, **wire):
+    """The real reuse check over a loader whose comparison never matches, so only the recorded
+    launch can recognize a runtime."""
+    launch_satisfied = inference_route._alias_launch_satisfied
+    backend, rec = _wire_alias_config(monkeypatch, **wire)
+    monkeypatch.setattr(inference_route, "_alias_launch_satisfied", launch_satisfied)
+    backend.is_diffusion = False
+    backend.load_intent_satisfied = lambda intent: False
+    monkeypatch.setattr(inference_route, "_active_gguf_intent", lambda *a, **k: None)
+    monkeypatch.setattr(inference_route, "_resolve_parallel_slots", lambda *a: 1)
+    return backend, rec
+
+
+def test_alias_idle_restore_with_switching_off_is_recognized_by_its_recorded_launch(monkeypatch):
+    backend, rec = _alias_runtime_never_compares(monkeypatch, enabled = False, saved = _ALIAS_LONG)
+    alias_kwargs = inference_route._alias_load_kwargs(*_ALIAS_RESOLVED, _ALIAS_FAST)[1]
+    freed = {k: v for k, v in alias_kwargs.items() if k not in ("model_path", "gguf_variant")}
+    recorded = (backend.model_identifier, inference_route._alias_launch_key(alias_kwargs))
+    backend.model_identifier, backend.is_loaded = None, False
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", _ALIAS_RESOLVED)
+    monkeypatch.setattr(
+        kw,
+        "_last_unloaded_intent",
+        {"kwargs": {}, "cpu_fallback": False, "alias_kwargs": freed, "alias_launch_key": recorded},
+    )
+    _switch_alias(_ALIAS_FAST)
+    _switch_alias(_ALIAS_FAST)
+    assert len(rec.calls) == 1
+
+
+def test_alias_retry_without_a_refused_gpu_pin_is_recognized_by_the_alias_request(monkeypatch):
+    backend, rec = _alias_runtime_never_compares(
+        monkeypatch, saved = {**_ALIAS_LONG, "gpu_ids": [0, 1]}
+    )
+
+    async def resolves(*args, **kwargs):
+        return True
+
+    async def refuse_pin(request, *args, **kwargs):
+        # A CPU-only llama-server on a CUDA host: the GPUs exist, the pin is refused.
+        if request.gpu_ids:
+            raise HTTPException(status_code = 400, detail = "gpu_ids are not available")
+        return await rec(request, *args, **kwargs)
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", resolves)
+    monkeypatch.setattr(inference_route, "_load_model_impl", refuse_pin)
+    _switch_alias(_ALIAS_LONG)
+    _switch_alias(_ALIAS_LONG)
+    assert len(rec.calls) == 1
+    assert rec.calls[0].gpu_ids is None
 
 
 def test_alias_config_does_not_replay_the_idle_unload_stash(monkeypatch):

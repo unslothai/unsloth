@@ -12842,6 +12842,13 @@ async def _maybe_auto_switch_model(
                             else None,
                             override_id,
                         )
+                        # The alias request this launch serves: a retry without the saved GPU pin, or an
+                        # idle-stash replay, still runs it, so reuse must find it by this key.
+                        launched_alias_key = None
+                        if alias_config:
+                            launched_alias_key = _alias_launch_key(load_kwargs)
+                        elif replaying_alias_launch and stashed_intent.get("alias_launch_key"):
+                            launched_alias_key = stashed_intent["alias_launch_key"][1]
                         # Call the impl directly: we hold the lifecycle gate the /load route takes (deadlock).
                         # Deferred claim: base preview ownership on what is actually resident, in a finally.
                         _switch_prior_resident = _loaded_slot_ident()
@@ -12929,11 +12936,11 @@ async def _maybe_auto_switch_model(
                                 load_request._override_alias_id = override_id
                                 await _switch_load(load_request)
                             _switch_loaded_ok = True
-                            if alias_config:
+                            if launched_alias_key is not None:
                                 # Reuse reads this, not the loader's normalized state (_alias_launch_satisfied).
                                 target_backend.alias_launch_key = (
                                     target_backend.model_identifier,
-                                    _alias_launch_key(load_kwargs),
+                                    launched_alias_key,
                                 )
                             # publish the completed load before a late cancellation is observed.
                             target_backend._openai_advertised_id = override_id

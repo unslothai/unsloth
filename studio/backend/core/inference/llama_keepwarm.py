@@ -930,6 +930,8 @@ def launch_to_replay(backend = None):
         "cpu_fallback": bool(getattr(intent, "cpu_fallback", False)),
         # A configured alias's whole launch, for that alias's restore with switching off.
         "alias_kwargs": getattr(backend, "replay_alias_launch", None),
+        # Which alias request that launch served, so the restored runtime is recognized as it again.
+        "alias_launch_key": getattr(backend, "alias_launch_key", None),
     }
 
 
