@@ -317,7 +317,6 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
                 "UPDATE linked_folder_sync_jobs SET successor_kind='rebuild' "
                 "WHERE rebuild_requested=1"
             )
-    # files already indexed and unchanged when the pass began, and files the pass has gone through
     if job_cols and "up_to_date" not in job_cols:
         conn.execute(
             "ALTER TABLE linked_folder_sync_jobs ADD COLUMN up_to_date INTEGER NOT NULL DEFAULT 0"

@@ -44,7 +44,7 @@ export function DocumentStatusChip({
   /** Hands that button to a viewer that owns its own open state (e.g. a dialog trigger). */
   openTrigger?: (trigger: ReactElement) => ReactNode;
   onRetry?: () => void;
-  /** Hover text in place of the default, unless the document failed. */
+  /** Hover text; an error still wins. */
   title?: string;
   /** Indexed for the whole project rather than this one chat: swap the file
    * glyph for a folder so the two scopes are told apart at a glance. */

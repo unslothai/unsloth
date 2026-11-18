@@ -64,13 +64,11 @@ def test_resync_counts_files_an_earlier_sync_already_indexed(
 
     assert second["status"] == "completed"
     assert second["discoveredFiles"] == 5
-    # This pass only indexed the two new files, but the folder is fully synced.
     assert second["processedFiles"] == 2
     assert second["syncedFiles"] == 5
 
     ingesting = [view for view in seen if view["stage"] == "ingesting"]
     assert ingesting, "the pass never reported progress"
-    # From the first ingesting update on, the three unchanged files already count as synced.
     assert ingesting[0]["syncedFiles"] == 3
     counts = [view["syncedFiles"] for view in ingesting]
     assert counts == sorted(counts)

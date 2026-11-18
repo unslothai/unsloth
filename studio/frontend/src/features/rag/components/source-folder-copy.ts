@@ -10,13 +10,10 @@ export function sourceFolderUnavailableMessage(isDesktop: boolean): string {
     : "Open Unsloth Desktop to add a source folder. You can still upload documents.";
 }
 
-/** What a source folder's sync line counts, shown on hover. */
 export const FOLDER_SYNC_HELP =
   "Synced files have been read and indexed (or set aside because they can't be), out of every supported file found in the folder. Chats can search a file as soon as it is synced.";
 
-/** Folder-wide sync progress, or null before the scan has counted the folder.
- * `syncedFiles` includes files an earlier sync already indexed; `processedFiles` counts
- * only this sync's changes, so it can stop short of the folder's total. */
+/** Null before the scan counts the folder; processedFiles would stop short of the total. */
 export function folderSyncProgress(job: {
   discoveredFiles?: number | null;
   syncedFiles?: number | null;
@@ -30,7 +27,6 @@ export function folderSyncLabel(synced: number, discovered: number): string {
   return `${synced} of ${discovered} file${discovered === 1 ? "" : "s"} synced`;
 }
 
-/** A linked folder's documents in the project: ready to search vs still indexing. */
 export function linkedFolderDocumentsSummary(
   name: string,
   total: number,
@@ -50,7 +46,7 @@ export function linkedFolderDocumentsSummary(
   };
 }
 
-/** A running chip's percentage: rounded down, so a few files still indexing never read 100%. */
+/** Floored so a chip still indexing never reads 100%. */
 export function runningPercent(progress: number): number {
   const value = progress <= 1 ? progress * 100 : progress;
   return Math.max(0, Math.min(99, Math.floor(value)));

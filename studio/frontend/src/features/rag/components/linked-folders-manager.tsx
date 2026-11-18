@@ -72,7 +72,6 @@ function jobSummary(job: FolderSyncJob): string {
     : `${processed} of ${discovered} files`;
 }
 
-/** The bar follows the same folder-wide count as the text when the server sends it. */
 function jobPercent(job: FolderSyncJob | undefined): number | null {
   if (!job) return null;
   const folderProgress = folderSyncProgress(job);

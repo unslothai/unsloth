@@ -1731,7 +1731,7 @@ def _reconcile_folder(job_id: str) -> None:
     ingest_failed: dict[str, dict] = {}
     cached_grace = False
     total = len(work) + len(missing)
-    # Files outside work are indexed and unchanged: the folder's own progress counts them as done.
+    # Files outside work are already indexed and unchanged, so they count as synced.
     _set_job(
         job_id,
         stage = "ingesting",
