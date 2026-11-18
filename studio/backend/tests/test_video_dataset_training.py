@@ -698,6 +698,17 @@ def test_mlx_training_runs_both_video_guards_around_formatting():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             lines.setdefault(node.func.id, []).append(node.lineno)
     assert len(lines["_mlx_video_preflight"]) == 1
+    guard = next(
+        n
+        for n in ast.walk(run)
+        if isinstance(n, ast.If)
+        and any(
+            isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_mlx_video_preflight"
+            for c in ast.walk(n)
+        )
+    )
+    # Audio runs are VLM runs too, but their rows never carry clips.
+    assert ast.unparse(guard.test) == "is_vlm and (not is_dataset_audio)"
     assert len(lines["_require_mlx_video_collation"]) == 1
     assert lines["_mlx_video_preflight"][0] < min(lines["format_and_template_dataset"])
     assert lines["_require_mlx_video_collation"][0] > max(lines["_adapt_for_mlx_vlm"])

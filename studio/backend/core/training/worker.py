@@ -3619,7 +3619,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             _send("status", status_message = status_message)
 
         # Before formatting: it would fetch every Hub clip only to be refused.
-        if is_vlm:
+        if is_vlm and not is_dataset_audio:
             _mlx_video_preflight(dataset)
 
         if is_dataset_audio:
