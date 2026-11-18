@@ -595,6 +595,36 @@ def test_an_overflow_retry_keeps_a_whole_attachment_when_dropping_turns_fits(mod
     assert [m["role"] for m in chats[1]["messages"]] == ["system", "user"]
 
 
+@pytest.mark.parametrize("mode", ["rolling", "checkpoint"])
+def test_a_rejected_native_compaction_falls_back_to_the_drop_mode(mode, monkeypatch):
+    import routes.inference as ri
+    from core.inference import external_provider as ep_mod
+    from test_external_auto_compaction import _OpenAICompactionRejectingHandler, _proxy
+
+    monkeypatch.setattr(ep_mod, "_is_openai_family_cloud", lambda _base_url: True)
+    monkeypatch.setattr(ri, "compacts_server_side", lambda *_args: True)
+
+    class Recording(_OpenAICompactionRejectingHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            super().do_POST()
+            Recording.bodies = list(self.server.recorded)  # type: ignore[attr-defined]
+
+    chunks, sent = _proxy(
+        "openai",
+        _long_chat(),
+        handler = Recording,
+        model = "gpt-5.5",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+        compaction_mode = mode,
+    )
+    # The refused native request and the locally fitted resend; no summary call between them.
+    assert len(Recording.bodies) == 2 and "context_management" not in sent
+    [truncation] = _truncations(chunks)
+    assert truncation["dropped_messages"] > 0
+    assert "summarized" not in truncation and "summary_failed" not in truncation
+
+
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError
