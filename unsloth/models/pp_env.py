@@ -980,9 +980,9 @@ def _refuse_split_router_aux(stage, n_microbatches):
     moe = getattr(getattr(stage, "ctx", None), "moe", None)
     if n_microbatches <= 1 or moe is None:
         return
-    from .pp_native import _router_aux_coef
+    from .pp_native import _router_aux_coef, _router_aux_requested
 
-    if not getattr(moe.config, "output_router_logits", False) or not _router_aux_coef(moe):
+    if not _router_aux_requested(stage.ctx, moe.config) or not _router_aux_coef(moe):
         return
     raise NotImplementedError(_split_router_aux_message(_env_vars(stage), n_microbatches))
 
@@ -993,7 +993,8 @@ def _split_router_aux_message(env_vars, n_microbatches):
         "micro-batches, and the pipeline adds the router load-balancing loss per micro-batch, which is not the "
         "loss the Trainer forms over the whole batch on one GPU. Set UNSLOTH_PP_MICROBATCHES=1 with "
         "UNSLOTH_PP_SCHEDULE=gpipe (where this torch allows one micro-batch), or turn the auxiliary loss off "
-        "(model.config.output_router_logits = False, or router_aux_loss_coef = 0.0 in SFTConfig)."
+        "(router_aux_loss_coef = 0.0 in SFTConfig, or model.config.output_router_logits = False with a plain "
+        "Trainer)."
         f"{_hint()}"
     )
 
@@ -1125,6 +1126,17 @@ def _set_trainer_aux(stage, value):
         ctx.trainer_aux = value
 
 
+def _router_aux_request(trainer):
+    """TRL >= 1.18 passes output_router_logits per forward, not via the config; the schedule skips compute_loss."""
+    return True if getattr(trainer, "aux_loss_enabled", False) else None
+
+
+def _set_router_aux_request(stage, value):
+    ctx = getattr(stage, "ctx", None)
+    if ctx is not None:
+        ctx.output_router_logits = value
+
+
 def _pp_training_step(
     self,
     model,
@@ -1155,13 +1167,15 @@ def _pp_training_step(
     scaler = getattr(self.accelerator, "scaler", None)
     scaler = scaler if scaler is not None and scaler.is_enabled() else None
     m, pad = resolve_microbatches(stage, input_ids.shape[0])
-    _refuse_split_router_aux(stage, m)
-    input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
-    chunked = _cpu_chunked_ce_model(self, model)
-    if chunked is not None:
-        chunked._unsloth_cpu_chunked_ce_active = True
-    _set_trainer_aux(stage, _trainer_router_aux(self, stage, n, chunked))
+    chunked = None
+    _set_router_aux_request(stage, _router_aux_request(self))
     try:
+        _refuse_split_router_aux(stage, m)
+        input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
+        chunked = _cpu_chunked_ce_model(self, model)
+        if chunked is not None:
+            chunked._unsloth_cpu_chunked_ce_active = True
+        _set_trainer_aux(stage, _trainer_router_aux(self, stage, n, chunked))
         loss = stage.step(
             input_ids,
             labels,
@@ -1173,6 +1187,7 @@ def _pp_training_step(
         )
     finally:
         _set_trainer_aux(stage, None)
+        _set_router_aux_request(stage, None)
         if chunked is not None:
             chunked._unsloth_cpu_chunked_ce_active = False
     del inputs
@@ -1225,16 +1240,18 @@ def _pp_prediction_step(
     count = _eval_items(self, inputs, labels)
     input_ids, labels, extra, count = _first_stage_batch(stage, input_ids, labels, extra, count)
     m, pad = resolve_microbatches(stage, input_ids.shape[0], train = False)
-    _refuse_split_router_aux(stage, m)
-    input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
-    # TRL's prediction step passes no num_items_in_batch: the aux term is added once per batch.
-    _set_trainer_aux(stage, _trainer_router_aux(self, stage, None, None, train = False))
+    _set_router_aux_request(stage, _router_aux_request(self))
     try:
+        _refuse_split_router_aux(stage, m)
+        input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
+        # TRL's prediction step passes no num_items_in_batch: the aux term is added once per batch.
+        _set_trainer_aux(stage, _trainer_router_aux(self, stage, None, None, train = False))
         loss = stage.eval_loss(
             input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra
         )
     finally:
         _set_trainer_aux(stage, None)
+        _set_router_aux_request(stage, None)
     return (loss.detach().to(self.args.device), None, None)
 
 

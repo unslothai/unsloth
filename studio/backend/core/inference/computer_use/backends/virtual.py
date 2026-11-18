@@ -127,6 +127,12 @@ class VirtualBackend(Backend):
                 return window
         return None
 
+    def window_stack(self) -> Optional[list[tuple[Any, tuple[float, float, float, float]]]]:
+        with self._lock:
+            return [
+                (window, window.bounds) for window in (self.front, *self.behind) if window.bounds
+            ]
+
     def open_app(self, name: str) -> str:
         if name.casefold() == "missing":
             raise BackendError(f"no application named {name} was found.")

@@ -99,6 +99,7 @@ import {
   mlxDrafterChoices,
   mlxSpeculativeMode,
   resolveSpeculativeType,
+  SPECULATIVE_TYPE_LABELS,
 } from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -287,18 +288,6 @@ const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
 const KV_CACHE_DTYPE_DEFAULT = "f16";
-const SPECULATIVE_TYPE_LABELS: Record<
-  (typeof SPECULATIVE_TYPES)[number],
-  string
-> = {
-  auto: "Auto",
-  mtp: "MTP",
-  dspark: "DSpark",
-  dflash: "DFlash",
-  ngram: "Ngram",
-  "mtp+ngram": "MTP+Ngram",
-  off: "Off",
-};
 const MLX_SPECULATIVE_TYPE_LABELS: Record<
   (typeof MLX_SPECULATIVE_TYPES)[number],
   string
@@ -586,6 +575,7 @@ function GgufContextLengthSetting({
   inputRef,
   onChange,
   renderWarning,
+  stacked = false,
 }: {
   value: number;
   autoValue: number;
@@ -596,6 +586,8 @@ function GgufContextLengthSetting({
   inputRef?: Ref<NumericValueInputHandle>;
   onChange: (value: number) => void;
   renderWarning: (value: number) => ReactNode;
+  // The narrow Run settings sidebar has no room for the slider beside the label and value.
+  stacked?: boolean;
 }) {
   // Auto (0) shows as a full bar; once a number is set, the far right is the real max.
   // Within a step of max counts: Radix rounds from min and may never land on max.
@@ -614,81 +606,99 @@ function GgufContextLengthSetting({
   );
   const shown = draft == null ? value : fromSlider(draft);
   const isAuto = shown === 0;
+  const label = (
+    // The hint and reset float after the label, so the slider's left gap counts from its text.
+    <div className="relative flex shrink-0 items-center">
+      <span className={LABEL_CLASS}>Context</span>
+      <span className="absolute left-full ml-1.5 flex items-center gap-1">
+        <InfoHint>
+          The model&apos;s context window. Auto (a full bar) picks one that
+          fits while keeping GPU speed; the reset button returns to it. A
+          number requests an exact context window, up to{" "}
+          {max.toLocaleString()} tokens; larger ones use more memory.
+          {isAuto && activeLoadedContext != null
+            ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
+            : ""}
+          {nativeContextLength != null
+            ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
+            : ""}
+        </InfoHint>
+        {isAuto ? null : (
+          <button
+            type="button"
+            onClick={() => onChange(0)}
+            className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-label="Reset context to Auto"
+            title="Reset to Auto"
+          >
+            <HugeiconsIcon
+              icon={ArrowTurnBackwardIcon}
+              className="size-4"
+              strokeWidth={2}
+            />
+          </button>
+        )}
+      </span>
+    </div>
+  );
+  const slider =
+    nativeContextLength != null ? (
+      <Slider
+        min={min}
+        max={max}
+        step={CONTEXT_SLIDER_STEP}
+        {...sliderProps}
+        onKeyDownCapture={() => {
+          keyed.current = true;
+        }}
+        onPointerDownCapture={() => {
+          keyed.current = false;
+        }}
+        className={stacked ? undefined : "ml-12 mr-7 min-w-0 flex-1"}
+        aria-label="Context"
+        thumbValueText={(v) =>
+          !(isMaxPosition(v) && value === 0)
+            ? `${(isMaxPosition(v) ? max : v).toLocaleString()} tokens`
+            : activeLoadedContext != null
+              ? `Auto, currently ${autoValue.toLocaleString()} tokens`
+              : "Auto"
+        }
+      />
+    ) : null;
+  const input = (
+    <div className="ml-auto flex shrink-0 items-center">
+      <NumericValueInput
+        ref={inputRef}
+        value={isAuto ? autoValue : shown}
+        min={min}
+        max={max}
+        step={1}
+        onChange={onChange}
+        displayValue={isAuto ? "Auto" : undefined}
+        ariaLabel="Context"
+        className={NUMBER_INPUT_CLASS}
+        fixedWidth={true}
+        size={8}
+      />
+    </div>
+  );
   return (
     <div className="space-y-1">
-      {/* The hint and reset float after the label, so the slider's left gap counts from its text. */}
-      <div className="config-row flex min-h-8 items-center">
-        <div className="relative flex shrink-0 items-center">
-          <span className={LABEL_CLASS}>Context</span>
-          <span className="absolute left-full ml-1.5 flex items-center gap-1">
-            <InfoHint>
-              The model&apos;s context window. Auto (a full bar) picks one that
-              fits while keeping GPU speed; the reset button returns to it. A
-              number requests an exact context window, up to{" "}
-              {max.toLocaleString()} tokens; larger ones use more memory.
-              {isAuto && activeLoadedContext != null
-                ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
-                : ""}
-              {nativeContextLength != null
-                ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
-                : ""}
-            </InfoHint>
-            {isAuto ? null : (
-              <button
-                type="button"
-                onClick={() => onChange(0)}
-                className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                aria-label="Reset context to Auto"
-                title="Reset to Auto"
-              >
-                <HugeiconsIcon
-                  icon={ArrowTurnBackwardIcon}
-                  className="size-4"
-                  strokeWidth={2}
-                />
-              </button>
-            )}
-          </span>
+      {stacked ? (
+        <div className="space-y-2">
+          <div className="config-row flex min-h-8 items-center">
+            {label}
+            {input}
+          </div>
+          {slider}
         </div>
-        {nativeContextLength != null ? (
-          <Slider
-            min={min}
-            max={max}
-            step={CONTEXT_SLIDER_STEP}
-            {...sliderProps}
-            onKeyDownCapture={() => {
-              keyed.current = true;
-            }}
-            onPointerDownCapture={() => {
-              keyed.current = false;
-            }}
-            className="ml-12 mr-7 min-w-0 flex-1"
-            aria-label="Context"
-            thumbValueText={(v) =>
-              !(isMaxPosition(v) && value === 0)
-                ? `${(isMaxPosition(v) ? max : v).toLocaleString()} tokens`
-                : activeLoadedContext != null
-                  ? `Auto, currently ${autoValue.toLocaleString()} tokens`
-                  : "Auto"
-            }
-          />
-        ) : null}
-        <div className="ml-auto flex shrink-0 items-center">
-          <NumericValueInput
-            ref={inputRef}
-            value={isAuto ? autoValue : shown}
-            min={min}
-            max={max}
-            step={1}
-            onChange={onChange}
-            displayValue={isAuto ? "Auto" : undefined}
-            ariaLabel="Context"
-            className={NUMBER_INPUT_CLASS}
-            fixedWidth={true}
-            size={8}
-          />
+      ) : (
+        <div className="config-row flex min-h-8 items-center">
+          {label}
+          {slider}
+          {input}
         </div>
-      </div>
+      )}
       {renderWarning(shown)}
     </div>
   );
@@ -4409,6 +4419,7 @@ export function ModelConfigPage({
               activeLoadedContext={activeLoadedContext}
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
+              stacked={variant === "sidebar"}
               renderWarning={(v) =>
                 resolvedIsDiffusion ? (
                   <DiffusionContextNote

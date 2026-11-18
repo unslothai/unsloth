@@ -879,6 +879,7 @@ export const ptBR = {
   chatMenu: {
     more: "Opções do chat",
     copy: "Copiar",
+    addScheduledTask: "Adicionar tarefa agendada…",
     compact: "Compactar conversa",
     compactQueued: "A compactação foi solicitada para a próxima mensagem",
     compactEmpty: "Ainda não há nada para compactar",
@@ -2121,7 +2122,7 @@ export const ptBR = {
       modelAliases: {
         sectionTitle: "Aliases de modelos (OpenAI API)",
         description:
-          "Nomes fixos para clientes da API, como fast-chat ou code. Uma solicitação que cita um alias é atendida pelo modelo para o qual ele aponta, então os apps conectados continuam funcionando quando você troca de modelo. Ative Trocar de modelo por requisição para que um alias possa carregar o modelo para o qual aponta.",
+          "Nomes curtos que os clientes da API podem usar no lugar do nome completo do modelo.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Nome do alias",
         modelAriaLabel: "Modelo para o qual o alias aponta",
@@ -2130,6 +2131,13 @@ export const ptBR = {
         add: "Adicionar alias",
         loadError: "Não foi possível carregar os aliases de modelos.",
         saveError: "Não foi possível salvar os aliases de modelos.",
+        contextLength: "Tamanho do contexto",
+        kvCacheType: "Tipo de cache KV",
+        speculativeDecoding: "Decodificação especulativa",
+        savedSetting: "Configuração salva",
+        loadSettings: "Configurações de carregamento",
+        loadSettingsHint:
+          "Apenas para modelos GGUF. Campos em branco usam as configurações salvas do modelo.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
@@ -5008,6 +5016,7 @@ export const ptBR = {
       intervalHours: "Intervalo (horas)",
       hourlyNote: "A primeira execução ocorre um intervalo após salvar. Alterar o intervalo ou retomar reinicia a espera.",
       createTitle: "Agendar uma tarefa",
+      repliesInChat: "Cada execução responde em “{title}”.",
       editTitle: "Editar tarefa agendada",
       name: "Nome",
       namePlaceholder: "Nome (opcional)",
