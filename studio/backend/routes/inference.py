@@ -4606,7 +4606,13 @@ def _memory_tool_requested(payload) -> bool:
         or getattr(payload, "tool_choice", None) == "none"
         or (getattr(payload, "n", None) or 1) > 1
         or _response_format_constrains_decoding(payload)
-        or _raw_grammar_fields(payload)
+        # Only local llama-server applies these; the provider proxy never sends them.
+        or (
+            _raw_grammar_fields(payload)
+            and not (
+                getattr(payload, "provider_id", None) or getattr(payload, "provider_type", None)
+            )
+        )
         or (
             _has_openai_tool_history(getattr(payload, "messages", None) or [])
             and not _only_studio_tool_history(payload)

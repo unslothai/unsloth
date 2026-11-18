@@ -270,3 +270,12 @@ def test_memory_keeps_the_client_tool_catalog(monkeypatch, _memory_on, enable_to
 def test_memory_keeps_hosted_search_with_the_provider(monkeypatch, _memory_on):
     sent = _proxy(monkeypatch, enabled_tools = ["web_search"])
     assert sent["enabled_tools"] == ["web_search"]
+
+
+@pytest.mark.parametrize(
+    "constraint", [{"grammar": 'root ::= "a"'}, {"json_schema": {"type": "object"}}]
+)
+def test_memory_keeps_update_memory_beside_a_raw_grammar(monkeypatch, _memory_on, constraint):
+    # The proxy never sends llama-server's grammar fields, so they must not withdraw saved memory.
+    transport = _loop_transport(monkeypatch, "openai", [], enable_tools = None, **constraint)
+    assert "update_memory" in transport._selected_local_tool_names
