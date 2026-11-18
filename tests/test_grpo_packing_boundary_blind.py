@@ -4,6 +4,7 @@
 """GRPO keeps its packed forwards off for models whose layers mix packed rows (packing_boundary_blocker)."""
 
 import ast
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,9 +41,11 @@ def packing_module(monkeypatch):
 
 def _helper():
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"))
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == HELPER)
-    namespace = {}
-    exec(compile(ast.Module(body = [node], type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
+    # The helper calls the packing leak probe, which the generated trainer defines next to it.
+    names = (HELPER, "_unsloth_grpo_packing_leaks")
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    namespace = {"os": os, "torch": torch, "UNSLOTH_ENABLE_LOGGING": False}
+    exec(compile(ast.Module(body = nodes, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
     return namespace[HELPER]
 
 
