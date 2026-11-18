@@ -69,6 +69,13 @@ def test_until_found_content_is_read():
         "<div role='dialog' hidden><p>Old answer.</p></div>",
         "<div role='tabpanel' aria-hidden='true'><p>Old answer.</p></div>",
         "<div role='tabpanel' style='display:none'><p>Old answer.</p></div>",
+        "<div role='tabpanel' hidden aria-hidden='true' style='display:none'><p>Old answer.</p></div>",
+        "<div style='display:none'><div role='tabpanel' hidden style='display:none'><p>Old answer.</p></div></div>",
+        "<div hidden='until-found' style='display:none'><p>Old answer.</p></div>",
+        "<div role='menu' hidden style='display:none'><p>Old answer.</p></div>",
+        "<div role='dialog' hidden style='display:none'><p>Old answer.</p></div>",
+        "<ul role='listbox' hidden style='display:none'><li>Old answer.</li></ul>",
+        "<span hidden style='display:none'>Old answer.</span>",
         "<div hidden><a role='tab' id='h'>Old answer.</a></div><div role='tabpanel' aria-labelledby='h'>x</div>",
         "<a role='tab' id='h'>x<template>Old answer.</template></a><div role='tabpanel' aria-labelledby='h'>x</div>",
         "<head><title role='tab' id='h'>Old answer.</title></head><div role='tabpanel' aria-labelledby='h'>x</div>",
@@ -127,6 +134,80 @@ def test_each_panel_is_named_by_its_labelling_tab(tabs):
         start = out.index(f"**{label}**") + len(label) + 4
         assert start < out.index(command)
         assert "**" not in out[start : out.index(command)]
+
+
+def _headless_ui_tabs(prefix: str, panels: dict[str, str]) -> str:
+    # Headless UI's server render: button tabs, panels with ids but no aria-labelledby, the inactive ones hidden
+    tabs = "".join(
+        f'<button role="tab" id="{prefix}t{i}">{label}</button>' for i, label in enumerate(panels)
+    )
+    bodies = "".join(
+        f'<div role="tabpanel" id="{prefix}p{i}"{" hidden style=display:none" if i else ""}>{body}</div>'
+        for i, body in enumerate(panels.values())
+    )
+    return f'<div><div role="tablist">{tabs}</div><div>{bodies}</div></div>'
+
+
+def test_headless_ui_panels_are_named_by_their_tab_in_order():
+    commands = {label: f"<pre><code>{cmd}</code></pre>" for label, cmd in _COMMANDS.items()}
+    frameworks = {
+        name: _headless_ui_tabs(
+            f"{name}-", {label: body.replace("jest", name) for label, body in commands.items()}
+        )
+        for name in ("Next", "Svelte")
+    }
+    page = (
+        f"<main><h1>Install</h1><p>{_INTRO}</p>{_headless_ui_tabs('f-', frameworks)}"
+        # a closed group's leftover tab must not name a later panel at the same depth
+        "<div><div role='tablist'><button role='tab' id='g'>Ghost</button></div></div>"
+        "<div><div role='tabpanel' id='stray'>Stray panel.</div></div></main>"
+    )
+    out = html_to_markdown(page, main_content = True)
+    labels = [line for line in out.splitlines() if line.startswith("**")]
+    assert labels == [f"**{label}**" for name in frameworks for label in (name, *_COMMANDS)]
+    for name in frameworks:
+        for label, command in _COMMANDS.items():
+            named = out.index(f"**{name}**")
+            assert out.index(f"**{label}**", named) < out.index(command.replace("jest", name))
+    assert "Stray panel." in out
+
+
+@pytest.mark.parametrize(
+    "body, labels",
+    [
+        # aria-controls outranks order, so a missing first panel shifts nothing
+        (
+            '<div><div role="tablist"><button role="tab" id="a" aria-controls="p0">npm</button>'
+            '<button role="tab" id="b" aria-controls="p1">pnpm</button></div>'
+            '<div><div role="tabpanel" id="p1">pnpm add x</div></div></div>',
+            ["**pnpm**"],
+        ),
+        # an aria-controls later in the page still outranks order
+        (
+            '<div><div role="tablist"><button role="tab" id="a">npm</button>'
+            '<button role="tab" id="b">pnpm</button></div>'
+            '<div><div role="tabpanel" id="p1">pnpm add x</div></div></div>'
+            '<div role="tablist"><button role="tab" id="c" aria-controls="p1">pnpm</button></div>',
+            ["**pnpm**"],
+        ),
+        # only the element right after the tablist holds its panels, a void one included
+        (
+            '<div role="tablist"><button role="tab" id="a">npm</button></div><hr>'
+            '<div><div role="tabpanel" id="q">pip i</div></div>',
+            [],
+        ),
+        # a panel id reused by a later tab leaves that tab's own label intact
+        (
+            '<div><div role="tablist"><button role="tab" id="t0">npm</button></div>'
+            '<div><div role="tabpanel" id="same">npm i</div></div></div>'
+            '<a role="tab" id="same">Python</a><div role="tabpanel" aria-labelledby="same">pip i</div>',
+            ["**npm**", "**Python**"],
+        ),
+    ],
+)
+def test_explicit_links_win_over_order(body, labels):
+    out = html_to_markdown(f"<main><h1>Install</h1><p>{_INTRO}</p>{body}</main>", main_content = True)
+    assert [line for line in out.splitlines() if line.startswith("**")] == labels
 
 
 def test_panel_label_does_not_break_a_table_row():

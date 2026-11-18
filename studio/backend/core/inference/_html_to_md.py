@@ -854,39 +854,57 @@ class _TitleButtonScan:
 # (len, hash) of recent pages -> their title buttons, so main-content passes over one page scan it once
 _TITLE_BUTTON_CACHE: dict[tuple[int, int], frozenset[tuple[int, int]]] = {}
 _TITLE_BUTTON_CACHE_SIZE = 4
-_TAB_LABEL_CACHE: dict[tuple[int, int], dict[str, str]] = {}
+_TAB_LABEL_CACHE: dict[tuple[int, int], tuple[dict[str, str], dict[str, str]]] = {}
 _MAX_TAB_LABEL_CHARS = 80
 # what the renderer skips, except buttons, which sphinx-tabs uses as tabs
 _TAB_LABEL_SKIP = _SKIP_TAGS - {"button"}
 _TAB_PANEL = re.compile(r"tabpanel", re.IGNORECASE)
-_TAB_PANEL_LABELLED = re.compile(r"aria-labelledby", re.IGNORECASE)
+_TAB_PANEL_PAIRING = re.compile(r"aria-labelledby|aria-controls|tablist", re.IGNORECASE)
 
 
 class _TabLabelScan(HTMLParser):
-    """Text of each shown role=tab element with an id, so a panel's aria-labelledby can name its tab."""
+    """Text of each shown role=tab element with an id, so a panel's aria-labelledby can name its tab; panel_labels
+    names a panel by its tab when only the tab's aria-controls or, for Headless UI, their order links them."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs = True)
         self.labels: dict[str, str] = {}
+        self.panel_labels: dict[str, str] = {}
+        self._order_labels: dict[str, str] = {}  # outranked by any aria-controls, even a later one
         self._open: list[str] = []
         # per-tag _open indices, so an end tag that matches nothing costs O(1) rather than a stack walk
         self._open_at: dict[str, list[int]] = {}
         self._muted_at = -1  # _open index of the outermost skipped or hidden element
         self._tab_at = -1  # _open index of the tab being read
         self._tab_id = ""
+        self._tab_controls = ""
         self._parts: list[str] = []
+        self._list_at = -1  # _open index of the tablist being read
+        self._list_tabs: list[str] = []
+        self._closed_list: tuple[int, list[str]] | None = None  # until its next sibling opens
+        # [_open index of the panels' wrapper, its tab ids, panels paired so far], innermost last
+        self._groups: list[list] = []
 
     def _finish_tab(self) -> None:
         # capped here too, so joining many long labels per panel stays linear
         label = " ".join("".join(self._parts).split())[:_MAX_TAB_LABEL_CHARS]
         if label:
             self.labels.setdefault(self._tab_id, label)
+            for panel_id in self._tab_controls.split():
+                self.panel_labels.setdefault(panel_id, label)
         self._tab_at = -1
         self._parts = []
 
     def _pop_to(self, i: int) -> None:
         if 0 <= self._tab_at and i <= self._tab_at:
             self._finish_tab()
+        if 0 <= self._list_at and i <= self._list_at:
+            self._closed_list = (self._list_at, self._list_tabs)
+            self._list_at = -1
+        if self._closed_list and i < self._closed_list[0]:
+            self._closed_list = None
+        while self._groups and self._groups[-1][0] >= i:
+            self._groups.pop()
         for tag in self._open[i:]:
             self._open_at[tag].pop()
         del self._open[i:]
@@ -897,6 +915,11 @@ class _TabLabelScan(HTMLParser):
         # an omitted </li> or </p> ends the element at a sibling that closes it, a tab included
         while self._open and tag in _IMPLICIT_CLOSERS.get(self._open[-1], ()):
             self._pop_to(len(self._open) - 1)
+        # Headless UI links panels to tabs only by order, inside the element right after the tablist
+        if self._closed_list:
+            if tag not in _VOID_TAGS:
+                self._groups.append([len(self._open), self._closed_list[1], 0])
+            self._closed_list = None
         if tag in _VOID_TAGS:
             return
         attr_dict = dict(attrs)
@@ -904,9 +927,25 @@ class _TabLabelScan(HTMLParser):
         self._open.append(tag)
         if self._muted_at < 0 and (tag in _TAB_LABEL_SKIP or _is_hidden_element(attr_dict)):
             self._muted_at = len(self._open) - 1
+        if self._list_at < 0 and _has_role(attr_dict, "tablist"):
+            self._list_at = len(self._open) - 1
+            self._list_tabs = []
         if self._tab_at < 0 and attr_dict.get("id") and _has_role(attr_dict, "tab"):
             self._tab_at = len(self._open) - 1
             self._tab_id = attr_dict["id"]
+            self._tab_controls = attr_dict.get("aria-controls") or ""
+            if self._list_at >= 0:
+                self._list_tabs.append(self._tab_id)
+        if self._groups and attr_dict.get("id") and _has_role(attr_dict, "tabpanel"):
+            self._pair_panel(attr_dict["id"])
+
+    def _pair_panel(self, panel_id: str) -> None:
+        group = self._groups[-1]
+        if group[0] == len(self._open) - 2 and group[2] < len(group[1]):
+            label = self.labels.get(group[1][group[2]])
+            group[2] += 1
+            if label:
+                self._order_labels.setdefault(panel_id, label)
 
     def handle_endtag(self, tag: str) -> None:
         # stray end tags, and the </img> HTMLParser sends after <img/>, match nothing and are ignored
@@ -918,16 +957,21 @@ class _TabLabelScan(HTMLParser):
         if self._tab_at >= 0 and self._muted_at < 0 and len(self._parts) < 64:
             self._parts.append(data)
 
+    def close(self) -> None:
+        super().close()
+        self.panel_labels = self._order_labels | self.panel_labels
 
-def _tab_labels(source_html: str, key: tuple[int, int]) -> dict[str, str]:
+
+def _tab_labels(source_html: str, key: tuple[int, int]) -> tuple[dict[str, str], dict[str, str]]:
+    """(tab id -> its text, panel id -> its tab's text when no aria-labelledby links them)"""
     labels = _TAB_LABEL_CACHE.get(key)
     if labels is None:
-        labels = {}
-        if _TAB_PANEL.search(source_html) and _TAB_PANEL_LABELLED.search(source_html):
+        labels = ({}, {})
+        if _TAB_PANEL.search(source_html) and _TAB_PANEL_PAIRING.search(source_html):
             scan = _TabLabelScan()
             scan.feed(source_html)
             scan.close()
-            labels = scan.labels
+            labels = (scan.labels, scan.panel_labels)
         if len(_TAB_LABEL_CACHE) >= _TITLE_BUTTON_CACHE_SIZE:
             _TAB_LABEL_CACHE.clear()
         _TAB_LABEL_CACHE[key] = labels
@@ -957,6 +1001,7 @@ class _MarkdownRenderer(HTMLParser):
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
         self.tab_labels: dict[str, str] = {}  # tab id -> its text, from _TabLabelScan
+        self.panel_labels: dict[str, str] = {}
         self._title_scan: _TitleButtonScan | None = None
         self._site_links = site_links
         self._out: list[str] = []
@@ -1938,7 +1983,7 @@ class _MarkdownRenderer(HTMLParser):
             # capped, so repeating an id cannot multiply the page
             label = " ".join(self.tab_labels[i] for i in ids if i in self.tab_labels)[
                 :_MAX_TAB_LABEL_CHARS
-            ]
+            ] or self.panel_labels.get(attr_dict.get("id") or "", "")
             if label:
                 self._emit(f"\n\n**{label}**\n\n")
 
@@ -2492,7 +2537,7 @@ def _new_renderer(
             page_span_limit = 2 * len(source_html),
         )
         renderer.title_buttons = title_buttons
-        renderer.tab_labels = tab_labels
+        renderer.tab_labels, renderer.panel_labels = tab_labels
         renderer._title_scan = scan
         if tokens is None:
             renderer.feed(source_html)
