@@ -1004,7 +1004,7 @@ class GgmlSttSidecar:
                     stdin = subprocess.DEVNULL,
                     # Co-located GPU libs on the loader path (WSL system HIP first); secrets scrubbed from child env.
                     env = _whisper_server_child_env(binary),
-                    # Die with Unsloth (Linux PDEATHSIG, Windows job) so a crash cannot orphan the model server.
+                    **windows_hidden_subprocess_kwargs(),
                     **child_popen_kwargs(),
                 )
                 with self._load_state_lock:

@@ -9,6 +9,7 @@ import * as zustandMiddleware from "zustand/middleware";
 import * as audioCppCatalog from "../src/features/audio/audio-cpp-catalog.ts";
 import * as sttContext from "../src/features/settings/stores/stt-context.ts";
 import * as sttModelCatalog from "../src/features/settings/stores/stt-model-catalog.ts";
+import * as voiceOrbOverlayPrefs from "../src/features/settings/stores/voice-orb-overlay-prefs.ts";
 import { installLocalStorageFake } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -25,6 +26,7 @@ const { useVoiceSettingsStore } = loadWithStubs<
     zustand,
     "zustand/middleware": zustandMiddleware,
     "./stt-model-catalog": sttModelCatalog,
+    "./voice-orb-overlay-prefs": voiceOrbOverlayPrefs,
     "./stt-context": sttContext,
     "../api/stt-device": { syncSttDevicePreference: () => undefined },
   },
@@ -60,4 +62,15 @@ test("writes to other keys leave the settings alone", () => {
   const before = useVoiceSettingsStore.getState().dictionary;
   fireWindowEvent("storage", { key: "unsloth_theme" });
   assert.equal(useVoiceSettingsStore.getState().dictionary, before);
+});
+
+test("a system-default mic chosen after the legacy picker stays the default across reloads", async () => {
+  store.set("unsloth_chat_mic_device_id", "old-usb-mic");
+  await useVoiceSettingsStore.persist.rehydrate();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(useVoiceSettingsStore.getState().micDeviceId, "old-usb-mic");
+  assert.equal(store.has("unsloth_chat_mic_device_id"), false);
+  useVoiceSettingsStore.getState().setMicDeviceId("default");
+  await useVoiceSettingsStore.persist.rehydrate();
+  assert.equal(useVoiceSettingsStore.getState().micDeviceId, "default");
 });

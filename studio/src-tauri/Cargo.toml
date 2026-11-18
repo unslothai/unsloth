@@ -9,8 +9,9 @@ edition = "2021"
 rust-version = "1.89"
 
 [dependencies]
-# unstable: child webviews in the main window for the browser panel (browser_webview.rs).
-tauri = { version = "~2.12.0", features = ["tray-icon", "unstable"] }
+# Windows executable-resource icons and ICO entry selection (tauri #15274 / #15241).
+# unstable: child webviews in the main window, for the browser panel's pages (browser_webview.rs).
+tauri = { version = "~2.12.0", features = ["tray-icon", "unstable", "macos-private-api"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
 # The plugin's own crate, used directly to pin the Windows Run entry to HKCU (main.rs).

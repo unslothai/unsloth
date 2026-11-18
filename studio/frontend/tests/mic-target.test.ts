@@ -26,6 +26,7 @@ import {
 import { AUDIO_ATTACHMENT_ACCEPT, MAX_AUDIO_SIZE } from "../src/lib/audio-utils.ts";
 import * as sttModelCatalog from "../src/features/settings/stores/stt-model-catalog.ts";
 import * as sttContext from "../src/features/settings/stores/stt-context.ts";
+import * as voiceOrbOverlayPrefs from "../src/features/settings/stores/voice-orb-overlay-prefs.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -43,6 +44,7 @@ const { useVoiceSettingsStore } = loadWithStubs<
     "zustand/middleware": zustandMiddleware,
     "./stt-model-catalog": sttModelCatalog,
     "./stt-context": sttContext,
+    "./voice-orb-overlay-prefs": voiceOrbOverlayPrefs,
     "../api/stt-device": { syncSttDevicePreference: () => undefined },
   },
 );

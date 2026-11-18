@@ -24,6 +24,7 @@ from loggers import get_logger
 
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from utils.process_lifetime import (
     adopt_pid,
     child_popen_kwargs,
@@ -1111,6 +1112,7 @@ class MtmdSttSidecar:
                 stdin = subprocess.DEVNULL,
                 # Like chat: bundled and pip CUDA libs on the loader path; secrets scrubbed.
                 env = {**_llama_server_child_env(binary), **key_env},
+                **windows_hidden_subprocess_kwargs(),
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )

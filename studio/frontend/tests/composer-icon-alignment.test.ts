@@ -10,6 +10,7 @@ import { readSrc } from "./helpers/kit.ts";
 const componentSources = [
   "../src/components/assistant-ui/thread.tsx",
   "../src/components/assistant-ui/chat-dictation-bar.tsx",
+  "../src/components/assistant-ui/voice-pause-stop-button.tsx",
   "../src/features/chat/shared-composer.tsx",
 ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
 
@@ -38,7 +39,7 @@ test("every isolated composer stop square draws at size-3.5, about a third of it
     .flatMap((source) => tags(source, "HugeiconsIcon"))
     .filter((tag) => /icon=\{StopIcon\}/.test(tag) && /\bsize-3\.5(?![\w.-])/.test(tag));
 
-  assert.equal(stops.length, 6);
+  assert.equal(stops.length, 7);
 });
 
 test("neither composer action glyph carries a device-pixel nudge", () => {

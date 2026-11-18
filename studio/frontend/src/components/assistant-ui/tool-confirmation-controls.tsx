@@ -133,7 +133,6 @@ export function ToolConfirmationControls({
     [
       toolCallId,
       confirmation,
-      clearToolConfirmation,
       allowToolAlways,
       grantChatFullAccess,
       autoAllowKey,

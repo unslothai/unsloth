@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  deriveOrbState,
+  type VoiceOrbInputs,
+} from "../src/features/chat/voice/orb-state.ts";
+
+function idle(overrides: Partial<VoiceOrbInputs> = {}): VoiceOrbInputs {
+  return {
+    voiceMode: "active",
+    hasChatModel: true,
+    voiceSlotLoading: false,
+    voiceHearing: false,
+    isPlaying: false,
+    voiceTranscribing: false,
+    isThreadRunning: false,
+    isReasoning: false,
+    isSpeaking: false,
+    ...overrides,
+  };
+}
+
+test("the orb is blank unless the loop is actually running", () => {
+  for (const voiceMode of ["off", "configuring"] as const) {
+    const decision = deriveOrbState(
+      idle({ voiceMode, voiceSlotLoading: true, isPlaying: true }),
+    );
+    assert.deepEqual(decision, { kind: "set", state: null });
+  }
+});
+
+test("a warming model reads as loading, not as a ready orb", () => {
+  assert.deepEqual(deriveOrbState(idle({ voiceSlotLoading: true })), {
+    kind: "set",
+    state: "loading",
+  });
+});
+
+test("hearing you outranks the model speaking, so barge-in is visible", () => {
+  assert.deepEqual(
+    deriveOrbState(idle({ voiceHearing: true, isPlaying: true, isSpeaking: true })),
+    { kind: "set", state: "hearing" },
+  );
+});
+
+test("playback outranks the work still running behind it", () => {
+  assert.deepEqual(
+    deriveOrbState(
+      idle({ isPlaying: true, isThreadRunning: true, isSpeaking: true }),
+    ),
+    { kind: "set", state: "speaking" },
+  );
+});
+
+test("transcribing is reported ahead of generating, the order they happen in", () => {
+  assert.deepEqual(
+    deriveOrbState(idle({ voiceTranscribing: true, isThreadRunning: true })),
+    { kind: "set", state: "transcribing" },
+  );
+  assert.deepEqual(deriveOrbState(idle({ isThreadRunning: true })), {
+    kind: "set",
+    state: "generating",
+  });
+});
+
+test("a synthesis gap holds the current state instead of switching", () => {
+  assert.deepEqual(deriveOrbState(idle({ isSpeaking: true })), { kind: "hold" });
+});
+
+test("an armed mic with nothing else happening is listening", () => {
+  assert.deepEqual(deriveOrbState(idle()), { kind: "set", state: "listening" });
+});
+
+test("no chat model waits instead of claiming to listen", () => {
+  assert.deepEqual(deriveOrbState(idle({ hasChatModel: false })), {
+    kind: "set",
+    state: "waiting",
+  });
+});
+
+test("waiting outranks a warming voice slot", () => {
+  assert.deepEqual(
+    deriveOrbState(idle({ hasChatModel: false, voiceSlotLoading: true })),
+    { kind: "set", state: "waiting" },
+  );
+});
+
+test("a blank orb still wins over waiting when the loop is not running", () => {
+  assert.deepEqual(
+    deriveOrbState(idle({ voiceMode: "configuring", hasChatModel: false })),
+    { kind: "set", state: null },
+  );
+});
+
+test("a reasoning model reads as thinking until answer text arrives", () => {
+  assert.deepEqual(deriveOrbState(idle({ isThreadRunning: true, isReasoning: true })), {
+    kind: "set",
+    state: "thinking",
+  });
+  assert.deepEqual(deriveOrbState(idle({ isThreadRunning: true, isReasoning: false })), {
+    kind: "set",
+    state: "generating",
+  });
+  assert.deepEqual(deriveOrbState(idle({ isReasoning: true })), { kind: "set", state: "listening" });
+});

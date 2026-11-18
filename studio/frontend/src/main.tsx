@@ -23,6 +23,7 @@ import {
   watchReasoningRowContainmentOverride,
 } from "./components/assistant-ui/reasoning-row-containment";
 import { fetchDeviceType } from "./config/env";
+import { ORB_WIDGET_QUERY } from "./features/chat/voice/orb-widget";
 import { refreshSession } from "./features/auth/api";
 import {
   getPostAuthRoute,
@@ -138,7 +139,25 @@ if (isTauri && /Mac/.test(navigator.platform)) {
 const APP_SHELL_READY_EVENT = "unsloth:app-shell-ready";
 const CHAT_PREFETCH_FALLBACK_MS = 3000;
 
+const isOrbWidget =
+  isTauri && new URLSearchParams(window.location.search).has(ORB_WIDGET_QUERY);
+if (isOrbWidget) {
+  const transparent = document.createElement("style");
+  transparent.textContent = "html, body, #root { background: transparent !important; overflow: hidden; }";
+  document.head.appendChild(transparent);
+}
+
 function renderApp(): void {
+  if (isOrbWidget) {
+    void import("./components/assistant-ui/orb-widget-view").then(({ OrbWidgetView }) =>
+      root.render(
+        <StrictMode>
+          <OrbWidgetView />
+        </StrictMode>,
+      ),
+    );
+    return;
+  }
   root.render(
     <StrictMode>
       <App />
@@ -158,11 +177,14 @@ function renderApp(): void {
   }
 }
 
-const localeInitialization = initializeLocale();
-const interfaceScaleInitialization = applyInterfaceScaleBeforeFirstPaint(
-  useInterfaceScaleStore.getState().scale,
-);
-if (typeof localeInitialization !== "string" || isTauri || chatPageAtStart) {
+// No locale or zoom for the widget: its strings come translated, and a zoom would break CSS px = logical px.
+const localeInitialization = isOrbWidget ? "en" : initializeLocale();
+const interfaceScaleInitialization = isOrbWidget
+  ? Promise.resolve()
+  : applyInterfaceScaleBeforeFirstPaint(useInterfaceScaleStore.getState().scale);
+if (isOrbWidget) {
+  renderApp();
+} else if (typeof localeInitialization !== "string" || isTauri || chatPageAtStart) {
   Promise.all([
     localeInitialization,
     interfaceScaleInitialization,
