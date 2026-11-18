@@ -400,7 +400,7 @@ async def collect_summary(stream: AsyncIterator[str]) -> str:
                 def _next_limit() -> float:
                     return min(loop.time() + SUMMARY_IDLE_TIMEOUT_S, deadline)
 
-                async with asyncio.timeout_at(_next_limit()) as scope:
+                async with asyncio.timeout_at(_next_limit()) as scope:  # novermin
                     await _read(lambda: scope.reschedule(_next_limit()))
             else:  # Python < 3.11: the whole call within the idle limit, as before.
                 await asyncio.wait_for(_read(), timeout = SUMMARY_IDLE_TIMEOUT_S)
