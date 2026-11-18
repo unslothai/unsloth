@@ -29542,13 +29542,22 @@ def _external_fit_limits(payload, prompt_tokens: int) -> tuple[int, Optional[int
     return context_length, max_tokens
 
 
-def _overflow_floor_threshold(messages: list[dict], count, max_tokens: Optional[int]) -> int:
-    """Smallest trigger whose prompt budget still holds the system turns and the newest user turn
-    onward, so an overflow retry evicts every older turn rather than none when half is too tight."""
+def _overflow_floor_threshold(
+    messages: list[dict],
+    count,
+    max_tokens: Optional[int],
+    anchors: Optional[set[int]] = None,
+) -> int:
+    """Smallest trigger whose prompt budget still holds what the fit keeps (system turns, ``anchors``
+    and the newest user turn onward), so an overflow retry evicts every older turn rather than none."""
     from core.inference.context_window import prompt_budget
 
     last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default = 0)
-    kept = [m for m in messages[:last_user] if m.get("role") in ("system", "developer")]
+    kept = [
+        m
+        for m in messages[:last_user]
+        if m.get("role") in ("system", "developer") or id(m) in (anchors or ())
+    ]
     floor = count(kept + messages[last_user:])
     low, high = 1, max(2, 2 * floor + (max_tokens or 0))
     while low < high:
@@ -30905,7 +30914,13 @@ async def _proxy_to_external_provider(
             bound = {
                 "compaction_threshold": max(
                     count(refused) // 2,
-                    _overflow_floor_threshold(messages, count, _effective_max_tokens(payload)),
+                    _overflow_floor_threshold(
+                        messages,
+                        count,
+                        _effective_max_tokens(payload),
+                        # The fit pins the active turn only when it may reset or replay an epoch.
+                        None if _rolling_only else _active_turn_anchors(messages, _request_branch),
+                    ),
                 ),
             }
             _evicting_payload = _evicting_payload.model_copy(update = bound)
