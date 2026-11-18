@@ -5873,6 +5873,33 @@ _warn_if_cuda_mask_hides_amd() {
     echo "" >&2
 }
 
+# Mixed NVIDIA + AMD host on the CUDA default: say the AMD card was skipped and how to use it (#12248).
+# Gated on the flag's own route test, so it never advertises a switch that would keep CUDA anyway.
+# Unsloth Desktop shows only stdout in its install log, so --tauri prints there instead.
+_notice_if_cuda_skipped_amd() {
+    case "$(_torch_index_url_leaf "${1:-}")" in cu[0-9]*) ;; *) return 0 ;; esac
+    _rocm_torch_explicitly_requested && return 0
+    _has_usable_nvidia_gpu >/dev/null 2>&1 || return 0
+    _nca_gfx=$(_amd_request_has_a_wheel_route >/dev/null 2>&1 && \
+        printf '%s' "$_AMD_REQUEST_TARGET_GFX") || return 0
+    [ -n "$_nca_gfx" ] || return 0
+    # A Ryzen iGPU next to an RTX card is not a training target worth the switch.
+    _amd_gfx_is_shadowing_integrated "$_nca_gfx" && return 0
+    {
+        echo ""
+        echo "[INFO] An AMD GPU ($_nca_gfx) was also found. CUDA PyTorch was installed for the NVIDIA GPU,"
+        echo "[INFO] so training will not use the AMD GPU (one torch install serves one vendor)."
+        echo "[INFO] To train on the AMD GPU instead, re-run this installer with UNSLOTH_FORCE_ROCM_TORCH=1;"
+        echo "[INFO] the NVIDIA GPU then drops out of training until it is unset and the installer re-run."
+        if ! _has_amd_rocm_gpu ignore-nvidia >/dev/null 2>&1; then
+            echo "[INFO] ROCm cannot see the AMD GPU yet (no rocminfo, amd-smi or /dev/kfd entry for it); install it first:"
+            echo "[INFO]   https://unsloth.ai/docs/get-started/install/amd"
+        fi
+        echo "[INFO] GGUF chat can already run on the AMD GPU: Settings > System > GGUF inference engine > Compute backend."
+        echo ""
+    } | if [ "${TAURI_MODE:-false}" = true ]; then cat; else cat >&2; fi
+}
+
 _is_pip_rocm_family_leaf() {
     case "$1" in
         gfx[0-9]*) return 0 ;;
@@ -6626,6 +6653,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
 fi
 if [ "$SKIP_TORCH" = false ]; then
     _warn_if_cuda_mask_hides_amd "$TORCH_INDEX_URL"
+    [ "$_torch_index_pinned" = true ] || _notice_if_cuda_skipped_amd "$TORCH_INDEX_URL"
 fi
 # Export the resolved torch backend ("cuda", "rocm", "xpu" or "cpu") so setup.sh and install_python_stack.py know what was chosen here and can skip ROCm-specific repair steps. Classify on the FINAL path segment only: a custom UNSLOTH_PYTORCH_MIRROR whose base path happens to contain "rocm" or "gfx" must not mislabel a cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix overrides in gfxNNNN/, so the trailing slash is stripped first). Lowercase the leaf so every gfx*/rocm*/cu* arm matches regardless of case (the canonical AMD RDNA4 leaf is gfx120X-all). CUDA is branded only on a real cu[0-9]* leaf, so a mirror leaf (/current) does NOT commit a CUDA backend; an unknown leaf leaves the var unset so the stack probes the GPU. Query and fragment are dropped first, then ALL trailing slashes, in lockstep with the shared _torch_index_url_leaf extractor.
 _torch_index_leaf="${TORCH_INDEX_URL%%\?*}"
