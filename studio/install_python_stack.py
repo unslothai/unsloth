@@ -3194,12 +3194,46 @@ def _note_forced_rocm_declined() -> None:
         "Keeping CUDA torch for the NVIDIA GPU."
     )
     # WSL sees the AMD GPU only through librocdxg, which install.sh skips beside NVIDIA.
-    if _is_wsl() and not _wsl_rocm_runtime_present():
-        _safe_print(
-            "   WSL: ROCm-on-WSL (librocdxg) isn't installed; install.sh skips that setup while an "
-            "NVIDIA GPU is usable. To set it up (sudo, large download): run "
-            "scripts/install_rocm_wsl_strixhalo.sh from the unsloth repo, then re-run this update."
+    if not _is_wsl() or _wsl_rocm_runtime_present():
+        return
+    _name = _wsl_amd_adapter_name()
+    if _name is None:
+        return
+    _safe_print(
+        f"   WSL: Windows reports {_name}, but ROCm-on-WSL (librocdxg) isn't installed; install.sh "
+        "skips that setup while an NVIDIA GPU is usable. To set it up (sudo, large download): run "
+        "scripts/install_rocm_wsl_strixhalo.sh from the unsloth repo, then re-run this update."
+    )
+
+
+def _wsl_amd_adapter_name() -> "str | None":
+    """The AMD adapter Windows reports, or "an AMD GPU" on a Strix Halo CPU; install.sh's
+    _wsl_amd_gpu_name plus the same cpuinfo test _maybe_bootstrap_rocm_wsl uses."""
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "
+                "'AMD|Radeon' } | Select-Object -First 1).Name",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 10,
         )
+        _name = result.stdout.decode(errors = "replace").replace("\x00", "").strip()
+        if result.returncode == 0 and _name:
+            return _name
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        text = Path("/proc/cpuinfo").read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    if re.search(r"Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo", text, re.IGNORECASE):
+        return "an AMD GPU"
+    return None
 
 
 def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:

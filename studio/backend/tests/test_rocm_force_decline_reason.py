@@ -226,9 +226,17 @@ class _Stop(BaseException):
     pass
 
 
-def _update(stack, monkeypatch, capsys, **host) -> str:
+def _update(
+    stack,
+    monkeypatch,
+    capsys,
+    *,
+    wsl_gpu: "str | None" = None,
+    **host,
+) -> str:
     _mixed_host(stack, monkeypatch, **host)
     monkeypatch.setattr(stack, "_wsl_rocm_runtime_present", lambda: False)
+    monkeypatch.setattr(stack, "_wsl_amd_adapter_name", lambda: wsl_gpu)
 
     def _refuse(*a, **k):
         pytest.fail("the update reached an install")
@@ -275,9 +283,30 @@ def test_update_says_why_the_request_kept_cuda(stack, monkeypatch, capsys, host,
 
 
 def test_update_on_wsl_without_librocdxg_says_the_setup_was_skipped(stack, monkeypatch, capsys):
-    out = _update(stack, monkeypatch, capsys, rocm_gpu = False, display = False, archs = [], wsl = True)
+    out = _update(
+        stack,
+        monkeypatch,
+        capsys,
+        wsl_gpu = "AMD Radeon AI PRO R9700",
+        rocm_gpu = False,
+        display = False,
+        archs = [],
+        wsl = True,
+    )
     assert _PY_REASON in out
-    assert "ROCm-on-WSL (librocdxg) isn't installed" in out
+    assert (
+        "Windows reports AMD Radeon AI PRO R9700, but ROCm-on-WSL (librocdxg) isn't installed"
+        in out
+    )
+
+
+def test_update_on_an_nvidia_only_wsl_host_gives_no_rocm_setup_hint(stack, monkeypatch, capsys):
+    """Windows reports no AMD adapter: the reason still prints, the setup advice does not."""
+    out = _update(
+        stack, monkeypatch, capsys, wsl_gpu = None, rocm_gpu = False, display = False, archs = [], wsl = True
+    )
+    assert _PY_REASON in out
+    assert "ROCm-on-WSL" not in out
 
 
 def test_a_viable_request_on_update_prints_nothing_new(stack, monkeypatch, capsys):
