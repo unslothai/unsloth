@@ -2623,6 +2623,8 @@ type AutoLoadCandidate = {
   ggufVariant: string | null;
   maxSeqLength: number;
   successLabel: string;
+  /** Shown instead of id when they differ, e.g. a repo id for a snapshot path. */
+  label?: string;
 };
 
 // Same case rules as autoLoadSourceKey: folding a POSIX target would conflate /models/Foo and /models/foo.
@@ -3005,6 +3007,8 @@ type AutoLoadSource = {
   id: string;
   /** Sent to /api/inference/load as model_path. */
   loadId: string;
+  /** Hub repo id of an hf_cache row: in another cache its id and loadId are the snapshot path. */
+  repoId?: string;
   sizeBytes: number;
   maxSeqLength: number;
   /** null when the target is one file already (a local .gguf) or safetensors. */
@@ -3069,6 +3073,8 @@ function buildAutoLoadSources(
       kind: isGguf ? "gguf" : "model",
       id: row.id,
       loadId: row.load_id || row.id,
+      repoId:
+        row.source === "hf_cache" && row.model_id ? row.model_id : undefined,
       sizeBytes: row.size_bytes ?? 0,
       maxSeqLength: isGguf ? 0 : safetensorsMaxSeqLength,
       listVariants: needsVariant
@@ -3084,16 +3090,40 @@ function buildAutoLoadSources(
   return sources;
 }
 
-function isRememberedSource(
+function rememberedMatch(
   source: AutoLoadSource,
   remembered: { id: string; kind: LastLocalModelKind },
-): boolean {
-  if (source.kind !== remembered.kind) return false;
+): "exact" | "repo" | null {
+  if (source.kind !== remembered.kind) return null;
   // Same case rules as the dedupe key.
   const target = normalizeTarget(remembered.id);
-  return (
+  if (
     normalizeTarget(source.id) === target ||
     normalizeTarget(source.loadId) === target
+  ) {
+    return "exact";
+  }
+  return source.repoId !== undefined &&
+    normalizeTarget(source.repoId) === target
+    ? "repo"
+    : null;
+}
+
+/** A snapshot matched only by repo id stands in for a missing exact row, never retries a failed one. */
+function rememberedSources(
+  sources: AutoLoadSource[],
+  remembered: { id: string; kind: LastLocalModelKind } | null,
+): Set<AutoLoadSource> {
+  if (!remembered) return new Set();
+  const exact = sources.filter(
+    (source) => rememberedMatch(source, remembered) === "exact",
+  );
+  return new Set(
+    exact.length > 0
+      ? exact
+      : sources.filter(
+          (source) => rememberedMatch(source, remembered) === "repo",
+        ),
   );
 }
 
@@ -3102,8 +3132,9 @@ function orderAutoLoadSources(
   sources: AutoLoadSource[],
   remembered: { id: string; kind: LastLocalModelKind } | null,
 ): AutoLoadSource[] {
+  const preferred = rememberedSources(sources, remembered);
   const rank = (source: AutoLoadSource): number => {
-    if (remembered && isRememberedSource(source, remembered)) return 0;
+    if (preferred.has(source)) return 0;
     return source.kind === "gguf" ? 1 : 2;
   };
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
@@ -3118,16 +3149,20 @@ async function resolveAutoLoadCandidate(
   source: AutoLoadSource,
   rememberedVariant: string | null,
   isSkipped: (candidate: AutoLoadCandidate) => boolean,
+  // Keys saved settings and the record: the repo id when only that matched the last used model.
+  id: string = source.id,
 ): Promise<AutoLoadCandidate | null> {
+  const label = source.repoId ?? id;
   const build = (ggufVariant: string | null): AutoLoadCandidate => ({
-    id: source.id,
+    id,
     loadId: source.loadId,
     kind: source.kind,
     ggufVariant,
     maxSeqLength: source.maxSeqLength,
     successLabel: ggufVariant
-      ? `Loaded ${source.id} (${ggufVariant})`
-      : `Loaded ${source.id}`,
+      ? `Loaded ${label} (${ggufVariant})`
+      : `Loaded ${label}`,
+    label,
   });
   if (!source.listVariants) {
     const variants =
@@ -4129,6 +4164,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     );
 
     // A target can be in several lists; a twin is tried only if the preferred row resolved nothing.
+    const remembered = rememberedSources(sources, lastLoaded);
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
       if (
@@ -4140,9 +4176,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
-      const isRemembered = lastLoaded
-        ? isRememberedSource(source, lastLoaded)
-        : false;
+      const isRemembered = remembered.has(source);
       const isTried = (entry: AutoLoadCandidate): boolean =>
         skippedAutoLoadCandidates.has(
           autoLoadCandidateKey(
@@ -4162,6 +4196,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             source,
             isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
             isTried,
+            isRemembered &&
+              lastLoaded &&
+              rememberedMatch(source, lastLoaded) === "repo"
+              ? lastLoaded.id
+              : source.id,
           );
           options?.abortSignal?.throwIfAborted();
           if (!candidate) break;

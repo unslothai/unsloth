@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
+import type { NpuCompat } from "./compat";
 import { npuSearchText } from "./display-name";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
@@ -99,29 +100,19 @@ export function npuRowsFor(
     .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
 }
 
-// The AMD NPU launch blog's headline models lead, then the newest ones that fit a Strix laptop
-// NPU, then the backend's order.
-const NPU_RECOMMENDED = [
+// The popular NPU models, pinned first in every NPU list; the backend's order follows.
+const NPU_POPULAR = [
   "qwen3.6-moe:35b-a3b",
   "qwen3.8-mtp:27b",
-  "qwen3.8-dflash2:27b",
+  "gemma4-it:12b",
   "qwen3.5:9b",
-  "qwen3.5:4b",
-  "gemma4-it:e4b",
-  "gpt-oss:20b",
-  "lfm3:1.7b",
-  "nemotron3.5-bolt:e4b",
   "qwen3vl-it:4b",
-  "gemma4-it:e2b",
-  "qwen3.5:2b",
-  "qwen3.5:0.8b",
-  "phi4-mini-it:4b",
-  "llama3.2:3b",
+  "lfm3:1.7b",
 ];
 
 function npuRank(checkpoint: string): number {
-  const rank = NPU_RECOMMENDED.indexOf(checkpoint);
-  return rank === -1 ? NPU_RECOMMENDED.length : rank;
+  const rank = NPU_POPULAR.indexOf(checkpoint);
+  return rank === -1 ? NPU_POPULAR.length : rank;
 }
 
 export interface NpuCapability {
@@ -243,6 +234,16 @@ export async function getNpuStatus(signal?: AbortSignal): Promise<NpuStatus> {
     );
   }
   return (await response.json()) as NpuStatus;
+}
+
+export async function getNpuCompat(): Promise<NpuCompat> {
+  const response = await authFetch("/api/npu/compat");
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Could not read NPU model support"),
+    );
+  }
+  return (await response.json()) as NpuCompat;
 }
 
 export async function enableNpu(): Promise<NpuStatus> {

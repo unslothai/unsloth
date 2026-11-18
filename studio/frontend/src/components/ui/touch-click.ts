@@ -14,3 +14,9 @@ export function isTouchClick(event: React.MouseEvent): boolean {
     window.matchMedia("(pointer: coarse)").matches
   );
 }
+
+/** Radix popover / menu triggers set aria-haspopup; a tap on one is for its popup, not a tooltip pin. */
+export function opensPopup(element: Pick<Element, "getAttribute"> | null): boolean {
+  const popup = element?.getAttribute("aria-haspopup");
+  return popup != null && popup !== "false";
+}

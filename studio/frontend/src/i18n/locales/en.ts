@@ -2134,7 +2134,7 @@ export const en = {
       modelAliases: {
         sectionTitle: "Model aliases (OpenAI API)",
         description:
-          "Stable names for API clients, such as fast-chat or code. A request naming an alias is served by the model it points to, so connected apps keep working when you swap models. Turn on Switch model by request so an alias can load its model.",
+          "Short names that API clients can use instead of the full model name.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Alias name",
         modelAriaLabel: "Model the alias points to",
@@ -2143,6 +2143,13 @@ export const en = {
         add: "Add alias",
         loadError: "Failed to load model aliases.",
         saveError: "Failed to save model aliases.",
+        contextLength: "Context length",
+        kvCacheType: "KV cache type",
+        speculativeDecoding: "Speculative decoding",
+        savedSetting: "Saved setting",
+        loadSettings: "Load settings",
+        loadSettingsHint:
+          "GGUF models only. Blank fields use the model's saved settings.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -4851,6 +4858,9 @@ export const en = {
   translate: {
     title: "Translate",
     detectLanguage: "Detect language",
+    // Source picker while detecting: the language found in the text so far.
+    detectedLanguage: "{language} (detected)",
+    detectedTab: "{language} - Detected",
     sourceLanguage: "Translate from",
     targetLanguage: "Translate to",
     recentTargets: "Recent",
@@ -4862,16 +4872,20 @@ export const en = {
     translate: "Translate",
     stop: "Stop",
     sourceLabel: "Text to translate",
-    sourcePlaceholder: "Type or paste text, or drop a text file",
+    sourcePlaceholder: "Type or paste text, or drop a document or image",
     outputLabel: "Translation",
     outputEmpty: "The translation appears here.",
     // Under the empty translation pane until the model's file is on disk.
     firstRunHint: "The first translation downloads {model} ({size}). After that it runs on this device, offline.",
+    charLimit: "Max {max} characters",
+    readingFile: "Reading {name}…",
+    downloadConfirmTitle: "Download {model}?",
+    downloadConfirm: "Download",
     clear: "Clear",
     paste: "Paste",
-    openFile: "Open a text file",
-    dropFile: "Drop a text file to translate it",
-    fileNotText: "Only text files can be opened here.",
+    openFile: "Open a document or image",
+    dropFile: "Drop a file to translate its text",
+    fileNotText: "This file has no text to translate.",
     truncated: "Only the first {max} characters were kept.",
     copy: "Copy translation",
     copied: "Copied",

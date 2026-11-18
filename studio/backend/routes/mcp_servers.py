@@ -143,6 +143,19 @@ def _validate_url(url: str) -> str:
     return trimmed
 
 
+def _http_origin(url: str) -> tuple:
+    try:
+        parsed = urlparse((url or "").strip())
+        scheme = parsed.scheme.lower()
+        return (
+            scheme,
+            (parsed.hostname or "").lower(),
+            parsed.port or {"http": 80, "https": 443}.get(scheme),
+        )
+    except ValueError:
+        return (url,)
+
+
 def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     """Trim header names, drop empties, coerce values to str; None if empty."""
     if not headers:
@@ -585,6 +598,15 @@ async def update_mcp_server(
         "url" in changes
         and is_stdio(changes["url"]) != is_stdio(old["url"])
         and "headers_json" not in changes
+    ):
+        changes["headers_json"] = None
+    # Saved headers belong to one origin: repointing an http row elsewhere drops them unless resent.
+    if (
+        "url" in changes
+        and "headers_json" not in changes
+        and not is_stdio(old["url"])
+        and not is_stdio(changes["url"])
+        and _http_origin(changes["url"]) != _http_origin(old["url"])
     ):
         changes["headers_json"] = None
     # Clear persisted OAuth tokens when the URL, the OAuth flag or the client changes

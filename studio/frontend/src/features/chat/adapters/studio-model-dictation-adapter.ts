@@ -513,10 +513,38 @@ export function unloadSttModel(
 export class StudioModelDictationAdapter implements DictationAdapter {
   private readonly chatId: string | null | undefined;
   private readonly language: string | undefined;
+  private readonly detectLanguage: boolean;
 
-  constructor(options: { chatId?: string | null; language?: string } = {}) {
+  constructor(
+    options: {
+      chatId?: string | null;
+      language?: string;
+      detectLanguage?: boolean;
+    } = {},
+  ) {
     this.chatId = options.chatId;
     this.language = options.language;
+    this.detectLanguage = options.detectLanguage === true;
+  }
+
+  private sessionLanguage(
+    model: string,
+    external: boolean,
+    setting: string,
+  ): string {
+    // "" omits the language so the model detects it; "auto" means the user's.
+    if (this.detectLanguage) {
+      return "";
+    }
+    if (external) {
+      return this.language ?? setting;
+    }
+    return resolveModelDictationLanguage(
+      model,
+      this.language && isModelDictationLanguage(model, this.language)
+        ? this.language
+        : setting,
+    );
   }
 
   static isSupported(): boolean {
@@ -548,14 +576,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       );
     }
     beginDictationSession();
-    const sessionLanguage = usesExternalEndpoint
-      ? (this.language ?? settings.dictationLanguage)
-      : resolveModelDictationLanguage(
-          sessionModel,
-          this.language && isModelDictationLanguage(sessionModel, this.language)
-            ? this.language
-            : settings.dictationLanguage,
-        );
+    const sessionLanguage = this.sessionLanguage(
+      sessionModel,
+      usesExternalEndpoint,
+      settings.dictationLanguage,
+    );
     const sessionEngine = usesExternalEndpoint
       ? undefined
       : sttEngineFor(sessionModel);

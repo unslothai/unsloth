@@ -125,6 +125,7 @@ import {
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
+  UNLIMITED_TOOL_CALLS,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -1951,19 +1952,20 @@ function MaxToolCallsSlider() {
     (s) => s.setMaxToolCallsPerMessage,
   );
 
-  // Slider range 0-41; 41 maps to 9999 ("Max")
-  const sliderValue = maxToolCalls >= 9999 ? 41 : Math.min(maxToolCalls, 40);
+  // Slider range 0-51; 51 maps to UNLIMITED_TOOL_CALLS ("Max")
+  const sliderValue =
+    maxToolCalls >= UNLIMITED_TOOL_CALLS ? 51 : Math.min(maxToolCalls, 50);
 
   return (
     <ParamSlider
       label="Max Tool Calls Per Message"
       value={sliderValue}
       min={0}
-      max={41}
+      max={51}
       step={1}
-      onChange={(v) => setMaxToolCalls(v >= 41 ? 9999 : v)}
-      format={(v) => (v >= 41 ? "Max" : v === 0 ? "Off" : undefined)}
-      info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap."
+      onChange={(v) => setMaxToolCalls(v >= 51 ? UNLIMITED_TOOL_CALLS : v)}
+      format={(v) => (v >= 51 ? "Max" : v === 0 ? "Off" : undefined)}
+      info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap. Turning on MCP sets it to Max."
     />
   );
 }

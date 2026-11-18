@@ -3711,6 +3711,14 @@ export function ChatPage({
   const baseAttachmentTargetKey =
     keptBaseViewRef.current?.attachmentTargetKey ?? nativeAttachmentTargetKey;
   const baseBackgrounded = view.mode === "compare";
+  // Sidebar rows, links and Back reach compare without enterCompare; the hidden chat is not the open one.
+  const comparePairId = view.mode === "compare" ? view.pairId : null;
+  useLayoutEffect(() => {
+    if (!active || comparePairId === null) return;
+    const store = useChatRuntimeStore.getState();
+    store.setActiveThreadId(null);
+    store.setContextUsage(null);
+  }, [active, comparePairId]);
 
   // Keyed by project, not a boolean: the hoisted provider is not remounted on project change.
   const projectLandingId =

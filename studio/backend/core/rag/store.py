@@ -917,7 +917,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
         widen: list[str] = []
         for s in pending:
             fetch = fetches[s]
-            rows, cap = _knn(conn, db_file, s, vector, query, fetch)
+            rows, cap, complete = _knn(conn, db_file, s, vector, query, fetch)
             kept[s] = _drop_incompatible(
                 conn,
                 # A NaN vector written by an fp16 embedder reads back as a NULL distance: skip it, or the
@@ -926,9 +926,17 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
                 embedding_model,
                 untagged,
             )
-            if len(kept[s]) < k and len(rows) >= fetch and fetch < cap:
-                fetches[s] = min(fetch * 4, cap)
-                widen.append(s)
+            if len(kept[s]) < k and len(rows) >= fetch and not complete:
+                if fetch < cap:
+                    fetches[s] = min(fetch * 4, cap)
+                    widen.append(s)
+                else:
+                    # Merge, not replace: an ANN pass can hold more hits than vec0's fallback cap.
+                    merged = dict(kept[s])
+                    merged.update(
+                        _search_compatible_dense(conn, s, query, embedding_model, untagged)
+                    )
+                    kept[s] = list(merged.items())
         pending = widen
     out = [hit for s in scopes for hit in kept[s]]
     out.sort(key = lambda t: t[1], reverse = True)
@@ -940,7 +948,8 @@ _MAX_DENSE_FETCH = 4096
 
 
 def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
-    """(chunk_id, distance) rows plus the largest fetch worth asking for: the cache's row count, or vec0's cap."""
+    """(chunk_id, distance) rows, the largest fetch worth asking for (the cache's row count, or vec0's cap), and
+    whether the rows already cover the whole scope."""
     if db_file is not None:
         hit = vec_cache.search(conn, db_file, scope, vector, fetch)
         if hit is not None:
@@ -951,11 +960,36 @@ def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
         "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
         (scope, query, min(fetch, _MAX_DENSE_FETCH)),
     ).fetchall()
-    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH
+    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH, False
 
 
 # One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
 _ID_BATCH = 900
+
+_COMPATIBLE_CHUNKS = (
+    "NOT EXISTS (SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+    "AND (d.linked_folder_id IS NULL OR EXISTS "
+    "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
+    "AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=? "
+    "OR d.embedding_model=?)"
+)
+
+
+def _search_compatible_dense(conn, scope, query, embedding_model, untagged):
+    # Prefilter on rowid, not chunk_id: vec0 matches a TEXT metadata IN list per row x per value.
+    rows = conn.execute(
+        "SELECT chunk_id, distance FROM chunks_vec "
+        "WHERE scope=? AND embedding MATCH ? AND k=? AND rowid IN ("
+        "SELECT v.rowid FROM chunks_vec v WHERE v.scope=? AND v.chunk_id IN ("
+        "SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
+        f"WHERE c.scope=? AND {_COMPATIBLE_CHUNKS})) ORDER BY distance",
+        (scope, query, _MAX_DENSE_FETCH, scope, scope, embedding_model, embedding_model, untagged),
+    ).fetchall()
+    return [
+        (r["chunk_id"], 1.0 - r["distance"])
+        for r in rows
+        if r["distance"] is not None and math.isfinite(r["distance"])
+    ]
 
 
 def _drop_incompatible(
@@ -975,12 +1009,7 @@ def _drop_incompatible(
             r["id"]
             for r in conn.execute(
                 f"SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
-                f"WHERE c.id IN ({placeholders}) AND NOT EXISTS "
-                f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
-                f"AND (d.linked_folder_id IS NULL OR EXISTS "
-                f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
-                f"AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=? "
-                f"OR d.embedding_model=?)",
+                f"WHERE c.id IN ({placeholders}) AND {_COMPATIBLE_CHUNKS}",
                 (*batch, embedding_model, embedding_model, untagged),
             ).fetchall()
         )
