@@ -441,24 +441,28 @@ def runtime_keeps_fp8(runtime: str) -> bool:
     return runtime in (RUNTIME_STATIC, RUNTIME_DYNAMIC, RUNTIME_STORED)
 
 
-# Diffusers' fused Cosmos3 decoder layer: the generation (video) tokens' Linears and the reasoner (text) tokens' ones.
+# Diffusers' fused Cosmos3 decoder layer routes its two token streams through separate Linears
+# (``Cosmos3AttnProcessor.__call__`` / ``Cosmos3DecoderLayer.forward``): ``to_q/to_k/to_v(und_seq)`` and
+# ``to_out`` -> und_out with ``mlp``, the reasoner (text) tokens; ``add_q_proj/add_k_proj/add_v_proj(gen_seq)`` and
+# ``to_add_out`` -> gen_out with ``mlp_moe_gen``, the generation (video) tokens. diffusers 0.42.1's own
+# ``_classify_cosmos3_linear`` swaps the attention halves, so its runtime keeps the video attention W8A16 and
+# quantizes the text attention; the checkpoint's policy (``reasoner: a16``) is applied to the real token paths here.
 _GENERATION_SUFFIXES = (
-    ".self_attn.to_q",
-    ".self_attn.to_k",
-    ".self_attn.to_v",
-    ".self_attn.to_out",
-)
-_REASONER_SUFFIXES = (
     ".self_attn.add_q_proj",
     ".self_attn.add_k_proj",
     ".self_attn.add_v_proj",
     ".self_attn.to_add_out",
 )
+_REASONER_SUFFIXES = (
+    ".self_attn.to_q",
+    ".self_attn.to_k",
+    ".self_attn.to_v",
+    ".self_attn.to_out",
+)
 
 
 def linear_path(name: str) -> Optional[str]:
-    """``generation`` / ``reasoner`` for a Cosmos3 MoT Linear, else None (the same split diffusers' Cosmos3 FP8 step
-    policy makes)."""
+    """``generation`` / ``reasoner``: the token stream a Cosmos3 MoT Linear runs on (video / text), else None."""
     if ".mlp_moe_gen." in name or name.endswith(_GENERATION_SUFFIXES):
         return "generation"
     if ".mlp." in name or name.endswith(_REASONER_SUFFIXES):

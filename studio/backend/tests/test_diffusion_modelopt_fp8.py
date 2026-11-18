@@ -383,6 +383,72 @@ def test_the_step_policy_runs_the_first_and_last_three_steps_w8a16(tmp_path, ste
     assert layer.a16_calls == int(a16)
 
 
+@pytest.mark.parametrize("repo", [NANO, EDGE])
+@pytest.mark.parametrize("step", [3, 4, 10, 16])
+def test_each_linear_runs_the_policy_of_the_token_stream_the_processor_feeds_it(
+    tmp_path, repo, step
+):
+    """Drive a real decoder layer with text (und) and video (gen) streams of different lengths, record which stream
+    reaches every quantized Linear through diffusers' own Cosmos3 processor, and check a middle step quantizes exactly
+    the video stream's Linears while every text Linear stays W8A16 (the checkpoint's ``reasoner: a16``)."""
+    root, _ref, _scales = _write_checkpoint(tmp_path, repo)
+    model = mo.load_modelopt_fp8_transformer(
+        Cosmos3OmniTransformer, root, runtime = mo.RUNTIME_STATIC
+    )
+    cls = mo.fp8_linear_class()
+    name, layer = next(
+        (n, m) for n, m in model.named_modules() if type(m).__name__.endswith("DecoderLayer")
+    )
+    und_len, gen_len = 3, 7
+    stream = {}
+
+    def record(n):
+        def hook(_module, args):
+            stream[n] = {und_len: "reasoner", gen_len: "generation"}[args[0].shape[0]]
+
+        return hook
+
+    hooks = [
+        module.register_forward_pre_hook(record(n))
+        for n, module in model.named_modules()
+        if isinstance(module, cls) and n.startswith(name + ".")
+    ]
+    hidden, head_dim = model.config.hidden_size, model.config.head_dim
+    torch.manual_seed(0)
+    und = (torch.randn(und_len, hidden) * 0.1).to(torch.bfloat16)
+    gen = (torch.randn(gen_len, hidden) * 0.1).to(torch.bfloat16)
+    rotary = tuple(
+        torch.ones(n, head_dim, dtype = torch.bfloat16)
+        if i % 2 == 0
+        else torch.zeros(n, head_dim, dtype = torch.bfloat16)
+        for i, n in enumerate((und_len, und_len, gen_len, gen_len))
+    )
+    with model.cache_context("cond", step_index = step, num_inference_steps = 20):
+        layer(und, gen, rotary)
+    for hook in hooks:
+        hook.remove()
+    # every quantized Linear in the layer ran, on exactly one stream, and the loader names that stream
+    assert len(stream) == len(hooks) and set(stream.values()) == {"reasoner", "generation"}
+    for n, path in stream.items():
+        assert mo.linear_path(n) == path, (n, path)
+        module = model.get_submodule(n)
+        assert module.path == path, n
+        # a middle step: the video stream W8A8, the text stream W8A16
+        a16 = path == "reasoner" or step < 3 or step >= 17
+        assert module.a16_calls == int(a16), (n, step)
+    attention = {n.rsplit(".", 1)[-1]: p for n, p in stream.items() if ".self_attn." in n}
+    assert attention == {
+        "to_q": "reasoner",
+        "to_k": "reasoner",
+        "to_v": "reasoner",
+        "to_out": "reasoner",
+        "add_q_proj": "generation",
+        "add_k_proj": "generation",
+        "add_v_proj": "generation",
+        "to_add_out": "generation",
+    }
+
+
 def test_without_a_step_policy_every_step_is_w8a8(tmp_path, monkeypatch):
     root, _ref, _scales = _write_checkpoint(tmp_path, EDGE)
     path = root / "transformer" / "config.json"
