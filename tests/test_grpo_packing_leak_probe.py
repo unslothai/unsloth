@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO turns its packed forwards off for a model whose attention lets packed documents see each other.
-
-OPT builds a plain causal mask over the whole packed row on transformers 4.57 and 5.x (its mask builder never
-reads position_ids or packed_seq_lengths), so every packed document attends to the ones before it. On a tiny
-OPT the packed log-probs move by 0.004 nats, which passes the 0.7 nat per-row self-verify, while the GRPO
-v_proj gradient is 15-55% off the padded one. The leak probe packs two rows that differ only in the first
-document and refuses packing when the second document's outputs change.
-"""
+"""GRPO turns packed forwards off when packed documents see each other (OPT's whole-row causal mask)."""
 
 import ast
 import os
@@ -111,7 +104,6 @@ def _packed_doc2(model, first, second):
 
 
 def test_opt_packed_documents_see_each_other():
-    # The defect itself: per-document position_ids do not stop OPT attending across documents.
     model = _tiny("opt").eval()
     g = torch.Generator().manual_seed(1)
     a, b, doc = (torch.randint(10, 256, (8,), generator = g) for _ in range(3))
@@ -126,7 +118,6 @@ def test_leaking_model_has_packing_refused():
     assert model.__dict__.get("_unsloth_seq_packing_nograd_ok") is False
     assert model.__dict__.get("_unsloth_seq_packing_grad_ok") is False
     assert model.__dict__.get("_unsloth_prefix_grouper_nograd_disabled") is True
-    # The probe ran in eval mode (dropout would differ between its two forwards) and restored train mode.
     assert model.training
 
 
@@ -161,7 +152,6 @@ def test_probe_runs_once_per_model(monkeypatch):
 
 
 def test_a_model_the_probe_cannot_run_keeps_packing():
-    # No input embeddings: the probe returns None and the self-verify decides, as before.
     model = torch.nn.Linear(2, 2)
     model.config = SimpleNamespace(model_type = "llama")
     assert _namespace()[PROBE](_trainer(), model) is None

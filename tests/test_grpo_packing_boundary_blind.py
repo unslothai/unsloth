@@ -41,7 +41,6 @@ def packing_module(monkeypatch):
 
 def _helper():
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"))
-    # The helper calls the packing leak probe, which the generated trainer defines next to it.
     names = (HELPER, "_unsloth_grpo_packing_leaks")
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     namespace = {"os": os, "torch": torch, "UNSLOTH_ENABLE_LOGGING": False}

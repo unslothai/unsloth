@@ -1799,15 +1799,9 @@ def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):
 
 
 def _unsloth_grpo_packing_leaks(self, unwrapped):
-    """True when one packed document's output depends on another document in the same packed row.
+    """True when a packed document's output depends on an earlier document in its row (e.g. OPT's plain causal mask).
 
-    Packing relies on the attention mask honouring packed_seq_lengths / per-document position_ids. A model whose
-    mask builder ignores both (OPT on transformers 4.57 and 5.x builds a plain causal mask over the whole row)
-    lets every document attend to the ones before it. The per-row self-verify compares values against a 0.7 nat
-    bf16 noise floor, so a small leak passes it (tiny OPT: 0.004 nats) while the gradients are 15-55% off. This
-    probe packs two rows that differ only in the first document and compares the second document's outputs, so
-    it needs no noise floor: an isolating mask gives the same values. Once per model; UNSLOTH_GRPO_PACKING_LEAK_PROBE=0
-    skips it. Returns None when it cannot run (the old behaviour then applies)."""
+    The 0.7 nat self-verify misses such leaks (tiny OPT: 0.004 nats, grads 15-55% off). None = could not run."""
     if os.environ.get("UNSLOTH_GRPO_PACKING_LEAK_PROBE", "1").lower() in (
         "0",
         "false",
@@ -1840,7 +1834,6 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
         lengths = torch.tensor([n1, n2], dtype = torch.int32, device = device)
         enabled = bool(getattr(self, "_autocast_enabled", False))
         dtype = getattr(self, "_autocast_dtype", torch.bfloat16)
-        # Dropout would differ between the two forwards on its own.
         was_training = unwrapped.training
         unwrapped.eval()
         outs = []
