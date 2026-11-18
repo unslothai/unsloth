@@ -9,12 +9,24 @@ TOOLSET_MODULE = "unsloth_level_tools"
 _SOURCE = Path(__file__).with_name(f"{TOOLSET_MODULE}.py")
 # PythonScriptPlugin runs init_unreal.py from every Content/Python folder at editor startup.
 _HOOK_MARKER = "# Unsloth level tools (installed by Unsloth Studio)"
-_HOOK = f"{_HOOK_MARKER}\nimport {TOOLSET_MODULE}\n\n{TOOLSET_MODULE}.register_when_ready()\n"
+# Guarded: with the Unreal MCP plugin off, toolset_registry is missing and an unguarded import would
+# also skip anything the user adds to init_unreal.py after this block.
+_HOOK = f"""{_HOOK_MARKER}
+try:
+    import {TOOLSET_MODULE}
+except ImportError as _unsloth_exc:
+    import unreal
+
+    unreal.log_warning(f"Unsloth level tools not loaded (enable the Unreal MCP plugin): {{_unsloth_exc}}")
+else:
+    {TOOLSET_MODULE}.register_when_ready()
+"""
 
 
 def project_root(project_path: str) -> Path:
     """The folder holding the .uproject, from that folder or the .uproject file itself."""
-    raw = project_path.strip()
+    # Windows Explorer's "Copy as path" wraps the path in double quotes.
+    raw = project_path.strip().strip('"').strip()
     if not raw:
         raise ValueError("Enter the folder that holds your .uproject file.")
     path = Path(raw).expanduser()

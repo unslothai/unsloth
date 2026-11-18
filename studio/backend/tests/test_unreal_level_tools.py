@@ -48,6 +48,32 @@ def test_install_keeps_an_existing_init_unreal(tmp_path):
     assert text.count("register_when_ready()") == 1
 
 
+def test_install_accepts_a_path_copied_with_quotes(tmp_path):
+    root = _project(tmp_path)
+    unreal_tools.install(f'  "{root / "MyGame.uproject"}" ')
+    assert (root / "Content" / "Python" / "init_unreal.py").exists()
+
+
+@pytest.mark.parametrize("plugin_on", [True, False])
+def test_hook_never_stops_the_rest_of_init_unreal(tmp_path, monkeypatch, plugin_on):
+    """Without the Unreal MCP plugin the toolset cannot import; the hook warns instead of raising."""
+    root = _project(tmp_path)
+    unreal_tools.install(str(root))
+    hook = (root / "Content" / "Python" / "init_unreal.py").read_text() + "\nafter_hook = True\n"
+    warnings, registered = [], []
+    monkeypatch.setitem(sys.modules, "unreal", types.SimpleNamespace(log_warning = warnings.append))
+    if plugin_on:
+        toolset = types.SimpleNamespace(register_when_ready = lambda: registered.append(True))
+        monkeypatch.setitem(sys.modules, "unsloth_level_tools", toolset)
+    else:
+        monkeypatch.setitem(sys.modules, "unsloth_level_tools", None)  # import raises ImportError
+    scope: dict = {}
+    exec(compile(hook, "init_unreal.py", "exec"), scope)
+    assert scope["after_hook"] is True
+    assert registered == ([True] if plugin_on else [])
+    assert len(warnings) == (0 if plugin_on else 1)
+
+
 @pytest.mark.parametrize("path", ["", "missing", "no_uproject"])
 def test_install_needs_a_project_folder(tmp_path, path):
     (tmp_path / "no_uproject").mkdir()
