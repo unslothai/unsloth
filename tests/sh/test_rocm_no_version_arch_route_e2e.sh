@@ -556,6 +556,51 @@ _fail_calls=$(lspci_calls)
 assert_eq "a failing lspci is asked again (index $_fail_index)" \
     "yes" "$([ "$_fail_calls" -ge 2 ] && echo yes || echo "no ($_fail_calls)")"
 
+# No rocminfo or amd-smi, and a pci.ids too old to name the card ("Device [1002:7590]"):
+# the KFD topology is the only source of the arch (RX 9060 XT on Linux Mint 22.1).
+runtime_less_kfd_host() {   # $1 = gfx_target_version
+    reset_host
+    mock_kfd_gfx "$1"
+    mock_pci_amd_display
+    mock_lspci "Device"
+}
+runtime_less_kfd_host 120000
+assert_eq "a runtime-less gfx1200 named only by KFD routes to its per-arch index" \
+    "$_AMD/gfx120X-all/" "$(run_index)"
+runtime_less_kfd_host 120000
+assert_eq "and hands setup.sh the KFD arch" "gfx1200" "$(run_gfx)"
+runtime_less_kfd_host 120000
+run_index >/dev/null
+_kfd_err=$(cat "$_ROOT/stderr.txt")
+assert_contains "and says the kernel driver named it" "$_kfd_err" "the kernel driver (KFD) reports gfx1200"
+case "$_kfd_err" in
+    *"installing CPU-only PyTorch"*) bad "and does not first announce a CPU-only install" ;;
+    *) ok "and does not first announce a CPU-only install" ;;
+esac
+if [ -n "$_SH_REAL" ]; then
+    _RUN_SHELL="$_SH_REAL"
+    runtime_less_kfd_host 120000
+    assert_eq "under /bin/sh the KFD-only host still routes per-arch" \
+        "$_AMD/gfx120X-all/" "$(run_index)"
+    _RUN_SHELL=bash
+fi
+runtime_less_kfd_host 110501
+mock_kfd_two 110501 120000
+assert_eq "a KFD-only APU beside a discrete card stays on cpu" "$_BASE/cpu" "$(run_index)"
+runtime_less_kfd_host 110501
+mock_kfd_two 110501 120000
+assert_eq "and names no arch for setup.sh to build" "" "$(run_gfx)"
+runtime_less_kfd_host 100100
+assert_eq "a KFD-only gfx1010 (no wheels) stays on cpu" "$_BASE/cpu" "$(run_index)"
+runtime_less_kfd_host 100303
+assert_eq "a KFD-only gfx1033 stays on cpu" "$_BASE/cpu" "$(run_index)"
+reset_host
+mock_kfd; mock_pci_amd_display; mock_lspci "Device"
+assert_eq "a KFD node with no gfx_target_version stays on cpu" "$_BASE/cpu" "$(run_index)"
+runtime_less_kfd_host 120000
+assert_eq "a declared arch with no wheels is not swapped for the KFD one" \
+    "$_BASE/cpu" "$(run_index_env UNSLOTH_ROCM_GFX_ARCH=gfx1010)"
+
 echo ""
 echo "  passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

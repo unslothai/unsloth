@@ -5601,6 +5601,12 @@ get_torch_index_url() {
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
                 echo "$_base/cpu"; return
             fi
+            # Same deferral when only KFD names the arch (lspci's pci.ids predates the card); the reroute reads it too.
+            _amd_kfd_gfx=$(_amd_sole_index_arch "$(_kfd_gfx_targets 2>/dev/null || true)" 2>/dev/null) || _amd_kfd_gfx=""
+            if [ -n "$_amd_kfd_gfx" ]; then
+                echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- the kernel driver (KFD) reports $_amd_kfd_gfx." >&2
+                echo "$_base/cpu"; return
+            fi
             # Repairing rocminfo cannot help here: the arch would read fine and still have no wheels (#8529). Advice only, same CPU index either way.
             # gfx1153 is inferred above (no index family), so it gets this warning without a name match.
             if { [ "${_amd_inferred_gfx:-}" = gfx1153 ] && _amd_unsup_gfx=gfx1153; } || \
@@ -6538,6 +6544,12 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
             _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
                 || _linux_inferred_gfx=""
+            # An older pci.ids names a new card "Device [1002:7590]", so no name maps; the kernel's own arch does.
+            # Never over a declared arch: that one is the user's call, mapped or not.
+            if [ -z "$_linux_inferred_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+                _linux_inferred_gfx=$(_amd_sole_index_arch "$(_kfd_gfx_targets 2>/dev/null || true)") \
+                    || _linux_inferred_gfx=""
+            fi
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"
             fi
