@@ -52,8 +52,9 @@ def _refusal(real: str) -> "str | None":
     # The sandbox would drop it at launch, so saving it would report trust that never applies.
     if not os_sandbox.grantable_trusted_roots((real,)):
         return (
-            "a folder holding a credential file (.env, token, .ssh and the like) or a Hugging Face "
-            f"token, or more than {os_sandbox._TRUSTED_FOLDER_SCAN_LIMIT} entries to check"
+            "a folder holding a credential file (.env, token, .ssh and the like), a Hugging Face "
+            "token, a socket or device, a part that cannot be listed, or more than "
+            f"{os_sandbox._TRUSTED_FOLDER_SCAN_LIMIT} entries to check"
         )
     return None
 

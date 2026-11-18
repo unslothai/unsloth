@@ -599,3 +599,36 @@ def test_the_scan_reads_windows_separators_as_the_gate_does(folder, monkeypatch)
     monkeypatch.setattr(os_sandbox, "_tree_fingerprint", lambda _folder: rows)
     os_sandbox._nested_credential_verdicts.clear()
     assert os_sandbox._holds_a_nested_credential(str(folder)) is True
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "POSIX IPC nodes")
+@pytest.mark.parametrize("kind", ["socket", "fifo"])
+def test_a_folder_holding_a_host_channel_is_not_granted(folder, kind):
+    import socket
+
+    path = folder / "sub" / "agent.sock"
+    path.parent.mkdir()
+    if kind == "fifo":
+        os.mkfifo(path)
+        assert os_sandbox.trusted_tool_folder_roots() == ()
+        return
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(str(path))
+        assert os_sandbox.trusted_tool_folder_roots() == ()
+    finally:
+        server.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason = "POSIX permissions, which root ignores"
+)
+def test_a_subtree_that_cannot_be_listed_is_not_granted(folder):
+    hidden = folder / "private"
+    hidden.mkdir()
+    (hidden / ".env").write_text("KEY=x")
+    hidden.chmod(0o111)
+    try:
+        assert os_sandbox.trusted_tool_folder_roots() == ()
+    finally:
+        hidden.chmod(0o755)

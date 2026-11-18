@@ -762,15 +762,15 @@ _nested_credential_verdicts: dict[str, tuple[tuple, bool]] = {}
 
 
 def _tree_fingerprint(folder: str) -> "tuple | None":
-    """Path, link target and link count of every entry; None past the cap. scandir, not walk: walk
-    lists a whole directory before the cap could stop it."""
+    """Path, link target and link count of every entry; None past the cap or where the tree cannot be fully
+    read. scandir, not walk: walk lists a whole directory before the cap could stop it."""
     rows = []
     pending = [folder]
     while pending:
         try:
             entries = os.scandir(pending.pop())
-        except OSError:  # unreadable here is unreadable in the sandbox too
-            continue
+        except OSError:  # an execute-only directory still opens its files by name
+            return None
         with entries:
             for entry in entries:
                 if len(rows) >= _TRUSTED_FOLDER_SCAN_LIMIT:
@@ -784,11 +784,15 @@ def _tree_fingerprint(folder: str) -> "tuple | None":
                         target = os.path.realpath(entry.path)
                     if is_dir:
                         pending.append(entry.path)
-                    # lstat, not entry.stat: DirEntry reports st_nlink 0 on Windows.
-                    elif entry.is_file(follow_symlinks = False):
-                        nlink = os.lstat(entry.path).st_nlink
+                    elif not linked:
+                        # lstat, not entry.stat: DirEntry reports st_nlink 0 on Windows.
+                        info = os.lstat(entry.path)
+                        # A socket, FIFO or device is a channel to the host that a read-only bind keeps open.
+                        if not stat.S_ISREG(info.st_mode):
+                            return None
+                        nlink = info.st_nlink
                 except OSError:
-                    pass
+                    return None
                 rows.append((entry.path, entry.name, target, nlink))
     return tuple(rows)
 
