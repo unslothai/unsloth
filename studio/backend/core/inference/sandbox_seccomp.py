@@ -37,9 +37,11 @@ _X32_SYSCALL_BIT = 0x40000000
 _CLONE_NEWUSER = 0x10000000
 _AF_VSOCK = 40
 _AF_UNIX = 1
+_SOCK_DGRAM = 2
+_SOCK_TYPE_MASK = 0xF
 
 # struct seccomp_data: nr@0, arch@4, args[0]@16.
-_LOAD, _JEQ, _JSET, _RET = 0x20, 0x15, 0x45, 0x06
+_LOAD, _JEQ, _JSET, _RET, _AND = 0x20, 0x15, 0x45, 0x06, 0x54
 _KILL = 0x80000000
 _EPERM = 0x00050000 | errno.EPERM
 _ENOSYS = 0x00050000 | errno.ENOSYS
@@ -95,14 +97,15 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
 
 
 def unix_socket_program(machine: str) -> tuple[tuple[int, int, int, int], ...]:
-    """Managed Landlock tools: refuse socket(AF_UNIX); socketpair() stays. Landlock below ABI 9 does
-    not mediate connect() to a pathname socket, so docker.sock or the session bus stays reachable."""
+    """Managed Landlock tools: refuse socket(AF_UNIX); stream socketpair() stays. Landlock below ABI 9
+    does not mediate connect() to a pathname socket, so docker.sock or the session bus stays reachable.
+    io_uring could create the socket without the syscall, and a datagram pair can still connect()."""
     key = machine.lower()
     if key not in _ABIS or sys.byteorder != "little":
         raise RuntimeError(
             "the Unsloth sandbox seccomp filter requires little-endian x86_64 or aarch64"
         )
-    audit_arch, socket_nr, _ = _ABIS[key]
+    audit_arch, socket_nr, socketpair_nr = _ABIS[key]
     code: list[tuple[int, int, int, int]] = [
         (_LOAD, 0, 0, 4),
         (_JEQ, 1, 0, audit_arch),
@@ -111,10 +114,19 @@ def unix_socket_program(machine: str) -> tuple[tuple[int, int, int, int], ...]:
     ]
     if key in ("x86_64", "amd64"):
         code += [(_JSET, 0, 1, _X32_SYSCALL_BIT), (_RET, 0, 0, _KILL)]
+    for number in _IO_URING:
+        code += [(_JEQ, 0, 1, number), (_RET, 0, 0, _EPERM)]
     code += [
-        (_JEQ, 0, 3, socket_nr),
+        (_JEQ, 0, 4, socket_nr),
         (_LOAD, 0, 0, 16),
         (_JEQ, 0, 1, _AF_UNIX),
+        (_RET, 0, 0, _EACCES),
+        (_RET, 0, 0, _ALLOW),
+        # args[1] (type, low word at 24) without SOCK_NONBLOCK / SOCK_CLOEXEC.
+        (_JEQ, 0, 4, socketpair_nr),
+        (_LOAD, 0, 0, 24),
+        (_AND, 0, 0, _SOCK_TYPE_MASK),
+        (_JEQ, 0, 1, _SOCK_DGRAM),
         (_RET, 0, 0, _EACCES),
         (_RET, 0, 0, _ALLOW),
     ]

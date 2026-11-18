@@ -24,6 +24,16 @@ _PROBE = (
     "except OSError as e:\n"
     "    print('RESULT:' + 'refused', e.errno)\n"
     "a, b = socket.socketpair(); a.send(b'k'); print('PAIR:' + b.recv(1).decode())\n"
+    "try:\n"
+    "    d, _ = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+    "    d.connect(sys.argv[2]); print('DGRAM:' + 'connected')\n"
+    "except OSError as e:\n"
+    "    print('DGRAM:' + 'refused', e.errno)\n"
+    "import ctypes, errno\n"
+    "libc = ctypes.CDLL(None, use_errno=True)\n"
+    "params = ctypes.create_string_buffer(120)\n"
+    "fd = libc.syscall(425, 4, params)\n"
+    "print('URING:' + ('refused' if fd < 0 and ctypes.get_errno() == errno.EPERM else 'open'))\n"
 )
 
 
@@ -34,7 +44,7 @@ def _probe(account, host_socket, **kwargs) -> str:
     return run_as(
         account,
         tools._bash_exec,
-        f"python probe_unix.py {host_socket}",
+        f"python probe_unix.py {host_socket} {host_socket}.d",
         session_id = "chat",
         **kwargs,
     )
@@ -54,9 +64,12 @@ def host_socket():
         shutil.rmtree(folder, ignore_errors = True)
         pytest.skip(f"cannot bind a probe socket: {exc}")
     server.listen(4)
+    datagram = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    datagram.bind(path + ".d")
     try:
         yield path
     finally:
+        datagram.close()
         server.close()
         shutil.rmtree(folder, ignore_errors = True)
 
@@ -68,19 +81,22 @@ def test_managed_tool_cannot_reach_a_host_unix_socket(host_socket):
     assert "RESULT:refused" in out, out
     # socketpair (multiprocessing, asyncio) keeps working.
     assert "PAIR:k" in out, out
+    assert "DGRAM:refused" in out, out
+    assert "URING:refused" in out, out
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
 def test_owner_tools_keep_unix_sockets(host_socket):
     out = _probe(OWNER, host_socket, disable_sandbox = True)
     assert "RESULT:connected" in out, out
+    assert "DGRAM:connected" in out, out
 
 
 def test_unix_filter_refuses_only_af_unix_socket():
     for machine in ("x86_64", "aarch64"):
         program = sandbox_seccomp.unix_socket_program(machine)
         socket_nr = sandbox_seccomp._ABIS[machine][0 + 1]
-        assert (sandbox_seccomp._JEQ, 0, 3, socket_nr) in program
+        assert (sandbox_seccomp._JEQ, 0, 4, socket_nr) in program
         assert (sandbox_seccomp._JEQ, 0, 1, sandbox_seccomp._AF_UNIX) in program
         assert program[-1] == (sandbox_seccomp._RET, 0, 0, sandbox_seccomp._ALLOW)
     with pytest.raises(RuntimeError):
