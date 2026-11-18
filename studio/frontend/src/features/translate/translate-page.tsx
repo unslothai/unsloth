@@ -202,7 +202,8 @@ const GO_BUTTON =
 const STOP_BUTTON =
   "ms-1 h-9 rounded-full px-3.5 text-ui-14 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
-const PANEL = "rounded-xl bg-wash-6";
+// glass-inset: index.css frosts it over a wallpaper in glass mode.
+const PANEL = "glass-inset rounded-xl bg-wash-6";
 const PANE_HEIGHT =
   "min-h-52 max-h-[70dvh] sm:min-h-[calc(18rem*var(--ui-space-scale,1))] md:max-h-[max(18rem,calc(100dvh-10rem))]";
 const PANE_HEIGHT_WITH_PROMPT =
@@ -210,7 +211,7 @@ const PANE_HEIGHT_WITH_PROMPT =
 // The box clips and an inner element scrolls: a scrollbar on the box itself squares off its corners.
 // Its outline is an inset shadow, not a border, so the scrollbar reaches the box's very edge.
 const SOURCE_BOX =
-  "overflow-hidden rounded-xl bg-background shadow-[inset_0_0_0_1px_var(--border)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none";
+  "glass-inset overflow-hidden rounded-xl bg-background shadow-[inset_0_0_0_1px_var(--border)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none";
 // A thin scrollbar keeps a margin beside its thumb; the scroller overhangs the box by that much.
 const EDGE_SCROLL = "hover-scrollbar w-[calc(100%+2px)] max-w-none";
 const SOURCE_TEXT =
@@ -473,7 +474,8 @@ function LanguageTabs({
         {active && (
           <motion.span
             layoutId={pillId}
-            className="absolute inset-0 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.09*var(--contrast-wash-gain,1)))]"
+            // The segmented controls' pill: white and shadowed in light, glass-aware.
+            className="hub-tab-toggle-pill absolute inset-0 rounded-full"
             transition={
               reduced
                 ? { duration: 0 }
@@ -495,11 +497,12 @@ function LanguageTabs({
       className={className}
       trailing={children}
       tabs={
-        // Clipped, not scrolled: the chevron lists any dropped tab.
+        // Clipped, not scrolled: the chevron lists any dropped tab. The padding, taken back by the
+        // margin, leaves room for the selected pill's shadow inside the clip.
         <div
           role="tablist"
           aria-label={label}
-          className="flex min-w-0 items-center gap-0.5 overflow-hidden"
+          className="-mx-2 -my-2 flex min-w-0 items-center gap-0.5 overflow-hidden px-2 py-2"
         >
           {allowAuto &&
             tab(
@@ -896,7 +899,8 @@ function ModelMenu({
             type="button"
             aria-label={`${t("translate.model.label")}: ${label}`}
             title={t("translate.model.label")}
-            className="unsloth-thinking-pill composer-model-chip max-w-56 pl-3.5 pr-3"
+            // unsloth-model-selector-trigger: the glass the other pages' model buttons get.
+            className="unsloth-thinking-pill composer-model-chip unsloth-model-selector-trigger max-w-56 pl-3.5 pr-3"
           >
             {preparing && (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
@@ -1324,8 +1328,13 @@ export function TranslatePage() {
       return;
     }
     setReadingFile(file.name);
+    // The box is read-only meanwhile, but swap or a history entry can still replace it: those win.
+    const before = useTranslateStore.getState().source;
     try {
       const { text } = await extractDocumentText(file);
+      if (useTranslateStore.getState().source !== before) {
+        return;
+      }
       if (text.trim()) loadText(text);
       else toast.error(t("translate.fileNotText"));
     } catch (error) {
@@ -1546,6 +1555,7 @@ export function TranslatePage() {
                     }
                   }}
                   maxLength={TRANSLATE_SOURCE_MAX_CHARS}
+                  readOnly={readingFile !== null}
                   placeholder={
                     readingFile
                       ? t("translate.readingFile", { name: readingFile })
@@ -1557,7 +1567,7 @@ export function TranslatePage() {
                   className={cn(SOURCE_TEXT, "pe-11")}
                 />
               </div>
-              {source !== "" && (
+              {source !== "" && readingFile === null && (
                 <IconAction
                   icon={Cancel01Icon}
                   label={t("translate.clear")}

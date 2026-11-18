@@ -5474,6 +5474,11 @@ main:has(.translate-page) {
 	scrollbar-gutter: stable;
 }
 
+/* Dark keeps its own wash: the segmented pill's --accent reads as a second selection colour here. */
+html.dark .translate-page .hub-tab-toggle-pill {
+	background-color: rgb(255 255 255 / calc(0.09 * var(--contrast-wash-gain, 1)));
+}
+
 /* Firefox has no per-axis thumb, so the whole bar waits for hover there. */
 @supports not selector(::-webkit-scrollbar) {
 	[data-streamdown="code-block"]:not(:hover, :focus-within),
