@@ -600,6 +600,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
                     "memory_total_gb": 8.0,
                     "vram_used_gb": 0.77,
                     "vram_free_gb": 7.23,
+                    "vram_free_bytes": 7402 * 1024**2,
                     "vram_utilization_pct": 9.6,
                     "shared_memory": False,
                 }
