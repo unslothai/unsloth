@@ -3933,6 +3933,7 @@ export const it = {
   chatMenu: {
     more: "Opzioni chat",
     copy: "Copia",
+    addScheduledTask: "Aggiungi attività pianificata…",
     compact: "Compatta conversazione",
     compactQueued: "Compattazione richiesta per il prossimo messaggio",
     compactEmpty: "Ancora niente da compattare",
@@ -5048,6 +5049,7 @@ export const it = {
       intervalHours: "Intervallo (ore)",
       hourlyNote: "La prima esecuzione avviene un intervallo dopo il salvataggio. Modificare l’intervallo o riprendere l’attività riavvia l’attesa.",
       createTitle: "Pianifica un’attività",
+      repliesInChat: "Ogni esecuzione risponde in “{title}”.",
       editTitle: "Modifica attività pianificata",
       name: "Nome",
       namePlaceholder: "Nome (facoltativo)",

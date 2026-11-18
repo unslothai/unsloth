@@ -879,6 +879,7 @@ export const fr = {
   chatMenu: {
     more: "Options de la discussion",
     copy: "Copier",
+    addScheduledTask: "Ajouter une tâche planifiée…",
     compact: "Compacter la conversation",
     compactQueued: "Compactage demandé pour le prochain message",
     compactEmpty: "Rien à compacter pour le moment",
@@ -5063,6 +5064,7 @@ export const fr = {
       intervalHours: "Intervalle (heures)",
       hourlyNote: "La première exécution a lieu un intervalle après l’enregistrement. Modifier l’intervalle ou reprendre la tâche relance le délai d’attente.",
       createTitle: "Planifier une tâche",
+      repliesInChat: "Chaque exécution répond dans « {title} ».",
       editTitle: "Modifier la tâche planifiée",
       name: "Nom",
       namePlaceholder: "Nom (facultatif)",

@@ -880,6 +880,7 @@ export const ja = {
   chatMenu: {
     more: "チャットのオプション",
     copy: "コピー",
+    addScheduledTask: "スケジュールタスクを追加…",
     compact: "会話を圧縮",
     compactQueued: "次のメッセージで会話を圧縮するようリクエストしました",
     compactEmpty: "まだ圧縮する内容がありません",
@@ -4930,6 +4931,7 @@ export const ja = {
       intervalHours: "間隔（時間）",
       hourlyNote: "保存してから指定した間隔が経過すると初回の実行が始まります。間隔の変更や再開を行うと、待機時間がリセットされます。",
       createTitle: "タスクをスケジュール",
+      repliesInChat: "各実行は「{title}」に返信します。",
       editTitle: "スケジュール済みタスクを編集",
       name: "名前",
       namePlaceholder: "名前（任意）",

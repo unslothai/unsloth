@@ -879,6 +879,7 @@ export const ar = {
   chatMenu: {
     more: "خيارات المحادثة",
     copy: "نسخ",
+    addScheduledTask: "إضافة مهمة مجدولة…",
     compact: "ضغط المحادثة",
     compactQueued: "تم طلب ضغط المحادثة للرسالة التالية",
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
@@ -4979,6 +4980,7 @@ export const ar = {
       intervalHours: "الفاصل الزمني (بالساعات)",
       hourlyNote: "يبدأ التشغيل الأول بعد مرور فاصل زمني واحد من الحفظ. يؤدي تغيير الفاصل الزمني أو استئناف المهمة إلى بدء الانتظار من جديد.",
       createTitle: "جدولة مهمة",
+      repliesInChat: "كل تشغيل يرد في «{title}».",
       editTitle: "تعديل المهمة المجدولة",
       name: "الاسم",
       namePlaceholder: "الاسم (اختياري)",

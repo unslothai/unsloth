@@ -58,6 +58,8 @@ export interface ScheduledTask {
   archiveSuccessful: boolean;
   projectId: string | null;
   webSearch?: boolean;
+  /** The chat each run replies in; null gives every run a chat of its own. */
+  threadId?: string | null;
   status: "active" | "paused" | "completed";
   nextRunAt: number | null;
   createdAt: number;
@@ -78,6 +80,7 @@ export interface ScheduledTaskInput {
   archiveSuccessful?: boolean;
   projectId?: string | null;
   webSearch?: boolean;
+  threadId?: string | null;
 }
 
 export type ScheduledTaskPatch = Partial<ScheduledTaskInput> & { enabled?: boolean };

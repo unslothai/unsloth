@@ -977,6 +977,7 @@ export const cs = {
   chatMenu: {
     more: "Možnosti chatu",
     copy: "Kopírovat",
+    addScheduledTask: "Přidat naplánovanou úlohu…",
     compact: "Zkomprimovat konverzaci",
     compactQueued: "Komprimace byla vyžádána pro další zprávu",
     compactEmpty: "Zatím není co komprimovat",
@@ -5346,6 +5347,7 @@ export const cs = {
       intervalHours: "Interval (hodiny)",
       hourlyNote: "První spuštění proběhne jeden interval po uložení. Změna intervalu nebo obnovení spustí čekání znovu.",
       createTitle: "Naplánovat úlohu",
+      repliesInChat: "Každé spuštění odpoví v chatu „{title}“.",
       editTitle: "Upravit naplánovanou úlohu",
       name: "Název",
       namePlaceholder: "Název (volitelné)",

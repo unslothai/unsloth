@@ -226,10 +226,16 @@ function effortChoices(
 
 export function TaskDialog({
   task,
+  initialProjectId = null,
+  chat = null,
   onClose,
   onDelete,
 }: {
   task: ScheduledTask | null;
+  /** A new task's project, as when it is added from a project chat. */
+  initialProjectId?: string | null;
+  /** A new task added from a chat replies in that chat on every run. */
+  chat?: { id: string; title: string } | null;
   onClose: () => void;
   onDelete?: (task: ScheduledTask) => void;
 }) {
@@ -254,7 +260,7 @@ export function TaskDialog({
   const [allowLoad, setAllowLoad] = useState(task?.allowModelLoad ?? false);
   const [archiveSuccessful, setArchiveSuccessful] = useState(task?.archiveSuccessful ?? false);
   const [webSearch, setWebSearch] = useState(task?.webSearch ?? false);
-  const [projectId, setProjectId] = useState<string | null>(task?.projectId ?? null);
+  const [projectId, setProjectId] = useState<string | null>(task?.projectId ?? initialProjectId);
   const { projects } = useChatProjects();
   const openProjects = projects.filter((project) => !project.archived || project.id === projectId);
   const [chosenEffort, setEffort] = useState<TaskReasoningEffort | null>(task?.reasoningEffort ?? null);
@@ -269,13 +275,13 @@ export function TaskDialog({
       : null;
   const efforts = effortChoices(models.connection, loadedReasoning);
   const effort = chosenEffort !== null && efforts.includes(chosenEffort) ? chosenEffort : null;
-  const [advanced, setAdvanced] = useState(
-    () =>
-      task !== null &&
-      (task.notify !== "all" ||
+  const [advanced, setAdvanced] = useState(() =>
+    task === null
+      ? initialProjectId !== null
+      : task.notify !== "all" ||
         task.archiveSuccessful ||
         task.projectId !== null ||
-        task.webSearch === true),
+        task.webSearch === true,
   );
   const [busy, setBusy] = useState(false);
   const timezone = task?.timezone ?? browserTimeZone();
@@ -329,6 +335,7 @@ export function TaskDialog({
           projectId,
           // Only when on: an older server refuses fields it does not know.
           ...(webSearch ? { webSearch } : {}),
+          ...(chat ? { threadId: chat.id } : {}),
         });
       }
       onClose();
@@ -368,6 +375,11 @@ export function TaskDialog({
             {task ? t("scheduledTasks.form.editTitle") : t("scheduledTasks.form.createTitle")}
           </DialogTitle>
           <DialogDescription className="sr-only">{t("scheduledTasks.description")}</DialogDescription>
+          {chat && !task ? (
+            <p className="text-ui-13 text-muted-foreground">
+              {t("scheduledTasks.form.repliesInChat", { title: chat.title })}
+            </p>
+          ) : null}
         </DialogHeader>
         <div className="flex flex-col gap-2">
           <div className={cn(CARD, "rounded-full")}>

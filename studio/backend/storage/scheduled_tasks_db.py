@@ -14,7 +14,7 @@ from typing import Callable, Iterator, Optional
 
 from storage.studio_db import delete_chat_threads_in, get_connection
 
-# Per account. Every run opens a chat, so this also bounds how many chats schedules can make.
+# Per account. A run without a target chat opens one, so this also bounds how many chats schedules can make.
 MAX_TASKS = 100
 RUN_HISTORY_LIMIT = 20
 
@@ -66,6 +66,32 @@ def chat_id_for_run(run_id: str) -> str:
     return str(uuid.uuid5(_RUN_CHAT_NAMESPACE, run_id))
 
 
+def message_ids_for_run(run_id: str) -> tuple[str, str]:
+    """The prompt and answer a run posts into an existing chat, derived so a failed run's pair can be found."""
+    return (
+        str(uuid.uuid5(_RUN_CHAT_NAMESPACE, f"{run_id}:prompt")),
+        str(uuid.uuid5(_RUN_CHAT_NAMESPACE, f"{run_id}:answer")),
+    )
+
+
+def discard_run_output(conn: sqlite3.Connection, run_ids: list[str]) -> None:
+    """Remove what failed runs wrote: a chat of their own, or their two messages in the task's chat."""
+    if not run_ids:
+        return
+    delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
+    message_ids = [message_id for run_id in run_ids for message_id in message_ids_for_run(run_id)]
+    conn.execute(
+        f"DELETE FROM chat_messages WHERE id IN ({', '.join('?' * len(message_ids))})",
+        message_ids,
+    )
+
+
+def discard_run(run_id: str) -> None:
+    """``discard_run_output`` for a run whose settle did not land."""
+    with _connect("BEGIN IMMEDIATE") as conn:
+        discard_run_output(conn, [run_id])
+
+
 def _task_from_row(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -83,6 +109,7 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "archiveSuccessful": bool(row["archive_successful"]),
         "projectId": row["project_id"],
         "webSearch": bool(row["web_search"]),
+        "threadId": row["thread_id"],
         "nextRunAt": row["next_run_at"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -165,6 +192,7 @@ _TASK_COLUMNS = (
     "archive_successful",
     "project_id",
     "web_search",
+    "thread_id",
     "next_run_at",
 )
 
@@ -184,6 +212,7 @@ def _task_values(task: dict) -> tuple:
         1 if task.get("archiveSuccessful") else 0,
         task.get("projectId"),
         1 if task.get("webSearch") else 0,
+        task.get("threadId"),
         task["nextRunAt"],
     )
 
@@ -234,14 +263,14 @@ def update_task(
 
 
 def delete_task(task_id: str) -> bool:
-    """Delete a task and its run history; finished runs' chats stay, an in-progress run's chat goes too."""
+    """Delete a task and its run history; finished runs' chats stay, an in-progress run's output goes too."""
     with _connect("BEGIN IMMEDIATE") as conn:
         running = conn.execute(
             "SELECT id FROM scheduled_task_runs WHERE task_id = ? AND status = 'running'",
             (task_id,),
         ).fetchall()
         if running:
-            delete_chat_threads_in(conn, [chat_id_for_run(row["id"]) for row in running])
+            discard_run_output(conn, [row["id"] for row in running])
         cursor = conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,))
         return cursor.rowcount > 0
 
@@ -445,7 +474,7 @@ def finish_run(
         if row is None:
             return False
         if discard_chat:
-            delete_chat_threads_in(conn, [chat_id_for_run(run_id)])
+            discard_run_output(conn, [run_id])
         # The chat can already be gone; the foreign key would refuse the whole update.
         if (
             thread_id is not None
@@ -478,8 +507,7 @@ def _fail_stale(conn: sqlite3.Connection, stale_before: int) -> None:
         [(now_ms(), run_id) for run_id in run_ids],
     )
     # Delete its chat in this transaction, so a failed run never keeps one and a late save cannot restore it.
-    if run_ids:
-        delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
+    discard_run_output(conn, run_ids)
     for task_id in {row["task_id"] for row in rows}:
         _trim_history(conn, task_id)
 

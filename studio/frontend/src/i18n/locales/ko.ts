@@ -879,6 +879,7 @@ export const ko = {
   chatMenu: {
     more: "채팅 옵션",
     copy: "복사",
+    addScheduledTask: "예약 작업 추가…",
     compact: "대화 압축",
     compactQueued: "다음 메시지에 대한 대화 압축을 요청했습니다",
     compactEmpty: "아직 압축할 내용이 없습니다",
@@ -4970,6 +4971,7 @@ export const ko = {
       intervalHours: "간격(시간)",
       hourlyNote: "저장한 뒤 설정한 간격이 지나면 처음 실행됩니다. 간격을 변경하거나 작업을 재개하면 대기 시간이 다시 시작됩니다.",
       createTitle: "작업 예약",
+      repliesInChat: "각 실행은 “{title}”에 답장합니다.",
       editTitle: "예약 작업 편집",
       name: "이름",
       namePlaceholder: "이름 (선택 사항)",

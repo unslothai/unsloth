@@ -892,7 +892,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             allow_model_load INTEGER NOT NULL DEFAULT 0,
             archive_successful INTEGER NOT NULL DEFAULT 0,
             project_id TEXT,
-            web_search INTEGER NOT NULL DEFAULT 0
+            web_search INTEGER NOT NULL DEFAULT 0,
+            thread_id TEXT
         )
         """
     )
@@ -919,6 +920,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN project_id TEXT")
     if "web_search" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN web_search INTEGER NOT NULL DEFAULT 0")
+    # The chat each run posts into; NULL gives every run a chat of its own.
+    if "thread_id" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN thread_id TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)"
     )

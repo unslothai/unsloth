@@ -2750,3 +2750,111 @@ def test_switching_back_unloads_a_non_gguf_task_model_first(monkeypatch):
     )
     assert world.unloaded == [SwapWorld.TASK_MODEL]
     assert world.loaded == SwapWorld.EARLIER
+
+
+def make_chat(thread_id = "chat-1", title = "Sheet export"):
+    studio_db.upsert_chat_thread(
+        {"id": thread_id, "title": title, "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        thread_id,
+        [
+            {
+                "id": f"{thread_id}-q",
+                "threadId": thread_id,
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "Export the sheet."}],
+                "createdAt": 10,
+            },
+            {
+                "id": f"{thread_id}-a",
+                "threadId": thread_id,
+                "parentId": f"{thread_id}-q",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Exported as CSV."}],
+                "createdAt": 20,
+            },
+        ],
+    )
+    return thread_id
+
+
+def test_a_task_can_post_into_an_existing_chat(client):
+    make_chat()
+    task = create(client, threadId = "chat-1").json()
+    assert task["threadId"] == "chat-1"
+    assert create(client, threadId = "nowhere").status_code == 400
+    cleared = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"threadId": None}).json()
+    assert cleared["threadId"] is None
+
+
+def test_a_run_answers_in_its_chat_after_the_last_message(monkeypatch):
+    make_chat()
+    task, run = claim_manual_run(threadId = "chat-1", archiveSuccessful = True)
+    answer = Answer(content = "Still exported.", reasoning = "", model = "gemma-3")
+
+    run_scheduler(task, run, answer = answer, monkeypatch = monkeypatch)
+
+    last_run = db.get_task(task["id"])["lastRun"]
+    assert (last_run["status"], last_run["threadId"]) == ("succeeded", "chat-1")
+    assert [thread["id"] for thread in studio_db.list_chat_threads()] == ["chat-1"]
+    thread = studio_db.get_chat_thread("chat-1")
+    assert (thread["title"], thread["archived"]) == ("Sheet export", False)
+    *_, prompt, reply = studio_db.list_chat_messages("chat-1")
+    assert prompt["parentId"] == "chat-1-a" and reply["parentId"] == prompt["id"]
+    assert reply["content"] == [{"type": "text", "text": "Still exported."}]
+
+
+def test_a_run_reads_its_chat_before_the_prompt(monkeypatch):
+    make_chat()
+    producer = FakeProducer(completion("Done."))
+    task = make_task(threadId = "chat-1")
+
+    generate(monkeypatch, producer, task = task)
+
+    roles = [(m.role, m.content) for m in producer.payload.messages[1:]]
+    assert roles == [
+        ("user", "Export the sheet."),
+        ("assistant", "Exported as CSV."),
+        ("user", "Write a haiku about mornings."),
+    ]
+
+
+def test_a_failed_run_takes_back_only_its_own_messages(monkeypatch):
+    make_chat()
+    task, run = claim_manual_run(threadId = "chat-1")
+    answer = Answer(content = "Written, then failed.", reasoning = "", model = "gemma-3")
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+    assert len(studio_db.list_chat_messages("chat-1")) == 4
+
+    assert db.finish_run(run["id"], "worker-under-test", status = "failed", discard_chat = True)
+
+    assert [m["id"] for m in studio_db.list_chat_messages("chat-1")] == ["chat-1-q", "chat-1-a"]
+
+
+def test_the_sweep_and_task_delete_leave_the_chat_itself(monkeypatch):
+    make_chat()
+    task, run = claim_manual_run(threadId = "chat-1")
+    answer = Answer(content = "Written, never settled.", reasoning = "", model = "gemma-3")
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+
+    sweep(db.now_ms() + scheduler_module._STALE_RUN_MS + 1)
+
+    assert [m["id"] for m in studio_db.list_chat_messages("chat-1")] == ["chat-1-q", "chat-1-a"]
+    assert db.delete_task(task["id"])
+    assert studio_db.get_chat_thread("chat-1") is not None
+
+
+def test_a_run_whose_chat_was_deleted_gets_a_chat_of_its_own(monkeypatch):
+    make_chat()
+    task, run = claim_manual_run(threadId = "chat-1")
+    studio_db.delete_chat_threads(["chat-1"])
+
+    run_scheduler(
+        task, run, answer = Answer(content = "Hi.", reasoning = "", model = "m"), monkeypatch = monkeypatch
+    )
+
+    thread_id = db.get_task(task["id"])["lastRun"]["threadId"]
+    assert thread_id not in (None, "chat-1")
+    assert studio_db.get_chat_thread(thread_id)["title"] == "Morning brief"

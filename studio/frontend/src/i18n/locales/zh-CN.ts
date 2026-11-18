@@ -879,6 +879,7 @@ export const zhCN = {
   chatMenu: {
     more: "聊天选项",
     copy: "复制",
+    addScheduledTask: "添加定时任务…",
     compact: "压缩对话",
     compactQueued: "已请求在下一条消息时压缩对话",
     compactEmpty: "暂无可压缩的内容",
@@ -4881,6 +4882,7 @@ export const zhCN = {
       intervalHours: "间隔（小时）",
       hourlyNote: "保存后经过一个间隔执行第一次任务。更改间隔或恢复任务会重新开始等待。",
       createTitle: "安排任务",
+      repliesInChat: "每次运行都会在“{title}”中回复。",
       editTitle: "编辑定时任务",
       name: "名称",
       namePlaceholder: "名称（可选）",
