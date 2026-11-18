@@ -133,7 +133,7 @@ test("playback starts after the first chunk and the next one synthesizes while i
   assert.deepEqual(spoken, adapter.readAloudChunks(REPLY));
 });
 
-test("the device-voice fallback after a played chunk resumes at the first unplayed one", async () => {
+for (const systemFallback of [true, false]) test(`a missing speech model mid-reply ${systemFallback ? "resumes on the device voice at the first unplayed chunk" : "ends with an error when the caller asked for no fallback"}`, async () => {
   FakeAudio.live = [];
   const said: string[] = [];
   const g = globalThis as Record<string, unknown>;
@@ -149,7 +149,7 @@ test("the device-voice fallback after a played chunk resumes at the first unplay
   };
   try {
     const { adapter, answers } = load(1);
-    new adapter.StudioSpeechSynthesisAdapter().speak(REPLY, "en", { systemFallback: true });
+    const u = new adapter.StudioSpeechSynthesisAdapter().speak(REPLY, "en", { systemFallback });
     await tick();
     answers.shift()?.(undefined);
     await tick();
@@ -158,11 +158,12 @@ test("the device-voice fallback after a played chunk resumes at the first unplay
     FakeAudio.live[0]?.end();
     await tick();
     const chunks = adapter.readAloudChunks(REPLY);
-    assert.deepEqual(said, [chunks.slice(1).join(" ")]);
+    assert.deepEqual(said, systemFallback ? [chunks.slice(1).join(" ")] : []);
+    assert.equal(u.status.type, systemFallback ? "running" : "ended");
   } finally {
-    delete g.window;
-    delete g.speechSynthesis;
-    delete g.SpeechSynthesisUtterance;
+    Reflect.deleteProperty(g, "window");
+    Reflect.deleteProperty(g, "speechSynthesis");
+    Reflect.deleteProperty(g, "SpeechSynthesisUtterance");
   }
 });
 
