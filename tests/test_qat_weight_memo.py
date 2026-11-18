@@ -38,7 +38,7 @@ class _Block(torch.nn.Module):
 def _fresh_state():
     state = getattr(memo, "_STATE", {})
     saved = dict(state)
-    state.update(armed = False, disabled = False, tokens = 0, rows = 0, row_probes = 0)
+    state.update(armed = False, disabled = False, tokens = 0, rows = 0, row_probes = 0, steps = 0)
     getattr(memo, "_DEVICE", {}).clear()
     yield
     state.update(armed = saved.get("armed", False), disabled = False)
@@ -328,3 +328,18 @@ def test_batch_size_seen_by_the_model(monkeypatch):
     model.eval()
     memo._record_batch(model, (), {"input_ids": torch.zeros(8, 2048, dtype = torch.long)})
     assert memo._STATE["tokens"] == 300  # evaluation batches do not count
+
+
+def test_checkpoint_skip_planner_arms_one_step_later(monkeypatch):
+    # UNSLOTH_GC_KEEP_LAYERS applies its plan from the second step: the cache waits for a step with it.
+    monkeypatch.setenv("UNSLOTH_GC_KEEP_LAYERS", "auto")
+    model = _model("int8", monkeypatch, arm = False)
+    x = torch.randn(4, DIM)
+    _run(model, x)
+    _arm()
+    for _ in range(2):
+        _run(model, x)
+    assert _memo_of(model).out is None
+    _arm()
+    _run(model, x)
+    assert _memo_of(model).out is not None

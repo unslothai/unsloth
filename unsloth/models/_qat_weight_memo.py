@@ -207,9 +207,18 @@ def _rebudget():
         state["max_used"] = budget[1]
 
 
+def _steps_before_arming():
+    # UNSLOTH_GC_KEEP_LAYERS plans its checkpoint skips from the first step's memory and applies them
+    # from the second step on: arm only once a step has run with that plan in place.
+    keep = os.environ.get("UNSLOTH_GC_KEEP_LAYERS", "").strip().lower()
+    return 1 if keep in ("", "0") else 2
+
+
 def _on_optimizer_step(optimizer, args, kwargs):
     _STATE["steps"] += 1
     if not _MEMOS or _mode() in ("0", "false", "off"):
+        return
+    if not _STATE["armed"] and _STATE["steps"] < _steps_before_arming():
         return
     try:
         _rebudget()
