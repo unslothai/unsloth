@@ -29,9 +29,8 @@ import { cn } from "@/lib/utils";
 const RECHECK_MS = 30_000;
 
 /**
- * Next to send on a large cloud thread the user has come back to after the provider's prompt
- * cache lapsed. On by default when auto-compaction is on: the next message is sent after a summary
- * of the history, through the same request /compact makes. A click switches it off or on.
+ * Offer for a cloud thread after its prompt cache lapses; with auto-compaction on, next send
+ * compacts first.
  */
 export const CompactOnReturnChip: FC = () => {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);

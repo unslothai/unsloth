@@ -227,11 +227,8 @@ function ChatPage(props: ChatPageProps) {
   );
 }
 
-// The layout re-renders on its own state (the Settings flag gating every route shortcut, a route
-// change): without these, each of those re-rendered the sidebar, the navbar and the whole chat
-// page with it. A component that takes no props is one element, made once: React skips a subtree
-// whose element is the one it rendered last. Neither form adds a fiber level, so the useId paths
-// the reload snapshot relies on are unchanged.
+// Hoisted elements stop layout re-renders reaching the sidebar and chat; useId paths stay
+// unchanged.
 const appSidebar = <AppSidebar />;
 const navbar = <Navbar />;
 const commandPalette = <CommandPalette />;

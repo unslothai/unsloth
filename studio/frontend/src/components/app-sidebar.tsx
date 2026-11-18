@@ -567,10 +567,8 @@ const CONTEXT_ROW_MENU: RowMenuParts = {
   Label: ContextMenuLabel,
 };
 
-// The kebab shows itself while its menu is open; the quick-action beside it was hover-only, so
-// it slid in over the title. The row reserves room for both, so reveal both. Row parts look at
-// the actions after them (`:has(~ ...)`), not the row at its descendants: a group-has-* puts the
-// style after the :has(), which WebKit re-checks across the whole document on every keystroke.
+// The kebab shows while its menu is open and the row reserves room for both, so reveal both; use
+// :has(~ ...) siblings, not group-has-*, as WebKit re-checks the whole document per keystroke.
 const REVEAL_WITH_OPEN_MENU_PROJECT_CHAT =
   "[&:has(~.sidebar-row-action[data-state=open])]:opacity-100 [&:has(~.sidebar-row-action[data-state=open])]:pointer-events-auto";
 const REVEAL_WITH_OPEN_MENU_RECENT =

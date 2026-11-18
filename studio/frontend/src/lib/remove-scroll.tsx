@@ -2,19 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Stands in for `react-remove-scroll` (aliased in vite.config.ts), the scroll lock Radix dialogs, modal
- * menus, selects and modal popovers mount while open.
- *
- * WebKit folds window and document wheel / touch listeners into the style of every element (event
- * listener regions), so the library's non-passive document listeners restyled the whole page on each
- * open and again on close: about 2.5 s per step on a 100-turn chat. Removing its injected <style> on
- * close rebuilt every style once more. Chromium pays neither.
- *
- * What the lock did here is kept: the `data-scroll-locked` counter on <body>, with the styles the
- * library injected now static in index.css. Its wheel and touch cancelling is dropped: under a modal
- * layer nothing outside it can be wheel-scrolled anyway (body is `pointer-events: none`, the thread
- * sits under a cover, the page itself never scrolls), and lists inside dialogs already scroll on
- * their own (`useWheelScrollRef`, popovers portaled into the dialog).
+ * Replaces react-remove-scroll (WebKit restyles on its document listeners); keeps the
+ * data-scroll-locked counter on body; wheel and touch cancelling dropped: under a modal nothing
+ * outside scrolls anyway
  */
 
 import { forwardRef, type ReactElement, useEffect } from "react";

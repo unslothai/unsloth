@@ -5,8 +5,7 @@ import { type NpuCompat, type NpuTag, npuFit } from "../../npu/compat.ts";
 
 // Mirrors SOURCE_QUANTS in backend core/export/q4nx.py; any other quant is dequantized and rounded again.
 const DIRECT_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
-// Only the q4k converter unpacks Q4_K, and only these architectures use it
-// (q4k_architectures in q4nx_converter_pins.json); the q4nx converter rounds Q4_K_M again.
+// Only the q4k converter unpacks Q4_K, for q4k_architectures; q4nx rounds Q4_K_M again.
 const Q4K_ARCHITECTURES = ["qwen35", "qwen35moe"];
 // Q4_0 and Q4_1 blocks are packed as is, so only the layout the converter config reads works: Q4_0
 // here, Q4_1 on every other q4nx architecture, Q4_K on the q4k ones. The backend refuses the rest.
@@ -137,8 +136,7 @@ export type Q4nxArchFit =
 // The converter finds no qwen2vl architecture name, so a Qwen2-VL basename falls to the dense qwen2 prefix.
 const QWEN2_VL_NAME = /(^|[\s/\\._-])qwen2[-_]?vl/i;
 
-/** `name` is the repo id or file path, used to refuse models the converter would misroute, even
- *  when the architecture is unknown. `compat` is GET /api/npu/compat. */
+/** name refuses models the converter would misroute, even when the architecture is unknown. */
 export function q4nxArchFit(
   architecture: string | null | undefined,
   name?: string | null,

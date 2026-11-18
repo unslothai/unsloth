@@ -45,9 +45,8 @@ export function syncWallpaperHost(host: Element | null | undefined): void {
 }
 
 /**
- * Keep the parent's flags in step with this layer: before paint after every render, and once it is
- * gone. The cleanup re-reads in a microtask, after React has removed or updated the layer and still
- * before the frame paints. Unchanged flags are not rewritten, so a re-render costs a few lookups.
+ * Keeps the parent's flags in step before paint; cleanup re-reads in a microtask after React
+ * commits.
  */
 export function useWallpaperHostFlags(
   layer: RefObject<HTMLElement | null>,

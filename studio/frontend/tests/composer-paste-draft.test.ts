@@ -123,8 +123,7 @@ test("typing or sending in another tab never rewrites this tab's draft", async (
   assert.equal(tab.latestDraft(), "", "nothing saved when the tab opened");
   const heard: string[] = [];
   const stop = tab.subscribeDraft(Symbol("chat"), (text: string) => heard.push(text));
-  // The other tab's debounced save, then its send clearing the slot; the browser
-  // tells this tab about each with a storage event.
+  // Another tab's debounced save, then its send clearing the slot, each heard as a storage event.
   const otherTabWrites = (text: string) => {
     writeComposerDraft(composerDraftKey("", true), text);
     for (const listener of windowListeners.get("storage") ?? []) {

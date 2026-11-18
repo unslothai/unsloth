@@ -985,10 +985,8 @@ const SingleContent = memo(function SingleContent({
         <ResizablePanel
           id="chat-thread"
           defaultSize="100%"
-          // Distinct per layout: re-registering re-sorts panels so resizing follows the chat.
-          // The browser can take most of the row (it opens small); research keeps the chat wider.
-          // On WebKitGTK the open constraints stay registered while closed: the zero-width,
-          // collapsed sibling already lets the chat fill the group.
+          // Distinct per layout so resizing follows the chat; on WebKitGTK open constraints stay
+          // while closed.
           minSize={
             browserFullView
               ? "0%"
@@ -4702,8 +4700,7 @@ export function ChatPage({
       eject: handleEject,
       ejectAll: () => void ejectAllModels(),
       externalConnections,
-      // Chat has no header picker: the shortcut, tour and Hub's Run open this one.
-      // Not under Compare, whose hidden base view keeps this composer mounted.
+      // Opened by the shortcut, tour and Hub's Run; not in Compare, which keeps it mounted.
       open:
         active &&
         view.mode !== "compare" &&

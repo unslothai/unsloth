@@ -16,9 +16,8 @@ function subscribe(listener: () => void) {
 }
 
 /*
- * Root flags for the wallpaper CSS. A descendant :has() on the workspace re-walks the whole
- * thread on every keystroke, so the welcome and compare states are mirrored onto <html>
- * in the same commit as the DOM they describe.
+ * Welcome and compare states are mirrored onto <html> in the same commit as the DOM they describe,
+ * so CSS avoids a descendant :has() that re-walks the thread on every keystroke.
  */
 export const ROOT_WELCOME = "data-chat-welcome";
 export const ROOT_COMPARE = "data-chat-compare";

@@ -1816,11 +1816,10 @@ html.pointer-cursors
 	cursor: pointer;
 }
 
-/* JS-driven springs are handled via MotionConfig in the provider.
-   0s, not 0.01ms, on `*`: transition-property defaults to all, so a nonzero duration transitions
-   every property of every element (Chromium: thousands of no-op scrollbar-color transitions per
-   restyle in a long chat). Class-declared transitions and the overlays native-view.ts follows
-   keep 0.01ms so transitionend still fires. */
+/*
+ * 0s, not 0.01ms, on * since transition-property defaults to all; native-view.ts overlays keep
+ * 0.01ms so transitionend still fires
+ */
 html.force-reduced-motion *,
 html.force-reduced-motion *::before,
 html.force-reduced-motion *::after {
@@ -2274,14 +2273,11 @@ html[data-chat-font] .aui-root {
 			pointer-events: none;
 		}
 	}
-	/* The side pane (browser, research) sets its own pointer-events: auto once shown, so it never
-	   inherited the lock and its scrollers (file view, page) took wheel and touch under a modal menu.
-	   The same cover over it blocks them as react-remove-scroll's document listeners did, without a
-	   listener per open (each add or remove restyles the whole page in WebKit). The pane roots carry a
-	   static class, so the lock toggle only looks at them (an :is() subject here made every toggle
-	   restyle the thread in Chromium: 120 ms at 200 turns). Both roots are position: relative;
-	   dialogs and menus portal to <body> at z-50, above the cover. Its own layer: Chromium's
-	   compositor otherwise hit-tests the composited scroller under a paintless cover and scrolls it. */
+	/*
+	 * Cover blocks pane scrollers without per-open listeners (WebKit restyles on each add or remove);
+	 * pane roots keep a static class, since an :is() subject cost 120 ms per toggle; own layer stops
+	 * Chromium scrolling under the cover
+	 */
 	[data-modal-lock-region] .chat-artifact-pop-surface .side-pane-lock-cover::after,
 	[data-modal-lock-region].chat-artifact-pop-surface .side-pane-lock-cover::after {
 		content: "";
@@ -7396,8 +7392,7 @@ html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browse
 }
 
 
-/* Windows hosts websites in a child WebView2 above the shell. A single glass
-   layer below the caption keeps both browser rows on the same backdrop. */
+/* Web pages run in a WebView2 above the shell; one glass layer keeps both rows on one backdrop. */
 html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"]::before {
   content: "";
   position: absolute;
@@ -7919,8 +7914,7 @@ html[data-glass] [data-windows-wallpaper-page][data-wallpaper-image][data-wallpa
   pointer-events: none;
   backdrop-filter: blur(max(22px, var(--glass-blur)));
 }
-/* The pinned sidebar's glass frame, flagged by the root: this page also holds the hidden chat, and
-   any :has() on it re-checked the chat on every mutation. */
+/* Flag from the root: a :has() here re-checked the hidden chat on every mutation. */
 [data-windows-wallpaper-page] > [data-slot="page-wallpaper-blur"][data-sidebar-frame] {
   border-top-left-radius: var(--radius-md);
 }
@@ -8091,13 +8085,11 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
    Keep measured placeholders and reconnected display:contents bodies at natural height. */
 .aui-thread-viewport [data-message-windowed] {
 	flex-shrink: 0;
-	/* duration-150 on user rows otherwise transitions the placeholder's height
-	   from its empty padding box, moving the reader as every batch is parked. */
+	/* Without this, duration-150 animates a parked placeholder's height and shifts the reader. */
 	transition-property: none;
 }
 
-/* Keep WebKitGTK thumb jumps synchronized with paints of newly mounted bodies.
-   Fixed backgrounds synchronize overflow scrolling with main-thread paints. */
+/* Fixed background keeps WebKitGTK thumb jumps in step with paints of newly mounted bodies. */
 .aui-thread-viewport[data-windowed-messages]::before {
 	content: "";
 	position: absolute;
