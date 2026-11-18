@@ -895,11 +895,12 @@ def conv_frames(
         or not lever_on(T1_CONV2D_ENV)
     ):
         return None
+    w4 = weight[:, :, 0]
+    if not w4.is_contiguous(memory_format = _torch().channels_last):
+        return None  # a strided weight view is re-laid-out by cuDNN on every call
     b, c, t, h, w = y.shape
     y4 = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
-    out = F.conv2d(
-        y4, weight[:, :, 0], bias, tuple(stride[1:]), tuple(padding[1:]), tuple(dilation[1:])
-    )
+    out = F.conv2d(y4, w4, bias, tuple(stride[1:]), tuple(padding[1:]), tuple(dilation[1:]))
     _count("t1_conv2d")
     return out.reshape(b, t, *out.shape[1:]).permute(0, 2, 1, 3, 4)
 
@@ -973,11 +974,10 @@ def causal_conv(
         and conv.stride[0] == 1
         and conv.dilation[0] == 1
     ):
+        # the last temporal tap as conv3d, as before: a conv2d on that strided weight slice measured 2.3x slower on
+        # Qwen-Image's one-frame decode (RTX PRO 6000), so the frame batch is for native temporal-1 weights only
         y = rms_norm_act(x, norm, act, in_bias = in_bias)  # also the cache: stays unpadded
-        out = conv_frames(y, conv.weight[:, :, -1:], bias, conv.stride, spatial, conv.dilation)
-        if out is None:
-            out = F.conv3d(y, conv.weight[:, :, -1:], bias, conv.stride, spatial, conv.dilation)
-        return out, y
+        return F.conv3d(y, conv.weight[:, :, -1:], bias, conv.stride, spatial, conv.dilation), y
     if lever_on(CAUSAL_TAIL_ENV):
         p, new_cache = rms_norm_act(
             x, norm, act, front = front, cache = cache, in_bias = in_bias, zero_pad = zero_pad, tail = 2

@@ -808,6 +808,10 @@ def test_conv_frames_is_a_frame_batched_conv2d():
     assert F.conv_frames(x, w, b, (2, 1, 1), (0, 1, 1), (1, 1, 1)) is None
     assert F.conv_frames(x.contiguous(), w, b, (1, 1, 1), (0, 1, 1), (1, 1, 1)) is None
 
+    # the last tap of a 3x3x3 weight is a strided view: stays conv3d (2.3x slower as conv2d on Qwen-Image)
+    w3 = torch.randn(4, 8, 3, 3, 3)
+    assert F.conv_frames(x, w3[:, :, -1:], b, (1, 1, 1), (0, 1, 1), (1, 1, 1)) is None
+
 
 def test_wan_shortcut_bias_fold_matches_stock(monkeypatch):
     mod = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_wan")
