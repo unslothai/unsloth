@@ -28,7 +28,7 @@ replica for generate / exports): Trainer.__init__ splits it (apply_pipeline_para
 the CPU for the post-training cells), then applies tensor parallel inside the stage, then FSDP2 / DDP-style
 averaging over mesh["dp"], and runs every training step through the pipeline schedule.
 UNSLOTH_PP_MICROBATCHES (default 2 x pp, lowered to a divisor of the batch) and UNSLOTH_PP_SCHEDULE (gpipe,
-1f1b) tune it.
+1f1b; default 1f1b, run as gpipe on a step with fewer micro-batches than stages) tune it.
 
 UNSLOTH_TP_SHARDED_LOAD=0 loads checkpoints in full on every rank instead (then shards them).
 """
@@ -225,8 +225,15 @@ def tensor_parallel_env_load(fn):
                 # Quantizing on load (load_in_4bit of a 16-bit checkpoint) keeps the full load; a
                 # pre-quantized bitsandbytes 4-bit checkpoint loads sharded.
                 four_bit = _four_bit(values, fn)
+                # Full finetuning trains the embedding, so it must stay on the GPU.
+                host_embed = not values.get("full_finetuning")
                 with _sharded_from_pretrained(
-                    {"mesh": mesh, "plan": None, "prequantized_only": four_bit}
+                    {
+                        "mesh": mesh,
+                        "plan": None,
+                        "prequantized_only": four_bit,
+                        "materialize_kwargs": {"host_embed": host_embed},
+                    }
                 ) as state:
                     out = fn(*args, **kwargs)
             except ValueError as exc:

@@ -306,3 +306,33 @@ def test_a_load_on_another_arch_drops_the_earlier_table(fake, monkeypatch, tmp_p
     monkeypatch.setattr(rt, "_arch", lambda device = None: "gfx1201")
     assert not rt.install_for_pipe(_pipe(fake))
     assert not fake.enabled and not rt.is_active()
+
+
+class _UNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = nn.Linear(4, 4)
+
+    def forward(self, x):
+        return self.lin(x)
+
+
+def test_tune_hooks_survive_a_whole_module_fullgraph_compile(fake, monkeypatch):
+    # The max tier compiles a U-Net whole (Module.compile, fullgraph), which traces the root module's hooks.
+    pipe = types.SimpleNamespace(unet = _UNet(), vae = nn.Linear(4, 4))
+    assert rt.install_for_pipe(pipe)
+    assert pipe.unet._forward_pre_hooks and pipe.unet._forward_hooks
+    monkeypatch.setattr(
+        torch.cuda, "is_available", lambda: False
+    )  # dynamo would save a CUDA RNG state
+    pipe.unet.compile(fullgraph = True, dynamic = False, backend = "eager")
+    x = torch.randn(2, 4)
+    for _ in range(3):
+        out = pipe.unet(x)
+    torch.testing.assert_close(out, pipe.unet._call_impl(x))
+    assert rt._STATE["depth"] == 0 and not fake.tuning
+    # Eager calls still tune on a steady shape.
+    pipe.unet._compiled_call_impl = None
+    pipe.unet(x)
+    pipe.unet(x)
+    assert ("tuning", True) in fake.calls and not fake.tuning
