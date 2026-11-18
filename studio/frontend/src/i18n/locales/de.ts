@@ -879,6 +879,7 @@ export const de = {
   chatMenu: {
     more: "Chat-Optionen",
     copy: "Kopieren",
+    addScheduledTask: "Geplante Aufgabe hinzufügen…",
     compact: "Unterhaltung komprimieren",
     compactQueued: "Komprimierung für die nächste Nachricht angefordert",
     compactEmpty: "Noch nichts zu komprimieren",
@@ -2132,7 +2133,7 @@ export const de = {
       modelAliases: {
         sectionTitle: "Modell-Aliase (OpenAI API)",
         description:
-          "Feste Namen für API-Clients, etwa fast-chat oder code. Eine Anfrage mit einem Alias wird vom Modell bedient, auf das er zeigt, sodass verbundene Apps beim Modellwechsel weiter funktionieren. Aktiviere Modell je Anfrage wechseln, damit ein Alias sein Modell laden kann.",
+          "Kurze Namen, die API-Clients anstelle des vollständigen Modellnamens verwenden können.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Alias-Name",
         modelAriaLabel: "Modell, auf das der Alias zeigt",
@@ -2141,6 +2142,13 @@ export const de = {
         add: "Alias hinzufügen",
         loadError: "Modell-Aliase konnten nicht geladen werden.",
         saveError: "Modell-Aliase konnten nicht gespeichert werden.",
+        contextLength: "Kontextlänge",
+        kvCacheType: "KV-Cache-Typ",
+        speculativeDecoding: "Spekulative Dekodierung",
+        savedSetting: "Gespeicherte Einstellung",
+        loadSettings: "Ladeeinstellungen",
+        loadSettingsHint:
+          "Nur für GGUF-Modelle. Leere Felder übernehmen die gespeicherten Einstellungen des Modells.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",
@@ -5053,6 +5061,7 @@ export const de = {
       intervalHours: "Intervall (Stunden)",
       hourlyNote: "Der erste Lauf erfolgt ein Intervall nach dem Speichern. Beim Ändern des Intervalls oder Fortsetzen beginnt die Wartezeit von vorn.",
       createTitle: "Aufgabe planen",
+      repliesInChat: "Jeder Lauf antwortet in „{title}“.",
       editTitle: "Geplante Aufgabe bearbeiten",
       name: "Name",
       namePlaceholder: "Name (optional)",
