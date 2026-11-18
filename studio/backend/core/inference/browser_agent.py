@@ -588,6 +588,9 @@ _FILE_SUFFIXES = (
 )
 
 
+_WINDOWS = os.name == "nt"
+
+
 def workspace_path_of(raw: Any) -> Optional[str]:
     """The file path in a navigate target that names a file rather than a site, or None.
     Syntax only: `page.html`, `./a/b.html`, `/abs/x.svg`, `file:///abs/x.html`."""
@@ -600,7 +603,11 @@ def workspace_path_of(raw: Any) -> Optional[str]:
             return None
         if (host or "localhost").lower() != "localhost":
             return None
-        return unquote(parsed.path) or None
+        path = unquote(parsed.path)
+        # file:///C:/x.html carries the drive after a slash; Windows reads `/C:/x` as relative to the current drive.
+        if _WINDOWS and re.match(r"^/[a-zA-Z]:[/\\]", path):
+            path = path[1:]
+        return path or None
     if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", target) or target.startswith("//"):
         return None
     path = re.split(r"[?#]", target, maxsplit = 1)[0]
@@ -616,14 +623,15 @@ def workspace_path_of(raw: Any) -> Optional[str]:
 def _workspace_file_named(target: str, session_id: Optional[str]) -> Optional[str]:
     """A bare name such as `run.py`, `notes.md` or `main.go` that is a file in the workspace, else
     None (a site). Many suffixes are also top-level domains, so the file has to exist."""
-    from .tools import _get_workdir
+    # Read-only: probing every bare host must not create a sandbox for a chat that only browses.
+    from .tools import resolve_sandbox_workdir
 
     path = re.split(r"[?#]", target, maxsplit = 1)[0]
     # A bare name only: `example.com/../run.py` is a web address that would resolve onto the file.
     if not path or ":" in path or re.search(r"[/\\]", path):
         return None
     try:
-        workdir = os.path.realpath(_get_workdir(session_id))
+        workdir = os.path.realpath(resolve_sandbox_workdir(session_id))
     except Exception:
         return None
     return path if os.path.isfile(os.path.join(workdir, path)) else None
@@ -632,14 +640,19 @@ def _workspace_file_named(target: str, session_id: Optional[str]) -> Optional[st
 def _workspace_file_request(path: str, session_id: Optional[str]) -> dict:
     """The panel's open_file action for a file in this chat's tool workspace, or ValueError
     telling the model what to do instead."""
-    from .tools import _get_workdir
+    from .tools import resolve_sandbox_workdir
 
-    workdir = os.path.realpath(_get_workdir(session_id))
+    workdir = os.path.realpath(resolve_sandbox_workdir(session_id))
     expanded = os.path.expanduser(path)
     full = os.path.realpath(
         expanded if os.path.isabs(expanded) else os.path.join(workdir, expanded)
     )
-    if os.path.commonpath([workdir, full]) != workdir:
+    try:
+        inside = os.path.commonpath([workdir, full]) == workdir
+    except ValueError:
+        # Another drive on Windows.
+        inside = False
+    if not inside:
         raise ValueError(
             f"{path} is outside the workspace, and the browser opens only files in it "
             f"({workdir}, where python and terminal run). Write or copy the file there first, "

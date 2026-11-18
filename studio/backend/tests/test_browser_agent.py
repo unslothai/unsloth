@@ -671,7 +671,7 @@ def workspace(tmp_path, monkeypatch):
     (root / "draw.html").write_text("<canvas></canvas>")
     (root / "sub").mkdir()
     (root / "sub" / "pic.svg").write_text("<svg/>")
-    monkeypatch.setattr(tools_mod, "_get_workdir", lambda session_id = None: str(root))
+    monkeypatch.setattr(tools_mod, "resolve_sandbox_workdir", lambda session_id = None: str(root))
     return root
 
 
@@ -754,7 +754,7 @@ def test_the_file_reaches_the_tab_for_this_chats_workspace(tmp_path, monkeypatch
         (folder / "page.html").write_text(f"<p>{session_id}</p>")
         return str(folder)
 
-    monkeypatch.setattr(tools_mod, "_get_workdir", workdir)
+    monkeypatch.setattr(tools_mod, "resolve_sandbox_workdir", workdir)
     callback, seen = _answer_with({"ok": True, "file": "page.html", "text": "s7"}, session = "s7")
     out = tools_mod.execute_tool(
         "browser_navigate", {"url": "page.html"}, session_id = "s7", output_callback = callback
@@ -797,3 +797,23 @@ def test_a_malformed_file_url_is_refused_and_its_badge_does_not_raise():
     assert status_for_tool("browser_navigate", {"url": "file://["}) == "Opening a page..."
     with pytest.raises(ValueError):
         _request("browser_navigate", {"url": "file://["})
+
+
+def test_browsing_a_site_creates_no_sandbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sandbox"))
+    monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", lambda host, port: (True, "", []))
+    request = browser_agent._validated_request(
+        "browser_navigate", {"url": "example.com"}, None, "chat-browse-only"
+    )
+    assert request == {"op": "navigate", "url": "https://example.com"}
+    assert not (tmp_path / "sandbox").exists()
+
+
+def test_a_windows_file_url_keeps_its_drive(monkeypatch):
+    monkeypatch.setattr(browser_agent, "_WINDOWS", True)
+    assert (
+        browser_agent.workspace_path_of("file:///C:/Users/me/ws/a%20b.html")
+        == "C:/Users/me/ws/a b.html"
+    )
+    monkeypatch.setattr(browser_agent, "_WINDOWS", False)
+    assert browser_agent.workspace_path_of("file:///C:/x.html") == "/C:/x.html"
