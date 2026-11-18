@@ -2448,9 +2448,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if is_hybrid and hybrid_opt_in_device is not None:
                 print(
                     f"🦥 Unsloth: Packing enabled on {hybrid_opt_in_device} through "
-                    f"{_HYBRID_PACKING_ENV_VAR}=1. Document boundaries passed the exactness "
-                    "check, but the packing speedup for hybrid linear-attention models is only "
-                    "measured on CUDA, so compare seconds per step against packing = False."
+                    f"{_HYBRID_PACKING_ENV_VAR}=1 (on by default only on CUDA). Document "
+                    "boundaries passed the exactness check; the speedup depends on this device's "
+                    "attention kernels, so compare seconds per step against packing = False."
                 )
             elif default_packing:
                 print(_DEFAULT_PACKING_NOTE)
