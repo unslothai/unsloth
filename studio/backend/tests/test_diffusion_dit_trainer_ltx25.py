@@ -632,7 +632,7 @@ def tiny_trainer(tiny_pack, tmp_path, monkeypatch):
 
     def run(name = "out", **extra):
         events: list = []
-        cfg = DiffusionLoraConfig(
+        params = dict(
             base_model = str(tiny_pack),
             data_dir = str(data),
             output_dir = str(tmp_path / name),
@@ -643,8 +643,8 @@ def tiny_trainer(tiny_pack, tmp_path, monkeypatch):
             lora_rank = 4,
             cache_variants = 1,
             seed = 0,
-            **extra,
         )
+        cfg = DiffusionLoraConfig(**{**params, **extra})
         dit.run_dit_lora_training(cfg, on_event = events.append)
         assert not [e for e in events if e.get("type") == "error"]
         return events
@@ -703,3 +703,70 @@ def test_a_warm_caption_cache_never_starts_the_encoder_worker(tiny_trainer, tmp_
         ]
 
     assert losses(second) == losses(first)
+
+
+def test_resuming_onto_another_dit_is_refused(tiny_trainer, tmp_path, monkeypatch):
+    """Dev and distilled DiTs have the same shapes, so only the recorded DiT source stops a dev adapter and its
+    moments from silently continuing on the distilled base (or the reverse)."""
+    from core.training.diffusion_checkpoint import ResumeError
+
+    # A completed run retires its bundles; keep checkpoint-2 as a crash after the save would.
+    monkeypatch.setattr(dit, "retire_own_checkpoints", lambda *a, **k: None)
+    from utils.paths import outputs_root
+
+    # Resume bundles must sit under the (per-test) Studio outputs root.
+    run_dir = str(outputs_root() / "ltx25-run")
+    tiny_trainer.run(output_dir = run_dir, save_steps = 2)
+    bundle = Path(run_dir) / "checkpoint-2"
+    manifest = json.loads((bundle / "trainer_state.json").read_text())
+    dit_key = next(v for k, v in _walk(manifest) if k == "base_dit")
+    assert dit_key.endswith(":transformer_full")
+
+    monkeypatch.setenv(dit.LTX25_TRAIN_DIT_ENV, "distilled")
+    with pytest.raises(ResumeError, match = "base DiT"):
+        tiny_trainer.run(output_dir = run_dir, resume_from_checkpoint = str(bundle))
+    # The same DiT resumes.
+    monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV)
+    events = tiny_trainer.run(output_dir = run_dir, resume_from_checkpoint = str(bundle))
+    assert [e["step"] for e in events if e.get("type") == "progress"] == [3, 4]
+
+
+def _walk(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k, v
+            yield from _walk(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk(v)
+
+
+def test_a_bundle_from_before_the_field_resumes_only_onto_the_default_dit():
+    from core.training.diffusion_checkpoint import CheckpointIdentity
+
+    base = dict(
+        family = FAMILY,
+        base_model = PACK,
+        lora_target_modules = _LTX2_TARGETS,
+        lora_rank = 32,
+        lora_alpha = 32,
+        precision = "bf16",
+        base_precision = "nf4",
+        resolution = 512,
+    )
+    legacy = CheckpointIdentity(**base)
+    dev = CheckpointIdentity(**base, base_dit = f"{PACK.lower()}:transformer_full")
+    distilled = CheckpointIdentity(**base, base_dit = f"{PACK.lower()}:transformer")
+    mirror = CheckpointIdentity(**base, base_dit = f"{MIRROR.lower()}:transformer")
+    assert legacy.mismatch_reason(dev) is None
+    assert "base DiT" in legacy.mismatch_reason(distilled)
+    assert "base DiT" in dev.mismatch_reason(mirror)
+    # The route preflight runs before the DiT is resolved: unknown is cannot-tell, not a mismatch.
+    assert dev.mismatch_reason(legacy) is None
+    # Same DiT, moved repo commit: refused; unknown revision on either side is cannot-tell.
+    old = CheckpointIdentity(**base, base_dit = dev.base_dit, base_dit_revision = "rev-aaa")
+    new = CheckpointIdentity(**base, base_dit = dev.base_dit, base_dit_revision = "rev-bbb")
+    assert "base DiT revision" in old.mismatch_reason(new)
+    assert old.mismatch_reason(dev) is None
+    # Round-trips through the manifest.
+    assert CheckpointIdentity.from_dict(old.as_dict()) == old

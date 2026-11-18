@@ -85,6 +85,7 @@ from core.training.diffusion_checkpoint import (
     identity_for_config,
     with_cache_mode,
     with_resolved_base_precision,
+    with_resolved_dit,
     with_resolved_revision,
     preflight_resume,
 )
@@ -180,6 +181,8 @@ class _FamilySpec:
     sample_forward_kwargs: Optional[dict] = None
     # cfg -> FlowMatchEuler scheduler. None = load scheduler/ (only valid if it IS FlowMatchEuler; Wan ships UniPC).
     training_scheduler: Optional[Callable[..., Any]] = None
+    # cfg -> (repo, subfolder) of the DiT a family resolves at load; recorded in the checkpoint identity.
+    dit_source: Optional[Callable[..., tuple]] = None
     # Saver takes ``adapter_metadata``; without it diffusers' loader assumes lora_alpha == rank.
     save_takes_metadata: bool = False
     # (scheduler config, cfg) -> the dynamic-shift mu the "auto" sigma table uses; None pins max_shift.
@@ -2583,6 +2586,7 @@ _SPECS: dict[str, _FamilySpec] = {
         forward = _ltx2_forward,
         save = _ltx2_save,
         training_scheduler = _ltx25_training_scheduler,
+        dit_source = _ltx25_dit_source,
     ),
     "wan2.2-ti2v-5b": _FamilySpec(
         family = "wan2.2-ti2v-5b",
@@ -3481,6 +3485,8 @@ def _train_dit(
     identity = with_cache_mode(identity, latent_cache is not None)
     # base_precision is resolved now (auto, or fp8/mxfp8 fallback to bf16); without this the bundle records a base it never trained on.
     identity = with_resolved_base_precision(identity, base_precision)
+    if spec.dit_source is not None:
+        identity = with_resolved_dit(identity, *spec.dit_source(fetch_cfg))
 
     transformer.train()
     n_images = len(image_paths)

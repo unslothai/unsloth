@@ -50,6 +50,9 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("family", "model family"),
     ("base_model", "base model"),
     ("base_revision", "base model revision"),
+    # LTX-2.5 picks its DiT at load (dev or distilled, upstream or mirror); both have the adapter's shapes.
+    ("base_dit", "base DiT"),
+    ("base_dit_revision", "base DiT revision"),
     ("dataset_fingerprint", "training images"),
     ("lora_target_modules", "LoRA target modules"),
     ("lora_rank", "LoRA rank"),
@@ -114,6 +117,9 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "max_grad_norm",
         # Known only to the DiT trainer; unknown means cannot-tell, leaving route preflight and SDXL alone.
         "base_precision_effective",
+        # Resolved only at load, so the route preflight leaves them unknown.
+        "base_dit",
+        "base_dit_revision",
     }
 )
 # Bundle side only: an incoming None is the route's unresolved pre-trainer identity ("cannot tell").
@@ -180,6 +186,9 @@ class CheckpointIdentity:
     base_precision_effective: Optional[str] = None
     # Gated bases fetch from an ungated mirror with different SHAs, so record which repo.
     base_revision_repo: Optional[str] = None
+    # "<repo>:<subfolder>" of the DiT the trainer resolved at load (LTX-2.5 only), and that repo's revision.
+    base_dit: Optional[str] = None
+    base_dit_revision: Optional[str] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -188,6 +197,8 @@ class CheckpointIdentity:
             "base_model": self.base_model,
             "base_revision": self.base_revision,
             "base_revision_repo": self.base_revision_repo,
+            "base_dit": self.base_dit,
+            "base_dit_revision": self.base_dit_revision,
             "dataset_fingerprint": self.dataset_fingerprint,
             "lora_target_modules": list(self.lora_target_modules),
             "lora_rank": int(self.lora_rank),
@@ -261,6 +272,8 @@ class CheckpointIdentity:
                 kind = str(data.get("kind") or "image"),
                 base_revision = _optional_str(data.get("base_revision")),
                 base_revision_repo = _optional_str(data.get("base_revision_repo")),
+                base_dit = _optional_str(data.get("base_dit")),
+                base_dit_revision = _optional_str(data.get("base_dit_revision")),
                 dataset_fingerprint = _optional_str(data.get("dataset_fingerprint")),
             )
         except (TypeError, ValueError):
@@ -279,6 +292,9 @@ class CheckpointIdentity:
             a, b = mine.get(field), theirs.get(field)
             if a in (None, "") and field in _LEGACY_IDENTITY_DEFAULTS:
                 a = _LEGACY_IDENTITY_DEFAULTS[field]
+            if a in (None, "") and field == "base_dit" and b not in (None, ""):
+                # A bundle from before the field trained the default: the dev DiT of its own base.
+                a = default_base_dit(self)
             # None / "" is "cannot tell", NOT falsiness: a lora_dropout of 0.0 is a real value and the commonest one,
             # so truthiness would skip exactly the 0.0-against-0.15 comparison that matters.
             if field in _OPTIONAL_IDENTITY_FIELDS and (a in (None, "") or b in (None, "")):
@@ -289,6 +305,12 @@ class CheckpointIdentity:
                 continue
             # SHAs are comparable only within one repo: an ungated mirror has different SHAs.
             if field == "base_revision" and _revision_repo(self) != _revision_repo(other):
+                continue
+            if field == "base_dit_revision" and not (
+                _revision_is_comparable(a)
+                and _revision_is_comparable(b)
+                and self.base_dit == other.base_dit
+            ):
                 continue
             if a == b:
                 continue
@@ -429,6 +451,34 @@ def with_resolved_base_precision(
     if not value:
         return identity  # nothing resolved; leave it unknown rather than asserting a value
     return replace(identity, base_precision_effective = value)
+
+
+# What a bundle without ``base_dit`` trained: LTX-2.5's default, the dev DiT of the base it names.
+_DEFAULT_DIT_SUBFOLDER = {"ltx-2.5": "transformer_full"}
+
+
+def _dit_key(repo: Any, subfolder: Any) -> str:
+    return f"{str(repo or '').strip().lower()}:{str(subfolder or '').strip()}"
+
+
+def default_base_dit(identity: "CheckpointIdentity") -> Optional[str]:
+    subfolder = _DEFAULT_DIT_SUBFOLDER.get(str(identity.family or "").strip().lower())
+    return _dit_key(identity.base_model, subfolder) if subfolder else None
+
+
+def with_resolved_dit(
+    identity: "CheckpointIdentity", repo: Any, subfolder: Any
+) -> "CheckpointIdentity":
+    """Records the DiT the trainer actually loaded, and its revision: a dev and a distilled DiT (or two repos) have
+    the same shapes, so only this tells an adapter trained on one from the other."""
+    from core.training.diffusion_train_extras import source_revision
+
+    revision = source_revision(repo)
+    return replace(
+        identity,
+        base_dit = _dit_key(repo, subfolder),
+        base_dit_revision = revision if _revision_is_comparable(revision) else None,
+    )
 
 
 def with_resolved_revision(identity: "CheckpointIdentity", base_model: Any) -> "CheckpointIdentity":
