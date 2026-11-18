@@ -314,7 +314,7 @@ def test_long_verdict_takes_family_sizes(monkeypatch):
 
 
 def _h3_block() -> str:
-    src = (BACKEND_DIR / "core" / "inference" / "video.py").read_text()
+    src = (BACKEND_DIR / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
     start = src.index("h3_attn_backend = select_attention_backend(")
     end = src.index("from .video_minimax_h3_flashinfer import install_h3_flashinfer", start)
     return src[start:end]
@@ -349,7 +349,7 @@ def test_h3_block_auto_is_gated_to_the_evidenced_configuration():
 
 
 def test_h3_load_status_carries_int8_attention():
-    src = (BACKEND_DIR / "core" / "inference" / "video.py").read_text()
+    src = (BACKEND_DIR / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
     h3 = src[src.index("def _load_h3_modular_pipeline(") :]
     h3 = h3[: h3.index("\n    def ", 10)]
     assert '"int8_attention": int8_resolved_entry(' in h3
@@ -520,7 +520,7 @@ def test_every_begin_load_accepts_it():
 
 def test_routes_forward_it_only_when_set():
     for rel in ("routes/inference.py", "routes/video.py"):
-        src = (BACKEND_DIR / rel).read_text()
+        src = (BACKEND_DIR / rel).read_text(encoding = "utf-8")
         assert (
             '**({"int8_attention": request.int8_attention} if request.int8_attention else {})'
             in src
