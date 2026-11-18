@@ -37,6 +37,14 @@ from core.training.diffusion_train_common import (
 
 FAMILY = "ltx-2.5"
 PACK = "Lightricks/LTX-2.5-Diffusers"
+# The ungated mirror training fetches from: the distilled DiT only, no transformer_full/.
+MIRROR = "unsloth/LTX-2.5-FP8"
+
+
+@pytest.fixture(autouse = True)
+def _fresh_dit_sources(monkeypatch):
+    monkeypatch.setattr(dit, "_LTX25_DIT_SOURCES", {})
+
 
 # Lightricks/LTX-2.5-Diffusers at 4791a1100e0cf97f7ed5c55c12dd71dce13f9dd3 (HfApi().model_info(...).siblings).
 PACK_LISTING = (
@@ -207,6 +215,8 @@ def test_family_train_infos_offers_ltx25(dit_train_host):
 
 def test_conditioning_stages_one_copy_of_the_small_components_only():
     files = ltx25_conditioning_files(PACK_LISTING)
+    # The Hub listing arrives as a generator: read once, model_index.json must still be staged.
+    assert ltx25_conditioning_files(iter(PACK_LISTING)) == files
     assert "model_index.json" in files
     assert {f.split("/", 1)[0] for f in files if "/" in f} == {
         "audio_vae",
@@ -345,6 +355,13 @@ def test_the_worker_encodes_like_the_video_page(monkeypatch):
 
 def test_the_dev_dit_is_the_default_base(monkeypatch, tmp_path):
     monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV, raising = False)
+    real = dit._ltx25_has_dev_dit
+    # Hub ids without the network; local packs through the real check.
+    monkeypatch.setattr(
+        dit,
+        "_ltx25_has_dev_dit",
+        lambda repo, token: repo == PACK if not Path(repo).is_absolute() else real(repo, token),
+    )
     hub = types.SimpleNamespace(base_model = PACK)
     assert dit._ltx25_dit_subfolder(hub) == "transformer_full"
     full = _index(tmp_path / "full", "Gemma4UnifiedForConditionalGeneration")
@@ -360,12 +377,32 @@ def test_the_dev_dit_is_the_default_base(monkeypatch, tmp_path):
     assert dit._ltx25_dit_subfolder(hub) == "transformer"
 
 
+def test_the_mirror_fetch_takes_the_dev_dit_from_the_upstream_pack(monkeypatch):
+    """The mirror ships only the distilled DiT, so the dev DiT comes from the upstream pack the token can read; with
+    no readable dev DiT anywhere the run trains the mirror's distilled DiT."""
+    monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV, raising = False)
+    asked = []
+    monkeypatch.setattr(
+        dit, "_ltx25_has_dev_dit", lambda repo, token: asked.append((repo, token)) or repo == PACK
+    )
+    cfg = types.SimpleNamespace(base_model = MIRROR, hf_token = "tok")
+    assert dit._ltx25_dit_source(cfg) == (PACK, "transformer_full")
+    assert asked == [(MIRROR, "tok"), (PACK, "tok")]
+    # Resolved once per run: the scheduler and the DiT load ask the same question.
+    dit._ltx25_dit_source(cfg)
+    assert len(asked) == 2
+
+    monkeypatch.setattr(dit, "_LTX25_DIT_SOURCES", {})
+    monkeypatch.setattr(dit, "_ltx25_has_dev_dit", lambda repo, token: False)
+    assert dit._ltx25_dit_source(cfg) == (MIRROR, "transformer")
+
+
 class _RecordingDiT:
     calls: list = []
 
     @classmethod
     def from_pretrained(cls, base, **kwargs):
-        cls.calls.append(kwargs)
+        cls.calls.append({"base": base, **kwargs})
         return cls()
 
     def to(self, *a, **k):
@@ -380,10 +417,11 @@ def test_every_base_precision_reads_the_chosen_subfolder(monkeypatch, precision)
     _RecordingDiT.calls = []
     monkeypatch.setattr(diffusers, "LTX2VideoTransformer3DModel", _RecordingDiT)
     monkeypatch.setattr(dit, "_bnb_4bit_config", lambda: "nf4-config")
-    cfg = types.SimpleNamespace(base_model = PACK, hf_token = None, resolved_family = FAMILY)
+    monkeypatch.setattr(dit, "_ltx25_has_dev_dit", lambda repo, token: repo == PACK)
+    cfg = types.SimpleNamespace(base_model = MIRROR, hf_token = None, resolved_family = FAMILY)
     _SPECS[FAMILY].load_transformer(cfg, "cpu", torch.bfloat16, precision)
     (kwargs,) = _RecordingDiT.calls
-    assert kwargs["subfolder"] == "transformer_full"
+    assert kwargs["subfolder"] == "transformer_full" and kwargs["base"] == PACK
     assert ("quantization_config" in kwargs) == (precision == "nf4")
 
 

@@ -2021,15 +2021,60 @@ def _ltx25_trains_dev() -> bool:
     return (os.environ.get(LTX25_TRAIN_DIT_ENV) or "").strip().lower() not in ("distilled", "0")
 
 
-def _ltx25_dit_subfolder(cfg) -> str:
-    """The pack subfolder the LoRA trains against: the dev DiT unless distilled is asked for, or a local pack ships no
-    dev DiT (then the distilled one it does ship)."""
+# (repo, subfolder) per (base, token): the scheduler and the DiT load ask the same question.
+_LTX25_DIT_SOURCES: dict = {}
+
+
+def _ltx25_has_dev_dit(repo: str, token) -> bool:
+    local = Path(repo).expanduser()
+    if local.is_dir():
+        return (local / _LTX25_DEV_SUBFOLDER / "config.json").is_file()
+    try:
+        from huggingface_hub import hf_hub_download
+        hf_hub_download(repo, f"{_LTX25_DEV_SUBFOLDER}/config.json", token = token)
+        return True
+    except Exception:  # noqa: BLE001 -- absent, gated without access, or offline: no dev DiT here
+        return False
+
+
+def _ltx25_dit_source(cfg) -> tuple[str, str]:
+    """``(repo, subfolder)`` of the DiT the LoRA trains against: the dev DiT unless distilled is asked for. The fetched
+    repo may be the ungated unsloth mirror, which ships only the distilled DiT, so the dev DiT then comes from the
+    upstream pack when this token can read it; with neither, the distilled DiT the fetched repo ships."""
+    base = str(cfg.base_model)
+    token = getattr(cfg, "hf_token", None)
     if not _ltx25_trains_dev():
-        return _LTX25_DISTILLED_SUBFOLDER
-    local = Path(str(cfg.base_model)).expanduser()
-    if local.is_dir() and not (local / _LTX25_DEV_SUBFOLDER / "config.json").is_file():
-        return _LTX25_DISTILLED_SUBFOLDER
-    return _LTX25_DEV_SUBFOLDER
+        return base, _LTX25_DISTILLED_SUBFOLDER
+    key = (base, token)
+    if key not in _LTX25_DIT_SOURCES:
+        from core.inference.diffusion_families import canonical_base
+
+        candidates = [base] + [c for c in (canonical_base(base),) if c and c != base]
+        repo = next((c for c in candidates if _ltx25_has_dev_dit(c, token)), None)
+        if repo is None:
+            import logging
+            logging.getLogger(__name__).warning(
+                "ltx-2.5: no readable dev DiT (%s); training against the distilled DiT of %s",
+                " or ".join(f"{c}/{_LTX25_DEV_SUBFOLDER}" for c in candidates),
+                base,
+            )
+        _LTX25_DIT_SOURCES[key] = (
+            (repo, _LTX25_DEV_SUBFOLDER) if repo else (base, _LTX25_DISTILLED_SUBFOLDER)
+        )
+    return _LTX25_DIT_SOURCES[key]
+
+
+def _ltx25_dit_subfolder(cfg) -> str:
+    return _ltx25_dit_source(cfg)[1]
+
+
+def _with_base(cfg, base: str):
+    import dataclasses
+    import types
+
+    if dataclasses.is_dataclass(cfg):
+        return dataclasses.replace(cfg, base_model = base)
+    return types.SimpleNamespace(**{**vars(cfg), "base_model": base})
 
 
 def ltx25_conditioning_files(names) -> list[str]:
@@ -2038,6 +2083,7 @@ def ltx25_conditioning_files(names) -> list[str]:
     keeps the indexed set). Never the encoder, the prompt enhancer, either DiT or the root-level LoRA."""
     from core.inference.video_ltx25 import ltx25_pack_files
 
+    names = list(names)
     files = [(n, 0) for n in names]
     keep = [
         n
@@ -2131,10 +2177,14 @@ def _ltx25_load_transformer(cfg, device, weight_dtype, base_precision):
 
     from diffusers import LTX2VideoTransformer3DModel
 
-    subfolder = _ltx25_dit_subfolder(cfg)
-    logging.getLogger(__name__).info("ltx-2.5: training against the %s DiT", subfolder)
+    repo, subfolder = _ltx25_dit_source(cfg)
+    logging.getLogger(__name__).info("ltx-2.5: training against the %s DiT of %s", subfolder, repo)
     return _load_dit_transformer(
-        LTX2VideoTransformer3DModel, cfg, device, base_precision, subfolder = subfolder
+        LTX2VideoTransformer3DModel,
+        _with_base(cfg, repo),
+        device,
+        base_precision,
+        subfolder = subfolder,
     )
 
 
