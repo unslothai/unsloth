@@ -38,6 +38,7 @@ _CLONE_NEWUSER = 0x10000000
 _AF_VSOCK = 40
 _AF_UNIX = 1
 _SOCK_DGRAM = 2
+_SOCK_RAW = 3  # AF_UNIX turns SOCK_RAW into SOCK_DGRAM
 _SOCK_TYPE_MASK = 0xF
 
 # struct seccomp_data: nr@0, arch@4, args[0]@16.
@@ -123,10 +124,11 @@ def unix_socket_program(machine: str) -> tuple[tuple[int, int, int, int], ...]:
         (_RET, 0, 0, _EACCES),
         (_RET, 0, 0, _ALLOW),
         # args[1] (type, low word at 24) without SOCK_NONBLOCK / SOCK_CLOEXEC.
-        (_JEQ, 0, 4, socketpair_nr),
+        (_JEQ, 0, 5, socketpair_nr),
         (_LOAD, 0, 0, 24),
         (_AND, 0, 0, _SOCK_TYPE_MASK),
-        (_JEQ, 0, 1, _SOCK_DGRAM),
+        (_JEQ, 1, 0, _SOCK_DGRAM),
+        (_JEQ, 0, 1, _SOCK_RAW),
         (_RET, 0, 0, _EACCES),
         (_RET, 0, 0, _ALLOW),
     ]

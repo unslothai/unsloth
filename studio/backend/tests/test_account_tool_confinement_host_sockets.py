@@ -29,6 +29,11 @@ _PROBE = (
     "    d.connect(sys.argv[2]); print('DGRAM:' + 'connected')\n"
     "except OSError as e:\n"
     "    print('DGRAM:' + 'refused', e.errno)\n"
+    "try:\n"
+    "    r, _ = socket.socketpair(socket.AF_UNIX, socket.SOCK_RAW)\n"
+    "    r.connect(sys.argv[2]); print('RAW:' + 'connected')\n"
+    "except OSError as e:\n"
+    "    print('RAW:' + 'refused', e.errno)\n"
     "import ctypes, errno\n"
     "libc = ctypes.CDLL(None, use_errno=True)\n"
     "params = ctypes.create_string_buffer(120)\n"
@@ -82,6 +87,7 @@ def test_managed_tool_cannot_reach_a_host_unix_socket(host_socket):
     # socketpair (multiprocessing, asyncio) keeps working.
     assert "PAIR:k" in out, out
     assert "DGRAM:refused" in out, out
+    assert "RAW:refused" in out, out
     assert "URING:refused" in out, out
 
 
