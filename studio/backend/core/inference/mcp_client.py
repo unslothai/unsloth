@@ -22,8 +22,8 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager
-from functools import wraps
+from contextlib import aclosing, contextmanager
+from functools import partial, wraps
 from typing import Any, Optional, get_type_hints
 from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
@@ -51,6 +51,8 @@ OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
 _account_oauth_token_stores: dict[str, Any] = {}
+_oauth_refresh_locks: dict[Any, threading.Lock] = {}
+_oauth_refresh_locks_guard = threading.Lock()
 
 
 def _managed_mcp_restricted() -> bool:
@@ -160,14 +162,33 @@ def _public_http_client_factory(**kwargs):
     return client_type(**kwargs)
 
 
-def _tool_http_client_factory(**kwargs):
+def _is_loopback_url(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _tool_http_client_factory(*, loopback: bool = False, **kwargs):
     """No read cap: _race_tool_call enforces each call's budget, which the SDK's 300s read timeout would cut short."""
     if _managed_mcp_restricted():
         client = _public_http_client_factory(**kwargs)
     else:
         from mcp.shared._httpx_utils import create_mcp_http_client
+
         kwargs.pop("follow_redirects", None)  # create_mcp_http_client sets its own redirect policy
         client = create_mcp_http_client(**kwargs)
+        if loopback:
+            # HTTP(S)_PROXY would route this machine's own servers (and their headers) through the proxy.
+            client = type(client)(
+                timeout = client.timeout,
+                headers = kwargs.get("headers"),
+                auth = kwargs.get("auth"),
+                trust_env = False,
+            )
     t = client.timeout
     client.timeout = type(t)(connect = t.connect, read = None, write = t.write, pool = t.pool)
     tracker = _SESSION_POSTS.get()
@@ -534,6 +555,75 @@ def _strip_client_id_under_basic_auth(auth) -> None:
         logger.warning("MCP OAuth: client_id fixup could not be applied: %s", exc)
 
 
+class _RootSlashIssuer(str):
+    """The SDK compares a PRM-advertised issuer with a plain ``!=``; apply its own root-slash rule there."""
+
+    __slots__ = ()
+
+    def __eq__(self, other):
+        from mcp.client.auth.utils import issuers_match
+        if not isinstance(other, str):
+            return False
+        try:
+            return issuers_match(str.__str__(self), str.__str__(other))
+        except ValueError:
+            return False
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = str.__hash__
+
+
+def _accept_root_issuer_slash(auth) -> None:
+    """Google advertises https://accounts.google.com/ but issues https://accounts.google.com (python-sdk#1919)."""
+    expected = getattr(auth, "_expected_issuer", None)
+    if expected is None:
+        logger.warning("MCP OAuth: _expected_issuer missing; issuer slash fixup skipped")
+        return
+
+    def _expected_issuer():
+        issuer = expected()
+        return _RootSlashIssuer(issuer) if type(issuer) is str else issuer
+
+    try:
+        auth._expected_issuer = _expected_issuer
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
+
+
+def _serialize_token_refresh(auth, lock: threading.Lock) -> None:
+    """Parallel refreshes each rotate the token and the one saved last can be revoked, forcing re-consent (#18164)."""
+    flow = auth.async_auth_flow
+
+    async def async_auth_flow(request):
+        held = False
+        if not auth._initialized or not auth.context.is_token_valid():
+            while not lock.acquire(blocking = False):
+                await asyncio.sleep(0.05)
+            held = True
+        try:
+            if held:
+                # Pick up a token another connection refreshed while this one waited.
+                await auth._initialize()
+            async with aclosing(flow(request)) as gen:
+                response = None
+                while True:
+                    try:
+                        sent = await gen.asend(response)
+                    except StopAsyncIteration:
+                        return
+                    if held and sent is request:
+                        lock.release()
+                        held = False
+                    response = yield sent
+        finally:
+            if held:
+                lock.release()
+
+    auth.async_auth_flow = async_auth_flow
+
+
 def _oauth(
     url: str,
     oauth_client_id: Optional[str] = None,
@@ -541,14 +631,19 @@ def _oauth(
 ):
     from fastmcp.client.auth import OAuth
 
+    store = _oauth_store()
     # A pre-registered client skips Dynamic Client Registration (Google's MCP servers have no /register).
     auth = OAuth(
         mcp_url = url,
-        token_storage = _oauth_store(),
+        token_storage = store,
         client_id = oauth_client_id,
         client_secret = oauth_client_secret,
     )
     _strip_client_id_under_basic_auth(auth)
+    _accept_root_issuer_slash(auth)
+    with _oauth_refresh_locks_guard:
+        lock = _oauth_refresh_locks.setdefault(_account_key(auth.mcp_url), threading.Lock())
+    _serialize_token_refresh(auth, lock)
     return auth
 
 
@@ -784,7 +879,7 @@ def _client(
             url = url,
             headers = headers or None,
             auth = auth,
-            httpx_client_factory = _tool_http_client_factory,
+            httpx_client_factory = partial(_tool_http_client_factory, loopback = _is_loopback_url(url)),
         )
     )
 

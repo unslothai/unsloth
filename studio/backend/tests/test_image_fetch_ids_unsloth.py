@@ -74,6 +74,7 @@ _CARD_BASES: dict[str, str] = {
     "unsloth/flux-3-image-klein-base-GGUF": "black-forest-labs/flux-3-image-klein-base",
     "unsloth/MOSS-Image-SFT-GGUF": "OpenMOSS-Team/MOSS-Image-SFT",
     "unsloth/MOSS-Image-Base-GGUF": "OpenMOSS-Team/MOSS-Image-Base",
+    "unsloth/MiniMax-H3-Image-GGUF": "MiniMaxAI/MiniMax-H3-Image",
 }
 
 # No mirror repo: official diffusers folders live in the unsloth repo (-FP8 if any, else -GGUF).

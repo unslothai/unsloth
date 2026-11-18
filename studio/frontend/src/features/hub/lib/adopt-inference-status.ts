@@ -3,6 +3,7 @@
 
 // Landing straight on /hub is the only entry point where nothing else applies inference status.
 
+import { isTranslationHeldSlot } from "../../../lib/translation-models.ts";
 import { ggufVariantsMatch, modelIdsMatch } from "./model-identity.ts";
 
 export interface ResidentAdoptionState {
@@ -44,6 +45,9 @@ export function adoptResidentModelStatus(
   }
   // A load applies its own status when it settles and owns the store meanwhile.
   if (state.modelLoading) {
+    return false;
+  }
+  if (isTranslationHeldSlot(checkpointId, state.checkpoint)) {
     return false;
   }
   if (!checkpointId) {

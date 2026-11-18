@@ -920,7 +920,12 @@ def share_rotq(graph: Any) -> int:
 
 
 def _fn(node: Any, *targets: Any) -> bool:
-    return getattr(node, "op", None) == "call_function" and node.target in targets
+    """``node`` calls one of ``targets``. An add carrying a non-unit ``alpha`` (``x + alpha * y``) matches nothing:
+    every fold rebuilds the plain ``x + y``, so folding it would silently drop the scale."""
+    if getattr(node, "op", None) != "call_function" or node.target not in targets:
+        return False
+    alpha = node.kwargs.get("alpha", 1) if node.kwargs else 1
+    return type(alpha) in (int, float) and alpha == 1
 
 
 def _val(node: Any) -> Any:
@@ -1053,6 +1058,8 @@ def _match_norm(root: Any) -> Any:
         mean, eps = add.args[0], add.args[1]
         if not isinstance(eps, float) or not _fn(mean, aten.mean.dim):
             continue
+        if mean.kwargs.get("dtype") not in (None, torch.float32):
+            continue  # a lower-precision mean is not the fp32 statistic the prologue computes
         dims = list(mean.args[1]) if len(mean.args) > 1 else []
         keep = mean.args[2] if len(mean.args) > 2 else mean.kwargs.get("keepdim", False)
         sq = mean.args[0]
@@ -1273,7 +1280,7 @@ if _CustomGraphPass is not None:
 
         def uuid(self) -> Any:
             folds = getattr(self, "folds", ())
-            return f"unsloth_studio.{_OP}.share.v2:{int(getattr(self, 'share', True))}:{','.join(folds)}"
+            return f"unsloth_studio.{_OP}.share.v3:{int(getattr(self, 'share', True))}:{','.join(folds)}"
 
 else:
     ShareRotqPass = None

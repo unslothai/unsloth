@@ -17,6 +17,8 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
     dump_diagnostics,
+    expand_collapsed_model_picker,
+    RUN_SETTINGS_CONTEXT_LABEL,
     evaluate_fetch,
     install_view_transition_killer,
     install_wall_clock_watchdog,
@@ -546,6 +548,9 @@ with sync_playwright() as p:
         if _count(popover) == 0 or not popover.is_visible():
             page.locator(TRIGGER).first.click()
             popover = page.locator(POPOVER).first
+            popover.wait_for(state = "visible", timeout = 30_000)
+            # A loaded model opens the picker collapsed to its own row: no tabs, search or rows.
+            expand_collapsed_model_picker(popover)
         popover.wait_for(state = "visible", timeout = 30_000)
         return popover
 
@@ -657,10 +662,11 @@ with sync_playwright() as p:
 
     def context_input(popover):
         for role in ("textbox", "spinbutton"):
-            loc = popover.get_by_role(role, name = "Context Length").first
+            # Exact: "Context" is a prefix of other run settings names.
+            loc = popover.get_by_role(role, name = RUN_SETTINGS_CONTEXT_LABEL, exact = True).first
             if _count(loc):
                 return loc
-        loc = popover.locator('input[aria-label="Context Length"]').first
+        loc = popover.locator(f'input[aria-label="{RUN_SETTINGS_CONTEXT_LABEL}"]').first
         return loc if _count(loc) else None
 
     PRIMARY_BUTTON_NAMES = re.compile(r"^(Load model|Reload model|Save settings|Forget settings)$")

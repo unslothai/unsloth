@@ -84,6 +84,9 @@ class FamilyProfile:
     auto_bf16_when_resident: Optional[str] = None
     # ROCm RDNA AUTO W8A8 evidence (gfx1151); None = bf16. Kill switch UNSLOTH_NATIVE_INT8_ACT=0.
     rdna_auto_w8a8: Optional[str] = None
+    # ROCm RDNA evidence that W8A8 beats weight-only int8 for an EXPLICIT int8 request (gfx1151; AUTO still keeps
+    # bf16 unless ``rdna_auto_w8a8``); None = weight-only. Kill switch UNSLOTH_NATIVE_INT8_ACT=0.
+    rdna_explicit_w8a8: Optional[str] = None
     # Turing (sm_75, fp16-only) AUTO int8 evidence; None = fp16. Kill switch UNSLOTH_DIFFUSION_FP16_CARD_INT8=0.
     turing_auto_int8: Optional[str] = None
     # Video: prequant DiT schemes AUTO seeds even where bf16 fits resident (else auto keeps resident bf16).
@@ -109,6 +112,9 @@ class FamilyProfile:
     compile_static: bool = False
     # Install the LTX-2 STG compile adapter after a successful compile (``ltx_stg_compile_adapter`` family hook).
     stg_compile_adapter: bool = False
+    # Measured reason a dense (unquantized) denoiser with speed unset compiles from render 1 instead of the deferred
+    # profile's two exact eager images; None = deferred. Only for an eager path measured far slower than compiled.
+    compile_from_render_one: Optional[str] = None
 
 
 DEFAULT_PROFILE = FamilyProfile()
@@ -134,6 +140,13 @@ def profile_table(attr: str, *, quant: bool = False) -> dict[str, Any]:
             for name in profile.quant_names:
                 table.setdefault(name, value)
     return table
+
+
+def compile_from_render_one_reason(family: Any) -> Optional[str]:
+    """``FamilyProfile.compile_from_render_one`` of ``family`` (a registry row or a stand-in with its ``name``)."""
+    if family is None:
+        return None
+    return profile_for(family).compile_from_render_one
 
 
 def profile_for(family: Any) -> FamilyProfile:

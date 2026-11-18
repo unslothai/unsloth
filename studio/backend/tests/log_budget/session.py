@@ -37,6 +37,8 @@ IDLE_POLLS: dict[str, tuple[float, str]] = {
     "/api/engines": (30.0, "declared"),
     # The Images page's queue panel: every 5s idle, every 1s while jobs wait (use-image-queue.ts).
     "/api/inference/images/queue": (5.0, "declared"),
+    # Cross-device chat sync: every 4s while the page is visible (REMOTE_HISTORY_POLL_MS, remote-history-sync.ts).
+    "/api/chat/revision": (4.0, "declared"),
 }
 
 # Polls only while an operation is in flight; separate so the idle envelope is not averaged.

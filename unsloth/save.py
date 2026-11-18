@@ -1463,6 +1463,17 @@ def _is_gpt_oss(model):
     )
 
 
+def _has_expert_lora(model):
+    """LoRA on MoE experts: a target_parameters ParamWrapper or per-expert Linear LoRA."""
+    try:
+        for name, module in model.named_modules():
+            if ".experts" in f".{name}" and getattr(module, "lora_A", None):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _is_vlm(model):
     config = getattr(model, "config", None)
     if config is None:
@@ -5221,6 +5232,13 @@ def unsloth_save_pretrained_gguf(
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
     is_gpt_oss = _is_gpt_oss(self)
+    if is_gpt_oss and _has_expert_lora(self):
+        # MXFP4 route keeps downloaded packed experts, silently dropping expert LoRA.
+        logger.warning_once(
+            "Unsloth: GPT-OSS with LoRA on the MoE experts is exported from a 16-bit merge, "
+            "since the MXFP4 GGUF route would drop the expert adapter."
+        )
+        is_gpt_oss = False
 
     # Will this fit? Ask before the merge. Runs here because `arguments` below snapshots locals(), so a redirected save_directory must be in place first. gpt-oss takes the mxfp4 route, not the merge/convert/quantize one this sizes.
     _gguf_prewarm_ok = True
@@ -7303,7 +7321,9 @@ def _tp_collective_save(method):
                     adapter = isinstance(self, PeftModel) and not torch.is_inference_mode_enabled()
                     select = "adapters" if adapter else "all"
                     return tp_collective(self, method, lambda: fn(self, *args, **kwargs), select)
-            elif getattr(self, "__dict__", {}).get("_unsloth_tp_world_save"):
+            elif getattr(self, "__dict__", {}).get(
+                "_unsloth_tp_world_save"
+            ) or _plain_data_parallel_push(self, method, fn, args, kwargs):
                 from .models.tp_replica import tp_world_push
                 return tp_world_push(method, lambda: fn(self, *args, **kwargs))
             return fn(self, *args, **kwargs)
@@ -7311,6 +7331,34 @@ def _tp_collective_save(method):
         return wrapper
 
     return decorate
+
+
+def _fsdp2_world():
+    import torch.distributed as dist
+    return dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+
+
+def _plain_data_parallel_push(model, method, fn, args, kwargs):
+    """Plain DDP Hub upload: identical weights on every rank, so rank 0 alone uploads (FSDP saves gather)."""
+    import torch.distributed as dist
+
+    if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+        return False
+    if not isinstance(model, torch.nn.Module):
+        return False
+    from .models.fsdp2_save import fsdp2_units
+
+    if fsdp2_units(model):
+        return False
+    try:  # FSDP1 state dict hooks all-gather on every rank
+        from torch.distributed.fsdp import FullyShardedDataParallel
+        if any(isinstance(m, FullyShardedDataParallel) for m in model.modules()):
+            return False
+    except Exception:
+        pass
+    return method == "push_to_hub" or bool(
+        _fsdp2_save_arguments(fn, model, args, kwargs).get("push_to_hub")
+    )
 
 
 def _fsdp2_rank():
@@ -9185,8 +9233,8 @@ def unsloth_tokenizer_save_pretrained(
     push_to_hub = False,
     **kwargs,
 ):
-    if self.__dict__.get("_unsloth_tp_world_save"):
-        from .models.tp_replica import tp_world_save
+    if self.__dict__.get("_unsloth_tp_world_save") or _fsdp2_world() > 1:
+        from .models.tp_replica import tp_world_push, tp_world_save
 
         push_kwargs = dict(kwargs)
         repo_id = push_kwargs.pop("repo_id", save_directory)
@@ -9198,7 +9246,7 @@ def unsloth_tokenizer_save_pretrained(
             save_directory,
         )
         if push_to_hub:
-            self.push_to_hub(repo_id, **push_kwargs)
+            tp_world_push("tokenizer.push_to_hub", lambda: self.push_to_hub(repo_id, **push_kwargs))
         return result
     return _unsloth_tokenizer_save_pretrained(
         self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
@@ -9258,6 +9306,12 @@ def _unsloth_tokenizer_save_pretrained(
 def patch_saving_functions(model, vision = False):
     import inspect
     from typing import Callable, Optional, Union, List
+
+    try:  # adapter saves of a model with frozen lookup tables write frozen_tables.json next to the adapter
+        from .models.frozen_table_provenance import install as _install_table_provenance
+        _install_table_provenance()
+    except Exception:
+        pass
 
     if model.push_to_hub.__name__ == "unsloth_push_to_hub":
         original_push_to_hub = model.original_push_to_hub

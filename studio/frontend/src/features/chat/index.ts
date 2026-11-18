@@ -11,6 +11,7 @@ export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
   browseFolders,
   ChatThreadDeletedError,
+  createBrowseFolder,
   deleteChatAttachment,
   deleteFineTunedModel,
   fetchChatAttachmentBlob,
@@ -181,11 +182,27 @@ export {
   rewindTouchesConversation,
   rewindTouchesFiles,
 } from "./utils/rewind";
+export { isSkillsCommand } from "./utils/skills-command";
 export {
   isCompactCommand,
   requestThreadCompaction,
   useCompactRequestStore,
 } from "./stores/compact-request-store";
+export { countContext } from "./api/context-breakdown";
+export {
+  contextReportBranch,
+  shownContextReport,
+  useContextReportStore,
+} from "./stores/context-report-store";
+export {
+  type ContextView,
+  deriveContextView,
+  isContextCommand,
+} from "./utils/context-command";
+export {
+  formatTokenCountFull,
+  getSeverityColor,
+} from "./lib/context-usage-bar-state";
 export {
   folderRingKey,
   planKey,
