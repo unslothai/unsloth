@@ -15703,7 +15703,7 @@ def build_conversation_recall(
         sources = sources,
     )
     built["sources"] = len(sources)
-    logger.info("Conversation recall: %d earlier passage(s) for %r", len(sources), query[:80])
+    logger.info("Conversation recall: %d earlier passage(s)", len(sources))
     return built
 
 
@@ -15939,7 +15939,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
         text = text,
         sources = sources,
     )
-    logger.info("RAG auto-inject: %d passage(s) for %r", len(sources), query[:80])
+    logger.info("RAG auto-inject: %d passage(s)", len(sources))
     return built
 
 
