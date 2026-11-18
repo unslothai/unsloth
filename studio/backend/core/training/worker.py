@@ -3655,7 +3655,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         elif is_vlm:
             from utils.datasets.format_conversion import _HubClips
 
-            # Row-level clip columns resolve against the same Hub repo as message parts.
             clip_hub = _HubClips(hf_dataset, config.get("dataset_revision"))
             _send("status", status_message = "Formatting VLM dataset...")
             vlm_info = format_and_template_dataset(

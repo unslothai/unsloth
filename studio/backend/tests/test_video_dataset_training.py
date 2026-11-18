@@ -437,7 +437,6 @@ def test_hub_relative_clips_resolve_from_the_dataset_repo(monkeypatch, tmp_path)
     own_message_videos(messages, dataset_name = "someone/clips", dataset_revision = "abc123")
     assert revisions and {revision for _, revision in revisions} == {"abc123"}
 
-    # A row-level clip column behind a bare placeholder resolves from the repo as well.
     adapt = _mlx_adapter()
     bare = {
         "messages": [{"role": "user", "content": [{"type": "video"}]}],
