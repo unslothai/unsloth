@@ -4,6 +4,9 @@
 """A refs/main that is not valid UTF-8 reads like a missing ref in every cache reader (#17672 fixed the scan):
 UnicodeDecodeError is a ValueError, so `except OSError` let it out past each reader's fallback."""
 
+from __future__ import annotations
+
+
 from pathlib import Path
 
 import pytest
