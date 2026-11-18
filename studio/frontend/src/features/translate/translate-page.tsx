@@ -1444,6 +1444,10 @@ export function TranslatePage() {
       const onDisk = await onDiskNow(dedicated).finally(() => {
         checkingDownload.current = false;
       });
+      // Another model picked meanwhile: this answer is not about it, so start nothing.
+      if (useTranslateStore.getState().prefs.modelId !== dedicated.id) {
+        return;
+      }
       if (onDisk === false) {
         setConfirmDownload(dedicated);
         return;
