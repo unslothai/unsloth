@@ -196,7 +196,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         sb, sc, st, sh, sw, cb, cc, ct, ch, cw,
         NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,  # NORM apply rms norm, ACT apply silu, HAS_BIAS bias present, HAS_IN_BIAS input bias present
         REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,  # REPLICATE replicate temporal padding, MEAN_SQ mean-square rms form, BLOCK_P pixels per program, BLOCK_C channels per program
-        SPAD: tl.constexpr, TAIL: tl.constexpr  # SPAD spatial halo 0 none / 1 replicate / 2 zeros / 3 reflect, TAIL also store the last n_tail frames' interior compactly
+        SPAD: tl.constexpr  # SPAD spatial halo 0 none / 1 replicate / 2 zeros / 3 reflect; n_tail > 0 also stores the last n_tail frames' interior compactly
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -233,7 +233,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         out_off = ((b.to(tl.int64) * To + t_o) * (Ho * Wo) + p.to(tl.int64))[:, None] * C + c[
             None, :
         ]
-        if TAIL:
+        # the causal cache tail is a runtime count (0 = none, every store masked off): one compiled kernel for both
+        if not REPLICATE:
             t_tail = t_o - (To - n_tail)
             tail_off = ((b.to(tl.int64) * n_tail + t_tail) * (H * W) + (hh * W + ww).to(tl.int64))[
                 :, None
@@ -253,20 +254,18 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 )
                 v = tl.load(cache_ptr + coff, mask = mi, other = 0.0)
                 tl.store(out_ptr + out_off, v.to(out_ptr.dtype.element_ty), mask = m)
-                if TAIL:
-                    tl.store(tail_ptr + tail_off, v.to(tail_ptr.dtype.element_ty), mask = tail_m)
+                tl.store(tail_ptr + tail_off, v.to(tail_ptr.dtype.element_ty), mask = tail_m)
             else:
                 tl.store(
                     out_ptr + out_off,
                     tl.zeros([BLOCK_P, BLOCK_C], out_ptr.dtype.element_ty),
                     mask = m,
                 )
-                if TAIL:
-                    tl.store(
-                        tail_ptr + tail_off,
-                        tl.zeros([BLOCK_P, BLOCK_C], tail_ptr.dtype.element_ty),
-                        mask = tail_m,
-                    )
+                tl.store(
+                    tail_ptr + tail_off,
+                    tl.zeros([BLOCK_P, BLOCK_C], tail_ptr.dtype.element_ty),
+                    mask = tail_m,
+                )
         else:
             t = tl.minimum(tl.maximum(t_o - front, 0), T - 1)
             off = (
@@ -297,7 +296,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             if SPAD == 2:
                 v = tl.where(mi, v, 0.0)
             tl.store(out_ptr + out_off, v.to(out_ptr.dtype.element_ty), mask = m)
-            if TAIL:
+            if not REPLICATE:
                 tl.store(tail_ptr + tail_off, v.to(tail_ptr.dtype.element_ty), mask = tail_m)
 
     @triton.jit(do_not_specialize = _SHAPE_ARGS["_bias_residual"])
@@ -813,11 +812,11 @@ def rms_norm_act(
     with _on_card(x):
         k.rms_act[grid](
             x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t, tail_buf,
-            c, t, h, w, ho, wo, ph, pw, to, front, n_cache, max(1, n_tail), scale, eps,
+            c, t, h, w, ho, wo, ph, pw, to, front, n_cache, n_tail, scale, eps,
             *x.stride(), *cache_t.stride(),
             NORM = norm is not None, ACT = bool(act), HAS_BIAS = has_bias, HAS_IN_BIAS = in_bias is not None,
             REPLICATE = temporal_rep, MEAN_SQ = mean_sq, BLOCK_P = block_p, BLOCK_C = block_c,
-            SPAD = spad, TAIL = bool(n_tail), num_warps = 4 if block_c * block_p <= 4096 else 8,
+            SPAD = spad, num_warps = 4 if block_c * block_p <= 4096 else 8,
         )  # fmt: skip
     out = out.permute(0, 4, 1, 2, 3)
     if tail:
@@ -854,6 +853,8 @@ PREPAD_ENV = "UNSLOTH_VAE_FUSED_PREPAD"
 T1_CONV2D_ENV = "UNSLOTH_VAE_FUSED_T1_CONV2D"
 LTX2_REFLECT_ENV = "UNSLOTH_VAE_FUSED_LTX2_REFLECT"
 BIAS_FOLD_ENV = "UNSLOTH_VAE_FUSED_BIAS_FOLD"
+# PREPAD (the conv's zero halo written by the norm pass, conv unpadded) is opt-in: same decode time on A100 / RTX PRO
+# 6000, so cuDNN's own zero padding stays.
 _LEVER_DEFAULTS = {
     CAUSAL_TAIL_ENV: True,
     PREPAD_ENV: False,
@@ -865,29 +866,11 @@ _LEVER_DEFAULTS = {
 ENGAGED: dict = {}
 
 
-# cuDNN's in-kernel zero padding vs a pre-padded input, Wan2.2 decode convs (same kernel, same call count): the
-# pre-padded input is faster on sm80 (A100); slower on sm120 (RTX PRO 6000). Default per capability where measured.
-_PREPAD_CAPS = frozenset({(8, 0)})
-
-
-@lru_cache(maxsize = 16)
-def _capability(index: int) -> tuple:
-    try:
-        return tuple(_torch().cuda.get_device_capability(index))
-    except Exception:  # noqa: BLE001
-        return (0, 0)
-
-
-def lever_on(env: str, device: Any = None) -> bool:
+def lever_on(env: str) -> bool:
     raw = os.environ.get(env, "").strip().lower()
-    if raw:
-        return raw not in _FALSE
-    if env == PREPAD_ENV:
-        if device is None or getattr(device, "type", None) != "cuda":
-            return False
-        index = device.index if device.index is not None else _torch().cuda.current_device()
-        return _capability(index) in _PREPAD_CAPS
-    return _LEVER_DEFAULTS.get(env, False)
+    if not raw:
+        return _LEVER_DEFAULTS.get(env, False)
+    return raw not in _FALSE
 
 
 def _count(name: str) -> None:
@@ -967,7 +950,7 @@ def causal_conv(
     kt = conv.kernel_size[0]
     spatial = (0, ph, pw)
     t = x.shape[2]
-    prepad = bool(ph or pw) and lever_on(PREPAD_ENV, x.device)
+    prepad = bool(ph or pw) and lever_on(PREPAD_ENV)
     zero_pad = (ph, pw) if prepad else None
     conv_pad = (0, 0, 0) if prepad else spatial
     if front == 0:
