@@ -290,6 +290,7 @@ def fresh_install_cache(monkeypatch, tmp_path):
     from integrations import installed
 
     installed._cache.clear()
+    monkeypatch.setattr(installed, "_connected", set())
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser("~") reads this on Windows
     monkeypatch.setattr(installed.shutil, "which", lambda name: None)
@@ -312,6 +313,56 @@ def test_install_hint_finds_editors_and_fails_open(fresh_install_cache, tmp_path
     monkeypatch.setattr(installed, "_detect", lambda *a: (_ for _ in ()).throw(OSError("denied")))
     installed._cache.clear()
     assert installed.is_installed("godot") is None
+
+
+def test_install_hint_finds_unpacked_linux_downloads(fresh_install_cache, tmp_path):
+    """The official Blender tarball and Godot zip are unpacked anywhere and never put on PATH."""
+    installed = fresh_install_cache
+    assert installed.is_installed("blender") is False and installed.is_installed("godot") is False
+    (tmp_path / "blender-5.3.0-linux-x64").mkdir()
+    (tmp_path / "blender-5.3.0-linux-x64" / "blender").write_text("", encoding = "utf-8")
+    (tmp_path / "Godot_v4.7.2-stable_linux.x86_64").write_text("", encoding = "utf-8")
+    installed._cache.clear()
+    assert installed.is_installed("blender") is True and installed.is_installed("godot") is True
+
+
+def test_a_connected_editor_counts_as_installed(fresh_install_cache):
+    installed = fresh_install_cache
+    assert installed.is_installed("godot") is False  # cached False
+    installed.note_connected("godot")
+    assert installed.is_installed("godot") is True
+    assert installed.is_installed("unity") is False
+
+
+@pytest.mark.asyncio
+async def test_editor_that_refuses_the_connection_says_so(fresh_install_cache, monkeypatch):
+    """Godot MCP Native with its token turned on answers 401; that is not 'Godot is not answering'."""
+    from types import SimpleNamespace
+
+    class Refused(Exception):
+        response = SimpleNamespace(status_code = 401)
+
+    async def refuse(*args, **kwargs):
+        try:
+            raise Refused("401 Unauthorized")
+        except Refused as exc:
+            raise RuntimeError("Client failed to connect") from exc
+
+    monkeypatch.setattr(editors, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(editors, "list_tools_async", refuse)
+    result = await editors.probe("godot", EditorSettings(port = 9080))
+    assert (
+        not result.ok
+        and "refused the connection (HTTP 401)" in result.error
+        and "token" in result.error
+    )
+
+    async def answer(*args, **kwargs):
+        return [{"name": "get_scene_tree"}]
+
+    monkeypatch.setattr(editors, "list_tools_async", answer)
+    assert (await editors.probe("godot", EditorSettings(port = 9080))).ok
+    assert fresh_install_cache.is_installed("godot") is True
 
 
 def test_catalog_reports_install_state(fresh_install_cache, monkeypatch):

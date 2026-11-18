@@ -290,9 +290,18 @@ async def test_blender(
         )
     settings = BlenderSettings(port = payload.port, blender_path = payload.blender_path)
     on_tools = None
-    if row and blender.settings_for(row) == settings:
+    saved = bool(row) and blender.settings_for(row) == settings
+    if saved:
         on_tools = lambda tools: cache_tools(row["id"], tools)
-    return await blender.probe(settings, on_tools = on_tools)
+    result = await blender.probe(settings, on_tools = on_tools)
+    if saved and result.blender_path:
+        # Keep the running Blender's executable so its command-line tools work without a manual path.
+        mcp_servers_db.update_server(
+            row["id"],
+            {"builtin_config_json": json.dumps({**config, "blender_path": result.blender_path})},
+        )
+        await asyncio.to_thread(close_mcp_sessions, row["url"], parse_server_headers(row))
+    return result
 
 
 @router.put("/builtins/blender", response_model = McpBuiltinResponse)

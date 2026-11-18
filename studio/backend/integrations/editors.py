@@ -13,7 +13,7 @@ from typing import Optional
 
 import httpx
 
-from integrations.installed import is_installed
+from integrations.installed import is_installed, note_connected
 from core.inference.mcp_client import (
     join_stdio_command,
     list_tools_async,
@@ -160,6 +160,18 @@ async def _unity_connected(port: int) -> bool:
         return bool(response.json().get("instances"))
 
 
+def _http_status(exc: BaseException) -> Optional[int]:
+    """The HTTP status behind an MCP connect failure, if there was one (httpx is vendored: match by attribute)."""
+    seen = 0
+    while exc is not None and seen < 10:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if isinstance(status, int):
+            return status
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return None
+
+
 async def probe(
     builtin_id: str,
     settings: EditorSettings,
@@ -180,9 +192,17 @@ async def probe(
         )
     try:
         tools = await list_tools_async(url, headers = headers or None, timeout = 15)
-    except Exception:
+    except Exception as exc:
+        status = _http_status(exc)
+        if status in (401, 403):
+            return McpServerProbeResult(
+                ok = False,
+                error = f"{editor.display_name} answered but refused the connection (HTTP {status}): its MCP server "
+                "requires a token. Turn off token authentication in the editor's MCP settings, then retry.",
+            )
         where = f" (port {settings.port})" if settings.port else ""
         return McpServerProbeResult(ok = False, error = f"{editor.not_ready}{where}")
+    note_connected(builtin_id)
     result = McpServerProbeResult(ok = True, tool_count = len(tools))
     if check_editor:
         result.editor_ready = True

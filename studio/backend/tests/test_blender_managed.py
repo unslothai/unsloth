@@ -161,3 +161,33 @@ def test_long_blender_names_dispatch_with_approval(monkeypatch):
     call.reset_mock()
     assert "disabled" in tools.execute_tool(specs[0]["function"]["name"], {})
     call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_connected_blender_off_path_has_its_executable_kept(monkeypatch, tmp_path):
+    """The official Linux tarball is never on PATH, so BLENDER_PATH fell back to "blender" and the command-line tools
+    (11 of 23) failed with "Blender executable not found" while the test said ready. The running Blender knows where
+    it lives; keep that."""
+    monkeypatch.setattr(service, "ensure_runtime", lambda: None)
+    monkeypatch.setattr(
+        service, "list_tools_async", AsyncMock(return_value = [{"name": "execute_blender_code"}])
+    )
+    executable = str(tmp_path / "blender-5.3.0-linux-x64" / "blender")
+    monkeypatch.setattr(service, "_bridge_version", AsyncMock(return_value = executable))
+    monkeypatch.setattr(service.shutil, "which", lambda name: None)
+    from integrations import installed
+
+    monkeypatch.setattr(installed, "_connected", set())
+    await routes.setup_blender(BlenderSetup(is_enabled = False, consent = True))
+    result = await routes.test_blender(BlenderTest())
+    assert result.blender_ready and result.blender_path == executable
+    row = db.list_servers()[0]
+    assert service.settings_for(row).blender_path == executable
+    assert json.loads(service.resolve_server(row)["headers_json"])["BLENDER_PATH"] == executable
+    assert installed.is_installed("blender") is True
+    again = await routes.test_blender(BlenderTest(blender_path = executable))
+    assert again.blender_path is None  # configured now: nothing to report
+    monkeypatch.setattr(service.shutil, "which", lambda name: "/usr/bin/blender")
+    assert (
+        await service.probe(service.BlenderSettings())
+    ).blender_path is None  # on PATH: "blender" works

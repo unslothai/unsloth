@@ -14,6 +14,12 @@ from typing import Optional
 
 _TTL_S = 60.0
 _cache: dict[tuple[str, str], tuple[float, bool]] = {}
+# Editors whose MCP server answered in this backend's lifetime: running proves installed, wherever it lives.
+_connected: set[str] = set()
+
+
+def note_connected(builtin_id: str) -> None:
+    _connected.add(builtin_id)
 
 
 def _env_path(name: str, default: str = "") -> Path:
@@ -83,6 +89,9 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
                 "/var/lib/flatpak/app/org.blender.Blender",
                 "~/.local/share/flatpak/app/org.blender.Blender",
                 "~/.steam/steam/steamapps/common/Blender",
+                # Official Linux tarballs, unpacked by hand.
+                "~/blender-*/blender",
+                "/opt/blender*/blender",
             ]
         )
     if builtin_id == "godot":
@@ -95,6 +104,9 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
                 "~/.local/share/flatpak/app/org.godotengine.Godot",
                 "/snap/bin/godot*",
                 "~/.steam/steam/steamapps/common/Godot Engine",
+                # Official Linux zips, unpacked by hand.
+                "~/Godot_v4*",
+                "/opt/godot*/Godot_v4*",
             ]
         )
     if builtin_id == "unity":
@@ -128,6 +140,8 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
 
 def is_installed(builtin_id: str, configured_path: str = "") -> Optional[bool]:
     """True / False from a cheap file-system look; None when the look itself failed, so no hint is shown."""
+    if builtin_id in _connected:
+        return True
     key = (builtin_id, configured_path)
     cached = _cache.get(key)
     if cached and time.monotonic() - cached[0] < _TTL_S:

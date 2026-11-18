@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import shutil
 import sys
 
 from core.inference.mcp_client import (
@@ -13,7 +14,7 @@ from core.inference.mcp_client import (
 )
 from integrations.blender import MIN_BLENDER_VERSION, MIN_PYTHON_VERSION, launch_command
 from integrations.blender.runtime import ensure_runtime
-from integrations.installed import is_installed
+from integrations.installed import is_installed, note_connected
 from models.mcp_servers import BlenderSettings, McpBuiltinResponse, McpServerProbeResult
 
 
@@ -68,7 +69,7 @@ async def _bridge_version(port):
     try:
         request = {
             "type": "execute",
-            "code": "import bpy\nresult = {'version': list(bpy.app.version)}",
+            "code": "import bpy\nresult = {'version': list(bpy.app.version), 'binary_path': bpy.app.binary_path}",
             "strict_json": True,
         }
         writer.write((json.dumps(request) + "\0").encode())
@@ -84,6 +85,8 @@ async def _bridge_version(port):
             raise ValueError("Invalid Blender bridge version response")
         if tuple(version) < tuple(map(int, MIN_BLENDER_VERSION.split("."))):
             raise ValueError(f"Blender {MIN_BLENDER_VERSION} or newer is required")
+        binary = response.get("result", {}).get("binary_path")
+        return binary if isinstance(binary, str) and binary else None
     finally:
         writer.close()
         await writer.wait_closed()
@@ -119,8 +122,17 @@ async def probe(
     result = McpServerProbeResult(ok = True, tool_count = len(tools))
     if check_bridge:
         try:
-            await asyncio.wait_for(_bridge_version(settings.port), timeout = 5)
+            binary = await asyncio.wait_for(_bridge_version(settings.port), timeout = 5)
             result.blender_ready = True
+            note_connected("blender")
+            # The CLI tools start Blender themselves; "blender" on PATH is missing for an unpacked Linux tarball, so
+            # report the running Blender's own executable for the settings to keep.
+            if (
+                not settings.blender_path
+                and not shutil.which("blender")
+                and isinstance(binary, str)
+            ):
+                result.blender_path = binary
         except Exception:
             result.blender_ready = False
             result.blender_error = f"Blender is not connected on port {settings.port}. Enable its MCP add-on, then retry."
