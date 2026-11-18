@@ -66,6 +66,15 @@ export interface NpuModel {
   memory_needed_gb?: number | null;
   /** false when the model is larger than the NPU memory window; null when unknown. */
   fits_memory?: boolean | null;
+  /** A Q4NX folder converted on the Export page; absent from servers that predate them. */
+  local?: NpuLocalModel | null;
+}
+
+export interface NpuLocalModel {
+  folder: string;
+  /** FastFlowLM catalog tag whose NPU kernels run it. */
+  base: string | null;
+  problem: string | null;
 }
 
 export function npuRowsFor(
@@ -84,7 +93,9 @@ export function npuRowsFor(
       (model) =>
         (!onDevice || model.downloaded) &&
         (!needle ||
-          npuSearchText(model).toLowerCase().includes(needle)),
+          `${npuSearchText(model)} ${model.local?.folder ?? ""}`
+            .toLowerCase()
+            .includes(needle)),
     )
     .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
 }
@@ -162,6 +173,32 @@ export function npuResumeLabel(model: NpuModel): string | null {
   return model.resume_percent == null
     ? null
     : `${model.resume_percent}% downloaded`;
+}
+
+export function npuRowDetails(model: NpuModel): string[] {
+  return [
+    "NPU",
+    model.local ? "Converted" : null,
+    npuSizeLabel(model.size_gb),
+    npuMemoryTag(model),
+    npuResumeLabel(model),
+  ].filter((part): part is string => Boolean(part));
+}
+
+export function npuRowTooltip(model: NpuModel): string | null {
+  if (!model.local) return null;
+  const { folder, problem } = model.local;
+  // A folder saved outside the exports root comes as its full path.
+  const where = /^(\/|[A-Za-z]:\/)/.test(folder) ? folder : `exports/${folder}`;
+  return problem
+    ? `Can't load ${folder}: ${problem}`
+    : `Converted on the Export page, from ${where}`;
+}
+
+export function npuDeleteDescription(model: NpuModel): string {
+  return model.local
+    ? "This removes the model from the NPU list. Your exported folder stays on disk."
+    : "This removes the model's NPU files from this device.";
 }
 
 /** Rehashing kept files before a resume, or Lemonade registering the files after the download. */

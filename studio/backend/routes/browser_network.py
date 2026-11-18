@@ -39,7 +39,7 @@ BROWSER_NETWORK_JS = r"""
         let lastRequest = 0;
         // Newest store version seen, so an answer asked for earlier can't roll the routing back.
         let routedVersion = null;
-        const route = (reply, writes) => {
+        const routeBySiteCookies = (reply, writes) => {
           if (typeof reply.siteCookies !== "boolean") return;
           const version = Array.isArray(reply.cookiesVersion) ? reply.cookiesVersion : null;
           const stale = version !== null && routedVersion !== null && version[0] === routedVersion[0] && version[1] < routedVersion[1];
@@ -63,7 +63,7 @@ BROWSER_NETWORK_JS = r"""
           signal.addEventListener("abort", onAbort);
           replies.set(id, (reply) => {
             settle();
-            route(reply, writes);
+            routeBySiteCookies(reply, writes);
             if (reply.ok === true) resolve(reply);
             else reject(new TypeError("Failed to fetch"));
           });

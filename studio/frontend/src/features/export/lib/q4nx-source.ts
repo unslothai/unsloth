@@ -8,6 +8,9 @@ const DIRECT_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
 // Only the q4k converter unpacks Q4_K, and only these architectures use it
 // (q4k_architectures in q4nx_converter_pins.json); the q4nx converter rounds Q4_K_M again.
 const Q4K_ARCHITECTURES = ["qwen35", "qwen35moe"];
+// Q4_0 and Q4_1 blocks are packed as is, so only the layout the converter config reads works: Q4_0
+// here, Q4_1 on every other q4nx architecture, Q4_K on the q4k ones. The backend refuses the rest.
+const Q4_0_ARCHITECTURES = ["qwen2", "lfm2"];
 
 // modelInfo fields for a typed repo. "gguf" is outside the SDK's expandable-key type but is forwarded to expand= as is.
 export const Q4NX_INFO_FIELDS = ["tags", "gguf"] as unknown as "tags"[];
@@ -31,26 +34,45 @@ function directRank(quant: string): number {
   return i === -1 ? DIRECT_QUANTS.length : i;
 }
 
-/** "by-architecture": Q4_K_M of a file whose architecture is not known yet. */
-export type Q4nxPacking = "direct" | "by-architecture" | "requantized";
+/** "by-architecture": Q4_K_M of a file whose architecture is not known yet. "mismatch": blocks the model reads in another layout. */
+export type Q4nxPacking = "direct" | "by-architecture" | "requantized" | "mismatch";
+
+/** The quant that packs directly for an architecture, or null when it is not known. */
+export function q4nxFitQuant(architecture?: string | null, name?: string | null): string | null {
+  const arch = architecture?.trim().toLowerCase();
+  if (!arch) return null;
+  // The q4k converter resolves a Qwen3.5 named Omni to qwen3.5_omni.json, which reads Q4_1.
+  if (arch === "qwen35" && /omni/i.test(name ?? "")) return "q4_1";
+  if (Q4K_ARCHITECTURES.includes(arch)) return "q4_k_m";
+  return Q4_0_ARCHITECTURES.includes(arch) ? "q4_0" : "q4_1";
+}
 
 export function q4nxPacking(
   quant: string,
   architecture?: string | null,
+  name?: string | null,
 ): Q4nxPacking {
+  // Both converters pack Q8_0 as is, and no model reads 8-bit in its 4-bit slots.
+  if (q4nxQuantLabel(quant).toLowerCase().endsWith("q8_0")) return "mismatch";
   const rank = directRank(quant);
   if (rank === DIRECT_QUANTS.length) return "requantized";
-  if (DIRECT_QUANTS[rank] !== "q4_k_m") return "direct";
-  const arch = architecture?.trim().toLowerCase();
-  if (!arch) return "by-architecture";
-  return Q4K_ARCHITECTURES.includes(arch) ? "direct" : "requantized";
+  const fit = q4nxFitQuant(architecture, name);
+  if (DIRECT_QUANTS[rank] !== "q4_k_m") {
+    return !fit || fit === DIRECT_QUANTS[rank] ? "direct" : "mismatch";
+  }
+  if (!fit) return "by-architecture";
+  if (fit === "q4_k_m") return "direct";
+  // The q4k converter packs Q4_K as is too, so only the q4nx one re-quantizes it.
+  return Q4K_ARCHITECTURES.includes(architecture?.trim().toLowerCase() ?? "")
+    ? "mismatch"
+    : "requantized";
 }
 
 export function packsDirectly(quant: string, architecture?: string | null): boolean {
   return q4nxPacking(quant, architecture) === "direct";
 }
 
-const PACKING_ORDER: Q4nxPacking[] = ["direct", "by-architecture", "requantized"];
+const PACKING_ORDER: Q4nxPacking[] = ["direct", "by-architecture", "requantized", "mismatch"];
 
 // A split GGUF is listed as one variant named by its first shard; the converter reads one file.
 const SPLIT_SHARD = /-\d{3,}-of-\d{3,}\.gguf$/i;
@@ -80,9 +102,10 @@ export function q4nxConvertibleFiles<T extends { filename: string; cleanable?: b
 export function sortQ4nxVariants<T extends Q4nxVariant>(
   variants: T[],
   architecture?: string | null,
+  name?: string | null,
 ): T[] {
   const rank = (v: T) =>
-    PACKING_ORDER.indexOf(q4nxPacking(v.quant, architecture)) * 10 + directRank(v.quant);
+    PACKING_ORDER.indexOf(q4nxPacking(v.quant, architecture, name)) * 10 + directRank(v.quant);
   return variants
     .map((variant, index) => ({ variant, index }))
     .sort((a, b) => rank(a.variant) - rank(b.variant) || a.index - b.index)
@@ -269,7 +292,7 @@ export function q4nxQuantName(quant: string): string {
 
 export const Q4NX_GUIDE_STEPS = [
   "Pick a GGUF model from Hugging Face or from this device",
-  "Choose its GGUF file: Q4_0 and Q4_1 pack directly, Q4_K_M for Qwen3.5",
+  "Choose its GGUF file: Q4_K_M always works, Q4_0 or Q4_1 only where it matches the model",
   "Check the original model and save directory in the convert settings",
   "Click Convert to write the Q4NX files",
 ] as const;
@@ -278,6 +301,7 @@ export const Q4NX_PACKING_TEXT: Record<Q4nxPacking, string> = {
   direct: "packs directly",
   "by-architecture": "packs directly for Qwen3.5 only",
   requantized: "re-quantized to 4-bit",
+  mismatch: "not readable by this model",
 };
 
 export interface Q4nxSummaryInput {
@@ -322,7 +346,7 @@ export function q4nxSummaryRows(
       label: "Convertible",
       value: !archFit
         ? dash
-        : archFit.status === "unsupported"
+        : archFit.status === "unsupported" || input.packing === "mismatch"
           ? "No"
           : archFit.status === "unknown"
             ? "Checked during conversion"

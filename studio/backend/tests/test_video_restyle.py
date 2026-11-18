@@ -496,6 +496,7 @@ def test_preview_reports_frames_used_and_edges():
 
 
 def test_availability_names_what_is_missing(weights, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_COSMOS3_TRANSFER_DIR", str(tmp_path / "setup"))
     monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: None)
     out = vr.availability()
     assert not out["available"] and "stable-diffusion.cpp" in out["reason"]
@@ -505,7 +506,8 @@ def test_availability_names_what_is_missing(weights, monkeypatch, tmp_path):
     monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: str(plain))
     assert not vr.availability()["available"]
     (plain.parent / "libstable-diffusion.so").write_bytes(b"..." + vr._COSMOS3_MARKER + b" %d/%d")
-    assert vr.availability() == {"available": True, "reason": None}
+    ready = vr.availability()
+    assert ready["available"] is True and ready["reason"] is None and ready["missing"] == []
     assert not vr.availability({})["available"]
 
 

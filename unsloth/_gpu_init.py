@@ -338,6 +338,7 @@ del _reraise_device_type_error_with_gpu_hint, _nvidia_smi_gpu_name
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
     fix_transformers5_legacy_config_types,
+    fix_transformers_config_commit_hash,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_bnb_prequantized_save,
@@ -378,6 +379,7 @@ from .import_fixes import (
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
+    fix_flex_attention_eager_saved_tensor_hooks,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
@@ -407,6 +409,8 @@ from .import_fixes import (
 )
 
 fix_transformers5_legacy_config_types()
+# transformers >= 5.18 no longer stamps config._commit_hash; Unsloth pins loads and probes to it.
+fix_transformers_config_commit_hash()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 # Probe-gated: no-op unless SDPA gets a query row that attends to nothing; runs before model imports so plain generate is covered.
@@ -477,6 +481,8 @@ fix_triton_compiled_kernel_missing_attrs()
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
 fix_inductor_reduction_readback_race()
+# Eager flex_attention inside a non-reentrant checkpoint (DDP) restarted the layer's recompute mid forward.
+fix_flex_attention_eager_saved_tensor_hooks()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
@@ -513,6 +519,7 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers5_legacy_config_types
+del fix_transformers_config_commit_hash
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
 del fix_transformers_tokenizer_config_vocab_file_override

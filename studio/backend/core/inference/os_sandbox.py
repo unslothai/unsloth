@@ -206,6 +206,8 @@ class ToolLaunchPlan:
     # Set by the trusted tool owner, never inferred from model args.
     execution_kind: Literal["python", "terminal"] | None = None
     cancel_event: Any = None
+    # Network only through a per-call proxy that refuses metadata and local addresses; unhonoured if unsupported.
+    egress_proxy: bool = False
 
 
 @dataclass
@@ -226,6 +228,8 @@ class PreparedSandboxLaunch:
     cleanup_diagnostics: list[str] = field(default_factory = list)
     spawn_callback: Callable | None = None
     launch_limitations: tuple[str, ...] = ()
+    # The proxy URL when the launch honoured ToolLaunchPlan.egress_proxy.
+    egress_proxy: str | None = None
 
     def cleanup(self) -> None:
         while self.cleanup_callbacks:

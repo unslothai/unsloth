@@ -165,12 +165,12 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
   },
 };
 
-const CHIP_BASE =
+export const CHIP_BASE =
   "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
-const CHIP_DEFAULT =
+export const CHIP_DEFAULT =
   "border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] bg-muted text-foreground/85 dark:border-border/60 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:text-foreground/85";
 
-function QuantBadge({
+export function QuantBadge({
   quant,
   fit,
   lookupTableBytes = 0,

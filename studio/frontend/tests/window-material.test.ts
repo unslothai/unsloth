@@ -93,6 +93,30 @@ test("the header fade covers both thread edges, unmasking only a classic scrollb
 	);
 });
 
+test("pinned Run settings rows frost a glass menu instead of painting its fill twice", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(
+		css,
+		/html\[data-glass\]\[data-glass-menus\] \.composer-run-settings :is\(\[data-config-header-row\], \[data-pinned-footer\]\) \{\n  background: none;\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;\n\}/,
+	);
+	assert.match(
+		css,
+		/html\[data-glass\]\[data-glass-menus\] \.composer-run-settings :is\(\[data-config-header-row\], \[data-pinned-footer\]\)::before \{[^}]*background: none;[^}]*backdrop-filter: blur\(16px\);/,
+	);
+	assert.match(
+		css,
+		/\[data-glass-motion\] \[data-glass-moving\] \.sticky,\nhtml:is\(\[data-glass\],\[data-glass-clear\]\)\[data-glass-motion\] \[data-glass-moving\] \.composer-run-settings :is\(\[data-config-header-row\], \[data-pinned-footer\]\)::before,/,
+	);
+	assert.match(
+		css,
+		/\[data-glass-motion\] \[data-glass-moving\] \.composer-run-settings :is\(\[data-config-header-row\], \[data-pinned-footer\]\)::before \{\n  background: color-mix\(in srgb, var\(--glass-page-popover\) 96%, transparent\);/,
+	);
+	assert.match(
+		css,
+		/\[data-glass-clear\]\[data-glass-menus\] [^{]*:is\(\.sticky, \[data-sticky-bar\], \.composer-run-settings \[data-config-header-row\]\) \{\n  --background: var\(--glass-page-bg\);/,
+	);
+});
+
 test("glass strength repairs malformed persisted data", () => {
 	assert.equal(sanitizeStrength(undefined), 50);
 	assert.equal(sanitizeStrength(Number.NaN), 50);

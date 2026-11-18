@@ -193,6 +193,10 @@ BENIGN_TIMING = {
     ("test_hf_download_fallback_and_kill.py", "_wait_for_transfer"),
     ("test_hf_download_reclaim_race.py", "test_gguf_reclaim_preserves_publication_and_active_peer"),
     ("test_hf_download_ref_concurrency.py", "test_peer_completion_survives_an_older_process"),
+    # A 5 s poll deadline for a request to reach the admission queue: descheduling only delays the poll.
+    ("test_anthropic_admission.py", "_until_queued"),
+    # A 5 s poll deadline for two image requests to join one batch: descheduling only delays the poll.
+    ("test_openai_images_load_swap.py", "test_a_batch_waiting_through_a_reload_carries_the_pin"),
 }
 
 
