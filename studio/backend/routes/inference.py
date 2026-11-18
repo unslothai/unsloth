@@ -10354,14 +10354,13 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
         resolve_override_for_load,
     )
 
-    # Blank alias fields mean the model's saved settings, not whatever another alias loaded.
     _key, saved = resolve_override_for_load(
         str(getattr(backend, "model_identifier", None) or intent.model_identifier),
         getattr(backend, "_openai_advertised_id", None),
         getattr(backend, "hf_variant", None),
     )
     saved = model_override_load_kwargs(saved, is_gguf = True)
-    # Fields neither saved nor set load the loader defaults, as a cold load would.
+    # Blank alias fields mean the saved setting, else the loader default, as a cold load would.
     wanted = {
         "max_seq_length": 0,
         "kv_cache_dtype": "f16",
@@ -12587,7 +12586,7 @@ async def _maybe_auto_switch_model(
                         if stashed_intent is not None and target_is_gguf:
                             replay = _replay_load_kwargs(stashed_intent, override_kwargs)
                             if alias_settings is not None:
-                                # Unset alias fields load the defaults _launched_with expects, not the last launch's.
+                                # Blank alias fields load the defaults, not the last launch's.
                                 for name in _ALIAS_DEFAULTED_FIELDS:
                                     replay.pop(name, None)
                             load_kwargs.update(replay)

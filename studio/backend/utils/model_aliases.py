@@ -204,8 +204,7 @@ def alias_model_objects(
 def _rewrite_alias_body(
     body: bytes, aliases: dict[str, dict[str, Any]]
 ) -> Optional[tuple[bytes, dict[str, Any]]]:
-    """The body with an aliased top-level ``model`` replaced by its target, and that alias, or None
-    if unchanged."""
+    """The body with an aliased ``model`` swapped for its target, plus that alias, or None."""
     # Cheap scan first so a large (image, audio) body is only parsed when it names an alias.
     if not any(
         value.decode("utf-8", "ignore").strip().lower() in aliases
