@@ -30788,7 +30788,10 @@ async def _proxy_to_external_provider(
                 )
             )
     _evicting_fit = managed is not None or _evict_only
-    _evicting_payload = payload
+    # Rolling also refuses a checkpoint this thread saved under another mode.
+    _evicting_payload = (
+        payload.model_copy(update = {"context_policy": "rolling"}) if _rolling_only else payload
+    )
     if _evict_only and _fit_active and not (payload.compaction_threshold and _rolling):
         # /compact or its epoch, auto-compact off or the error policy: nothing past it is evicted.
         _evicting_payload = payload.model_copy(

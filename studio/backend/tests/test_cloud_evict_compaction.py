@@ -413,6 +413,47 @@ def test_rolling_compact_starts_no_checkpoint(rag_home, rag_conn, stub_embedding
     assert _truncations(chunks) == []
 
 
+def test_rolling_ignores_a_checkpoint_saved_before_the_switch(
+    rag_home, rag_conn, stub_embeddings, _tool_loop_runs
+):
+    thread = "thread-switch-to-rolling"
+    chat = _recall_chat(thread)
+    chunks, _, _ = _bodies(
+        _SummarisingHandler,
+        messages = chat,
+        thread_id = thread,
+        compact_context = True,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 200_000,
+        context_window = 256_000,
+        **_EVICT,
+    )
+    [truncation] = _truncations(chunks)
+    count = len(chat) - 1
+    studio_db.upsert_chat_message(
+        {
+            "id": f"{thread}-{count}",
+            "threadId": thread,
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "metadata": {"custom": {"contextTruncation": truncation}},
+            "createdAt": count + 2,
+        }
+    )
+    later = [*chat, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "Thanks."}]
+    sent = {}
+    for name in (thread, "thread-fresh-rolling"):
+        if name != thread:
+            _recall_chat(name)
+        chunks, _, [sent[name]] = _bodies(
+            _SummarisingHandler, messages = later, thread_id = name, **_SMALL_TRIGGER, **_ROLLING
+        )
+        assert not _truncations(chunks)[0].get("checkpoint")
+    # Recall differs (the switched thread's archive also holds its checkpoint); the window does not.
+    switched, fresh = sent[thread]["messages"], sent["thread-fresh-rolling"]["messages"]
+    assert len(switched) == len(fresh) and switched[:-1] == fresh[:-1]
+
+
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError
