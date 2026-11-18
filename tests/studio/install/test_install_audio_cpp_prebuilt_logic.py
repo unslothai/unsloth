@@ -312,6 +312,7 @@ def _isolated_env(monkeypatch):
     monkeypatch.setattr(M, "_RELEASE_INDEX_MEMO", {})
     # The host's torch decides this for real; tests opt in to the chat-only path explicitly.
     monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: False)
+    monkeypatch.setattr(M, "_windows_runtime_from_wheels", lambda major: False)
     # /releases/latest names FORK_TAG unless a test says otherwise.
     heads = []
     monkeypatch.setattr(
@@ -2774,3 +2775,121 @@ def test_a_cpu_fallback_that_tried_the_wheels_does_not_retry_them_for_a_new_rele
     record_path.write_text(json.dumps(record))
     assert M.main(["--install-dir", str(target)]) == M.EXIT_OK
     assert len(attempts) == 1
+
+
+def _windows_chat_only_host(
+    monkeypatch,
+    tmp_path,
+    dlls,
+    *,
+    pip_adds = (),
+):
+    monkeypatch.undo()
+    wheel_dir = tmp_path / "site-packages" / "nvidia" / "cu13" / "bin" / "x86_64"
+    wheel_dir.mkdir(parents = True)
+    for name in dlls:
+        (wheel_dir / name).write_bytes(b"dll")
+    monkeypatch.setattr(M.sys, "platform", "win32")
+    monkeypatch.setattr(M.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(M, "torch_cuda_major", lambda: None)
+    monkeypatch.setattr(M, "_cuda_runtime_dirs", lambda backend: [str(wheel_dir)])
+    installs = []
+
+    def pip(wheels, what):
+        installs.append(tuple(wheels))
+        for name in pip_adds:
+            (wheel_dir / name).write_bytes(b"dll")
+
+    monkeypatch.setattr(M, "_pip_install_wheels", pip)
+    return installs
+
+
+LLAMA_CU13 = ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll")
+
+
+def test_windows_reuses_llama_wheels_and_adds_only_cufft(monkeypatch, tmp_path):
+    installs = _windows_chat_only_host(
+        monkeypatch, tmp_path, LLAMA_CU13, pip_adds = ("cufft64_12.dll",)
+    )
+    assert M._windows_runtime_from_wheels(13) is True
+    assert installs == [("nvidia-cufft",)]
+
+
+def test_windows_with_cufft_already_installed_installs_nothing(monkeypatch, tmp_path):
+    installs = _windows_chat_only_host(monkeypatch, tmp_path, (*LLAMA_CU13, "cufft64_12.dll"))
+    assert M._windows_runtime_from_wheels(13) is True
+    assert installs == []
+
+
+def test_windows_keeps_the_cudart_archive_when_cufft_does_not_install(monkeypatch, tmp_path):
+    installs = _windows_chat_only_host(monkeypatch, tmp_path, LLAMA_CU13)
+    assert M._windows_runtime_from_wheels(13) is False
+    assert installs == [("nvidia-cufft",)]
+
+
+def test_windows_keeps_the_cudart_archive_without_llama_wheels_for_the_line(monkeypatch, tmp_path):
+    # cuBLAS for CUDA 12 does not serve a CUDA 13 bundle, and the archive is then no larger than the wheels.
+    installs = _windows_chat_only_host(
+        monkeypatch, tmp_path, ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
+    )
+    assert M._windows_runtime_from_wheels(13) is False
+    assert installs == []
+
+
+def test_windows_cuda12_asks_for_the_cu12_cufft_wheel(monkeypatch, tmp_path):
+    installs = _windows_chat_only_host(
+        monkeypatch,
+        tmp_path,
+        ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"),
+        pip_adds = ("cufft64_11.dll",),
+    )
+    assert M._windows_runtime_from_wheels(12) is True
+    assert installs == [("nvidia-cufft-cu12",)]
+
+
+@pytest.mark.parametrize(
+    "platform_name, machine, torch_major, major",
+    [
+        ("win32", "ARM64", None, 13),  # no wheels for Windows ARM64 cuBLAS: keep the archive
+        ("win32", "AMD64", 13, 13),  # torch decides, as before
+        ("linux", "x86_64", None, 13),
+        ("win32", "AMD64", None, None),
+    ],
+)
+def test_windows_wheel_reuse_is_off_elsewhere(
+    monkeypatch, tmp_path, platform_name, machine, torch_major, major
+):
+    installs = _windows_chat_only_host(monkeypatch, tmp_path, (*LLAMA_CU13, "cufft64_12.dll"))
+    monkeypatch.setattr(M.sys, "platform", platform_name)
+    monkeypatch.setattr(M.platform, "machine", lambda: machine)
+    monkeypatch.setattr(M, "torch_cuda_major", lambda: torch_major)
+    assert M._windows_runtime_from_wheels(major) is False
+    assert installs == []
+
+
+def test_windows_install_skips_the_cudart_archive_when_the_wheels_carry_it(monkeypatch, tmp_path):
+    release, downloads = _cuda_release(monkeypatch, tmp_path)
+    monkeypatch.setattr(M, "_windows_runtime_from_wheels", lambda major: major == 12)
+    server = M.install(install_dir = tmp_path / "audio.cpp", accelerator = "cuda")
+    assert downloads == [WIN_CUDA_ZIP]
+    assert not (server.parent / "cudart64_12.dll").exists()
+    record = M.read_install_record(tmp_path / "audio.cpp")
+    assert (record["asset"], record["cudart_asset"], record["backend"]) == (
+        WIN_CUDA_ZIP,
+        None,
+        "cuda",
+    )
+
+
+def test_a_wheel_runtime_install_stays_intact_only_while_the_wheels_are_there(monkeypatch):
+    record = {
+        "backend": "cuda",
+        "os": "windows",
+        "cudart_asset": None,
+        "asset": f"audio-{FORK_TAG}-bin-windows-x64-cuda13.zip",
+    }
+    monkeypatch.setattr(M, "torch_provides_cuda_runtime", lambda major: False)
+    monkeypatch.setattr(M, "_windows_wheel_runtime_present", lambda major, cufft = True: major == 13)
+    assert M._cuda_runtime_satisfied(record) is True
+    monkeypatch.setattr(M, "_windows_wheel_runtime_present", lambda major, cufft = True: False)
+    assert M._cuda_runtime_satisfied(record) is False

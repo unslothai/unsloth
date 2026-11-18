@@ -623,7 +623,9 @@ export function LocalOnDeviceCard({
                           </span>
                           <span className="ml-auto flex shrink-0 items-center gap-1.5">
                             <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
-                              {formatBytes(variant.size_bytes)}
+                              <span className="cap-centered">
+                                {formatBytes(variant.size_bytes)}
+                              </span>
                             </span>
                           </span>
                         </button>
@@ -661,7 +663,7 @@ export function LocalOnDeviceCard({
                         disabled={currentVariantState.loading || runPending}
                         className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        <span className="truncate">
+                        <span className="cap-centered truncate">
                           {currentVariantState.loading
                             ? "Loading"
                             : currentVariantState.error
@@ -671,7 +673,7 @@ export function LocalOnDeviceCard({
                                 : "Select"}
                         </span>
                         {selectedVariant && (
-                          <span className="shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
+                          <span className="cap-centered shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
                             {formatBytes(selectedVariant.size_bytes)}
                           </span>
                         )}

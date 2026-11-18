@@ -130,7 +130,14 @@ def test_an_eval_split_formatted_to_nothing_disables_evaluation():
     ]
 
 
-def _run_mlx_until_model_load(monkeypatch, config, stop_requested):
+def _run_mlx_until_model_load(
+    monkeypatch,
+    config,
+    stop_requested,
+    prepare = None,
+    exit_stack = None,
+    on_load = None,
+):
     """Runs the real _run_mlx_training with MLX stubbed; a model load fails the test."""
     loaded = []
     events = []
@@ -139,6 +146,8 @@ def _run_mlx_until_model_load(monkeypatch, config, stop_requested):
         @staticmethod
         def from_pretrained(*args, **kwargs):
             loaded.append(args)
+            if on_load is not None:
+                on_load()
             raise AssertionError("the model loaded")
 
         @staticmethod
@@ -164,7 +173,7 @@ def _run_mlx_until_model_load(monkeypatch, config, stop_requested):
     def _reject_manifest(*_args, **_kwargs):
         raise ValueError("ambiguous audio reference")
 
-    s3_dataset.prepare_s3_dataset_download = _reject_manifest
+    s3_dataset.prepare_s3_dataset_download = prepare or _reject_manifest
     for name, module in {
         "mlx": mlx,
         "mlx.core": mlx_core,
@@ -186,7 +195,7 @@ def _run_mlx_until_model_load(monkeypatch, config, stop_requested):
         def put(self, event):
             events.append(event)
 
-    _worker._run_mlx_training(_Queue(), None, {"model_name": "org/model", **config})
+    _worker._run_mlx_training(_Queue(), None, {"model_name": "org/model", **config}, exit_stack)
     return loaded, events
 
 
@@ -210,3 +219,34 @@ def test_mlx_stop_during_dataset_load_skips_the_model_load(monkeypatch):
     assert loaded == []
     assert events[-1]["type"] == "complete"
     assert events[-1]["status_message"] == "Training cancelled"
+
+
+@pytest.mark.parametrize("is_audio", [True, False])
+def test_mlx_s3_audio_download_outlives_the_model_load(monkeypatch, tmp_path, is_audio):
+    import contextlib
+    import shutil
+
+    download_dir = tmp_path / "unsloth_s3_dataset_x"
+    download_dir.mkdir()
+    manifest = download_dir / "train.jsonl"
+    manifest.write_text('{"text": "hi", "audio": "a.wav"}\n', encoding = "utf-8")
+
+    class _Download:
+        files = [str(manifest)]
+
+        def cleanup(self):
+            shutil.rmtree(download_dir, ignore_errors = True)
+
+    alive_at_load = []
+    with contextlib.ExitStack() as stack:
+        with pytest.raises(AssertionError, match = "the model loaded"):
+            _run_mlx_until_model_load(
+                monkeypatch,
+                {"s3_config": {"bucket": "b"}, "is_dataset_audio": is_audio},
+                [False],
+                prepare = lambda *_a, **_k: _Download(),
+                exit_stack = stack,
+                on_load = lambda: alive_at_load.append(download_dir.exists()),
+            )
+    assert alive_at_load == [is_audio]
+    assert not download_dir.exists()

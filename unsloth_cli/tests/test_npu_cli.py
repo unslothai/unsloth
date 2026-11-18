@@ -30,6 +30,14 @@ from unsloth_cli._npu import NpuCliError, npu_model_path, prepare_npu_model
         ("unsloth/Qwen3-0.6B-GGUF", None),
         ("unsloth/Qwen3-0.6B-GGUF:Q4_K_M", None),
         ("org/name-FLM", None),
+        ("Qwen3.6-35B-A3B-NPU2", "lemonade:Qwen3.6-35B-A3B-NPU2"),
+        ("qwen3-0.6b-npu2", "lemonade:qwen3-0.6b-npu2"),
+        ("FastFlowLM/Qwen3.6-35B-A3B-NPU2", "lemonade:FastFlowLM/Qwen3.6-35B-A3B-NPU2"),
+        ("fastflowlm/qwen3-0.6b-npu2", "lemonade:fastflowlm/qwen3-0.6b-npu2"),
+        ("FastFlowLM/", None),
+        ("FastFlowLM/a/b", None),
+        ("unsloth/Qwen3-0.6B-NPU2-GGUF", None),
+        ("Qwen3-0.6B-GGUF", None),
         ("lemonade:", None),
         ("", None),
         (None, None),
@@ -72,8 +80,29 @@ class _Studio:
             return io.BytesIO(json.dumps(self.status).encode())
         if path == "/api/npu/models":
             models = [
-                {"id": "qwen3-0.6b-FLM", "downloaded": self.downloaded, "size_gb": 0.66},
-                {"id": "gemma3-1b-FLM", "downloaded": False, "size_gb": 1.2},
+                {
+                    "id": "qwen3-0.6b-FLM",
+                    "downloaded": self.downloaded,
+                    "size_gb": 0.66,
+                    "hf_repo": "FastFlowLM/Qwen3-0.6B-NPU2",
+                },
+                {
+                    "id": "gemma3-1b-FLM",
+                    "downloaded": False,
+                    "size_gb": 1.2,
+                    "hf_repo": "FastFlowLM/Gemma3-1B-NPU2",
+                },
+                {
+                    "id": "qwen3.5-2b-FLM",
+                    "downloaded": True,
+                    "hf_repo": "FastFlowLM/Qwen3.5-2B-NPU2",
+                },
+                {
+                    "id": "qwen3.5-flash-2b-FLM",
+                    "downloaded": True,
+                    "hf_repo": "FastFlowLM/Qwen3.5-2B-NPU2",
+                },
+                {"id": "qwen3-0.6b-core-FLM", "downloaded": True, "hf_repo": None},
             ]
             return io.BytesIO(json.dumps({"models": models}).encode())
         if path.endswith("/download"):
@@ -115,6 +144,98 @@ def test_an_npu_left_off_names_the_flag():
 def test_an_unknown_model_lists_the_real_ones():
     with pytest.raises(NpuCliError, match = "gemma3-1b-FLM"):
         prepare_npu_model(_Studio(ready = True), "lemonade:nope-FLM", print)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Qwen3-0.6B-NPU2",
+        "qwen3-0.6b-npu2",
+        "FastFlowLM/Qwen3-0.6B-NPU2",
+        "FASTFLOWLM/QWEN3-0.6B-NPU2",
+        "QWEN3-0.6B-flm",
+    ],
+)
+def test_the_name_unsloth_studio_shows_resolves_to_the_lemonade_id(name):
+    studio = _Studio(ready = True, downloaded = True)
+    path = prepare_npu_model(studio, npu_model_path(name), print)
+    assert path == "lemonade:qwen3-0.6b-FLM"
+
+
+def test_a_resolved_name_downloads_by_its_lemonade_id():
+    studio = _Studio(ready = True)
+    path = prepare_npu_model(studio, "lemonade:Qwen3-0.6B-NPU2", lambda _line: None)
+    assert path == "lemonade:qwen3-0.6b-FLM"
+    assert studio.calls[-1] == ("POST", "/api/npu/models/qwen3-0.6b-FLM/download")
+
+
+@pytest.mark.parametrize(
+    ("name", "suggested"),
+    [
+        ("Qwen3-0.6B-NPU", "Qwen3-0.6B-NPU2"),
+        ("FastFlowLM/Gemma3-1B-NPU3", "FastFlowLM/Gemma3-1B-NPU2"),
+        ("qwen3-0.6-FLM", "qwen3-0.6b-FLM"),
+    ],
+)
+def test_a_near_miss_suggests_the_closest_names(name, suggested):
+    with pytest.raises(NpuCliError, match = "Did you mean") as caught:
+        prepare_npu_model(_Studio(ready = True), npu_model_path(name), print)
+    assert suggested in str(caught.value)
+    assert f"No NPU model named {name}." in str(caught.value)
+
+
+def test_a_name_two_models_share_asks_for_an_id():
+    # FastFlowLM's flash builds reuse the base build's Hugging Face repo.
+    with pytest.raises(
+        NpuCliError, match = "more than one NPU model: qwen3.5-2b-FLM, qwen3.5-flash-2b-FLM"
+    ):
+        prepare_npu_model(_Studio(ready = True), "lemonade:Qwen3.5-2B-NPU2", print)
+
+
+def test_a_gguf_repo_stays_on_the_gguf_path_even_when_an_npu_model_names_it():
+    # FastFlowLM's qwen3-core:0.6b downloads from unsloth/Qwen3-0.6B-GGUF.
+    assert npu_model_path("unsloth/Qwen3-0.6B-GGUF") is None
+
+
+def test_a_running_studio_loads_a_display_name_by_its_lemonade_id(monkeypatch):
+    import unsloth_cli._inference as inference
+
+    seen = {}
+
+    class _Backend:
+        def __init__(self, *_args):
+            pass
+
+        def _request(
+            self,
+            method,
+            path,
+            payload = None,
+            timeout = None,
+        ):
+            return _Studio(ready = True, downloaded = True)(method, path, payload, timeout)
+
+        def ensure_loaded(self, model, **_kwargs):
+            seen["loaded"] = model
+
+    monkeypatch.setattr(inference, "find_studio_server", lambda *a, **k: "http://127.0.0.1:8888")
+    monkeypatch.setattr(inference, "verify_studio_identity", lambda *a, **k: True)
+    monkeypatch.setattr(inference, "_studio_token", lambda: "token")
+    monkeypatch.setattr(inference, "HttpChatBackend", _Backend)
+    inference.connect_studio_server(
+        "Qwen3-0.6B-NPU2", hf_token = None, max_seq_length = 0, load_in_4bit = None
+    )
+    assert seen == {"loaded": "lemonade:qwen3-0.6b-FLM"}
+
+
+def test_run_loads_the_resolved_lemonade_id():
+    import inspect
+
+    from unsloth_cli.commands import studio as studio_mod
+
+    src = inspect.getsource(studio_mod.run)
+    # The display name went to /api/inference/load, which only knows Lemonade ids.
+    assert "model = prepare_npu_model(" in src
 
 
 @pytest.mark.parametrize(
@@ -273,6 +394,200 @@ def test_the_run_banner_offers_no_endpoint_an_npu_model_refuses():
     assert banner.index("if not npu_path:") < banner.index('typer.echo("OpenAI Responses:")')
 
 
+_CATALOG = [
+    {
+        "id": "qwen3-0.6b-FLM",
+        "hf_repo": "FastFlowLM/Qwen3-0.6B-NPU2",
+        "size_gb": 0.66,
+        "downloaded": True,
+        "memory_needed_gb": 1.7,
+        "fits_memory": True,
+    },
+    {
+        "id": "gpt-oss-120b-FLM",
+        "hf_repo": "FastFlowLM/gpt-oss-120b-NPU2",
+        "size_gb": 62.0,
+        "downloaded": False,
+        "resume_percent": 12,
+        "memory_needed_gb": 63.0,
+        "fits_memory": False,
+    },
+    {"id": "gemma3-1b-FLM", "hf_repo": None, "size_gb": 1.2, "downloaded": False},
+]
+
+
+def _list(
+    monkeypatch,
+    *,
+    server = "http://127.0.0.1:8888",
+    studio = None,
+    local = None,
+):
+    import unsloth_cli._inference as inference
+    from unsloth_cli import app
+    from unsloth_cli.commands import npu as npu_cmd
+
+    class _Backend:
+        def __init__(self, *_args):
+            pass
+
+        def _request(
+            self,
+            method,
+            path,
+            payload,
+            timeout = None,
+        ):
+            return studio(method, path, payload, timeout)
+
+    def _no_local():
+        if local is None:
+            raise AssertionError("read the local NPU status while a Studio answered")
+        return local
+
+    monkeypatch.setattr(inference, "find_studio_server", lambda *a, **k: server)
+    monkeypatch.setattr(inference, "verify_studio_identity", lambda *a, **k: True)
+    monkeypatch.setattr(inference, "_studio_token", lambda: "token")
+    monkeypatch.setattr(inference, "HttpChatBackend", _Backend)
+    monkeypatch.setattr(npu_cmd, "_local_npu_status", _no_local)
+    return CliRunner().invoke(app, ["list-npu-models"])
+
+
+def _catalog_studio(status):
+    calls = []
+
+    def _request(method, path, payload, timeout):
+        calls.append((method, path))
+        if path == "/api/npu/status":
+            return io.BytesIO(json.dumps(status).encode())
+        if path == "/api/npu/models":
+            return io.BytesIO(json.dumps({"models": _CATALOG}).encode())
+        raise AssertionError(path)
+
+    _request.calls = calls
+    return _request
+
+
+_READY = {"supported": True, "ready": True, "runtime_installed": True, "memory_window_gb": 30.0}
+
+
+def test_list_shows_hf_names_download_and_fit_states(monkeypatch):
+    studio = _catalog_studio(_READY)
+    result = _list(monkeypatch, studio = studio)
+    assert result.exit_code == 0, result.output
+    # Reads only: never enables the runtime or starts a download.
+    assert studio.calls == [("GET", "/api/npu/status"), ("GET", "/api/npu/models")]
+    lines = result.output.splitlines()
+    assert lines[0] == "Memory the NPU can map on this PC: 30.0 GB"
+    rows = {line.split()[1]: line for line in lines if "-FLM" in line and "chat" not in line}
+    assert rows["qwen3-0.6b-FLM"].split() == [
+        "Qwen3-0.6B-NPU2",
+        "qwen3-0.6b-FLM",
+        "0.7",
+        "GB",
+        "yes",
+        "yes",
+    ]
+    assert "gpt-oss-120b-NPU2" in rows["gpt-oss-120b-FLM"]
+    assert "partly (12%)" in rows["gpt-oss-120b-FLM"]
+    assert rows["gpt-oss-120b-FLM"].endswith("no, needs 63.0 GB")
+    # No hf_repo: falls back to the -FLM id, like the app.
+    assert rows["gemma3-1b-FLM"].split()[:2] == ["gemma3-1b-FLM", "gemma3-1b-FLM"]
+    assert rows["gemma3-1b-FLM"].endswith("unknown")
+    assert "Chat with one: unsloth chat <ID>" in result.output
+
+
+@pytest.mark.parametrize(
+    ("status", "words"),
+    [
+        ({"supported": False, "hardware": {"present": False}}, "No AMD Ryzen AI NPU was found"),
+        (
+            {
+                "supported": False,
+                "hardware": {"present": True, "family": "XDNA2", "enabled": False},
+            },
+            "UNSLOTH_STUDIO_ENABLE_NPU=1",
+        ),
+        (
+            {"supported": False, "hardware": {"present": True, "family": "XDNA", "name": "NPU1"}},
+            "NPU1 is not supported",
+        ),
+        (
+            {"supported": True, "ready": False, "runtime_installed": False},
+            "FastFlowLM isn't installed",
+        ),
+        (
+            {
+                "supported": True,
+                "ready": False,
+                "runtime_installed": True,
+                "error": "driver too old",
+            },
+            "installed but not enabled: driver too old",
+        ),
+    ],
+)
+def test_list_says_why_the_npu_cannot_list(monkeypatch, status, words):
+    studio = _catalog_studio(status)
+    result = _list(monkeypatch, studio = studio)
+    assert result.exit_code == 1
+    assert words in result.output
+    assert result.output.count("\n") == 1
+    assert studio.calls == [("GET", "/api/npu/status")]
+
+
+def test_list_without_studio_reports_a_missing_npu_from_local_status(monkeypatch):
+    result = _list(
+        monkeypatch, server = None, local = {"supported": False, "hardware": {"present": False}}
+    )
+    assert result.exit_code == 1
+    assert "No AMD Ryzen AI NPU was found on this machine." in result.output
+
+
+def test_list_without_studio_reports_a_missing_runtime(monkeypatch):
+    result = _list(
+        monkeypatch,
+        server = None,
+        local = {"supported": True, "ready": False, "runtime_installed": False},
+    )
+    assert result.exit_code == 1
+    assert "FastFlowLM isn't installed" in result.output
+
+
+def test_list_without_studio_on_a_ready_npu_asks_for_studio(monkeypatch):
+    result = _list(monkeypatch, server = None, local = _READY)
+    assert result.exit_code == 1
+    assert "Unsloth Studio isn't running. Start it with `unsloth studio`" in result.output
+
+
+def test_list_with_a_lost_studio_is_one_line(monkeypatch):
+    def _request(*_args):
+        raise ConnectionResetError("reset")
+
+    result = _list(monkeypatch, studio = _request)
+    assert result.exit_code == 1
+    assert "Lost the connection to Unsloth Studio" in result.output
+
+
+def test_local_npu_status_never_starts_the_runtime(monkeypatch, tmp_path):
+    # The real backend: status() must answer without starting lemond, which catalog() does.
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli.commands import npu as npu_cmd
+
+    ensure_studio_backend_path(seed_cache_env = False)
+    from core.inference import npu_backend
+
+    def _started(*_args):
+        raise AssertionError("the offline listing started the NPU runtime")
+
+    monkeypatch.setattr(npu_backend.LemonadeNpuBackend, "_ensure_running", _started)
+    monkeypatch.setattr(npu_backend, "_npu_root", lambda: tmp_path)
+    monkeypatch.setattr(npu_backend, "_backend", None)
+    status = npu_cmd._local_npu_status()
+    assert status["runtime_installed"] is False and status["runtime_running"] is False
+    assert npu_cmd.npu_status_problem(status)
+
+
 def _npu_load_payload(
     monkeypatch,
     status,
@@ -370,3 +685,35 @@ def test_run_and_chat_help_name_context_length(monkeypatch):
         result = CliRunner().invoke(app, [command, "--help"], terminal_width = 80)
         assert result.exit_code == 0, result.output
         assert "--context-length" in result.output, command
+
+
+@pytest.mark.parametrize("supported", [False, True])
+def test_list_npu_models_is_in_help_only_with_a_supported_npu(monkeypatch, supported):
+    import unsloth_cli
+    from unsloth_cli import _npu
+
+    monkeypatch.setattr(_npu, "npu_detected", lambda: supported)
+    app = typer.Typer()
+    unsloth_cli._register_command(app, "list-npu-models")
+    group = typer.main.get_group(app)
+    assert group.commands["list-npu-models"].hidden is not supported
+
+
+def test_npu_detected_reads_studios_detector(monkeypatch):
+    from unsloth_cli import _npu
+    monkeypatch.setenv("UNSLOTH_STUDIO_ENABLE_NPU", "0")
+    assert _npu.npu_detected() is False
+
+
+@pytest.mark.parametrize(
+    "folder, name",
+    [
+        ("/home/u/runs/my-finetune/npu-q4nx", "my-finetune"),
+        ("C:\\Users\\u\\exports\\qwen-q4nx", "qwen-q4nx"),
+        ("/srv/q4nx/llama-sft", "llama-sft"),
+    ],
+)
+def test_a_converted_model_is_listed_by_its_folder_name(folder, name):
+    from unsloth_cli._npu import npu_display_name
+    row = {"id": "local-npu-q4nx-1a2b3c4d-q4nx-FLM", "hf_repo": None, "local": {"folder": folder}}
+    assert npu_display_name(row) == name

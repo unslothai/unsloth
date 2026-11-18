@@ -877,6 +877,13 @@ def _moe_aux_plan(parts):
     return _MoEAux(inner, config, router_class, index, num_experts, top_k, routers)
 
 
+def _router_aux_requested(ctx, config):
+    on = getattr(ctx, "output_router_logits", None)
+    if on is None:
+        on = getattr(config, "output_router_logits", False)
+    return bool(on)
+
+
 def _router_aux_coef(moe):
     """Read per step: trainers rewrite the coef after the split."""
     if type(moe.owner).__name__ in _PP_MOE_AUX_WRAPPERS:
@@ -1008,7 +1015,10 @@ def _refuse_uncarried_router_aux(ctx, kwargs):
     text = (
         inner.config.get_text_config() if hasattr(inner.config, "get_text_config") else inner.config
     )
-    if not _router_aux_off(inner, text, kwargs.get("output_router_logits")):
+    requested = kwargs.get("output_router_logits")
+    if requested is None:
+        requested = getattr(ctx, "output_router_logits", None)
+    if not _router_aux_off(inner, text, requested):
         raise ValueError(
             _uncarried_router_aux_message(
                 inner,
@@ -1438,7 +1448,8 @@ def _tower_adapter_state(model, parts):
 
 
 class _PPLayerTableSlice(nn.Module):
-    """This rank's layers' columns of embed_tokens_per_layer; lookups zero-fill the other layers."""
+    """This rank's layers' columns of embed_tokens_per_layer; lookups zero-fill the other layers. Rows come out in
+    the dtype the table itself returns: forced float32 (float16 weights) upcasts before the scale, as one GPU does."""
 
     def __init__(self, source, owned, layers, width):
         super().__init__()
@@ -1455,13 +1466,17 @@ class _PPLayerTableSlice(nn.Module):
             self.register_buffer("embed_scale", scale.detach().clone(), persistent = False)
         self.padding_idx = getattr(source, "padding_idx", None)
         self.__dict__["_pp_layers"] = (tuple(owned), layers, width)
+        self.__dict__["_pp_out_dtype"] = _embedding_output_dtype(source)
 
     def forward(self, input_ids):
         owned, layers, width = self._pp_layers
         rows = torch.nn.functional.embedding(input_ids, self.weight, self.padding_idx)
+        dtype = self.__dict__.get("_pp_out_dtype") or self.weight.dtype
+        if rows.dtype != dtype:
+            rows = rows.to(dtype)
         scale = self._buffers.get("embed_scale")
         if scale is not None:
-            rows = rows * scale.to(self.weight.dtype)
+            rows = rows * scale.to(dtype)
         out = rows.new_zeros((*input_ids.shape, layers, width))
         index = torch.tensor(owned, dtype = torch.long, device = rows.device)
         return out.index_copy(-2, index, rows.view(*input_ids.shape, len(owned), width))
@@ -1509,7 +1524,9 @@ def _ple_project(
         ctx.ple_output = projection[:, :, ctx.end :]
     if per_layer_inputs is None:
         return projection
-    return (projection + per_layer_inputs.to(projection.dtype)) * decoder.per_layer_input_scale
+    # As the model's own project_per_layer_inputs: no cast, so float16 projections meet forced float32 per-layer
+    # inputs in float32 (a float16 sum rounds every layer's input and moved Gemma-4 T4 step-1 gradients 2x).
+    return (projection + per_layer_inputs) * decoder.per_layer_input_scale
 
 
 def _install_per_layer_inputs(pp_stage, parts, owned, kept):
@@ -1618,6 +1635,8 @@ class _StageContext:
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
+        # Per-step request (None: config decides); pp_env._router_aux_request.
+        self.output_router_logits = None
         self.uncarried_moe = None
         self.ple = None
         self.ple_input = None
@@ -1837,13 +1856,13 @@ class _PPStageModule(nn.Module):
 
     def _router_statistics(self, captured, carry, attention_mask, device):
         """This stage's load-balancing statistics added to the received ones (`carry`, from the previous
-        stage), or None when the auxiliary loss is off (config.output_router_logits)."""
+        stage), or None when the auxiliary loss is off (output_router_logits: the step's, else the config's)."""
         ctx = self._pp_ctx
         moe = ctx.moe
-        if not getattr(moe.config, "output_router_logits", False):
+        if not _router_aux_requested(ctx, moe.config):
             return None
         if torch.is_grad_enabled():  # checkpointing can be turned on after the split
-            _refuse_aux_with_reentrant_checkpointing(self, moe.config)
+            _refuse_aux_with_reentrant_checkpointing(self, moe.config, on = True)
         expected = sum(moe.routers.get(i, 0) for i in range(ctx.start, ctx.end))
         if len(captured) != expected:
             raise RuntimeError(
@@ -2027,18 +2046,23 @@ def _check_torch_pipelining():
             )
 
 
-def _refuse_aux_with_reentrant_checkpointing(model, config):
+def _refuse_aux_with_reentrant_checkpointing(
+    model,
+    config,
+    on = None,
+):
     """Reentrant checkpointing (transformers' default, Unsloth smart checkpointing) runs the first layer forward
     under no_grad, so the captured router logits carry no graph and the auxiliary loss would add its value but
     no gradient."""
-    if not getattr(config, "output_router_logits", False):
+    if not (getattr(config, "output_router_logits", False) if on is None else on):
         return
     if non_reentrant_checkpointing_only(model) is False:
         raise ValueError(
             "Unsloth: pipeline parallelism carries the router auxiliary loss only with gradient checkpointing "
             "off or torch's non-reentrant checkpointing (gradient_checkpointing_kwargs = {'use_reentrant': "
-            "False}); reentrant checkpointing would drop its gradient. Or set config.output_router_logits = "
-            "False to train without the auxiliary loss."
+            "False}); reentrant checkpointing would drop its gradient. Or train without the auxiliary loss "
+            "(router_aux_loss_coef = 0.0 in SFTConfig, or config.output_router_logits = False with a plain "
+            "Trainer)."
         )
 
 
@@ -2433,9 +2457,10 @@ class PipelineParallel:
         optimizer.zero_grad between steps). Returns the batch loss (sum over tokens / num_items_in_batch,
         unscaled) on every rank.
 
-        A mixture-of-experts model with config.output_router_logits adds router_aux_loss_coef x the
-        load-balancing loss of each micro-batch (over all stages' routers), as gradient accumulation over the
-        same micro-batches does in one process; their sum (without the coefficient) is in last_aux_loss.
+        A mixture-of-experts model with output_router_logits on (the trainer's request, else the config's) adds
+        router_aux_loss_coef x the load-balancing loss of each micro-batch (over all stages' routers), as gradient
+        accumulation over the same micro-batches does in one process; their sum (without the coefficient) is in
+        last_aux_loss.
 
         With FSDP2 over a dp mesh, each dp replica passes its own slice of the global batch (pp / tp peers the
         same one); num_items_in_batch is the token count of the whole global batch (default: this slice's
@@ -2589,7 +2614,7 @@ class PipelineParallel:
             dist.all_reduce(total, group = dp_group)  # each replica's sum / global tokens
         if self.ctx.moe is not None:
             # Sum over micro-batches of the router load-balancing loss (unscaled by router_aux_loss_coef;
-            # 0 with config.output_router_logits off). The returned loss already holds coef x this.
+            # 0 with output_router_logits off). The returned loss already holds coef x this.
             self.last_aux_loss = total[1]
         return total[0]
 

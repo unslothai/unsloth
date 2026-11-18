@@ -227,6 +227,14 @@ import {
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
+import {
+  ATTENTION_SELECT_HINT,
+  INT8_ATTENTION_HINT,
+  INT8_ATTENTION_LABEL,
+  INT8_ATTENTION_OPTIONS,
+  int8AttentionSelection,
+  type Int8AttentionChoice,
+} from "@/lib/int8-attention";
 import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedImageFilename,
@@ -1643,6 +1651,7 @@ type LoadAdvanced = Pick<
   | "transformer_quant"
   | "text_encoder_quant"
   | "attention_backend"
+  | "int8_attention"
   | "memory_mode"
   | "transformer_cache"
   | "family_override"
@@ -2036,6 +2045,7 @@ export function ImagesPage({
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
   );
+  const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
@@ -3952,6 +3962,8 @@ export function ImagesPage({
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const int8 = int8AttentionSelection(record.int8_attention);
+    if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -3975,6 +3987,8 @@ export function ImagesPage({
         transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
         text_encoder_quant: textEncoderQuant === "auto" ? undefined : textEncoderQuant,
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
+        // Always sent: the backend reads "auto" as no per-load override.
+        int8_attention: int8Attention,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         family_override: familyOverrideRequired ? explicitFamily(familyOverride) : undefined,
@@ -3998,6 +4012,7 @@ export function ImagesPage({
       transformerQuant,
       textEncoderQuant,
       attentionBackend,
+      int8Attention,
       memoryMode,
       transformerCache,
       familyOverride,
@@ -4098,6 +4113,7 @@ export function ImagesPage({
             : undefined,
           text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
+          int8_attention: advanced.int8_attention,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
           family_override: advanced.family_override,
@@ -6218,7 +6234,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint={ATTENTION_SELECT_HINT}
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -6229,6 +6245,14 @@ export function ImagesPage({
           ["flash3", "FlashAttention 3"],
           ["sage", "SageAttention (INT8)"],
         ]}
+      />
+      <AdvancedSelect
+        label={INT8_ATTENTION_LABEL}
+        hint={INT8_ATTENTION_HINT}
+        badge={<ResolvedBadge status={status} controlKey="int8_attention" />}
+        value={int8Attention}
+        onValueChange={(v) => setInt8Attention(v as Int8AttentionChoice)}
+        options={INT8_ATTENTION_OPTIONS}
       />
       {!external && imageGpuDevices.length > 0 && (
         <VramBudgetControl image modelLoading={busy === "loading"} />

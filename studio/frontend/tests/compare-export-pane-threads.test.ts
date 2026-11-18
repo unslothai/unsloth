@@ -76,3 +76,38 @@ test("exporting a reopened Compare downloads only its two panes, not the chat op
 test("exporting a Compare with no other chat open downloads both panes", async () => {
   assert.deepEqual(await exportFromCompare(null), ["pane-1", "pane-2"]);
 });
+
+const chatPage = readSrc("features/chat/chat-page.tsx");
+const clearStart = chatPage.indexOf("const comparePairId = ");
+const clearEnd = chatPage.indexOf("}, [active, comparePairId]);", clearStart);
+const clearOnCompare = ts.transpileModule(
+  `${chatPage.slice(clearStart, clearEnd)}});`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText;
+
+function openView(view: { mode: string; pairId?: string }, active = true) {
+  const store = { activeThreadId: "earlier-private-chat" as string | null, contextUsage: {} as object | null };
+  const runtime = {
+    getState: () => ({
+      setActiveThreadId: (id: string | null) => void (store.activeThreadId = id),
+      setContextUsage: (usage: object | null) => void (store.contextUsage = usage),
+    }),
+  };
+  new Function("view", "active", "useChatRuntimeStore", "useLayoutEffect", clearOnCompare)(
+    view,
+    active,
+    runtime,
+    (effect: () => void) => effect(),
+  );
+  return store;
+}
+
+test("any route into Compare drops the chat that was open, not only New Compare", () => {
+  assert.ok(clearStart >= 0 && clearEnd > clearStart);
+  assert.deepEqual(openView({ mode: "compare", pairId: "pair" }), {
+    activeThreadId: null,
+    contextUsage: null,
+  });
+  assert.equal(openView({ mode: "single" }).activeThreadId, "earlier-private-chat");
+  assert.equal(openView({ mode: "compare", pairId: "pair" }, false).activeThreadId, "earlier-private-chat");
+});

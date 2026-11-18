@@ -2285,7 +2285,7 @@ export const fa = {
       modelAliases: {
         sectionTitle: "نام‌های مستعار مدل (OpenAI API)",
         description:
-          "نام‌های ثابت برای کلاینت‌های API، مانند fast-chat یا code. درخواستی که یک نام مستعار را ذکر کند، با مدلی که آن نام به آن اشاره دارد پاسخ داده می‌شود، بنابراین برنامه‌های متصل هنگام تعویض مدل‌ها همچنان کار می‌کنند. «تعویض مدل بر اساس درخواست» را روشن کنید تا نام مستعار بتواند مدل خود را بارگذاری کند.",
+          "نام‌های کوتاهی که کلاینت‌های API می‌توانند به‌جای نام کامل مدل استفاده کنند.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "نام مستعار",
         modelAriaLabel: "مدلی که نام مستعار به آن اشاره دارد",
@@ -2294,6 +2294,13 @@ export const fa = {
         add: "افزودن نام مستعار",
         loadError: "بارگذاری نام‌های مستعار مدل ناموفق بود.",
         saveError: "ذخیرهٔ نام‌های مستعار مدل ناموفق بود.",
+        contextLength: "طول زمینه",
+        kvCacheType: "نوع کش KV",
+        speculativeDecoding: "رمزگشایی حدسی",
+        savedSetting: "تنظیم ذخیره‌شده",
+        loadSettings: "تنظیمات بارگذاری",
+        loadSettingsHint:
+          "فقط برای مدل‌های GGUF. فیلدهای خالی از تنظیمات ذخیره‌شدهٔ مدل استفاده می‌کنند.",
       },
       previewSharing: {
         sectionTitle: "اشتراک‌گذاری پیش‌نمایش",
@@ -5149,6 +5156,8 @@ export const fa = {
   translate: {
     title: "ترجمه",
     detectLanguage: "تشخیص زبان",
+    detectedLanguage: "{language} (شناسایی‌شده)",
+    detectedTab: "{language} - شناسایی‌شده",
     sourceLanguage: "ترجمه از",
     targetLanguage: "ترجمه به",
     recentTargets: "اخیر",
@@ -5159,17 +5168,20 @@ export const fa = {
     translate: "ترجمه",
     stop: "توقف",
     sourceLabel: "متن برای ترجمه",
-    sourcePlaceholder:
-      "متن را تایپ یا جای‌گذاری کنید، یا یک فایل متنی را اینجا رها کنید",
+    sourcePlaceholder: "متن را بنویسید یا جای‌گذاری کنید، یا سند یا تصویری را رها کنید",
     outputLabel: "ترجمه",
     outputEmpty: "ترجمه اینجا نمایش داده می‌شود.",
     firstRunHint:
       "اولین ترجمه {model} را دانلود می‌کند ({size}). پس از آن روی همین دستگاه و به‌صورت آفلاین اجرا می‌شود.",
+    charLimit: "حداکثر {max} نویسه",
+    readingFile: "در حال خواندن {name}…",
+    downloadConfirmTitle: "{model} دانلود شود؟",
+    downloadConfirm: "دانلود",
     clear: "پاک کردن",
     paste: "جای‌گذاری",
-    openFile: "باز کردن فایل متنی",
-    dropFile: "برای ترجمه، یک فایل متنی را اینجا رها کنید",
-    fileNotText: "اینجا فقط فایل‌های متنی باز می‌شوند.",
+    openFile: "باز کردن سند یا تصویر",
+    dropFile: "فایلی را رها کنید تا متن آن ترجمه شود",
+    fileNotText: "این فایل متنی برای ترجمه ندارد.",
     truncated: "فقط {max} نویسهٔ اول نگه داشته شد.",
     copy: "کپی ترجمه",
     copied: "کپی شد",
