@@ -10385,8 +10385,7 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
     named.update(settings)
     wanted |= named
     wanted["speculative_type"] = _canonicalize_spec_mode(wanted["speculative_type"])
-    # Launch flags can run another KV cache or context than the fields record. A setting the
-    # alias or the saved row names strips those flags when it loads, so it must be what launched.
+    # Launch flags may run another cache or context; a named setting strips them, so must match.
     extras = getattr(backend, "requested_extra_args", None) or list(intent.extra_args or ())
     if "kv_cache_dtype" in named:
         k_type, v_type = getattr(
@@ -10438,7 +10437,6 @@ def _ignored_alias_load_settings(
     alias: dict[str, Any],
     limit: str = "only apply when a local GGUF model generates text",
 ) -> HTTPException:
-    """The refusal for an alias whose load settings the model answering it would ignore."""
     return _alias_refusal(
         fastapi_request,
         "alias_load_settings_unsupported",
