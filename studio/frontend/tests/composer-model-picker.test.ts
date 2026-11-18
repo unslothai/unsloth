@@ -711,14 +711,14 @@ test("the open picker is at least 420px and grows only into the room under Selec
   );
 });
 
-test("short landscape windows get a 380px floor; phones and tall windows keep 420px", () => {
-  assert.equal(pickerMinHeight(1366, 768, 1), 380);
-  assert.equal(pickerMinHeight(1280, 640, 1), 380);
-  assert.equal(pickerMinHeight(1440, 900, 1), 380);
+test("short landscape windows get a 400px floor; phones and tall windows keep 420px", () => {
+  assert.equal(pickerMinHeight(1366, 768, 1), 400);
+  assert.equal(pickerMinHeight(1280, 640, 1), 400);
+  assert.equal(pickerMinHeight(1440, 900, 1), 400);
   assert.equal(pickerMinHeight(1920, 1080, 1), 420);
   assert.equal(pickerMinHeight(390, 844, 1), 420);
   // 1366x768 at 67% zoom.
-  assert.equal(pickerMinHeight(2039, 1146, 1.49), 380);
+  assert.equal(pickerMinHeight(2039, 1146, 1.49), 400);
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );

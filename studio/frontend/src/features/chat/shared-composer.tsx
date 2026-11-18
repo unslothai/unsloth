@@ -950,8 +950,7 @@ export function SharedComposer({
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
+  const exportThreadIds = [model1ThreadId, model2ThreadId].filter(
     (id): id is string => Boolean(id),
   );
   const lastOpenRouterChosenModel = useChatRuntimeStore(

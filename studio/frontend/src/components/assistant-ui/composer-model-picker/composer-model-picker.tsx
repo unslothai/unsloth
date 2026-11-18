@@ -134,8 +134,11 @@ import { isCapableCheckpointQuant } from "@/features/model-picker/components/mod
 import {
   type NpuModel,
   NpuSetupNotice,
+  npuDeleteDescription,
   npuDownloadLabel,
+  npuRowTooltip,
   npuSizeLabel,
+  refreshNpuModels,
   useNpuCatalog,
   useNpuStatus,
 } from "@/features/npu";
@@ -189,6 +192,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -1715,6 +1719,11 @@ export function ComposerModelPicker({
       : undefined,
   );
   const npuModels = npuCatalog?.models ?? null;
+  // The picker stays mounted, so a conversion made on the Export page lists only on a fresh read.
+  const npuReady = npuStatus?.supported === true && npuStatus.ready === true;
+  useEffect(() => {
+    if (open && npuReady) void refreshNpuModels();
+  }, [open, npuReady]);
   const online = useOnlineStatus();
   const hfToken = useHfTokenStore((s) => s.token);
   const gpuInfo = useGpuInfo(open);
@@ -3110,6 +3119,12 @@ export function ComposerModelPicker({
       isLora: false,
       isDownloaded: true,
     } as const;
+    if (model.local?.problem) {
+      toast.error("Can't load this model on the NPU", {
+        description: model.local.problem,
+      });
+      return;
+    }
     if (model.downloaded) {
       if (row.id !== chosen?.id) {
         setPending(row);
@@ -3380,11 +3395,10 @@ export function ComposerModelPicker({
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
   const [roomBelow, setRoomBelow] = useState<number | null>(null);
-  const dropsDown = open && openSide === "bottom";
-  useEffect(() => {
-    if (!(dropsDown && panel)) {
-      setDropOffset(PICKER_GAP);
-      setRoomBelow(null);
+  const dropsDown = openSide === "bottom";
+  // Layout effect: the first painted frame must already have the measured offset.
+  useLayoutEffect(() => {
+    if (!(open && dropsDown && panel)) {
       return;
     }
     const place = () => {
@@ -3404,7 +3418,7 @@ export function ComposerModelPicker({
       observer.disconnect();
       window.removeEventListener("resize", place);
     };
-  }, [dropsDown, panel]);
+  }, [open, dropsDown, panel]);
   // The open-time rect is stale once the trigger moves or lays out late.
   useEffect(() => {
     const trigger = triggerRef.current;
@@ -3443,7 +3457,14 @@ export function ComposerModelPicker({
       // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
       const trigger = triggerRef.current;
       const rect = trigger?.getBoundingClientRect() ?? null;
-      setOpenSide(pickerSide(side, rect, window.innerHeight));
+      const nextSide = pickerSide(side, rect, window.innerHeight);
+      setOpenSide(nextSide);
+      setDropOffset(PICKER_GAP);
+      setRoomBelow(
+        nextSide === "bottom" && rect
+          ? pickerRoomBelow(rect.bottom, window.innerHeight)
+          : null,
+      );
       const scale = trigger
         ? Number.parseFloat(
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
@@ -3757,7 +3778,7 @@ export function ComposerModelPicker({
     if (row.kind === "local" && row.lora) {
       return loraMeta(row.lora);
     }
-    if (row.npu?.downloaded) {
+    if (row.npu?.downloaded && !row.npu.local?.problem) {
       return {
         source: "local",
         isLora: false,
@@ -4015,7 +4036,7 @@ export function ComposerModelPicker({
     if (npu?.downloaded && npuCatalog) {
       return {
         title: `Delete ${row.label}?`,
-        description: "This removes the model's NPU files from this device.",
+        description: npuDeleteDescription(npu),
         successMessage: `Deleted ${row.label}`,
         disabled: row.loaded || source?.deleteDisabled,
         onConfirm: () => npuCatalog.remove(npu),
@@ -4167,6 +4188,7 @@ export function ComposerModelPicker({
             // Shared with the header picker's rows: the Playwright drivers select by these.
             data-model-picker-option=""
             data-model-picker-active-option={rowActive ? "true" : undefined}
+            title={row.npu ? (npuRowTooltip(row.npu) ?? undefined) : undefined}
             onMouseMove={() => {
               setActive(index);
               setHighlight(true);
