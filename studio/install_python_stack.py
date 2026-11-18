@@ -11737,11 +11737,23 @@ def _hnsw_auto_install_disabled() -> bool:
     }
 
 
+def _hnsw_prefetch() -> bool:
+    return os.environ.get("UNSLOTH_HNSW_PREFETCH", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _hnsw_prebuilt_step() -> None:
-    """11e. Optional HNSW pair; never fails the install (RAG falls back to exact search)."""
+    """11e. Optional HNSW pair; never fails the install (RAG falls back to exact search).
+
+    On demand by default: the backend fetches it the first time a knowledge base is large enough
+    to use it (core/rag/hnsw_runtime.py), so most installs never download it. UNSLOTH_HNSW_PREFETCH=1
+    installs it now, e.g. on a machine that will be offline later."""
     if _hnsw_auto_install_disabled():
         _progress("HNSW search (disabled)")
         _record_step("hnsw-prebuilt", "disabled")
+        return
+    if not _hnsw_prefetch():
+        _progress("HNSW search (on demand)")
+        _record_step("hnsw-prebuilt", "on-demand")
         return
     _progress("HNSW search")
     try:

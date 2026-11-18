@@ -2392,10 +2392,12 @@ function Get-RocmPinStaleTags {
     }
 }
 
-# A skipped (current) Python stack leaves the HNSW pair unchecked; --check-only is offline.
+# UNSLOTH_HNSW_PREFETCH=1 only: by default the backend fetches the pair when a knowledge base needs
+# it. A skipped (current) Python stack leaves it unchecked; --check-only is offline.
 function Invoke-HnswBackfill {
     $_hnswInstaller = Join-Path $PSScriptRoot "install_hnsw_prebuilt.py"
-    if (@('0', 'false', 'no', 'off') -contains "$env:RAG_VEC_ANN_AUTO_INSTALL".Trim().ToLower() -or
+    if (@('1', 'true', 'yes', 'on') -notcontains "$env:UNSLOTH_HNSW_PREFETCH".Trim().ToLower() -or
+        @('0', 'false', 'no', 'off') -contains "$env:RAG_VEC_ANN_AUTO_INSTALL".Trim().ToLower() -or
         -not (Test-Path -LiteralPath $_hnswInstaller)) {
         return
     }

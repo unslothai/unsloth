@@ -40,6 +40,8 @@ stack = _load()
 @pytest.fixture
 def step(monkeypatch, tmp_path):
     monkeypatch.delenv("RAG_VEC_ANN_AUTO_INSTALL", raising = False)
+    # The install-time fetch is opt-in; these cover what it does when asked for.
+    monkeypatch.setenv("UNSLOTH_HNSW_PREFETCH", "1")
     monkeypatch.setattr(stack, "_progress", lambda label: progress.append(label))
     monkeypatch.setattr(stack, "_note", lambda message, color_fn = None: notes.append(message))
     stack._STEP_RESULTS.clear()
@@ -85,6 +87,19 @@ def test_a_missing_installer_is_a_note(step, monkeypatch, tmp_path):
     monkeypatch.setattr(stack, "HNSW_INSTALLER", tmp_path / "absent.py")
     stack._hnsw_prebuilt_step()
     assert stack._STEP_RESULTS["hnsw-prebuilt"] == "failed"
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "no"])
+def test_by_default_installs_download_nothing_and_leave_it_to_the_first_big_knowledge_base(
+    step, monkeypatch, value
+):
+    if value is None:
+        monkeypatch.delenv("UNSLOTH_HNSW_PREFETCH", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_HNSW_PREFETCH", value)
+    progress, notes, result = step("raise AssertionError('the installer must not even load')\n")
+    # Same progress slot as a prefetch, so the step count is identical either way.
+    assert progress == ["HNSW search (on demand)"] and notes == [] and result == "on-demand"
 
 
 def test_the_opt_out_loads_nothing(step, monkeypatch):
@@ -155,6 +170,7 @@ def _run_sh(tmp_path, env = None):
         f"{func}_hnsw_backfill\n"
     )
     full_env = {k: v for k, v in os.environ.items() if k != "RAG_VEC_ANN_AUTO_INSTALL"}
+    full_env["UNSLOTH_HNSW_PREFETCH"] = "1"
     full_env.update(env or {})
     return subprocess.run(
         ["bash", "-euo", "pipefail", "-c", script], capture_output = True, text = True, env = full_env
@@ -195,6 +211,15 @@ def test_setup_sh_opt_out_and_missing_installer_run_nothing(tmp_path):
     assert _run_sh(tmp_path).returncode == 0
 
 
+@_needs_bash
+@pytest.mark.parametrize("value", ["", "0"])
+def test_setup_sh_fetches_nothing_unless_prefetch_is_asked_for(tmp_path, value):
+    installer = _stub(tmp_path, "missing", "ready")
+    out = _run_sh(tmp_path, {"UNSLOTH_HNSW_PREFETCH": value})
+    assert out.returncode == 0, out.stderr
+    assert _calls(installer) == [] and "STEP" not in out.stdout
+
+
 def test_setup_sh_calls_it_only_on_the_skipped_branch():
     source = (REPO_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     branch = source[source.index('step "python" "dependencies up to date"') :]
@@ -214,6 +239,7 @@ def _run_ps1(tmp_path, env = None):
         f"{func}Invoke-HnswBackfill\n"
     )
     full_env = {k: v for k, v in os.environ.items() if k != "RAG_VEC_ANN_AUTO_INSTALL"}
+    full_env["UNSLOTH_HNSW_PREFETCH"] = "1"
     full_env.update(env or {})
     return run_pwsh(
         [pwsh, "-NoProfile", "-Command", script], capture_output = True, text = True, env = full_env
@@ -253,3 +279,11 @@ def test_setup_ps1_opt_out_runs_nothing(tmp_path):
     installer = _stub(tmp_path, "missing", "ready")
     assert _run_ps1(tmp_path, {"RAG_VEC_ANN_AUTO_INSTALL": "0"}).returncode == 0
     assert _calls(installer) == []
+
+
+@pytest.mark.parametrize("value", ["", "0"])
+def test_setup_ps1_fetches_nothing_unless_prefetch_is_asked_for(tmp_path, value):
+    installer = _stub(tmp_path, "missing", "ready")
+    out = _run_ps1(tmp_path, {"UNSLOTH_HNSW_PREFETCH": value})
+    assert out.returncode == 0, out.stderr
+    assert _calls(installer) == [] and "STEP" not in out.stdout

@@ -2411,8 +2411,10 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
-# A skipped (current) Python stack leaves the HNSW pair unchecked; --check-only is offline.
+# UNSLOTH_HNSW_PREFETCH=1 only: by default the backend fetches the pair when a knowledge base needs
+# it. A skipped (current) Python stack leaves it unchecked; --check-only is offline.
 _hnsw_backfill() {
+    case "${UNSLOTH_HNSW_PREFETCH:-0}" in 1|true|yes|on) ;; *) return 0 ;; esac
     case "${RAG_VEC_ANN_AUTO_INSTALL:-1}" in 0|false|no|off) return 0 ;; esac
     local _installer="$SCRIPT_DIR/install_hnsw_prebuilt.py" _status
     [ -f "$_installer" ] || return 0
