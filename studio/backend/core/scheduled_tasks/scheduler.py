@@ -141,9 +141,11 @@ def _run_instructions(task: dict, now_ms: int) -> str:
     project = studio_db.get_chat_project(task["projectId"]) if task.get("projectId") else None
     agents_md = agents_md_text(project).strip()
     instructions = project["instructions"].strip() if project and not project["archived"] else ""
+    chat_settings = (_target_chat(task) or {}).get("settings") or {}
     parts = [
         f"<agents_md>\n{agents_md}\n</agents_md>" if agents_md else "",
         f"<project_instructions>\n{instructions}\n</project_instructions>" if instructions else "",
+        (chat_settings.get("systemPrompt") or "").strip(),
         system_prompt(task, now_ms),
     ]
     return "\n\n".join(part for part in parts if part)

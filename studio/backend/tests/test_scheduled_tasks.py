@@ -2823,6 +2823,27 @@ def test_a_run_reads_its_chat_before_the_prompt(monkeypatch):
     assert producer.payload.context_policy == "rolling"
 
 
+def test_a_run_in_a_chat_keeps_that_chats_system_prompt(monkeypatch):
+    make_chat()
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-1",
+            "title": "Sheet export",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 1,
+            "settings": {"systemPrompt": "  Always answer in French.  "},
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    producer = FakeProducer(completion("Fait."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "chat-1"))
+
+    assert producer.payload.messages[0].content == "Always answer in French.\n\n" + note
+
+
 def test_a_run_without_a_chat_keeps_the_default_overflow(monkeypatch):
     producer = FakeProducer(completion("Done."))
     generate(monkeypatch, producer)
