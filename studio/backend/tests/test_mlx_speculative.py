@@ -3,6 +3,7 @@
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -99,7 +100,9 @@ def test_a_bundled_drafter_follows_the_head_and_precedes_cached_ones(cache, tmp_
     _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
     (draft := tmp_path / "org--Qwen3.5-4B-4bit" / "draft").mkdir()
     (draft / "config.json").write_text(json.dumps({**_ASSISTANT, "backbone_hidden_size": 8}))
-    paths = lambda: [os.path.relpath(s.path, draft.parent) for s in _resolve("auto").sources]
+    paths = lambda: [
+        Path(os.path.relpath(s.path, draft.parent)).as_posix() for s in _resolve("auto").sources
+    ]
     assert paths() == [".", "../g--Qwen3.5-4B-assistant"]  # no weights beside the config
     (draft / "model.safetensors").touch()
     assert paths() == [".", "draft", "../g--Qwen3.5-4B-assistant"]
