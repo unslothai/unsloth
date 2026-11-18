@@ -765,6 +765,10 @@ def _resident(**state):
     return backend
 
 
+async def _async_true(*args, **kwargs):
+    return True
+
+
 def _satisfied(
     monkeypatch,
     backend,
@@ -1006,16 +1010,25 @@ def test_alias_reuse_is_no_match_when_the_resident_unloads_during_resolution(mon
     )
 
 
-@pytest.mark.parametrize("tensor_parallel", [True, False])
-def test_alias_reuse_matches_a_cpu_only_launch_that_dropped_saved_tensor(
-    monkeypatch, tensor_parallel
-):
-    # load_model drops tensor parallelism for a manual zero-layer split: the saved toggle then matches.
-    backend = _resident(_gpu_memory_mode = "manual", _gpu_layers = 0, _tensor_parallel = False)
-    saved = {"tensor_parallel": tensor_parallel}
+@pytest.mark.parametrize(
+    "saved",
+    [
+        {"tensor_parallel": True},
+        {"tensor_parallel": False},
+        {"gpu_ids": [0, 1], "tensor_split": [1.0, 1.0]},
+        {"gpu_ids": [0, 1], "tensor_split": [1.0, 1.0], "tensor_parallel": True},
+    ],
+)
+def test_alias_reuse_matches_a_cpu_only_launch_that_dropped_saved_tensor(monkeypatch, saved):
+    # load_model drops the tensor toggle and ratio for a manual zero-layer split: saved ones then match.
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_override_gpu_ids_still_resolve", _async_true)
+    state = {"_requested_gpu_ids": saved.get("gpu_ids"), "_gpu_ids": saved.get("gpu_ids")}
+    backend = _resident(_gpu_memory_mode = "manual", _gpu_layers = 0, _tensor_parallel = False, **state)
     assert _satisfied(monkeypatch, backend, {**_CONFIG, "gpu_layers": 0}, saved = saved)
     # A GPU split that kept tensor is still not this CPU-only launch.
-    backend = _resident(_gpu_memory_mode = "manual", _gpu_layers = 0, _tensor_parallel = True)
+    backend = _resident(_gpu_memory_mode = "manual", _gpu_layers = 0, _tensor_parallel = True, **state)
     assert not _satisfied(monkeypatch, backend, {**_CONFIG, "gpu_layers": 0}, saved = saved)
 
 

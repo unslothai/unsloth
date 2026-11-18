@@ -4453,6 +4453,12 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
 _GPU_UNACCELERATED_CACHE_TYPES = {"iq4_nl": "q4_0"}
 
 
+def _manual_split_runs_without_tensor(intent: "GgufLoadIntent") -> bool:
+    """A manual split with zero (CPU only) or Auto layers, which load_model always launches without
+    tensor parallelism or a ratio, whatever the request or extras ask for."""
+    return intent.gpu_memory_mode == "manual" and intent.gpu_layers <= 0
+
+
 def _kv_cache_gpu_fallback_warning(
     cache_type_kv: Optional[str],
     gpu_memory_mode: str,
@@ -9802,6 +9808,10 @@ class LlamaCppBackend:
 
         if intent.force_reload:
             return False
+        if _manual_split_runs_without_tensor(intent):
+            # load_model drops the tensor toggle and ratio itself for this placement (the "Manual
+            # gpu_layers=0" and "Manual mode with Auto layers" branches), so compare what it launches.
+            intent = replace(intent, tensor_parallel = False, tensor_split = None)
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
@@ -9861,9 +9871,8 @@ class LlamaCppBackend:
         if _metal_device_is_paravirtual():
             if self._tensor_parallel:
                 return False
-        elif intent.gpu_memory_mode == "manual" and intent.gpu_layers <= 0:
-            # load_model drops tensor for a manual split with zero or Auto layers, extras included,
-            # so a saved tensor toggle must not read as a different launch here.
+        elif _manual_split_runs_without_tensor(intent):
+            # Extras cannot turn tensor back on for this placement either.
             if self._tensor_parallel:
                 return False
         elif not _tensor_parallel_matches_loaded(
