@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { imageSwapForRequest, streamImageSwap } from "./chat-image-swap";
 import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
@@ -7306,6 +7307,8 @@ export function createOpenAIStreamAdapter(
                 runtime.loadedContextLength ??
                 (params.maxSeqLength || null));
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
+            const imageSwap = isExternalRequest ? null : await imageSwapForRequest(requestPayload, runSignal);
+            if (imageSwap) generationDecision = "legacy";
             if (generationDecision === "pending") {
               // Keyed on `enabled_tools`, never `requestPayload.tools`: see durable-gate.ts.
               if (turnRequiresLegacyStream(requestPayload)) {
@@ -7435,7 +7438,9 @@ export function createOpenAIStreamAdapter(
             };
             // The window lets a length-stop tell user Max Tokens from the backend's stand-in for Max.
             const sourceStream =
-              generationDecision === "durable"
+              imageSwap
+                ? streamImageSwap(requestPayload, imageSwap, runSignal, servedContextLength)
+                : generationDecision === "durable"
                 ? durableStream()
                 : streamChatCompletions(
                     requestPayload,
@@ -8047,7 +8052,7 @@ export function createOpenAIStreamAdapter(
                     const mcpImages: McpImageToolResult | null =
                       isMcpImageToolResult(mcpCandidate) ? mcpCandidate : null;
                     if (
-                      toolCallParts[idx].toolName === "image_generation" &&
+                      ["image_generation", "generate_image"].includes(toolCallParts[idx].toolName) &&
                       typeof imageB64 === "string" &&
                       imageB64
                     ) {

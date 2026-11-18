@@ -3542,6 +3542,7 @@ from models.inference import (
     DiffusionLoadRequest,
     LoraSpec,
     MediaUnloadOutcome,
+    ChatImageSwapRequest,
     MediaUnloadRequest,
     DiffusionLoadUnloadedResponse,
     DiffusionUnloadResponse,
@@ -19286,6 +19287,9 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
+            if extra is None and isinstance(response, LoadResponse):
+                from core.inference.chat_image_swap import remember_text_load
+                remember_text_load(request, user_initiated = user_initiated)
             if extra is not None:
                 from core.inference.llama_keepwarm import _note_activity
 
@@ -52816,6 +52820,37 @@ async def _enhance_generate_prompts(
         from core.inference.diffusion_families import load_identity
         outcome.load = load_identity(status.get("repo_id"), status.get("base_repo"), family)
     return outcome
+
+
+@studio_router.post("/images/chat-swap/{swap_id}/cancel")
+async def cancel_chat_image_swap(
+    swap_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    if via_api_key or account_access.account_scope() is not None:
+        raise HTTPException(status_code = 403, detail = "Image swaps require a single-user Unsloth session.")
+    from core.inference.chat_image_swap import cancel
+    return {"cancelled": cancel(swap_id)}
+
+
+@studio_router.post("/images/chat-swap", response_model = DiffusionGenerateResponse)
+@account_access.gpu_busy_route
+async def generate_chat_image_with_swap(
+    request: ChatImageSwapRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    # Model control is an explicit action of the signed-in local user. A chat tools key may
+    # load beside its model only and must never acquire this ability.
+    if via_api_key or not _loads_anything() or account_access.account_scope() is not None:
+        raise HTTPException(status_code = 403, detail = "Image swaps require a single-user Unsloth session.")
+    from core.inference.chat_image_swap import generate_and_restore
+
+    return await _tunnel_safe_json(
+        generate_and_restore(request, http_request, current_subject), label = "Chat image generation"
+    )
 
 
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)

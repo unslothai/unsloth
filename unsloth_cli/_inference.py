@@ -1109,6 +1109,7 @@ class HttpChatBackend:
     """
 
     def __init__(self, base_url: str, token: str) -> None:
+        self.image_generator: Optional[str] = None
         self._base = base_url
         self._token = token
         self.reply_hit_token_limit = False
@@ -1193,6 +1194,7 @@ class HttpChatBackend:
             _exit_if_refused_load(model, reason, trust_remote_code)
             typer.echo(f"Model load failed: {reason}", err = True)
             raise typer.Exit(code = 1)
+        self._text_id = loaded.get("model") or model
         self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
 
     def _inference_status(self) -> Optional[dict]:
@@ -1257,6 +1259,30 @@ class HttpChatBackend:
             body["max_tokens"] = max_new_tokens
         if use_adapter is not None:
             body["use_adapter"] = use_adapter
+        if self.image_generator:
+            from unsloth_cli._chat_image_swap import image_tool_turn
+
+            def api(path, payload = None):
+                method = "GET" if payload is None else "POST"
+                return read_json_checking_deferred_error(
+                    self._base + path, self._request(method, path, payload, timeout = 1200)
+                )
+
+            def show_image(image):
+                typer.echo(f"Saved gallery image {image['gallery_image_id']}: {image['url']}", err = True)
+
+            choice, history = image_tool_turn(
+                api, body, self._text_id,
+                {"model_path": self.image_generator}, show_image,
+            )
+            if not history:
+                self.reply_hit_token_limit = choice.get("finish_reason") == "length"
+                reply = choice["message"]
+                text = reply.get("content") or ""
+                if reply.get("reasoning_content"):
+                    text = _THINK_OPEN + reply["reasoning_content"] + "</think>" + text
+                return iter([text])
+            body.update(model = self._text_id, messages = [*msgs, *history], enable_tools = False, tool_choice = "none")
         resp = self._request("POST", "/v1/chat/completions", body)
 
         self.reply_hit_token_limit = False
@@ -1314,6 +1340,11 @@ class HttpChatBackend:
             if not saw_finish:
                 raise RuntimeError("Stream ended before the reply completed.")
 
+        if self.image_generator:
+            def with_tool_history():
+                yield from cumulative()
+                messages.extend(history)
+            return with_tool_history()
         return cumulative()
 
     def close(self) -> None:

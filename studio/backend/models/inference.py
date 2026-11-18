@@ -5476,6 +5476,18 @@ class DiffusionDetailerSpec(BaseModel):
     )
 
 
+class ChatImageSwapRequest(BaseModel):
+    """A local chat has completed a tool call and released its inference request."""
+    swap_id: Optional[str] = Field(None, min_length = 1, max_length = 96, pattern = r"^[A-Za-z0-9_-]+$")
+    text_id: str = Field(min_length = 1)
+    image_load: DiffusionLoadRequest
+    prompt: str = Field(min_length = 1)
+    width: Optional[int] = Field(None, gt = 0)
+    height: Optional[int] = Field(None, gt = 0)
+    seed: Optional[int] = None
+    negative_prompt: Optional[str] = None
+
+
 class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""
 

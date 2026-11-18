@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { CHAT_IMAGE_SWAP_CHANGED, CHAT_IMAGE_SWAP_ENABLED } from "./chat-image-swap-selection";
+import { useConfirmedLoginMode } from "@/features/auth";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
@@ -2029,6 +2031,8 @@ export function ImagesPage({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_images_advanced_open",
   );
+  const loginMode = useConfirmedLoginMode();
+  const [chatImageSwap, setChatImageSwap] = usePersistedToggle(CHAT_IMAGE_SWAP_ENABLED);
   const [allowOversized, setAllowOversized] = usePersistedToggle(
     "unsloth_images_allow_oversized",
   );
@@ -6484,6 +6488,18 @@ export function ImagesPage({
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
+      {loginMode === "single" && (
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            Swap models for chat images
+            <InfoHint>Chat uses the last text-to-image model loaded here. When only the text model is loaded, an image tool call unloads it, renders the image, then restores the text model.</InfoHint>
+          </span>
+          <Switch checked={chatImageSwap} aria-label="Swap models for chat images" onCheckedChange={(on) => {
+            setChatImageSwap(on);
+            window.dispatchEvent(new Event(CHAT_IMAGE_SWAP_CHANGED));
+          }} />
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           {ALLOW_OVERSIZED_LABEL}

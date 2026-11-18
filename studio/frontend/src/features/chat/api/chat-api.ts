@@ -369,7 +369,7 @@ export class LoadModelError extends Error {
 
 /** `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
  *  since a truncated body means unfinished there but is legitimate elsewhere. */
-async function parseJsonOrThrow<T>(
+export async function parseJsonOrThrow<T>(
   response: Response,
   paddedLabel?: string,
 ): Promise<T> {
