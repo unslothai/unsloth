@@ -739,7 +739,12 @@ def test_int32_guard_splits_documents_instead_of_the_dense_fallback(monkeypatch,
     assert hpa.HF_PACKED_ATTENTION_STATS["int32_split"] == before["int32_split"] + 1
     assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"]
     for a, b in zip(split, whole):
-        torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+        if torch.version.hip is None:
+            torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+        else:
+            # ROCm's flash varlen (AOTriton) can round a bf16 ulp differently per launch shape: hold
+            # the groups to the self-check's tolerance instead of bit equality.
+            assert (a.float() - b.float()).abs().max() <= 0.02 * b.float().abs().max() + 1e-3
 
 
 def test_block_varlen_kwargs_sends_rows_past_int32_to_the_eager_wrapper(monkeypatch):
