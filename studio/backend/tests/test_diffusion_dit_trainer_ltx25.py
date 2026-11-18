@@ -566,14 +566,10 @@ class _TinyCondPipe:
         return pipe
 
 
-def test_tiny_end_to_end_trains_the_dev_dit_and_bakes_on_the_distilled_one(
-    tiny_pack, tmp_path, monkeypatch
-):
+@pytest.fixture
+def tiny_trainer(tiny_pack, tmp_path, monkeypatch):
+    """run(**cfg) trains on the tiny pack through run_dit_lora_training; every run gets a fresh fake worker client."""
     from PIL import Image
-    from safetensors.torch import load_file
-
-    from core.inference import video_lora
-    from diffusers import LTX2VideoTransformer3DModel
 
     monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV, raising = False)
     data = tmp_path / "data"
@@ -605,11 +601,18 @@ def test_tiny_end_to_end_trains_the_dev_dit_and_bakes_on_the_distilled_one(
             pred, f, h, w, conf.patch_size, conf.patch_size_t
         ),
     )
-    client = _FakeClient(
-        width = _TINY_CONNECTORS["caption_channels"] * _TINY_CONNECTORS["text_proj_in_factor"]
-    )
-    monkeypatch.setattr(dit, "_ltx25_start_encoder", lambda cfg, device: client)
-    loaded = []
+    clients: list = []
+
+    def start(cfg, device):
+        clients.append(
+            _FakeClient(
+                width = _TINY_CONNECTORS["caption_channels"] * _TINY_CONNECTORS["text_proj_in_factor"]
+            )
+        )
+        return clients[-1]
+
+    monkeypatch.setattr(dit, "_ltx25_start_encoder", start)
+    loaded: list = []
     spec = _SPECS[FAMILY]
     load = spec.load_transformer
 
@@ -618,23 +621,38 @@ def test_tiny_end_to_end_trains_the_dev_dit_and_bakes_on_the_distilled_one(
         return load(cfg, device, weight_dtype, base_precision).float()
 
     monkeypatch.setattr(spec, "load_transformer", load_float)
-    events = []
-    cfg = DiffusionLoraConfig(
-        base_model = str(tiny_pack),
-        data_dir = str(data),
-        output_dir = str(tmp_path / "out"),
-        resolution = 64,
-        train_steps = 4,
-        train_batch_size = 1,
-        learning_rate = 1e-2,
-        lora_rank = 4,
-        cache_variants = 1,
-        seed = 0,
-    )
-    dit.run_dit_lora_training(cfg, on_event = events.append)
 
-    assert not [e for e in events if e.get("type") == "error"]
-    assert loaded == ["transformer_full"]
+    def run(name = "out", **extra):
+        events: list = []
+        cfg = DiffusionLoraConfig(
+            base_model = str(tiny_pack),
+            data_dir = str(data),
+            output_dir = str(tmp_path / name),
+            resolution = 64,
+            train_steps = 4,
+            train_batch_size = 1,
+            learning_rate = 1e-2,
+            lora_rank = 4,
+            cache_variants = 1,
+            seed = 0,
+            **extra,
+        )
+        dit.run_dit_lora_training(cfg, on_event = events.append)
+        assert not [e for e in events if e.get("type") == "error"]
+        return events
+
+    return types.SimpleNamespace(run = run, clients = clients, loaded = loaded, catalog = catalog)
+
+
+def test_tiny_end_to_end_trains_the_dev_dit_and_bakes_on_the_distilled_one(tiny_pack, tiny_trainer):
+    from safetensors.torch import load_file
+
+    from core.inference import video_lora
+    from diffusers import LTX2VideoTransformer3DModel
+
+    events = tiny_trainer.run()
+    assert tiny_trainer.loaded == ["transformer_full"]
+    (client,) = tiny_trainer.clients
     assert client.prompts == ["a red tile in sks style"] and client.closed == 1
     losses = [
         e["loss"] for e in events if e.get("type") == "progress" and e.get("loss") is not None
@@ -645,7 +663,7 @@ def test_tiny_end_to_end_trains_the_dev_dit_and_bakes_on_the_distilled_one(
     assert adapter.name == DEFAULT_LORA_FILENAME
     keys = list(load_file(str(adapter)))
     assert keys and all(".attn1." in k or ".attn2." in k for k in keys)
-    published = [p for p in catalog.glob("*.safetensors")]
+    published = [p for p in tiny_trainer.catalog.glob("*.safetensors")]
     assert len(published) == 1
     sidecar = json.loads(published[0].with_suffix(".json").read_text(encoding = "utf-8"))
     assert sidecar["families"] == [FAMILY]
@@ -662,3 +680,20 @@ def test_tiny_end_to_end_trains_the_dev_dit_and_bakes_on_the_distilled_one(
     assert merged == len(keys) // 2
     assert full.abs().sum() > 0
     torch.testing.assert_close(half * 2, full, rtol = 1e-4, atol = 1e-6)
+
+
+def test_a_warm_caption_cache_never_starts_the_encoder_worker(tiny_trainer, tmp_path):
+    """Studio's conditioning cache serves the second run's captions and latents, so no Gemma 4 worker is spawned."""
+    cache = tmp_path / "cond_cache"
+    first = tiny_trainer.run("first", cond_cache_dir = str(cache))
+    assert len(tiny_trainer.clients) == 1 and tiny_trainer.clients[0].closed == 1
+    second = tiny_trainer.run("second", cond_cache_dir = str(cache))
+    assert len(tiny_trainer.clients) == 1, "a warm cache must not start the encoder worker"
+
+    def losses(events):
+        return [
+            e["loss"] for e in events if e.get("type") == "progress" and e.get("loss") is not None
+        ]
+
+    # Same conditioning from the cache: the same seeded run.
+    assert losses(second) == losses(first)
