@@ -49,6 +49,8 @@ export function mcpImagesEnvelope(images: McpImage[]): string {
 
 // The backend keeps only the newest eight pictures, but only after parsing, so bound here too.
 export const MAX_TOTAL_MCP_IMAGES = 8;
+// Mirrors IMAGE_TRIM_STEP in studio/backend/core/inference/mcp_images.py.
+export const MCP_IMAGE_TRIM_STEP = 4;
 // Mirrors the backend's per-result promotion limit.
 export const MAX_MODEL_IMAGES = 4;
 // Mirrors LOCAL_MAX_IMAGES_PER_TURN in studio/backend/core/inference/mcp_images.py.
@@ -63,6 +65,14 @@ export const MAX_MCP_IMAGE_MIME_CHARS = 256;
 export function isImageToolName(name: unknown): boolean {
   // "computer": its screenshots, so a later turn still shows the model the screen its results describe.
   return typeof name === "string" && (name === "view_image" || name === "computer" || name.startsWith("mcp__"));
+}
+
+/** Mirrors stepped_keep in mcp_images.py: pictures drop a step at a time so the prompt stays append-only. */
+export function steppedKeep(count: number, limit: number, step = MCP_IMAGE_TRIM_STEP): number {
+  if (limit <= 0) return 0;
+  if (count <= limit) return count;
+  const s = limit >= step ? step : 1;
+  return count - Math.ceil((count - limit) / s) * s;
 }
 
 interface EnvelopeCarrier {
@@ -84,14 +94,32 @@ export function planMcpImageBound(
   let spare = DECODE_FAILURE_ALLOWANCE;
   let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
   const perResult = localMarkers ? LOCAL_MAX_IMAGES_PER_TURN : MAX_MODEL_IMAGES;
+  if (!localMarkers) {
+    // The backend steps its cut off the count it receives, so send one step past the cap, congruent
+    // to the whole history's count: it then keeps what the tool loop last showed (#18231).
+    let total = 0;
+    for (const batch of batches) {
+      for (const images of batch) {
+        let bounded = 0;
+        for (const image of images) {
+          if (image.mimeType.length <= MAX_MCP_IMAGE_MIME_CHARS) bounded++;
+        }
+        total += Math.min(perResult, bounded);
+      }
+    }
+    budget = steppedKeep(total, MAX_TOTAL_MCP_IMAGES + MCP_IMAGE_TRIM_STEP);
+    // The upload stays within the old cap plus allowance.
+    spare = Math.min(spare, Math.max(0, MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE - budget));
+  }
   const out: McpImage[][][] = batches.map((batch) => batch.map(() => []));
   // Newest first: those are the ones the backend would have kept.
   for (let b = batches.length - 1; b >= 0; b--) {
     const batch = batches[b];
     const room = Math.min(budget, perResult);
     // Charge only what the backend can promote; shared spares keep corrupt entries from stranding
-    // valid older images.
-    let allowance = room + spare;
+    // valid older images. Off the marker path they ride only past a full quota, which the
+    // backend's count ignores.
+    let allowance = room + (localMarkers || room === perResult ? spare : 0);
     let taken = 0;
     for (let r = batch.length - 1; r >= 0; r--) {
       const images = batch[r];

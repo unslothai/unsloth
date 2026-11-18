@@ -11,7 +11,9 @@ import {
   MAX_TOTAL_MCP_IMAGES,
   MAX_MCP_IMAGE_MIME_CHARS,
   MAX_TOTAL_MCP_IMAGE_CHARS,
+  MCP_IMAGE_TRIM_STEP,
   planMcpImageBound,
+  steppedKeep,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
   mcpImagesEnvelope,
@@ -557,4 +559,29 @@ test("sandbox image viewer replays bounded images without trusting arbitrary too
   const bounded = boundMcpImageEnvelopes(messages);
   assert.equal(splitMcpImages(bounded[0].content).images.length, 1);
   assert.equal(splitMcpImages(bounded[1].content).images.length, 0);
+});
+
+test("steppedKeep drops a step at a time, like the backend's stepped_keep", () => {
+  const keep = Array.from({ length: 18 }, (_, n) => steppedKeep(n, 8, 4));
+  assert.deepEqual(keep, [0, 1, 2, 3, 4, 5, 6, 7, 8, 5, 6, 7, 8, 5, 6, 7, 8, 5]);
+});
+
+test("a screenshot chain uploads a count the backend cuts where its tool loop did (#18231)", () => {
+  for (let calls = 1; calls <= 40; calls++) {
+    const chain = Array.from({ length: calls }, (_, i) => ({
+      role: "tool",
+      name: "computer",
+      content: `ok${i}` + mcpImagesEnvelope([{ data: `s${i}`, mimeType: "image/jpeg" }]),
+    }));
+    const sent = boundMcpImageEnvelopes(chain).filter(
+      (m) => splitMcpImages(m.content).images.length > 0,
+    );
+    assert.equal(sent.length, steppedKeep(calls, MAX_TOTAL_MCP_IMAGES + MCP_IMAGE_TRIM_STEP));
+    assert.equal(sent.at(-1)?.content, chain.at(-1)?.content, "newest first");
+    assert.equal(
+      steppedKeep(sent.length, MAX_TOTAL_MCP_IMAGES),
+      steppedKeep(calls, MAX_TOTAL_MCP_IMAGES),
+      `${calls} calls`,
+    );
+  }
 });

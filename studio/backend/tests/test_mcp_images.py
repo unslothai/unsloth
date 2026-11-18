@@ -379,7 +379,8 @@ def test_the_data_url_history_is_capped_too():
     messages = promote_history(turns, vision = True)
     parts = mcp_images.count_image_parts(messages, "image_url")
 
-    assert parts == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    assert parts == mcp_images.stepped_keep(len(turns) // 2, mcp_images.MAX_TOTAL_MODEL_IMAGES)
+    assert parts <= mcp_images.MAX_TOTAL_MODEL_IMAGES
 
 
 def test_a_live_image_turn_merges_into_a_trailing_nudge():
@@ -767,7 +768,9 @@ def test_the_replay_cap_still_bounds_what_promotion_adds():
 
     out = promote_history(turns, vision = True)
 
-    assert mcp_images.count_image_parts(out, "image_url") == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    assert mcp_images.count_image_parts(out, "image_url") == mcp_images.stepped_keep(
+        len(turns) // 2, mcp_images.MAX_TOTAL_MODEL_IMAGES
+    )
 
 
 def test_the_sniff_charges_every_format_promotion_can_decode():
@@ -2090,7 +2093,7 @@ def test_a_gguf_replay_keeps_its_allowance_beside_the_attachment():
     """llama-server's limit is its context window, not an image cap; the live GGUF loop never
     reserved the attachment's slot, so replay must not lose a picture to it."""
     history = [{"role": "user", "content": "start"}]
-    for r in range(9):
+    for r in range(mcp_images.MAX_TOTAL_MODEL_IMAGES):
         history += [
             {
                 "role": "assistant",
@@ -2120,10 +2123,11 @@ def test_a_gguf_replay_keeps_its_allowance_beside_the_attachment():
         parts = mcp_images._all_image_url_parts(out)
         return sum(1 for part in parts if part["image_url"]["url"].startswith("data:image/png"))
 
+    limit = mcp_images.MAX_TOTAL_MODEL_IMAGES
     gguf = promote_history(history, vision = True)
-    assert promoted_parts(gguf) == mcp_images.MAX_TOTAL_MODEL_IMAGES + 1
+    assert promoted_parts(gguf) == limit + 1
     provider = promote_history(history, vision = True, reserve_for_caller = True)
-    assert promoted_parts(provider) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    assert promoted_parts(provider) == mcp_images.stepped_keep(limit, limit - 1) + 1
 
 
 def test_a_legacy_attachment_displaces_a_merged_replay_marker():
@@ -2705,3 +2709,76 @@ def test_local_replay_does_not_add_a_second_image_to_an_attachment_turn():
     assert pixels == [attachment]
     assert messages[-1] is user
     assert len(mcp_images.image_marker_parts(messages)) == 1
+
+
+def _distinct_image(i: int) -> dict:
+    return _image(_png(size = (8 + i, 8)))
+
+
+def _screenshot_chain(calls: int, name: str = "computer"):
+    """The live GGUF loop over a chain of one-screenshot calls, and the history a follow-up replays."""
+    conversation = [{"role": "user", "content": "do the task"}]
+    history = [{"role": "user", "content": "do the task"}]
+    owned: list = []
+    prompts = []
+    for i in range(calls):
+        call = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": f"c{i}", "type": "function", "function": {"name": name, "arguments": "{}"}}
+            ],
+        }
+        image = _distinct_image(i)
+        conversation += [call, {"role": "tool", "tool_call_id": f"c{i}", "content": "ok"}]
+        history += [
+            call,
+            {"role": "tool", "tool_call_id": f"c{i}", "content": _envelope("ok", image)},
+        ]
+        mcp_images.append_image_turn(conversation, [[image]], per_result = True, owned = owned)
+        prompts.append(json.loads(json.dumps(conversation)))
+    return conversation, history, prompts
+
+
+def _urls(conversation) -> list:
+    return [part["image_url"]["url"] for part in mcp_images._all_image_url_parts(conversation)]
+
+
+def test_stepped_keep_drops_a_step_at_a_time():
+    keep = [mcp_images.stepped_keep(n, 8, 4) for n in range(0, 18)]
+    assert keep == [0, 1, 2, 3, 4, 5, 6, 7, 8, 5, 6, 7, 8, 5, 6, 7, 8, 5]
+    assert mcp_images.stepped_keep(5, 2, 4) == 2
+    assert mcp_images.stepped_keep(5, 0) == 0
+
+
+def test_a_screenshot_chain_stays_append_only_between_drops():
+    """#18231: dropping the oldest picture per call shifted the prompt from the first image on,
+    so llama-server re-prefilled the whole chain on every call past the cap."""
+    _conversation, _history, prompts = _screenshot_chain(20)
+    shifted = [
+        index + 1
+        for index in range(1, len(prompts))
+        if prompts[index][: len(prompts[index - 1])] != prompts[index - 1]
+    ]
+    assert shifted == [9, 13, 17]
+    assert all(len(_urls(prompt)) <= mcp_images.MAX_TOTAL_MODEL_IMAGES for prompt in prompts)
+
+
+@pytest.mark.parametrize("calls", [3, 8, 9, 11, 12, 13, 16, 17, 23])
+def test_a_follow_up_replays_the_pictures_the_loop_last_sent(calls):
+    conversation, history, _prompts = _screenshot_chain(calls)
+    history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+
+    replay = promote_history(history, vision = True)
+
+    assert _urls(replay) == _urls(conversation)
+
+
+def test_a_frontend_bounded_replay_keeps_the_loop_cut():
+    """The frontend sends one step past the cap (steppedKeep(total, 12)); recounting that must land
+    on the same cut as the whole history."""
+    limit = mcp_images.MAX_TOTAL_MODEL_IMAGES
+    step = mcp_images.IMAGE_TRIM_STEP
+    for total in range(0, 40):
+        sent = mcp_images.stepped_keep(total, limit + step)
+        assert mcp_images.stepped_keep(sent, limit) == mcp_images.stepped_keep(total, limit), total
