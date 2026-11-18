@@ -166,6 +166,8 @@ NEUTRAL_PLAIN_HELPERS = {
     "_ast_fingerprint": _no_replay,
     "_bindings_intact": _no_replay,
     "_resolved_bindings": _no_replay,
+    # unsloth_zoo #2586: the head replay tries several contracts through this resolver.
+    "_first_resolved": _no_replay,
     "_verify_with_lazy_replay": _no_replay,
 }
 

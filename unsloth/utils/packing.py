@@ -1404,6 +1404,22 @@ def _auto_hybrid_device_ok(module) -> bool:
     return torch.version.hip is None and weight is not None and weight.device.type == "cuda"
 
 
+def _hybrid_opt_in_device(modules) -> Optional[str]:
+    for module in modules:
+        if _auto_hybrid_device_ok(module):
+            continue
+        if torch.version.hip is not None:
+            return "ROCm"
+        weight = next(module.parameters(), None)
+        return weight.device.type if weight is not None else "this device"
+    return None
+
+
+def hybrid_packing_opt_in_device(model) -> Optional[str]:
+    """Device a hybrid model packs on through UNSLOTH_EXPERIMENTAL_HYBRID_PACKING=1 alone, else None."""
+    return getattr(model, "_unsloth_hybrid_opt_in_device", None)
+
+
 def _probe_target(modules):
     for module in modules:
         if _stateful_mixer_kind(module) != "gated_delta":
@@ -1763,6 +1779,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         model._unsloth_varlen_forward_wrapped = True
 
     _wrap_generate_clears_varlen(model, hybrid_modules)
+    model._unsloth_hybrid_opt_in_device = (
+        None if torch_varlen_only else _hybrid_opt_in_device(hybrid_modules)
+    )
     HYBRID_PACKING_STATS["patched"] += 1
     return True
 

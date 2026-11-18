@@ -1281,7 +1281,9 @@ def _refused_by_its_own_tensors(model_dir: str, config: dict) -> Optional[str]:
         return None
 
     unhoused = sorted(
-        name for name in set(tensors) - built if not name.endswith((".scales", ".biases"))
+        name
+        for name in set(tensors) - built
+        if not name.endswith((".scales", ".biases", ".weight_scale_2"))
     )
     if unhoused:
         refusal = _extra_tensors_refused(model, config, unhoused)
@@ -1371,6 +1373,10 @@ def _install_oq_renames(config: dict) -> None:
     )
     if install is not None:
         install(config.get("model_type"))
+    # Mixed-mode and NVFP4-scaled-embedding checkpoints (Ollama's MLX tags), on a zoo that reads them.
+    install_quantization = getattr(loader, "_ensure_vlm_checkpoint_quantization", None)
+    if install_quantization is not None:
+        install_quantization()
 
 
 @functools.lru_cache(maxsize = 4)
