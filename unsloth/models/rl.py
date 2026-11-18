@@ -3370,8 +3370,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
-    # GRPO hands the vision tower each prompt's images num_generations times (rollout prefill and
-    # every policy forward): encode each distinct image once. UNSLOTH_GRPO_IMAGE_DEDUP=0 disables.
+    # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
             "try:\n"
