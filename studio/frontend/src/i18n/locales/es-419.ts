@@ -5928,6 +5928,12 @@ export const es419 = {
       openFileFailed: "No se pudo abrir el archivo",
     },
   },
+  exportTabs: {
+    ariaLabel: "Tipo de exportación",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Convertir a Q4NX",
+  },
   exportDecision: {
     title: "Modelo de decisión",
     description:

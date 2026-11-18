@@ -20,7 +20,8 @@ Switch (``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``, read by ``diffusion_int8_at
 * ``0``: never; ``UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH=0`` turns off only this route.
 * ``1`` or ``unsloth_int8`` by name: every dispatch DiT where the kernel passes its accuracy check (no race, except
   the Triton stand-in), from ``MIN_TOKENS``.
-* unset: ``AUTO_DITS`` on NVIDIA where the kernel passes the check and beats the incumbent by ``RACE_MARGIN``. Won at
+* unset: ``AUTO_DITS`` on NVIDIA (on ROCm the ``ROCM_AUTO_DITS`` of the card's gfx arch and the OS) where the kernel
+  passes the check and beats the incumbent by ``RACE_MARGIN``. Won at
   both race sizes: floor ``MIN_TOKENS``; at 4096 only: a ``MID_RACE_TOKENS`` race sets it. Lost at both: a second race
   at ``LONG_RACE_TOKENS`` can still route video lengths, since int8 gains grow with length (A100: 0.96x at 4096
   tokens, 1.37x at 27k).
@@ -77,6 +78,16 @@ AUTO_CUDA_ONLY = frozenset(
         "ZImageTransformer2DModel",
     }
 )
+# ROCm runs the Triton kernel (16-bit P.V, so no attention-sink path is needed). With the switch unset it races only the
+# DiTs of (gfx arch, sys.platform) measured there to be accurate (per-step error within the shipped INT8 weights') and
+# more than 2% faster end to end. gfx1151 Linux, against flash attention: Qwen-Image-2.1-Turbo 10.5% and Wan2.2-TI2V-5B
+# 6.7% faster; FLUX.3 Klein 2.3% slower and Z-Image-Turbo 1.8% faster stay off. gfx1151 Windows, against torch SDPA:
+# Qwen-Image-2.1-Turbo 3.8 to 4.9% faster; FLUX.3 Klein 1.8 to 3.1% (raced 1.9%), Z-Image-Turbo 1.6% (raced) and
+# Wan2.2-TI2V-5B 1.5% stay off.
+ROCM_AUTO_DITS: dict = {
+    ("gfx1151", "linux"): frozenset({"QwenImage21Transformer2DModel", "WanTransformer3DModel"}),
+    ("gfx1151", "win32"): frozenset({"QwenImage21Transformer2DModel"}),
+}
 # processors that already run the kernel themselves
 _STRIDED_FLAG = "_unsloth_int8"
 
@@ -692,6 +703,15 @@ def _card_floor(
     return found, max(minimum, MIN_TOKENS)
 
 
+def rocm_auto_dits(index: int) -> frozenset:
+    """The DiTs the unset switch races on this ROCm card: ``ROCM_AUTO_DITS`` of its gfx arch and this OS, or none."""
+    from . import diffusion_int8_attention as I8
+    try:
+        return ROCM_AUTO_DITS.get((I8._gfx_arch(index), sys.platform), frozenset())
+    except Exception:  # noqa: BLE001 -- an unreadable arch keeps the incumbent
+        return frozenset()
+
+
 def _target_device(target: Any) -> str:
     return str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
 
@@ -718,11 +738,15 @@ def _install(
     device = _target_device(target)
     if not device.startswith("cuda") or not torch.cuda.is_available():
         return 0
-    if not forced and I8._is_rocm():
-        return 0
     dev = torch.device(device)
     index = I8._device_index(dev)
     dev = torch.device("cuda", index)
+    rocm = I8._is_rocm()
+    auto_dits = AUTO_DITS
+    if rocm and not forced:
+        auto_dits = rocm_auto_dits(index)
+        if not auto_dits:
+            return 0
     dtype = getattr(target, "dtype", None)
     if str(dtype) not in ("torch.float16", "torch.bfloat16"):
         dtype = (
@@ -733,7 +757,7 @@ def _install(
     family: dict = {}
     for dit in _dits(pipe):
         if not forced and (
-            type(dit).__name__ not in AUTO_DITS
+            type(dit).__name__ not in auto_dits
             or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
             or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
         ):
@@ -746,7 +770,7 @@ def _install(
         ]
         candidates.extend(mods)
         family.update((id(m), type(dit).__name__) for m in mods)
-        if not forced and type(dit).__name__ in AUTO_CUDA_ONLY:
+        if not forced and not rocm and type(dit).__name__ in AUTO_CUDA_ONLY:
             cuda_only.update(id(m) for m in mods)
     if not candidates or install_dispatch_route() == 0:
         return 0

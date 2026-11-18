@@ -24,6 +24,7 @@ from typing import Any, Optional, Tuple
 import torch
 from torch import Tensor
 import torch.nn.functional as F
+from packaging.version import Version
 
 from ..device_type import DEVICE_TYPE
 from ..models._utils import *
@@ -116,8 +117,35 @@ def _avoids_cudnn(Q, training):
     return bool(training) and Q.is_cuda and Q.device.index in _NO_CUDNN_TRAINING
 
 
+# torch < 2.14 compiled masked SDPA backward faults on an unaligned bias; pad the call to a multiple of 8.
+_MASKED_SDPA_ALIGNMENT = 8
+_MASKED_SDPA_NEEDS_ALIGNMENT = Version(torch.__version__.split("+")[0]) < Version("2.14.0")
+
+
+def _masked_sdpa_needs_alignment(Q, K, attn_mask):
+    return (
+        _MASKED_SDPA_NEEDS_ALIGNMENT
+        and isinstance(attn_mask, torch.Tensor)
+        and Q.is_cuda
+        and Q.shape[-2] == K.shape[-2]
+        and torch.compiler.is_compiling()
+    )
+
+
 def _training_sdpa(*args, **kwargs):
     """Avoid per-length cuDNN planning on SM100 training calls, including traced forwards."""
+    if len(args) >= 3 and _masked_sdpa_needs_alignment(args[0], args[1], kwargs.get("attn_mask")):
+        # Pad 2..9, never 0 or 1: dynamo specialises those and recompiles.
+        Q, K, V = args[:3]
+        q_len = Q.shape[-2]
+        pad = 2 + (-q_len - 2) % _MASKED_SDPA_ALIGNMENT
+        Q, K, V = (F.pad(x, (0, 0, 0, pad)) for x in (Q, K, V))
+        kwargs = {**kwargs, "attn_mask": _padded_bucket_mask(kwargs["attn_mask"], pad)}
+        return _training_sdpa_call(Q, K, V, *args[3:], **kwargs)[..., :q_len, :]
+    return _training_sdpa_call(*args, **kwargs)
+
+
+def _training_sdpa_call(*args, **kwargs):
     if args and _avoids_cudnn(args[0], True):
         # Narrows the caller's sdpa_kernel policy (MATH stays math); cuDNN-only runs as asked.
         backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
