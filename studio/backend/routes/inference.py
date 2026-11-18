@@ -2020,8 +2020,17 @@ def _openai_llama_admission_compact_image_part(part: dict) -> dict:
     return {"type": "image_url", "image_url": compact_image_url}
 
 
+def _mcp_replay_uncapped(payload) -> bool:
+    """A compacting GGUF chat keeps every tool picture: its tool loop does too and lets the fit make
+    room, so the follow-up prompt matches what the loop last sent (#18231)."""
+    return payload is not None and _rolling_context_policy(payload) == "truncate_oldest"
+
+
 def _openai_llama_admission_messages_for_estimate(
-    messages, *, vision: bool = True
+    messages,
+    *,
+    vision: bool = True,
+    uncapped: bool = False,
 ) -> tuple[list[dict], int]:
     """Strip image bytes before estimating text; mtmd token counts follow the model, not base64 size."""
     estimate_messages = []
@@ -2108,7 +2117,9 @@ def _openai_llama_admission_messages_for_estimate(
             estimate_message["content"] = estimate_content
         estimate_messages.append(estimate_message)
     # Cap replay images separately from caller attachments, matching GGUF promotion.
-    return estimate_messages, image_parts + min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
+    if not uncapped:
+        envelope_image_parts = min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
+    return estimate_messages, image_parts + envelope_image_parts
 
 
 def _conversation_video_clips(messages) -> list[str]:
@@ -2222,7 +2233,7 @@ def _openai_llama_admission_tokens(
     elif isinstance(messages, list) and messages:
         try:
             estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-                messages, vision = vision
+                messages, vision = vision, uncapped = _mcp_replay_uncapped(payload)
             )
             prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
@@ -2375,7 +2386,9 @@ def _count_gguf_admission_prompt(
     budget = _openai_llama_admission_budget(llama_backend) or 0
     try:
         text_messages, images = _openai_llama_admission_messages_for_estimate(
-            messages, vision = bool(getattr(llama_backend, "is_vision", False))
+            messages,
+            vision = bool(getattr(llama_backend, "is_vision", False)),
+            uncapped = _mcp_replay_uncapped(payload),
         )
         if prepared_body is None:
             template_kwargs = llama_backend._request_reasoning_kwargs(
@@ -48928,7 +48941,12 @@ def _openai_messages_for_gguf_chat(
         _splice_image_into_last_user(messages, image_part)
     has_image = _normalize_anthropic_openai_images(messages, is_vision)
     return (
-        promote_mcp_history_images(messages, vision = is_vision, promoted_out = promoted_out),
+        promote_mcp_history_images(
+            messages,
+            vision = is_vision,
+            promoted_out = promoted_out,
+            limit = None if _mcp_replay_uncapped(payload) else _MCP_MAX_TOTAL_MODEL_IMAGES,
+        ),
         has_image,
     )
 
