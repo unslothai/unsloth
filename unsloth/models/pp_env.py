@@ -1137,6 +1137,28 @@ def _set_router_aux_request(stage, value):
         ctx.output_router_logits = value
 
 
+def _apply_trainer_aux_coef(trainer, stage):
+    """The trainer's router_aux_loss_coef on the text config the stage reads for MoE VLM wrappers, for one step.
+
+    TRL >= 1.18 no longer writes it into the config, so the wrappers' coef (config.text_config) would stay the
+    checkpoint's. Returns what to hand to _restore_trainer_aux_coef, so the value never reaches a saved config."""
+    config = getattr(getattr(getattr(stage, "ctx", None), "moe", None), "config", None)
+    coef = getattr(trainer, "router_aux_loss_coef", None)
+    if coef is None or config is None or not hasattr(config, "router_aux_loss_coef"):
+        return None
+    old = config.router_aux_loss_coef
+    if old == coef:
+        return None
+    config.router_aux_loss_coef = coef
+    return (config, old)
+
+
+def _restore_trainer_aux_coef(applied):
+    if applied is not None:
+        config, old = applied
+        config.router_aux_loss_coef = old
+
+
 def _pp_training_step(
     self,
     model,
@@ -1169,6 +1191,7 @@ def _pp_training_step(
     m, pad = resolve_microbatches(stage, input_ids.shape[0])
     chunked = None
     _set_router_aux_request(stage, _router_aux_request(self))
+    applied_coef = _apply_trainer_aux_coef(self, stage)
     try:
         _refuse_split_router_aux(stage, m)
         input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
@@ -1186,6 +1209,7 @@ def _pp_training_step(
             **extra,
         )
     finally:
+        _restore_trainer_aux_coef(applied_coef)
         _set_trainer_aux(stage, None)
         _set_router_aux_request(stage, None)
         if chunked is not None:
@@ -1241,6 +1265,7 @@ def _pp_prediction_step(
     input_ids, labels, extra, count = _first_stage_batch(stage, input_ids, labels, extra, count)
     m, pad = resolve_microbatches(stage, input_ids.shape[0], train = False)
     _set_router_aux_request(stage, _router_aux_request(self))
+    applied_coef = _apply_trainer_aux_coef(self, stage)
     try:
         _refuse_split_router_aux(stage, m)
         input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
@@ -1250,6 +1275,7 @@ def _pp_prediction_step(
             input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra
         )
     finally:
+        _restore_trainer_aux_coef(applied_coef)
         _set_trainer_aux(stage, None)
         _set_router_aux_request(stage, None)
     return (loss.detach().to(self.args.device), None, None)

@@ -385,6 +385,8 @@ def test_rocm_keeps_windowed_rows_off_flash_attn(monkeypatch, window):
     dispatched = []
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(torch.version, "hip", "6.4")
+    # Torch varlen off (failed self-check), so rows reach flash-attn.
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [None])
     monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: ad.FLASH_VARLEN)
     monkeypatch.setattr(ad, "run_attention", lambda **kwargs: dispatched.append(1) or kwargs["Q"])
     lengths = [3, 5]
@@ -737,7 +739,11 @@ def test_int32_guard_splits_documents_instead_of_the_dense_fallback(monkeypatch,
     assert hpa.HF_PACKED_ATTENTION_STATS["int32_split"] == before["int32_split"] + 1
     assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"]
     for a, b in zip(split, whole):
-        torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+        if torch.version.hip is None:
+            torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+        else:
+            # ROCm AOTriton bf16 rounding varies per launch shape: self-check tolerance, not bit equality.
+            assert (a.float() - b.float()).abs().max() <= 0.02 * b.float().abs().max() + 1e-3
 
 
 def test_block_varlen_kwargs_sends_rows_past_int32_to_the_eager_wrapper(monkeypatch):
@@ -2148,3 +2154,85 @@ def test_packed_fp32_rows_under_autocast_take_varlen(monkeypatch, autocast):
     for a, b in zip(grads_fast, grads_ref):
         assert a.dtype == torch.float32
         torch.testing.assert_close(a, b, atol = 5e-2, rtol = 5e-2)
+
+
+def _fake_varlen(leak = False):
+    def fn(
+        q,
+        k,
+        v,
+        cu_q,
+        cu_k,
+        max_q,
+        max_k,
+        scale = None,
+        window_size = (-1, 0),
+        **kwargs,
+    ):
+        lengths = (cu_q[1:] - cu_q[:-1]).tolist()
+        window = None if window_size[0] < 0 else window_size[0] + 1
+        args = (
+            q.transpose(0, 1)[None].float(),
+            k.transpose(0, 1)[None].float(),
+            v.transpose(0, 1)[None].float(),
+        )
+        if leak:
+            lengths = [sum(lengths)]
+        return hpa._document_reference(*args, lengths, scale, window)[0].to(q.dtype)
+
+    return fn
+
+
+def _flash_from(fn):
+    def flash(query, key, value, cu_seqlens, max_seqlen, scale, window):
+        return hpa._call_torch_varlen(fn, query, key, value, cu_seqlens, max_seqlen, scale, window)
+
+    return flash
+
+
+@pytest.mark.parametrize("kind", ["exact", "leaky", "raises"])
+def test_rocm_varlen_needs_a_matching_self_check(monkeypatch, kind):
+    """ROCm builds use torch's flash varlen only when it matches per-document attention, fwd and bwd."""
+    fn = _fake_varlen(leak = kind == "leaky")
+    if kind == "raises":
+
+        def fn(*args, **kwargs):
+            raise RuntimeError("no varlen kernel on this arch")
+
+    monkeypatch.setattr(torch.version, "hip", "7.1")
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [fn])
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN_GQA", [False])
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN_DEVICES", {})
+    monkeypatch.setattr(hpa, "_HIP_WINDOW_OK", {})
+    monkeypatch.setattr(hpa, "_flash_varlen", _flash_from(fn))
+    device = torch.device("cpu")
+    want = kind == "exact"
+    assert (hpa._torch_varlen(device) is fn) is want
+    assert hpa._TORCH_VARLEN_DEVICES == {None: want}
+    assert hpa._hip_window_ok(device, None)
+    assert hpa._hip_window_ok(device, 64) is want
+
+
+def test_rocm_window_check_is_separate(monkeypatch):
+    """A build whose windowed rows leak keeps windowless rows on varlen and windowed rows on sdpa."""
+    exact = _fake_varlen()
+
+    def no_window(
+        *args,
+        window_size = (-1, 0),
+        **kwargs,
+    ):
+        if window_size[0] >= 0:
+            return exact(*args, window_size = (-1, 0), **kwargs)
+        return exact(*args, window_size = window_size, **kwargs)
+
+    monkeypatch.setattr(torch.version, "hip", "7.1")
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [no_window])
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN_GQA", [False])
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN_DEVICES", {})
+    monkeypatch.setattr(hpa, "_HIP_WINDOW_OK", {})
+    monkeypatch.setattr(hpa, "_flash_varlen", _flash_from(no_window))
+    device = torch.device("cpu")
+    assert hpa._torch_varlen(device) is no_window
+    assert not hpa._hip_window_ok(device, 4096)
+    assert hpa._hip_window_ok(device, None)

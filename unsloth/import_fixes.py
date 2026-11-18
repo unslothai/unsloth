@@ -10795,28 +10795,31 @@ def _torch_rocm_device_props():
 
 
 def _iter_hipinfo_paths():
-    """Yield existing hipInfo.exe paths: PATH, interpreter scripts dir (venv
-    and conda layouts), then HIP SDK / AMD installer locations."""
+    """Yield existing hipInfo.exe paths: PATH, then HIP SDK / AMD installer locations.
+    The interpreter's scripts dir is skipped: AMD torch wheels put an unsigned uv launcher
+    there that Smart App Control blocks."""
     import shutil
     import sysconfig
 
+    skip_dirs = set()
+    try:
+        for d in (sysconfig.get_path("scripts"), os.path.dirname(sys.executable or "")):
+            if d:
+                skip_dirs.add(os.path.normcase(os.path.normpath(d)))
+    except Exception:
+        pass
     candidates = []
     try:
-        resolved = shutil.which("hipinfo.exe")
-        if resolved:
-            candidates.append(resolved)
+        # The first PATH hit outside the skipped dirs, not just which()'s first hit.
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if entry and os.path.normcase(os.path.normpath(entry)) not in skip_dirs:
+                resolved = shutil.which("hipinfo.exe", path = entry)
+                if resolved:
+                    candidates.append(resolved)
+                    break
     except Exception:
         pass
-    try:
-        scripts_dir = sysconfig.get_path("scripts")
-        if scripts_dir:
-            candidates.append(os.path.join(scripts_dir, "hipInfo.exe"))
-    except Exception:
-        pass
-    executable_dir = os.path.dirname(sys.executable or "")
-    if executable_dir:
-        candidates.append(os.path.join(executable_dir, "hipInfo.exe"))
-        candidates.append(os.path.join(executable_dir, "Scripts", "hipInfo.exe"))
     for env_key in ("HIP_PATH", "ROCM_PATH"):
         root = os.environ.get(env_key, "").strip()
         if root:

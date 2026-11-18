@@ -849,7 +849,15 @@ class ContextParallelManager:
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
         pad = (-seq_len) % (self.size if ulysses else 2 * self.size)
         padded = self.__dict__.get("_padded_input_ids")
-        if not pad and padded is not None and padded[0]() is input_ids:
+        prepared = not pad and padded is not None and padded[0]() is input_ids
+        # Before alignment padding and sharding: LongRoPE picks its factors from the caller's positions.
+        positions = inputs.get("position_ids")
+        self.position_bound = (
+            positions[:, : padded[1] if prepared else seq_len].amax()
+            if isinstance(positions, torch.Tensor)
+            else None
+        )
+        if prepared:
             return  # prepared already (prediction_step, then apply): keep the real length
         self._padded_input_ids = None
         if pad:
