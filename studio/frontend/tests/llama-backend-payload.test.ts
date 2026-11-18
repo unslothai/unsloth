@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   llamaBackendSelectionNeedsApply,
+  llamaBackendUnavailableKey,
   parseLlamaBackendStatus,
   visibleLlamaBackendOptions,
 } from "../src/features/settings/api/llama-backend-payload.ts";
@@ -104,6 +105,90 @@ test("only installable backends are offered", () => {
     visibleLlamaBackendOptions(status, "auto").map((option) => option.backend),
     ["auto"],
   );
+});
+
+test("an unavailable backend this host's GPUs could run is greyed with its reason, not hidden", () => {
+  // Mixed NVIDIA + AMD host on Linux where ROCm was never installed.
+  const status = parseLlamaBackendStatus({
+    ...FULL_PAYLOAD,
+    options: [
+      FULL_PAYLOAD.options[0],
+      { backend: "cuda", available: true, resolved_backend: "cuda", applies_to_host: true },
+      {
+        backend: "rocm",
+        available: false,
+        unavailable_reason: "rocm_not_installed",
+        unavailable_hint: "ROCm is not installed, so llama.cpp cannot use the AMD card through it.",
+        applies_to_host: true,
+      },
+      { backend: "vulkan", available: false, unavailable_reason: "no_prebuilt", applies_to_host: true },
+    ],
+  });
+
+  const shown = visibleLlamaBackendOptions(status, "auto");
+  assert.deepEqual(
+    shown.map((option) => [option.backend, llamaBackendUnavailableKey(option)]),
+    [
+      ["auto", null],
+      ["cuda", null],
+      ["rocm", "rocmNotInstalled"],
+      ["vulkan", "noBuild"],
+    ],
+  );
+  assert.match(shown[2].unavailableHint ?? "", /ROCm is not installed/);
+});
+
+test("a closed /dev/kfd or render node reads as no access", () => {
+  const status = parseLlamaBackendStatus({
+    ...FULL_PAYLOAD,
+    options: [
+      {
+        backend: "rocm",
+        available: false,
+        unavailable_reason: "rocm_no_access",
+        unavailable_hint: "sudo usermod -a -G render,video someone",
+        applies_to_host: true,
+      },
+    ],
+  });
+
+  const [rocm] = visibleLlamaBackendOptions(status, "auto").filter(
+    (option) => option.backend === "rocm",
+  );
+  assert.equal(llamaBackendUnavailableKey(rocm), "rocmNoAccess");
+  assert.equal(rocm.unavailableHint, "sudo usermod -a -G render,video someone");
+});
+
+test("a backend for a GPU this host does not have stays hidden", () => {
+  const status = parseLlamaBackendStatus({
+    ...FULL_PAYLOAD,
+    options: [
+      FULL_PAYLOAD.options[0],
+      { backend: "rocm", available: false, unavailable_reason: "unavailable", applies_to_host: false },
+    ],
+  });
+
+  assert.deepEqual(
+    visibleLlamaBackendOptions(status, "auto").map((option) => option.backend),
+    ["auto"],
+  );
+});
+
+test("the picker renders greyed options disabled with the reason in the label", async () => {
+  // Pinned by source: node --test has no DOM to render the Radix Select into.
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(
+    new URL("../src/features/settings/components/llama-backend-section.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /disabled=\{\s*unavailableKey !== null/);
+  assert.match(source, /settings\.resources\.llamaBackend\.unavailableOption/);
+  assert.match(source, /llama-backend-hint-\$\{option\.backend\}/);
+  const en = await readFile(new URL("../src/i18n/locales/en.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(en, /Only backends with a build for this machine are listed/);
+  for (const key of ["rocmNotInstalled", "rocmNoAccess", "checkFailed", "noBuild"]) {
+    assert.match(en, new RegExp(`${key}: "`));
+  }
 });
 
 test("the selected backend stays listed even when it stops being installable", () => {

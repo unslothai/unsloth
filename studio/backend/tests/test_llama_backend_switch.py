@@ -1263,3 +1263,124 @@ def test_a_deliberate_switch_still_takes_the_repair_branch(monkeypatch):
     monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: marker)
     monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
     assert _whisper_phase_plan("vulkan", llama_will_run = True) is marker
+
+
+# --- why an unavailable backend is unavailable (#12248) ---
+
+import utils.hardware.amd as amd_hw  # noqa: E402
+import utils.llama_cpp_path_settings as path_settings  # noqa: E402
+
+_MIXED_HOST_PAYLOAD = {
+    "backends": [
+        {
+            "backend": "auto",
+            "available": True,
+            "resolved_backend": "cuda",
+            "release_tag": "b9596-mix-abc",
+            "asset": "app-b9596-mix-abc-linux-x64-cuda12.tar.gz",
+        },
+        {"backend": "cpu", "available": True, "resolved_backend": "cpu"},
+        {"backend": "cuda", "available": True, "resolved_backend": "cuda"},
+        {
+            "backend": "rocm",
+            "available": False,
+            "reason": "unavailable",
+            "detail": "no rocm prebuilt bundle attempts were available",
+        },
+        {"backend": "vulkan", "available": False, "reason": "no_prebuilt", "detail": "x"},
+    ]
+}
+
+
+def _host(monkeypatch, tmp_path, *, vendors, rocm_tools = True, nodes_block = False, hint = None):
+    """Pins every host probe the status reads, so the answer is the same on any runner."""
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", lambda *a, **k: _MIXED_HOST_PAYLOAD)
+    monkeypatch.setattr(upd, "latest_release_assets", lambda repo, force_refresh = False: {})
+    monkeypatch.setattr(
+        path_settings,
+        "host_gpu_vendors",
+        lambda *, reachable = True: None if vendors is None else set(vendors),
+    )
+    monkeypatch.setattr(amd_hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(amd_hw, "_rocm_tools_installed", lambda: rocm_tools)
+    monkeypatch.setattr(amd_hw, "amd_closed_nodes_block_the_runtime", lambda **k: nodes_block)
+    monkeypatch.setattr(amd_hw, "amd_node_permission_hint", lambda **k: hint)
+    return {option["backend"]: option for option in upd.get_backend_status()["options"]}
+
+
+def test_rocm_on_an_amd_card_without_rocm_installed_says_install_rocm(monkeypatch, tmp_path):
+    options = _host(monkeypatch, tmp_path, vendors = {"nvidia", "amd"}, rocm_tools = False)
+
+    rocm = options["rocm"]
+    assert rocm["available"] is False
+    assert rocm["applies_to_host"] is True
+    assert rocm["unavailable_reason"] == "rocm_not_installed"
+    assert "Install ROCm" in rocm["unavailable_hint"]
+    # The resolver's own message still reaches the API.
+    assert rocm["unavailable_detail"] == "no rocm prebuilt bundle attempts were available"
+    assert options["cuda"]["applies_to_host"] is True
+    assert options["vulkan"]["applies_to_host"] is True
+    assert options["vulkan"]["unavailable_hint"] is None
+
+
+def test_rocm_behind_a_closed_kfd_or_render_node_gives_the_group_repair(monkeypatch, tmp_path):
+    repair = "Add the account to the render,video groups ...: sudo usermod -a -G render,video someone"
+    options = _host(monkeypatch, tmp_path, vendors = {"amd"}, nodes_block = True, hint = repair)
+
+    assert options["rocm"]["unavailable_reason"] == "rocm_no_access"
+    assert options["rocm"]["unavailable_hint"] == repair
+
+
+def test_a_closed_node_with_no_specific_hint_still_names_render_and_video(monkeypatch, tmp_path):
+    options = _host(monkeypatch, tmp_path, vendors = {"amd"}, nodes_block = True, hint = None)
+
+    assert options["rocm"]["unavailable_reason"] == "rocm_no_access"
+    assert "render and video" in options["rocm"]["unavailable_hint"]
+
+
+def test_rocm_with_rocm_working_but_no_build_keeps_the_resolver_reason(monkeypatch, tmp_path):
+    options = _host(monkeypatch, tmp_path, vendors = {"amd"})
+
+    assert options["rocm"]["applies_to_host"] is True
+    assert options["rocm"]["unavailable_reason"] == "unavailable"
+    assert options["rocm"]["unavailable_hint"] is None
+
+
+def test_rocm_is_not_offered_on_a_host_with_no_amd_card(monkeypatch, tmp_path):
+    options = _host(monkeypatch, tmp_path, vendors = {"nvidia"}, rocm_tools = False)
+
+    assert options["rocm"]["applies_to_host"] is False
+    # No AMD card, so no ROCm advice either.
+    assert options["rocm"]["unavailable_reason"] == "unavailable"
+    assert options["rocm"]["unavailable_hint"] is None
+
+
+def test_unknown_gpus_keep_unavailable_gpu_backends_hidden(monkeypatch, tmp_path):
+    options = _host(monkeypatch, tmp_path, vendors = None)
+
+    assert options["rocm"]["applies_to_host"] is False
+    assert options["vulkan"]["applies_to_host"] is False
+    assert options["cpu"]["applies_to_host"] is True
+
+
+def test_the_rocm_blocker_is_linux_only(monkeypatch):
+    monkeypatch.setattr(amd_hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(amd_hw, "_rocm_tools_installed", lambda: False)
+
+    assert amd_hw.rocm_runtime_blocker() is None
+
+
+def test_physical_vendors_keep_an_amd_card_whose_kfd_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(path_settings.sys, "platform", "linux")
+    monkeypatch.setattr(path_settings.os.path, "isdir", lambda p: False)
+    monkeypatch.setattr(path_settings.os.path, "exists", lambda p: p == "/dev/nvidiactl")
+    monkeypatch.setattr(path_settings, "_DRM_ROOT", str(tmp_path))
+    for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    for card, vendor in (("card0", "0x1002"), ("card1", "0x10de")):
+        (tmp_path / card / "device").mkdir(parents = True)
+        (tmp_path / card / "device" / "vendor").write_text(vendor + "\n", encoding = "utf-8")
+
+    assert path_settings.host_gpu_vendors() == {"nvidia"}
+    assert path_settings.host_gpu_vendors(reachable = False) == {"amd", "nvidia"}

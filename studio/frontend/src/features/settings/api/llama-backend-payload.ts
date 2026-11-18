@@ -23,6 +23,12 @@ export function isLlamaBackend(value: unknown): value is LlamaBackend {
 export interface LlamaBackendOption {
   backend: LlamaBackend;
   available: boolean;
+  /** Why it cannot install here, when unavailable: a resolver or ROCm reason code. */
+  unavailableReason: string | null;
+  /** What to do about it, from the server (the group command for a closed /dev/kfd). */
+  unavailableHint: string | null;
+  /** This host has a GPU the backend runs on, so an unavailable one is shown greyed, not hidden. */
+  appliesToHost: boolean;
   resolvedBackend: LlamaEffectiveBackend | null;
   releaseTag: string | null;
   downloadSizeBytes: number | null;
@@ -101,6 +107,9 @@ function parseOption(value: unknown): LlamaBackendOption | null {
   return {
     backend: option.backend,
     available: option.available === true,
+    unavailableReason: asString(option.unavailable_reason),
+    unavailableHint: asString(option.unavailable_hint),
+    appliesToHost: option.applies_to_host === true,
     resolvedBackend:
       (asString(option.resolved_backend) as LlamaEffectiveBackend | null) ??
       null,
@@ -159,7 +168,7 @@ export function parseLlamaBackendSwitchStarted(
   };
 }
 
-/** Keep the selected value as an item even with no options: a Select whose value has no item renders blank. */
+/** Installable backends, plus the unavailable ones this host's GPUs could run (greyed with a reason) and the selection. Keep the selected value as an item even with no options: a Select whose value has no item renders blank. */
 export function visibleLlamaBackendOptions(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,
@@ -168,16 +177,43 @@ export function visibleLlamaBackendOptions(
     return [];
   }
   const visible = status.options.filter(
-    (option) => option.available || option.backend === selected,
+    (option) =>
+      option.available || option.appliesToHost || option.backend === selected,
   );
   if (selected && !visible.some((option) => option.backend === selected)) {
     visible.push({
       backend: selected,
       available: false,
+      unavailableReason: null,
+      unavailableHint: null,
+      appliesToHost: false,
       resolvedBackend: selected === "auto" ? status.backend : null,
       releaseTag: null,
       downloadSizeBytes: null,
     });
   }
   return visible;
+}
+
+const UNAVAILABLE_REASONS = {
+  rocm_not_installed: "rocmNotInstalled",
+  rocm_no_access: "rocmNoAccess",
+  error: "checkFailed",
+} as const;
+
+export type LlamaBackendUnavailableKey =
+  | (typeof UNAVAILABLE_REASONS)[keyof typeof UNAVAILABLE_REASONS]
+  | "noBuild";
+
+/** The short reason a greyed option shows; null for an option that can be picked. */
+export function llamaBackendUnavailableKey(
+  option: LlamaBackendOption,
+): LlamaBackendUnavailableKey | null {
+  if (option.available) {
+    return null;
+  }
+  const reason = option.unavailableReason ?? "";
+  return Object.hasOwn(UNAVAILABLE_REASONS, reason)
+    ? UNAVAILABLE_REASONS[reason as keyof typeof UNAVAILABLE_REASONS]
+    : "noBuild";
 }
