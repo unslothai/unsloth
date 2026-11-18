@@ -1086,6 +1086,13 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
+            let policy_never = matches!(
+                settings.hardware_acceleration_policy(),
+                webkit2gtk::HardwareAccelerationPolicy::Never
+            );
+            if !linux_webkit::smooth_scrolling_enabled(policy_never) {
+                settings.set_enable_smooth_scrolling(false);
+            }
         }
         // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
         // installed; deferred because loading it blocks ~40 ms. Not on a bundled AppImage: its

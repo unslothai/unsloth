@@ -1603,6 +1603,15 @@ def _normalize_tied_weights_keys_for_save(save_fn):
     return wrapper
 
 
+def _release_nf4_dequant_cache():
+    """Merging needs the memory the training-time NF4 dequant cache held. A module-level helper rather than a local import, because `unsloth_save_model` forwards its own locals() as keywords."""
+    try:
+        from .kernels.dequant_cache import clear_dequant_cache
+    except Exception:
+        return
+    clear_dequant_cache()
+
+
 @_model_parallel_refuses_save("unsloth_save_model")
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
@@ -1632,6 +1641,7 @@ def unsloth_save_model(
     datasets: Optional[List[str]] = None,
 ):
     _refuse_mtp_variant(model, variant)
+    _release_nf4_dequant_cache()
     if push_to_hub and _attached_mtp_head(model) is not None:
         return _push_with_mtp_head(dict(locals()))
 
