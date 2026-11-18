@@ -10338,7 +10338,11 @@ _ALIAS_DEFAULTED_FIELDS = (
 
 
 def _launched_with(backend, settings: dict[str, Any]) -> bool:
-    from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
+    from core.inference.llama_cpp import (
+        _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
+        _planned_main_cache_types,
+    )
 
     intent = backend.last_load_intent
     # The requested mode survives a crash recovery that relaunches with "off".
@@ -10352,6 +10356,7 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
     from utils.openai_auto_switch_settings import (
         model_override_load_kwargs,
         resolve_override_for_load,
+        strip_args_shadowed_by,
     )
 
     _key, saved = resolve_override_for_load(
@@ -10368,7 +10373,7 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
         if _extra_args_set_spec_type(saved.get("llama_extra_args"))
         else "auto",
     }
-    wanted |= {
+    named = {
         name: saved.get(key)
         for name, key in (
             ("max_seq_length", "max_seq_length"),
@@ -10377,8 +10382,24 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
         )
         if saved.get(key) is not None
     }
-    wanted.update(settings)
+    named.update(settings)
+    wanted |= named
     wanted["speculative_type"] = _canonicalize_spec_mode(wanted["speculative_type"])
+    # Launch flags can run another KV cache or context than the fields record. A setting the
+    # alias or the saved row names strips those flags when it loads, so it must be what launched.
+    extras = getattr(backend, "requested_extra_args", None) or list(intent.extra_args or ())
+    if "kv_cache_dtype" in named:
+        k_type, v_type = getattr(
+            backend, "_requested_cache_types", None
+        ) or _planned_main_cache_types(intent.cache_type_kv, extras)
+        launched["kv_cache_dtype"] = k_type if k_type == v_type else None
+    if (
+        "max_seq_length" in named
+        and extras
+        and strip_args_shadowed_by(extras, {"max_seq_length": wanted["max_seq_length"]})
+        != list(extras)
+    ):
+        return False
     return all(launched[name] == value for name, value in wanted.items())
 
 

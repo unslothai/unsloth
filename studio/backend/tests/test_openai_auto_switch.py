@@ -310,6 +310,8 @@ class _AliasLoadRecorder(_LoadRecorder):
             speculative_type = request.speculative_type,
         )
         self.backend.requested_spec_mode = request.speculative_type or "auto"
+        self.backend.requested_extra_args = request.llama_extra_args
+        self.backend._requested_cache_types = (request.cache_type_kv or "f16",) * 2
 
 
 def _loaded_with_other_settings(monkeypatch, *, enabled):
@@ -471,6 +473,60 @@ def test_an_idle_unloaded_model_restored_for_an_alias_does_not_replay_the_last_a
     assert [(c.max_seq_length, c.cache_type_kv, c.speculative_type) for c in rec.calls] == [
         (4096, None, None)
     ]
+
+
+def _loaded_like_the_fast_alias(
+    monkeypatch,
+    *,
+    flags,
+    cache_types = ("q4_0", "q4_0"),
+):
+    """A resident whose recorded fields equal the fast alias, launched with extra flags."""
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        "unsloth/a-gguf", n_ctx = 4096, cache_type_kv = "q4_0"
+    )
+    rec.backend.requested_spec_mode = "auto"
+    rec.backend.requested_extra_args = flags
+    rec.backend._requested_cache_types = cache_types
+    return rec
+
+
+@pytest.mark.parametrize(
+    "flags, cache_types",
+    [
+        (["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"], ("q8_0", "q8_0")),
+        # Two types are no alias type at all.
+        (["--cache-type-v", "q8_0"], ("q4_0", "q8_0")),
+        (["-c", "32768"], ("q4_0", "q4_0")),
+    ],
+)
+def test_an_alias_reloads_a_model_whose_launch_flags_run_other_settings(
+    monkeypatch, flags, cache_types
+):
+    rec = _loaded_like_the_fast_alias(monkeypatch, flags = flags, cache_types = cache_types)
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch)
+    assert [(c.max_seq_length, c.cache_type_kv) for c in rec.calls] == [(4096, "q4_0")]
+
+
+@pytest.mark.parametrize("flags", [["-c", "4096"], ["--threads", "8"]])
+def test_launch_flags_that_agree_with_the_alias_do_not_reload(monkeypatch, flags):
+    rec = _loaded_like_the_fast_alias(monkeypatch, flags = flags)
+    _run_alias_hook(monkeypatch)
+    assert rec.calls == []
+
+
+def test_a_blank_alias_field_keeps_the_flags_a_reload_would_inherit(monkeypatch):
+    # A setting neither the alias nor the saved row names loads with the resident's own flags.
+    rec = _loaded_like_the_fast_alias(
+        monkeypatch,
+        flags = ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"],
+        cache_types = ("q8_0", "q8_0"),
+    )
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent("unsloth/a-gguf", n_ctx = 4096)
+    _run_alias_hook(monkeypatch, alias = {**_FAST, "load_settings": {"max_seq_length": 4096}})
+    assert rec.calls == []
 
 
 def test_models_listing_marks_only_the_alias_whose_load_settings_are_running(monkeypatch):
