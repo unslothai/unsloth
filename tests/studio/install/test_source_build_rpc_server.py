@@ -6,6 +6,7 @@
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -483,6 +484,8 @@ def test_rpc_server_is_not_a_health_requirement():
 UPGRADE_FUNCTIONS = (
     "_llama_rpc_server_target",
     "_has_local_rpc_server",
+    "_llama_build_relocated",
+    "_llama_rpc_needs_rebuild",
     "_backfill_local_rpc_server",
 )
 
@@ -518,6 +521,7 @@ def _upgrade_harness(tmp_path: Path, *, tree: Path, cmake_writes: str | None) ->
         run_quiet_no_exit() {{ shift; "$@" >/dev/null 2>&1; }}
         PATH="{fake_bin}:$PATH"
         {body}
+        echo "REBUILD=$(_llama_rpc_needs_rebuild "{tree}" && echo yes || echo no)"
         _backfill_local_rpc_server "{tree}"
         echo "PRESENT=$(_has_local_rpc_server "{tree}" && echo yes || echo no)"
         """
@@ -531,6 +535,7 @@ def _old_install(
     configured: bool = True,
     rpc_target: bool = True,
     rpc_on: bool = True,
+    configured_in: Path | None = None,
 ) -> Path:
     """An install from before the RPC server was built: llama-server and nothing else new."""
     tree = tmp_path / "llama.cpp"
@@ -540,6 +545,8 @@ def _old_install(
     server.chmod(0o755)
     if configured:
         cached = "GGML_RPC:BOOL=ON\n" if rpc_on else "GGML_CUDA:BOOL=ON\n"
+        if configured_in is not None:
+            cached += f"CMAKE_CACHEFILE_DIR:INTERNAL={configured_in}\n"
         (tree / "build" / "CMakeCache.txt").write_text(cached, encoding = "utf-8")
     if rpc_target:
         (tree / "tools" / "rpc").mkdir(parents = True)
@@ -612,6 +619,154 @@ def test_a_tree_with_no_rpc_target_is_not_an_error(tmp_path) -> None:
     tree = _old_install(tmp_path, rpc_target = False)
     out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = None)
     assert "VERBOSE no RPC server target" in out, out
+
+
+@_POSIX_ONLY
+def test_a_moved_build_is_not_reconfigured_in_place(tmp_path) -> None:
+    """setup.sh stages source builds in llama.cpp.build.$$ and moves them: cmake refuses that cache."""
+    tree = _old_install(
+        tmp_path, rpc_on = False, configured_in = tmp_path / "llama.cpp.build.4242" / "build"
+    )
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = "ggml-rpc-server")
+    assert "REBUILD=yes" in out, out
+    assert "UNSLOTH_LLAMA_FORCE_COMPILE=1" in out and "PRESENT=no" in out, out
+    assert not (tmp_path / "cmake.log").exists(), "cmake was run against a moved cache"
+
+
+@_POSIX_ONLY
+def test_a_build_configured_in_place_still_backfills(tmp_path) -> None:
+    tree = tmp_path / "llama.cpp"
+    tree = _old_install(tmp_path, rpc_on = False, configured_in = tree / "build")
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = "ggml-rpc-server")
+    assert "REBUILD=no" in out and "PRESENT=yes" in out, out
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("why", ["rpc_on", "disabled", "has_server", "no_target"])
+def test_a_moved_build_is_rebuilt_at_most_once(tmp_path, why) -> None:
+    """A rebuild that enabled RPC, a macOS build that turned it off on purpose, a tree that has the
+    server or cannot build one: none of them is rebuilt again on every setup run."""
+    tree = _old_install(
+        tmp_path,
+        rpc_on = why == "rpc_on",
+        rpc_target = why != "no_target",
+        configured_in = tmp_path / "llama.cpp.build.4242" / "build",
+    )
+    if why == "disabled":
+        (tree / "build" / ".unsloth_rpc_disabled").write_text("", encoding = "utf-8")
+    if why == "has_server":
+        server = tree / "build" / "bin" / "ggml-rpc-server"
+        server.write_text("binary", encoding = "utf-8")
+        server.chmod(0o755)
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = None)
+    assert "REBUILD=no" in out, out
+
+
+def _ps1_functions(*names: str) -> str:
+    text = _ps1()
+    out = []
+    for name in names:
+        start = text.index(f"function {name} {{")
+        out.append(text[start : text.index("\n}\n", start) + 3])
+    return "\n".join(out)
+
+
+@pytest.mark.skipif(not PWSH_AVAILABLE, reason = "needs pwsh")
+@pytest.mark.parametrize(
+    "where, rpc_on, expected",
+    [
+        ("staged", False, "True/True"),
+        ("staged", True, "True/False"),
+        ("here", False, "False/False"),
+    ],
+    ids = ["moved-pre-rpc", "moved-rpc-on", "in-place"],
+)
+def test_windows_finds_a_moved_build_and_rebuilds_it_once(tmp_path, where, rpc_on, expected):
+    tree = tmp_path / "llama.cpp"
+    build = tree / "build"
+    (build / "bin" / "Release").mkdir(parents = True)
+    (tree / "tools" / "rpc").mkdir(parents = True)
+    (tree / "tools" / "rpc" / "CMakeLists.txt").write_text(
+        "add_executable(ggml-rpc-server x.cpp)\n"
+    )
+    recorded = (tmp_path / "llama.cpp.build.77" / "build") if where == "staged" else build
+    cache = f"CMAKE_CACHEFILE_DIR:INTERNAL={recorded.as_posix()}\n"
+    cache += "GGML_RPC:BOOL=ON\n" if rpc_on else "GGML_CUDA:BOOL=ON\n"
+    (build / "CMakeCache.txt").write_text(cache)
+    # setup.ps1's Test-PathQuiet also tells "denied" from "absent"; plain Test-Path is enough here.
+    stub = (
+        "function Test-PathQuiet { param([string]$Path, [string]$PathType = 'Any')\n"
+        "  if ($PathType -eq 'Leaf') { return (Test-Path -LiteralPath $Path -PathType Leaf) }\n"
+        "  return (Test-Path -LiteralPath $Path) }\n"
+    )
+    script = (
+        stub
+        + _ps1_functions(
+            "Get-LlamaRpcServerTarget",
+            "Test-LlamaBuildRelocated",
+            "Test-LlamaRpcNeedsRebuild",
+        )
+        + f"\n$a = Test-LlamaBuildRelocated -BuildDir '{build}'"
+        + f"\n$b = Test-LlamaRpcNeedsRebuild -SourceDir '{tree}' -BuildDir '{build}'"
+        + "\nWrite-Output ('<' + $a + '/' + $b + '>')\n"
+    )
+    result = run_pwsh(
+        [PWSH, "-NoProfile", "-Command", script], capture_output = True, text = True, timeout = 60
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"<{expected}>" in result.stdout, result.stdout
+
+
+def test_the_windows_reuse_decision_rebuilds_a_moved_pre_rpc_tree() -> None:
+    text = _ps1()
+    gate = text.index("(Test-LlamaRpcNeedsRebuild -SourceDir $LlamaCppDir -BuildDir $BuildDir)")
+    assert text.index("$CanReuseLlamaBuild = Test-LlamaTreeStillHealthy") < gate
+    assert gate < text.index("$WillBuildLlamaFromSource = $NeedLlamaSourceBuild")
+    assert "$CanReuseLlamaBuild = $false" in text[gate : gate + 400]
+    backfill = _ps1_functions("Backfill-LlamaRpcServer")
+    assert backfill.index("Test-LlamaBuildRelocated") < backfill.index("cmake -S")
+
+
+def test_the_reuse_decision_rebuilds_a_moved_pre_rpc_tree() -> None:
+    text = _sh()
+    gate = text.index('_llama_rpc_needs_rebuild "$LLAMA_CPP_DIR"; then')
+    reuse = text.index('"existing source build found; skipping rebuild"')
+    assert gate < reuse
+    assert "_LLAMA_REUSE_EXISTING=false" in text[gate:reuse]
+
+
+def test_the_macos_no_rpc_fallback_marks_its_build() -> None:
+    body = _bash_function(_sh(), "_llama_build_rpc_server")
+    assert body.index("-DGGML_RPC=OFF") < body.index(".unsloth_rpc_disabled")
+
+
+@_POSIX_ONLY
+@pytest.mark.skipif(shutil.which("cmake") is None, reason = "needs cmake")
+def test_cmake_really_refuses_a_moved_build_and_the_check_sees_it(tmp_path) -> None:
+    """The premise, on a real cmake: configure in a staging dir, move it, build again."""
+    staged = tmp_path / "proj.build.4242"
+    staged.mkdir()
+    (staged / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.14)\nproject(p NONE)\nadd_custom_target(t)\n",
+        encoding = "utf-8",
+    )
+    subprocess.run(
+        ["cmake", "-S", str(staged), "-B", str(staged / "build")], check = True, capture_output = True
+    )
+    final = tmp_path / "proj"
+    staged.rename(final)
+    rebuilt = subprocess.run(
+        ["cmake", "-S", str(final), "-B", str(final / "build")], capture_output = True, text = True
+    )
+    assert rebuilt.returncode != 0, rebuilt.stdout
+    body = _bash_function(_sh(), "_llama_build_relocated")
+    probe = subprocess.run(
+        [BASH, "-c", f'{body}\n_llama_build_relocated "{final}" && echo moved || echo here'],
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    assert probe.stdout.strip() == "moved"
 
 
 def test_the_reuse_branch_actually_calls_the_backfill() -> None:
