@@ -161,6 +161,9 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
   // An org click must cancel an unresolved Discover pick and restart the keyboard highlight, as a tab click does.
   assert.match(picker, /offerAbort\.current = null;[\s\S]{0,120}?\}, \[open, viewed, orgFilter\]\);/);
   assert.match(picker, /setHighlight\(false\);\s*\}, \[query, viewed, orgFilter, setHighlight\]\);/);
+  // Under an org filter, Discover pages count only the rows it shows, so hidden pages cannot reset the fetch cap.
+  assert.match(picker, /const hubShownCount = hubOrgFilter\s*\? foundRows\.filter\(\(row\) => row\.kind === "hub"\)\.length\s*: hubResults\.length;/);
+  assert.match(picker, /resultCount: hubShownCount,\s*resetKey: hubOrgFilter \?/);
   // Chips that land after mount still refresh the fades.
   assert.match(picker, /new MutationObserver\(update\);\s*chips\.observe\(strip, \{ childList: true \}\);/);
   // The org comes from the repo itself, never a fine-tune's base model.
