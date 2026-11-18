@@ -15,6 +15,7 @@ import {
   MAX_OPEN_DOCUMENT_XML_BYTES,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
+import { SUPERSCRIPT_BASE_CHARS, isNoteReference, raiseSuperscript } from "./superscript";
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
@@ -931,6 +932,69 @@ function linearizeDocxMathParts(select: DocxPartSelect): Record<string, Uint8Arr
   return Object.keys(rewritten).length ? rewritten : null;
 }
 
+const DOCX_RUN_TEXT = new Map([["tab", "\t"], ["br", "\n"], ["cr", "\n"]]);
+
+export function writeDocxSuperscripts(archive: Uint8Array): Uint8Array {
+  return rezipDocx(archive, writeDocxSuperscriptParts(archiveParts(archive)));
+}
+
+function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = select((name) => name.endsWith(".xml"));
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!xml.includes("superscript")) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const paragraphOf = (node: Node) => {
+      let parent = node.parentNode;
+      while (parent && !((parent as Element).localName === "p" && (parent as Element).namespaceURI === w)) parent = parent.parentNode;
+      return parent;
+    };
+    const isSuperscript = (run: Element) =>
+      childElements(run, w, "rPr").some((pr) =>
+        childElements(pr, w, "vertAlign").some((align) => align.getAttributeNS(w, "val") === "superscript"),
+      ) &&
+      !childElements(run, w, "footnoteReference").length &&
+      !childElements(run, w, "endnoteReference").length;
+    let found = false;
+    for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
+      let before = "";
+      let raised: Element[] = [];
+      const raise = () => {
+        const text = raised.map((t) => t.textContent ?? "").join("");
+        const result = raiseSuperscript(before, text);
+        if (result !== text) {
+          raised.forEach((t, i) => {
+            while (t.firstChild) t.removeChild(t.firstChild);
+            if (!i) t.appendChild(doc.createTextNode(result));
+          });
+          found = true;
+        }
+        before = (before + result).slice(-SUPERSCRIPT_BASE_CHARS);
+        raised = [];
+      };
+      for (const run of Array.from(p.getElementsByTagNameNS(w, "r"))) {
+        if (paragraphOf(run) !== p) continue;
+        const pieces = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1 && (child as Element).namespaceURI === w);
+        const text = pieces.map((child) => (child.localName === "t" ? (child.textContent ?? "") : (DOCX_RUN_TEXT.get(child.localName) ?? ""))).join("");
+        if (!text) continue;
+        if (isSuperscript(run)) {
+          raised.push(...pieces.filter((child) => child.localName === "t"));
+          continue;
+        }
+        if (raised.length) raise();
+        before = (before + text).slice(-SUPERSCRIPT_BASE_CHARS);
+      }
+      if (raised.length) raise();
+    }
+    if (found) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  return Object.keys(rewritten).length ? rewritten : null;
+}
+
 const W14_NAMESPACE = "http://schemas.microsoft.com/office/word/2010/wordml";
 const DOCX_BREAK_OR_CHECKBOX_RE = /<(?:[\w.-]+:)?(?:br|cr|checkbox|checkBox)[\s/>]/;
 
@@ -1838,7 +1902,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   let parts: Record<string, Uint8Array> | null = repackedDocxParts(unpacked.entries);
   if (!parts) {
     const repacked = zipSync(unpacked.entries, { level: 0 });
-    const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES)));
+    const marked = markDocxNotes(writeDocxSuperscripts(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES))));
     const { value } = await mammoth.extractRawText({
       arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
     });
@@ -1857,6 +1921,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   };
   apply(writeDocxSymbolParts(select, MAX_OPEN_DOCUMENT_XML_BYTES));
   apply(linearizeDocxMathParts(select));
+  apply(writeDocxSuperscriptParts(select));
   const marked = markDocxNoteParts(select);
   apply(marked.rewritten);
   apply(writeDocxListNumberParts(select));
@@ -1988,6 +2053,7 @@ function collectHtmlBlockText(
   node: Node | null,
   preformatted?: string[],
   rowSpans?: number[],
+  before = "",
 ): string {
   if (!node) {
     return "";
@@ -2072,17 +2138,25 @@ function collectHtmlBlockText(
   const start = tag === "ol" ? Number.parseInt(element.getAttribute("start") ?? "", 10) : Number.NaN;
   let number = Number.isNaN(start) ? (reversed ? Array.from(element.childNodes).filter(isItem).length : 1) : start;
   const format = tag === "ol" ? lookUp(HTML_LIST_FORMATS, element.getAttribute("type") ?? "") : undefined;
+  let tail = HTML_BLOCK_TAGS.has(tag) ? "\n" : before;
   const text = Array.from(element.childNodes)
     .map((child) => {
-      const inner = collectHtmlBlockText(child, preformatted, groupSpans);
-      if (!isItem(child)) return inner;
+      const inner = collectHtmlBlockText(child, preformatted, groupSpans, tail);
+      if (!isItem(child)) {
+        tail = (tail + inner).slice(-SUPERSCRIPT_BASE_CHARS);
+        return inner;
+      }
       const value = Number.parseInt((child as Element).getAttribute("value") ?? "", 10);
       if (!Number.isNaN(value)) number = value;
       const label = listNumber(number, lookUp(HTML_LIST_FORMATS, (child as Element).getAttribute("type") ?? "") ?? format);
       number += reversed ? -1 : 1;
+      tail = "\n";
       return `\n${label}. ${inner.trimStart()}`;
     })
     .join("");
+  if (tag === "sup" && !isNoteReference(element.getAttribute("class"), element.getAttribute("role"))) {
+    return raiseSuperscript(before, text);
+  }
   return HTML_BLOCK_TAGS.has(tag) ? `\n${text}\n` : text;
 }
 

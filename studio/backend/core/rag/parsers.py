@@ -188,6 +188,7 @@ class _Stripper(HTMLParser):
         self.labels: list[str] = []
         self.nonce = secrets.token_hex(4)
         self._label: str | None = None
+        self._sups: list[tuple[int, list[str], int]] = []
 
     def _in_table(self) -> bool:
         return bool(self._tables) and not self._skip and not self._deep
@@ -391,6 +392,12 @@ class _Stripper(HTMLParser):
         elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
             # absolute x/y coordinates start a separate SVG text label or line
             self._flush()
+        elif tag == "sup" and not self._skip:
+            from ..inference._html_to_md import _MAX_SUP_DEPTH, _note_reference
+            while self._sups and self._sups[-1][0] >= index:
+                self._sups.pop()
+            if len(self._sups) < _MAX_SUP_DEPTH and not _note_reference(dict(attrs)):
+                self._sups.append((index, self._line, len(self._line)))
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -408,6 +415,8 @@ class _Stripper(HTMLParser):
             self._pop_tags(index)
             if muted:
                 return
+            if tag == "sup":
+                self._end_sup(index)
         elif self._hidden_at is not None:
             return
         if tag == "template":
@@ -440,6 +449,15 @@ class _Stripper(HTMLParser):
                     pass
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
+
+    def _end_sup(self, index: int) -> None:
+        from ..inference._html_to_md import _raise_superscript
+        while self._sups and self._sups[-1][0] > index:
+            self._sups.pop()
+        if self._sups and self._sups[-1][0] == index:
+            _, line, start = self._sups.pop()
+            if line is self._line:
+                _raise_superscript(line, start)
 
     def handle_data(self, data):
         if not self._skip and self._hidden_at is None:
@@ -1305,14 +1323,39 @@ def _docx_run_text(run) -> str:
     )
 
 
+def _docx_superscript(run) -> bool:
+    align = run.find(f"{_W}rPr/{_W}vertAlign")
+    return (
+        align is not None
+        and align.get(_W + "val") == "superscript"
+        and run.find(_W + "footnoteReference") is None
+        and run.find(_W + "endnoteReference") is None
+    )
+
+
 def _docx_paragraph_text(paragraph) -> str:
     """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag, and equations."""
+    from ..inference._html_to_md import _raise_superscript
+
     p = paragraph._p
-    return "".join(
-        _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
-        for node in p.iter(_W + "r", *_DOCX_MATH)
-        if not _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH)
-    )
+    parts: list[str] = []
+    raised = None
+    for node in p.iter(_W + "r", *_DOCX_MATH):
+        if _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH):
+            continue
+        superscript = node.tag not in _DOCX_MATH and _docx_superscript(node)
+        text = _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
+        if not text:
+            continue
+        if raised is not None and not superscript:
+            _raise_superscript(parts, raised)
+            raised = None
+        elif raised is None and superscript:
+            raised = len(parts)
+        parts.append(text)
+    if raised is not None:
+        _raise_superscript(parts, raised)
+    return "".join(parts)
 
 
 def _docx_int(value) -> int:

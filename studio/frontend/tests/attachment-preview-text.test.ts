@@ -335,6 +335,38 @@ test("extractHtmlAttachmentText keeps the ticked state of check boxes", async ()
   assert.equal(extracted, "☒ Ship\n\n☐ Docs\n\nSmoker: ☒ Yes ☐ No");
 });
 
+test("extractHtmlAttachmentText keeps superscript exponents", async () => {
+  const sup = (text: string, attrs: Record<string, string> = {}) => ({
+    ...element("sup", textNode(text)),
+    getAttribute: (name: string) => attrs[name] ?? null,
+  });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("Mass is 1.898×10"), sup("27"), textNode(" kg; MAX is "), element("b", textNode("2")), sup("53"), textNode(" - 1.")),
+        element("p", sup("2"), textNode("Tolerance is 10"), sup("-3"), textNode(" m over 40 km"), sup("2"), textNode(".")),
+        element(
+          "p",
+          textNode("Held on the 21"),
+          sup("st"),
+          textNode(" of June."),
+          sup("4"),
+          textNode(" See Smith"),
+          sup("[2]"),
+          textNode(" and Jones"),
+          sup("3", { class: "footnote-ref" }),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Mass is 1.898×10^27 kg; MAX is 2^53 - 1.\n\n2Tolerance is 10^-3 m over 40 km^2.\n\nHeld on the 21st of June.4 See Smith[2] and Jones3",
+  );
+});
+
 test("extractHtmlAttachmentText keeps the indentation of preformatted code", async () => {
   const extracted = await withStubDom(
     () =>
