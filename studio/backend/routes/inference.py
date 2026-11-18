@@ -29542,6 +29542,24 @@ def _external_fit_limits(payload, prompt_tokens: int) -> tuple[int, Optional[int
     return context_length, max_tokens
 
 
+def _overflow_floor_threshold(messages: list[dict], count, max_tokens: Optional[int]) -> int:
+    """Smallest trigger whose prompt budget still holds the system turns and the newest user turn
+    onward, so an overflow retry evicts every older turn rather than none when half is too tight."""
+    from core.inference.context_window import prompt_budget
+
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default = 0)
+    kept = [m for m in messages[:last_user] if m.get("role") in ("system", "developer")]
+    floor = count(kept + messages[last_user:])
+    low, high = 1, max(2, 2 * floor + (max_tokens or 0))
+    while low < high:
+        mid = (low + high) // 2
+        if prompt_budget(mid, max_tokens) >= floor:
+            high = mid
+        else:
+            low = mid + 1
+    return low
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -30883,9 +30901,11 @@ async def _proxy_to_external_provider(
             # Half the refused prompt, kept for the loop's later passes so they stay under it.
             refused = _last_fit if _last_fit is not None else messages
             # The window stays: the fit clamps the reply cap against it.
+            count = _external_token_counter(payload, tools)
             bound = {
                 "compaction_threshold": max(
-                    1, _external_token_counter(payload, tools)(refused) // 2
+                    count(refused) // 2,
+                    _overflow_floor_threshold(messages, count, _effective_max_tokens(payload)),
                 ),
             }
             _evicting_payload = _evicting_payload.model_copy(update = bound)

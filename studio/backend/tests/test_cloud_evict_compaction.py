@@ -487,6 +487,32 @@ def test_checkpoint_mode_resets_under_a_rolling_process_default(
     assert truncation.get("checkpoint") is True
 
 
+@pytest.mark.parametrize("mode", ["rolling", "checkpoint"])
+def test_an_overflow_with_a_large_latest_turn_still_evicts_every_older_turn(mode):
+    # The newest turn alone is more than half the refused prompt, so a half-size budget cannot fit.
+    turn = "word " * 400
+    chat = [{"role": "system", "content": "Answer in French."}]
+    for index in range(4):
+        chat += [
+            {"role": "user", "content": f"q{index} {turn}"},
+            {"role": "assistant", "content": f"a{index} {turn}"},
+        ]
+    chat.append({"role": "user", "content": "latest " + "doc " * 6000})
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps([chat[0], chat[-1]])) + 2_000
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 200_000,
+        compaction_mode = mode,
+    )
+    assert not [c for c in chunks if "error" in c]
+    assert len(chats) == 2 and [m["role"] for m in chats[1]["messages"]] == ["system", "user"]
+
+
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError
