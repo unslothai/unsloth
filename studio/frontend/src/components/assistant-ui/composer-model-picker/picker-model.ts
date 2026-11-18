@@ -470,7 +470,7 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** In on-screen px, so zoom does not flip the 380/420 choice. */
+/** In on-screen px, so zoom does not flip the 400/420 choice. */
 export function pickerMinHeight(
   innerWidth: number,
   innerHeight: number,
@@ -478,7 +478,7 @@ export function pickerMinHeight(
 ): number {
   const shortLandscape =
     innerWidth > innerHeight && innerHeight / zoomOut <= 900;
-  return shortLandscape ? 380 : 420;
+  return shortLandscape ? 400 : 420;
 }
 
 export function pickerRoomBelow(
