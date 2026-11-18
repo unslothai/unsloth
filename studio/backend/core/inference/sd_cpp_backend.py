@@ -3953,6 +3953,11 @@ class SdCppDiffusionBackend:
             from core.inference.diffusion_families import assert_flux3_checkpoint_matches_family
 
             assert_flux3_checkpoint_matches_family(fam, paths["diffusion_model"])
+            from core.inference.diffusion_content import sd_cpp_gguf_refusal
+
+            refusal = sd_cpp_gguf_refusal(paths["diffusion_model"])
+            if refusal is not None:
+                raise ValueError(refusal)
             sample_sigmas, grid_base = _base_sample_sigmas(
                 repo_id,
                 base,
