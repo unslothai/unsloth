@@ -31232,14 +31232,6 @@ async def _proxy_to_external_provider(
     ):
 
         async def _compaction_fallback(messages):
-            nonlocal _evict_only, _rolling_only, _evicting_fit, _evicting_payload, _first_payload
-            if payload.compaction_mode in ("rolling", "checkpoint"):
-                # The deployment refused native compaction: fit locally the way the connection asked.
-                _evict_only = _evicting_fit = True
-                _rolling_only = payload.compaction_mode == "rolling"
-                _evicting_payload = _first_payload = payload.model_copy(
-                    update = {"context_policy": payload.compaction_mode}
-                )
             return await _external_context_fitter(messages, auto = True)
 
     _deferred_fit_plan = None
