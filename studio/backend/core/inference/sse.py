@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared inbound server-sent-event framing.
-
-SSE transport pieces are arbitrary byte ranges: a multi-byte character or a `data:` line can
-straddle two chunks, and lines end in \\n, \\r\\n, or \\r. Reframing used to be re-implemented per
-consumer and each copy lost data differently; line reassembly and event boundaries live here once.
-"""
+"""Inbound SSE framing: transport pieces may split a line or a UTF-8 character anywhere."""
 
 from __future__ import annotations
 
@@ -15,11 +10,9 @@ from typing import Any, AsyncIterator
 
 
 class SSELineDecoder:
-    """Reassemble complete lines from arbitrarily split text/byte pieces.
+    """Complete lines from split text/byte pieces; a trailing "\\r" waits one piece for its "\\n".
 
-    Carries a partial line and any split multi-byte character across feed() calls; a trailing
-    "\\r" is held one piece so "\\r\\n" never counts as two line endings. The pending line is
-    kept as fragments so a long unterminated stream does not become a quadratic copy.
+    The pending line is kept as fragments so a long unterminated line is not a quadratic copy.
     """
 
     def __init__(self) -> None:
@@ -68,11 +61,7 @@ class SSELineDecoder:
         return lines
 
     def flush(self) -> list[str]:
-        """The last line at end-of-stream, or [] when the stream ended on a line boundary.
-
-        Declares the stream ended: a "\\r" still held is treated as a line ending. Feeding
-        more pieces afterwards works but cannot rejoin that held "\\r" with its "\\n".
-        """
+        """The unterminated last line at end-of-stream; a held "\\r" counts as a line ending."""
         lines = self.feed(self._decoder.decode(b"", final = True))
         if self._parts and (tail := "".join(self._parts)):
             lines.append(tail[:-1] if tail.endswith("\r") else tail)
@@ -81,11 +70,7 @@ class SSELineDecoder:
 
 
 class SSEDecoder:
-    """feed() pieces, get each complete event's data payload.
-
-    Multi-line `data:` fields join with "\\n" per the SSE spec, one optional space after the colon
-    is stripped, and comment/`event:`/`id:` lines are ignored: Studio's chat wire is data-only.
-    """
+    """Each complete event's joined `data:` payload; other fields are ignored (chat wire is data-only)."""
 
     def __init__(self) -> None:
         self._lines = SSELineDecoder()
