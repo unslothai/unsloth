@@ -10292,6 +10292,9 @@ class DiffusionBackend:
                                             local_files_only,
                                         ),
                                         variant = _decision_variant,
+                                        cast_cached = tuple(
+                                            _image_cast_cached(_cast_cands, _decision_variant)
+                                        ),
                                     )
                                     if small_host is not None and small_host.engaged:
                                         pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
@@ -13634,10 +13637,11 @@ class DiffusionBackend:
         fetch: Optional[Callable[[], Any]] = None,
         variant: Optional[str] = None,
         dense_denoiser: bool = False,
+        cast_cached: tuple = (),
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
         ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
-        is the weight layout the load reads."""
+        is the weight layout the load reads; ``cast_cached`` components read 16-bit from the cast cache."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
         if (
             fetch is not None
@@ -13676,6 +13680,8 @@ class DiffusionBackend:
             pread_libraries = ("transformers",) if pread_available() else (),
             spill_free_mib = spill_capacity_mib(),
             dense_denoiser = dense_denoiser,
+            # a variant reads 16-bit twins, not the fp32 files sized here
+            skip_narrowed = tuple(comps) if variant else tuple(cast_cached),
         )
         if decision.engaged or decision.refuse:
             logger.info(

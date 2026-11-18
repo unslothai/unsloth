@@ -806,3 +806,91 @@ def test_twins_completed_by_a_supplied_component_skip_the_early_download(tmp_pat
         variant = variant,
     )
     assert variant == "fp16" and calls == []
+
+
+# Tongyi-MAI/Z-Image-Turbo: a 22.9 GB fp32 DiT next to a bf16 encoder. A bf16 load materialises the 11.5 GB bf16
+# copy in anonymous host RAM; on a 15 GB host with ~10.7 GB available the kernel killed the whole server.
+ZIMAGE = {
+    "transformer": sh.StoredComponent("transformer", 23470, "float32"),
+    "text_encoder": sh.StoredComponent("text_encoder", 7690, "bfloat16"),
+    "vae": sh.StoredComponent("vae", 160, "float32"),
+}
+MINT_TOTAL = 15 * 1024
+
+
+def test_fp32_dit_narrowed_to_bf16_is_refused_when_its_copy_cannot_fit(monkeypatch):
+    d = _decide(ZIMAGE, dtype = torch.bfloat16, total = MINT_TOTAL, available = 10719)
+    assert not d.engaged and d.refuse and "Not enough system RAM" in d.refuse
+    assert "float32" in d.refuse
+    # the bf16 copy of the DiT alone, plus the convert margin; the small fp32 VAE does not count
+    assert d.dense_host_mib == int(23470 / 2 * 1.15)
+    monkeypatch.setenv(sh.HOST_RAM_CHECK_ENV, "0")
+    assert _decide(ZIMAGE, dtype = torch.bfloat16, total = MINT_TOTAL, available = 10719).refuse is None
+
+
+def test_fp32_dit_narrowed_on_a_host_that_holds_the_copy_loads_dense():
+    d = _decide(ZIMAGE, dtype = torch.bfloat16, total = 32 * 1024, available = 28000)
+    assert not d.engaged and d.refuse is None and "float32 -> 16-bit" in d.reason
+
+
+def test_narrowing_skips_cast_cached_components_and_wide_or_non_cuda_loads():
+    tight = dict(total = MINT_TOTAL, available = 10719)
+    assert (
+        _decide(ZIMAGE, dtype = torch.bfloat16, skip_narrowed = ("transformer",), **tight).refuse
+        is None
+    )
+    assert _decide(ZIMAGE, dtype = torch.float32, **tight).dense_host_mib == int(7690 * 2 * 1.15)
+    assert _decide(ZIMAGE, dtype = torch.bfloat16, device = "mps", **tight).refuse is None
+    assert _decide(ZIMAGE, dtype = torch.bfloat16, total = MINT_TOTAL, available = None).refuse is None
+
+
+def test_fp16_load_budgets_the_narrowed_dit_beside_the_converted_encoder():
+    d = _decide(ZIMAGE, dtype = torch.float16, total = 64 * 1024, available = 60000)
+    encoder = int(7690 * 1.15)
+    narrowed = int(23470 / 2 * 1.15)
+    assert not d.engaged and d.dense_host_mib == narrowed + encoder
+    routed = _decide(ZIMAGE, dtype = torch.float16, total = MINT_TOTAL, available = 10719)
+    assert routed.engaged and routed.route_host_mib >= narrowed and routed.refuse
+
+
+def test_the_pipeline_decision_raises_the_narrowing_refusal_and_skips_it_for_variants_and_cast_hits(
+    tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dif
+
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (MINT_TOTAL, 10719))
+    monkeypatch.setattr(dif, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
+    monkeypatch.setattr(dif, "stored_components", lambda snapshot: dict(ZIMAGE))
+
+    def decide(**kw):
+        return dif.DiffusionBackend()._small_host_decision(
+            str(tmp_path),
+            {},
+            types.SimpleNamespace(device = "cuda"),
+            torch.bfloat16,
+            lora_active = False,
+            **kw,
+        )
+
+    with pytest.raises(RuntimeError, match = "Not enough system RAM"):
+        decide()
+    assert decide(variant = "fp16").refuse is None
+    assert decide(cast_cached = ("transformer",)).refuse is None
+
+
+def test_the_generic_pipeline_load_passes_its_cast_cache_hits():
+    import ast
+    import inspect
+
+    from core.inference import diffusion as dif
+
+    tree = ast.parse(inspect.getsource(dif))
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "attr", None) == "_small_host_decision"
+        and any(k.arg == "variant" for k in n.keywords)
+    ]
+    assert calls and all(any(k.arg == "cast_cached" for k in c.keywords) for c in calls)

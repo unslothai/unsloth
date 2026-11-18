@@ -459,9 +459,12 @@ def decide_small_host(
     pread_libraries: tuple[str, ...] = (),
     spill_free_mib: Optional[int] = None,
     dense_denoiser: bool = False,
+    skip_narrowed: tuple[str, ...] = (),
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
-    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
+    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. A large fp32 component loaded at
+    fp16 / bf16 is never routed but materialises its converted copy, so it is budgeted and refused when that
+    copy cannot fit (``skip_narrowed``: components read elsewhere, e.g. the cast cache). ``host_commit_mib`` (Windows)
     also routes a dense load whose commit need does not fit: on Windows commit exhaustion is an access
     violation in native code, not a Python error (#13432, #14513). ``spill_free_mib``: ``spill_capacity_mib``, None = no spill.
     ``dense_denoiser``: the caller asked for the unquantised denoiser, so the route keeps it memory-mapped at its
@@ -471,31 +474,42 @@ def decide_small_host(
     if str(device) != "cuda":
         return SmallHostDecision(False, "not a CUDA load")
     compute = _dtype_name(compute_dtype)
+    narrowed = _narrowed_mib(components, compute, skip_narrowed)
     if compute not in ("float16", "float32"):
-        return SmallHostDecision(False, f"compute dtype {compute} needs no conversion")
+        return _narrowed_only(
+            f"compute dtype {compute} needs no conversion",
+            narrowed,
+            host_total_mib,
+            host_available_mib,
+        )
     converted = {
         name: comp
         for name, comp in components.items()
         if comp.dtype == "bfloat16" and comp.mib >= _STREAM_MIN_MIB
     }
     if not converted:
-        return SmallHostDecision(False, "no large bf16 component to convert")
-    dense = int(
+        return _narrowed_only(
+            "no large bf16 component to convert", narrowed, host_total_mib, host_available_mib
+        )
+    dense = narrowed + int(
         sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
         * _CONVERT_MARGIN
     )
     # encoders stay memory-mapped except fp32-kept layers and a token embedding widened to float32
     # (``prepare_streamed_encoder_`` converts the first parameter's owner on the host: 3.8 GB for Qwen3.5-9B); a DiT
     # lands as int8, or memory-mapped like an encoder
-    route = sum(
-        c.mib // 2
-        if n in INT8_DENOISER_NAMES and not dense_denoiser
-        else c.kept_fp32_mib * 4 // _itemsize(c.dtype) + _widened_embed_mib(c, compute)
-        if n.startswith("text_encoder")
-        else c.kept_fp32_mib * 4 // _itemsize(c.dtype)
-        if n in INT8_DENOISER_NAMES
-        else c.mib * _itemsize(compute) // _itemsize(c.dtype)
-        for n, c in converted.items()
+    route = (
+        sum(
+            c.mib // 2
+            if n in INT8_DENOISER_NAMES and not dense_denoiser
+            else c.kept_fp32_mib * 4 // _itemsize(c.dtype) + _widened_embed_mib(c, compute)
+            if n.startswith("text_encoder")
+            else c.kept_fp32_mib * 4 // _itemsize(c.dtype)
+            if n in INT8_DENOISER_NAMES
+            else c.mib * _itemsize(compute) // _itemsize(c.dtype)
+            for n, c in converted.items()
+        )
+        + narrowed
     )
     reserve = host_reserve_mib(host_total_mib)
     # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
@@ -575,6 +589,46 @@ def decide_small_host(
         spill_route_host_mib = spill_route if spill else 0,
         dense_denoiser = bool(dense_denoiser),
         **extra,
+    )
+
+
+def _narrowed_mib(
+    components: dict[str, StoredComponent], compute: str, skip: tuple[str, ...]
+) -> int:
+    """Host MiB of the converted copies of large fp32 components loaded at a narrower compute dtype."""
+    return (
+        int(
+            sum(
+                (c.mib - c.kept_fp32_mib) * _itemsize(compute) / 4
+                for n, c in components.items()
+                if c.dtype == "float32" and c.mib >= _STREAM_MIN_MIB and n not in skip
+            )
+            * _CONVERT_MARGIN
+        )
+        if _itemsize(compute) < 4
+        else 0
+    )
+
+
+def _narrowed_only(
+    reason: str, narrowed: int, total: Optional[int], available: Optional[int]
+) -> SmallHostDecision:
+    """Not routed; refused when the fp32 -> 16-bit copies alone cannot fit (Z-Image-Turbo's 22.9 GB fp32 DiT)."""
+    if not narrowed or available is None:
+        return SmallHostDecision(False, reason)
+    reserve = host_reserve_mib(total)
+    refuse = (
+        _refusal(narrowed, reserve, available, "converting its float32 weights")
+        if narrowed + reserve > int(available) and not host_ram_check_disabled()
+        else None
+    )
+    return SmallHostDecision(
+        False,
+        f"{reason}; float32 -> 16-bit copies need ~{narrowed} MiB + {reserve} MiB reserve, {available} MiB available",
+        available,
+        total,
+        narrowed,
+        refuse = refuse,
     )
 
 
