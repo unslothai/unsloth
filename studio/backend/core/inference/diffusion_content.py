@@ -172,7 +172,6 @@ def gguf_comfy_quant_declared(path: Optional[str]) -> bool:
 
 
 def sd_cpp_gguf_refusal(path: Optional[str]) -> Optional[str]:
-    """Why the native engine cannot run this GGUF, or None."""
     if not path or not str(path).lower().endswith(".gguf") or not gguf_comfy_quant_declared(path):
         return None
     return (
