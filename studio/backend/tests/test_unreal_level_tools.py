@@ -110,6 +110,7 @@ class _FakeEditor:
     ):
         self.level, self.existing, self.calls = level, set(existing), []
         self.ticks = []
+        self.assets_save = True
         world = types.SimpleNamespace(
             get_outermost = lambda: types.SimpleNamespace(get_name = lambda: self.level)
         )
@@ -125,7 +126,7 @@ class _FakeEditor:
             @staticmethod
             def save_dirty_packages(maps, content):
                 editor.calls.append(("save_dirty_packages", maps, content))
-                return True
+                return editor.assets_save
 
         self.module = types.SimpleNamespace(
             uclass = lambda: (lambda cls: cls),
@@ -202,3 +203,11 @@ def test_toolset_registers_once_the_registry_is_up(monkeypatch):
     editor.ticks[0](0.016)
     assert state["registered"] == [toolset.LevelSaveTools]
     assert editor.ticks == []
+
+
+def test_save_as_reports_assets_that_did_not_save(monkeypatch):
+    editor = _FakeEditor()
+    toolset, _ = _load_toolset(monkeypatch, editor)
+    editor.assets_save = False  # e.g. a read-only Blueprint package
+    with pytest.raises(RuntimeError, match = "some other assets were not"):
+        toolset.LevelSaveTools.save_current_level_as("/Game/Maps/City")

@@ -56,7 +56,10 @@ class LevelSaveTools(unreal.ToolsetDefinition):
         world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
         if not unreal.EditorLoadingAndSavingUtils.save_map(world, level_path):
             raise RuntimeError(f"Saving the level as {level_path!r} failed; see the editor log")
-        unreal.EditorLoadingAndSavingUtils.save_dirty_packages(True, True)
+        if not unreal.EditorLoadingAndSavingUtils.save_dirty_packages(True, True):
+            raise RuntimeError(
+                f"The level was saved as {level_path!r}, but some other assets were not; see the editor log"
+            )
         return _current_level_path()
 
     @toolset_registry.tool_call
