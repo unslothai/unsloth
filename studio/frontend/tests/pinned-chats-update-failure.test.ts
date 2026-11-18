@@ -23,6 +23,7 @@ const {
 const {
   isExpectedPinSyncInterruption,
   isPinFailureUnderDesktopUpdate,
+  shouldReportPinSyncFailure,
 } = await import(
   "../src/features/chat/utils/pinned-chats-update-failure.ts"
 );
@@ -121,14 +122,9 @@ function pinRuntime() {
     readLegacy: () => [],
     isRetryable: isRetryablePinError,
     publish: () => {},
-    onError: (error) => {
+    onError: (error, editLost) => {
       raised.push(error);
-      if (
-        !isPinFailureUnderDesktopUpdate(error) &&
-        !isExpectedPinSyncInterruption(error)
-      ) {
-        toasted.push(error);
-      }
+      if (shouldReportPinSyncFailure(error, editLost)) toasted.push(error);
     },
   });
   return { api, sync, raised, toasted };
@@ -391,4 +387,65 @@ test("a pins read slower than the 10s timeout stays silent and the edit saves on
   handle = serve;
   await runtime.sync.refresh();
   assert.deepEqual(server.pins, ["a"]);
+});
+
+test("a refresh that hits a 401 the token refresh could not clear stays silent", async () => {
+  const server = pinsServer();
+  const runtime = pinRuntime();
+  const serve = handle;
+  // authFetch hands back the 401 when the refresh endpoint is unreachable or busy.
+  handle = async () =>
+    new Response(JSON.stringify({ detail: "Invalid or expired token" }), { status: 401 });
+  await assert.rejects(runtime.sync.refresh());
+  assert.ok(runtime.raised.length > 0);
+  assert.deepEqual(runtime.toasted, []);
+  handle = serve;
+  server.pins = ["a"];
+  await runtime.sync.refresh();
+  assert.deepEqual(runtime.toasted, []);
+});
+
+test("a pins read answered with a proxy page stays silent", async () => {
+  pinsServer();
+  const runtime = pinRuntime();
+  handle = async () => new Response("<!doctype html><title>Sign in</title>", { status: 200 });
+  await assert.rejects(runtime.sync.refresh());
+  assert.ok(runtime.raised[0] instanceof SyntaxError);
+  assert.deepEqual(runtime.toasted, []);
+});
+
+test("unpinning part of a queued bulk pin saves every edit without a toast", async () => {
+  const server = pinsServer();
+  const runtime = pinRuntime();
+  await runtime.sync.refresh();
+  const edits = [
+    runtime.sync.setPinned(["a", "b"], true),
+    runtime.sync.setPinned(["c"], true),
+    runtime.sync.setPinned(["a"], false),
+  ];
+  await Promise.allSettled(edits);
+  assert.ok(runtime.raised.some((error) => error instanceof PinnedChatsBlockedError));
+  assert.deepEqual(runtime.toasted, []);
+  // The edits that waited behind the trimmed pin save on the next refresh.
+  await runtime.sync.refresh();
+  assert.deepEqual([...server.pins].sort(), ["b", "c"]);
+});
+
+test("a pin change the server rejects for good still toasts", async () => {
+  const server = pinsServer();
+  const runtime = pinRuntime();
+  await runtime.sync.refresh();
+  const serve = handle;
+  handle = async (url, init) => {
+    if (url.endsWith("/api/chat/settings/compare-and-set")) {
+      return new Response(JSON.stringify({ detail: [{ loc: [], msg: "bad" }] }), {
+        status: 400,
+      });
+    }
+    return serve(url, init);
+  };
+  await assert.rejects(runtime.sync.setPinned(["a"], true));
+  assert.equal(runtime.toasted.length, 1);
+  assert.ok(runtime.toasted[0] instanceof ChatSettingsRequestError);
+  assert.deepEqual(server.pins, []);
 });

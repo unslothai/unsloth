@@ -39,6 +39,23 @@ test("a core build's repo drops only its owner", () => {
   assert.equal(npuDisplayName(core), "Qwen3.5-9B-Q4_G128-GGUF");
 });
 
+test("a converted Q4NX model is named by its folder wherever it shows", () => {
+  const converted = {
+    id: "local-qwen3-0.6b-q4-1-q4nx-aaea03b7-q4nx-FLM",
+    model_path: "lemonade:local-qwen3-0.6b-q4-1-q4nx-aaea03b7-q4nx-FLM",
+    local: { folder: "q4nx/Qwen3-0.6B-Q4_1-q4nx" },
+  };
+  assert.equal(npuDisplayName(converted), "Qwen3-0.6B-Q4_1-q4nx");
+  assert.equal(
+    npuDisplayNameOf([converted], converted.model_path),
+    "Qwen3-0.6B-Q4_1-q4nx",
+  );
+  assert.equal(
+    npuDisplayName({ ...converted, local: { folder: "/mnt/run/npu-q4nx" } }),
+    "run",
+  );
+});
+
 test("a loaded model is named by its id or its lemonade: path", () => {
   assert.equal(
     npuDisplayNameOf([qwen], qwen.model_path),

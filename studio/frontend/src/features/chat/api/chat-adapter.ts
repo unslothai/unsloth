@@ -40,6 +40,7 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+import { isTranslationHeldSlot, isTranslationOnlyRepo } from "@/lib/translation-models";
 import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-cache-snapshot";
 import {
   isServedByLlamaCpp,
@@ -272,10 +273,9 @@ import {
   clampReasoningEffortToLevels,
   externalMaxOutputTokensNeedsConnectionCap,
   externalStopWindow,
-  getExternalMaxOutputTokens,
+  externalRequestMaxTokens,
   getPublishedExternalMaxOutputTokens,
   getGroundedExternalMaxOutputTokens,
-  getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   providerModelReplaysReasoning,
   providerSupportsPreserveThinking,
@@ -363,6 +363,12 @@ import {
   recordLastLocalModelLoad,
   type LastLocalModelKind,
 } from "../utils/last-local-model-load";
+import {
+  failureLabelFor,
+  rememberedMissNote,
+  sameVariant,
+  withRememberedMiss,
+} from "../utils/auto-load-remembered";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import {
   createImageGateRunOwner,
@@ -2904,6 +2910,7 @@ function applyAutoLoadRuntimeState(
 
 /** Whether a cache row is chattable. Every field is optional so an older backend keeps trying. */
 function isChattableCachedRepo(repo: {
+  repo_id?: string;
   partial?: boolean;
   task?: string | null;
   model_format?: string | null;
@@ -2915,7 +2922,9 @@ function isChattableCachedRepo(repo: {
     // Adapters fetch base weights from the Hub, and can_chat is true on file layout alone.
     repo.model_format !== "adapter" &&
     // Cached diffusion and speech repos report can_chat true on file format alone.
-    !NON_CHAT_TASKS.has(repo.task ?? "")
+    !NON_CHAT_TASKS.has(repo.task ?? "") &&
+    // Translate's models are tagged text-generation, but would translate the user's prompt.
+    !isTranslationOnlyRepo(repo.repo_id)
   );
 }
 
@@ -2955,6 +2964,7 @@ function isAutoLoadableLocalRow(
     // Allowlist: backends send "unknown" or omit the field, so a denylist admitted pickles.
     (isGgufLocalRow(row) || row.model_format === "safetensors") &&
     !NON_CHAT_TASKS.has(row.task ?? "") &&
+    !isTranslationOnlyRepo(row.model_id) &&
     runsOnThisPlatform(row) &&
     !isHiddenModelId(row.model_id, row.id, row.path)
   );
@@ -3508,14 +3518,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     cpuFallbackReason?: CpuFallbackReason | null,
     mmprojFallbackReason?: MmprojFallbackReason | null,
     offloadCounts?: OffloadCounts,
+    missedNote?: string | null,
   ): void => {
     // Both reasons composed (mmproj and CPU); see loadFallbackNotice.
-    const notice = loadFallbackNotice(
-      message,
-      cpuFallbackReason,
-      mmprojFallbackReason,
-      offloadWarning(offloadCounts ?? {}),
-      expertSpillNote(offloadCounts ?? {}),
+    const notice = withRememberedMiss(
+      loadFallbackNotice(
+        message,
+        cpuFallbackReason,
+        mmprojFallbackReason,
+        offloadWarning(offloadCounts ?? {}),
+        expertSpillNote(offloadCounts ?? {}),
+      ),
+      missedNote ?? null,
     );
     const options = {
       description: notice.description,
@@ -3540,6 +3554,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const loadFailure: {
     current: { label: string; detail: string; blamesModel: boolean } | null;
   } = { current: null };
+  // Set when the last used model was tried and did not load: a fallback must say so and must not replace it (#18002).
+  const rememberedMiss: { current: string | null } = { current: null };
 
   // Set once the user declines the HF token dialog, so nothing asks again.
   let autoLoadCancelled = false;
@@ -3625,6 +3641,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
+    // Set when this load stands in for a last used model that failed.
+    missedNote: string | null = null,
   ): Promise<boolean> {
     if (
       autoLoadCancelled ||
@@ -3635,9 +3653,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     }
     const currentStore = useChatRuntimeStore.getState();
     const modelPath = candidate.loadId ?? candidate.id;
-    const failureLabel = candidate.ggufVariant
-      ? `${candidate.id} (${candidate.ggufVariant})`
-      : candidate.id;
+    const failureLabel = failureLabelFor(candidate);
     const { config } = resolveInitialConfig(
       candidate.id,
       candidate.ggufVariant,
@@ -4042,7 +4058,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           activeModelIsLocal: loadResp.is_local_model ?? false,
         });
       }
-      if (!(loadResp.is_lora ?? false)) {
+      if (!(loadResp.is_lora ?? false) && missedNote === null) {
         recordLastLocalModelLoad({
           id: candidate.id,
           kind: candidate.kind,
@@ -4054,6 +4070,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         loadResp.cpu_fallback_reason,
         loadResp.mmproj_fallback_reason,
         offloadCountsFrom(loadResp),
+        missedNote,
       );
     });
     return true;
@@ -4151,16 +4168,36 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           candidateResolvedFor.add(sourceKey);
           updateAutoLoadToast(
             isRemembered ? "Loading last used model…" : "Loading a model…",
-            candidate.ggufVariant
-              ? `${candidate.id} (${candidate.ggufVariant})`
-              : candidate.id,
+            failureLabelFor(candidate),
           );
+          const isRememberedCandidate =
+            isRemembered &&
+            sameVariant(candidate.ggufVariant, lastLoaded?.ggufVariant ?? null);
+          const failuresBefore = loadFailure.current;
+          const noteRememberedMiss = (): void => {
+            if (!isRememberedCandidate || rememberedMiss.current !== null) {
+              return;
+            }
+            const failure =
+              loadFailure.current !== failuresBefore ? loadFailure.current : null;
+            rememberedMiss.current = rememberedMissNote(
+              failureLabelFor(candidate),
+              failure?.detail ?? null,
+            );
+          };
           try {
-            if (await loadAutoLoadCandidate(candidate)) {
+            if (
+              await loadAutoLoadCandidate(
+                candidate,
+                isRememberedCandidate ? null : rememberedMiss.current,
+              )
+            ) {
               return { loaded: true, blockedByTrustRemoteCode: false };
             }
+            noteRememberedMiss();
           } catch {
             options?.abortSignal?.throwIfAborted();
+            noteRememberedMiss();
             hadNonTrustFailure = true;
             // loadAutoLoadCandidate does not record rejections; mark here or the same quant loops forever.
             skippedAutoLoadCandidates.add(
@@ -4364,16 +4401,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           activeModelIsLocal: loadResp.is_local_model ?? false,
           ...resolveLoadedSpeculativeSettings(loadResp),
         });
-        recordLastLocalModelLoad({
-          id: DEFAULT_CHAT_MODEL_REPO,
-          kind: "gguf",
-          ggufVariant: DEFAULT_CHAT_MODEL_VARIANT,
-        });
+        if (rememberedMiss.current === null) {
+          recordLastLocalModelLoad({
+            id: DEFAULT_CHAT_MODEL_REPO,
+            kind: "gguf",
+            ggufVariant: DEFAULT_CHAT_MODEL_VARIANT,
+          });
+        }
         showAutoLoadSuccess(
           `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
           loadResp.cpu_fallback_reason,
           loadResp.mmproj_fallback_reason,
           offloadCountsFrom(loadResp),
+          rememberedMiss.current,
         );
       });
       return { loaded: true, blockedByTrustRemoteCode: false };
@@ -4430,8 +4470,9 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
         };
       }
       const status = settled.status;
-      // A speech model is not one chat can queue against, so read the slot as empty.
-      const checkpoint = isSpeechOnlyStatus(status)
+      // A speech or Translate-held model is not one chat can queue against, so read the slot as empty.
+      const checkpoint =
+        isSpeechOnlyStatus(status) || isTranslationHeldSlot(status.active_model, null)
         ? null
         : resolveInferenceCheckpointId(status);
       if (checkpoint) {
@@ -6785,6 +6826,12 @@ export function createOpenAIStreamAdapter(
                 }
               }
             }
+            const externalMaxTokens = externalRequestMaxTokens(
+              externalProvider?.providerType,
+              externalSelection?.modelId,
+              externalProvider?.maxOutputTokens,
+              params.maxTokens,
+            );
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
@@ -6803,18 +6850,9 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.topP !== false && params.topP < 1
                 ? { top_p: params.topP }
                 : {}),
-              // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
-              max_tokens: Math.min(
-                Math.max(
-                  params.maxTokens,
-                  getExternalMinOutputTokens(externalProvider?.providerType),
-                ),
-                getExternalMaxOutputTokens(
-                  externalProvider?.providerType,
-                  externalSelection?.modelId,
-                  externalProvider?.maxOutputTokens,
-                ),
-              ),
+              ...(externalMaxTokens == null
+                ? {}
+                : { max_tokens: externalMaxTokens }),
 
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.minP

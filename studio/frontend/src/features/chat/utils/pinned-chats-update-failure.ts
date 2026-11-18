@@ -54,3 +54,10 @@ export function isExpectedPinSyncInterruption(error: unknown): boolean {
   }
   return error instanceof ChatSettingsRequestError && !isTerminalSettingsRejection(error);
 }
+
+/** Only a pin change the sync discarded is news; the journal retries every other failure. */
+export function shouldReportPinSyncFailure(error: unknown, editLost: boolean): boolean {
+  return (
+    editLost && !isPinFailureUnderDesktopUpdate(error) && !isExpectedPinSyncInterruption(error)
+  );
+}

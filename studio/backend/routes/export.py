@@ -688,6 +688,12 @@ async def export_gguf(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
+        if request.npu_q4nx and output_path:
+            from core.inference.npu_local_models import EXPORT_SUBFOLDER, hidden_in_exports
+
+            # The NPU picker finds <save>/npu-q4nx only once the save folder is registered.
+            if hidden_in_exports(Path(output_path) / EXPORT_SUBFOLDER):
+                await asyncio.to_thread(_try_register_external_export, Path(output_path))
         if getattr(backend, "decision", None):
             details = await asyncio.to_thread(_decision_export_details, output_path)
         else:
@@ -767,6 +773,11 @@ async def convert_q4nx(
     except Exception as e:
         logger.error(f"Q4NX conversion failed: {e}", exc_info = True)
         raise HTTPException(status_code = 400, detail = f"Q4NX conversion failed: {e}")
+    from core.inference.npu_local_models import hidden_in_exports
+
+    # The NPU picker lists registered folders too; _export_details registers one outside exports.
+    if hidden_in_exports(Path(output_path)):
+        await asyncio.to_thread(_try_register_external_export, Path(output_path))
     return ExportOperationResponse(
         success = True,
         message = "Converted to Q4NX for the AMD NPU",

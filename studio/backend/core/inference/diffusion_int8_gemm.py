@@ -265,14 +265,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         T,
         stride_gb,
         stride_gt,
-        HAS_BIAS: tl.constexpr,  # bias present
-        XS_FP32: tl.constexpr,  # activation scale is fp32
-        WS_FP32: tl.constexpr,  # weight scale is fp32
-        EVEN_K: tl.constexpr,  # K divisible by BLOCK_K
-        BLOCK_M: tl.constexpr,  # block size along M (rows)
-        BLOCK_N: tl.constexpr,  # block size along N (out features)
-        BLOCK_K: tl.constexpr,  # block size along K (in features)
-        GROUP_M: tl.constexpr,  # M tiles per swizzle group
+        HAS_BIAS: tl.constexpr,
+        XS_FP32: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        EVEN_K: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        GROUP_M: tl.constexpr,
         PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
         NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear epilogue: fp32 acc * xs * ws (+ bias), one bf16 round
         RES: tl.constexpr = False,  # gated residual: r + bf16(linear out) * g, rows of T tokens per batch
@@ -363,13 +363,13 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         N,
         K,
         stride_cm,
-        HAS_BIAS: tl.constexpr,  # bias present
-        XS_FP32: tl.constexpr,  # activation scale is fp32
-        WS_FP32: tl.constexpr,  # weight scale is fp32
-        BLOCK_M: tl.constexpr,  # block size along M (rows)
-        BLOCK_N: tl.constexpr,  # block size along N (out features)
-        BLOCK_K: tl.constexpr,  # block size along K (in features)
-        GROUP_M: tl.constexpr,  # M tiles per swizzle group
+        HAS_BIAS: tl.constexpr,
+        XS_FP32: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        GROUP_M: tl.constexpr,
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -716,7 +716,7 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 os.environ.get(INT8_GEMM_TILES_ENV, ""),
                 os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
                 # the timing mode decides the huge-race winners: a plan raced the other way is re-raced
-                f"sustained={int(cut.sustained_enabled())}",
+                f"sustained={cut.sustained_mode()}",
                 h.hexdigest()[:20],
             )
         )
@@ -897,8 +897,7 @@ def _cutlass_plan(
     return plan
 
 
-# free device memory the huge race needs, as a multiple of one operand + one output: today's output, the candidate
-# outputs the caching allocator keeps between timed calls, and slack for the streamed tiers' budget
+# huge-race free memory, in (operand + output) units: today's output, cached candidate outputs, streaming slack
 _HUGE_RACE_HEADROOM = 4.0
 
 
@@ -1628,10 +1627,51 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
     return rec
 
 
+def rdna_native_rotated(module: Any) -> bool:
+    """Native int8 Linear on the RDNA W8A8 kernels with ConvRot group 256. Traced: plain attribute reads only."""
+    return (
+        type(module).__name__ == "NativeWeightOnlyLinear"
+        and bool(getattr(module, "act_int8", False))
+        and bool(getattr(module, "_rdna", False))
+        and getattr(module, "rot_group", 0) == 256
+    )
+
+
+def _rdna_shared(x: Any, linears: tuple) -> Optional[list]:
+    """``[m(x) for m in linears]`` for native RDNA W8A8 Linears with one rotation + act quant: each Linear's own
+    forward (``_forward_rdna``) on the same codes, so bit-identical. None when any is not on that path for ``x``."""
+    import torch
+
+    if not all(rdna_native_rotated(m) and not _hooked(m) for m in linears):
+        return None
+    d0 = linears[0]
+    k = d0.in_features
+    if x.shape[-1] != k or any(m.in_features != k for m in linears):
+        return None
+    if not all(m._rdna_on(x) for m in linears):
+        return None
+    for m in linears:
+        d = m.__dict__
+        if "_diffusers_hook" in d or "_hf_hook" in d:
+            return None
+    from . import diffusion_native_w8a8_rdna as rdna
+
+    xq, xs = rdna.rotq(x.reshape(-1, k), d0.rot_group)
+    lead = x.shape[:-1]
+    return [
+        rdna.w8a8_mm(
+            xq, xs, m.weight_q, m.weight_scale.view(torch.float32), m.bias, x.dtype
+        ).reshape(*lead, m.out_features)
+        for m in linears
+    ]
+
+
 def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
     """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered."""
     import torch
 
+    if linears and rdna_native_rotated(linears[0]):
+        return _rdna_shared(x, linears)
     if x.dtype != torch.bfloat16 or not x.is_cuda or x.numel() < _MIN_ROWS * x.shape[-1]:
         return None
     recs = [_swapped_rec(m) for m in linears]

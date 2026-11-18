@@ -521,6 +521,26 @@ def test_gpt_oss_evidence_ids_are_real_parity_cases():
     assert named == 3
 
 
+def test_gpt_oss_pp_evidence_ids_are_real_parity_cases():
+    import re
+
+    parity = pytest.importorskip("tests.test_pp_moe_aux_off_gloo")
+    named = 0
+    for cell in caps.CELLS:
+        if (
+            cell.parity
+            and "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation[" in cell.parity
+        ):
+            assert " x aux off x pp" in cell.name and "gpt_oss" in cell.name, cell.name
+            ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+            assert set(ids) <= set(parity.CELLS), (cell.name, ids)
+            assert all(parity.CELLS[i].get("lora") for i in ids), (cell.name, ids)
+            experts = {bool(parity.CELLS[i].get("experts")) for i in ids}
+            assert experts == {"lora+experts" in cell.name}, (cell.name, ids)
+            named += 1
+    assert named == 3  # lora, lora+experts, qlora
+
+
 def test_unsloth_checkpoint_keeps_an_unverified_moe_row_refused_under_strict(
     clean_env, monkeypatch
 ):

@@ -4593,8 +4593,26 @@ def _sf_parse_think_markers(
     return _resolved_kwargs_think(None, resolved)
 
 
-def _effective_enable_tools(payload) -> Optional[bool]:
-    """An explicit enable_tools false beats the launcher default; a CLI policy override outranks it."""
+def _memory_tool_requested(payload) -> bool:
+    """Saved memory may add a tool only when the caller has no client-owned contract."""
+    if (
+        getattr(payload, "tools", None)
+        or getattr(payload, "tool_choice", None) == "none"
+        or (getattr(payload, "n", None) or 1) > 1
+        or _response_format_constrains_decoding(payload)
+        or (
+            _has_openai_tool_history(getattr(payload, "messages", None) or [])
+            and not _only_studio_tool_history(payload)
+        )
+    ):
+        return False
+    from core.chat_memory import thread_context
+
+    return thread_context(getattr(payload, "thread_id", None)) is not None
+
+
+def _base_enable_tools(payload) -> Optional[bool]:
+    """Tool selection before optional memory tools; the CLI policy outranks request flags."""
     from state.tool_policy import get_tool_policy, get_tool_policy_default
 
     policy = get_tool_policy()
@@ -4603,6 +4621,16 @@ def _effective_enable_tools(payload) -> Optional[bool]:
     if payload.enable_tools is None:
         return get_tool_policy_default()
     return payload.enable_tools
+
+
+_MEMORY_LOOP_TOOL_NAMES = ("update_memory", "search_conversation")
+
+
+def _effective_enable_tools(payload) -> Optional[bool]:
+    from state.tool_policy import get_tool_policy
+    if get_tool_policy() is not False and _memory_tool_requested(payload):
+        return True
+    return _base_enable_tools(payload)
 
 
 async def _materialize_sandbox_attachments(payload) -> None:
@@ -4632,6 +4660,7 @@ def _tools_on_by_launcher_default_only(payload) -> bool:
         get_tool_policy() is None
         and payload.enable_tools is None
         and not getattr(payload, "mcp_enabled", False)
+        and not _memory_tool_requested(payload)
     )
 
 
@@ -4656,7 +4685,9 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     from state.tool_policy import get_tool_policy
 
     policy = get_tool_policy()
-    return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
+    return policy is not False and (
+        payload.enable_tools is True or bool(payload.mcp_enabled) or _memory_tool_requested(payload)
+    )
 
 
 def _selects_only_provider_hosted_tools(
@@ -4892,6 +4923,10 @@ def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
         enabled = list(selected_names)
     elif getattr(payload, "mcp_enabled", False):
         return True
+    elif _memory_tool_requested(payload) and not _base_enable_tools(payload):
+        if getattr(payload, "deep_research_armed", False):
+            return True
+        enabled = _MEMORY_LOOP_TOOL_NAMES
     else:
         enabled = getattr(payload, "enabled_tools", None)
     if enabled is None:
@@ -4947,10 +4982,10 @@ def _confirm_gate_has_no_channel(
         # Bypass suppresses the gate, so no stream is needed; else full-access non-streaming runs 400.
         if getattr(payload, "bypass_permissions", False):
             return False
-        return _confirm_gate_needs_stream(payload)
+        return _confirm_gate_needs_stream(payload, selected_names)
     if ui_events:
         return False
-    if _request_states_no_tool_flag(payload):
+    if _request_states_no_tool_flag(payload) and not _memory_tool_requested(payload):
         # Never asked for tools: withdraw launcher defaults, not 400; external providers use the complement.
         return False
     return _confirm_gate_would_prompt(payload, selected_names)
@@ -4967,7 +5002,7 @@ def _confirm_gate_would_prompt(payload, selected_names = None) -> bool:
     return _confirm_gate_needs_stream(payload, selected_names)
 
 
-def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
+def _launcher_tool_catalog_applies(payload, ui_events: bool) -> bool:
     """Launcher default skips streams the gate would stop, else the caller parks in wait_tool_decision."""
     if not _request_states_no_tool_flag(payload):
         return True
@@ -4976,6 +5011,11 @@ def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
     if not (getattr(payload, "stream", False) and not ui_events):
         return True
     return not _confirm_gate_would_prompt(payload)
+
+
+def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
+    """Memory keeps its loop without opting into the launcher's broader tool catalog."""
+    return _memory_tool_requested(payload) or _launcher_tool_catalog_applies(payload, ui_events)
 
 
 def _reject_confirm_gate_without_channel(
@@ -5704,6 +5744,16 @@ _TOOL_BASE_NUDGE = (
     "materially helps; otherwise answer normally and follow the user's requested "
     "format."
 )
+_TOOL_MEMORY_TIP = (
+    "Answer normally without calling update_memory by default. Use update_memory only when "
+    "the latest user message supplies new lasting information about the user or an established "
+    "decision for the current project, corrects such information, or asks to forget it. Greetings, "
+    "questions, requests for code or advice, hypothetical options, temporary instructions and "
+    "text supplied for translation or summarization do not establish memories. Facts about "
+    "people in quoted text are not facts about the user. Never save your own answers or "
+    "suggestions. Do not re-save remembered facts. If there is no qualifying new fact, "
+    "answer directly with no memory call."
+)
 _TOOL_WEB_COMPACT_TIP = "When using web_search, do not repeat the same search query."
 # Only with Search images on; small models call the tool before knowing their list, so answer first.
 _TOOL_IMAGES_TIP = (
@@ -5880,7 +5930,7 @@ def _build_tool_action_nudge(
     full_access_only: bool = False,
     user_folder: bool = False,
 ) -> str:
-    """full_access_only keeps just the environment sentences (Full access, project folder) and skills catalog, not the general guidance."""
+    """full_access_only omits general guidance, keeping environment, skills and memory rules."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -5898,8 +5948,9 @@ def _build_tool_action_nudge(
     has_artifact = "render_html" in tool_names
     has_research = "deep_research" in tool_names
     has_skills = bool({"read_skill", "create_skill"} & tool_names)
+    memory_tip = _TOOL_MEMORY_TIP if "update_memory" in tool_names else ""
     if not (has_web or has_code or has_artifact or has_research or has_skills):
-        return ""
+        return memory_tip
     model_size_b = _extract_model_size_b(model_name)
     # Small models get the shorter web tip and the smaller skill catalog.
     compact = model_size_b is not None and model_size_b < 9
@@ -5910,7 +5961,7 @@ def _build_tool_action_nudge(
     )
     folder_tip = _project_folder_tip(tool_names) if user_folder else ""
     if full_access_only:
-        tips = []
+        tips = [memory_tip]
         if full_access and has_code:
             tips.append(_full_access_tip(code_tools))
         if folder_tip:
@@ -5919,7 +5970,7 @@ def _build_tool_action_nudge(
             tips.append(skill_tip)
         return " ".join(tip for tip in tips if tip)
     if not (has_web or has_code or has_artifact):
-        tips = []
+        tips = [memory_tip]
         if has_research:
             tips.append(_TOOL_RESEARCH_TIP)
         if has_skills:
@@ -5944,6 +5995,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
     if has_skills:
         tool_tip_parts.append(skill_tip)
+    if memory_tip:
+        tool_tip_parts.append(memory_tip)
     # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
     return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
@@ -6294,6 +6347,18 @@ async def _select_request_tools(
         if not tools_on:
             # After a reset, offer search_conversation ALONE: models guess tool names in big catalogs.
             tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
+    from core.chat_memory import offer
+
+    memory_tools = (
+        offer(getattr(payload, "thread_id", None))
+        if tools_on and _memory_tool_requested(payload)
+        else []
+    )
+    if memory_tools and (
+        not _base_enable_tools(payload) or not _launcher_tool_catalog_applies(payload, ui_events)
+    ):
+        tools = [t for t in tools if t["function"]["name"] in _MEMORY_LOOP_TOOL_NAMES]
+    tools += memory_tools
     tools = _tools_for_search_images(tools)
     # Before the MCP append: Full access says nothing about how an MCP server runs.
     if payload.bypass_permissions:
@@ -8357,6 +8422,67 @@ def _replay_load_kwargs(launch, override_kwargs) -> dict[str, Any]:
     return kwargs
 
 
+async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
+    """``request`` with its unset fields filled from the model's saved launch settings, as auto-switch resolves them."""
+    from core.inference.local_model_resolver import (
+        local_target_is_gguf,
+        resolve_local_gguf,
+        resolve_trusted_cached_local_gguf,
+    )
+    from utils.openai_auto_switch_settings import (
+        model_override_load_kwargs,
+        resolve_override_for_load,
+        stored_gpu_index_kind,
+    )
+
+    load_path, variant = request.model_path, request.gguf_variant
+    alias = _snapshot_repo_or_self(load_path, require_cache = True)
+    # A row may be keyed by the snapshot path; the scan also warms the index local_target_is_gguf reads.
+    ref = f"{load_path}:{variant}" if variant else load_path
+    local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
+        resolve_local_gguf, ref
+    )
+    if local:
+        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+        # A bare id may resolve to a cached quant the load itself would not pick.
+        named = variant or looks_like_quant(split_model_ref(load_path)[1])
+        variant = (local[1] or variant) if named else None
+        load_path = local[0]
+        alias = local[2] or alias
+    key, override = await asyncio.to_thread(resolve_override_for_load, load_path, alias, variant)
+    if not override:
+        return request
+    is_gguf = await asyncio.to_thread(local_target_is_gguf, load_path, alias)
+    sent = request.model_dump(include = request.model_fields_set)
+    fill = {
+        name: value
+        for name, value in model_override_load_kwargs(override, is_gguf = is_gguf).items()
+        if name not in sent
+    }
+    # A sent 4-bit choice is the engine precision (_managed_engine_request maps it only when none is set).
+    if "load_in_4bit" in sent:
+        fill.pop("engine_precision", None)
+    # Placement is one choice: saved layers or split would contradict the sent mode or GPUs.
+    if any(name in sent for name in _PLACEMENT_FIELDS):
+        for name in _PLACEMENT_FIELDS:
+            fill.pop(name, None)
+    if fill.get("llama_extra_args"):
+        fill["llama_extra_args"] = _strip_inherited_extras(request, fill["llama_extra_args"])
+    if fill.get("gpu_ids") and not await _override_gpu_ids_still_resolve(
+        fill["gpu_ids"], stored_gpu_index_kind(override)
+    ):
+        fill.pop("gpu_ids", None)
+        fill.pop("tensor_split", None)
+    if not fill:
+        return request
+    filled = LoadRequest(**request.model_dump(exclude_unset = True), **fill)
+    filled.__pydantic_private__ = dict(request.__pydantic_private__ or {})
+    # Replay and the managed path check re-read the row by this alias: a repo id misses a snapshot-keyed one.
+    filled._override_alias_id = key or alias
+    return filled
+
+
 def _snapshot_repo_or_self(model_id, require_cache = False):
     from core.inference.model_ids import hf_cache_repo_id
 
@@ -8545,6 +8671,46 @@ def _should_strip_tensor_split(request: LoadRequest) -> bool:
     return (
         getattr(request, "gpu_memory_mode", "auto") == "manual"
         and getattr(request, "gpu_layers", -1) >= 0
+    )
+
+
+def _strip_inherited_extras(
+    request: LoadRequest,
+    stored_args: list[str],
+    effective_chat_template_override: Optional[str] = None,
+) -> list[str]:
+    """``stored_args`` without the flags that would beat a field ``request`` set in llama.cpp's last-wins parse."""
+    # Strip only groups whose field was set; a bundled family template also strips --chat-template-file, else the stale arg shadows the bundled template.
+    fields_set = getattr(request, "model_fields_set", set())
+    # A matching inherited -c is the user's opt-in to exceed the fit estimate; keep it.
+    from core.inference.llama_server_args import matches_explicit_ctx_override
+
+    return strip_shadowing_flags(
+        stored_args,
+        strip_context = "max_seq_length" in fields_set
+        and not matches_explicit_ctx_override(
+            stored_args, getattr(request, "max_seq_length", None)
+        ),
+        strip_cache = "cache_type_kv" in fields_set,
+        strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
+        strip_template = (
+            "chat_template_override" in fields_set or effective_chat_template_override is not None
+        ),
+        strip_split_mode = _should_strip_split_mode(request, stored_args),
+        # Manual per-GPU ratio emits its own --tensor-split; drop the inherited one (appended last wins), but keep the user's --split-mode choice.
+        strip_tensor_split = _should_strip_tensor_split(request),
+        # Manual emits its own --fit/--gpu-layers, so an inherited offload flag must not win last; auto keeps the user's -ngl. getattr: validate lacks fields.
+        strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+        strip_reasoning_budget = "reasoning_budget" in fields_set,
+        strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
+        strip_batch = "n_batch" in fields_set,
+        strip_ubatch = "n_ubatch" in fields_set,
+        strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
+        strip_cache_ram = "cache_ram" in fields_set,
+        strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,
+        # The load mode also strips its deprecated aliases: a trailing one resets the mode.
+        strip_load_mode = "load_mode" in fields_set,
+        strip_load_mode_aliases = "load_mode" in fields_set,
     )
 
 
@@ -10551,7 +10717,7 @@ def _loaded_satisfies(requested: str) -> bool:
 
     npu_model = _resident_npu_model()
     if npu_model is not None:
-        return requested in (npu_model.model_path, npu_model.id)
+        return requested in (npu_model.model_path, npu_model.id) or npu_model.answers_to(requested)
     base, variant = split_model_ref(requested)
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
@@ -10628,7 +10794,7 @@ def _loaded_identity_satisfies(requested: str) -> bool:
 
     npu_model = _resident_npu_model()
     if npu_model is not None:
-        return requested in (npu_model.model_path, npu_model.id)
+        return requested in (npu_model.model_path, npu_model.id) or npu_model.answers_to(requested)
     base, _ = split_model_ref(requested)
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
@@ -11397,6 +11563,89 @@ def _switch_loads_beside(target_speaks: Callable[[], bool]) -> bool:
     return target_speaks() != bool(info.get("is_audio") and info.get("audio_type") != "whisper")
 
 
+async def _npu_path_for_display_name(
+    requested_model: Optional[str],
+    fastapi_request: Request,
+    serves_npu: bool = True,
+) -> Optional[str]:
+    """``lemonade:<id>`` for the NPU model name the app shows (``Qwen3-0.6B-NPU2`` or its
+    ``FastFlowLM/`` repo); any other name is returned unchanged."""
+    from core.inference.npu_backend import (
+        NpuError,
+        get_npu_backend,
+        looks_like_npu_display_name,
+    )
+
+    if not looks_like_npu_display_name(requested_model):
+        return requested_model
+    npu = get_npu_backend()
+    if not npu.hardware().get("supported"):
+        return requested_model
+    from core.inference.load_policy import LoadPolicy, current_load_policy, owner_chat_loads_beside
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+    # Reading the catalog starts the runtime, so only a request that could load may start it:
+    # the credential's policy as _refuse_unless_any_load reads it, then the switch settings.
+    policy = current_load_policy()
+    scope = getattr(fastapi_request, "scope", None)
+    may_load = (
+        serves_npu
+        and (
+            policy is LoadPolicy.ANY
+            or (policy is LoadPolicy.BESIDE_ONLY and not _chat_model_resident())
+        )
+        and not (isinstance(scope, dict) and scope.get(LOADED_MODELS_ONLY_SCOPE_KEY))
+        and not account_access.managed_account()
+        and not _auto_switch_opted_out(fastapi_request)
+        and (
+            get_openai_auto_switch_enabled()
+            or _model_switch_allowed_for_request(fastapi_request)
+            or owner_chat_loads_beside()
+        )
+        and not await _keyless_caller_held_back(fastapi_request)
+    )
+    if account_access.managed_account():
+        # The NPU is the owner's; a managed caller only reaches the model already loaded.
+        loaded = _resident_npu_model()
+        if loaded is not None and loaded.answers_to(requested_model):
+            return loaded.model_path
+        return requested_model
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+
+    def _refuse(status: int, message: str, code: str) -> HTTPException:
+        return HTTPException(
+            status_code = status,
+            detail = (
+                error_body_for_path(path, message, status = status, code = code, param = "model")
+                if isinstance(path, str)
+                else message
+            ),
+        )
+
+    try:
+        resolved = await asyncio.to_thread(
+            npu.model_path_for_name, requested_model, start_runtime = may_load
+        )
+    except NpuError as exc:
+        raise _refuse(400, str(exc), "invalid_value") from None
+    if resolved:
+        return resolved
+    if not await asyncio.to_thread(npu.can_run):
+        return requested_model
+    # This host runs the NPU, so the name is an NPU model's: never answered by another model.
+    if may_load:
+        message = (
+            f"No NPU model is named '{requested_model}'. GET /api/npu/models lists them, "
+            "with the name Unsloth Studio shows in hf_repo."
+        )
+    else:
+        message = (
+            f"The NPU model '{requested_model}' is not loaded. Load it in Unsloth Studio, or turn "
+            "on 'Switch model by request' under Settings > API to load it from a request."
+        )
+    raise _refuse(404, message, "model_not_found")
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -11456,6 +11705,9 @@ async def _maybe_auto_switch_model(
     # A text-only GGUF reads tool-result images as a note, so only audio or video needs its mmproj.
     gguf_requires_vision = (
         (require_audio_input or require_video) if tool_images_only else require_vision
+    )
+    requested_model = await _npu_path_for_display_name(
+        requested_model, fastapi_request, serves_npu = serves_npu
     )
     # The reload-only sentinel means an omitted model, not a name.
     named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
@@ -17192,40 +17444,7 @@ def _resolve_inherited_extra_args(
         # Clear explicitly so the backend doesn't inherit via 'no opinion'.
         extra_llama_args = []
     else:
-        # Strip only groups whose field was set; a bundled family template also strips --chat-template-file, else the stale arg shadows the bundled template.
-        fields_set = getattr(request, "model_fields_set", set())
-        # A matching inherited -c is the user's opt-in to exceed the fit estimate; keep it.
-        from core.inference.llama_server_args import matches_explicit_ctx_override
-
-        stripped = strip_shadowing_flags(
-            stored_args,
-            strip_context = "max_seq_length" in fields_set
-            and not matches_explicit_ctx_override(
-                stored_args, getattr(request, "max_seq_length", None)
-            ),
-            strip_cache = "cache_type_kv" in fields_set,
-            strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
-            strip_template = (
-                "chat_template_override" in fields_set
-                or effective_chat_template_override is not None
-            ),
-            strip_split_mode = _should_strip_split_mode(request, stored_args),
-            # Manual per-GPU ratio emits its own --tensor-split; drop the inherited one (appended last wins), but keep the user's --split-mode choice.
-            strip_tensor_split = _should_strip_tensor_split(request),
-            # Manual emits its own --fit/--gpu-layers, so an inherited offload flag must not win last; auto keeps the user's -ngl. getattr: validate lacks fields.
-            strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
-            strip_reasoning_budget = "reasoning_budget" in fields_set,
-            strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
-            # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
-            strip_batch = "n_batch" in fields_set,
-            strip_ubatch = "n_ubatch" in fields_set,
-            # The load mode also strips its deprecated aliases: a trailing one resets the mode.
-            strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
-            strip_cache_ram = "cache_ram" in fields_set,
-            strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,
-            strip_load_mode = "load_mode" in fields_set,
-            strip_load_mode_aliases = "load_mode" in fields_set,
-        )
+        stripped = _strip_inherited_extras(request, stored_args, effective_chat_template_override)
         # Drop only denylisted flags, not the whole inherited list.
         extra_llama_args, _dropped = drop_managed_flags(stripped)
         if _dropped:
@@ -18156,10 +18375,16 @@ async def load_model(
     if _resolve_trained_run_request(request):
         # keeps the job's name as the served id, so chat and /v1/models answer to it
         request._advertised_id = request._advertised_id or named
-    return await _tunnel_safe_json(
-        load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
-        label = "Model load",
-    )
+
+    async def _load(request):
+        # Inside the padded call: a cold index makes the saved-settings lookup scan every model folder.
+        if request.use_saved_settings:
+            request = await _with_saved_settings(request)
+        return await load_model_gated(
+            request, fastapi_request, current_subject, user_initiated = True
+        )
+
+    return await _tunnel_safe_json(_load(request), label = "Model load")
 
 
 def _repo_is_in_the_hub_cache(model_ref) -> Optional[bool]:
@@ -19006,7 +19231,7 @@ def _npu_load_response(
         display_name = model.id,
         is_npu = True,
         is_vision = model.vision,
-        inference = load_inference_config(model.id),
+        inference = load_inference_config(model.sampling_id),
         context_length = resident.context_length,
         **flm_args_status(flm_args),
         # The free-RAM estimate where one was made, as llama.cpp reports its fit.
@@ -22946,7 +23171,7 @@ async def _slot_status(current_subject: str):
                 is_vision = _npu_model.vision,
                 loading = _loading,
                 loaded = [_npu_model.model_path],
-                inference = load_inference_config(_npu_model.id),
+                inference = load_inference_config(_npu_model.sampling_id),
                 context_length = _npu_resident.context_length,
                 requested_context_length = _npu_resident.requested_context_length,
                 **flm_args_status(_npu_resident.flm_args),
@@ -31311,7 +31536,8 @@ def _refuse_npu_chat_request(payload, *, supports_vision: bool, supports_tools: 
         _raise_unsupported_n("NPU chat completions")
     if _response_format_constrains_decoding(payload):
         _raise_unsupported_openai_parameter(
-            "response_format", "FastFlowLM on the NPU has no guided decoding for response_format."
+            "response_format",
+            "response_format needs a grammar engine, and FastFlowLM on the NPU has none.",
         )
     if getattr(payload, "seed", None) is not None:
         _raise_unsupported_openai_parameter(
@@ -31393,7 +31619,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         payload.enable_thinking = payload.reasoning_effort != "none"
     _fill_recommended_sampling_openai(
         payload,
-        upstream.model,
+        upstream.sampling_model or upstream.model,
         thinking = payload.enable_thinking if upstream.supports_reasoning else None,
     )
 
@@ -32311,6 +32537,8 @@ async def produce_openai_chat_completions(
     cancel_on_disconnect: bool,
 ):
     """GGUF models route to llama-server, others to the transformers backend; stream defaults to false."""
+    from core.chat_memory import apply_to_request
+
     request = _DisconnectPolicyRequest(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
@@ -32364,6 +32592,8 @@ async def produce_openai_chat_completions(
                 status_code = 400,
                 detail = "Audio input is only supported on a local model with audio support.",
             )
+        # A hosted request must not inherit an unrelated local model's window.
+        apply_to_request(payload, payload.context_window)
         return await _proxy_to_external_provider(payload, request, current_subject)
 
     _mcp_image = await _request_mcp_image(payload, _ui_events)
@@ -32550,7 +32780,15 @@ async def produce_openai_chat_completions(
     from core.inference.npu_backend import peek_npu_backend
 
     _npu = peek_npu_backend()
-    if _npu is not None and _npu.is_loaded and routed_slot.get() is None:
+    _using_npu = _npu is not None and _npu.is_loaded and routed_slot.get() is None
+    # Auto-switching also selects kept slots: budget facts against the serving model.
+    _messages_before_memory = payload.messages
+    apply_to_request(
+        payload, _npu.loaded_context_length if _using_npu else _monitor_context_length()
+    )
+    if _pre_parsed is not None and payload.messages is not _messages_before_memory:
+        _pre_parsed = await _extract_content_parts_async(payload.messages, keep_tool_images = True)
+    if _using_npu:
         _refuse_unused_mcp_image(_mcp_image)
         return await _npu_chat_completions(payload, request, current_subject)
 
@@ -35301,6 +35539,18 @@ async def produce_openai_chat_completions(
 
     _managed_promoted_parts: list = []
     if _managed_images:
+        if not backend.models.get(backend.active_model_name, {}).get(
+            "supports_tools"
+        ) and _only_studio_tool_history(payload):
+            # A model switch can leave Studio tool turns in a plain-chat conversation.
+            payload.messages = _folded_studio_tool_messages(payload.messages)
+            for message in payload.messages:
+                if message.tool_calls:
+                    message.content = _merge_user_content(
+                        message.content,
+                        "Tool calls: " + json.dumps(message.tool_calls, ensure_ascii = False),
+                    )
+                    message.tool_calls = None
         # Fetch remote image URLs here: the engine's own fetch has no SSRF guard.
         if _messages_have_remote_image(payload.messages):
             try:
@@ -37643,6 +37893,9 @@ def _slot_model_objects() -> list[dict]:
             "owned_by": _OWNED_BY,
             "device": "npu",
         }
+        if _npu_model.display_name:
+            # The name the app shows; requests may name the model by it too.
+            _npu_entry["display_name"] = _npu_model.display_name
         if _npu_resident.context_length:
             _npu_entry["context_length"] = _npu_resident.context_length
         if _npu_model.max_context_length:
@@ -38521,7 +38774,15 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     aliased = await asyncio.to_thread(resolve_model_alias, model_id)
     for entry in [] if aliased else _loaded:
         eid = entry["id"]
-        if isinstance(eid, str) and eid.lower() == model_id.lower():
+        resident = _resident_npu_model() if entry.get("device") == "npu" else None
+        if isinstance(eid, str) and (
+            eid.lower() == model_id.lower()
+            or (
+                resident is not None
+                and resident.model_path == eid
+                and resident.answers_to(model_id)
+            )
+        ):
             return _with_openai_residency({**entry, "loaded": True})
 
     objects = await _openai_catalog_with_aliases()
@@ -41044,6 +41305,7 @@ def _build_chat_request(
     chat_kwargs: dict = dict(
         messages = messages,
         stream = stream,
+        thread_id = getattr(payload, "thread_id", None),
     )
     # Forward only an explicit model so an omitted one stays reload-only.
     if "model" in payload.model_fields_set:
@@ -42219,7 +42481,6 @@ async def _responses_in_process_stream(
     # Registered by the chat handler's tracker, so a cancel by response id, thread or run
     # reaches the run just as it does on llama-server.
     chat_req.cancel_id = resp_id
-    chat_req.thread_id = getattr(payload, "thread_id", None)
     chat_req.generation_run_id = getattr(payload, "generation_run_id", None)
     source = await _InProcessChatStream.open(chat_req, request, current_subject)
     try:
@@ -42389,6 +42650,11 @@ async def _responses_stream(
         # half the client called.
         if _folds_studio_tool_history(chat_req, llama_backend):
             chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
+
+        # Facts only: this passthrough has no tool loop to offer update_memory.
+        from core.chat_memory import apply_to_request
+
+        apply_to_request(chat_req, llama_backend.context_length)
 
         # Streaming /v1/responses builds the passthrough body directly (bypassing
         # openai_chat_completions), so apply recommended sampling here too.
@@ -44123,6 +44389,8 @@ async def chat_count_tokens(
     ):
         raise HTTPException(status_code = 404, detail = "Model not found")
     # Admitted only while idle, not atomic by design; also blocks second-tab and /api runs the UI misses.
+    from core.chat_memory import apply_to_request
+
     await _route_to_extra_slot(payload.model)
     if model_slots.routed_generation_count() > 0:
         raise HTTPException(
@@ -44145,6 +44413,8 @@ async def chat_count_tokens(
             and isinstance(_tool.get("function"), dict)
         ):
             _tool["type"] = "function"
+
+    apply_to_request(payload, _monitor_context_length())
 
     # /apply-template swaps each image for a short media marker, so refuse rather than undercount.
     if _request_has_attached_image(payload):
@@ -53915,6 +54185,7 @@ async def _batched_openai_images(
     guidance: float,
     expected_load: Any,
     loras: Optional[list[tuple[str, float]]] = None,
+    expected_load_loras: Optional[tuple] = None,
 ) -> Optional[dict]:
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
@@ -53968,6 +54239,7 @@ async def _batched_openai_images(
                     seeds = seeds,
                     batch_size = len(seeds),
                     expected_load = expected_load,
+                    **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                     **({"loras": loras} if loras else {}),
                 )
             except Exception as exc:
@@ -53979,6 +54251,7 @@ async def _batched_openai_images(
     key = (
         current_account_id(),
         expected_load,
+        expected_load_loras,
         width,
         height,
         steps,
@@ -54036,7 +54309,11 @@ async def _generate_openai_images(
     backend = get_active_diffusion_engine()
     from core.inference.diffusion_memory import ImageActivationShortfallError
     from core.inference.diffusion_lora import LoraSelectionError
-    from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
+    from core.inference.diffusion_families import (
+        DiffusionModelReplacedError,
+        load_identity,
+        load_lora_signature,
+    )
 
     # A replacement can commit between status() and generate(): pin the read to the generation and
     # re-decide from fresh state once.
@@ -54079,11 +54356,28 @@ async def _generate_openai_images(
             status.get("repo_id"), status.get("base_repo"), status.get("family")
         )
         loras = _openai_image_loras(body, status)
+        # An omitted loras was resolved from this load's adapters: the identity pin above is repo / base /
+        # family only, so a same-model reload with other adapters must be refused and retried too (#17993).
+        # Only an engine reporting its load's adapters (diffusers) can check the pin.
+        expected_load_loras = (
+            load_lora_signature(status.get("load_lora_specs"))
+            if body.loras is None and "load_lora_specs" in status
+            else None
+        )
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
                 result = await _batched_openai_images(
-                    backend, status, body, width, height, steps, guidance, expected_load, loras
+                    backend,
+                    status,
+                    body,
+                    width,
+                    height,
+                    steps,
+                    guidance,
+                    expected_load,
+                    loras,
+                    expected_load_loras,
                 )
                 if result is None:
                     result = await _image_generate_in_thread(
@@ -54097,6 +54391,7 @@ async def _generate_openai_images(
                         seed = body.seed,
                         batch_size = body.n,
                         expected_load = expected_load,
+                        **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                         # Only when set, so engines without the parameter keep their call shape.
                         **({"loras": loras} if loras else {}),
                     )
