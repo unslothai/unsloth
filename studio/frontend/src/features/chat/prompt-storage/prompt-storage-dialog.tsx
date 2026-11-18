@@ -659,12 +659,15 @@ async function withSandboxImages(content: unknown): Promise<unknown> {
   return parts.flat();
 }
 
+// marked overflows V8's fixed regexp backtrack stack on a data URL of about 8M characters.
+const MAX_INLINE_IMAGE_BYTES = 4 * 1024 * 1024;
+
 async function sandboxImageMarkdown(sessionId: string, name: string): Promise<string> {
   const alt = name.replace(/[\\[\]]/g, "\\$&");
   const blob = await authFetch(sandboxFilePath(sessionId, name))
     .then((response) => (response.ok ? response.blob() : null))
     .catch(() => null);
-  const src = blob ? await blobDataUrl(blob) : "";
+  const src = blob && blob.size <= MAX_INLINE_IMAGE_BYTES ? await blobDataUrl(blob) : "";
   return isDataImage(src) ? `![${alt}](${src})` : `[image: ${alt}]`;
 }
 

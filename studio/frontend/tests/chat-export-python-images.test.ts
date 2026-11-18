@@ -85,7 +85,7 @@ function slice(source: string, startMarker: string, endMarker: string): string {
   return source.slice(start, end);
 }
 
-async function exportedBodies() {
+async function exportedBodies(turns: unknown[] = TURNS) {
   const javascript = ts.transpileModule(
     [
       slice(DIALOG, "function contentBlocksToText(", "/** A sidebar row as one markdown document."),
@@ -103,7 +103,7 @@ async function exportedBodies() {
   const context = {
     exports: {},
     toast: { info: () => {}, loading: () => 0, dismiss: () => {} },
-    listStoredChatMessages: async () => TURNS,
+    listStoredChatMessages: async () => turns,
     getStoredChatThread: async () => ({ id: "t1", title: "Plot", createdAt: 0, settings: {} }),
     settleThreadScopedSettingsForCopy: async () => {},
     threadScopedDefault: () => "",
@@ -128,7 +128,11 @@ async function exportedBodies() {
         ? new Response(Buffer.from(PNG_BASE64, "base64"), {
             headers: { "content-type": "image/png" },
           })
-        : new Response("Not found", { status: 404 }),
+        : url === "/api/inference/sandbox/t1/photo.png"
+          ? new Response(new Uint8Array(7 * 1024 * 1024), {
+              headers: { "content-type": "image/png" },
+            })
+          : new Response("Not found", { status: 404 }),
     downloadBlob: async (body: string) => {
       html.push(body);
     },
@@ -163,5 +167,21 @@ test("a python picture that is no longer on disk is named in the export", async 
     assert.ok(document.includes("[image: gone.png]"));
     assert.ok(document.includes("That file is gone."));
     assert.equal(document.split("<img ").length - 1, 1);
+  }
+});
+
+test("a python picture too large to inline is named and the export still renders", async () => {
+  const turns = [
+    TURNS[0],
+    {
+      ...TURNS[1],
+      content: [pythonCall("c1", "photo.png"), { type: "text", text: "Here is the photo." }],
+    },
+  ];
+  const { html, pdf } = await exportedBodies(turns);
+  for (const document of [html, pdf]) {
+    assert.ok(document.includes("[image: photo.png]"));
+    assert.ok(document.includes("Here is the photo."));
+    assert.equal(document.split("<img ").length - 1, 0);
   }
 });
