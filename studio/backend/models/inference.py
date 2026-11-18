@@ -3479,6 +3479,19 @@ class ChatCompletionRequest(BaseModel):
             "raised to the provider's floor and never exceeds context_window."
         ),
     )
+    compaction_mode: Optional[Literal["summary", "rolling", "checkpoint"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] How a cloud connection that does not compact server-side "
+            "compacts once compaction_threshold is passed, and on compact_context. "
+            "'summary' (the default) asks the same model to summarise the older turns. "
+            "'rolling' and 'checkpoint' make no summary call and drop whole oldest turns "
+            "into the thread's archive, where search_conversation and inline recall find "
+            "them: 'rolling' drops just enough on each request, 'checkpoint' resets to the "
+            "latest turn as a local model does, and only it honours compact_context. "
+            "Ignored by local engines and by Anthropic and OpenAI server-side compaction."
+        ),
+    )
     context_window: Optional[int] = Field(
         None,
         ge = 1,
