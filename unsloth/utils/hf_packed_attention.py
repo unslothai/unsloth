@@ -972,9 +972,41 @@ def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, w
             cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
             out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
             out.float().sum().backward()
-            return True
+            # The graph checks the op's outputs against its fake kernel at run time.
+            return _flash_meta_matches(query, key, cu_seqlens, 9, window)
         except Exception:
             return False
+
+
+def _flash_meta_matches(
+    query,
+    key,
+    cu_seqlens,
+    max_seqlen,
+    window,
+    op = None,
+) -> bool:
+    """aten's flash varlen returns the output and logsumexp shapes its fake kernel promises. A compiled
+    graph asserts them (assert_size_stride), and ROCm's varlen returns a logsumexp of another rank,
+    so eager runs while every compiled block fails; such builds keep the eager varlen wrapper."""
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    op = torch.ops.aten._flash_attention_forward if op is None else op
+    query, key = (x[0].transpose(0, 1).detach() for x in (query, key))
+    # Same layout _flash_varlen gives FA4 / FA3 under compile.
+    if active_flash_impl() is not None:
+        query, key = query.contiguous(), key.contiguous()
+    args = (query, key, key, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, 0.0, False, False)
+    kwargs = {
+        "scale": 1.0,
+        "window_size_left": -1 if window is None else window - 1,
+        "window_size_right": 0,
+    }
+    with torch.no_grad():
+        real = op(*args, **kwargs)
+        with FakeTensorMode() as mode:
+            fake = op(*(mode.from_tensor(a) if torch.is_tensor(a) else a for a in args), **kwargs)
+    return all(tuple(r.shape) == tuple(f.shape) for r, f in zip(real[:2], fake[:2]))
 
 
 _varlen_in_graph = _constant_probe(_varlen_in_graph_eager)
