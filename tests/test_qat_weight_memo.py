@@ -453,3 +453,14 @@ def test_a_new_model_profiles_its_first_step_uncached(monkeypatch):
     assert (
         memo.install_qat_weight_memo(other) > 0 and memo._STATE["armed"]
     )  # re-installing the same model keeps its arming
+
+
+def test_switching_the_memo_off_mid_run_frees_the_cache(monkeypatch):
+    model = _model("int8", monkeypatch)
+    x = torch.randn(4, DIM)
+    for _ in range(2):
+        _run(model, x)
+    assert memo.qat_weight_memo_stats()["cached_bytes"] > 0
+    monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
+    _run(model, x)
+    assert memo.qat_weight_memo_stats()["cached_bytes"] == 0 and _memo_of(model).out is None

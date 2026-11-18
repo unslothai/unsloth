@@ -344,6 +344,8 @@ def _memo_forward(quantizer, w, forward):
         return forward(quantizer, w)
     mode = _mode()
     if mode in ("0", "false", "off"):
+        if _STATE["live"]:
+            _drop_all()  # switched off mid-run: give the cached copies back
         return forward(quantizer, w)
     if _STATE["disabled"] or not quantizer.training:
         # After an out of memory error, or in eval mode (evaluation, generation): free every cached
