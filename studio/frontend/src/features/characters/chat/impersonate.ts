@@ -6,6 +6,7 @@ import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { ggufCompactionRequestFields } from "@/features/chat/utils/auto-compaction";
 import { isServedByLlamaCpp } from "@/features/model-picker/model-config/per-model-config";
+import { isNpuModelId } from "@/features/npu";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { loadParticipants, textOf, toPromptCharacter } from "../chat-runtime";
 import { roleplayMetaOf } from "../meta";
@@ -52,6 +53,7 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
           checkpoint: params.checkpoint,
         }),
         isMlx: state.loadedIsMlx === true,
+        isNpu: isNpuModelId(params.checkpoint),
         isManagedEngine: state.loadedEngine !== "auto",
         autoCompactEnabled: state.autoCompactEnabled,
         rolling: true,
