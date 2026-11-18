@@ -10333,14 +10333,13 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
     from core.inference.llama_cpp import _canonicalize_spec_mode
 
     intent = backend.last_load_intent
+    # The requested mode survives a crash recovery that relaunches with "off".
+    requested_mode = getattr(backend, "requested_spec_mode", intent.speculative_type or "auto")
     launched = {
         "max_seq_length": intent.n_ctx,
         "kv_cache_dtype": intent.cache_type_kv or "f16",
-        # The requested mode survives a crash recovery that relaunches with "off".
-        "speculative_type": _canonicalize_spec_mode(
-            getattr(backend, "requested_spec_mode", intent.speculative_type)
-        )
-        or "auto",
+        # None when extra arguments own --spec-type, which no alias mode matches.
+        "speculative_type": requested_mode and _canonicalize_spec_mode(requested_mode),
     }
     from utils.openai_auto_switch_settings import (
         model_override_load_kwargs,
@@ -10361,7 +10360,7 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
             ("kv_cache_dtype", "cache_type_kv"),
             ("speculative_type", "speculative_type"),
         )
-        if saved.get(key)
+        if saved.get(key) is not None
     }
     wanted.update(settings)
     if "speculative_type" in wanted:

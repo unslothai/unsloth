@@ -309,6 +309,7 @@ class _AliasLoadRecorder(_LoadRecorder):
             cache_type_kv = request.cache_type_kv,
             speculative_type = request.speculative_type,
         )
+        self.backend.requested_spec_mode = request.speculative_type or "auto"
 
 
 def _loaded_with_other_settings(monkeypatch, *, enabled):
@@ -367,6 +368,32 @@ def test_a_blank_alias_field_reloads_with_the_saved_setting_not_another_alias(mo
         (4096, "q4_0"),
         (8192, "q4_0"),
     ]
+
+
+def test_a_blank_context_reloads_back_to_the_saved_automatic_context(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    monkeypatch.setattr(settings, "get_model_override", lambda _id: {"gpu_memory_mode": "manual"})
+    kv_only = {**_FAST, "load_settings": {"kv_cache_dtype": "q4_0"}}
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    assert [(c.max_seq_length, c.cache_type_kv) for c in rec.calls] == [
+        (4096, "q4_0"),
+        (0, "q4_0"),
+    ]
+
+
+def test_an_auto_alias_reloads_a_model_whose_extra_arguments_chose_the_speculative_mode(
+    monkeypatch,
+):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        "unsloth/a-gguf", n_ctx = 4096, cache_type_kv = "q4_0"
+    )
+    rec.backend.requested_spec_mode = None
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch)
+    assert [c.speculative_type for c in rec.calls] == ["auto"]
 
 
 def test_an_auto_alias_is_served_after_a_crash_recovery_relaunched_without_drafting(monkeypatch):
