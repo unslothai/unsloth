@@ -127,7 +127,36 @@ class _Cache:
         self.entries: "OrderedDict[tuple, Any]" = OrderedDict()
         self.bytes = 0
         self.vae_ref: Any = None
+        # bumped on every VAE load_state_dict: assign=True can keep version counters equal
+        self.generation: Optional[int] = 0
+        self.hooked: "weakref.WeakSet[Any]" = weakref.WeakSet()
         self.lock = threading.Lock()
+
+    def bind(self, vae: Any) -> None:
+        with self.lock:
+            self.clear()
+            self.vae_ref = weakref.ref(vae)
+            self.generation = (self.generation or 0) + 1
+        if vae in self.hooked:
+            return
+        cache_ref = weakref.ref(self)
+        vae_ref = weakref.ref(vae)
+
+        def _loaded(module: Any, incompatible_keys: Any) -> None:
+            cache = cache_ref()
+            if cache is not None and cache.vae_ref is not None and cache.vae_ref() is vae_ref():
+                with cache.lock:
+                    cache.clear()
+                    if cache.generation is not None:
+                        cache.generation += 1
+
+        try:
+            for module in vae.modules():
+                module.register_load_state_dict_post_hook(_loaded)
+            self.hooked.add(vae)
+        except Exception:  # noqa: BLE001 - a VAE that takes no hooks is never cached
+            with self.lock:
+                self.generation = None
 
     def clear(self) -> None:
         self.entries.clear()
@@ -185,10 +214,12 @@ def install(pipe: Any, logger: Any = None) -> bool:
             STATS["bypassed"] += 1
             return stock(image, generator)
         if cache.vae_ref is None or cache.vae_ref() is not vae:
-            with cache.lock:
-                cache.clear()
-                cache.vae_ref = weakref.ref(vae)
-        key = (pixels, vae_key)
+            cache.bind(vae)
+        generation = cache.generation
+        if generation is None:
+            STATS["bypassed"] += 1
+            return stock(image, generator)
+        key = (pixels, vae_key, generation)
         hit = cache.get(key)
         if hit is not None:
             STATS["hits"] += 1

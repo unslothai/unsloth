@@ -1684,3 +1684,154 @@ def test_float_rows_serialize_like_the_element_loop():
         assert json.dumps(fast) == json.dumps([float(x) for x in row])
         assert all(type(x) is float for x in fast)
     assert inference_route._embedding_payload([0.5, 1], "float") == [0.5, 1.0]
+
+
+class _Monitor:
+    def __init__(self):
+        self.calls = []
+
+    def start(self, **_kwargs):
+        return "mid"
+
+    def fail(self, monitor_id, detail):
+        self.calls.append(("fail", detail))
+
+    def finish(self, monitor_id, *args):
+        self.calls.append(("finish", *args))
+
+
+def _counting_gguf_proxy(
+    studio_embedder,
+    body,
+    status = 200,
+):
+    import httpx
+
+    parses = []
+
+    class _Response(httpx.Response):
+        def json(self, **kwargs):
+            parses.append(threading.get_ident())
+            return super().json(**kwargs)
+
+    class _Client:
+        async def post(self, *_args, **_kwargs):
+            return _Response(status, content = body)
+
+        async def aclose(self):
+            return None
+
+    _resident_embedding_gguf(studio_embedder, _Client)
+    return parses
+
+
+def _upstream_body(dim = 4):
+    rows = [{"object": "embedding", "index": 0, "embedding": [0.25] * dim}]
+    usage = {"prompt_tokens": 3, "total_tokens": 3}
+    return json.dumps({"object": "list", "data": rows, "usage": usage}).encode()
+
+
+def test_gguf_proxy_skips_the_parse_when_nothing_reads_it(studio_embedder):
+    body = _upstream_body()
+    parses = _counting_gguf_proxy(studio_embedder, body)
+    response = asyncio.run(
+        inference_route.openai_embeddings(_Request({"input": "alpha"}), "tester")
+    )
+    assert response.body == body
+    assert parses == []
+
+
+@pytest.mark.parametrize("upstream", [_upstream_body(), b"{not json"], ids = ["json", "invalid"])
+def test_gguf_proxy_parses_once_off_the_loop_for_monitor_and_dimensions(studio_embedder, upstream):
+    parses = _counting_gguf_proxy(studio_embedder, upstream)
+    monitor, seen = _Monitor(), []
+    studio_embedder.setattr(inference_route, "api_monitor", monitor)
+    studio_embedder.setattr(inference_route, "_request_used_api_key", lambda request: False)
+    studio_embedder.setattr(
+        inference_route,
+        "_monitor_openai_chunk",
+        lambda monitor_id, data, context_length = None, **_: seen.append(data),
+    )
+    request = _Request({"input": "alpha", "dimensions": 4})
+    request.state.skip_api_monitor = False
+    if upstream.startswith(b"{not"):
+        assert _http_error_for(request).status_code == 400
+        assert seen == [] and monitor.calls[0][0] == "fail"
+    else:
+        response = asyncio.run(inference_route.openai_embeddings(request, "tester"))
+        assert response.body == upstream
+        assert seen == [json.loads(upstream)]
+        assert monitor.calls == [("finish",)]
+    assert len(parses) == 1 and parses[0] != threading.get_ident()
+
+
+def _http_error_for(request):
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    return exc.value
+
+
+@pytest.mark.parametrize("encoding_format", ["float", "base64"])
+def test_studio_payload_is_serialized_off_the_loop_with_the_same_bytes(
+    studio_embedder, encoding_format
+):
+    rows = np.random.default_rng(0).standard_normal((3, 2)).astype(np.float32)
+    rows[0, 0] = np.nan
+    threads = []
+    real_payload = inference_route._embedding_payload
+
+    def _payload(vector, fmt):
+        threads.append(threading.get_ident())
+        return real_payload(vector, fmt)
+
+    studio_embedder.setattr(inference_route, "_embedding_payload", _payload)
+    studio_embedder.setattr(rag_embeddings, "encode", lambda texts, **_: rows[: len(texts)])
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    body = {"input": ["a", "bb", "ccc"], "encoding_format": encoding_format}
+    response = asyncio.run(inference_route.openai_embeddings(_Request(body), "tester"))
+    expected = {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "index": i, "embedding": real_payload(row, encoding_format)}
+            for i, row in enumerate(rows)
+        ],
+        "model": IDENTITY,
+        "usage": {"prompt_tokens": 6, "total_tokens": 6},
+    }
+    assert response.body == json.dumps(expected).encode()
+    assert threads and threading.get_ident() not in threads
+
+
+_USAGE = {"prompt_tokens": 3, "total_tokens": 3}
+_ROWS = [{"embedding": [0.25] * 4, "index": 0, "object": "embedding"}]
+
+
+@pytest.mark.parametrize(
+    "upstream, full_parses",
+    [
+        (json.dumps({"data": _ROWS, "model": "m", "object": "list", "usage": _USAGE}), 0),
+        (json.dumps({"data": _ROWS, "model": '"usage": {}', "usage": _USAGE}, indent = 2), 0),
+        (json.dumps({"usage": _USAGE, "data": _ROWS}), 1),
+        (json.dumps({"data": _ROWS, "x": {"usage": _USAGE}}), 1),
+        (json.dumps({"data": _ROWS}), 1),
+    ],
+)
+def test_gguf_proxy_monitor_reads_usage_from_the_tail(studio_embedder, upstream, full_parses):
+    upstream = upstream.encode()
+    parses = _counting_gguf_proxy(studio_embedder, upstream)
+    monitor, seen = _Monitor(), []
+    studio_embedder.setattr(inference_route, "api_monitor", monitor)
+    studio_embedder.setattr(inference_route, "_request_used_api_key", lambda request: False)
+    studio_embedder.setattr(
+        inference_route,
+        "_monitor_openai_chunk",
+        lambda monitor_id, data, context_length = None, **_: seen.append(data.get("usage")),
+    )
+    request = _Request({"input": "alpha"})
+    request.state.skip_api_monitor = False
+    response = asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    assert response.body == upstream
+    assert seen == [json.loads(upstream).get("usage")]
+    assert len(parses) == full_parses and monitor.calls == [("finish",)]

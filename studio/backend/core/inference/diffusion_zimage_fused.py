@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Z-Image-Turbo fused QKV GEMM (LoRA wrappers fall back to stock); UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0"""
+"""Z-Image-Turbo fused QKV GEMM (active LoRA wrappers fall back to stock); UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0"""
 
 from __future__ import annotations
 
@@ -52,14 +52,26 @@ def _real_rope(x: Any, freqs_cis: Any, fusion: tuple) -> Any:
     return out.type_as(x)
 
 
+def _lora_base(module: Any) -> Any:
+    """The wrapped Linear of a PEFT LoRA layer, else ``module`` itself."""
+    base = getattr(module, "base_layer", None)
+    if base is not None and isinstance(module.__dict__.get("scaling"), dict):
+        return base
+    return module
+
+
 def _qkv_intact(attn: Any) -> Any:
-    """The fused Linear, if ``to_q/to_k/to_v`` are still the exact modules it was built from."""
+    """The fused Linear, if ``to_q/to_k/to_v`` are still the exact modules it was built from and none is a LoRA
+    layer with its adapters on. A baked LoRA switched off (every weight 0) takes the fused GEMM a plain load runs."""
     rec = attn.__dict__.get(_QKV_ATTR)
     if rec is None:
         return None
     lin, q, k, v = rec
     if attn.to_q is not q or attn.to_k is not k or attn.to_v is not v:
         return None
+    for part in (q, k, v):
+        if _lora_base(part) is not part and not part.__dict__.get("_disable_adapters", False):
+            return None
     if lin.weight.device != q.weight.device:
         return None  # a layer split moved the parts after the fusion; the stale fused copy is on another card
     return lin
@@ -340,8 +352,10 @@ def install_modules(
             parts = [getattr(module, n, None) for n in ("to_q", "to_k", "to_v")]
             if any(p is None for p in parts):
                 continue
-            fused = _fuse_linears(parts)
-            if fused is None or not _share_storage(fused, parts):
+            # A baked LoRA's base Linears: the fused GEMM serves the layers while their adapters are off.
+            bases = [_lora_base(p) for p in parts]
+            fused = _fuse_linears(bases)
+            if fused is None or not _share_storage(fused, bases):
                 continue
             module.__dict__[_QKV_ATTR] = (fused, *parts)
             result["fused_qkv"] += 1

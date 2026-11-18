@@ -888,9 +888,7 @@ def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
 
 
 def _replay_route_reasoning_extractor(cumulatives: list[str]) -> tuple[str, str]:
-    """Replay the route's cumulative suffix-diff + reasoning extractor (the
-    shared core of routes/inference.py gguf_stream_chunks and the tool-loop
-    consumer) over content snapshots. Returns (visible, reasoning)."""
+    """Replays the route's cumulative-snapshot reasoning extractor; returns (visible, reasoning)."""
     from routes.inference import _ResponsesReasoningExtractor
 
     extractor = _ResponsesReasoningExtractor(parse_think_markers = True)
@@ -1101,8 +1099,7 @@ def test_mixed_execute_and_noop_batch_keeps_structured_reasoning(monkeypatch):
 
 
 def test_textual_tool_call_turn_replays_reasoning_only_trace_in_next_payload(monkeypatch):
-    """A reasoning only tool turn has empty content, so without the field the
-    trace left the conversation entirely."""
+    """With empty content, the reasoning trace must be replayed or it leaves the conversation."""
     tool_stream = [
         _sse({"reasoning_content": "I must search before answering."}),
         _sse(
@@ -1639,8 +1636,7 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
     )
 
     assert len(payloads) == 2
-    # The final pass may not call tools, but re-renders the same catalogue so the cached
-    # prompt prefix still matches.
+    # Final pass keeps the same tools so the cached prefix matches; tool_choice is none.
     assert payloads[1]["tool_choice"] == "none"
     assert payloads[1]["tools"] == payloads[0]["tools"]
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
@@ -1847,6 +1843,68 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
         event.get("type") == "content" and event.get("text") == "Final answer from first search."
         for event in events
     )
+
+
+def test_repeated_duplicate_final_pass_asks_for_the_answer_not_another_tool(monkeypatch):
+    search = {"query": "gpu prices 2026"}
+    streams = [
+        [_tool_call_sse("web_search", search, f"call_search_{index}"), _done()]
+        for index in range(3)
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        streams + [[_sse({"content": "Answer."}), _done()]],
+        payloads,
+    )
+    _record_tool_calls(monkeypatch, "result")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search gpus"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 10,
+    )
+
+    final_pass = payloads[-1]
+    assert final_pass["tool_choice"] == "none"
+    last = final_pass["messages"][-1]
+    assert last["role"] == "user"
+    assert "different tool" not in last["content"]
+    assert "final answer now" in last["content"]
+
+
+def test_final_pass_notice_ends_with_the_answer_request_in_a_mixed_batch(monkeypatch):
+    def batch(*queries):
+        calls = [
+            {
+                "index": index,
+                "id": f"call_{query}_{index}_{len(queries)}",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": json.dumps({"query": query})},
+            }
+            for index, query in enumerate(queries)
+        ]
+        return [_sse({"tool_calls": calls}), _done()]
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [batch("a", "b"), batch("a"), batch("a", "b"), [_sse({"content": "Answer."}), _done()]],
+        payloads,
+    )
+    _record_tool_calls(monkeypatch, "result")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 10,
+    )
+
+    final_pass = payloads[-1]
+    assert final_pass["tool_choice"] == "none"
+    assert "different tool" not in final_pass["messages"][-1]["content"]
 
 
 def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
@@ -2677,8 +2735,7 @@ def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatc
     statuses = _status_texts(events)
     assert NUDGE_TOOL_CALLS_STATUS in statuses
     index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
-    # Blank first: the route resets its text cursor only on an empty status.
-    # index > 0 matters: at 0, statuses[-1] wraps to the terminal clear.
+    # Blank first resets the text cursor; index > 0 keeps statuses[-1] off the terminal clear.
     assert index > 0 and statuses[index - 1] == ""
     assert statuses[index + 1].startswith("Searching:")
     assert statuses[-1] == ""
@@ -3020,9 +3077,7 @@ def _streamed_structured_tool_call(
     call_id: str,
     frag: int = 24,
 ) -> list[str]:
-    """A structured tool call whose arguments arrive token-by-token across many
-    deltas (id + name on the first delta), mirroring how llama-server streams a
-    large tool-call argument such as a full HTML/code file."""
+    """Streams a tool call whose arguments arrive over many deltas, as llama-server does for large args."""
     args_json = json.dumps(arguments)
     fragments = [args_json[i : i + frag] for i in range(0, len(args_json), frag)] or [""]
     chunks = [
@@ -3115,6 +3170,42 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
     assert events.index(provisional[0]) < events.index(gated[0])
 
 
+def test_gated_mcp_call_streams_its_arguments_before_approval(monkeypatch):
+    """An MCP call waiting for approval (an editor script, say) fills its card while the model writes it, not all at once at the end."""
+
+    name = "mcp__unreal__call_tool"
+    script = "import unreal\n" + "\n".join(f"unreal.log('step {i}')" for i in range(80))
+    arguments = {"tool_name": "execute_tool_script", "arguments": {"script": script}}
+    assert len(json.dumps(arguments)) > _PROVISIONAL_ARGS_MIN_CHARS
+
+    first_stream = _streamed_structured_tool_call(name, arguments, "call_mcp_gated")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "deny")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "build a village in Unreal"}],
+        [{"type": "function", "function": {"name": name}}],
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    assert len(provisional) == 1, tool_starts
+    assert provisional[0]["tool_call_id"] == "call_mcp_gated"
+
+    args_events = [e for e in events if e.get("type") == "tool_args"]
+    assert len(args_events) > 1, "gated MCP call streamed no arguments"
+    assert "step 79" in "".join(e["text"] for e in args_events)
+
+    gated = [e for e in tool_starts if e.get("awaiting_confirmation")]
+    assert gated, tool_starts
+    assert events.index(args_events[0]) < events.index(gated[0])
+    assert gated[0]["tool_call_id"] == "call_mcp_gated"  # the same card asks, not a second one
+
+
 @pytest.mark.parametrize("verdict", ["allow", "deny"])
 def test_only_an_approved_call_is_marked_approved(monkeypatch, verdict):
     first_stream = _streamed_structured_tool_call("python", {"code": "print(1)"}, "call_gated")
@@ -3203,8 +3294,7 @@ def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeyp
 
 
 def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
-    """A small tool-call argument finishes streaming instantly, so it keeps the
-    existing behavior of a single (real) tool_start with no provisional card."""
+    """Small arguments finish at once, so they get a real tool_start and no provisional card."""
 
     first_stream = _structured_tool_call("python", {"code": "print(1)"}, "call_py_small")
     final_stream = [_sse({"content": "Done."}), _done()]
@@ -3224,9 +3314,7 @@ def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
 
 
 def _streamed_parallel_tool_calls(specs, frag: int = 24) -> list[str]:
-    """Two or more structured tool calls, each streamed token-by-token across
-    deltas, one index fully before the next, mirroring how llama-server streams
-    several parallel tool calls whose arguments are large."""
+    """Parallel tool calls streamed one index at a time, each split into many argument deltas."""
     chunks: list[str] = []
     for index, (tool_name, arguments, call_id) in enumerate(specs):
         args_json = json.dumps(arguments)
@@ -3254,9 +3342,7 @@ def _streamed_parallel_tool_calls(specs, frag: int = 24) -> list[str]:
 
 
 def test_parallel_large_tool_calls_each_emit_provisional_start(monkeypatch):
-    """With parallel tool use enabled (the default), every streamed large tool
-    call surfaces its own provisional card, not just the first one, so the UI
-    shows progress for each call as its arguments stream."""
+    """With parallel tool use (the default), each large streamed call gets its own provisional card."""
 
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     big_cmd = "echo start\n" + "\n".join(f"echo line {i}" for i in range(60))
@@ -3292,9 +3378,7 @@ def test_parallel_large_tool_calls_each_emit_provisional_start(monkeypatch):
 
 
 def test_parallel_disabled_suppresses_provisional_for_later_calls(monkeypatch):
-    """When parallel tool use is disabled the downstream truncates to the first
-    call, so only the first streamed call may surface a provisional; a later
-    call must not get a card that could never reconcile or be closed."""
+    """With parallel tool use off, later calls are truncated, so they must not get a provisional card."""
 
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     big_cmd = "echo start\n" + "\n".join(f"echo line {i}" for i in range(60))
@@ -3332,9 +3416,7 @@ def test_parallel_disabled_suppresses_provisional_for_later_calls(monkeypatch):
 
 
 def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
-    """If llama-server drops mid tool-call after a provisional card is shown, the
-    loop must close that card before surfacing the error so the UI never leaves a
-    tool spinning forever."""
+    """A provisional card must be closed before a connect error surfaces, or the tool spins forever."""
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     fragments = _streamed_structured_tool_call("python", {"code": big_code}, "call_py_err")
     fragments = fragments[:-1]
@@ -4183,8 +4265,7 @@ def test_connect_error_retry_is_bounded(monkeypatch):
 
 
 def test_pre_header_transport_errors_also_respawn(monkeypatch):
-    """A child that dies during prefill already accepted the socket, so it does
-    not surface as ConnectError. Nothing has streamed yet, so replay is safe."""
+    """Pre-header transport errors also respawn: nothing has streamed yet, so replay is safe."""
     for exc in (
         httpx.RemoteProtocolError("server disconnected without sending a response"),
         httpx.ReadError("connection reset by peer"),
@@ -4412,8 +4493,7 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypat
 
 
 def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
-    """If generation is cut off mid bare-JSON object (no closing brace), the held
-    fragment must be stripped at stream end rather than dumped to the user."""
+    """Held truncated bare-JSON text is stripped at stream end, not dumped to the user."""
 
     truncated = '{"name": "web_search", "parameters": {"query": "weather in S'
     stream = _streamed_content(truncated)
@@ -4622,8 +4702,7 @@ def test_gemma_wrapperless_execution_call_streams_instead_of_draining(monkeypatc
 
 
 def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
-    """A terminal SSE chunk carrying llama-server's ``usage`` block, the way the
-    real server reports it on the final chunk of a completion."""
+    """Terminal SSE chunk with llama-server's usage block, as the real server sends it."""
     return (
         "data: "
         + json.dumps(
@@ -4677,8 +4756,7 @@ def test_metadata_event_omits_context_tokens_on_a_single_pass(monkeypatch):
 
 
 def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
-    """No KV-cache block from the server -> the key isn't fabricated, so the
-    route falls back to its 0-default instead of reading a bogus value."""
+    """No KV-cache block means the key is omitted, not fabricated; the route falls back to 0."""
     stream = [
         _sse({"content": "hi"}),
         _usage_done({"prompt_tokens": 5, "completion_tokens": 2}),
@@ -5006,9 +5084,7 @@ def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch)
 
 
 def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
-    """End-of-stream flush: a plain answer that ENDS on a tool-name word with no
-    ``[ARGS]`` following is real prose and must not be dropped by the streaming
-    rehearsal hold."""
+    """Prose ending on a tool-name word is not dropped by the rehearsal hold unless [ARGS] follows."""
 
     first_stream = [
         _sse({"content": "I think "}),
@@ -5036,9 +5112,8 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
 
 
 def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypatch):
-    """Finding 11: an explicitly marked MCP name longer than the 32-char buffer cap,
-    split before [ARGS]{...}, must still be held, so the name does not leak and the
-    call executes."""
+    """A marked MCP name over the 32-char cap, split before [ARGS], must still be held so the name
+    does not leak and the call executes."""
     name = "mcp__github__create_pull_request"
     assert len(name) >= 32, len(name)
 
@@ -5231,8 +5306,7 @@ def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
 
 
 def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
-    """Textual fallback calls are capped at _MAX_TOOL_CALLS_PER_TURN; llama-server bounds structured
-    ones."""
+    """Textual fallback calls are capped at _MAX_TOOL_CALLS_PER_TURN, not by llama-server."""
     from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
 
     n = _MAX_TOOL_CALLS_PER_TURN + 4
@@ -5405,8 +5479,7 @@ def test_gguf_over_cap_does_not_ask_for_a_retry_when_the_range_check_ends_the_lo
     def _call(q):
         return '<tool_call>{"name":"web_search","arguments":{"query":"%s"}}</tool_call>' % q
 
-    # No-op turns burn the range without raising the executed-tool count; distinct keys
-    # avoid the duplicate limit.
+    # No-op turns burn the range, not the count; distinct keys avoid the duplicate limit.
     streams = [[_sse({"content": "".join(_call("q%d" % i) for i in range(6))}), _done()]]
     streams += [[_sse({"content": _call("q%d" % i)}), _done()] for i in range(5)]
     streams.append([_sse({"content": "".join(_call("z%d" % i) for i in range(10))}), _done()])
@@ -5676,9 +5749,7 @@ def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
 
 
 def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
-    """A TEXT (XML) tool call must stream its raw call text as tool_args under the
-    id the stream-end parser assigns ("call_0"), so the provisional card and the
-    final tool_start reconcile."""
+    """Text tool calls stream raw text as tool_args under call_0 so the card reconciles with tool_start."""
 
     code = "print('hello')\n" + ("# filler\n" * 60)
     call_json = json.dumps({"name": "python", "arguments": {"code": code}})
@@ -5715,8 +5786,7 @@ def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
 
 
 def test_ordinary_json_answer_streams_no_tool_args(monkeypatch):
-    """A large ordinary JSON answer (no enabled tool name) must not spawn a
-    provisional card or tool_args events; it stays a normal content answer."""
+    """Ordinary JSON with no enabled tool name must not spawn provisional cards or tool_args."""
 
     answer = json.dumps({"result": "fine", "data": ["x" * 40] * 12, "note": "not a tool call"})
     chunks = [answer[i : i + 64] for i in range(0, len(answer), 64)]
@@ -5767,9 +5837,7 @@ def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
 
 
 def test_provisional_mcp_card_carries_server_display_name(tmp_path, monkeypatch):
-    """Regression: the early card for a large-argument MCP call must already
-    carry the server display name. Without it the card (and a cancelled turn's
-    saved history/export/search text) shows the internal uuid server id."""
+    """The early MCP card must carry the server display name, not the internal uuid server id."""
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -6492,8 +6560,7 @@ def test_refusing_a_call_also_stops_it_costing_the_window(monkeypatch):
 
 
 def test_reply_room_is_reclaimed_before_generating(monkeypatch):
-    """A prompt that fits can still leave no room for the reply, so compaction must run before
-    generating."""
+    """A prompt that fits can still leave no room for the reply, so compact before generating."""
     bulky = "<!DOCTYPE html>" + "z" * 30000
     prior_call = {
         "id": "call_done",
@@ -6832,9 +6899,7 @@ def test_the_decode_slot_is_asked_for_and_read_only_when_a_caller_wants_it(monke
     ],
 )
 def test_a_cancel_emits_the_blocked_object_the_gguf_guard_was_holding(monkeypatch, held):
-    """A completed blocked markerless call keeps the chain guard true while its suffix is
-    empty, so the whole object sits in the buffer as display text the parser never promotes.
-    The cancel arm returned without it and the reply vanished."""
+    """The cancel arm must emit the held blocked object, or the reply vanishes."""
     from core.inference.llama_cpp import _LlamaStreamCancelled
 
     backend = _make_backend(monkeypatch, [[_sse({"content": held})]], [])
@@ -7207,9 +7272,8 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
 
 
 def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):
-    # The template renders tools at the top of the system prompt. Dropping them on the final
-    # pass changed the prompt from its first tokens, so llama-server re-processed the whole
-    # conversation on that pass and again on the next turn.
+    # Tools render at the top of the prompt, so dropping them on the final pass forces a full
+    # reprocess.
     first = [_tool_call_sse("web_search", {"query": "flappy bird"}, "call_1"), _done()]
     final_stream = [_sse({"content": "Summary."}), _done()]
     backend, payloads = _backend_and_payloads(monkeypatch, [first, final_stream])
@@ -7448,3 +7512,127 @@ def test_no_post_tool_nudge_when_only_the_user_can_unblock(monkeypatch):
     )
     content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
     assert len(payloads) == 2 and "I will make the song" in content
+
+
+def test_a_released_nudge_retry_records_its_reasoning_wrap(monkeypatch):
+    """A held-back retry shown after all must record its wrap, or its reasoning reads as answer."""
+    trace = "Think </think> and <tool_call>{}</tool_call> again."
+    streams = [
+        [
+            _sse({"reasoning_content": "Plan."}),
+            _sse({"content": "I will search the web now."}),
+            _done(),
+        ],
+        [
+            _sse({"reasoning_content": trace}),
+            _sse({"content": "The square "}),
+            _sse({"reasoning_content": "Check."}),
+            _sse({"content": "is red."}),
+            _done(),
+        ],
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, streams)
+    ledger = {"wrapped": 0}
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        [_web_search_tool()],
+        nudge_tool_calls = True,
+        reasoning_provenance = ledger,
+    )
+
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    shown = f"<think>{trace}</think>The square <think>Check.</think>is red."
+    assert content_texts[-1] == shown
+    assert ledger["wraps"][-1] == {"len": len(trace)}
+    assert ledger["later"][-1] == {"len": len("Check."), "at": shown.index("<think>Check.")}
+
+
+def _screenshot_chain_payloads(monkeypatch, calls: int, context_overflow):
+    """A chain of one-screenshot MCP calls through the real loop; returns each request's messages."""
+    import base64 as _b64
+    import io as _io
+
+    from PIL import Image as _Image
+
+    from core.inference import mcp_images
+    from core.inference.context_window import estimate_messages_tokens_dense
+
+    def shot(index):
+        buffer = _io.BytesIO()
+        _Image.new("RGB", (64, 40), ((index * 37) % 256, (index * 91) % 256, 7)).save(
+            buffer, format = "PNG"
+        )
+        image = {"data": _b64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}
+        return "[1 image returned]\n" + mcp_images.SENTINEL + json.dumps([image])
+
+    streams = [
+        _structured_tool_call("mcp__d__screenshot", {"step": i}, f"call_{i}") for i in range(calls)
+    ] + [[_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _vision_backend(monkeypatch, streams, payloads, vision = True)
+    backend._effective_context_length = 65536
+    monkeypatch.setattr("core.inference.llama_cpp._mcp_image_tokens", lambda _backend: 300)
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: estimate_messages_tokens_dense(messages),
+    )
+    counter = iter(range(calls))
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: shot(next(counter)),
+    )
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Switch the desktop to dark mode."}],
+            tools = [{"type": "function", "function": {"name": "mcp__d__screenshot"}}],
+            max_tool_iterations = calls + 2,
+            permission_mode = "off",
+            context_overflow = context_overflow,
+        )
+    )
+    return [payload["messages"] for payload in payloads]
+
+
+def _image_count(messages) -> int:
+    return sum(
+        1
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    )
+
+
+def test_a_compacting_screenshot_chain_keeps_every_picture_append_only(monkeypatch):
+    """#18231: dropping the oldest picture past 8 shifted the prompt at its first image turn, so
+    llama-server re-read the whole chain on every call; with compaction on nothing is dropped."""
+    requests = _screenshot_chain_payloads(monkeypatch, 12, "truncate_oldest")
+
+    assert [_image_count(messages) for messages in requests] == list(range(13))
+    assert all(
+        requests[index][: len(requests[index - 1])] == requests[index - 1]
+        for index in range(1, len(requests))
+    )
+
+
+def test_without_compaction_the_screenshot_cap_still_steps(monkeypatch):
+    requests = _screenshot_chain_payloads(monkeypatch, 12, None)
+
+    assert [_image_count(messages) for messages in requests] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        5,
+        6,
+        7,
+        8,
+    ]

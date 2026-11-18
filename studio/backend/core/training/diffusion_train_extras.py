@@ -148,8 +148,7 @@ class LoRAEMA:
         self.updates = max(0, int(updates or 0))
 
     def copy_to(self, model: Any) -> dict[str, Any]:
-        """Write the shadow values into ``model``'s params, returning the
-        displaced originals so ``restore`` can undo the swap."""
+        """Write shadow values into params, returning displaced originals for restore to undo."""
         import torch
 
         backup: dict[str, Any] = {}
@@ -191,6 +190,15 @@ def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: 
 _CACHE_VERSION = "1"
 # v2 composites transparent images onto white before encoding.
 _LATENT_CACHE_VERSION = "2"
+
+
+def _latent_cache_salt() -> str:
+    """Windows ROCm keys apart: latents encoded there before its VAE attention was routed to exact math are wrong."""
+    try:
+        from core.inference.diffusion_vae_attn_chunked import windows_rocm
+        return "w" if windows_rocm() else ""
+    except Exception:  # noqa: BLE001 -- unknown keeps the shared key
+        return ""
 
 
 def _file_content_hash(path: str) -> str:
@@ -307,7 +315,7 @@ class PersistentConditioningCache:
         geom = f"{shape[0]}x{shape[1]}" if shape else str(self.resolution)
         var = f"{u_left:.6f}_{u_top:.6f}_{int(bool(flip))}"
         return (
-            f"lat_v{_LATENT_CACHE_VERSION}_{self.family}_{geom}_"
+            f"lat_v{_LATENT_CACHE_VERSION}{_latent_cache_salt()}_{self.family}_{geom}_"
             f"{_file_content_hash(image_path)}_{var}"
         )
 

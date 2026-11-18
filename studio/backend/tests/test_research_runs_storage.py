@@ -2082,8 +2082,7 @@ def _run_search_then_finish(
     retrieve = None,
     decision_payloads = None,
 ):
-    """Drive the supplied decisions (by default one search followed by finish) and return
-    the completed run plus the synthesis prompts the model was given."""
+    """Drives the decisions (default: one search, then finish); returns run and synthesis prompts."""
     from core import research_runs as worker
 
     _patch_web_rank(monkeypatch, retrieve = retrieve)
@@ -2626,9 +2625,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
 def test_knowledge_base_evidence_beyond_the_source_cap_is_not_synthesized(
     research_home, monkeypatch
 ):
-    """A knowledge-base hit that the source cap refuses to persist must not reach synthesis:
-    it has no document_source_catalog entry, so any citation of it is stripped from the
-    finished report and the claim it supports would be left unattributed."""
+    """Unpersisted KB hits must not reach synthesis: their citations would be stripped as uncatalogued."""
     from core import research_runs as worker
 
     _create(
@@ -4125,8 +4122,7 @@ def test_repointing_clears_the_stopped_run_of_its_old_question(research_home):
     assert reused["steps"] == []
     assert reused["sources"] == []
     assert reused["planRevision"] > plan["planRevision"]
-    # Events replay into the activity panel, so a kept approval would claim the new question's
-    # plan was already approved.
+    # A kept approval must not survive a rebound, since events replay into the activity panel.
     types = [event["type"] for event in research_db.list_events("run-1")]
     assert "run.approved" not in types
     assert types[-1] == "run.rebound"
@@ -4494,8 +4490,7 @@ def _create_via_route(user_message_id, question = None):
 
 
 def test_an_attachment_only_turn_researches_the_handed_off_question(research_home):
-    """An attachment-only turn still researches the handed-off question, not the message's own empty
-    text."""
+    """An attachment-only turn researches the handed-off question, not the message's empty text."""
     message_id = _attachment_only_message()
 
     run = _create_via_route(message_id, question = "What does this revenue chart show for Q3?")

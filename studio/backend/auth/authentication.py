@@ -23,6 +23,7 @@ from .storage import (
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
+    API_KEY_ACCESS_INFERENCE,
     STUDIO_CHAT_TOOLS_KEY_NAME,
     validate_api_key_account,
     validate_api_key_with_credential,
@@ -40,6 +41,26 @@ _KEYLESS_CREDENTIALS = HTTPAuthorizationCredentials(
     scheme = KEYLESS_SCHEME,
     credentials = "",
 )
+
+
+class _RoutedCredentials(HTTPAuthorizationCredentials):
+    """A bearer with the (method, path, root_path) it was sent to; credentials built anywhere else
+    carry no route, so an inference only key is refused there."""
+
+    route: Optional[Tuple[str, str, str]] = None
+
+
+INFERENCE_ONLY_KEY_DETAIL = (
+    "This API key is inference only: it can chat with and list the loaded models, but cannot "
+    "load, unload or download models or change settings. Use a full access key from "
+    "Settings > API for this."
+)
+
+
+def _inference_key_may_call(credentials: HTTPAuthorizationCredentials) -> bool:
+    from utils.keyless_api_access import KEYLESS_SCOPE_INFERENCE, scope_covers
+    route = getattr(credentials, "route", None)
+    return route is not None and scope_covers(KEYLESS_SCOPE_INFERENCE, *route)
 
 
 def is_keyless(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
@@ -117,9 +138,7 @@ def request_admitted_without_credential(request: Request) -> bool:
 
 
 def admitted_without_session(request: Any) -> bool:
-    """True when keyless API access lets this request through with no Unsloth sign-in. The single
-    predicate behind both the auth dependency below and the route-level checks that ask whether a
-    caller is the Unsloth UI or a programmatic client."""
+    """True when keyless API access admits this request with no sign-in; shared by auth and routes."""
     from utils.keyless_api_access import request_was_admitted_keyless
 
     recorded = request_was_admitted_keyless(request)
@@ -172,7 +191,12 @@ class _BearerOrKeyless(HTTPBearer):
                 credentials = token,
             )
         if usable_bearer:
-            return HTTPAuthorizationCredentials(scheme = scheme, credentials = token)
+            asgi = getattr(request, "scope", {})
+            return _RoutedCredentials(
+                scheme = scheme,
+                credentials = token,
+                route = (asgi.get("method", ""), asgi.get("path", ""), asgi.get("root_path", "")),
+            )
         return await super().__call__(request)
 
 
@@ -214,9 +238,7 @@ def create_access_token(
     desktop: bool = False,
     secret: Optional[str] = None,
 ) -> str:
-    """Create a signed JWT for the given subject (e.g. username). Valid across restarts: the signing
-    secret is stored in SQLite. Callers that already verified a credential pass ``secret`` so a
-    rotation landing mid-request cannot sign the token with the credential that just replaced it."""
+    """Signed JWT for a subject; pass the verified secret so a mid-request rotation cannot sign it."""
     to_encode = {"sub": subject}
     if desktop:
         to_encode["desktop"] = True
@@ -269,10 +291,7 @@ def create_refresh_token(
     desktop: bool = False,
     secret: Optional[str] = None,
 ) -> str:
-    """Create a random refresh token, store its hash in SQLite, and return it. Refresh tokens are opaque (not
-    JWTs); expire after REFRESH_TOKEN_EXPIRE_DAYS. ``secret`` stamps the token with the credential version the
-    caller verified, so a rotation cannot leave a token minted from the replaced credential valid.
-    """
+    """Refresh token stamped with the verified credential version, so a rotation invalidates it."""
     token, expires_at = new_refresh_token_value()
     save_refresh_token(
         token,
@@ -285,9 +304,7 @@ def create_refresh_token(
 
 
 def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[str], bool]:
-    """Validate a refresh token and issue a new access token. The refresh token is NOT consumed; it stays valid
-    until expiry. Returns a new access_token, or None if the refresh token is invalid/expired.
-    """
+    """Issues a new access token; the refresh token is not consumed and stays valid until expiry."""
     verified = verify_refresh_token(refresh_token)
     if verified is None:
         return None, None, False
@@ -300,8 +317,7 @@ def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[st
 
 
 def reload_secret() -> None:
-    """Legacy API compat for callers expecting auth storage init. Auth now resolves the current signing
-    secret directly from SQLite."""
+    """Legacy compat: reloads the signing secret, which now always comes from SQLite."""
     load_jwt_secret()
 
 
@@ -395,9 +411,7 @@ async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_a
 async def authenticated_via_desktop_jwt(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> bool:
-    """True when the caller is the local desktop app, not a browser session or API key. Lets routes treat the
-    desktop as an authority of its own: it authenticates with a local secret rather than the account password.
-    """
+    """True for the local desktop app, which uses a local secret rather than the account password."""
     return await run_in_threadpool(is_desktop_access_token, credentials.credentials)
 
 
@@ -417,8 +431,7 @@ API_KEY_PLACEHOLDER = f"{API_KEY_PREFIX}YOUR_KEY"
 
 
 def _invalid_api_key_detail(token: str) -> str:
-    """Why the key failed. Only the example placeholder is called out; every real
-    key gets one indistinguishable message, so this leaks no key existence."""
+    """Only the placeholder key gets a specific message, so no real key's existence leaks."""
     if token == API_KEY_PLACEHOLDER:
         return (
             "This is the placeholder key from the example. Create an API key in "
@@ -470,6 +483,16 @@ async def _get_current_credential(
                 detail = _invalid_api_key_detail(token),
             )
         record, secret = verified
+        if record.get("key_access") == API_KEY_ACCESS_INFERENCE and not _inference_key_may_call(
+            credentials
+        ):
+            raise HTTPException(
+                status_code = status.HTTP_403_FORBIDDEN, detail = INFERENCE_ONLY_KEY_DETAIL
+            )
+        if record.get("key_access") == API_KEY_ACCESS_INFERENCE:
+            # Server-side tools (python, terminal, skill and memory writes) act on this host, as for keyless access.
+            from state.tool_policy import force_disable_tools_for_request
+            force_disable_tools_for_request()
         generation = credential_generation(secret)
         # A second lookup by username would bind whoever owns that name after a delete and re-create.
         bind_account(
@@ -480,7 +503,9 @@ async def _get_current_credential(
                 credential_gen = generation,
                 via_api_key = True,
                 load_policy = policy_for_credential(
-                    internal = bool(record.get("key_internal")), key_name = record.get("key_name")
+                    internal = bool(record.get("key_internal")),
+                    key_name = record.get("key_name"),
+                    access = record.get("key_access"),
                 ).value,
                 ui_chat = bool(record.get("key_internal"))
                 and record.get("key_name") == STUDIO_CHAT_TOOLS_KEY_NAME,

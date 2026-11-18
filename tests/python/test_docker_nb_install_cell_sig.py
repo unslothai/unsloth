@@ -340,9 +340,8 @@ def test_a_real_shell_invocation_still_counts(sig, line):
 
 
 def test_the_whole_shipped_corpus_is_unaffected(sig):
-    """Blast radius, measured rather than asserted: all 1064 marker lines inside the
-    152 `%%bash` cells of the 561 shipped notebooks open a command, so the narrowing
-    changes no digest today. It only removes the tail this item found."""
+    """All marker lines inside the shipped %%bash notebook cells open a command, so narrowing the
+    marker changes no digest; only the review-found tail is removed."""
     for line in (
         "pip install -q unsloth",
         "apt install -y git",

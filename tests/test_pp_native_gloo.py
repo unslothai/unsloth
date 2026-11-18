@@ -191,9 +191,8 @@ def _read_adapter(path):
 
 
 def _enable_reentrant_gc(model):
-    """Reentrant checkpointing only back-propagates into a segment whose input requires grad; with the
-    embeddings frozen (LoRA) that needs enable_input_require_grads, which transformers 4.x
-    gradient_checkpointing_enable does not do for a PEFT model (5.x does)."""
+    """Reentrant checkpointing needs a grad-requiring input: frozen LoRA embeddings need
+    enable_input_require_grads, which transformers 4.x skips for PEFT but 5.x does."""
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     model.enable_input_require_grads()
 
@@ -708,7 +707,9 @@ def test_pp2_grad_scaler_found_inf_is_max_over_stages():
 
 def test_pp2_refusals():
     out = _spawn("refusals", 2)[0]
-    assert "mixture-of-experts" in (out["moe"] or ""), out["moe"]
+    # Since #18165 an uncarried MoE (OLMoE here) splits with its router aux loss off; turning the loss on is
+    # what is refused, covered in test_pp_moe_aux_off_gloo.py.
+    assert out["moe"] is None, out["moe"]
     assert "mixture-of-experts" in (out["mla"] or "") or "latent attention" in (
         out["mla"] or ""
     ), out["mla"]

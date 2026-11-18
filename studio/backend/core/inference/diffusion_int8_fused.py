@@ -1004,9 +1004,9 @@ def _plain_int8_weight(w: Any) -> bool:
             return False
         if getattr(kw, "reduce_range", False) or getattr(w, "reduce_range", False):
             return False
-        if "SYMMETRIC" not in str(getattr(kw, "mapping_type", "")) or "ASYMMETRIC" in str(
-            getattr(kw, "mapping_type", "")
-        ):
+        # plain SYMMETRIC only: the kernels divide amax by 127.5, which SYMMETRIC_NO_CLIPPING_ERR does not
+        mapping = getattr(kw, "mapping_type", None)
+        if getattr(mapping, "name", str(mapping).rsplit(".", 1)[-1]) != "SYMMETRIC":
             return False
         if type(getattr(kw, "granularity", None)).__name__ != "PerRow":
             return False
@@ -1802,11 +1802,9 @@ _OFF_TREE_RECORDS = (
 
 
 def relocate_after_layer_split(transformer: Any, logger: Any = None) -> dict:
-    """A layer split moved blocks to other cards after their fused records were built on one card. Each off-tree
-    fused Linear (which shared its parts' storage there) is rebuilt on its parts' new card, freeing the stale copy, or
-    its record is dropped (the module then runs its stock path). Regions on a card whose fused kernels fail the probe
-    get their stock forward back. Returns counts; idempotent. Must run before the first forward (the regional compile
-    traces what it finds)."""
+    """After a layer split, off-tree fused Linears are rebuilt on their parts' new card or dropped
+    to the stock path, and cards failing the probe get stock forwards back; idempotent, must run
+    before the first forward."""
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
     out = {"rebuilt": 0, "dropped": 0, "restored": 0}

@@ -435,9 +435,7 @@ _RECOVERED_CAPACITY_WARNING = (
 
 
 def test_a_recovered_capacity_warning_is_not_a_capacity_failure():
-    """Only the failing segment's [E] line is a capacity failure. Read as one, the warning would hide what really
-    stopped the render: the build-level failure below must still be recorded, and an unrelated crash must not be
-    explained as memory."""
+    """Only the failing [E] line is capacity; build failures stay recorded, unrelated crashes not memory."""
     assert not sd_cpp_backend.output_shows_capacity_failure(_RECOVERED_CAPACITY_WARNING)
     build_failure = (
         "sd-cli exited 1. Last output:\n"

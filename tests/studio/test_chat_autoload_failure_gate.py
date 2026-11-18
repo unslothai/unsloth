@@ -65,6 +65,44 @@ def _load_request_source() -> str:
     return source
 
 
+# Inlined, not stubbed: auto-load admits another cache's snapshot rows by this picker rule.
+LOCAL_PATH = _source_path("studio/frontend/src/lib/local-path.ts")
+LOCAL_CACHE_SNAPSHOT = _source_path(
+    "studio/frontend/src/features/model-picker/inventory/local-cache-snapshot.ts"
+)
+
+
+# Inlined, not stubbed: the fallback toast and the record gate are what #18002 scenarios assert on.
+AUTO_LOAD_REMEMBERED = _source_path(
+    "studio/frontend/src/features/chat/utils/auto-load-remembered.ts"
+)
+
+
+def _auto_load_remembered_source() -> str:
+    source = AUTO_LOAD_REMEMBERED.read_text(encoding = "utf-8")
+    assert "export function rememberedMissNote(" in source
+    return source
+
+
+def _local_cache_snapshot_source() -> str:
+    """looksLikeLocalPath and isOtherCacheSnapshot, as shipped."""
+    path_source = "\n".join(
+        line
+        for line in LOCAL_PATH.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith("import ")
+    )
+    assert "export function looksLikeLocalPath(" in path_source
+    match = re.search(
+        r"^export function isOtherCacheSnapshot\(.*?^}\n",
+        LOCAL_CACHE_SNAPSHOT.read_text(encoding = "utf-8"),
+        re.S | re.M,
+    )
+    assert (
+        match
+    ), "isOtherCacheSnapshot is no longer a top-level function in local-cache-snapshot.ts"
+    return path_source + "\n" + match.group(0)
+
+
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
 # tests/studio/test_chat_mount_cli_load_adoption.py.
 PONYFILLS = """
@@ -435,6 +473,9 @@ function offloadWarning(counts: any) {
   if (total <= 0 || offloaded >= total) return null;
   return { titleSuffix: ", partly on CPU", description: `${offloaded} of ${total}` };
 }
+function expertSpillNote(_counts: any) {
+  return null;
+}
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });
   if (SCENARIO.tokenDecision === "decline") return { proceed: false, token };
@@ -498,6 +539,8 @@ const toast: any = Object.assign(
       return "toast-id";
     },
     success: (msg: string) => EVENTS.push({ kind: "toast.success", msg }),
+    warning: (msg: string, opts?: any) =>
+      EVENTS.push({ kind: "toast.warning", msg, description: opts?.description }),
     error: (msg: string, opts?: any) =>
       EVENTS.push({ kind: "toast.error", msg, description: opts?.description }),
     dismiss: () => EVENTS.push({ kind: "toast.dismiss" }),
@@ -526,7 +569,8 @@ function recordLastLocalModelLoad(x: any) {
 function normalizeMaxSeqLength(value: any) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
-function resolveInitialConfig(_id: string, _variant: any) {
+function resolveInitialConfig(id: string, variant: any) {
+  EVENTS.push({ kind: "resolveInitialConfig", id, variant });
   return { config: {
     customContextLength: null, maxSeqLength: null, gpuMemoryMode: null,
     gpuLayers: null, nCpuMoe: null, selectedGpuIds: undefined,
@@ -777,6 +821,13 @@ async function loadModel(payload: any) {
 // studio/frontend/src/features/chat/lib/speech-only-status.ts. Real logic rather than a
 // neutral stub: a stub that always answered false would keep every scenario green if the
 // queued path's guard were removed.
+// No scenario serves a translation model, so both read as "not one".
+export function isTranslationOnlyRepo(_id: any): boolean {
+  return false;
+}
+export function isTranslationHeldSlot(_active: any, _selection: any): boolean {
+  return false;
+}
 export function isSpeechOnlyStatus(status: any): boolean {
   return (
     Boolean(status?.is_audio) &&
@@ -932,7 +983,14 @@ def _build_harness(run_dir: Path):
     # Any mention, not just a call; comments are stripped first.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
-    preamble = PREAMBLE + PONYFILLS + _wait_gate_source() + _load_request_source()
+    preamble = (
+        PREAMBLE
+        + PONYFILLS
+        + _wait_gate_source()
+        + _load_request_source()
+        + _local_cache_snapshot_source()
+        + _auto_load_remembered_source()
+    )
     missing = sorted(
         name
         for name in imported
@@ -1271,8 +1329,7 @@ def test_a_local_model_wins_over_the_default_even_when_the_cache_is_empty():
 
 
 def test_the_smallest_on_device_model_wins_across_inventories():
-    """Cached and local rows compete in one size-ordered cascade, not one list
-    then the other."""
+    """Cached and local rows compete in one size-ordered cascade, not one list and then the other."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " localModels: [LOCAL_GGUF] })"
@@ -1297,9 +1354,8 @@ def test_an_inventory_failure_never_reads_as_an_empty_device(inventory):
 
 @pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos", "localModels"])
 def test_one_broken_inventory_still_loads_a_model_another_one_found(broken):
-    """A failure is one unknown source, not a verdict on the other two.
-    Promise.all rejected the batch, discarding lists that had already arrived,
-    so a broken local scan left a loadable model unused."""
+    """A failure is one unknown source, not a verdict on the other two; Promise.all rejected the
+    whole batch and discarded lists already received, leaving a loadable model unused."""
     holder = "localModels" if broken != "localModels" else "ggufRepos"
     rows = "[LOCAL_GGUF]" if holder == "localModels" else "[GEMMA]"
     extra = "" if holder == "localModels" else ", variants: { [GEMMA.repo_id]: GEMMA_VARIANTS }"
@@ -1334,6 +1390,168 @@ def test_the_remembered_local_model_is_tried_before_a_smaller_one():
     )
 
     assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+
+
+# #18002: a stand-in for a last used model that failed must say so and must not replace it.
+def test_a_failed_last_used_model_is_kept_and_named_on_the_fallback():
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " lastLoaded: { id: 'r2', kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' },"
+        " load: (p) => p.model_path === 'r2' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == ["r2", "r1"]
+    assert out["result"]["loaded"] is True
+    assert [e for e in out["events"] if e["kind"] == "recordLastLocal"] == []
+    assert _toasts(out, "toast.success") == []
+    [warning] = _toasts(out, "toast.warning")
+    assert warning["msg"] == "Loaded r1 (UD-Q4_K_XL)"
+    assert warning["description"].startswith(
+        "Your last used model r2 (UD-Q4_K_XL) did not load: Failed to load model: "
+        "llama-server was stopped by the operating system"
+    )
+    assert _toasts(out, "toast.error") == []
+
+
+def test_a_last_used_model_that_loads_is_still_recorded_without_a_warning():
+    """Control for the test above: the healthy path keeps its plain success and record."""
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " lastLoaded: { id: 'r2', kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' } })"
+    )
+
+    assert _loaded_paths(out) == ["r2"]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == ["r2"]
+    assert _toasts(out, "toast.warning") == []
+
+
+def test_a_failed_last_used_model_in_another_cache_is_still_named_and_kept():
+    out = _run(
+        "(() => { const snap = (repo, size) => {"
+        " const p = `/mnt/old/hub/models--${repo.replace('/', '--')}/snapshots/abc`;"
+        " return { id: p, load_id: p, path: p, model_id: repo, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: size,"
+        " capabilities: { can_chat: true, requires_variant: true } }; };"
+        " const big = snap('unsloth/gemma-4-26B-A4B-it-GGUF', 2);"
+        " const small = snap('unsloth/gemma-4-E2B-it-GGUF', 1);"
+        " return scenario({ ggufRepos: 'throw', modelRepos: 'throw', localModels: [small, big],"
+        " variants: { [big.path]: GEMMA_VARIANTS, [small.path]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: 'unsloth/gemma-4-26B-A4B-it-GGUF', kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' },"
+        " load: (p) => p.model_path === big.path ? new Error(OOM) : LOADED(p) }); })()"
+    )
+
+    big = "/mnt/old/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/abc"
+    small = "/mnt/old/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/abc"
+    assert _loaded_paths(out) == [big, small]
+    assert [e for e in out["events"] if e["kind"] == "recordLastLocal"] == []
+    [warning] = _toasts(out, "toast.warning")
+    assert warning["msg"] == "Loaded unsloth/gemma-4-E2B-it-GGUF (UD-Q4_K_XL)"
+    assert warning["description"].startswith(
+        "Your last used model unsloth/gemma-4-26B-A4B-it-GGUF (UD-Q4_K_XL) did not load: Failed to load model"
+    )
+
+
+def test_an_exact_last_used_row_outranks_a_snapshot_matched_by_repo_id():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " const v = (q, size) => ({ quant: q, filename: `${q}/m-${q}.gguf`, downloaded: true, size_bytes: size });"
+        " return scenario({ ggufRepos: [{ ...GEMMA, repo_id: R, load_id: R, size_bytes: 30 }],"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [R]: { variants: [v('Q4_K_M', 10), v('Q8_0', 20)] }, [p]: { variants: [v('Q4_K_M', 10)] } },"
+        " lastLoaded: { id: R, kind: 'gguf', ggufVariant: 'Q8_0' } }); })()"
+    )
+
+    loads = [
+        (e["model_path"], e["gguf_variant"]) for e in out["events"] if e["kind"] == "loadModel"
+    ]
+    assert loads == [("unsloth/gemma-4-26B-A4B-it-GGUF", "Q8_0")]
+
+
+def test_a_repo_id_snapshot_is_not_retried_when_the_exact_last_used_row_failed():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " const v = (q, size) => ({ quant: q, filename: `${q}/m-${q}.gguf`, downloaded: true, size_bytes: size });"
+        " return scenario({ ggufRepos: [{ ...GEMMA, repo_id: R, load_id: R, size_bytes: 30 },"
+        " { ...GEMMA, repo_id: 'small', load_id: 'small', size_bytes: 5 }],"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [R]: { variants: [v('Q4_K_M', 10), v('Q8_0', 20)] }, [p]: { variants: [v('Q4_K_M', 10)] },"
+        " small: { variants: [v('Q4_K_M', 5)] } },"
+        " lastLoaded: { id: R, kind: 'gguf', ggufVariant: 'Q8_0' },"
+        " load: (x) => x.model_path === 'small' ? LOADED(x) : new Error(OOM) }); })()"
+    )
+
+    assert _loaded_paths(out) == [
+        "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "small",
+    ]
+    assert out["result"]["loaded"] is True
+
+
+def test_a_repo_id_snapshot_loads_by_path_but_keeps_the_repo_settings_and_record():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " return scenario({ ggufRepos: 'throw', modelRepos: 'throw',"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [p]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: R, kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' } }); })()"
+    )
+
+    repo = "unsloth/gemma-4-26B-A4B-it-GGUF"
+    assert _loaded_paths(out) == [
+        "/mnt/old/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/old"
+    ]
+    assert [e["id"] for e in out["events"] if e["kind"] == "resolveInitialConfig"] == [repo]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == [repo]
+    assert _toasts(out, "toast.success")[0]["msg"] == f"Loaded {repo} (UD-Q4_K_XL)"
+
+
+def test_a_snapshot_remembered_by_its_path_keeps_its_path_keyed_settings():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " return scenario({ ggufRepos: 'throw', modelRepos: 'throw',"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [p]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: p, kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' } }); })()"
+    )
+
+    path = "/mnt/old/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/old"
+    assert _loaded_paths(out) == [path]
+    assert [e["id"] for e in out["events"] if e["kind"] == "resolveInitialConfig"] == [path]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == [path]
+    assert (
+        _toasts(out, "toast.success")[0]["msg"]
+        == "Loaded unsloth/gemma-4-26B-A4B-it-GGUF (UD-Q4_K_XL)"
+    )
+
+
+def test_without_a_last_used_model_a_fallback_is_recorded_as_before():
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " load: (p) => p.model_path === 'r1' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == ["r1", "r2"]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == ["r2"]
+    assert _toasts(out, "toast.warning") == []
 
 
 def test_the_default_model_is_fetched_through_the_download_manager():
@@ -1408,9 +1626,8 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
 
 
 def test_an_image_generation_row_is_never_auto_loaded_for_chat():
-    """Diffusion rows carry an image/video task while can_chat stays true on
-    file format alone. The picker routes them to the Images page on click; a
-    background load has no routing step, so it has to skip them."""
+    """Diffusion rows carry an image or video task while can_chat stays true on file format alone;
+    the picker routes them to Images on click, so a background load must skip them."""
     for task in ("text-to-image", "text-to-video", "image-diffusion-unsupported"):
         rows = (
             f"{{ ...LOCAL_GGUF, id: 'img', load_id: 'img', path: 'img', task: '{task}',"
@@ -1596,8 +1813,7 @@ def test_a_download_that_survives_a_failed_cancel_is_not_loaded():
 
 
 def test_a_failed_cancel_does_not_latch_the_toast_action_off():
-    """The retry latch must clear once the request settles, or every later
-    Cancel click is swallowed."""
+    """The retry latch must clear once the request settles, or every later Cancel click is swallowed."""
     src = (WORKDIR / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
         encoding = "utf-8"
     )
@@ -1808,9 +2024,8 @@ def test_a_deferred_verdict_with_only_gguf_cached_does_not_detect_hardware():
 
 
 def test_a_cached_adapter_repo_is_never_auto_loaded():
-    """A cached LoRA has no weights of its own: /load fetches the base from the
-    Hub when it is not cached, which is why the local twin is dropped too.
-    Adapters are tiny, so the size order puts one first."""
+    """A cached LoRA has no weights of its own: /load fetches the base from the Hub when uncached,
+    which is why the local twin is dropped too; the size order would put it first."""
     out = _run(
         "scenario({ modelRepos: [{ repo_id: 'org/lora', load_id: 'org/lora',"
         " size_bytes: 40000000, model_format: 'adapter',"
@@ -1854,9 +2069,8 @@ def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
 
 
 def test_an_admitted_hf_cache_row_is_not_attempted_twice():
-    """The surviving cached list may name the same model as the admitted
-    hf_cache row, so the load-target dedupe has to collapse them or the pair
-    spends two of the three attempts on one model."""
+    """The surviving cached list may name the same model as the admitted hf_cache row, so the
+    load-target dedupe must collapse them or the pair spends two of three attempts on one model."""
     row = (
         "{ ...LOCAL_GGUF, source: 'hf_cache', load_id: 'org/dup', path: 'org/dup', id: 'org/dup' }"
     )

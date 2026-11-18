@@ -404,9 +404,7 @@ def _audio(frames):
 
 
 def _mp4_layout(data):
-    """What two encodes of the same frames and soundtrack with the same settings must share. Video packet bytes
-    are not in it: libx264 through PyAV is not run-to-run byte-reproducible here (two stock exports of one clip
-    can differ in a rate-control decision), so they would make the comparison flaky."""
+    """Compare stream layout, not packet bytes: libx264 via PyAV is not run-to-run byte-reproducible."""
     import re
 
     with av.open(io.BytesIO(data)) as c:
@@ -451,8 +449,10 @@ def test_h3_streamed_mp4_matches_the_x264_export(tmp_path):
     data = session.take(frames, 8, audio, _H3_RATE)
     assert data is not None, vse.STATS["last"]
     reference = tmp_path / "reference.mp4"
-    assert encode_x264(frames, 8, str(reference), audio, _H3_RATE)
+    # H3 streams the reference workflow's file (CRF 18, BT.709, float AAC), as its post-decode export does
+    assert encode_x264(frames, 8, str(reference), audio, _H3_RATE, reference = True)
     got, want = _mp4_layout(data), _mp4_layout(reference.read_bytes())
+    assert b"crf=18.0" in want["x264_settings"]
     assert want["x264_settings"] is not None and want["decoded_frames"] == len(frames)
     # same streams in the same order, same encoder settings, same frame count, the soundtrack byte for byte
     assert got == want

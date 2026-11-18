@@ -10,5 +10,6 @@ export {
 } from "./preset-policy";
 export type {
   ImageGenerationPresetParams,
+  TrainingPresetParams,
   VideoGenerationPresetParams,
 } from "./types";

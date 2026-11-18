@@ -111,6 +111,15 @@ def test_a_running_compile_is_never_waited_for(collector, monkeypatch):
     assert not _cache.CacheArtifactManager.need_serialize()
 
 
+def test_a_torch_without_the_grouped_bundle_helpers_keeps_the_collector(collector, monkeypatch):
+    # clearing without the per-group (de)serializers dropped reused graphs from the next bundle
+    monkeypatch.delattr(_cache, "_serialize_single_cache")
+    monkeypatch.delattr(_cache, "_deserialize_single_cache")
+    _record("pending")
+    assert cc._fresh_collector(None) is False
+    assert _cache.CacheArtifactManager.need_serialize()
+
+
 # Real CPU Inductor: a later model of the same classes runs earlier graphs from memory and records nothing.
 
 

@@ -374,6 +374,7 @@ def _case_train(
     probe_refusal = False,
     gc = "none",
     packed = None,
+    eval_only = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -467,6 +468,10 @@ def _case_train(
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
+    cpu_chunked_ce = False
+    if eval_only:
+        from unsloth_zoo.cpu.ops import patch_chunked_causal_lm_loss
+        cpu_chunked_ce = patch_chunked_causal_lm_loss(model)
     gdn_calls = []
     if arch == "qwen3_5":
         # The torch Gated DeltaNet kernels (fla / Triton need CUDA), and a counter on Unsloth's GDN exchange.
@@ -520,6 +525,8 @@ def _case_train(
         batch["labels"][
             batch["labels"] % 5 == 0
         ] = -100  # uneven token counts per row and per shard
+        if eval_only:
+            batch["attention_mask"] = torch.ones_like(input_ids)
         if packed:
             batch.update(_packed_row(batch, packed, int(rows[0]["row"])))
         return batch
@@ -569,6 +576,8 @@ def _case_train(
         dataset_kwargs = {"skip_prepare_dataset": True},
         gradient_checkpointing = False,
     )
+    if eval_only:
+        args.loss_type = "nll"
     if packed:
         # What the registry reads for a packed run (query_from): SFTConfig.padding_free; the rows come from the
         # collator above, so TRL's own padding-free collator is not involved.
@@ -648,6 +657,17 @@ def _case_train(
         processing_class = tokenizer,
         callbacks = [Grabber()],
     )
+    if eval_only:
+        trainer.args.per_device_eval_batch_size = bs
+        metrics = trainer.evaluate(eval_dataset = data)
+        stage = pp_native.pipeline_stage_of(trainer.model)
+        return {
+            "eval_loss": metrics["eval_loss"],
+            "rows_read": rows_read,
+            "stage": None if stage is None else int(stage.stage_index),
+            "cpu_compute_loss": bool(getattr(type(trainer).compute_loss, "_unsloth_cpu", False)),
+            "cpu_chunked_ce": cpu_chunked_ce,
+        }
     if device != "cpu":
         assert trainer.accelerator.mixed_precision == "no", trainer.accelerator.mixed_precision
     manager = getattr(trainer, "_context_parallel_manager", None)
@@ -1300,6 +1320,40 @@ def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(
     for rank, res in enumerate(results):
         # transformers 4.x drifts ~1.4e-4 / ~5e-6 at GA 4 even aux off; the guarded error is 13-42% of the loss
         _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (ga, aux, rank))
+
+
+@pytest.mark.parametrize(
+    "arch,aux",
+    [("llama", False), ("qwen3_moe", False), ("qwen3_moe", True)],
+    ids = ["dense", "moe_aux_off", "moe_aux_on"],
+)
+def test_cpu_pipeline_eval_matches_one_process(monkeypatch, arch, aux):
+    monkeypatch.setenv("UNSLOTH_FORCE_CPU", "1")
+    kw = dict(
+        bs = 2,
+        ga = 1,
+        steps = 3,
+        arch = arch,
+        eval_only = True,
+        router_aux = aux,
+        aux_coef = 0.5 if aux else None,
+    )
+    (ref,) = _spawn("train", 1, **kw)
+    assert "error" not in ref, ref
+    results = _spawn(
+        "train",
+        2,
+        {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"},
+        **kw,
+    )
+    _skip_if_one_microbatch_refused(results)
+    assert sorted(res.get("stage", -1) for res in results) == [0, 1], results
+    for res in [ref, *results]:
+        assert "error" not in res, res
+        assert res["cpu_compute_loss"]
+        assert res["cpu_chunked_ce"] is (arch == "llama")
+        assert res["rows_read"] == ref["rows_read"]
+        assert res["eval_loss"] == pytest.approx(ref["eval_loss"], rel = 1e-5)
 
 
 _PP_AUX_SPLIT = "load-balancing loss per micro-batch"

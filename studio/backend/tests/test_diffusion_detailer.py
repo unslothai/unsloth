@@ -187,8 +187,7 @@ def _face(
 
 
 class _FakeInpaint:
-    """Paints the masked area of the enlarged crop a colour derived from the seed, as a real inpaint would only change
-    the masked area; records every call."""
+    """Paints the masked area with a seed-derived colour, as an inpaint would; records calls."""
 
     def __init__(self):
         self.calls = []

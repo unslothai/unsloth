@@ -57,6 +57,12 @@ def _run_to_extras(
         "_ensure_cpu_torch": None,
         "_ensure_xpu_triton": None,
         "run": None,
+        # No-torch updates resolve the unsloth / unsloth-zoo pair against the package index;
+        # keep these install-ordering cases offline (the resolver has its own tests).
+        "_no_torch_pair": ("2026.11.1", "2026.11.1", 0),
+        # The runner's own certifi / pip versions would otherwise decide whether a real install runs
+        # (no uv on PATH: FileNotFoundError); the floor has its own tests in test_ca_trust_floor.py.
+        "_trust_floor_specs": [],
         # Off macOS the floor would skip every case; it has its own tests.
         "_mlx_pins_are_installable": mlx_installable,
     }.items():
@@ -316,7 +322,7 @@ def test_pin_floor_is_revisited_whenever_the_pins_move():
     assert _repair_specs() == {
         "mlx": "==0.32.4",
         "mlx-lm": ">=0.31.3,<=0.32.2",
-        "mlx-vlm": ">=0.4.4,<=0.7.12",
+        "mlx-vlm": ">=0.4.4,<=0.8.0",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 
@@ -446,9 +452,8 @@ def _zoo_spec_sequence(monkeypatch, specs):
 
 
 def test_the_core_phase_upgrading_the_zoo_re_resolves_mlx(monkeypatch):
-    """The MLX step runs before the core phase, so it honours the OLD zoo's range. Without the
-    re-resolve an update that moves the zoo leaves the machine on the narrower mlx-vlm for good:
-    the startup self-heal will not correct it, since 0.6.x satisfies _MLX_MIN_VERSIONS."""
+    """The MLX step runs before the core phase and honours the old zoo's range; without a re-resolve
+    the narrower mlx-vlm stays for good, since 0.6.x satisfies _MLX_MIN_VERSIONS."""
     narrow = f"{stack._MLX_VLM_SPEC},<0.7.0"
     # Twice for the install step, then the widened answer after the core phase.
     _zoo_spec_sequence(monkeypatch, [narrow, narrow, stack._MLX_VLM_SPEC])

@@ -730,8 +730,7 @@ class TestInstallShLogic:
         assert b"ERROR" in r.stderr
 
     def test_python_version_resolution(self):
-        """Python version defaults to 3.12 on Intel Mac, 3.13 elsewhere.
-        --python overrides both."""
+        """The Python version defaults to 3.12 on Intel Mac and 3.13 elsewhere; --python overrides both."""
         script = textwrap.dedent("""\
             MAC_INTEL="$1"
             _USER_PYTHON="$2"

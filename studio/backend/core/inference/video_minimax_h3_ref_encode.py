@@ -1,8 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 reference-video VAE condition normalised per 17-frame chunk, not as one float32 clip; bit-identical
-(elementwise), only over the mirrored diffusers 0.42.1 sources. ``UNSLOTH_H3_CHUNKED_REF_ENCODE=0`` disables."""
+"""MiniMax-H3 VAE conditions (keyframes, reference images and videos), over the mirrored diffusers 0.42.1 sources.
+
+- Latent: the posterior mean in float32, as the reference implementation's encode returns. Diffusers samples the
+  posterior under seed 42 and rounds to float16; ``UNSLOTH_H3_REFERENCE_LATENT=sample`` restores that.
+- Memory: a reference video is normalised per 17-frame chunk, not as one float32 clip; bit-identical (elementwise).
+  ``UNSLOTH_H3_CHUNKED_REF_ENCODE=0`` disables the chunking.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +18,9 @@ import threading
 from typing import Any, Optional
 
 H3_CHUNKED_REF_ENCODE_ENV = "UNSLOTH_H3_CHUNKED_REF_ENCODE"
-_ENCODERS_MODULE = "diffusers.modular_pipelines.minimax_h3.encoders"
+H3_REFERENCE_LATENT_ENV = "UNSLOTH_H3_REFERENCE_LATENT"
+H3_REFERENCE_LATENT_MEAN = "mean"
+H3_REFERENCE_LATENT_SAMPLE = "sample"
 _FUNC = "encode_vae_condition"
 
 # sha256[:16] of inspect.getsource of the mirrored functions (diffusers 0.42.1).
@@ -30,6 +37,16 @@ _VERIFIED: dict = {}
 def enabled() -> bool:
     raw = (os.environ.get(H3_CHUNKED_REF_ENCODE_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
+
+
+def reference_latent_mode() -> str:
+    """``mean`` (the reference implementation's posterior mean, the default) or ``sample`` (Diffusers' seeded draw)."""
+    raw = (os.environ.get(H3_REFERENCE_LATENT_ENV) or "").strip().lower()
+    return (
+        H3_REFERENCE_LATENT_SAMPLE
+        if raw == H3_REFERENCE_LATENT_SAMPLE
+        else H3_REFERENCE_LATENT_MEAN
+    )
 
 
 def _sha(fn: Any) -> Optional[str]:
@@ -106,7 +123,9 @@ def _make_shim(original: Any) -> Any:
         pixel_std: tuple,
         encode_seed: int = 42,
     ) -> Any:
-        if not _eligible(vae, pixels):
+        sample = reference_latent_mode() == H3_REFERENCE_LATENT_SAMPLE
+        chunked = _eligible(vae, pixels)
+        if sample and not chunked:
             return original(vae, pixels, pixel_mean, pixel_std, encode_seed)
         import torch
         from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
@@ -116,11 +135,21 @@ def _make_shim(original: Any) -> Any:
         pixel_mean = torch.tensor(pixel_mean, device = pixels.device).view(1, -1, 1, 1, 1)
         pixel_std = torch.tensor(pixel_std, device = pixels.device).view(1, -1, 1, 1, 1)
 
-        posterior = DiagonalGaussianDistribution(
-            _chunked_moments(vae, pixels, pixel_mean, pixel_std)
-        )
-        latents = posterior.sample(generator = torch.Generator().manual_seed(encode_seed))
-        latents = latents.to(torch.float16).float().cpu()
+        if chunked:
+            posterior = DiagonalGaussianDistribution(
+                _chunked_moments(vae, pixels, pixel_mean, pixel_std)
+            )
+        else:
+            # the stock normalisation, op for op
+            normalized = (pixels.to(torch.float32).div(255.0) - pixel_mean) / pixel_std
+            posterior = vae.encode(normalized, return_dict = False)[0]
+            del normalized
+        if sample:
+            latents = posterior.sample(generator = torch.Generator().manual_seed(encode_seed))
+            latents = latents.to(torch.float16).float().cpu()
+        else:
+            # the reference: chunk(moments.float())[0], no draw and no float16 rounding
+            latents = posterior.mean.float().cpu()
         return (latents - latents_mean) / latents_std
 
     encode_vae_condition._unsloth_chunked_ref_encode = True
@@ -134,7 +163,7 @@ def _make_shim(original: Any) -> Any:
 
 def install_h3_chunked_reference_encode(logger: Any = None) -> bool:
     """Shims the module global the modular step calls; idempotent, never raises."""
-    if not enabled():
+    if not enabled() and reference_latent_mode() == H3_REFERENCE_LATENT_SAMPLE:
         return False
     try:
         from diffusers.modular_pipelines.minimax_h3 import encoders as module
@@ -154,5 +183,8 @@ def install_h3_chunked_reference_encode(logger: Any = None) -> bool:
             return False
         setattr(module, _FUNC, _make_shim(current))
     if logger is not None:
-        logger.info("video.h3_ref_encode: reference videos normalise one VAE chunk at a time")
+        logger.info(
+            "video.h3_ref_encode: conditions take the posterior %s; reference videos normalise one VAE chunk at a time",
+            reference_latent_mode(),
+        )
     return True

@@ -112,3 +112,66 @@ def test_valid_pair_is_forwarded_to_the_server(monkeypatch, tmp_path):
         "_apply_supplied_password_before_launch",
         "_enforce_password_change_before_exposure",
     ]
+
+
+_ENV = ("UNSLOTH_STUDIO_SSL_CERTFILE", "UNSLOTH_STUDIO_SSL_KEYFILE")
+
+
+def _set_env(
+    monkeypatch,
+    cert = None,
+    key = None,
+    desktop = False,
+):
+    for name, value in zip(_ENV, (cert, key)):
+        if value is None:
+            monkeypatch.delenv(name, raising = False)
+        else:
+            monkeypatch.setenv(name, str(value))
+    if desktop:
+        monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
+    else:
+        monkeypatch.delenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", raising = False)
+
+
+def test_env_pair_is_forwarded_when_no_flag_is_given(monkeypatch, tmp_path):
+    crt, key = _pair(tmp_path)
+    _set_env(monkeypatch, crt, key)
+    _, calls = _invoke(monkeypatch, ["-H", "0.0.0.0"])
+    argv = calls["exec"][0]
+    assert argv[argv.index("--ssl-certfile") + 1] == str(crt)
+    assert argv[argv.index("--ssl-keyfile") + 1] == str(key)
+
+
+@pytest.mark.parametrize("case", ["cert_only", "key_only", "missing_file", "with_secure"])
+def test_bad_env_pair_fails_before_touching_credentials(monkeypatch, tmp_path, case):
+    crt, key = _pair(tmp_path)
+    env, extra = {
+        "cert_only": ((crt, None), []),
+        "key_only": ((None, key), []),
+        "missing_file": ((crt, tmp_path / "absent.key"), []),
+        "with_secure": ((crt, key), ["--secure"]),
+    }[case]
+    _set_env(monkeypatch, *env)
+    result, calls = _invoke(monkeypatch, ["-H", "0.0.0.0", *extra])
+    assert result.exit_code == 2, result.output
+    assert calls == {"exec": [], "auth": []}
+
+
+def test_flags_replace_the_env_pair(monkeypatch, tmp_path):
+    crt, key = _pair(tmp_path)
+    _set_env(monkeypatch, tmp_path / "env.crt", tmp_path / "env.key")
+    _, calls = _invoke(
+        monkeypatch, ["-H", "0.0.0.0", "--ssl-certfile", str(crt), "--ssl-keyfile", str(key)]
+    )
+    argv = calls["exec"][0]
+    assert argv[argv.index("--ssl-certfile") + 1] == str(crt)
+    assert argv[argv.index("--ssl-keyfile") + 1] == str(key)
+
+
+def test_desktop_backend_ignores_the_env_pair(monkeypatch, tmp_path):
+    crt, key = _pair(tmp_path)
+    _set_env(monkeypatch, crt, key, desktop = True)
+    _, calls = _invoke(monkeypatch, ["--api-only", "-H", "127.0.0.1"])
+    assert len(calls["exec"]) == 1, calls
+    assert "--ssl-certfile" not in calls["exec"][0]

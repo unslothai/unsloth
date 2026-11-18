@@ -43,8 +43,7 @@ def wait_browser_action(
     cancel_event = None,
     timeout: Optional[float] = None,
 ) -> tuple[str, Optional[dict]]:
-    """Block until the tab answers. Returns ``("answered", result)``, ``("cancelled", None)`` or
-    ``("expired", None)``; always removes its own slot."""
+    """Blocks until answered, cancelled or expired; always removes its own slot."""
     waited = 0.0
     try:
         while not slot["event"].wait(timeout = 0.25):

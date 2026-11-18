@@ -104,6 +104,7 @@ export const normalizeLanguage = (language: string): BundledLanguage => {
 };
 
 export const MIN_INCREMENTAL_CHARS = 2000;
+export const LIVE_TAIL_CHARS = 1024;
 const REFRESH_MS = 250;
 const REFRESH_SLICE_MS = 8;
 // A wall-clock limit can cache a half-plain theme; bound line length for deterministic dual-theme output.
@@ -659,7 +660,8 @@ export function createCodePlugin(
       const grewLargeFence =
         fence.result !== null &&
         fence.code.length >= MIN_INCREMENTAL_CHARS &&
-        opts.code.length > fence.code.length;
+        opts.code.length > fence.code.length &&
+        opts.code.length - fence.committedLength > LIVE_TAIL_CHARS;
       if (!exact && grewLargeFence && elapsed < REFRESH_MS) {
         const result = approximateResult(fence, opts.code);
         queuePending(fence, opts.code, callback);

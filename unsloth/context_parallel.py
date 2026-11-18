@@ -46,11 +46,14 @@ def _torch_supports_context_parallel() -> bool:
     ) >= Version("2.7.0")
 
 
-def _ring_sdpa_backends():
-    # The math kernel is not ringed: it would attend over the local shard only.
+def _ring_sdpa_backends(efficient = False):
+    # The math kernel is not ringed: it would attend over the local shard only. The efficient kernel is ringed,
+    # but its load balanced backward returns wrong dq / dk in fp16 / bf16 (torch 2.14); float32 only.
     if SDPBackend is None:
         return None
-    backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+    backends = [SDPBackend.FLASH_ATTENTION]
+    if efficient:
+        backends.append(SDPBackend.EFFICIENT_ATTENTION)
     cudnn = getattr(SDPBackend, "CUDNN_ATTENTION", None)
     op = getattr(torch.ops.aten, "_scaled_dot_product_cudnn_attention", None)
     if cudnn is not None and op is not None:
@@ -65,6 +68,17 @@ def _ring_sdpa_backends():
         if isinstance(handled, dict) and op.default in handled:
             backends.append(cudnn)
     return backends
+
+
+def _compute_dtype(model):
+    config = getattr(model, "config", None)
+    for c in (getattr(config, "text_config", None), config):
+        dtype = getattr(c, "dtype", None) or getattr(c, "torch_dtype", None)
+        if isinstance(dtype, str):
+            dtype = getattr(torch, dtype, None)
+        if isinstance(dtype, torch.dtype):
+            return dtype
+    return getattr(model, "dtype", None)
 
 
 def _cp_replaced_functions():
@@ -113,8 +127,9 @@ def context_parallel_options(config) -> tuple:
 
 # Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks, so
 # only these layer types and the window are exempt; chunked attention and softcap still refuse.
+# transformers >= 5.18 renames V3.2's "deepseek_sparse_attention" to "indexed_attention".
 _ULYSSES_OWN_MASK_LAYER_TYPES = {
-    "deepseek_v32": ("deepseek_sparse_attention",),
+    "deepseek_v32": ("deepseek_sparse_attention", "indexed_attention"),
     "deepseek_v4": (
         "sliding_attention",
         "compressed_sparse_attention",
@@ -186,13 +201,46 @@ def _keep_layer_out_of_block_compile(model, attn_name: str) -> None:
 
 
 def _model_heads(model):
+    """Sorted (heads, kv heads) per attention layer kind; per_layer_config first since Gemma 4 global reads raise."""
     config = getattr(model, "config", None)
     text = getattr(config, "text_config", None) or config
-    heads = getattr(text, "num_attention_heads", None)
-    if not isinstance(heads, int):
-        return None, None
-    kv = getattr(text, "num_key_value_heads", None)
-    return heads, kv if isinstance(kv, int) and kv > 0 else heads
+    if not isinstance(getattr(text, "num_attention_heads", None), int):
+        return []
+    counts = set()
+    try:
+        # transformers >= 5.15 gives every config a per-layer view; its len() reads num_hidden_layers,
+        # which configs such as remote-code ChatGLM (num_layers) do not define.
+        layers = list(getattr(text, "per_layer_config", None) or ())
+    except (AttributeError, TypeError):
+        layers = []
+    for layer in layers or [text]:
+        heads = getattr(layer, "num_attention_heads", None)
+        heads = heads if isinstance(heads, int) else text.num_attention_heads
+        kv = getattr(layer, "num_key_value_heads", None)
+        counts.add((heads, kv if isinstance(kv, int) and kv > 0 else heads))
+    # Without a per-layer view (older Gemma 4 configs) the global layers' KV count sits beside the sliding
+    # one; a per-layer view already lists what every layer uses, and a config with no global layer uses none.
+    global_kv = getattr(text, "num_global_key_value_heads", None)
+    layer_types = getattr(text, "layer_types", None) or ()
+    if (
+        not layers
+        and isinstance(global_kv, int)
+        and global_kv > 0
+        and getattr(text, "attention_k_eq_v", False)
+        and (not layer_types or "full_attention" in layer_types)
+    ):
+        counts.add((text.num_attention_heads, global_kv))
+    return sorted(counts)
+
+
+def _ulysses_head_plans(
+    model,
+    size: int,
+    tp: int = 1,
+) -> None:
+    # Under tensor parallel each rank holds heads / tp of them (and kv heads / tp, or all when fewer).
+    for heads, kv in _model_heads(model):
+        ulysses_head_plan(heads // tp, kv // tp if kv % tp == 0 else kv, size)
 
 
 def resolve_cp_backend(
@@ -210,11 +258,8 @@ def resolve_cp_backend(
         return backend
     if rl:
         return "ulysses"
-    heads, kv = _model_heads(model)
-    if heads is None:
-        return "ulysses"
     try:
-        ulysses_head_plan(heads // tp, kv // tp if kv % tp == 0 else kv, size)
+        _ulysses_head_plans(model, size, tp)
     except ValueError:
         return "ring"
     return "ulysses"
@@ -281,6 +326,42 @@ def _unregister_cp_sharding_rules() -> None:
 
 # A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
 _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
+
+
+def _seq_len_rope(module) -> bool:
+    kinds = getattr(module, "rope_type", None)
+    kinds = kinds.values() if isinstance(kinds, dict) else (kinds,)
+    return any(kind in ("dynamic", "longrope") for kind in kinds)
+
+
+def _rope_over_full_positions(module) -> None:
+    """dynamic / longrope pick their frequencies from max(position_ids) + 1 (transformers'
+    dynamic_rope_update): under Ulysses each rank would see only its shard and rotate with its own
+    frequencies. Append the sequence's largest position so the frequencies match, then drop it: the
+    tables stay this rank's size (slicing full-sequence tables would keep them alive for backward)."""
+    forward = module.forward
+
+    @functools.wraps(forward)
+    def full_positions_forward(x, position_ids, *args, **kwargs):
+        manager = get_cp_manager()
+        full = getattr(manager, "full_position_ids", None)
+        local = position_ids.shape[-1]
+        if (
+            not isinstance(full, torch.Tensor)
+            or full.ndim != 2
+            or full.shape != (position_ids.shape[0], local * manager.size)
+        ):
+            return forward(x, position_ids, *args, **kwargs)
+        start = manager.mesh.get_local_rank() * local
+        full = full.to(position_ids.device)
+        ids = torch.cat(
+            [full[:, start : start + local], full.max().expand(full.shape[0], 1)], dim = -1
+        )
+        cos, sin = forward(x, ids, *args, **kwargs)
+        return cos[:, :local], sin[:, :local]
+
+    module.forward = full_positions_forward
+    module._unsloth_cp_full_rope = True
 
 
 # Before the imports below: on the CPU route they bind this from the partially initialised module.
@@ -499,10 +580,19 @@ def _optimizer_window(trainer):
     return getattr(getattr(trainer, "state", None), "global_step", None)
 
 
+def _in_media_tower(name: str) -> bool:
+    # CP only takes text batches: vision / audio encoders (Gemma 4's towers name theirs self_attn too) never run.
+    return not _MEDIA_TOWER_NAMES.isdisjoint(name.split("."))
+
+
 def _attention_modules(model) -> list:
     if not hasattr(model, "named_modules"):
         return []
-    return [module for name, module in model.named_modules() if name.endswith("self_attn")]
+    return [
+        module
+        for name, module in model.named_modules()
+        if name.endswith("self_attn") and not _in_media_tower(name)
+    ]
 
 
 def _uses_unsloth_attention(model, rl = False) -> bool:
@@ -631,6 +721,7 @@ class ContextParallelManager:
         return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
+        self._ring_float32 = _compute_dtype(model) == torch.float32
         if any(
             isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
             for m in model.modules()
@@ -643,7 +734,14 @@ class ContextParallelManager:
                     wrap_ulysses_mixer_forward(module, get_cp_manager)
             # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
             generic = not _uses_unsloth_attention(model)
+            for name, module in model.named_modules() if generic else ():
+                if _in_media_tower(name):
+                    continue
+                if _seq_len_rope(module) and not getattr(module, "_unsloth_cp_full_rope", False):
+                    _rope_over_full_positions(module)
             for name, module in model.named_modules():
+                if _in_media_tower(name):
+                    continue
                 if (
                     name.endswith("self_attn")
                     and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
@@ -659,7 +757,7 @@ class ContextParallelManager:
                         module, module.config._attn_implementation, get_cp_manager
                     )
         for name, module in list(model.named_modules()):
-            if not name.endswith("self_attn"):
+            if not name.endswith("self_attn") or _in_media_tower(name):
                 continue
             if not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
@@ -751,7 +849,15 @@ class ContextParallelManager:
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
         pad = (-seq_len) % (self.size if ulysses else 2 * self.size)
         padded = self.__dict__.get("_padded_input_ids")
-        if not pad and padded is not None and padded[0]() is input_ids:
+        prepared = not pad and padded is not None and padded[0]() is input_ids
+        # Before alignment padding and sharding: LongRoPE picks its factors from the caller's positions.
+        positions = inputs.get("position_ids")
+        self.position_bound = (
+            positions[:, : padded[1] if prepared else seq_len].amax()
+            if isinstance(positions, torch.Tensor)
+            else None
+        )
+        if prepared:
             return  # prepared already (prediction_step, then apply): keep the real length
         self._padded_input_ids = None
         if pad:
@@ -821,7 +927,9 @@ class ContextParallelManager:
         MoE counts expert usage (the remote shim): one process routes caller padding through the MoE
         with its own activations (Kimi delta layers zero it, attention masks the padded keys), so the
         Ulysses mixers reproduce them for the routes, and the expert counts, to match."""
-        return self.__dict__.get("_caller_pad_lengths", {}).get((bsz, total))
+        store = self.__dict__.get("_caller_pad_lengths")
+        # Hashing the (bsz, total) key specialises a compiled layer's shard length: look up only when set.
+        return store.get((bsz, total)) if store else None
 
     @contextlib.contextmanager
     def _rotate_method_scope(self) -> Iterator[None]:
@@ -844,6 +952,7 @@ class ContextParallelManager:
     def _ulysses_shard(self, inputs: dict) -> None:
         # Contiguous shards; packed_seq_lengths stays global.
         rank = self.mesh.get_local_rank()
+        self.full_position_ids = inputs.get("position_ids")  # for _rope_over_full_positions
         self._note_caller_padding(inputs.get("attention_mask"))
         real = self._real_tokens(inputs.get("input_ids"))
         if real is not None:
@@ -875,6 +984,7 @@ class ContextParallelManager:
         finally:
             _ACTIVE_MANAGER = previous
             self.packed_seq_lengths = None
+            self.full_position_ids = None
 
     @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
@@ -906,7 +1016,7 @@ class ContextParallelManager:
         sdpa = F.scaled_dot_product_attention
         dispatcher = getattr(DTensor, "_op_dispatcher", None)
         handlers = getattr(dispatcher, "_custom_op_handlers", None)
-        ring_backends = _ring_sdpa_backends()
+        ring_backends = _ring_sdpa_backends(self.__dict__.get("_ring_float32", False))
         registry = _cp_replaced_functions()
         wrappers = set(registry) if registry is not None else None
         raised = False
@@ -1559,6 +1669,19 @@ def _check_cp_runtime(self, size: int, backend: str) -> None:
         )
 
 
+# Config fields of n-gram lookup tables hashed from the tokens before each position (Qwen4Exp PLE, DeepSeek-V4.1
+# engram): a sequence shard would hash its first tokens without the previous shard's, so the rows would differ.
+_NGRAM_TABLE_CONFIG_KEYS = ("ple_layer_ids", "engram_layer_ids")
+
+
+def _ngram_table_blocker(config) -> Optional[str]:
+    for c in (config, getattr(config, "text_config", None)):
+        for key in _NGRAM_TABLE_CONFIG_KEYS:
+            if c is not None and getattr(c, key, None):
+                return key
+    return None
+
+
 def _check_cp_model(
     model,
     size: int,
@@ -1567,6 +1690,12 @@ def _check_cp_model(
     tp: int = 1,
 ) -> None:
     model_config = getattr(model, "config", None)
+    table = _ngram_table_blocker(model_config)
+    if table is not None:
+        raise NotImplementedError(
+            f"Unsloth: context parallelism does not support n-gram lookup tables ({table}): their hashes read "
+            "the tokens before each position, which a sequence shard boundary would cut off."
+        )
     # DPO / GRPO (allow_hybrids False) keep the Llama-style rule: their decoder hooks are not verified on
     # the generic path.
     generic = (
@@ -1582,10 +1711,7 @@ def _check_cp_model(
         )
     if backend == "ulysses":
         # Every rank raises here, before any collective.
-        heads, kv_heads = _model_heads(model)
-        if heads is not None:
-            # Under tensor parallel each rank holds heads / tp of them (and kv heads / tp, or all when fewer).
-            ulysses_head_plan(heads // tp, kv_heads // tp if kv_heads % tp == 0 else kv_heads, size)
+        _ulysses_head_plans(model, size, tp)
     if _stateful_mixers(model) and not allow_hybrids:
         raise NotImplementedError(
             "Unsloth: DPO / GRPO context parallelism does not support linear attention hybrids yet."
@@ -1916,10 +2042,15 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         if not isinstance(shift_labels, torch.Tensor):
             with manager.apply(inputs):
                 return original_prediction_step(self, model, inputs, *args, **kwargs)
-        inputs["num_items_in_batch"] = shift_labels.ne(-100).sum().clamp_min(1)
+        # compute_loss returns this shard's token mean (TRL >= 1 ignores an inputs["num_items_in_batch"]
+        # key, older TRL leaves the model to average): weight it by the shard's share of the targets so
+        # the cp sum is the sequence's token mean. A shard without targets adds 0, even when its mean is 0 / 0.
+        count = shift_labels.ne(-100).sum().clamp_min(1)
         inputs.setdefault("use_cache", False)
         with manager.apply(inputs), torch.no_grad(), self.compute_loss_context_manager():
+            local = inputs["shift_labels"].ne(-100).sum()
             loss = self.compute_loss(model, inputs).detach()
+        loss = torch.where(local > 0, loss * local / count, torch.zeros_like(loss))
         dist.all_reduce(loss, group = manager.mesh.get_group())
         return loss, None, None
 
@@ -2635,3 +2766,8 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
     trainer_cls._unsloth_cp_methods = cp_methods
     trainer_cls.__init__ = patched_init
     trainer_cls.__unsloth_context_parallel__ = True
+
+
+# RL trainers patched while this module was still importing (see models/rl.py).
+for _trainer_cls, _kind in globals().pop("_DEFERRED_RL_TRAINERS", ()):
+    patch_rl_trainer(_trainer_cls, _kind)

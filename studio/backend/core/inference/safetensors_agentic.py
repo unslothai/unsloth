@@ -11,6 +11,7 @@ native transformers has no such channel, so this loop parses tool calls from the
 dispatches via ``core.inference.tools``.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import bisect
 import inspect
 import json
@@ -61,9 +62,8 @@ from core.inference.mcp_images import (
     png_payloads_per_result,
     trim_image_turns,
 )
-from core.inference.tool_facts import repeatable
+from core.inference.tool_facts import STEPWISE, repeatable
 from core.inference.tool_loop_controller import (
-    BROWSER_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
@@ -560,7 +560,7 @@ def run_safetensors_tool_loop(
     auto_heal_tool_calls: bool = True,
     deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
-    max_tool_iterations: int = 25,
+    max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
     thread_id: Optional[str] = None,
@@ -590,11 +590,8 @@ def run_safetensors_tool_loop(
         from core.inference.tools import mcp_image_targets
         messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
     conversation = restore_replayed_tool_results(messages)
-    # Where the caller's own attachment sits in the seeded sink. The cap is about what
-    # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
-    # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
-    # let the prompt carry a second full allowance. The route reserves the attachment's
-    # slot by trimming replay to limit - 1 before interleaving it.
+    # The caller attachment is never dropped, but replayed pictures are not exempt from the cap; the
+    # route trims replay to limit - 1 before interleaving the attachment.
     caller_images = tuple(caller_image_indexes)
     # The branch this request is on. A GGUF-compacted thread keeps its archive across a
     # switch to safetensors, so search_conversation is advertised here too and needs the
@@ -602,10 +599,8 @@ def run_safetensors_tool_loop(
     # response in them.
     # Restored dicts are new; the branch matches by identity.
     _live_branch = list(conversation)
-    # ...and the replies and tool results the loop adds to it: a fit can evict this request's
-    # own earlier tool exchange into the archive, where the client's messages alone would
-    # refuse it. Not the loop's user turns: those are its own notices, and recall searches
-    # for the branch's last user turn, which has to stay the request.
+    # Loop replies and tool results count, not its own user notices: a fit can evict the request
+    # tool exchange to the archive, and the branch last user turn must stay the request.
     _live_branch_ids = {id(message) for message in _live_branch}
 
     def _extend_live_branch(current: list) -> list:
@@ -678,11 +673,8 @@ def run_safetensors_tool_loop(
     _loadable_mcp = [] if unrestricted_tools else mcp_loadable_specs(tools)
     _detect_tools = [] if unrestricted_tools else list(tools or []) + _loadable_mcp
     _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(_detect_tools))
-    # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
-    # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-    # Sanitized at construction: prepare_call authorizes against the controller, so a tool
-    # dropped from the prompt for unsafe markup must leave the controller too. The gates above
-    # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
+    # Detection and gates keep ORIGINAL names, one-shots included (#7066); the controller gets
+    # sanitized.
     from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
     # Use the renderer's markup profile and the all-templates-safe catalog, so prepare_call never authorizes a tool the render left out of the prompt.
@@ -705,12 +697,11 @@ def run_safetensors_tool_loop(
     reprompt_count = 0
     # A browser task is many steps, each a chance to announce the next one and stop: there one
     # nudge per tool turn, as in the GGUF and external loops; other requests never nudge after a tool.
-    browser_turns = any(name in BROWSER_TOOL_NAMES for name in _active_tool_names(tools or []))
+    browser_turns = any(name in STEPWISE for name in _active_tool_names(tools or []))
     post_tool_reprompts = 0
     # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
     last_reprompt_text = ""
-    # A denied tool confirmation must not be answered with a plan-without-action
-    # re-prompt (which would raise the confirmation gate again).
+    # A denied confirmation gets no plan-without-action re-prompt: it would re-raise the gate.
     tool_denied = False
     # Only turns that executed a tool consume max_tool_iterations (GGUF parity).
     _executed_tool_iters = 0
@@ -769,6 +760,9 @@ def run_safetensors_tool_loop(
                 conversation, active_tools, _extend_live_branch(conversation)
             )
             conversation = list(fit_result.get("messages") or conversation)
+            for gone in reversed(fit_result.get("dropped_images") or ()):
+                del images_sink[gone]
+                caller_images = tuple(i - (i > gone) for i in caller_images if i != gone)
             yield from fit_result.get("events") or ()
 
         # Cumulative snapshots: keep scans incremental with overlap for split literals.
@@ -1016,8 +1010,7 @@ def run_safetensors_tool_loop(
                 elif blocked_bare_json_chain_may_continue(content_buffer, _enabled_tool_names):
                     if len(stripped) < _MAX_BARE_JSON_BUFFER:
                         continue
-                    # Chain outgrew the bounded buffer: fail closed rather than stream
-                    # content a later peer could make executable.
+                    # Overflow fails closed; a later peer could make streamed text executable.
                     detect_state = _state_draining
                     continue
 
@@ -1039,8 +1032,7 @@ def run_safetensors_tool_loop(
                     detect_state = _state_draining
                     continue
                 if _gemma_chain:
-                    # A promotable peer behind a blocked call must not stream before the
-                    # end-of-turn parser gets it.
+                    # A promotable peer behind a blocked call is held for end-of-turn parsing.
                     if parse_tool_calls_from_text(
                         stripped,
                         id_offset = next_call_id,
@@ -1147,8 +1139,7 @@ def run_safetensors_tool_loop(
                 detect_state = _state_streaming
 
         if detect_state == _state_streaming:
-            # Run the parser even with no XML signal (the Llama-3.2 bare-JSON form carries none); it's
-            # strict so plain answers stay untouched. Mirrors GGUF.
+            # Runs with no XML signal too (Llama-3.2 bare JSON); strict so plain answers stay.
             safety_tc = parse_tool_calls_from_text(
                 content_accum,
                 id_offset = next_call_id,
@@ -1253,9 +1244,8 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_names_gate,
             )
             if not tool_calls:
-                # Parser found nothing. Auto-Heal-enabled display cleanup
-                # strips unparseable tool XML; disabled Auto-Heal preserves
-                # the raw text so literal/malformed markup stays visible.
+                # Auto-Heal strips unparseable tool XML from display; off, raw text keeps malformed
+                # markup visible.
                 if content_accum:
                     _drain_text = _strip_tool_markup_final(
                         content_accum,
@@ -1462,6 +1452,7 @@ def run_safetensors_tool_loop(
                 arguments = decision.arguments,
                 sandbox_level = sandbox_level,
                 session_id = session_id,
+                thread_id = thread_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirm = needs_confirm or image_share is not None

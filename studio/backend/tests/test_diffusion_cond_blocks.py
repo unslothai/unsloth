@@ -442,8 +442,7 @@ def test_compact_kill_switch_grad_and_lora_scale_keep_stock(monkeypatch):
 
 
 def test_pre_hook_stays_last(monkeypatch):
-    """A hook registered after the cache (dynamic text dims installs at compile time) must still run first, so the
-    conditioning blocks run inside its scope."""
+    """A hook added after the cache must run first, so conditioning blocks run inside its scope."""
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
     model = _tiny(cls)
@@ -496,3 +495,146 @@ def test_switch_values(monkeypatch):
     for value, want in (("", True), ("1", True), ("0", False), ("off", False), ("False", False)):
         monkeypatch.setenv(cb.COND_BLOCKS_ENV, value)
         assert cb.enabled() is want
+
+
+def _span_inputs(
+    batch: int,
+    refs: int,
+    dtype,
+    seed: int = 3,
+):
+    g = torch.Generator().manual_seed(seed)
+    img, txt = 16, 5
+    kw = {
+        "hidden_states": torch.randn(batch, img, 8, generator = g).to(dtype),
+        "encoder_hidden_states": torch.randn(batch, txt, 24, generator = g).to(dtype),
+        "timestep": torch.full((batch,), 0.7),
+        "img_ids": torch.randint(0, 8, (img, 4), generator = g).float(),
+        "txt_ids": torch.randint(0, 8, (txt, 4), generator = g).float(),
+        "return_dict": False,
+    }
+    if refs:
+        n = 7 * refs  # odd span length, one span of 7 tokens per reference image
+        kw["image_cond_hidden_states"] = torch.randn(batch, n, 8, generator = g).to(dtype)
+        kw["image_cond_ids"] = torch.randint(0, 8, (n, 4), generator = g).float()
+    return kw
+
+
+def _joint_mod_shapes(model):
+    seen = []
+
+    def spy(m, args, kwargs):
+        span = kwargs.get(cb.SPAN_KWARG)
+        if span is not None:
+            assert tuple(span.shape[1:2]) == (1,) and kwargs[cb.SPAN_LEN_KWARG].numel() == 0
+            # a block graph copies every input into a static buffer of the same strides: none may overlap itself
+            from core.inference.diffusion_block_graph import _static_like
+            for t in (kwargs["temb_mod"], span, kwargs[cb.SPAN_LEN_KWARG]):
+                _static_like(t).copy_(t)
+        seen.append((tuple(kwargs["temb_mod"].shape), span is not None))
+
+    handles = [
+        b.register_forward_pre_hook(spy, with_kwargs = True) for b in model.single_transformer_blocks
+    ]
+    return seen, handles
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("batch", [1, 2])
+@pytest.mark.parametrize("refs", [0, 1, 8])
+def test_span_modulation_matches_per_token_rows_bitwise(dtype, batch, refs, monkeypatch):
+    """One modulation row per span (image, references) is bitwise the per-token rows, and no per-token copy reaches
+    the joint blocks."""
+    cls = _flux3()
+    monkeypatch.delenv(cb.COMPACT_MOD_ENV, raising = False)
+    monkeypatch.delenv(cb.SPAN_MOD_ENV, raising = False)
+    model = _tiny(cls).to(dtype)
+    kw = _span_inputs(batch, refs, dtype)
+    with torch.no_grad():
+        assert cb.prepare(model)
+        assert model.__dict__[cb._SPAN_ATTR] is True
+        model.__dict__[cb._SPAN_ATTR] = False
+        want = model(**kw)[0]
+        model.__dict__[cb._SPAN_ATTR] = True
+        seen, handles = _joint_mod_shapes(model)
+        try:
+            got = model(**kw)[0]
+        finally:
+            for h in handles:
+                h.remove()
+    assert torch.equal(
+        got.view(torch.int16 if dtype == torch.bfloat16 else torch.int32),
+        want.view(torch.int16 if dtype == torch.bfloat16 else torch.int32),
+    )
+    if refs:
+        assert all(shape[1] == 1 and span for shape, span in seen), seen
+    else:
+        assert not any(span for _, span in seen)
+
+
+def test_span_modulation_kill_switch(monkeypatch):
+    cls = _flux3()
+    monkeypatch.delenv(cb.COMPACT_MOD_ENV, raising = False)
+    monkeypatch.setenv(cb.SPAN_MOD_ENV, "0")
+    model = _tiny(cls)
+    cb.prepare(model)
+    assert model.__dict__[cb._SPAN_ATTR] is False
+    seen, handles = _joint_mod_shapes(model)
+    with torch.no_grad():
+        model(**_span_inputs(1, 1, torch.float32))
+    for h in handles:
+        h.remove()
+    assert seen and all(shape[1] > 1 and not span for shape, span in seen)
+
+
+def test_span_block_without_the_kwarg_is_stock():
+    cls = _flux3()
+    model = _tiny(cls)
+    block = model.single_transformer_blocks[0]
+    assert cb.patch_single_class(type(block)) is None
+    g = torch.Generator().manual_seed(5)
+    h, e = torch.randn(1, 9, 32, generator = g), torch.randn(1, 4, 32, generator = g)
+    mod, cmod = torch.randn(1, 9, 96, generator = g), torch.randn(1, 1, 96, generator = g)
+    rope = (torch.ones(13, 16), torch.zeros(13, 16))
+    stock = cb._PATCHED_SINGLE[type(block)]
+    with torch.no_grad():
+        want = stock(block, h, e, mod, cmod, rope)
+        got = block(h, e, mod, cmod, rope)
+    assert all(torch.equal(a, b) for a, b in zip(want, got))
+
+
+@pytest.mark.parametrize("refs", [1, 3])
+def test_span_blocks_compile_without_breaks_and_match_compiled_per_token_rows(refs, monkeypatch):
+    """Studio compiles each block: the span forward traces whole (no graph break), once across two reference counts
+    under dynamic shapes, and matches the per-token rows compiled the same way."""
+    from torch._dynamo.testing import CompileCounterWithBackend
+
+    cls = _flux3()
+    monkeypatch.delenv(cb.COMPACT_MOD_ENV, raising = False)
+    monkeypatch.delenv(cb.SPAN_MOD_ENV, raising = False)
+    model = _tiny(cls)
+    assert cb.prepare(model)
+    blocks = list(model.single_transformer_blocks)
+    eager = [b.forward for b in blocks]
+    outs = {}
+    counters = {}
+    for span in (False, True):
+        torch._dynamo.reset()
+        cc = CompileCounterWithBackend("inductor")
+        for b in blocks:
+            b.forward = torch.compile(
+                type(b).forward.__get__(b), backend = cc, fullgraph = True, dynamic = True
+            )
+        model.__dict__[cb._SPAN_ATTR] = span
+        try:
+            with torch.no_grad():
+                outs[span] = [
+                    model(**_span_inputs(1, n, torch.float32))[0] for n in (refs, refs + 1)
+                ]
+        finally:
+            for b, f in zip(blocks, eager):
+                b.forward = f
+        counters[span] = cc.frame_count
+    torch._dynamo.reset()
+    assert counters[True] == len(blocks)
+    assert all(torch.equal(a, b) for a, b in zip(outs[True], outs[False]))

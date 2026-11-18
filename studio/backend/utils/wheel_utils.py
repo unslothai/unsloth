@@ -169,6 +169,25 @@ MAMBA_SSM_PURE_VERSION = "2.3.2.post1"
 MAMBA_SSM_PURE_WHEEL = f"mamba_ssm-{MAMBA_SSM_PURE_VERSION}-py3-none-any.whl"
 
 
+# studio/native_kernels/int8_gemm: C ABI + static cudart, so one py3-none wheel per platform fits every torch and CUDA 12/13.
+I8GEMM_DISTRIBUTION = "unsloth-studio-i8gemm"
+I8GEMM_VERSION = "1.0.0"
+_I8GEMM_PLATFORMS = {"linux_x86_64": "manylinux_2_28_x86_64", "win_amd64": "win_amd64"}
+
+
+def int8_gemm_wheel_url(env: dict[str, str] | None) -> str | None:
+    """The prebuilt int8 GEMM wheel for an NVIDIA CUDA torch on x86_64 Linux / Windows, else None."""
+    if env is None or env.get("hip_version") or not env.get("cuda_major"):
+        return None
+    platform = _I8GEMM_PLATFORMS.get(str(env.get("platform_tag") or ""))
+    if platform is None:
+        return None
+    return (
+        f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/"
+        f"unsloth_studio_i8gemm-{I8GEMM_VERSION}-py3-none-{platform}.whl"
+    )
+
+
 def mamba_ssm_pure_wheel_url(env: dict[str, str] | None = None) -> str:
     """The extension-free mamba_ssm wheel (the same file for every environment)."""
     return (
@@ -207,9 +226,8 @@ _UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
     ("linux_aarch64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
 }
 
-# Extra cells that carry only some packages. On Linux torch 2.10 to 2.12 ours replace upstream's
-# causal-conv1d / mamba-ssm (205 / 351 MB, every arch and -lineinfo); upstream flash-attn 2.8.1 is
-# already smaller there than ours, so it keeps resolving upstream.
+# Extra cells carrying only some packages: on Linux torch 2.10 to 2.12 ours replace upstream
+# causal-conv1d and mamba-ssm; upstream flash-attn 2.8.1 is smaller than ours, so it stays upstream.
 _UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES: dict[str, frozenset[str]] = {
     "linux_x86_64": frozenset({"causal_conv1d", "mamba_ssm"}),
     "linux_aarch64": frozenset({"causal_conv1d", "mamba_ssm"}),
@@ -322,11 +340,9 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
-# The cells the pinned upstream releases publish (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1,
-# identical for both): (platform, CUDA major, cxx11abi) -> torch minors, each for cp310-cp313.
-# Read from the two release asset lists; anything else (CUDA 13 before torch 2.9, aarch64 before
-# 2.7, an abiFALSE torch after 2.6, any interpreter outside cp310-cp313) is a URL that 404s in
-# front of the source fallback, so it resolves to nothing instead.
+# Cells the pinned releases (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1) publish for cp310-cp313;
+# anything else (CUDA 13 before torch 2.9, aarch64 before 2.7, abiFALSE torch after 2.6) would 404
+# ahead of the source fallback, so it resolves to nothing.
 _UPSTREAM_SSM_PINS = {
     "causal_conv1d": CAUSAL_CONV1D_PACKAGE_VERSION,
     "mamba_ssm": MAMBA_SSM_PACKAGE_VERSION,

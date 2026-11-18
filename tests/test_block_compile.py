@@ -9,6 +9,7 @@ GPU: compiled Qwen3 and Qwen3.5 layers match the stock forward and gradients wit
 (Qwen3.5's fla kernel runs as the opaque op inside the block).
 """
 
+import functools
 import importlib.util
 import os
 import sys
@@ -119,6 +120,144 @@ def test_batch_change_does_not_recompile(monkeypatch, dynamic_batch):
         assert extra == 0
     else:
         assert extra >= 1  # the control: without the batch mark the batch change recompiles
+
+
+class _MaskDecoderLayer(torch.nn.Module):
+    """SDPA over a mask that transformers drops (None) for an unpadded micro batch."""
+
+    def __init__(self, causal = True):
+        super().__init__()
+        self.proj = torch.nn.Linear(8, 8)
+        self.self_attn = types.SimpleNamespace(is_causal = causal)
+        self.causal = causal
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask = None,
+        **kwargs,
+    ):
+        q = self.proj(hidden_states)[:, None]
+        if attention_mask is None:
+            out = torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal = self.causal)
+        else:
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q, q, q, attn_mask = attention_mask
+            )
+        return out[:, 0]
+
+
+def _compile_counter(monkeypatch):
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = counter, fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+    return counter
+
+
+def _padded_mask(
+    lengths,
+    L,
+    causal = True,
+):
+    keep = torch.arange(L)[None] < torch.tensor(lengths)[:, None]
+    base = torch.ones(L, L, dtype = torch.bool)
+    if causal:
+        base = base.tril()
+    return base[None, None] & keep[:, None, None, :]
+
+
+@pytest.mark.parametrize("causal", [True, False], ids = ["causal", "bidirectional"])
+def test_unpadded_batch_reuses_the_masked_graph(monkeypatch, causal):
+    """Padded vs unpadded micro batches must not flip mask/None and recompile."""
+    M = _load()
+    counter = _compile_counter(monkeypatch)
+    M._wrap(_MaskDecoderLayer, {})
+    layer = _MaskDecoderLayer(causal).train()
+    reference = _MaskDecoderLayer(causal).train()
+    reference.load_state_dict(layer.state_dict())
+
+    def step(lengths, L, padded):
+        x = torch.randn(len(lengths), L, 8)
+        mask = _padded_mask(lengths, L, causal) if padded else None
+        xs = x.clone().requires_grad_()
+        out = layer(xs, attention_mask = mask)
+        out.square().sum().backward()
+        xr = x.clone().requires_grad_()
+        ref = _MaskDecoderLayer.forward.__wrapped__(reference, xr, attention_mask = mask)
+        ref.square().sum().backward()
+        torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-5)
+        torch.testing.assert_close(xs.grad, xr.grad, rtol = 1e-5, atol = 1e-5)
+
+    step([16, 12], 16, True)
+    step([20, 17], 20, True)
+    before = counter.frame_count
+    step([24, 24], 24, False)
+    step([18, 9], 18, True)
+    step([14, 14], 14, False)
+    extra = counter.frame_count - before
+    torch._dynamo.reset()
+    assert extra == 0
+
+
+def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
+    M = _load()
+    layer = _MaskDecoderLayer().train()
+    hidden = torch.zeros(2, 6, 8)
+    assert M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"] is None
+    layer.self_attn = types.SimpleNamespace()
+    M._normalise_mask(layer, hidden, {"attention_mask": _padded_mask([6, 4], 6)})
+    assert M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"] is None
+    M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1] * 6, [1] * 4 + [0] * 2])})
+    rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    assert rebuilt.dtype == torch.long and rebuilt.shape == (2, 6) and bool((rebuilt == 1).all())
+    # transformers expands its 4D mask (a view) and dynamo guards the base: the rebuilt mask is a view too.
+    layer.self_attn = types.SimpleNamespace(is_causal = True)
+    M._normalise_mask(
+        layer, hidden, {"attention_mask": _padded_mask([6, 4], 6).expand(2, -1, 6, 6)}
+    )
+    rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    assert rebuilt._base is not None and rebuilt._base.shape == rebuilt.shape
+    assert torch.equal(rebuilt, torch.ones(6, 6, dtype = torch.bool).tril().expand(2, 1, 6, 6))
+    M._normalise_mask(layer, hidden, {"attention_mask": _padded_mask([6, 4], 6).contiguous()})
+    assert (
+        M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]._base is None
+    )
+    padding = torch.tensor([[True] * 6, [True] * 4 + [False] * 2])[:, None, None, :].clone()
+    for causal, want in ((False, torch.ones(2, 1, 6, 6, dtype = torch.bool)), (True, None)):
+        layer = _MaskDecoderLayer().train()
+        layer.self_attn = types.SimpleNamespace(is_causal = causal)
+        M._MATERIALISED[0] = None
+        M._normalise_mask(layer, hidden, {"attention_mask": padding.expand(2, 1, 6, 6)})
+        rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+        assert rebuilt is None if want is None else torch.equal(rebuilt, want)
+    # Batch size 1: the rebuilt causal mask owns its storage (no 2D base dynamo would guard as a view).
+    layer = _MaskDecoderLayer().train()
+    layer.self_attn = types.SimpleNamespace(is_causal = True)
+    M._MATERIALISED[0] = None
+    one = torch.zeros(1, 6, 8)
+    M._normalise_mask(layer, one, {"attention_mask": _padded_mask([6], 6).contiguous()})
+    rebuilt = M._normalise_mask(layer, one, {"attention_mask": None})["attention_mask"]
+    assert rebuilt._base is None and torch.equal(
+        rebuilt, torch.ones(6, 6, dtype = torch.bool).tril()[None, None]
+    )
+    assert (
+        M._normalise_mask(layer, one, {"attention_mask": None, "is_causal": False})[
+            "attention_mask"
+        ]
+        is None
+    )
+    layer = _MaskDecoderLayer().train()
+    M._MATERIALISED[0] = None
+    M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1], [0]]).expand(2, 6)})
+    rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    assert torch.equal(rebuilt, torch.ones(2, 6, dtype = torch.long))
 
 
 def test_rebind_globals_resolves():
@@ -490,6 +629,18 @@ def test_outer_compile_keeps_selective_experts_eager(request, monkeypatch):
     torch._dynamo.reset()
 
 
+def _fla_present():
+    import importlib.util
+    import sys
+
+    if sys.modules.get("fla") is not None:
+        return True
+    try:
+        return importlib.util.find_spec("fla") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
     """GDN first reached under an enclosing compile runs _prepare_gdn eagerly; later traces stay whole."""
     from transformers import AutoModelForCausalLM
@@ -506,15 +657,11 @@ def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
         ).train()
     except Exception as e:
         pytest.skip(f"tiny Qwen3-Next unavailable: {e}")
+    if _fla_present():
+        # The stock GDN op then resolves to fla (installed or vendored), which is compiler-disabled.
+        pytest.skip("stock GDN op resolves to fla")
     ids = torch.randint(0, 100, (2, 8))
-    try:
-        want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
-    except (RuntimeError, ValueError) as e:
-        # A GPU host resolves the stock GDN op to the compiler-disabled fla Triton kernel, which
-        # neither takes these CPU tensors nor traces whole; the eager GDN reference only runs CPU-only.
-        if "Triton" not in str(e):
-            raise
-        pytest.skip(f"stock GDN op resolved to a Triton kernel: {e}")
+    want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
     calls = []
     prepare = M._prepare_gdn
 
@@ -755,6 +902,177 @@ def test_gemma4_band_fast_path_in_blocks(monkeypatch):
     assert routed == [short] and plain_calls == [long]
 
 
+def _fake_gemma4_router_stack(M, monkeypatch, scans):
+    """zoo's gemma-4 router wrapped by another router from a module without _ORIG_SDPA (unsloth's
+    head_dim 512 kernel is installed on top at load, before the block hook runs)."""
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    band = types.ModuleType("fake_banded_attention_2")
+    band._mask_is_plain_band = lambda mask, S, w: scans.append((S, w)) or bool(
+        getattr(mask, "_ok", True)
+    )
+    zoo = types.ModuleType("fake_flash_sliding_2")
+    top_mod = types.ModuleType("fake_large_head_2")
+    calls = {"plain": [], "top": []}
+
+    def plain(module, q, k, v, mask, **kw):
+        calls["plain"].append(mask)
+        return "plain", None
+
+    def top(module, q, k, v, mask, **kw):
+        calls["top"].append(mask)
+        return "top", None
+
+    top._unsloth_gemma4_flash = True  # forwarded sentinels, like the real wrappers do
+    top.__module__ = top_mod.__name__
+    zoo._ORIG_SDPA = [plain]
+    for mod in (band, zoo, top_mod):
+        monkeypatch.setitem(sys.modules, mod.__name__, mod)
+    monkeypatch.setattr(M, "_BAND_MODULE", band.__name__)
+    monkeypatch.setattr(M, "_FLASH_MODULE", zoo.__name__)
+    monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, "sdpa", top)
+    return calls, top
+
+
+def test_gemma4_hook_installs_beneath_a_wrapping_router(monkeypatch):
+    M = _load()
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    scans = []
+    calls, top = _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    assert wrapped is not top and wrapped._unsloth_block_band and M._BAND_CHECK[0] is not None
+
+
+def test_gemma4_global_layer_mask_gets_a_causal_verdict(monkeypatch):
+    M = _load()
+    scans = []
+    _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+
+    class Gemma4TextAttention(torch.nn.Module):
+        is_sliding, sliding_window, head_dim = False, None, 512
+
+    layer = torch.nn.Module()
+    layer.self_attn = Gemma4TextAttention()
+    plain_causal, padded = torch.zeros(1, 1, 96, 96), torch.zeros(1, 1, 96, 96)
+    padded._ok = False
+    M._precheck_band(layer, 96, (plain_causal,), {})
+    M._precheck_band(layer, 96, (), {"attention_mask": padded})
+    assert scans == [(96, 96), (96, 96)]
+    assert plain_causal._unsloth_plain_causal is True and padded._unsloth_plain_causal is False
+    assert plain_causal._unsloth_block_long_band is False
+
+
+def _sliding_layer(window = 64, head_dim = 256):
+    class Gemma4TextAttention(torch.nn.Module):
+        is_sliding, sliding_window, is_causal, training = True, window, True, True
+
+    attn = Gemma4TextAttention()
+    attn.head_dim = head_dim
+    layer = torch.nn.Module()
+    layer.self_attn = attn
+    return layer, attn
+
+
+def test_gemma4_long_band_verdict_needs_the_kernel(monkeypatch):
+    M = _load()
+    scans = []
+    _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    layer, _ = _sliding_layer()
+    hidden = torch.zeros(1, 96, 8, dtype = torch.bfloat16)
+    ready = []
+    monkeypatch.setattr(M, "_band_kernel_ready", lambda layer, h: ready.append(h) or True)
+    long = torch.zeros(1, 1, 96, 96)
+    M._precheck_band(layer, 96, (long,), {}, hidden)
+    assert scans == [(96, 64)] and long._unsloth_block_long_band is True
+    assert long._unsloth_block_band is False and long._unsloth_plain_causal is False
+    monkeypatch.setattr(M, "_band_kernel_ready", lambda layer, h: False)
+    other = torch.zeros(1, 1, 96, 96)
+    M._precheck_band(layer, 96, (other,), {}, hidden)
+    assert other._unsloth_block_long_band is False and scans == [(96, 64)]
+    # Within the window the existing is_causal route decides; no long-band scan.
+    short = torch.zeros(1, 1, 32, 32)
+    M._precheck_band(layer, 32, (short,), {}, hidden)
+    assert short._unsloth_block_long_band is False and short._unsloth_block_band is True
+
+
+def test_gemma4_band_kernel_kill_switch(monkeypatch):
+    M = _load()
+    layer, _ = _sliding_layer()
+    monkeypatch.setenv("UNSLOTH_BLOCK_SLIDING_KERNEL", "0")
+    assert M._band_kernel_ready(layer, torch.zeros(1, 4, 8)) is False
+    monkeypatch.delenv("UNSLOTH_BLOCK_SLIDING_KERNEL")
+    assert M._band_kernel_ready(layer, torch.zeros(1, 4, 8)) is False  # CPU tensor
+
+
+def test_gemma4_long_band_routes_to_the_interval_kernel(monkeypatch):
+    M = _load()
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    scans = []
+    calls, _ = _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    _, attn = _sliding_layer(window = 16, head_dim = 32)
+    kernel = []
+    monkeypatch.setattr(
+        M,
+        "_band_kernel_attention",
+        lambda q, k, v, w, s: kernel.append((q.shape, w, s)) or "kernel",
+    )
+    monkeypatch.setattr(M, "_band_kernel_checked", lambda q: True)
+    q = torch.randn(1, 4, 48, 32, dtype = torch.bfloat16)
+    kv = torch.randn(1, 2, 48, 32, dtype = torch.bfloat16)
+    mask = torch.zeros(1, 1, 48, 48)
+    mask._unsloth_block_long_band = True
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    M._IN_BLOCK[0] = M._FULL
+    try:
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "kernel"
+        assert kernel == [(q.shape, 16, 1.0)]
+        mask._unsloth_block_long_band = False
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "plain"
+        mask._unsloth_block_long_band = True
+        assert (
+            wrapped(attn, q, kv, kv, mask, dropout = 0.1, scaling = 1.0)[0] == "plain"
+        )  # training dropout
+        assert wrapped(attn, q.float(), kv.float(), kv.float(), mask, scaling = 1.0)[0] == "plain"
+    finally:
+        M._IN_BLOCK[0] = M._OFF
+    assert len(kernel) == 1 and len(calls["plain"]) == 3
+
+
+def test_gemma4_long_band_past_int32_keeps_the_plain_route(monkeypatch):
+    M = _load()
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    scans = []
+    calls, _ = _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    _, attn = _sliding_layer(window = 16, head_dim = 32)
+    monkeypatch.setattr(M, "_band_kernel_attention", lambda q, k, v, w, s: "kernel")
+    monkeypatch.setattr(M, "_band_kernel_checked", lambda q: True)
+    import importlib
+
+    lh = importlib.import_module(M._LH_MODULE)
+    q = torch.randn(1, 4, 48, 32, dtype = torch.bfloat16)
+    kv = torch.randn(1, 2, 48, 32, dtype = torch.bfloat16)
+    mask = torch.zeros(1, 1, 48, 48)
+    mask._unsloth_block_long_band = True
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    M._IN_BLOCK[0] = M._FULL
+    try:
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "kernel"
+        monkeypatch.setattr(lh, "_INT32_MAX", q.numel() - 1)
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "plain"
+    finally:
+        M._IN_BLOCK[0] = M._OFF
+
+
 def test_kill_switch(monkeypatch):
     M = _load()
     monkeypatch.setenv("UNSLOTH_BLOCK_COMPILE", "0")
@@ -768,6 +1086,26 @@ def test_kill_switch(monkeypatch):
     assert not M._torch_supported()
     monkeypatch.setattr(torch, "__version__", "2.7.1+cu126")
     assert M._torch_supported()
+
+
+@pytest.mark.parametrize("version", ["2.6.0+cu124", "2.5.1"])
+def test_old_torch_installs_nothing(monkeypatch, version):
+    """#10744: torch < 2.7 keeps every layer on the stock forward (no class wrapped, nothing compiled)."""
+    M = _load()
+    calls = []
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: calls.append(1) or fn)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch, "__version__", version)
+    cls = _toy_class()
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([cls(), cls()])
+    original = cls.forward
+    assert M.patch_block_compile(model) == []
+    assert cls.forward is original
+    model.layers[0](torch.randn(2, 4, 8, requires_grad = True)).sum().backward()
+    assert calls == []
+    monkeypatch.setattr(torch, "__version__", "2.7.1+cu126")
+    assert M.patch_block_compile(model) == [cls.__name__]
 
 
 def test_forced_float32_is_decided_per_model(monkeypatch):
@@ -867,6 +1205,137 @@ def test_checkpoint_recompute_keeps_the_no_grad_mode(monkeypatch):
     calls.clear()
     layer(x.requires_grad_())
     assert calls == [("split", True)]
+
+
+def test_failed_attempt_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
+    """A SPLIT attempt that ran part of the block, then failed, packed its tensors into the checkpoint:
+    CheckpointError "saved during forward: 94, during recomputation: 70" (tiny Gemma3, head_dim 8)."""
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+
+    def fake_compile(fn, **kwargs):
+        def compiled(self, hidden_states, *args, **kw):
+            if M._IN_BLOCK[0] == M._SPLIT:
+                self.proj(hidden_states * 2).sum()  # ran compiled, then the next graph fails
+            raise _Boom("lowering failed")
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    original = cls.forward
+    M._wrap(cls, {})
+    torch.manual_seed(0)
+    layer, ref = cls(), cls()
+    ref.load_state_dict(layer.state_dict())
+    x = torch.randn(2, 4, 8, requires_grad = True)
+    checkpoint(layer, x, use_reentrant = False).square().sum().backward()
+    assert layer._unsloth_block_mode == M._OFF
+    x_ref = x.detach().requires_grad_()
+    original(ref, x_ref).square().sum().backward()
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(layer.proj.weight.grad, ref.proj.weight.grad)
+
+
+def _record_proj(layer, style, recorded):
+    if style == "hook":
+        from transformers.utils.output_capturing import _active_collector
+
+        def hook(module, args, output):
+            collected = _active_collector.get()
+            if collected is not None:
+                collected["router_logits"].append(output)
+
+        layer.proj.register_forward_hook(hook)
+        return _active_collector.set({"router_logits": recorded})
+
+    def make_capture_wrapper(orig):
+        @functools.wraps(orig)
+        def wrapped_forward(*args, **kwargs):
+            out = orig(*args, **kwargs)
+            recorded.append(out)
+            return out
+
+        return wrapped_forward
+
+    layer.proj.forward = make_capture_wrapper(layer.proj.forward)
+    return None
+
+
+@pytest.mark.parametrize("style", ["hook", "forward"])
+def test_trial_forward_is_not_recorded_as_a_model_output(monkeypatch, style):
+    # Qwen3-MoE tiny: trial forward added an extra router_logits entry (grad norm 1.04 vs 1.21).
+    from torch.utils.checkpoint import checkpoint
+
+    if style == "hook":
+        pytest.importorskip("transformers.utils.output_capturing")
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    recorded = []
+    token = _record_proj(layer, style, recorded)
+    try:
+        checkpoint(layer, torch.randn(2, 4, 8, requires_grad = True), use_reentrant = False)
+    finally:
+        if token is not None:
+            from transformers.utils.output_capturing import _active_collector
+            _active_collector.reset(token)
+    assert len(recorded) == 1, f"{len(recorded)} recorded outputs for one forward"
+
+
+class _TraceableCollector:
+    """unsloth_zoo's compiled-code mirror of transformers' collector: dynamo traces get() and guards on it."""
+
+    def __init__(self):
+        self.value = None
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        old, self.value = self.value, value
+        return old
+
+    def reset(self, token):
+        self.value = token
+
+
+def test_trial_forward_graph_is_reused_by_the_real_call(monkeypatch):
+    # tiny Gemma-4 vision: a trial hidden from the collector (None) compiled graphs no real call matched.
+    from torch._dynamo.utils import counters
+
+    output_capturing = pytest.importorskip("transformers.utils.output_capturing")
+    M = _load()
+    real_compile = torch.compile
+
+    def eager_compile(fn, **kwargs):
+        kwargs = {k: v for k, v in kwargs.items() if k not in ("options", "backend")}
+        return real_compile(fn, backend = "eager", **kwargs)
+
+    monkeypatch.setattr(torch, "compile", eager_compile)
+    collector = _TraceableCollector()
+    monkeypatch.setattr(output_capturing, "_active_collector", collector)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+
+    def hook(module, args, output):
+        collected = output_capturing._active_collector.get()
+        if collected is not None and "attentions" in collected:
+            collected["attentions"].append(output)
+
+    layer.proj.register_forward_hook(hook)
+    collector.set({})  # capture_outputs with nothing requested
+    torch._dynamo.reset()
+    counters.clear()
+    x = torch.randn(2, 4, 8)
+    with torch.no_grad():  # reentrant checkpoint forward: grad-mode trial, then the real call
+        layer(x)
+    layer(x.requires_grad_()).sum().backward()  # the recompute
+    assert counters["stats"]["unique_graphs"] == 2, dict(counters["stats"])
 
 
 def test_gdn_self_check_leaves_default_rng_alone():
@@ -1036,6 +1505,80 @@ def test_block_flex_forces_the_main_kernel(monkeypatch):
     ]
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
+@pytest.mark.parametrize("guard", ["0", "1"], ids = ["no_align_guard", "torch_guard"])
+def test_block_does_not_recompile_per_length_mod_8(monkeypatch, guard):
+    """torch 2.14 SDPA lowering guards `Mod(s, 8)` on strides: a block recompiled per alignment class."""
+    import inspect
+
+    import torch._inductor.lowering as lowering
+    from transformers.models.qwen3 import modeling_qwen3 as modeling
+    from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+
+    M = _load()
+    stock = lowering.sdpa_constraint
+    stock = (
+        getattr(stock, "__wrapped__", stock)
+        if getattr(stock, "_unsloth_no_align_guard", False)
+        else stock
+    )
+    if "is_aligned_realized_tensor" not in inspect.getsource(stock):
+        pytest.skip("this torch has no alignment check in the SDPA lowering")
+    monkeypatch.setattr(lowering, "sdpa_constraint", stock)
+    for op, fn in list(lowering._maybe_layout_constraints.items()):
+        if getattr(fn, "_unsloth_no_align_guard", False):
+            monkeypatch.setitem(lowering._maybe_layout_constraints, op, stock)
+    monkeypatch.setenv("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", guard)
+    assert M._sdpa_alignment_without_guard() is (guard == "0")
+    # A cached graph from the other arm would carry its guards.
+    monkeypatch.setattr(torch._inductor.config, "fx_graph_cache", False)
+    monkeypatch.setattr(torch._functorch.config, "enable_autograd_cache", False)
+    import torch._dynamo.convert_frame as convert_frame
+
+    reasons = []
+    stock_reasons = convert_frame.get_and_maybe_log_recompilation_reasons
+
+    def record(*a, **k):
+        out = stock_reasons(*a, **k)
+        reasons.extend(str(r) for r in out)
+        return out
+
+    monkeypatch.setattr(convert_frame, "get_and_maybe_log_recompilation_reasons", record)
+
+    cfg = Qwen3Config(
+        vocab_size = 64,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+    )
+    cfg._attn_implementation = "sdpa"
+    torch.manual_seed(0)
+    cls = modeling.Qwen3DecoderLayer
+    model = modeling.Qwen3Model(cfg).cuda().to(torch.bfloat16).train()
+    layer = model.layers[0]
+
+    def run(L):
+        # Causal flash SDPA: backward reads a (B, H, L) logsumexp, strides (H*L, L, 1).
+        ids = torch.randint(0, 64, (2, L), device = "cuda")
+        model(input_ids = ids, use_cache = False).last_hidden_state.float().sum().backward()
+
+    original = cls.forward
+    try:
+        M._wrap(cls, M._COMPILE_OPTIONS)
+        torch._dynamo.reset()
+        for L in (517, 520, 523, 528):  # unaligned, aligned, unaligned, aligned
+            run(L)
+        assert layer.__dict__.get("_unsloth_block_checked", 0) & 2
+    finally:
+        cls.forward = original
+        torch._dynamo.reset()
+    mod_8 = [r for r in reasons if "% 8" in r]
+    assert bool(mod_8) is (guard == "1"), reasons
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "flex_attention kernels need CUDA")
 def test_block_flex_options_lower_short_gqa_training_queries():
     """Qwen3.5 GRPO shapes: with the block options, compiled flex fwd + bwd lower and match eager."""
@@ -1128,6 +1671,7 @@ def test_short_gqa_flex_block_stays_compiled():
 @pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need CUDA")
 def test_qwen3_5_gdn_block_has_no_break():
     pytest.importorskip("unsloth")
+    pytest.importorskip("transformers.models.qwen3_5")  # transformers >= 5.2
     pytest.importorskip("fla.ops.gated_delta_rule")
     from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
@@ -1174,6 +1718,12 @@ def test_qwen3_5_gdn_block_has_no_break():
         counters.clear()
         got = [_grads_after_step(layers, run, xi.clone().requires_grad_()) for xi in x]
         assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])
+        # A stock-forward fallback also has no break: assert the block ran (grouped heads demoted it on 5.23).
+        for layer in layers:
+            assert layer.__dict__.get("_unsloth_block_mode") == M._FULL, layer.__dict__.get(
+                "_unsloth_block_mode"
+            )
+            assert layer.__dict__.get("_unsloth_block_checked", 0) & 2
     finally:
         cls.forward = original
         torch._dynamo.reset()
@@ -1188,14 +1738,33 @@ def test_qwen3_5_gdn_block_has_no_break():
             )
 
 
+def test_gdn_op_name_pins_its_fake_meta():
+    """Inductor's disk cache keys on the op name, not its fake meta: changing the fake requires a new op name."""
+    M = _load("_gdn_op")
+    if M._gdn_chunk is None:
+        pytest.skip("torch without torch.library.custom_op")
+    q = torch.empty(2, 64, 4, 32, device = "meta", dtype = torch.bfloat16)
+    v = torch.empty(2, 64, 16, 32, device = "meta", dtype = torch.bfloat16)
+    g = torch.empty(2, 64, 16, device = "meta")
+    A = [tuple(shape) for shape, _ in M._chunk_meta(q, q, v, g)][-1]
+    published = {
+        "unsloth::qwen3_5_gdn_chunk": (2, 64, 4, 64),
+        "unsloth::qwen3_5_gdn_chunk_v2": (2, 64, 16, 64),
+    }
+    assert published[M._gdn_chunk._qualname] == A, (M._gdn_chunk._qualname, A)
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need a GPU")
-def test_opaque_fla_op_matches_fla_function():
+@pytest.mark.parametrize("qk_heads", [4, 2], ids = ["equal_heads", "grouped_value_heads"])
+def test_opaque_fla_op_matches_fla_function(qk_heads):
+    """grouped_value_heads: transformers 5.23 passes q / k unrepeated (huggingface/transformers#49141); the fake
+    meta of A had the q / k head count, so Inductor's output check failed and every GVA layer ran stock."""
     pytest.importorskip("fla.ops.gated_delta_rule.chunk")
     M = _load("_gdn_op")
     gen = torch.Generator(device = "cuda").manual_seed(0)
     B, T, H, D = 2, 150, 4, 128
     mk = lambda *s, dt = torch.bfloat16: torch.randn(*s, device = "cuda", dtype = dt, generator = gen)
-    q, k, v = mk(B, T, H, D), mk(B, T, H, D), mk(B, T, H, D)
+    q, k, v = mk(B, T, qk_heads, D), mk(B, T, qk_heads, D), mk(B, T, H, D)
     g = -mk(B, T, H, dt = torch.float32).abs() * 0.1
     beta = mk(B, T, H).sigmoid()
     assert M._fla_ops(lambda: (q, k, v, g, beta))
@@ -1218,7 +1787,7 @@ def test_gdn_adapter_routes_only_the_self_checked_call(monkeypatch):
     monkeypatch.setattr(
         torch.ops,
         "unsloth",
-        types.SimpleNamespace(qwen3_5_gdn_chunk = lambda *a: seen.append("op") or ("out",)),
+        types.SimpleNamespace(qwen3_5_gdn_chunk_v2 = lambda *a: seen.append("op") or ("out",)),
         raising = False,
     )
     adapter = M._gdn_chunk_adapter(lambda *a, **kw: seen.append("fla") or ("fla", None))
@@ -1252,7 +1821,7 @@ def test_gdn_adapter_routes_packed_batches_once_self_checked(monkeypatch):
         return ("out",)
 
     monkeypatch.setattr(
-        torch.ops, "unsloth", types.SimpleNamespace(qwen3_5_gdn_chunk = op), raising = False
+        torch.ops, "unsloth", types.SimpleNamespace(qwen3_5_gdn_chunk_v2 = op), raising = False
     )
     adapter = M._gdn_chunk_adapter(lambda *a, **kw: seen.append(("fla", None)) or ("fla", None))
     stock = dict(use_qk_l2norm_in_kernel = True, initial_state = None, output_final_state = False)
@@ -1290,7 +1859,7 @@ def test_gdn_adapter_ignores_kwargs_the_hub_wrapper_drops(monkeypatch):
     monkeypatch.setattr(
         torch.ops,
         "unsloth",
-        types.SimpleNamespace(qwen3_5_gdn_chunk = lambda *a: seen.append("op") or ("out",)),
+        types.SimpleNamespace(qwen3_5_gdn_chunk_v2 = lambda *a: seen.append("op") or ("out",)),
         raising = False,
     )
     fla = lambda *a, **kw: seen.append("fla") or ("fla", None)
@@ -1397,6 +1966,51 @@ def test_causal_depthwise_conv_matches_conv1d():
     x, w = torch.randn(2, 6, 37), torch.randn(6, 4)
     want = torch.nn.functional.conv1d(x, w[:, None], groups = 6, padding = 3)[..., :37]
     torch.testing.assert_close(M._causal_depthwise_conv(x, w), want, rtol = 1e-5, atol = 1e-5)
+
+
+@pytest.mark.parametrize("call", ["positional", "x_keyword"])
+def test_causal_conv_adapter_takes_both_call_conventions(call):
+    """transformers < 5.15 GatedDeltaNet calls self.causal_conv1d_fn(x = ..., weight = ..., ...): the adapter
+    required `hidden_states`, so a Qwen3-Next model built after the first block forward raised TypeError."""
+    M = _load()
+    G = _load("_gdn_op")
+    seen = []
+
+    def legacy(
+        x,
+        weight,
+        bias = None,
+        activation = None,
+        seq_idx = None,
+        **kwargs,
+    ):
+        seen.append(sorted(kwargs) + (["seq_idx"] if seq_idx is not None else []))
+        out = torch.nn.functional.conv1d(
+            x, weight[:, None], bias, groups = x.shape[1], padding = weight.shape[-1] - 1
+        )
+        out = out[..., : x.shape[-1]]
+        return torch.nn.functional.silu(out) if activation else out
+
+    fn = M._causal_conv1d_adapter(legacy, G._causal_depthwise_conv)
+    torch.manual_seed(0)
+    x, w, b = torch.randn(2, 6, 17), torch.randn(6, 4), torch.randn(6)
+
+    def call_it(f):
+        if call == "positional":
+            return f(x, w, b, activation = "silu")
+        return f(x = x, weight = w, bias = b, activation = "silu", seq_idx = None)
+
+    want = call_it(legacy)
+    torch.testing.assert_close(call_it(fn), want)  # eager: passes through unchanged
+    M._IN_BLOCK[0] = M._FULL
+    try:
+        seen.clear()
+        got = torch.compile(lambda: call_it(fn), backend = "eager", fullgraph = True)()
+    finally:
+        M._IN_BLOCK[0] = M._OFF
+        torch._dynamo.reset()
+    assert seen == []  # in-block: the traceable depthwise conv, not the legacy kernel
+    torch.testing.assert_close(got, want, rtol = 1e-5, atol = 1e-5)
 
 
 def test_disable_unless_decode_keeps_original_traceable_on_old_torch(monkeypatch):
@@ -1660,6 +2274,40 @@ def test_router_logits_after_a_forward_without_them(request, monkeypatch):
     torch._dynamo.reset()
 
 
+@pytest.mark.parametrize("registry_kind", ["dict", "model_keyed"])
+def test_router_hooks_install_with_either_registry_api(monkeypatch, registry_kind):
+    """transformers 5.23 (huggingface/transformers#49594) made _CAN_RECORD_REGISTRY a dict subclass whose
+    .get takes the model and stringifies its class, so .get(<class string>) answered {} and no router hook
+    was installed up front (the IndexError above came back). Keys are still the class strings."""
+    M = _load()
+
+    class Registry(dict):
+        def get(self, model):
+            return super().get(str(model.__class__)) or {}
+
+    class Collector:
+        _unsloth_eager_mirror = True
+
+    class MoeModel(torch.nn.Module):
+        pass
+
+    registry = (dict if registry_kind == "dict" else Registry)()
+    dict.__setitem__(registry, str(MoeModel), {"router_logits": object()})
+    installed = []
+    fake = types.ModuleType("transformers.utils.output_capturing")
+    fake._CAN_RECORD_REGISTRY = registry
+    fake.maybe_install_capturing_hooks = installed.append
+    fake.CompileableContextVar = Collector
+    monkeypatch.setitem(sys.modules, "transformers.utils.output_capturing", fake)
+    import transformers.utils
+
+    monkeypatch.setattr(transformers.utils, "output_capturing", fake, raising = False)
+    model = MoeModel()
+    model.inner = torch.nn.Linear(2, 2)
+    assert M._install_router_capture_hooks(model) == 1
+    assert installed == [model]
+
+
 def test_router_hooks_are_not_installed_twice_after_an_eager_capture(request, monkeypatch):
     """Failing before: an eager capturing forward hooks the inner model; installing on the unflagged outer
     CausalLM recursed into it again and every captured tuple held each layer twice."""
@@ -1684,12 +2332,9 @@ def test_router_hooks_are_not_installed_twice_after_an_eager_capture(request, mo
 
 
 def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
-    """A capture hook inside the block appends to an empty scratch list on every call.
-
-    Before: the hook appended to the collector's list and Dynamo guarded on its length (the layer
-    index), so each of 10 layers compiled its own graph. Now <= 2 graphs (static, then dynamic) across
-    10 layers at 10 sequence lengths, and the collected logits match the stock forward in order.
-    """
+    """A capture hook appends to an empty scratch list per call, so Dynamo does not guard on the
+    collector's length, which compiled one graph per layer; now at most 2 graphs across 10 layers
+    and 10 lengths, with logits matching the stock forward."""
     output_capturing = pytest.importorskip("transformers.utils.output_capturing")
     misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
     if not hasattr(misc, "output_capture_scratch"):
@@ -1953,3 +2598,190 @@ def test_parametrized_class_is_reused_per_module(monkeypatch):
     assert type(b) is not seen[0] and torch.equal(
         b.weight, 2 * b.parametrizations["weight"].original
     )
+
+
+def test_relax_strict_dynamic_aliases_only_marked_tensors():
+    M = _load()
+    ids = torch.zeros(2, 16, dtype = torch.long)
+    torch._dynamo.mark_dynamic(ids, 1)
+    other = torch.zeros(2, 16)
+    pos = (torch.zeros(1, 16), torch.zeros(1, 16))
+    out = M._relax_strict_dynamic((other, pos, {"ple_input_ids": ids, "x": None}))
+    assert out[0] is other and out[1] is pos
+    alias = out[2]["ple_input_ids"]
+    assert alias is not ids and alias.data_ptr() == ids.data_ptr() and alias.shape == ids.shape
+    assert not getattr(alias, "_dynamo_dynamic_indices", None)
+    assert ids._dynamo_dynamic_indices == {1}  # the caller's tensor keeps its own mark
+    unmarked = (other, {"a": other})
+    assert M._relax_strict_dynamic(unmarked) is unmarked
+
+
+def test_strict_marked_kwarg_does_not_demote_the_block(monkeypatch, capsys):
+    """Qwen4Exp passes input_ids (strictly marked by unsloth_zoo's loss bookkeeping) into every block as
+    ple_input_ids; a length the block specialized raised ConstraintViolationError and the layer kind fell
+    back to the stock forward."""
+    M = _load()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = "eager", fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+
+    class PleDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            ple_input_ids = None,
+            **kwargs,
+        ):
+            out = self.proj(hidden_states)
+            if ple_input_ids.shape[1] == 16:  # a block that specializes the length
+                out = out + 1
+            return out
+
+    M._wrap(PleDecoderLayer, {})
+    layer = PleDecoderLayer().train()
+    x = torch.randn(2, 16, 8, requires_grad = True)
+    ids = torch.zeros(2, 16, dtype = torch.long)
+    torch._dynamo.mark_dynamic(ids, 1)
+    layer(x, ple_input_ids = ids).sum().backward()
+    torch._dynamo.reset()
+    assert "block compile failed" not in capsys.readouterr().out
+    assert layer._unsloth_block_mode != M._OFF
+
+
+def _like_transformers_5_23(forward):
+    """GradientCheckpointingLayer.__init_subclass__ (transformers >= 5.23): checkpoint in `forward`."""
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and type(self).forward is forward_with_checkpointing
+        ):
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
+def _checkpointed_layer(cls, reentrant = False):
+    layer = cls()
+    layer.gradient_checkpointing = True
+    calls = []
+
+    def checkpoint(fn, *args):
+        calls.append(len(args))
+        if reentrant:  # the forward of a reentrant checkpoint runs without grad
+            with torch.no_grad():
+                return fn(*args)
+        return fn(*args)
+
+    layer._gradient_checkpointing_func = checkpoint
+    return layer, calls
+
+
+def test_block_keeps_transformers_layer_checkpointing(monkeypatch):
+    # The block replaced the class forward, hiding transformers' wrapper, so nothing was checkpointed.
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _toy_class()
+    stock = cls.forward
+    cls.forward = _like_transformers_5_23(stock)
+    M._wrap(cls, {})
+    assert getattr(cls.forward, M._MARK) and cls.forward._unsloth_block_original is stock
+    layer, calls = _checkpointed_layer(cls)
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    out = layer(x, attention_mask = None)
+    torch.testing.assert_close(out, layer.proj(x) + x)
+    assert calls == [1]
+    layer.eval()(x)
+    assert calls == [1]
+    # Wrapping again (a second model load) keeps one checkpoint.
+    M._wrap(cls, {})
+    layer.train()(x)
+    assert calls == [1, 1]
+    # The grad-mode trial must call the block, not the checkpoint shim (that recursed until RecursionError).
+    fresh, fresh_calls = _checkpointed_layer(cls, reentrant = True)
+    out = fresh(x)
+    torch.testing.assert_close(out, fresh.proj(x) + x)
+    assert fresh_calls == [1]
+
+
+def test_block_leaves_call_level_checkpointing_alone(monkeypatch):
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    assert not getattr(cls.forward, "_unsloth_block_checkpoint_outside", False)
+    layer, calls = _checkpointed_layer(cls)
+    layer(torch.randn(1, 4, 8))
+    assert calls == []  # transformers <= 5.22 checkpoints in __call__, outside the block already
+
+
+def test_block_keeps_real_transformers_checkpointing(monkeypatch):
+    modeling_layers = pytest.importorskip("transformers.modeling_layers")
+    M = _load()
+
+    class ToyGCDecoderLayer(modeling_layers.GradientCheckpointingLayer):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            return self.proj(hidden_states) + hidden_states
+
+    if ToyGCDecoderLayer.forward.__code__.co_name != "forward_with_checkpointing":
+        pytest.skip("this transformers checkpoints in __call__")
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    M._wrap(ToyGCDecoderLayer, {})
+    layer, calls = _checkpointed_layer(ToyGCDecoderLayer)
+    layer(torch.randn(1, 4, 8, requires_grad = True))
+    assert calls == [1]
+
+
+@pytest.mark.parametrize("extra_fwd", [0, 1], ids = ["fla_0.5_six_outputs", "fla_main_seven_outputs"])
+def test_opaque_gdn_op_takes_any_fla_return_length(monkeypatch, extra_fwd):
+    # fla main (#1731) returns an extra h; a fixed 6-way unpack silently disabled the op.
+    import contextlib
+
+    M = _load("_gdn_op")
+    if M._gdn_chunk is None:
+        pytest.skip("torch.library.custom_op unavailable")
+    monkeypatch.setattr(torch.cuda, "device", lambda *a, **k: contextlib.nullcontext())
+
+    def fwd(q, k, v, g, beta, scale, initial_state, output_final_state, **kw):
+        A = torch.zeros(*k.shape[:-1], 64, dtype = k.dtype)
+        return (g.float().cumsum(1), v * scale, A, None, None, None) + (None,) * extra_fwd
+
+    def bwd(q, k, v, g, beta, A, scale, initial_state, do, dht, **kw):
+        return (do * 0 + 1, do * 0 + 2, do * scale, beta * 0 + 3, g * 0 + 4, None, None, None)
+
+    def l2_fwd(x):
+        return x.clone(), x.new_ones(x.shape[:-1], dtype = torch.float32)
+
+    def l2_bwd(x, rstd, dx):
+        return dx.clone()
+
+    monkeypatch.setattr(M, "_FLA", (fwd, bwd, l2_fwd, l2_bwd))
+    B, T, H, D = 1, 8, 2, 4
+    q, k, v = (torch.randn(B, T, H, D, requires_grad = True) for _ in range(3))
+    g, beta = (torch.randn(B, T, H, requires_grad = True) for _ in range(2))
+    out = M._gdn_chunk(q, k, v, g, beta, 0.5)
+    assert len(out) == 7
+    torch.testing.assert_close(out[0], v.detach() * 0.5)
+    out[0].sum().backward()
+    assert torch.all(v.grad == 0.5) and torch.all(q.grad == 1) and torch.all(g.grad == 4)

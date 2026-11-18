@@ -5,7 +5,7 @@ from threading import RLock
 from typing import Callable, Literal, Optional
 
 
-MediaGenerationKind = Literal["image", "video"]
+MediaGenerationKind = Literal["image", "video", "training"]
 _settings_lock = RLock()
 _MAX_PRESETS = 100
 

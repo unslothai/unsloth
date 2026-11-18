@@ -1,16 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact."""
+"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 VAE's
+math SDPA keeps bf16 (what ``allow_fp16_bf16_reduction_math_sdp`` runs, computed per call without that process-wide
+flag) instead of upcasting q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the fp32
+upcast). fp16 always upcasts: the FLUX.1 / Z-Image VAE's mid-block scores reach 1e6 to 5e7, past fp16's 65504."""
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 VAE_ATTN_CHUNK_ENV = "UNSLOTH_VAE_ATTN_CHUNKED"
 VAE_ATTN_CHUNK_MB_ENV = "UNSLOTH_VAE_ATTN_CHUNK_MB"
+VAE_ATTN_HALF_MATH_ENV = "UNSLOTH_VAE_ATTN_HALF_MATH"
 _FALSE = ("0", "false", "no", "off")
 # fp32 score bytes per chunk; a full matrix at or under this runs unchunked (FLUX.1 1024x1024 is exactly 1 GiB).
 DEFAULT_SCORE_BUDGET_MB = 1024
@@ -22,6 +27,62 @@ def chunking_disabled() -> bool:
     return os.environ.get(VAE_ATTN_CHUNK_ENV, "").strip().lower() in _FALSE
 
 
+def half_math_enabled() -> bool:
+    return os.environ.get(VAE_ATTN_HALF_MATH_ENV, "").strip().lower() not in _FALSE
+
+
+def half_math_sdpa(
+    q: Any,
+    k: Any,
+    v: Any,
+    scale: Optional[float] = None,
+) -> Any:
+    """Math SDPA as with ``allow_fp16_bf16_reduction_math_sdp(True)``, without touching that process-global flag."""
+    import torch
+
+    s = 1.0 / math.sqrt(q.shape[-1]) if scale is None else scale
+    root = math.sqrt(abs(s))
+    attn = torch.matmul(q * (-root if s < 0 else root), k.transpose(-2, -1) * root)
+    # torch < 2.5 has no _safe_softmax; its math SDPA used plain softmax
+    softmax = getattr(torch.ops.aten, "_safe_softmax", None)
+    attn = softmax(attn, -1) if softmax is not None else attn.softmax(-1)
+    return torch.matmul(attn, v)
+
+
+def fp32_math_sdpa(
+    q: Any,
+    k: Any,
+    v: Any,
+    scale: Optional[float] = None,
+) -> Any:
+    """Math SDPA in fp32 (what ROCm's math kernel upcasts a half call to), returned in ``q``'s dtype."""
+    return half_math_sdpa(q.float(), k.float(), v.float(), scale).to(q.dtype)
+
+
+def _autocast_dtype(device_type: str) -> Any:
+    import torch
+    try:
+        return (
+            torch.get_autocast_dtype(device_type)
+            if torch.is_autocast_enabled(device_type)
+            else None
+        )
+    except (AttributeError, TypeError):  # torch without per-device autocast queries
+        return None
+
+
+def _half_math_call(q: Any) -> bool:
+    # bf16 only: bf16 has fp32's range, fp16 overflows real VAE scores to inf and softmax turns the rows NaN (ROCm
+    # cards without native bf16, gfx103x and older, run the VAE in fp16).
+    import torch
+    return (
+        getattr(getattr(q, "device", None), "type", None) == "cuda"
+        and q.dtype == torch.bfloat16
+        and is_rocm_torch(torch)
+        and half_math_enabled()
+    )
+
+
 def score_budget_bytes(default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
     raw = os.environ.get(VAE_ATTN_CHUNK_MB_ENV, "").strip()
     try:
@@ -31,8 +92,36 @@ def score_budget_bytes(default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
     return max(1, mb) * 2**20
 
 
+# Widest head the Windows ROCm fused SDPA kernels compute correctly. AMD's Windows torch 2.11.0+rocm7.14.0 on gfx1151
+# accepts head dim 512 (the VAE's single-head mid-block) in flash and efficient attention and returns garbage: relative
+# error 19-38 against math in fp32 and bf16, NaN through the default dispatch, with or without the AOTriton experimental
+# switch; 128 and 256 match math. That wrecked every Windows AMD VAE encode / decode (renders and training latents).
+WINDOWS_ROCM_FUSED_MAX_HEAD_DIM = 256
+
+
+def windows_rocm(torch: Any = None) -> bool:
+    import sys
+
+    if sys.platform != "win32":
+        return False
+    if torch is None:
+        try:
+            import torch
+        except Exception:  # noqa: BLE001
+            return False
+    return is_rocm_torch(torch)
+
+
+def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
+    shape = getattr(q, "shape", None) or ()
+    return (
+        len(shape) > 0 and int(shape[-1]) > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM and windows_rocm(torch)
+    )
+
+
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
-    """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes."""
+    """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes.
+    A Windows ROCm head wider than 256 counts as no: the kernels that take it there compute it wrong."""
     import torch
 
     device_type = getattr(getattr(q, "device", None), "type", None)
@@ -41,6 +130,8 @@ def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
         return mps_prefill_attention(q, k, v)
     if device_type != "cuda":
         return True
+    if _windows_rocm_untrusted_head(q, torch):
+        return False
     cb = torch.backends.cuda
     try:
         try:
@@ -119,14 +210,18 @@ def _plain_call(args: tuple, kwargs: dict) -> Optional[tuple]:
 
 
 def _mode_class() -> Any:
+    import torch
     import torch.nn.functional as F
     from torch.overrides import TorchFunctionMode
+
+    _BUILTIN_SDPA = torch._C._nn.scaled_dot_product_attention
 
     class ChunkedVaeAttentionMode(TorchFunctionMode):
         def __init__(self, budget: int):
             super().__init__()
             self.budget = budget
             self.chunked = 0
+            self.half = 0
 
         def __torch_function__(
             self,
@@ -136,13 +231,36 @@ def _mode_class() -> Any:
             kwargs: Any = None,
         ) -> Any:
             kwargs = kwargs or {}
-            if func is F.scaled_dot_product_attention:
+            # A non-redispatching wrapper leaves the mode seeing torch's builtin: match both.
+            if func is F.scaled_dot_product_attention or func is _BUILTIN_SDPA:
                 call = _plain_call(args, kwargs)
                 if call is not None:
                     q, k, v, scale = call
-                    if _score_bytes(q, k) > self.budget and not fused_sdpa_available(q, k, v):
-                        self.chunked += 1
-                        return chunked_sdpa(func, q, k, v, self.budget, scale)
+                    if not fused_sdpa_available(q, k, v):
+                        if _half_math_call(q):
+                            self.half += 1
+                            cast = _autocast_dtype(q.device.type)
+                            if cast is not None:
+                                q, k, v = (t.to(cast) for t in (q, k, v))
+                            with torch.autocast(q.device.type, enabled = False):
+                                if _score_bytes(q, k) > self.budget:
+                                    self.chunked += 1
+                                    return chunked_sdpa(half_math_sdpa, q, k, v, self.budget, scale)
+                                return half_math_sdpa(q, k, v, scale)
+                        if _windows_rocm_untrusted_head(q, torch):
+                            # fp32, or half with UNSLOTH_VAE_ATTN_HALF_MATH=0: the default dispatch would still pick the
+                            # fused kernels that miscompute this head, so run the math (fp32, as ROCm's math kernel does).
+                            cast = _autocast_dtype(q.device.type)
+                            if cast is not None:
+                                q, k, v = (t.to(cast) for t in (q, k, v))
+                            with torch.autocast(q.device.type, enabled = False):
+                                if _score_bytes(q, k) > self.budget:
+                                    self.chunked += 1
+                                    return chunked_sdpa(fp32_math_sdpa, q, k, v, self.budget, scale)
+                                return fp32_math_sdpa(q, k, v, scale)
+                        if _score_bytes(q, k) > self.budget:
+                            self.chunked += 1
+                            return chunked_sdpa(func, q, k, v, self.budget, scale)
             return func(*args, **kwargs)
 
     return ChunkedVaeAttentionMode

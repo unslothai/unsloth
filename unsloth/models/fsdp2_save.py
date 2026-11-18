@@ -11,6 +11,7 @@ __all__ = [
     "mesh_writer_rank",
     "writes_off_rank0",
     "install_dcp_bnb_state_dict",
+    "install_dcp_frozen_table_state_dict",
     "reduce_unsharded_trainable_grads",
 ]
 
@@ -29,6 +30,32 @@ _ACTIVE = []
 # Per gather in progress: id of each packed 4-bit weight staged on the CPU -> the device it was
 # gathered on, where `merge_4bit_lora_layer_by_layer` merges it.
 _STAGED_4BIT = []
+
+
+def _install_table_provenance():
+    # Best effort: this module is also loaded on its own (outside the unsloth package), where the provenance
+    # hook has nothing to attach to.
+    try:
+        from .frozen_table_provenance import install
+    except ImportError:
+        try:
+            from unsloth.models.frozen_table_provenance import install
+        except (
+            Exception
+        ):  # importing unsloth itself can refuse (no accelerator): nothing to attach to then
+            return False
+    return install()
+
+
+def _frozen_tables_hidden(model):
+    try:
+        from .fsdp2_native import frozen_tables_hidden
+    except ImportError:
+        try:
+            from unsloth.models.fsdp2_native import frozen_tables_hidden
+        except Exception:  # without the unsloth package no model carries frozen lookup tables
+            return contextlib.nullcontext()
+    return frozen_tables_hidden(model)
 
 
 def _fsdp_module_class():
@@ -99,10 +126,25 @@ def _root_mesh(mesh):
     return _mesh_resources.get_root_mesh(mesh)
 
 
+def _same_mesh(a, b):
+    """Same device type, dim names and rank layout. DTensor ops may hand back an equal mesh from an earlier
+    init_device_mesh of the same shape (torch caches specs by mesh equality), so identity is not enough."""
+    if a is b:
+        return True
+    try:
+        return (
+            a.device_type == b.device_type
+            and tuple(a.mesh_dim_names or ()) == tuple(b.mesh_dim_names or ())
+            and torch.equal(a.mesh, b.mesh)
+        )
+    except Exception:
+        return False
+
+
 def _composed_writer_rank(meshes):
     try:
         root = _root_mesh(meshes[0])
-        if any(_root_mesh(m) is not root for m in meshes[1:]):
+        if any(not _same_mesh(_root_mesh(m), root) for m in meshes[1:]):
             return None
         axes = set()
         for m in meshes:
@@ -188,10 +230,8 @@ def _wait_for_writer(
     writer,
     writer_rank = 0,
 ):
-    """The other ranks wait for the writer's write, so no later collective overtakes it. A store key,
-    not a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
-    collective timeout, and NCCL ranks blocked in a barrier would abort before the writer arrives.
-    Keyed per writer rank so disjoint sub-meshes do not release each other."""
+    """Store key, not a barrier: other ranks wait so no later collective overtakes the write, and a
+    long export can outlast the collective timeout; keyed per writer rank."""
     _SAVE_COUNTER[writer_rank] = _SAVE_COUNTER.get(writer_rank, 0) + 1
     count = _SAVE_COUNTER[writer_rank]
     key = (
@@ -323,6 +363,7 @@ def fsdp2_gathered(
     they then go, with a CPU copy of their QuantState, to the CPU right after each one is gathered, so
     rank 0 never holds the whole quantized base on its accelerator. A merge brings them back one layer
     at a time (`merge_4bit_lora_layer_by_layer`)."""
+    _install_table_provenance()  # adapter saves write frozen_tables.json when the model has frozen tables
     if _ACTIVE:
         yield _ACTIVE[-1]
         return
@@ -331,8 +372,7 @@ def fsdp2_gathered(
     if not units or DTensor is None:
         yield None
         return
-    # An eval forward leaves the last block and the lm_head unit gathered; make every
-    # parameter a DTensor again so all ranks gather the same list.
+    # An eval forward leaves units gathered; reshard first so all ranks gather the same list.
     _reshard_units(units)
     dist = _dist()
     rank = dist.get_rank() if dist is not None else 0
@@ -447,8 +487,7 @@ _MERGED_4BIT_METHODS = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit
 
 
 def _merges_onto_dequantized_4bit(model):
-    """unsloth_zoo folds a merged_16bit LoRA onto dequant(W4) for a few architectures (falcon_h1),
-    dequantizing the live packed weight where it sits."""
+    """zoo folds merged_16bit LoRA onto dequantized W4 for some architectures (falcon_h1)."""
     try:
         from unsloth_zoo.saving_utils import (
             _model_type_needs_dequant_merge_base,
@@ -554,8 +593,7 @@ def _gathered_host_bytes(
     DTensor = _dtensor_class()
     if DTensor is None:
         return 0
-    # Counted as the gather will find them: it reshards first, so an eval forward's still
-    # gathered units are DTensors again by then.
+    # Reshards first so the count matches what the gather finds.
     _reshard_units(fsdp2_units(model))
     total = 0
     seen = set()
@@ -726,7 +764,7 @@ def _share_from_writer(
 ):
     """The writer's `payload` on every rank, passed through the default store (not a collective,
     so a rank may wait for it as long as an export takes). Without a store, None off the writer."""
-    import pickle
+    from . import _store_codec
 
     try:
         store = dist.distributed_c10d._get_default_store()
@@ -738,14 +776,17 @@ def _share_from_writer(
     counter[tag] = counter.get(tag, 0) + 1
     key = f"unsloth_fsdp2_export_r{writer_rank}_{tag}_{counter[tag]}"
     if writer:
-        try:
-            data = pickle.dumps(payload)
-        except Exception:
-            data = pickle.dumps(None)
-        store.set(key, data)
+        store.set(key, _store_codec.encode(payload))
         return payload
     store.wait([key], _save_timeout())
-    return pickle.loads(store.get(key))
+    try:
+        return _store_codec.decode(store.get(key))
+    except ValueError:
+        return (
+            ("error", "the writer left an unreadable result in the store")
+            if tag == "result"
+            else None
+        )
 
 
 @contextlib.contextmanager
@@ -803,12 +844,9 @@ def fsdp2_export_on_writer(
     convert_on = None,
     converts_in_place = False,
 ):
-    """An export that rebuilds or quantizes the whole model in one process (GGUF, torchao, OpenVINO),
-    on a model FSDP2 shards. Every rank must call it. The writer (global rank 0, or the lowest rank
-    of a sub-mesh) first checks the gathered weights fit its host RAM, and every rank refuses if
-    not. Then the shards are gathered to the writer's CPU, the writer alone calls `run()`, the
-    ordinary single-process export, and the others wait on the store (a GGUF build can outlast any
-    collective timeout). Every rank returns the writer's result, or raises if the writer raised."""
+    """Every rank must call it. The writer checks gathered weights fit its host RAM (all ranks
+    refuse if not), gathers to CPU, alone runs the single-process export; others wait on the
+    store; all return or raise with the writer."""
     dist = _dist()
     rank = dist.get_rank() if dist is not None else 0
     writer_rank = mesh_writer_rank(model)
@@ -877,6 +915,12 @@ def fsdp2_export_on_writer(
 
 _DCP_DEPTH = [0]
 _ADAPTER_ONLY = [0]
+_MODEL_STATE_FUNCTIONS = (
+    "get_model_state_dict",
+    "set_model_state_dict",
+    "get_state_dict",
+    "set_state_dict",
+)
 _DCP_FUNCTIONS = (
     "get_model_state_dict",
     "set_model_state_dict",
@@ -896,6 +940,15 @@ def _drops_frozen_weights(kwargs):
     return bool(getattr(kwargs.get("options", None), "ignore_frozen_params", False))
 
 
+def _linear4bit_class():
+    # unsloth_zoo's stub (no bitsandbytes) yields an instance; isinstance on it raises TypeError.
+    try:
+        from bitsandbytes.nn import Linear4bit
+    except Exception:
+        return None
+    return Linear4bit if isinstance(Linear4bit, type) else None
+
+
 def _has_sharded_4bit(args, kwargs):
     """A Linear4bit whose weight FSDP2 made a DTensor: DCP cannot resolve `weight.absmax` on it at all,
     so keeping bitsandbytes' entries only raises (Trainer.save_model -> accelerate get_state_dict)."""
@@ -903,9 +956,8 @@ def _has_sharded_4bit(args, kwargs):
     DTensor = _dtensor_class()
     if DTensor is None or not isinstance(model, torch.nn.Module):
         return False
-    try:
-        from bitsandbytes.nn import Linear4bit
-    except Exception:
+    Linear4bit = _linear4bit_class()
+    if Linear4bit is None:
         return False
     return any(
         isinstance(m, Linear4bit) and isinstance(getattr(m, "weight", None), DTensor)
@@ -914,16 +966,13 @@ def _has_sharded_4bit(args, kwargs):
 
 
 def _has_native_replicated_4bit(args, kwargs):
-    """A natively sharded model (fsdp2_native, fit layout) whose Linear4bit weights FSDP2 left replicated:
-    they keep bitsandbytes' own `weight.absmax` / `quant_state` entries, which a strict DCP load rejects
-    as unexpected keys although the in-memory QuantState already equals them."""
+    """Replicated Linear4bit weights keep weight.absmax and quant_state keys that strict DCP rejects."""
     model = args[0] if args else kwargs.get("model", None)
     if not isinstance(model, torch.nn.Module) or not getattr(model, "_unsloth_fsdp2_native", False):
         return False
     DTensor = _dtensor_class()
-    try:
-        from bitsandbytes.nn import Linear4bit
-    except Exception:
+    Linear4bit = _linear4bit_class()
+    if Linear4bit is None:
         return False
     return any(
         isinstance(m, Linear4bit)
@@ -960,6 +1009,37 @@ def _wrap_accelerate_adapter_only():
         setattr(fsdp_utils, name, wrapper)
 
 
+def install_dcp_frozen_table_state_dict():
+    """Frozen lookup tables (UNSLOTH_FROZEN_TABLE=ram / disk) are read from their own checkpoint files: never in a
+    torch.distributed.checkpoint model state dict (saved or loaded), and their checkpoint names are no module
+    attributes (get_model_state_dict would raise AttributeError). Wraps the model state dict functions to hide them
+    (fsdp2_native.frozen_tables_hidden); needs nothing but torch. Idempotent."""
+    try:
+        import torch.distributed.checkpoint.state_dict as dcp_state_dict
+    except Exception:
+        return False
+    for name in _MODEL_STATE_FUNCTIONS:
+        fn = getattr(dcp_state_dict, name, None)
+        if fn is None or getattr(fn, "_unsloth_frozen_tables_patched", False):
+            continue
+
+        @functools.wraps(fn)
+        def wrapper(
+            *args,
+            _fn = fn,
+            **kwargs,
+        ):
+            model = args[0] if args else kwargs.get("model")
+            if not isinstance(model, torch.nn.Module):
+                return _fn(*args, **kwargs)
+            with _frozen_tables_hidden(model):
+                return _fn(*args, **kwargs)
+
+        wrapper._unsloth_frozen_tables_patched = True
+        setattr(dcp_state_dict, name, wrapper)
+    return True
+
+
 def install_dcp_bnb_state_dict():
     """torch.distributed.checkpoint resolves every state dict key as an attribute path, and
     bitsandbytes' `weight.absmax` / `weight.quant_state.bitsandbytes__nf4` entries are not one
@@ -968,10 +1048,13 @@ def install_dcp_bnb_state_dict():
     and bias; the QuantState is unchanged in memory. A full DCP state dict of a sharded 4-bit model is
     built the same way and then gets bitsandbytes' entries back under their usual keys
     (`_add_quant_state_entries`), which loading drops again. Other DCP calls are untouched."""
+    install_dcp_frozen_table_state_dict()  # with or without bitsandbytes
     try:
         import torch.distributed.checkpoint.state_dict as dcp_state_dict
-        from bitsandbytes.nn import Linear4bit
     except Exception:
+        return False
+    Linear4bit = _linear4bit_class()
+    if Linear4bit is None:
         return False
     _wrap_accelerate_adapter_only()
     original_save = Linear4bit._save_to_state_dict
@@ -988,8 +1071,7 @@ def install_dcp_bnb_state_dict():
     Linear4bit._save_to_state_dict = _save_to_state_dict
 
     def _wrap(fn, name):
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
+        def _body(*args, **kwargs):
             adapter_only = _drops_frozen_weights(kwargs)
             full_4bit = not adapter_only and _has_sharded_4bit(args, kwargs)
             if not (adapter_only or full_4bit):
@@ -1009,6 +1091,7 @@ def install_dcp_bnb_state_dict():
                 _add_quant_state_entries(model, state_dict, kwargs.get("options", None))
             return out
 
+        wrapper = functools.wraps(fn)(_body)
         wrapper._unsloth_fsdp2_patched = True
         return wrapper
 
@@ -1022,9 +1105,8 @@ def install_dcp_bnb_state_dict():
 def _linear4bit_entries(model):
     """(state dict key prefix, module) of every bitsandbytes Linear4bit with a QuantState, keyed the way
     torch.distributed.checkpoint names them (no torch.compile `_orig_mod.` segment)."""
-    try:
-        from bitsandbytes.nn import Linear4bit
-    except Exception:
+    Linear4bit = _linear4bit_class()
+    if Linear4bit is None:
         return []
     entries = []
     for name, module in model.named_modules():
@@ -1127,9 +1209,8 @@ def _restore_quant_state(model, state_dict, options):
             loads_weight, saved = payload[0]
         if not saved:
             if loads_weight:
-                # A checkpoint written before QuantState was saved (a frozen QLoRA base): its packed
-                # bytes are the live ones, so the live scales are theirs. Other bytes would be
-                # dequantized with the wrong scales.
+                # Pre-QuantState checkpoints: live scales apply only when the saved packed bytes
+                # match the live ones.
                 same = _same_packed_bytes(
                     module.weight, state_dict.get(head[:-1]), dist if broadcast else None
                 )
@@ -1284,10 +1365,7 @@ def model_mesh(model):
 
 
 def mesh_all_reduce(tensor, mesh, dist):
-    """Sum `tensor` in place over every rank of `mesh` (the world when None), one all_reduce per mesh
-    dimension (the groups of each dimension partition the mesh, so an HSDP mesh is summed whole).
-    Returns the number of ranks summed. A sub-mesh (several models or replicas on disjoint ranks)
-    reduces only over its own ranks."""
+    """One all_reduce per mesh dim sums an HSDP mesh whole; a sub-mesh reduces only over its own ranks."""
     if mesh is None:
         dist.all_reduce(tensor)
         return dist.get_world_size()

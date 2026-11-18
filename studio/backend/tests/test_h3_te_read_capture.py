@@ -129,3 +129,29 @@ def test_declines_deepstack_and_out_of_range_layers(layer):
 def test_declines_modules_without_a_decoder_stack():
     assert not install_h3_te_read_capture(torch.nn.Linear(2, 2))
     assert not install_h3_te_read_capture(None)
+
+
+def test_compiled_caller_traces_one_graph_with_the_capture_installed():
+    model = _tiny()
+    kw = _inputs(False)
+    with torch.no_grad():
+        stock = model.model(output_hidden_states = True, **kw).hidden_states
+    assert install_h3_te_read_capture(model, layer = 4)
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    torch._dynamo.reset()
+    try:
+        fn = torch.compile(
+            lambda: model.model(output_hidden_states = True, **kw).hidden_states[4],
+            backend = counter,
+            fullgraph = True,
+        )
+        with torch.no_grad():
+            got = fn()
+            again = fn()
+    finally:
+        torch._dynamo.reset()
+    assert counter.frame_count == 1
+    assert torch.equal(got, stock[4]) and torch.equal(again, stock[4])
+    assert not model.model.language_model.layers[4]._forward_pre_hooks

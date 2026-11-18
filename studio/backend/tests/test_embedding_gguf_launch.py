@@ -182,8 +182,7 @@ class TestIsEmbeddingGguf:
 
 
 class TestLoadModelEmitsTheFlag:
-    """load_model is too large to drive here, so pin its source, as the
-    GPU-memory-mode and batch-size suites do for the same command block."""
+    """load_model is too large to drive in a test, so the test pins its source text instead."""
 
     def test_embedding_flag_is_gated_on_the_header_probe(self):
         src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)

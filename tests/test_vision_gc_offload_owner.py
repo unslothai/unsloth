@@ -3,7 +3,7 @@
 
 """vision.py's non-reentrant offloaded checkpoint gives each model its own zoo offloader."""
 
-import ast, contextlib, functools, gc, os, weakref
+import ast, contextlib, functools, gc, importlib.util, os, weakref
 import pytest
 import torch
 import torch.utils.checkpoint as torch_checkpoint
@@ -147,14 +147,28 @@ def _vision_nonre_checkpoint(
         _orig_checkpoint = torch_checkpoint.checkpoint,
         _offload = True,
     )
+    helper = os.path.join(os.path.dirname(VISION), "non_reentrant_checkpoint.py")
+    if os.path.exists(helper):
+        spec = importlib.util.spec_from_file_location("_unsloth_non_reentrant_checkpoint", helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        ns["non_reentrant_checkpoint"] = module.non_reentrant_checkpoint
+
+    def defines_nonre(n):
+        if isinstance(n, ast.FunctionDef):
+            return n.name == "_nonre_checkpoint"
+        return isinstance(n, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_nonre_checkpoint" for t in n.targets
+        )
+
     for node in ast.walk(ast.parse(src)):
         body = getattr(node, "body", None)
         if not isinstance(body, list):
             continue
-        if not any(isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint" for n in body):
+        if not any(defines_nonre(n) for n in body):
             continue
         for n in body:
-            if isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint":
+            if defines_nonre(n):
                 exec(ast.get_source_segment(src, n), ns)
             elif (
                 isinstance(n, ast.Assign)

@@ -373,15 +373,22 @@ def _stored_weight(module: Any) -> tuple[Any, bool]:
     return packed, packed is not None
 
 
-def graph_variant(transformer: Any) -> dict[str, Any]:
+def _adapter_path(name: str) -> bool:
+    return any(part.startswith("lora_") for part in str(name).split("."))
+
+
+def graph_variant(transformer: Any, *, skip_adapters: bool = False) -> dict[str, Any]:
     """Structural descriptor of the loaded quant artifact (no weight hashing): stable across processes, distinct for
     plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises."""
+    # skip_adapters: describe the base build (PEFT adapter modules ignored), for the learned-peak key.
     variant: dict[str, Any] = {}
     try:
         import torch  # noqa: PLC0415
 
         counts: dict[str, int] = {}
-        for module in transformer.modules():
+        for name, module in transformer.named_modules():
+            if skip_adapters and _adapter_path(name):
+                continue
             weight, packed = _stored_weight(module)
             if not isinstance(weight, torch.Tensor):
                 continue
@@ -942,7 +949,13 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
             return False
     try:
         import torch  # noqa: PLC0415
-        from torch.compiler._cache import CacheArtifactManager  # noqa: PLC0415
+
+        # _merge_groups needs these (torch 2.8+), not just AppendingByteSerializer
+        from torch.compiler._cache import (  # noqa: F401, PLC0415
+            CacheArtifactManager,
+            _deserialize_single_cache,
+            _serialize_single_cache,
+        )
         from torch.utils._appending_byte_serializer import AppendingByteSerializer  # noqa: F401, PLC0415
     except ImportError:
         # torch 2.7 bundles are a flat list that cannot be merged

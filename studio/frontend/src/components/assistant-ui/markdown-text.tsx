@@ -700,6 +700,19 @@ function MermaidCopyButton({ source }: { source: string }) {
   );
 }
 
+/** A block's own wrap and expand choices, by language and code: the thread window remounts rows
+ *  it scrolls back to, and the choices would otherwise reset with the component. */
+const blockViews = new Map<string, { wrapped?: boolean; expanded?: boolean }>();
+const BLOCK_VIEWS_MAX = 500;
+
+function rememberBlockView(key: string | null, view: { wrapped?: boolean; expanded?: boolean }) {
+  if (key === null) return;
+  const next = { ...blockViews.get(key), ...view };
+  blockViews.delete(key);
+  blockViews.set(key, next);
+  if (blockViews.size > BLOCK_VIEWS_MAX) blockViews.delete(blockViews.keys().next().value as string);
+}
+
 export function CodeBlockActions({
   disabled,
   language,
@@ -714,12 +727,23 @@ export function CodeBlockActions({
 }) {
   const { copied, showCopied } = useCopiedState();
   const actionsRef = useRef<HTMLDivElement>(null);
+  const viewKey = wrappable && typeof source === "string" ? `${language ?? ""}\n${source}` : null;
+  const remembered = viewKey === null ? undefined : blockViews.get(viewKey);
   // Starts from Appearance > Code > Word wrap; the toggle overrides it for this block only.
   const [wrapped, setWrapped] = useState(
-    () => typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap"),
+    () =>
+      remembered?.wrapped ??
+      (typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap")),
   );
   const wrapLabel = wrapped ? "Disable word wrap" : "Enable word wrap";
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(() => remembered?.expanded ?? false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: restores a remembered view once, on mount
+  useLayoutEffect(() => {
+    const wrapper = actionsRef.current?.parentElement;
+    if (!wrapper || !remembered) return;
+    if (remembered.wrapped !== undefined) wrapper.setAttribute("data-wrap", remembered.wrapped ? "on" : "off");
+    if (remembered.expanded) wrapper.toggleAttribute("data-code-expanded", true);
+  }, []);
   const [overflowing, setOverflowing] = useState(false);
   useEffect(() => {
     const wrapper = actionsRef.current?.parentElement;
@@ -759,6 +783,7 @@ export function CodeBlockActions({
             const next = !wrapped;
             // The block is this bar's sibling; index.css keys the per-block wrap on the shared wrapper.
             actionsRef.current?.parentElement?.setAttribute("data-wrap", next ? "on" : "off");
+            rememberBlockView(viewKey, { wrapped: next });
             setWrapped(next);
           }}
         >
@@ -773,6 +798,7 @@ export function CodeBlockActions({
           onClick={() => {
             const next = !expanded;
             actionsRef.current?.parentElement?.toggleAttribute("data-code-expanded", next);
+            rememberBlockView(viewKey, { expanded: next });
             setExpanded(next);
           }}
         >
@@ -1015,7 +1041,8 @@ const tokenizesOffThread = (body: string, streaming: boolean): boolean =>
 const slowMainThreadRegex =
   typeof window !== "undefined"
   && typeof window.requestIdleCallback !== "function";
-const MAIN_THREAD_TAIL_CHARS = 512;
+// JavaScriptCore interprets lookbehind patterns, so there even a short fence goes to the worker.
+const MAIN_THREAD_TAIL_CHARS = slowMainThreadRegex ? 0 : 512;
 
 const settlesOffThread = (
   body: string,
@@ -1023,7 +1050,7 @@ const settlesOffThread = (
   options: ReturnType<typeof fenceHighlightOptions>,
 ): boolean => {
   if (!tokenizesOffThread(body, streaming)) {
-    if (streaming || !slowMainThreadRegex) return false;
+    if (streaming) return false;
     const state = highlightWorkerState();
     if (state === "unavailable" || state === "stalled") return false;
   }
@@ -1165,7 +1192,7 @@ function useFenceTokens(
       }
       show(settled);
     };
-    if (defer()) {
+    if (defer() && !settlesOffThread(body, streaming, options)) {
       if (displayed.current !== null
         && (displayed.current.body !== body || displayed.current.language !== languageToken)) {
         show(null);
@@ -1302,12 +1329,13 @@ function FenceBlock({
 
   /* warm(true) tokenizes now (a sync cache hit for render); warm(false) only loads the grammar. */
   const warm = useCallback(
-    (tokens: boolean) => {
+    (tokens: boolean, inView = false) => {
       const body = trimTrailingNewlines(source);
       const options = fenceHighlightOptions(body, languageToken);
       const inline =
         tokens
-        && (!settlesOffThread(body, Boolean(isIncomplete), options)
+        && ((inView && !slowMainThreadRegex && !tokenizesOffThread(body, Boolean(isIncomplete)))
+          || !settlesOffThread(body, Boolean(isIncomplete), options)
           || code.cached(options) !== null);
       if (inline && !isIncomplete) code.highlightExact(options, () => {});
       else code.highlight(inline ? options : fenceHighlightOptions("", languageToken), () => {});

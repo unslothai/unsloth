@@ -37,9 +37,8 @@ stack_mod = _load_stack_module()
 
 
 def _sh_function_body(source: str, name: str) -> str:
-    """Return a POSIX-shell function body by brace matching (same idea as
-    _extract_sh_function_body in test_rocm_support.py, kept local so this file
-    stands alone)."""
+    """Return a POSIX-shell function body by brace matching; a local copy of
+    _extract_sh_function_body so this file stands alone."""
     needle = f"{name}() {{"
     start = source.find(needle)
     assert start != -1, f"{name}() not found"
@@ -225,9 +224,8 @@ def _match_sh(rows: list[tuple[list[str], str]], gpu_name: str) -> str | None:
 
 
 def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
-    """Evaluate a PowerShell -match table: first arm whose regex matches wins.
-    -match is case-insensitive; .NET and Python agree on these patterns
-    (alternation plus one negative lookahead)."""
+    """First arm whose regex matches wins; PowerShell -match is case-insensitive, and .NET and
+    Python agree on these patterns (alternation plus one negative lookahead)."""
     for pattern, arch in rows:
         if re.search(pattern, gpu_name, re.IGNORECASE):
             return arch
@@ -291,6 +289,30 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon 880M Graphics": "gfx1150",
     "AMD Radeon 860M Graphics": "gfx1152",
     "AMD Radeon 840M Graphics": "gfx1152",
+    # RDNA 2 by die (pci.ids 73bf / 73df / 73ef / 73ff; LLVM AMDGPUUsage). Windows device packs are per arch.
+    "AMD Radeon RX 6800 XT": "gfx1030",
+    "AMD Radeon RX 6900 XT": "gfx1030",
+    "AMD Radeon RX 6700 XT": "gfx1031",
+    "AMD Radeon RX 6750 XT": "gfx1031",
+    "AMD Radeon RX 6800M": "gfx1031",
+    "AMD Radeon RX 6850M XT": "gfx1031",
+    "AMD Radeon RX 6700S": "gfx1032",
+    "AMD Radeon RX 6800S": "gfx1032",
+    "AMD Radeon RX 6650 XT": "gfx1032",
+    "AMD Radeon RX 6600M": "gfx1032",
+    # One name, two dies: libdrm amdgpu.ids 73DF (Navi 22) vs 73FF (Navi 23).
+    "AMD Radeon RX 6750 GRE 12GB": "gfx1031",
+    "AMD Radeon RX 6750 GRE 10GB": "gfx1032",
+    "AMD Radeon 6550S": "gfx1034",
+    "AMD Radeon Pro V620": "gfx1030",
+    # Navi 33 / 44 / 48 names from libdrm amdgpu.ids (7499, 7590, 7551).
+    "AMD Radeon RX 7400": "gfx1102",
+    "AMD Radeon RX 7300": "gfx1102",
+    "AMD Radeon Pro W7400": "gfx1102",
+    "AMD Radeon RX 9050": "gfx1200",
+    "AMD Radeon AI Pro R9600D": "gfx1201",
+    # amd.com: Zen 5 + RDNA 3.5 with 16 CUs is Strix Point, not Phoenix.
+    "AMD Ryzen Z2 Extreme": "gfx1150",
 }
 
 
@@ -347,11 +369,8 @@ def _spoof_profiles() -> dict[str, str]:
     raise AssertionError("_PROFILES not found in tests/_zoo_rocm_spoof.py")
 
 
-# The spoof fixture maps gfx -> name, an independent witness. RX 6700 XT is a deliberate
-# divergence: AMD documents no gfx1031 and nothing consumes the exact id.
-_SPOOF_DIVERGENCES = {
-    "gfx1031": "installers group Navi 22 into the gfx1030 arm; see comment above",
-}
+# The spoof fixture maps gfx -> name, an independent witness.
+_SPOOF_DIVERGENCES: dict[str, str] = {}
 
 
 def _resolve(where: str, rows, gpu_name: str) -> str | None:
@@ -372,9 +391,8 @@ class TestGpuNameArchParity:
 
     @pytest.mark.parametrize("gpu_name", [name for name, _ in _GPU_NAME_LEAF_CASES])
     def test_all_copies_return_the_same_arch(self, gpu_name):
-        """The drift guard proper: no expected value, just agreement. This is what
-        catches a table edited in one installer and not the other three, and it
-        stays honest even where the shipped gfx id is itself wrong."""
+        """Drift guard with no expected value, only agreement: catches a table edited in one
+        installer but not the others, and stays honest even where the shipped gfx id is wrong."""
         answers = {where: _resolve(where, rows, gpu_name) for where, rows in _name_tables().items()}
         distinct = set(answers.values())
         assert len(distinct) == 1, f"{gpu_name!r} resolves inconsistently: {answers}"
@@ -402,6 +420,14 @@ class TestGpuNameArchParity:
             assert (
                 arch == expected_arch
             ), f"{where}: {gpu_name!r} -> {arch!r}, AMD documents {expected_arch!r}"
+
+    @pytest.mark.parametrize("gpu_name", ["AMD Radeon 680M", "AMD Radeon 660M", "AMD Radeon 610M"])
+    def test_rdna2_igpus_stay_unmapped(self, gpu_name):
+        """No copy may route these APUs to ROCm torch by name: RDNA 2 iGPU training is unmeasured
+        and gfx1033 computes wrong answers (studio/ROCM_RDNA2_APU.md)."""
+        for where, rows in _name_tables().items():
+            got = _resolve(where, rows, gpu_name)
+            assert got is None, f"{where}: {gpu_name!r} matched {got!r}"
 
     def test_unknown_name_matches_nothing_anywhere(self):
         """An unrecognised card must fall through to the CPU path in every copy,
@@ -474,9 +500,8 @@ class TestSpoofFixtureParity:
                 ), f"{where}: spoof says {gfx} is {gpu_name!r}, installer says {got!r}"
 
     def test_divergences_are_real_and_still_diverging(self):
-        """Keeps the exception list from going stale: if the installers are
-        corrected later, this fails and the entry has to be removed rather than
-        quietly suppressing a check that now passes."""
+        """Keeps the divergence exception list honest: once installers are corrected this fails so
+        the entry is removed, not silently suppressing a passing check."""
         tables = _name_tables()
         profiles = _spoof_profiles()
         for gfx in _SPOOF_DIVERGENCES:
@@ -541,9 +566,8 @@ def _files_carrying_a_name_arch_table(root: Path = PACKAGE_ROOT) -> dict[str, in
 
 
 class TestNoUnregisteredArchTable:
-    """The failure this whole file exists for is a copy of the table that nobody
-    knew about. Enumerating the copies by hand is the same manual step that let
-    them drift, so this rediscovers them from the source tree."""
+    """Guards against an unknown copy of the arch table; enumerating copies by hand is what let them
+    drift, so the source tree is scanned instead."""
 
     def test_scan_still_finds_the_known_copies(self):
         """Guards the guard: if the heuristic stops matching (patterns reformatted

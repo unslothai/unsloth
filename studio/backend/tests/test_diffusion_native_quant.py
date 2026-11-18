@@ -212,6 +212,32 @@ def test_rdna_auto_w8a8_reason_is_per_family_with_a_kill_switch(rocm, monkeypatc
     assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
 
 
+def test_rdna_explicit_int8_reason_covers_every_family_with_the_same_gates(rocm, monkeypatch):
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.setattr(tq._sys, "platform", "linux")
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    assert tq.rdna_explicit_int8_reason(_target(), "toy-family") is not None
+    assert tq.rdna_explicit_int8_reason(_target(), "flux.3-klein") is not None
+    assert tq.rdna_explicit_int8_reason(_target(dtype = torch.float16), "toy-family") is None
+    assert tq.rdna_explicit_int8_reason(_target("cpu"), "toy-family") is None
+    monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, "0")
+    assert tq.rdna_explicit_int8_reason(_target(), "toy-family") is None
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: False)
+    assert tq.rdna_explicit_int8_reason(_target(), "toy-family") is None
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setitem(tq._FAMILY_SCHEME_DENY, "toy-family", frozenset({tq.TQ_INT8}))
+    assert tq.rdna_explicit_int8_reason(_target(), "toy-family") is None
+    monkeypatch.setattr(tq._sys, "platform", "win32")
+    assert tq.rdna_explicit_int8_reason(_target(), "flux.3-klein") is None
+
+
+def test_rdna_explicit_int8_reason_is_rocm_only(nvidia, monkeypatch):
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setattr(tq._sys, "platform", "linux")
+    assert tq.rdna_explicit_int8_reason(_target(), "toy-family") is None
+
+
 def test_rdna_auto_w8a8_ships_only_for_the_measured_families():
     # Wan, small DiTs, edit / layered stay bf16.
     assert set(tq._FAMILY_RDNA_AUTO_W8A8) == {"qwen-image", "qwen-image-2.1"}
