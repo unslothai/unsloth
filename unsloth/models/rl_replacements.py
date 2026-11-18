@@ -3995,6 +3995,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         from unsloth_zoo.rl_replacements import (
                             chunked_hidden_states_selective_log_softmax_recompute as chunked_hidden_states_selective_log_softmax,
                         )
+                    else:
+                        # The kept set: the same dispatcher the zoo loss scores the policy with (its
+                        # recompute kept-set scorer on a new zoo), so the ratio starts at exactly 1.
+                        from unsloth_zoo.rl_replacements import (
+                            grpo_chunked_hidden_states_logprobs as chunked_hidden_states_selective_log_softmax,
+                        )
                 else:
                     from unsloth_zoo.rl_replacements import (
                         grpo_chunked_hidden_states_logprobs as chunked_hidden_states_selective_log_softmax,
