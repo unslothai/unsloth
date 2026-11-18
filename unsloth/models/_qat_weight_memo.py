@@ -36,7 +36,9 @@ tensor, so weights streamed in per forward (offloading) are never held. Skipped:
 fine-tuning), range learning, tensor subclasses / DTensors, multi-process runs (FSDP reshards
 weights), inference-mode calls (whose outputs autograd cannot save) and torch.compile traces: a
 compiled region (torch >= 2.11 block compile) keeps fake quantizing inside its graph, unchanged.
-PEFT merge / unmerge write the weight through .data (no version bump) and drop the cache."""
+PEFT merge / unmerge write the weight through .data (no version bump) and drop the cache; any other
+in place rewrite of a frozen base weight must bump its version (write it under torch.no_grad(), not
+through .data) or call clear_qat_weight_memo."""
 
 import os
 import weakref

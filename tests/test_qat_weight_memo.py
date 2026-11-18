@@ -396,3 +396,38 @@ def test_deleted_model_releases_its_budget(monkeypatch):
     del other
     gc.collect()
     assert memo.qat_weight_memo_stats()["cached_bytes"] == before - held
+
+
+def test_lora_ga_rebase_refreshes_cache(monkeypatch, tmp_path):
+    # Loading a converted residual (LoRA-GA) adapter re-bases the frozen base weight in place.
+    from safetensors.torch import save_file
+
+    from unsloth.models._utils import _native_from_converted
+
+    model = _model("int8", monkeypatch)
+    x = torch.randn(4, DIM)
+    for _ in range(2):
+        _run(model, x)
+    layer = model.base_model.model.up_proj
+    r = layer.lora_A["default"].weight.shape[0]
+    A0_live = torch.randn(r, DIM)
+    B0_live = torch.randn(2 * DIM, r)
+    layer._unsloth_initial_lora = {"default": (A0_live, B0_live, layer.scaling["default"])}
+    name = "base_model.model.up_proj"
+    A = torch.cat([torch.randn(r, DIM), torch.randn(r, DIM)])  # saved A0 differs from the live one
+    B = torch.cat([torch.randn(2 * DIM, r), torch.randn(2 * DIM, r)], dim = 1)
+    save_file(
+        {f"{name}.lora_A.weight": A, f"{name}.lora_B.weight": B},
+        str(tmp_path / "adapter_model.safetensors"),
+    )
+    assert _memo_of(model).out is not None
+    before = layer.get_base_layer().weight.clone()
+    assert _native_from_converted(model, "default", str(tmp_path)) is not None
+    assert not torch.equal(before, layer.get_base_layer().weight)  # the base was re-based
+    monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
+    with torch.no_grad():
+        want = model(x)
+    monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "auto")
+    with torch.no_grad():
+        got = [model(x) for _ in range(3)]
+    assert all(torch.equal(want, g) for g in got)

@@ -8984,7 +8984,9 @@ def _native_from_converted(model, adapter_name, folder):
             delta = scaling0 * (B0_live.float() @ A0_live.float() - B0.float() @ A0.float())
             if getattr(module, "fan_in_fan_out", False):
                 delta = delta.T
-            base.data.add_(delta.to(base))
+            # In place on the parameter (no_grad), not through .data: the version bump invalidates
+            # anything keyed on it, such as the QAT fake quantized weight cache.
+            base.add_(delta.to(base))
             module._unsloth_initial_lora[k] = (A0.clone(), B0.clone(), scaling0)
     return weights
 
