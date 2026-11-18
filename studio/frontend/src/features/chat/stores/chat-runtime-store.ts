@@ -180,6 +180,10 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE = 50;
+export const UNLIMITED_TOOL_CALLS = 9999;
+// The slider value from before MCP lifted it to Max, so turning MCP off can put it back.
+const MAX_TOOL_CALLS_BEFORE_MCP_KEY = "unsloth_max_tool_calls_before_mcp";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
@@ -3843,6 +3847,32 @@ function getHydratedSettingsState(
   return nextState;
 }
 
+/** MCP chains (editor tools, tool search) run long, so turning MCP on lifts the tool-call cap to Max; turning it off restores the saved value unless the slider moved off Max meanwhile. */
+function mcpToolCallCapPatch(
+  state: ChatRuntimeStore,
+  mcpOn: boolean,
+): Partial<ChatRuntimeStore> {
+  if (mcpOn === state.mcpEnabledForChat) return {};
+  const current = state.maxToolCallsPerMessage;
+  let next: number;
+  if (mcpOn) {
+    if (current >= UNLIMITED_TOOL_CALLS) return {};
+    writeStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY, String(current));
+    next = UNLIMITED_TOOL_CALLS;
+  } else {
+    const saved = Number.parseInt(
+      readStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY) ?? "",
+      10,
+    );
+    writeStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY, "");
+    if (!Number.isInteger(saved) || saved < 0) return {};
+    if (current < UNLIMITED_TOOL_CALLS) return {};
+    next = saved;
+  }
+  setScalarSettingVersion("maxToolCallsPerMessage", next, current);
+  return { maxToolCallsPerMessage: next };
+}
+
 function setScalarSettingVersion<K extends ScalarSettingKey>(
   key: K,
   value: ChatRuntimeStore[K],
@@ -4501,7 +4531,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   deduplicateToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
   keepRunningWhenTabClosed: DEFAULT_KEEP_RUNNING_WHEN_TAB_CLOSED,
-  maxToolCallsPerMessage: 25,
+  maxToolCallsPerMessage: DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
   toolCallTimeout: 5,
   kvCacheDtype: null,
   mlxKvQuant: null,
@@ -5738,6 +5768,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return deepResearchEnabled
         ? {
+            ...mcpToolCallCapPatch(state, false),
             deepResearchEnabled,
             toolsEnabled: false,
             codeToolsEnabled: false,
@@ -5816,6 +5847,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       if (mcpEnabledForChat) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       return {
+        ...mcpToolCallCapPatch(state, mcpEnabledForChat),
         ...(mcpEnabledForChat
           ? { mcpEnabledForChat, deepResearchEnabled: false }
           : { mcpEnabledForChat }),

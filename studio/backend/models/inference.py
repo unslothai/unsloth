@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import re
 import time
 import uuid
@@ -3297,7 +3298,7 @@ class ChatCompletionRequest(BaseModel):
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
-        25,
+        DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         ge = 0,
         description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
     )

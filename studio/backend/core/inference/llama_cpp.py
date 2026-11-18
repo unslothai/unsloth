@@ -7,6 +7,7 @@ Manages a llama-server subprocess and proxies chat completions through its
 OpenAI-compatible /v1/chat/completions endpoint.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import ast
 import atexit
 import bisect
@@ -38715,7 +38716,7 @@ class LlamaCppBackend:
         # False when the caller knows the history held reasoning its conversion dropped.
         replay_preserve_thinking: bool = True,
         continue_final_message: bool = False,
-        max_tool_iterations: int = 25,
+        max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
