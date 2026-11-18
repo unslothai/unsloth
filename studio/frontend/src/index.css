@@ -7234,7 +7234,7 @@ html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot=
 html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   transition: border-top-left-radius .2s ease;
 }
-html[data-glass][data-chat-wallpaper-workspace-ready]:not(:has([data-windows-glass-frame])) aside[data-slot="chat-settings-panel"] {
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-sidebar-glass-frame]) aside[data-slot="chat-settings-panel"] {
   border-top-left-radius: min(14px, var(--studio-custom-titlebar-height, 0px));
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {

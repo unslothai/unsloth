@@ -268,11 +268,13 @@ test("docked Run settings rounds its top corner only while no pinned sidebar str
 	const panel = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\]`;
 	assert.match(css, new RegExp(String.raw`${panel} aside\[data-slot="chat-settings-panel"\] \{\n  transition: border-top-left-radius \.2s ease;`));
 	// No custom titlebar (macOS, browser, fullscreen) leaves the corner square.
-	assert.match(css, new RegExp(String.raw`${panel}:not\(:has\(\[data-windows-glass-frame\]\)\) aside\[data-slot="chat-settings-panel"\] \{\n  border-top-left-radius: min\(14px, var\(--studio-custom-titlebar-height, 0px\)\);`));
+	assert.match(css, new RegExp(String.raw`${panel}:not\(\[data-sidebar-glass-frame\]\) aside\[data-slot="chat-settings-panel"\] \{\n  border-top-left-radius: min\(14px, var\(--studio-custom-titlebar-height, 0px\)\);`));
 	assert.match(css, new RegExp(String.raw`${panel} aside\[data-slot="chat-settings-panel"\] > div:last-child \{\n  border-top-left-radius: inherit;`));
 	// The strip is only drawn for a pinned sidebar under the custom titlebar.
 	const sidebar = readFileSync(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8");
 	assert.match(sidebar, /data-windows-glass-frame=\{\(pinned && usesCustomTitlebar\) \|\| undefined\}/);
+	// Mirrored on <html> by the sidebar, not read through a :has() that would restyle the thread.
+	assert.match(sidebar, /const glassFrame = pinned && usesCustomTitlebar;\n\s*useEffect\(\(\) => \{\n\s*const el = document\.documentElement;\n\s*el\.toggleAttribute\("data-sidebar-glass-frame", glassFrame\);\n\s*return \(\) => el\.removeAttribute\("data-sidebar-glass-frame"\);/);
 	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
 	const docked = sheet.slice(sheet.indexOf("<aside"), sheet.indexOf("</aside>"));
 	assert.match(docked, /\{settingsContent\}\n\s*<\/div>\n\s*$/);

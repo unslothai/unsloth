@@ -1345,6 +1345,13 @@ export function AppSidebar() {
     setOpenMobile,
     state: sidebarState,
   } = useSidebar();
+  // On <html>: docked Run settings, outside the sidebar, rounds its corner when no strip meets it.
+  const glassFrame = pinned && usesCustomTitlebar;
+  useEffect(() => {
+    const el = document.documentElement;
+    el.toggleAttribute("data-sidebar-glass-frame", glassFrame);
+    return () => el.removeAttribute("data-sidebar-glass-frame");
+  }, [glassFrame]);
   const navigate = useNavigate();
   const router = useRouter();
   const [rowNavigation] = useState(() =>
