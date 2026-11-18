@@ -3640,11 +3640,13 @@ def _persistent_buffers(root):
 
 
 def _peft_trained_layout(root, saved, adapter):
-    """Zoo saves expert LoRA in vanilla PEFT's layout (swapped factors, a legacy [out, E, R] lora_B);
-    PEFT's load undoes that, this direct copy has to as well."""
+    """Zoo's wrapped get_peft_model_state_dict saves expert LoRA in vanilla PEFT's layout (swapped
+    factors for flagged expert classes, a legacy [out, E, R] lora_B) and its wrapped
+    set_peft_model_state_dict undoes that on every PEFT load; this direct copy has to as well.
+    Shape-checked: a file already in the trained layout and every non-expert adapter pass as is."""
     try:
         from unsloth_zoo.temporary_patches.moe_lora_factor_swap import _from_vanilla
-    except Exception:  # noqa: BLE001 - Zoo without the converter saved the trained layout
+    except Exception:  # noqa: BLE001 - Zoo before 2026.11.1 saves the trained layout
         return saved
     return _from_vanilla(root, saved, adapter)
 
@@ -3715,12 +3717,8 @@ def native_load_model_checkpoint(model, checkpoint):
             if adapter not in active_names and not _has_checkpoint_weights(directory):
                 absent.append(adapter)  # an inactive adapter this checkpoint did not save
                 continue
-            sources.append(
-                (
-                    adapter,
-                    _peft_trained_layout(root, _read_checkpoint_weights(directory)[0], adapter),
-                )
-            )
+            saved = _read_checkpoint_weights(directory)[0]
+            sources.append((adapter, _peft_trained_layout(root, saved, adapter)))
         is_adapter = True
     else:
         saved, is_adapter = _read_checkpoint_weights(checkpoint)
