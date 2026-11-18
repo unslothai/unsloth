@@ -95,6 +95,18 @@ def test_auto_takes_every_cached_kind_in_preference_order(cache):
     assert _resolve("ngram-mod").speculative
 
 
+def test_a_bundled_drafter_follows_the_head_and_precedes_cached_ones(cache, tmp_path):
+    _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
+    (draft := tmp_path / "org--Qwen3.5-4B-4bit" / "draft").mkdir()
+    (draft / "config.json").write_text(json.dumps({**_ASSISTANT, "backbone_hidden_size": 8}))
+    paths = lambda: [os.path.relpath(s.path, draft.parent) for s in _resolve("auto").sources]
+    assert paths() == [".", "../g--Qwen3.5-4B-assistant"]  # no weights beside the config
+    (draft / "model.safetensors").touch()
+    assert paths() == [".", "draft", "../g--Qwen3.5-4B-assistant"]
+    (draft.parent / "config.json").write_text(json.dumps({"vocab_size": 10, "hidden_size": 4}))
+    assert paths() == [".", "../g--Qwen3.5-4B-assistant"]  # built for another width
+
+
 def test_an_auto_offload_plan_makes_room_for_a_modes_first_drafter(cache, tmp_path):
     cache({"a/Qwen3.5-4B-DFlash": _DFLASH, "g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
     target = str(tmp_path / "org--Qwen3.5-4B-4bit")

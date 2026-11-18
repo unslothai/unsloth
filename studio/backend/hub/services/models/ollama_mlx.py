@@ -46,8 +46,12 @@ _ADMITTED_MEDIA_TYPES = frozenset(
     }
 )
 # Drafters ride in the same tensor set (Gemma4's assistant, Qwen3.6's MTP head).
-_DRAFTER_PREFIXES = ("draft.", "mtp.")
-_DROPPED_JSON = frozenset({"config.json", "hf_quant_config.json"})
+# The assistant becomes a checkpoint of its own; an MTP head stays where mlx-vlm's splitter reads it.
+_ASSISTANT_PREFIX = "draft."
+_DRAFTER_PREFIXES = (_ASSISTANT_PREFIX, "mtp.")
+_ASSISTANT_DIR = "draft"
+_GENERATED_JSON = frozenset({"config.json", f"{_ASSISTANT_DIR}/config.json"})
+_DROPPED_JSON = frozenset({"hf_quant_config.json"})
 # Ollama's names for an MLX-packed weight's companions (create/prequant.go), and MLX's.
 _COMPANIONS = {".scale": ".scales", ".bias": ".biases", ".global_scale": ".weight_scale_2"}
 # Ollama quant_type -> MLX (group_size, bits, mode), as mlx/quant/quant.go maps them.
@@ -60,6 +64,8 @@ _QUANT_TYPES = {
 }
 _PACKED_TENSOR_BYTES = 1 << 20
 _TAG_FILE = "ollama_tag.txt"
+# Part of a build's key, so a change to what a build holds rebuilds it.
+_BUILD_LAYOUT = b"2"
 _CURRENT_BUILD_LINK = "mlx"
 # Well under the 2048 soft limit mlx-lm sets, leaving room for the process's other files.
 _MAX_TENSOR_FILES = 1024
@@ -289,26 +295,30 @@ def _contained(root: Path, name: str) -> Optional[Path]:
     return root / name
 
 
-def _build(
-    directory: Path, blobs_dir: Path, blob_path, manifest: dict, ollama_config: dict
-) -> None:
-    layers = manifest["layers"]
+def _write_tensors(
+    directory: Path,
+    blobs_dir: Path,
+    blob_path,
+    layers: list,
+    strip: str = "",
+) -> dict:
+    """*layers*' tensors as MLX shards and an index in *directory*, names without *strip*; returns
+    each packed module's (quant_type, group_size)."""
     tensors = []
     for layer in layers:
-        if layer.get("mediaType") != TENSOR_MEDIA_TYPE or layer["name"].startswith(
-            _DRAFTER_PREFIXES
-        ):
-            continue
         blob = blob_path(blobs_dir, layer.get("digest"))
         if blob is None or not blob.is_file():
             raise ValueError(f"Ollama blob for {layer['name']} is missing")
         size, header = _read_header(blob)
         renamed, quant = _mlx_header(header)
+        renamed = {key.removeprefix(strip): value for key, value in renamed.items()}
+        quant = {key.removeprefix(strip): value for key, value in quant.items()}
         tensors.append((blob.stat().st_size, blob, size, header, renamed, quant))
     tensors.sort(key = lambda item: item[0])
     small = sum(1 for item in tensors if item[0] < _PACKED_TENSOR_BYTES)
     packed_count = max(small, len(tensors) - _MAX_TENSOR_FILES)
 
+    directory.mkdir(parents = True, exist_ok = True)
     weight_map, quant = {}, {}
     shard_names = [f"model-{i + 1:05d}.safetensors" for i in range(len(tensors) - packed_count + 1)]
     if packed_count:
@@ -327,10 +337,56 @@ def _build(
     (directory / "model.safetensors.index.json").write_text(
         json.dumps({"metadata": {}, "weight_map": weight_map})
     )
+    return quant
 
+
+def _write_config(directory: Path, blobs_dir: Path, blob_path, layer: dict, quant: dict) -> dict:
+    blob = blob_path(blobs_dir, layer.get("digest"))
+    if blob is None:
+        raise ValueError(f"Ollama MLX layer {layer['name']!r} is unusable")
+    config = json.loads(blob.read_text(encoding = "utf-8"))
+    if not isinstance(config, dict):
+        raise ValueError(f"Ollama MLX {layer['name']} is not an object")
+    # Its ModelOpt block describes the source export, not the MLX packing Ollama converted it to.
+    config.pop("quantization_config", None)
+    quantization = _quantization(quant)
+    if quantization is not None:
+        config["quantization"] = quantization
+    (directory / "config.json").write_text(json.dumps(config, indent = 2))
+    return config
+
+
+def _build(
+    directory: Path, blobs_dir: Path, blob_path, manifest: dict, ollama_config: dict
+) -> None:
+    layers = manifest["layers"]
+    tensors = [layer for layer in layers if layer.get("mediaType") == TENSOR_MEDIA_TYPE]
     json_layers = _json_layers(layers)
+    assistant = [layer for layer in tensors if layer["name"].startswith(_ASSISTANT_PREFIX)]
+    quant = _write_tensors(
+        directory,
+        blobs_dir,
+        blob_path,
+        [layer for layer in tensors if not layer["name"].startswith(_ASSISTANT_PREFIX)],
+    )
+    if f"{_ASSISTANT_DIR}/config.json" not in json_layers:
+        assistant = []
+    if assistant:
+        draft_quant = _write_tensors(
+            directory / _ASSISTANT_DIR, blobs_dir, blob_path, assistant, _ASSISTANT_PREFIX
+        )
+        _write_config(
+            directory / _ASSISTANT_DIR,
+            blobs_dir,
+            blob_path,
+            json_layers[f"{_ASSISTANT_DIR}/config.json"],
+            draft_quant,
+        )
+
     for name, layer in json_layers.items():
-        if name in _DROPPED_JSON or name.startswith("draft/"):
+        if name in _GENERATED_JSON or name in _DROPPED_JSON:
+            continue
+        if name.startswith(f"{_ASSISTANT_DIR}/") and not assistant:
             continue
         target, blob = _contained(directory, name), blob_path(blobs_dir, layer.get("digest"))
         if target is None or blob is None or not blob.is_file():
@@ -338,19 +394,7 @@ def _build(
         target.parent.mkdir(parents = True, exist_ok = True)
         target.symlink_to(blob)
 
-    config_blob = blob_path(blobs_dir, json_layers["config.json"].get("digest"))
-    if config_blob is None:
-        raise ValueError("Ollama MLX config.json is unusable")
-    config = json.loads(config_blob.read_text(encoding = "utf-8"))
-    if not isinstance(config, dict):
-        raise ValueError("Ollama MLX config.json is not an object")
-    # Its ModelOpt block describes the source export, not the MLX packing Ollama converted it to.
-    config.pop("quantization_config", None)
-    quantization = _quantization(quant)
-    if quantization is not None:
-        config["quantization"] = quantization
-    (directory / "config.json").write_text(json.dumps(config, indent = 2))
-
+    config = _write_config(directory, blobs_dir, blob_path, json_layers["config.json"], quant)
     tokenizer_config = directory / "tokenizer_config.json"
     has_template = (directory / "chat_template.jinja").exists() or (
         tokenizer_config.exists()
@@ -397,7 +441,7 @@ def materialize(
     if problem is not None:
         raise ValueError(f"Unsloth Studio cannot load this Ollama MLX model: {problem}")
     name = _checkpoint_name(model_id)
-    build = tag_dir / f"mlx-{hashlib.sha256(manifest_bytes).hexdigest()[:16]}"
+    build = tag_dir / f"mlx-{hashlib.sha256(_BUILD_LAYOUT + manifest_bytes).hexdigest()[:16]}"
     if _checkpoint_model_id(build / name) != model_id:
         tag_dir.mkdir(parents = True, exist_ok = True)
         staging = tag_dir / f".{build.name}.tmp-{uuid.uuid4().hex[:8]}"

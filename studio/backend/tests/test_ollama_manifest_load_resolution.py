@@ -807,6 +807,11 @@ def _write_ollama_mlx_store(
             None,
         ),
         "draft.model.norm.weight": ({"draft.model.norm.weight": np.ones(4, np.float16)}, None),
+        "draft.model.embed_tokens.weight": (
+            {"draft.model.embed_tokens.weight": rng.random(600_000).astype(np.float16)},
+            None,
+        ),
+        "mtp.fc.weight": ({"mtp.fc.weight": np.ones(4, np.float16)}, None),
     }
     if extra_tensor:
         tensors["model.language_model.extra.weight"] = (
@@ -830,7 +835,11 @@ def _write_ollama_mlx_store(
         "config.json": config,
         "tokenizer_config.json": {"bos_token": "<bos>"},
         "hf_quant_config.json": {},
-        "draft/config.json": {},
+        "draft/config.json": {
+            "model_type": "gemma4_assistant",
+            "architectures": ["Gemma4AssistantForCausalLM"],
+        },
+        "draft/tokenizer.json": {},
     }.items():
         text = json.dumps(content).encode()
         digest = __import__("hashlib").sha256(text).hexdigest()
@@ -897,20 +906,11 @@ def test_an_mlx_tag_lists_as_a_chat_only_safetensors_row(mlx_store, monkeypatch)
         "gemma4:e4b-mlx (MLX nvfp4)",
     )
     assert row.capabilities.can_chat and not row.capabilities.can_train
-    # The drafter's tensors are not part of the model Studio loads.
-    drafter = next(
-        layer
+    assert row.size_bytes == sum(
+        layer["size"]
         for layer in json.loads(mlx_store[1].read_text())["layers"]
-        if layer.get("name") == "draft.model.norm.weight"
-    )
-    assert (
-        row.size_bytes
-        == sum(
-            layer["size"]
-            for layer in json.loads(mlx_store[1].read_text())["layers"]
-            if layer["mediaType"].endswith("tensor")
-        )
-        - drafter["size"]
+        if layer["mediaType"].endswith("tensor")
+        and not layer["name"].startswith(("draft.", "mtp."))
     )
     ref = ollama.ollama_mlx_ref_for_path(row.id)
     assert ollama.is_ollama_mlx_ref(ref) and ollama.ollama_model_ref_public_id(ref) == row.model_id
@@ -947,6 +947,7 @@ def test_an_mlx_tag_materializes_as_a_standard_mlx_checkpoint(mlx_store):
     from safetensors.numpy import load_file
 
     from core.inference.chat_templates import load_bundled_chat_template
+    from core.inference.mlx_speculative import _bundled_companion
     from hub.services.models import ollama
 
     root, tag_file, tensors = mlx_store
@@ -972,11 +973,19 @@ def test_an_mlx_tag_materializes_as_a_standard_mlx_checkpoint(mlx_store):
         for name, array in arrays.items()
         if not name.startswith("draft.")
     }
-    assert weight_map.keys() == expected.keys()
+    assert weight_map.keys() == expected.keys() and "mtp.fc.weight" in weight_map
     loaded = {}
     for shard in set(weight_map.values()):
         loaded.update(load_file(str(checkpoint / shard)))
     assert all(np.array_equal(loaded[name], array) for name, array in expected.items())
+    # The assistant is a checkpoint of its own, named as its standalone release names it.
+    draft = checkpoint / "draft"
+    draft_map = json.loads((draft / "model.safetensors.index.json").read_text())["weight_map"]
+    shard = load_file(str(draft / draft_map["model.embed_tokens.weight"]))
+    assert draft_map.keys() == {"model.norm.weight", "model.embed_tokens.weight"}
+    assert np.array_equal(*shard.values(), *tensors["draft.model.embed_tokens.weight"][0].values())
+    assert (draft / "tokenizer.json").is_symlink()
+    assert _bundled_companion(str(checkpoint)).path == str(draft)
     assert (
         weight_map[f"{down}.scales"] == weight_map[f"{gate_up}.scales"]
     )  # both small: one packed shard
@@ -989,9 +998,7 @@ def test_an_mlx_tag_materializes_as_a_standard_mlx_checkpoint(mlx_store):
         config["quantization"] == {"group_size": 16, "bits": 4, "mode": "nvfp4"}
         and "quantization_config" not in config
     )
-    assert (
-        not (checkpoint / "hf_quant_config.json").exists() and not (checkpoint / "draft").exists()
-    )
+    assert not (checkpoint / "hf_quant_config.json").exists()
     assert (checkpoint / "chat_template.jinja").read_text() == load_bundled_chat_template(
         "gemma-4-edge.jinja"
     )
