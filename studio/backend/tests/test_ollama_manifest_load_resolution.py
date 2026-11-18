@@ -1241,3 +1241,20 @@ def test_an_unrelated_load_does_not_take_the_ollama_lease_pool(monkeypatch):
                 LoadRequest(model_path = path), operation = "load-model", stack = stack
             )
             assert asyncio.run(lease) is None
+
+
+@_APFS
+def test_an_image_request_probes_an_unbuilt_mlx_tag_from_its_checkpoint(mlx_store, monkeypatch):
+    from hub.services.models import ollama
+    from routes import inference
+
+    row_id = ollama.scan_ollama_dir(mlx_store[0])[0].id
+    seen = []
+    monkeypatch.setattr(
+        inference,
+        "_target_is_vision",
+        lambda path, *_a: seen.append(path) or (Path(path) / "config.json").is_file(),
+    )
+    assert not Path(row_id).exists()
+    assert inference._target_accepts_request_input(row_id, False, True, False)
+    assert seen == [row_id]

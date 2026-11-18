@@ -9650,12 +9650,27 @@ def _target_accepts_request_input(
             need_image,
             gguf_companion_roots,
         )
+    _build_unbuilt_ollama_mlx_tag(load_path)
     if needs_video and not _target_accepts_video_input(load_path):
         return False
     if needs_audio and not _target_accepts_audio_input(load_path):
         return False
     # need_image, not needs_vision: audio sets needs_vision but needs no vision tower.
     return _target_is_vision(load_path) if (needs_vision and need_image) else True
+
+
+def _build_unbuilt_ollama_mlx_tag(load_path: str) -> None:
+    """An unbuilt MLX tag's probes would read a checkpoint that does not exist yet."""
+    from hub.services.models.ollama import materialize_ollama_mlx_ref, ollama_mlx_ref_for_path
+
+    if os.path.exists(load_path):
+        return
+    try:
+        ref = ollama_mlx_ref_for_path(load_path)
+        if ref:
+            materialize_ollama_mlx_ref(ref)
+    except (OSError, ValueError) as exc:
+        logger.warning("inference.ollama_mlx_materialize_failed: %s", exc)
 
 
 def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
