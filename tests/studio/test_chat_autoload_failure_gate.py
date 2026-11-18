@@ -1428,6 +1428,30 @@ def test_a_last_used_model_that_loads_is_still_recorded_without_a_warning():
     assert _toasts(out, "toast.warning") == []
 
 
+# #18104: with the cached listings down, another cache's snapshot is listed by path; the repo id must still match it.
+def test_a_failed_last_used_model_in_another_cache_is_still_named_and_kept():
+    out = _run(
+        "(() => { const snap = (repo, size) => {"
+        " const p = `/mnt/old/hub/models--${repo.replace('/', '--')}/snapshots/abc`;"
+        " return { id: p, load_id: p, path: p, model_id: repo, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: size,"
+        " capabilities: { can_chat: true, requires_variant: true } }; };"
+        " const big = snap('unsloth/gemma-4-26B-A4B-it-GGUF', 2);"
+        " const small = snap('unsloth/gemma-4-E2B-it-GGUF', 1);"
+        " return scenario({ ggufRepos: 'throw', modelRepos: 'throw', localModels: [small, big],"
+        " variants: { [big.path]: GEMMA_VARIANTS, [small.path]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: 'unsloth/gemma-4-26B-A4B-it-GGUF', kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' },"
+        " load: (p) => p.model_path === big.path ? new Error(OOM) : LOADED(p) }); })()"
+    )
+
+    big = "/mnt/old/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/abc"
+    small = "/mnt/old/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/abc"
+    assert _loaded_paths(out) == [big, small]
+    assert [e for e in out["events"] if e["kind"] == "recordLastLocal"] == []
+    [warning] = _toasts(out, "toast.warning")
+    assert "did not load: Failed to load model" in warning["description"]
+
+
 def test_without_a_last_used_model_a_fallback_is_recorded_as_before():
     out = _run(
         "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
