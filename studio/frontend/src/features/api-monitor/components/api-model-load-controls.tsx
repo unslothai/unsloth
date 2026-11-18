@@ -1,3 +1,4 @@
+import { ModelLoadError } from "./model-load-error";
 import {
   type ComposerModelPickerSource,
   ComposerModelPickerContext,
@@ -423,12 +424,7 @@ export function ApiModelLoadControls({
         </ComposerModelPickerContext.Provider>
       </div>
       {actionError ? (
-        <span
-          role="alert"
-          className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
-        >
-          {actionError}
-        </span>
+        <ModelLoadError message={actionError} onDismiss={() => setActionError(null)} />
       ) : null}
     </div>
   );
