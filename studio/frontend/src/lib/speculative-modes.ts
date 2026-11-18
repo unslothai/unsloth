@@ -12,6 +12,19 @@ export const SPECULATIVE_TYPES = [
   "off",
 ] as const;
 
+export const SPECULATIVE_TYPE_LABELS: Record<
+  (typeof SPECULATIVE_TYPES)[number],
+  string
+> = {
+  auto: "Auto",
+  mtp: "MTP",
+  dspark: "DSpark",
+  dflash: "DFlash",
+  ngram: "Ngram",
+  "mtp+ngram": "MTP+Ngram",
+  off: "Off",
+};
+
 /** Values only an MLX load reads (studio/backend/core/inference/mlx_speculative.py). */
 export const MLX_ONLY_SPEC_TYPES = ["eagle3"] as const;
 

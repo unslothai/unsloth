@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { modelInfo } from "@huggingface/hub";
@@ -28,6 +29,12 @@ import {
   q4nxIsSplitFile,
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
+import type { NpuCompat } from "../src/features/npu/compat.ts";
+
+// GET /api/npu/compat for FastFlowLM 1.0.12 and the pinned converters.
+const FLM = JSON.parse(
+  readFileSync(new URL("./fixtures/npu-compat-flm-1.0.12.json", import.meta.url), "utf8"),
+) as NpuCompat;
 
 test("Q4_0 and Q4_1 pack directly only where the model reads that layout; Q4_K_M only where the q4k converter runs", () => {
   // The architecture is not known yet: the converter refuses a mismatch when it runs.
@@ -121,62 +128,63 @@ test("the original model comes from the card's base_model, else the repo without
   assert.equal(q4nxBaseModel("", null), "");
 });
 
-test("architectures the pinned converter accepts are supported, with size caveats", () => {
-  assert.deepEqual(q4nxArchFit("qwen3"), { status: "supported", note: null });
-  assert.deepEqual(q4nxArchFit("LLAMA"), { status: "supported", note: null });
-  assert.equal(q4nxArchFit("gpt-oss").status, "supported");
-  const qwen35 = q4nxArchFit("qwen35");
-  assert.equal(qwen35.status, "supported");
-  assert.match(qwen35.note ?? "", /0\.8B, 2B, 4B, 9B/);
+test("an architecture and size the NPU runs and the converter takes is supported", () => {
+  assert.deepEqual(q4nxArchFit("qwen3", "unsloth/Qwen3-4B-GGUF", FLM), {
+    status: "supported",
+    note: null,
+    tag: "convertRuns",
+  });
+  assert.equal(q4nxArchFit("LLAMA", "unsloth/Llama-3.2-1B-GGUF", FLM).status, "supported");
+  assert.equal(q4nxArchFit("gpt-oss", "unsloth/gpt-oss-20b-GGUF", FLM).status, "supported");
+  const unnamed = q4nxArchFit("qwen35", "acme/my-finetune-GGUF", FLM);
+  assert.equal(unnamed.status, "supported");
+  assert.match(unnamed.note ?? "", /Qwen3\.5-0\.8B, Qwen3\.5-2B, Qwen3\.5-4B, Qwen3\.5-9B/);
 });
 
 test("qwen2vl is Qwen2.5-VL only; a Qwen2-VL name is refused", () => {
   // The converter would send Qwen2-VL to the dense qwen2 converter by basename.
-  const vl25 = q4nxArchFit("qwen2vl", "unsloth/Qwen2.5-VL-7B-Instruct-GGUF");
-  assert.equal(vl25.status, "supported");
-  assert.match(vl25.note ?? "", /Only Qwen2\.5-VL/);
-  assert.equal(q4nxArchFit("qwen2vl").status, "supported");
+  assert.equal(
+    q4nxArchFit("qwen2vl", "unsloth/Qwen2.5-VL-3B-Instruct-GGUF", FLM).status,
+    "supported",
+  );
   for (const name of [
     "unsloth/Qwen2-VL-7B-Instruct-GGUF",
     "bartowski/qwen2vl-2b-GGUF",
     "C:\\models\\Qwen2_VL-2B.Q4_0.gguf",
   ]) {
-    const fit = q4nxArchFit("qwen2vl", name);
+    const fit = q4nxArchFit("qwen2vl", name, FLM);
     assert.equal(fit.status, "unsupported", name);
     assert.match(fit.note, /Qwen2-VL/);
   }
   // A generic repo id with a Qwen2-VL file: the card passes "<repo> <filename>".
   assert.equal(
-    q4nxArchFit("qwen2vl", "acme/vision-GGUF Qwen2-VL-2B-Instruct-Q4_0.gguf").status,
+    q4nxArchFit("qwen2vl", "acme/vision-GGUF Qwen2-VL-2B-Instruct-Q4_0.gguf", FLM).status,
     "unsupported",
-  );
-  assert.equal(
-    q4nxArchFit("qwen2vl", "acme/vision-GGUF Qwen2.5-VL-3B-Instruct-Q4_0.gguf").status,
-    "supported",
   );
   // Local files have no architecture before conversion, so the name alone decides.
   for (const name of [
     "/models/Qwen2-VL-2B-Instruct-Q4_0.gguf",
     "unsloth/Qwen2-VL-7B-Instruct-GGUF /hf/models--unsloth--Qwen2-VL-7B-Instruct-GGUF/snapshots/abc/x.gguf",
   ]) {
-    assert.equal(q4nxArchFit(null, name).status, "unsupported", name);
+    assert.equal(q4nxArchFit(null, name, FLM).status, "unsupported", name);
   }
-  assert.equal(
-    q4nxArchFit(null, "/models/Qwen2.5-VL-7B-Instruct-Q4_0.gguf").status,
-    "unknown",
-  );
-  // Only qwen2vl GGUFs are checked by name; a dense Qwen2 repo is untouched.
-  assert.equal(q4nxArchFit("qwen2", "Qwen/Qwen2-VL-ish").status, "supported");
+  assert.equal(q4nxArchFit(null, "/models/Qwen2.5-VL-7B-Instruct-Q4_0.gguf", FLM).status, "unknown");
 });
 
-test("a known unsupported architecture is refused, an unknown one only warned about", () => {
-  const moe = q4nxArchFit("qwen3moe");
+test("an architecture neither side supports is refused; an unknown one or an unread table only warned about", () => {
+  const moe = q4nxArchFit("qwen3moe", "unsloth/Qwen3-30B-A3B-GGUF", FLM);
   assert.equal(moe.status, "unsupported");
-  assert.match(moe.note, /qwen3moe/);
+  assert.equal(moe.tag, "unsupported");
   for (const arch of [null, undefined, ""]) {
-    const fit = q4nxArchFit(arch);
+    const fit = q4nxArchFit(arch, null, FLM);
     assert.equal(fit.status, "unknown");
     assert.match(fit.note, /may not be supported/);
+  }
+  // NPU not enabled yet: FastFlowLM's list is unread, the conversion checks the size.
+  for (const compat of [null, { ...FLM, fastflowlm_known: false }]) {
+    const fit = q4nxArchFit("qwen3", "unsloth/Qwen3-14B-GGUF", compat);
+    assert.equal(fit.status, "unknown");
+    assert.equal(fit.tag, null);
   }
 });
 
@@ -344,30 +352,21 @@ test("without a window from the server the line shows the need alone and never w
   assert.equal(q4nxNpuMemory(null, 16), null);
 });
 
-test("a size the converter has no model for is refused by name, before any download", () => {
-  // Qwen3.8 27B reports the qwen35 architecture, which converts only at 0.8B, 2B, 4B and 9B.
-  const big = q4nxArchFit("qwen35", "unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-Q4_0.gguf");
+test("Qwen3 14B is refused before any download; LFM3 1.7B is shown as running, not converted", () => {
+  const big = q4nxArchFit("qwen3", "unsloth/Qwen3-14B-GGUF Qwen3-14B-Q4_0.gguf", FLM);
   assert.equal(big.status, "unsupported");
-  assert.equal(big.status === "unsupported" && big.sized, true);
-  assert.match(big.note ?? "", /27B model\. Only Qwen3\.5 0\.8B, 2B, 4B, 9B and Omni convert\./);
-  // A size on the list needs no caveat.
-  for (const name of ["unsloth/Qwen3.5-4B-GGUF", "unsloth/Qwen3.5-0.8B-GGUF", "acme/Qwen3.5-Omni-GGUF"]) {
-    assert.deepEqual(q4nxArchFit("qwen35", name), { status: "supported", note: null }, name);
-  }
-  // No size in the name: the caveat stays a note.
-  const unnamed = q4nxArchFit("qwen35", "acme/my-finetune-GGUF");
-  assert.equal(unnamed.status, "supported");
-  assert.match(unnamed.note ?? "", /0\.8B, 2B, 4B, 9B/);
-  assert.deepEqual(q4nxArchFit("qwen35moe", "unsloth/Qwen3.6-35B-A3B-GGUF"), {
-    status: "supported",
-    note: null,
-  });
-  assert.equal(q4nxArchFit("qwen35moe", "acme/Qwen3.5-122B-A10B-GGUF").status, "unsupported");
-  // An architecture with no size list is never refused by size.
-  assert.equal(q4nxArchFit("llama", "meta/Llama-3.3-70B-GGUF").status, "supported");
-  // An unsupported architecture is not a size refusal.
-  const arch = q4nxArchFit("qwen3moe", "acme/x-30B-GGUF");
-  assert.equal(arch.status === "unsupported" && arch.sized, undefined);
+  assert.equal(big.tag, "convertOnly");
+  assert.match(big.note ?? "", /no NPU kernels for this size/);
+  const lfm3 = q4nxArchFit("lfm3", "LiquidAI/LFM3-1.7B-GGUF", FLM);
+  assert.equal(lfm3.status, "unsupported");
+  assert.equal(lfm3.tag, "runs");
+  assert.match(lfm3.note ?? "", /FastFlowLM ships its own LFM3-1\.7B/);
+  assert.equal(q4nxArchFit("qwen35", "unsloth/Qwen3.8-27B-GGUF", FLM).tag, "runs");
+  assert.equal(q4nxArchFit("qwen35moe", "acme/Qwen3.5-122B-A10B-GGUF", FLM).tag, "convertOnly");
+  assert.equal(q4nxArchFit("llama", "meta/Llama-3.3-70B-GGUF", FLM).tag, "convertOnly");
+  assert.equal(q4nxArchFit("qwen35moe", "unsloth/Qwen3.6-35B-A3B-GGUF", FLM).tag, "convertRuns");
+  const source = readFileSync(new URL("../src/features/export/lib/q4nx-source.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /Q4NX_ARCHITECTURES|Q4NX_SIZES/);
 });
 
 test("the quant is named alone, out of a variant key or a file stem", () => {
@@ -390,7 +389,7 @@ test("the export summary describes the conversion: source, file and quant, outpu
     saveDirectory: "q4nx",
     size: "2.7 GB",
     memory: { fits: true, label: "3.6 of 30.8 GB NPU" },
-    archFit: q4nxArchFit("qwen35", "unsloth/Qwen3.5-4B-GGUF"),
+    archFit: q4nxArchFit("qwen35", "unsloth/Qwen3.5-4B-GGUF", FLM),
   };
   assert.deepEqual(rows(picked), {
     Model: "unsloth/Qwen3.5-4B-GGUF",
@@ -403,8 +402,8 @@ test("the export summary describes the conversion: source, file and quant, outpu
     Convertible: "Yes",
   });
   assert.equal(
-    rows({ ...picked, archFit: q4nxArchFit("phi3", "acme/phi-GGUF") }).Convertible,
-    "Only Phi-4 mini converts.",
+    rows({ ...picked, archFit: q4nxArchFit("phi3", "acme/phi-GGUF", FLM) }).Convertible,
+    "Only these phi3 sizes run on the NPU: Phi4-mini-Instruct.",
   );
 
   const over = rows({
@@ -412,7 +411,7 @@ test("the export summary describes the conversion: source, file and quant, outpu
     quant: "Q6_K",
     packing: q4nxPacking("Q6_K", "qwen35"),
     memory: { fits: false, label: "~16.5 of 16.0 GB NPU" },
-    archFit: q4nxArchFit("qwen35", "unsloth/Qwen3.8-27B-GGUF"),
+    archFit: q4nxArchFit("qwen3", "unsloth/Qwen3-14B-GGUF", FLM),
   });
   assert.equal(over.Quant, "Q6_K, re-quantized to 4-bit");
   assert.equal(
@@ -430,8 +429,11 @@ test("the export summary describes the conversion: source, file and quant, outpu
   assert.equal(over["NPU memory"], "May not fit: ~16.5 of 16.0 GB NPU");
   assert.equal(over.Convertible, "No");
 
-  assert.equal(rows({ ...picked, archFit: q4nxArchFit("llama") }).Convertible, "Yes");
-  assert.equal(rows({ ...picked, archFit: q4nxArchFit(null) }).Convertible, "Checked during conversion");
+  assert.equal(
+    rows({ ...picked, archFit: q4nxArchFit("llama", "meta/Llama-3.1-8B-GGUF", FLM) }).Convertible,
+    "Yes",
+  );
+  assert.equal(rows({ ...picked, archFit: q4nxArchFit(null, null, FLM) }).Convertible, "Checked during conversion");
 
   const empty = rows({
     model: null,

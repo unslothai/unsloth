@@ -66,16 +66,19 @@ export function modelDetails(
 }
 
 /** Fades the list's top or bottom edge while more rows lie beyond it. */
-function fadeScrollEdges(list: HTMLElement | null) {
+export function fadeScrollEdges(list: HTMLElement | null) {
   if (!list) return;
   const update = () => {
-    // The pinned Older models header stays crisp: no fade over it.
+    // The Older models header pins to either edge and stays crisp: no fade over it.
     const header = list.querySelector("[data-fold-header]");
-    const pinned =
-      header !== null &&
-      header.getBoundingClientRect().top - list.getBoundingClientRect().top < 1;
-    const above = list.scrollTop > 1 && !pinned;
-    const below = list.scrollTop + list.clientHeight < list.scrollHeight - 1;
+    const box = list.getBoundingClientRect();
+    const at = header?.getBoundingClientRect();
+    const pinnedTop = at !== undefined && at.top - box.top < 1;
+    const pinnedBottom = at !== undefined && box.bottom - at.bottom < 1;
+    header?.toggleAttribute("data-stuck", pinnedTop || pinnedBottom);
+    const above = list.scrollTop > 1 && !pinnedTop;
+    const below =
+      list.scrollTop + list.clientHeight < list.scrollHeight - 1 && !pinnedBottom;
     const mask =
       above || below
         ? `linear-gradient(to bottom, ${above ? "transparent" : "#000"} 0, #000 32px, #000 calc(100% - 32px), ${below ? "transparent" : "#000"} 100%)`
@@ -277,6 +280,8 @@ export function ConnectionModelList({
             "hover-scrollbar flex flex-col gap-0.5 pr-1",
             rows.length > 10 &&
               "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
+            // Rows reached by Tab scroll clear of the pinned header.
+            grouped && "scroll-py-12",
           )}
         >
           {rows.length === 0 && !grouped ? (
@@ -289,7 +294,7 @@ export function ConnectionModelList({
               {grouped ? (
                 <li
                   data-fold-header={true}
-                  className="sticky top-0 z-10 mt-1 border-t border-border/60 bg-background pt-1"
+                  className="sticky top-0 bottom-0 z-10 mt-1 border-t border-border/60 bg-background pt-1"
                 >
                   <button
                     type="button"

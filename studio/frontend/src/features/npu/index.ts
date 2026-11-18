@@ -22,6 +22,14 @@ export {
   npuSizeLabel,
 } from "./api";
 export {
+  NPU_CATALOG_TAG,
+  NPU_TAG_TEXT,
+  type NpuCompat,
+  type NpuFit,
+  type NpuTag,
+  npuFit,
+} from "./compat";
+export {
   npuDisplayName,
   npuDisplayNameOf,
   npuRepoLabel,
@@ -39,4 +47,5 @@ export {
   useNpuDisplayName,
   useNpuDisplayNames,
 } from "./use-npu-display-name";
+export { useNpuCompat } from "./use-npu-compat";
 export { useNpuStatus } from "./use-npu-status";

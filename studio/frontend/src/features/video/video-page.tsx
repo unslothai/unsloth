@@ -226,6 +226,14 @@ import {
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
+import {
+  ATTENTION_SELECT_HINT,
+  INT8_ATTENTION_HINT,
+  INT8_ATTENTION_LABEL,
+  INT8_ATTENTION_OPTIONS,
+  int8AttentionSelection,
+  type Int8AttentionChoice,
+} from "@/lib/int8-attention";
 import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
@@ -1202,6 +1210,7 @@ type VideoLoadAdvanced = Pick<
   | "memory_mode"
   | "speed_mode"
   | "attention_backend"
+  | "int8_attention"
   | "transformer_cache"
   | "transformer_quant"
   | "family_override"
@@ -1397,6 +1406,7 @@ function VideoGenerator({
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
+  const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
@@ -2011,6 +2021,8 @@ function VideoGenerator({
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const int8 = int8AttentionSelection(record.int8_attention);
+    if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -2939,6 +2951,7 @@ function VideoGenerator({
     memoryMode,
     speedMode,
     attentionBackend,
+    int8Attention,
     transformerCache,
     transformerQuant,
     familyOverride,
@@ -2949,6 +2962,7 @@ function VideoGenerator({
     memoryMode,
     speedMode,
     attentionBackend,
+    int8Attention,
     transformerCache,
     transformerQuant,
     familyOverride,
@@ -2963,6 +2977,8 @@ function VideoGenerator({
         speed_mode: controls.speedMode === "auto" ? undefined : controls.speedMode,
         attention_backend:
           controls.attentionBackend === "auto" ? undefined : controls.attentionBackend,
+        // Always sent: the backend reads "auto" as no per-load override.
+        int8_attention: controls.int8Attention,
         transformer_cache:
           controls.transformerCache === "auto" ? undefined : controls.transformerCache,
         transformer_quant:
@@ -3067,6 +3083,7 @@ function VideoGenerator({
           memory_mode: advanced.memory_mode,
           speed_mode: advanced.speed_mode,
           attention_backend: advanced.attention_backend,
+          int8_attention: advanced.int8_attention,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
           family_override: advanced.family_override,
@@ -4113,7 +4130,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint={ATTENTION_SELECT_HINT}
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -4124,6 +4141,14 @@ function VideoGenerator({
           ["flash3", "FlashAttention 3"],
           ["sage", "SageAttention (INT8)"],
         ]}
+      />
+      <AdvancedSelect
+        label={INT8_ATTENTION_LABEL}
+        hint={INT8_ATTENTION_HINT}
+        badge={<ResolvedBadge status={status} controlKey="int8_attention" />}
+        value={int8Attention}
+        onValueChange={(v) => setInt8Attention(v as Int8AttentionChoice)}
+        options={INT8_ATTENTION_OPTIONS}
       />
       {gpuChoices.length > 0 && (
         <AdvancedSelect

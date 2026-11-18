@@ -233,3 +233,110 @@ def test_nll_loss_and_grads_match_stock_trl_and_fp64_oracle(kind):
         if trl_grads is not None:
             torch.testing.assert_close(trl_grads[name], oracle_grads[name], rtol = 1e-4, atol = 1e-6)
         torch.testing.assert_close(unsloth_grads[name], oracle_grads[name], rtol = 1e-4, atol = 1e-6)
+
+
+CHECKPOINT_COEF = 0.001  # Qwen3-VL-MoE's config default
+
+
+def _tiny_moe_vlm():
+    import transformers
+
+    if not hasattr(transformers, "Qwen3VLMoeForConditionalGeneration"):
+        pytest.skip("transformers without Qwen3-VL-MoE")
+    mrope = dict(rope_type = "default", mrope_section = [1, 1, 2], mrope_interleaved = True)
+    config = transformers.Qwen3VLMoeConfig(
+        text_config = dict(
+            vocab_size = 64,
+            hidden_size = 16,
+            intermediate_size = 32,
+            moe_intermediate_size = 16,
+            num_hidden_layers = 2,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            head_dim = 8,
+            num_experts = 4,
+            num_experts_per_tok = 2,
+            router_aux_loss_coef = CHECKPOINT_COEF,
+            output_router_logits = False,
+            pad_token_id = 1,
+            eos_token_id = 2,
+            rope_parameters = dict(rope_theta = 10000.0, **mrope),
+            rope_scaling = mrope,
+        ),
+        vision_config = dict(
+            depth = 1,
+            hidden_size = 16,
+            intermediate_size = 16,
+            num_heads = 2,
+            out_hidden_size = 16,
+            deepstack_visual_indexes = [0],
+        ),
+    )
+    return transformers.Qwen3VLMoeForConditionalGeneration(config).to(torch.float32)
+
+
+def test_vlm_wrapper_trains_with_the_sft_config_coefficient_not_the_checkpoint_one():
+    # Qwen3-VL-MoE / Qwen3.5-MoE / GLM-4V-MoE wrappers add the aux loss to their own loss with
+    # config.text_config.router_aux_loss_coef. TRL >= 1.18 stops writing SFTConfig.router_aux_loss_coef there,
+    # so without Unsloth applying it the checkpoint's coefficient is trained on.
+    if importlib.util.find_spec("trl") is None:
+        pytest.skip("trl not installed")
+    from trl import SFTConfig, SFTTrainer
+
+    if "router_aux_loss_coef" not in SFTConfig.__dataclass_fields__:
+        pytest.skip("TRL < 1.7 has no SFT router aux loss")
+    from datasets import Dataset
+
+    torch.manual_seed(0)
+    model = _tiny_moe_vlm()
+    model.train()
+    text_config = model.config.get_text_config()
+    gen = torch.Generator().manual_seed(1)
+    input_ids = torch.randint(3, 64, (2, 9), generator = gen)
+    batch = {
+        "input_ids": input_ids,
+        "attention_mask": torch.ones_like(input_ids),
+        "labels": input_ids.clone(),
+    }
+
+    with tempfile.TemporaryDirectory() as out:
+        args = SFTConfig(
+            output_dir = out,
+            report_to = "none",
+            use_cpu = True,
+            per_device_train_batch_size = 2,
+            max_steps = 1,
+            bf16 = False,
+            fp16 = False,
+            router_aux_loss_coef = COEF,
+        )
+        trainer = SFTTrainer(
+            model = model,
+            args = args,
+            train_dataset = Dataset.from_dict({"input_ids": input_ids.tolist()}),
+            processing_class = _tokenizer(),
+        )
+    assert trainer.aux_loss_enabled and trainer.router_aux_loss_coef == COEF
+    trainer.current_gradient_accumulation_steps = 1
+    trainer.__class__ = _generated_class(type(trainer).__mro__[1])
+    # TRL 1.7-1.17 wrote the coefficient into the config; whatever it holds now must be what is left afterwards.
+    config_coef = text_config.router_aux_loss_coef
+    with torch.no_grad():
+        loss = trainer.compute_loss(model, dict(batch)).item()
+        loss_again = trainer.compute_loss(model, dict(batch)).item()
+        text_config.router_aux_loss_coef = 0.0
+        ref = model(**batch, output_router_logits = True)
+        text_config.router_aux_loss_coef = config_coef
+    ce, aux = ref.loss.item(), ref.aux_loss.item()
+    assert COEF * aux > 0.1, "the aux term is too small for the test to tell the coefficients apart"
+    applied = (loss - ce) / aux
+    assert applied == pytest.approx(COEF, rel = 1e-4), (
+        f"trained on router_aux_loss_coef {applied:.6f}, SFTConfig asked for {COEF} "
+        f"(checkpoint {CHECKPOINT_COEF})"
+    )
+    assert loss_again == pytest.approx(
+        loss, rel = 1e-6
+    ), "the coefficient must apply the same way every step"
+    assert (
+        text_config.router_aux_loss_coef == config_coef
+    ), "compute_loss must not leave the config modified"

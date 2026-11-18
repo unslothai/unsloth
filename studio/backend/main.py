@@ -220,14 +220,12 @@ if sys.platform == "win32":
     _add_rocm_dll_dirs()
     del _add_rocm_dll_dirs
 
-    # bitsandbytes runs hipinfo.exe via PATH at import; add the venv Scripts dir (AMD wheel ships it).
-    _scripts_dir = os.path.dirname(sys.executable)
-    if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
-        import shutil as _shutil
-        if not _shutil.which("hipinfo.exe"):
-            os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
-        del _shutil
-    del _scripts_dir
+    # bnb never reads its hipinfo.exe arch; the venv copy is unsigned (Smart App Control blocks it).
+    import logging as _logging
+
+    _logging.getLogger("bitsandbytes.cuda_specs").addFilter(
+        lambda _r: _r.funcName != "get_rocm_gpu_arch"
+    )
 
     # bitsandbytes derives the DLL name from torch.version.hip but the wheel ships rocm72.dll.
     if (

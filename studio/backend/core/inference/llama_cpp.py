@@ -8573,6 +8573,29 @@ _SIGKILL_REAP_TIMEOUT_S = 30
 _QUIT_SIGNAL_EXIT_GRACE_S = 2
 
 
+# llama.cpp's `<arch>.decision.type` values whose only output is decisions
+# (server_model_output_modalities); granite-switch also generates text.
+_DECISION_ONLY_GGUF_TYPES = frozenset(
+    {
+        "openjev",
+        "lev",
+        "kev",
+        "nimble",
+        "laya",
+        "clef",
+        "pplx-decider",
+        "vllm-decision2",
+        "vllm-d3",
+        "lfm2-d1",
+        "lfm2-d1-omni",
+        "h2o-lightning",
+        "openbmb-minicpm-ocr-jev",
+        "lfm3-d1",
+        "lfm3-d1-omni",
+    }
+)
+
+
 class LlamaCppBackend:
     """Held across the teardown check and publish, never a health wait; class-level for __new__ doubles."""
 
@@ -19547,6 +19570,7 @@ class LlamaCppBackend:
         self._nextn_predict_layers = None
         self._architecture = None
         self._gguf_type = None
+        self._decision_type = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
         self._gguf_split_index = None
@@ -19579,6 +19603,7 @@ class LlamaCppBackend:
             pooling_by_arch: dict[str, int] = {}
 
             nextn_by_arch: dict[str, int] = {}
+            decision_by_arch: dict[str, str] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -19626,10 +19651,13 @@ class LlamaCppBackend:
                             or key in arch_keys
                             or key.endswith(".pooling_type")
                             or key.endswith(".nextn_predict_layers")
+                            or key.endswith(".decision.type")
                         ):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
+                                if key.endswith(".decision.type"):
+                                    decision_by_arch[key] = val_s
                                 if key.startswith("general.") and key != "general.architecture":
                                     general[key] = val_s
                                 if key == "general.type":
@@ -19742,6 +19770,7 @@ class LlamaCppBackend:
                     f"{arch}.nextn_predict_layers",
                     self._nextn_predict_layers,
                 )
+                self._decision_type = decision_by_arch.get(f"{arch}.decision.type")
 
             # Decide diffusion routing before the SWA resolver: it can raise on an unknown arch and drop DiffusionGemma to plain llama-server.
             self._is_diffusion = bool(
@@ -21501,6 +21530,14 @@ class LlamaCppBackend:
             return (
                 "This GGUF is a LoRA adapter and needs a matching base model. "
                 "Select a full model GGUF for chat, or use this adapter with its base model."
+            )
+        decision_type = (getattr(self, "_decision_type", None) or "").strip().lower()
+        if decision_type in _DECISION_ONLY_GGUF_TYPES:
+            return (
+                f"This is a decision model ({decision_type}), not a chat model: llama.cpp "
+                "only answers decision requests with it (POST /v1/systemone) and cannot "
+                "generate text. Pick a chat GGUF, or use a decision model from Settings > "
+                "API > Decision API."
             )
         arch = (self._architecture or "").strip().lower()
         # A media arch is KV 0 so a partial remote prefix can carry it; the walk still gates the no-arch fallback, since an incomplete read looks like none.
