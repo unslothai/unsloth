@@ -407,14 +407,14 @@
    "vae_fused_encoder": true
   },
   "flux.3-klein": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
   "flux.3-klein-base": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },

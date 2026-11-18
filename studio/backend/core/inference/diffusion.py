@@ -16833,6 +16833,20 @@ class DiffusionBackend:
             state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
         )
         speed_optims = int8_gemm_live(state.pipe, speed_optims)
+        attention_backend = state.attention_backend
+        try:
+            from core.inference.diffusion_int8_attention import live_backend
+            attention_backend = live_backend(state.pipe, state.attention_backend)
+        except Exception:  # noqa: BLE001 - the load-time value stays
+            pass
+        if (
+            attention_backend != state.attention_backend
+            and isinstance(resolved, dict)
+            and isinstance(resolved.get("attention_backend"), dict)
+        ):
+            entry = dict(resolved["attention_backend"])
+            entry["value"] = attention_backend or "native"
+            resolved = {**resolved, "attention_backend": entry}
         lora_gate = dict(
             engine = "diffusers",
             family = state.family.name,
@@ -16875,7 +16889,7 @@ class DiffusionBackend:
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": _reported_transformer_quant(state),
             **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
-            "attention_backend": state.attention_backend,
+            "attention_backend": attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
