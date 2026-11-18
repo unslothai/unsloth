@@ -3261,7 +3261,50 @@ def _train_dit(
         num_training_steps = cfg.train_steps,
     )
 
-    _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
+    from core.training.diffusion_lora_fast import (
+        Nf4DequantCache,
+        attach_training_hooks,
+        bucket_activation_scale,
+        cache_vram_handler,
+        set_vram_request_handler,
+        dequant_cache_enabled,
+        fast_lora_enabled,
+        fast_lora_stats,
+        install_fast_lora,
+        mark_lora_updated,
+        uninstall_fast_lora,
+    )
+
+    # Eager only: a compiled graph already fuses PEFT's casts. The dequant cache needs CUDA's free-memory probe.
+    dequant_cache = None
+    fast_lora_layers = 0
+    fast_lora_hooks = ()
+    if not compiled and device in ("cuda", "xpu") and fast_lora_enabled():
+        if base_is_bnb and device == "cuda" and not torch_is_rocm() and dequant_cache_enabled():
+            dequant_cache = Nf4DequantCache()
+        fast_lora_layers = install_fast_lora(transformer, dequant_cache)
+        if fast_lora_layers:
+            # After each optimizer step: recast the bf16 masters; after step 1: size the dequant cache.
+            fast_lora_hooks = attach_training_hooks(
+                optimizer,
+                dequant_cache,
+                bucket_activation_scale(canvases),
+                lambda stats: _emit(on_event, "dequant_cache_planned", **stats),
+                lambda kind, stats: _emit(on_event, kind, **stats),
+            )
+            if dequant_cache is not None:
+                # Studio asks for this room back before another model loads on the card (lend_vram).
+                set_vram_request_handler(cache_vram_handler(dequant_cache))
+        else:
+            dequant_cache = None
+
+    _emit(
+        on_event,
+        "model_load_completed",
+        compiled = compiled,
+        base_precision = base_precision,
+        fast_lora_layers = fast_lora_layers,
+    )
     # Read the commit after the base is on disk: an earlier identity says unresolved, so resume cannot detect a moved repo. Record the repo actually fetched.
     identity = with_resolved_revision(identity, fetch_cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
@@ -3398,6 +3441,9 @@ def _train_dit(
             return
         t_round = time.time()
         parked = next(sample_vae.parameters()).device.type == "cpu"
+        if dequant_cache is not None:
+            # The preview needs the room; the following steps refill the cache.
+            dequant_cache.suspend()
         try:
             with isolated_sampling(device, compiled):
                 transformer.eval()
@@ -3411,6 +3457,11 @@ def _train_dit(
             sample_plan = None
         finally:
             transformer.train()
+            if dequant_cache is not None:
+                dequant_cache.resume()
+            if fast_lora_layers:
+                # A preview may swap EMA weights in and out of the LoRA masters.
+                mark_lora_updated()
             if parked:
                 sample_vae.to("cpu")
                 if device == "cuda":
@@ -3559,6 +3610,18 @@ def _train_dit(
         if stop_now:
             stopped = True
             break
+
+    if fast_lora_layers:
+        stats = fast_lora_stats()
+        if dequant_cache is not None:
+            stats["dequant"] = dequant_cache.stats()
+            set_vram_request_handler(None)
+            dequant_cache.release()
+        _emit(on_event, "fast_lora_stats", **stats)
+        for handle in fast_lora_hooks:
+            handle.remove()
+        # Saving and any later reuse of this transformer see PEFT's own modules again.
+        uninstall_fast_lora(transformer)
 
     lora_path: Optional[str] = None
     catalog_path: Optional[str] = None

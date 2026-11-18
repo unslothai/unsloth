@@ -721,6 +721,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3ModularPipeline",
+        # As FLUX.2 Klein: per-process reduction-config / cuDNN picks moved one seed 0.003-0.007 LPIPS on L4.
+        filter_reduction_configs = True,
+        cudnn_benchmark = False,
         # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
         # (black-forest-labs/flux-3-image-klein-comfy, byte-identical), which scored better than an INT8 built with
         # the keep-list, so the prequant loader reads it through the ComfyUI quant path. The FP8 file is Studio's own.
@@ -795,6 +798,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
+        # As FLUX.2 Klein: per-process reduction-config / cuDNN picks moved one seed 0.003-0.007 LPIPS on L4.
+        filter_reduction_configs = True,
+        cudnn_benchmark = False,
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
         # the loader checks the stored exclude set against it. The base has its own repo.
         prequant_repos = (
