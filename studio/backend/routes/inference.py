@@ -10419,13 +10419,46 @@ def _alias_reload_due(fastapi_request) -> bool:
     return _loads_anything() and not _alias_load_settings_met(fastapi_request)
 
 
-def _alias_refusal(fastapi_request, code: str, message: str) -> HTTPException:
+def _alias_refusal(
+    fastapi_request,
+    code: str,
+    message: str,
+    status: int = 409,
+) -> HTTPException:
     return HTTPException(
-        status_code = 409,
+        status_code = status,
         detail = error_body_for_path(
-            fastapi_request.url.path, message, status = 409, code = code, param = "model"
+            fastapi_request.url.path, message, status = status, code = code, param = "model"
         ),
     )
+
+
+async def _refuse_ignored_alias_load_settings(
+    request: Request, _subject: str = Depends(get_current_subject)
+) -> None:
+    """Load settings only apply when a local GGUF model generates text. Refuse the alias where
+    they would be ignored: embeddings, a Connection target, a request sent to a provider."""
+    alias = _request_alias(request)
+    if alias is None:
+        return
+    ignored = (
+        request.url.path.rstrip("/").endswith("/embeddings")
+        or _connection_model_ref(alias["model"]) is not None
+    )
+    if not ignored:
+        body = await request.json()
+        ignored = isinstance(body, dict) and bool(
+            body.get("provider_id") or body.get("provider_type")
+        )
+    if ignored:
+        raise _alias_refusal(
+            request,
+            "alias_load_settings_unsupported",
+            f"The alias '{alias['name']}' has its own load settings, and those only apply when a "
+            "local GGUF model generates text. Remove the load settings from the alias, or send "
+            "the model's own name.",
+            status = 400,
+        )
 
 
 def _refuse_changed_alias(fastapi_request) -> None:
@@ -32664,7 +32697,7 @@ async def _collect_chat_completion(lines, model: str):
     return JSONResponse(body)
 
 
-@router.post("/chat/completions")
+@router.post("/chat/completions", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -39682,7 +39715,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
     }
 
 
-@router.post("/completions")
+@router.post("/completions", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
@@ -40528,7 +40561,7 @@ def _embeddings_input_present(body: dict) -> bool:
     return inp is not None
 
 
-@router.post("/embeddings")
+@router.post("/embeddings", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
@@ -43227,7 +43260,7 @@ async def _responses_stream(
     )
 
 
-@router.post("/responses")
+@router.post("/responses", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_responses(
     payload: ResponsesRequest,
@@ -44560,7 +44593,7 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
     return total, parts, rendered.get("prompt")
 
 
-@router.post("/chat/count_tokens")
+@router.post("/chat/count_tokens", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
     current_subject: str = Depends(get_current_subject),
@@ -45373,7 +45406,7 @@ async def _anthropic_messages_via_connection(
     return JSONResponse(_anthropic_message_from_events([event async for event in events]))
 
 
-@router.post("/messages/count_tokens")
+@router.post("/messages/count_tokens", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
     request: Request,
@@ -46033,7 +46066,7 @@ async def _anthropic_in_process_messages(
     return _monitor_anthropic_response(response, monitor_id, context_length, cancel_event)
 
 
-@router.post("/messages")
+@router.post("/messages", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def anthropic_messages(
     payload: AnthropicMessagesRequest,

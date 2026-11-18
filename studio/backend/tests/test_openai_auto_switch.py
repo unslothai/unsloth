@@ -529,6 +529,63 @@ def test_a_blank_alias_field_keeps_the_flags_a_reload_would_inherit(monkeypatch)
     assert rec.calls == []
 
 
+def _alias_request(
+    path,
+    alias = _FAST,
+    body = None,
+):
+    async def json():
+        return body or {"model": alias["model"]}
+
+    return SimpleNamespace(
+        scope = {"_unsloth_model_alias": alias}, url = SimpleNamespace(path = path), json = json
+    )
+
+
+@pytest.mark.parametrize(
+    "path, alias, body",
+    [
+        ("/v1/embeddings", _FAST, None),
+        ("/v1/chat/completions", {**_FAST, "model": "external::provider::gpt"}, None),
+        ("/v1/chat/completions", _FAST, {"model": "unsloth/a-gguf", "provider_id": "provider"}),
+        ("/v1/chat/completions", _FAST, {"model": "unsloth/a-gguf", "provider_type": "openai"}),
+    ],
+)
+def test_an_alias_with_load_settings_is_refused_where_they_would_be_ignored(path, alias, body):
+    request = _alias_request(path, alias, body)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._refuse_ignored_alias_load_settings(request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["error"]["code"] == "alias_load_settings_unsupported"
+
+
+@pytest.mark.parametrize(
+    "path, alias",
+    [
+        ("/v1/chat/completions", _FAST),
+        # A plain alias is served everywhere, as before.
+        ("/v1/embeddings", {"name": "plain", "model": "unsloth/a-gguf"}),
+        ("/v1/chat/completions", {"name": "plain", "model": "external::provider::gpt"}),
+    ],
+)
+def test_an_alias_is_served_where_its_load_settings_apply_or_it_has_none(path, alias):
+    request = _alias_request(path, alias)
+    assert asyncio.run(inference_route._refuse_ignored_alias_load_settings(request, "t")) is None
+
+
+def test_every_route_that_resolves_aliases_refuses_ignored_load_settings():
+    from utils.model_aliases import _ALIAS_ROUTES
+    guarded = {
+        route.path
+        for route in inference_route.router.routes
+        if any(
+            dep.dependency is inference_route._refuse_ignored_alias_load_settings
+            for dep in getattr(route, "dependencies", ())
+        )
+    }
+    assert guarded == set(_ALIAS_ROUTES)
+
+
 def test_models_listing_marks_only_the_alias_whose_load_settings_are_running(monkeypatch):
     rec = _loaded_with_other_settings(monkeypatch, enabled = True)
     rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent("unsloth/a-gguf", n_ctx = 8192)
