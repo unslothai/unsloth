@@ -352,6 +352,24 @@ def test_a_session_the_user_stopped_stops_and_the_portal_asks_again(bus, tmp_pat
     backend.move(5, 5)
 
 
+def test_a_capture_failing_because_the_user_stopped_sharing_stops_too(bus, tmp_path):
+    class Failing(FakeGrabber):
+        def grab(
+            self,
+            node,
+            timeout = 3.0,
+        ):
+            bus.close_session()
+            time.sleep(0.2)
+            raise RuntimeError("stream ended")
+
+    backend = WaylandBackend(grabber = Failing, token_path = tmp_path / "token")
+    display = backend.displays()[0]
+    with pytest.raises(BackendError, match = "Do not try again"):
+        backend.capture(display)
+    assert not (tmp_path / "token").exists()
+
+
 def test_an_idle_closed_session_is_restored_without_asking(bus, tmp_path):
     backend = _backend(tmp_path, idle_close = 0.3)
     backend.displays()

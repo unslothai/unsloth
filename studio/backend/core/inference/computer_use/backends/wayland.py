@@ -231,6 +231,7 @@ class WaylandBackend(LinuxBackend):
             return grabber.grab(stream.node).convert("RGB")
         except Exception as exc:  # noqa: BLE001 - the stream ended or never sent a frame
             with self._lock:
+                self._check_stopped()
                 self._end()
             raise BackendError("the shared screen could not be captured. Try again.") from exc
 
