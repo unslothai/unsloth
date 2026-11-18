@@ -14466,8 +14466,7 @@ def _manual_estimate_split(
     except ValueError:
         return None
 
-    # Manual strips -ncmoe/-cmoe (the field owns them), but these options
-    # reach the child and can override its tensor layout or device list.
+    # These reach the child and can re-place tensors or devices (manual strips only -ncmoe/-cmoe).
     if _extra_args_set_any_flag(
         args,
         _OVERRIDE_TENSOR_FLAGS
@@ -14492,8 +14491,7 @@ def _manual_estimate_split(
     ):
         return None
     if request.native_path_lease:
-        # A leased GGUF only authorizes regular sibling shards in its directory.
-        # Check them before letting GGUFReader open any additional headers.
+        # A lease authorizes only sibling shards: validate them before GGUFReader opens any.
         from core.inference.offload_layout import split_shard_paths
         try:
             for shard in split_shard_paths(gguf_path) or ():
@@ -14501,8 +14499,7 @@ def _manual_estimate_split(
         except HTTPException:
             return None
     pin = request.selected_gpu_ids
-    # An explicit pin strips the child's --device and LLAMA_ARG_DEVICE; otherwise
-    # it can change membership AND order, even if it preserves the device count.
+    # A pin strips --device / LLAMA_ARG_DEVICE; unpinned, they can change membership and order.
     if not pin and (
         _extra_args_main_device(args) is not None or os.environ.get("LLAMA_ARG_DEVICE")
     ):
@@ -14535,12 +14532,10 @@ def _manual_estimate_split(
     ):
         return None
     if ratio and len(ratio) == len(ids):
-        # Without a pin this count comes from torch at launch. A Vulkan inventory
-        # can have different devices, so its count cannot establish emission.
+        # Unpinned, the launch counts torch devices, which a Vulkan inventory need not match.
         if not pin and backend == "vulkan":
             return None
-        # An emitted ratio pins the child to the picker's order, including
-        # unpinned CUDA under a reordered parent mask (see _pin_visible_gpu_order_for_split).
+        # An emitted ratio pins picker order (see _pin_visible_gpu_order_for_split).
         rendered = [_as_emitted(v) for v in ratio]
         try:
             parse_tensor_split_override(["-ts", ",".join(str(v) for v in rendered)])
@@ -14549,8 +14544,7 @@ def _manual_estimate_split(
         return _ManualLayerSplit(ids, rendered, "tensor_split")
 
     if not pin:
-        # Without an emitted ratio the child keeps its inherited device order.
-        # For a numeric mask the picker can list physical PCI order instead.
+        # No ratio: the child keeps its inherited order, which the picker's PCI order may not match.
         if backend == "cuda" and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
             return None
         ordinals = [d.get("visible_ordinal") for d in devices]
@@ -14559,8 +14553,7 @@ def _manual_estimate_split(
         ids = sorted(ids, key = lambda i: by_id[i]["visible_ordinal"])
     if time.monotonic() - sampled_at >= getattr(main, "_SYSTEM_GPU_CACHE_TTL_SECONDS", 10.0):
         return None
-    # llama.cpp weights the split by raw free bytes. Display headroom, total
-    # memory and rounded GiB can all put the boundary on a different block.
+    # llama.cpp splits by raw free bytes; rounded or display figures can move the boundary block.
     free = [by_id[i].get("vram_free_bytes") for i in ids]
     if any(type(value) is not int or value < 0 for value in free) or not any(free):
         return None
@@ -15355,8 +15348,7 @@ def _gguf_memory_breakdown(
         if not kv_on_gpu:
             cache_bytes = 0
         elif runtime.kv_estimable:
-            # The aggregate budgets the wider type for K and V. A pass-through
-            # --parallel also supersedes the slot count used by the aggregate.
+            # Mixed K/V types or a pass-through --parallel make the aggregate cache unsplittable.
             types = _planned_main_cache_types(cache_type_kv, extras)
             slots = _extra_args_n_parallel(extras, {})
             if len({_kv_bytes_per_elem(t) for t in types}) == 1 and slots in (
@@ -15368,7 +15360,6 @@ def _gguf_memory_breakdown(
             gguf_path, gpu_layers, layer_split, cache_bytes, runtime.n_parallel
         )
     if per_gpu and all(row.cache_bytes is not None for row in per_gpu):
-        # Each row already prices the exact suffix, output matrix and live cache.
         gpu_bytes = sum(row.weights_bytes + row.cache_bytes for row in per_gpu)
     else:
         gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)

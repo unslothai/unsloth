@@ -447,7 +447,6 @@ def estimate_layer_split(
     try:
         slots = _device_slots(active, split_weights)
     except (OverflowError, ZeroDivisionError):
-        # A split that overflows or rounds to all zero at the loader's float precision.
         return []
 
     mask = layout.attention_layers

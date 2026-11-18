@@ -198,7 +198,7 @@ function gpuPlacementRow(
 
 function gpuLayersNote(estimate: MemoryEstimate): string | null {
   if (estimate.perGpu.length > 0) {
-    // Some GGUFs declare unused draft slots in layerCount. Count the blocks placed on devices.
+    // layerCount can include unused draft slots: count placed blocks.
     const layers = estimate.perGpu.reduce((sum, gpu) => sum + gpu.layerCount, 0);
     const output = estimate.perGpu.some((gpu) => gpu.outputLayer);
     return `${layers} repeating ${layers === 1 ? "layer" : "layers"}${output ? " and the output layer" : ""} on GPU`;

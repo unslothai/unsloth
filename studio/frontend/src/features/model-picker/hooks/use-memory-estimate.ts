@@ -48,7 +48,6 @@ function splitInventory(
   if (ids.length < 2) return null;
   const args = request.llamaExtraArgs ?? [];
   const flags = extraArgFlags(args);
-  // Extra args can override the layer count or tensor parallel setting. The backend resolves them.
   if (request.tensorParallel && !flags.includes("--split-mode") && !flags.includes("-sm")) return null;
   const layerOverride = flags.some((flag) =>
     ["-ngl", "--gpu-layers", "--n-gpu-layers"].includes(flag),

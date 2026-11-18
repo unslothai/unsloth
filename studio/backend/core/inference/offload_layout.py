@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Hybrid Mamba-2 archs storing head_count_kv (and on Bolt expert_used_count) per layer.
 _NEMOTRON_H_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
-# These loaders use one uniform KV tensor pair per attention block. Qwen 3.5's
-# Gated DeltaNet blocks instead carry recurrent state (identified below).
+# One uniform KV pair per attention block; Qwen 3.5 GDN blocks carry recurrent state instead.
 _UNIFORM_KV_ARCHS = frozenset({"llama", "qwen2", "qwen2moe", "qwen3", "qwen3moe"})
 _QWEN_HYBRID_ARCHS = frozenset({"qwen35", "qwen35moe"})
 _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
@@ -77,9 +76,7 @@ class ModelLayout:
     complete: bool = False
     # The loader partitions block_count + 1 slots even when it skips loading nextn weights.
     n_nextn_layers: int = 0
-    # One flag per target block; None when the per-layer cache sizes are unknown.
     attention_layers: Optional[tuple[bool, ...]] = None
-    # Non-block tensors whose devices cannot be determined from these buckets.
     has_unplaced_tensors: bool = False
 
     @property
@@ -320,7 +317,6 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
             other_resident += nbytes
 
     if not token_embd or (nextn and arch not in _QWEN_HYBRID_ARCHS):
-        # Unknown loader semantics for trailing blocks, or an incomplete target tensor table.
         has_unplaced_tensors = True
     if not spill and not resident:
         return ModelLayout()
