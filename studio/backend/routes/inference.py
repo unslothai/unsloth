@@ -30786,8 +30786,8 @@ async def _proxy_to_external_provider(
     # Managed engines and "Drop oldest turns" connections fit by eviction only.
     _evicting_fit = managed is not None or _evict_only
     _evicting_payload = payload
-    if _evict_only and _fit_active and not payload.compaction_threshold:
-        # /compact, or its epoch replayed, with auto-compact off: nothing past the epoch is evicted.
+    if _evict_only and _fit_active and not (payload.compaction_threshold and _rolling):
+        # /compact or its epoch, auto-compact off or the error policy: nothing past it is evicted.
         _evicting_payload = payload.model_copy(
             update = {
                 "compaction_threshold": payload.context_window or _EXTERNAL_COMPACTION_THRESHOLD_MAX
@@ -30963,7 +30963,11 @@ async def _proxy_to_external_provider(
             tools = _external_fit_tools,
             # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
             can_reset = (
-                bool(managed.supports_tools) if managed is not None else bool(studio_tool_loop)
+                bool(managed.supports_tools)
+                if managed is not None
+                else provider_model_runs_local_tools(
+                    provider_type, payload.external_model or payload.model
+                )
             )
             and not _tool_calls_are_disabled(payload),
             replays_manual = True,

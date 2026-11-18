@@ -195,6 +195,53 @@ def test_compact_starts_a_checkpoint_without_a_summary(
     assert len(after) < len(later) - 1
 
 
+def test_compact_with_tools_off_still_starts_a_checkpoint(rag_home, rag_conn, stub_embeddings):
+    thread = "thread-evict-manual-no-tools"
+    chat = _recall_chat(thread)
+    chunks, summaries, [sent] = _bodies(
+        _SummarisingHandler,
+        messages = chat,
+        thread_id = thread,
+        compact_context = True,
+        context_overflow = "truncate_oldest",
+        **_EVICT,
+    )
+    assert summaries == []
+    assert len(sent["messages"]) < len(chat)
+    [truncation] = _truncations(chunks)
+    assert truncation["manual"] is True and truncation["checkpoint_started"] is True
+
+
+def test_the_error_policy_evicts_nothing_after_an_earlier_fit():
+    thread = _saved_thread("thread-evict-error-policy")
+    chat = _long_chat()
+    chunks, _, _ = _bodies(
+        _SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER, **_EVICT
+    )
+    [truncation] = _truncations(chunks)
+    studio_db.upsert_chat_message(
+        {
+            "id": f"{thread}-reply",
+            "threadId": thread,
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "metadata": {"custom": {"contextTruncation": truncation}},
+            "createdAt": 2,
+        }
+    )
+    chunks, summaries, [sent] = _bodies(
+        _SummarisingHandler,
+        messages = chat,
+        thread_id = thread,
+        context_overflow = "error",
+        compaction_threshold = 6_000,
+        context_window = 64_000,
+        **_EVICT,
+    )
+    assert summaries == [] and _truncations(chunks) == []
+    assert len(sent["messages"]) == len(chat)
+
+
 def test_compact_without_a_saved_thread_is_ignored():
     chat = _long_chat(turns = 2)
     chunks, summaries, [sent] = _bodies(
