@@ -561,23 +561,41 @@ def register_route(index: int, head_dim: int, raise_floor: Callable) -> None:
 def _drop_routes(plan: dict) -> None:
     _, Sq, Sk, _, D = plan["shape"]
     floor = (min(Sq, Sk) // DECIDE_BUCKET + 1) * DECIDE_BUCKET
+    restored = raised = 0
     for index, head_dim, raise_floor in list(_ROUTES):
         if index == plan["index"] and head_dim == D:
-            raise_floor(floor)
+            if raise_floor(floor):
+                restored += 1
+            else:
+                raised += 1
+    if restored or raised:
+        # the install logged the kernel on these modules; say what runs now
+        _log().info(
+            "diffusion.int8_attention: torch attention beat the sink path on cuda:%d at %d tokens: %d attention "
+            "modules back on their stock processor, %d below %d tokens stay on %s",
+            plan["index"],
+            min(Sq, Sk),
+            restored,
+            raised,
+            floor,
+            BACKEND,
+        )
 
 
 def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
     """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
     its calls compile as they did before the install; any other raises its token floor."""
 
-    def raise_floor(tokens: int) -> None:
+    def raise_floor(tokens: int) -> bool:
+        """True when the module got its stock processor back."""
         stock = getattr(proc, "_unsloth_stock", None)
         if stock is not None and module is not None and getattr(module, "processor", None) is proc:
             module.processor = stock
-            return
+            return True
         proc._unsloth_int8_min_tokens = max(
             int(getattr(proc, "_unsloth_int8_min_tokens", 0)), tokens
         )
+        return False
 
     return raise_floor
 
@@ -2127,6 +2145,28 @@ def int8_attention_count(transformer: Any) -> int:
     return sum(
         1 for m in int8_processors(transformer) if getattr(m.processor, "_unsloth_int8", False)
     )
+
+
+# The backend a strided install raced (None: native), kept on the pipeline: the status names it once no module routes.
+INCUMBENT_ATTR = "_unsloth_int8_incumbent"
+
+
+def live_backend(pipe: Any, engaged: Any) -> Any:
+    """``engaged`` as it runs now. A load that engaged the kernel on the strided processors reports it only while a
+    module still routes to it: a sink race that found torch's attention faster gives every module its stock processor
+    back (``_drop_routes``), and the incumbent the install raced runs from then on."""
+    if engaged != BACKEND or pipe is None or not hasattr(pipe, INCUMBENT_ATTR):
+        return engaged
+    dits = [getattr(pipe, name, None) for name in ("transformer", "transformer_2")]
+    if any(int8_attention_count(t) for t in dits if t is not None):
+        return engaged
+    try:
+        from .diffusion_int8_attention_dispatch import routed_count
+        if routed_count(pipe):
+            return engaged
+    except Exception:  # noqa: BLE001 - no dispatch route: the strided census decides
+        pass
+    return getattr(pipe, INCUMBENT_ATTR)
 
 
 def engaged_implementations(transformer: Any) -> set:
