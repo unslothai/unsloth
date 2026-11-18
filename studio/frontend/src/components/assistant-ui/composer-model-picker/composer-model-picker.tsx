@@ -73,6 +73,7 @@ import {
   useHubModelSearch,
   useOnlineStatus,
 } from "@/features/hub";
+import { useAvatarImageUrl } from "@/features/hub/catalog/owner-avatar";
 import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
 import {
   hfCacheRepoId,
@@ -247,7 +248,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
-import { npuPickerRows } from "./npu-rows";
+import { npuMarkOwner, npuPickerRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -713,7 +714,32 @@ type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
   id?: string;
   label?: string;
   lora?: LoraModelOption;
+  npu?: Pick<NpuModel, "hf_repo">;
 };
+
+function NpuOwnerMark({ owner, name }: { owner: string; name?: string }) {
+  const src = useAvatarImageUrl(owner);
+  const [failed, setFailed] = useState<string | null>(null);
+  if (!src || failed === src) {
+    return (
+      <ApiProviderLogo
+        providerType={null}
+        name={name ?? owner}
+        className="-m-[calc(1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
+      />
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      aria-hidden={true}
+      decoding="async"
+      onError={() => setFailed(src)}
+      className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 rounded-[3px] object-cover"
+    />
+  );
+}
 
 function rowMarkName(row?: RowMarkRow): string | undefined {
   const name = row?.label ?? row?.lora?.name ?? row?.id?.split(/[\\/]/).pop();
@@ -721,6 +747,7 @@ function rowMarkName(row?: RowMarkRow): string | undefined {
 }
 
 function hasRowMark(row?: RowMarkRow): boolean {
+  if (npuMarkOwner(row)) return true;
   return row?.kind === "external"
     ? Boolean(row.providerType)
     : rowMaker(row) !== null || rowMarkName(row) !== undefined;
@@ -731,6 +758,10 @@ function RowMark({ row }: { row?: RowMarkRow }) {
   const provider = rowMaker(row);
   if (provider) {
     return <MakerMark provider={provider} className={size} />;
+  }
+  const npuOwner = npuMarkOwner(row);
+  if (npuOwner) {
+    return <NpuOwnerMark owner={npuOwner} name={rowMarkName(row)} />;
   }
   if (row?.kind === "external" && row.providerType) {
     return (

@@ -4561,10 +4561,11 @@ class AnthropicMessage(BaseModel):
                         else getattr(block, "source", None)
                     )
                     stype = source.get("type") if isinstance(source, dict) else None
-                    if stype not in ("text", "content"):
+                    pdf = stype == "base64" and source.get("media_type") == "application/pdf"
+                    if stype not in ("text", "content") and not pdf:
                         raise ValueError(
-                            f"unsupported document source type {stype!r}: only text and content "
-                            "documents can be read"
+                            f"unsupported document source type {stype!r}: only text, content "
+                            "and base64 PDF documents can be read"
                         )
         return data
 
