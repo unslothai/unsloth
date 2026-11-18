@@ -1590,10 +1590,7 @@ function Get-LlamaRpcServerTarget {
     return ''
 }
 
-# Best-effort, like Step G: adds the RPC server to a reused build that predates it. The target
-# exists only once the build is configured with GGML_RPC=ON; cmake keeps every other cached option.
-# True when $BuildDir was configured in another directory and moved here (source builds are staged
-# in "$LlamaCppDir.build.$PID"): cmake cannot reconfigure or build in such a tree any more.
+# True when $BuildDir was configured in "$LlamaCppDir.build.$PID" and moved here: cmake refuses that cache.
 function Test-LlamaBuildRelocated {
     param([string]$BuildDir)
     $cache = Join-Path $BuildDir "CMakeCache.txt"
@@ -1607,8 +1604,7 @@ function Test-LlamaBuildRelocated {
     return -not [string]::Equals($was, $here, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
-# True when a reused source build predates ggml-rpc-server and only a fresh build can add it: the
-# tree has the target and its moved build directory never enabled RPC.
+# True when a moved reused build never enabled RPC, so only a fresh build can add the server.
 function Test-LlamaRpcNeedsRebuild {
     param([string]$SourceDir, [string]$BuildDir)
     foreach ($rpcName in @('ggml-rpc-server', 'rpc-server')) {
@@ -1620,6 +1616,7 @@ function Test-LlamaRpcNeedsRebuild {
     return -not (Select-String -LiteralPath $cache -Pattern '^GGML_RPC:BOOL=ON' -Quiet -ErrorAction SilentlyContinue)
 }
 
+# Best-effort: adds the RPC server to a reused build that predates it (cmake keeps other cached options).
 function Backfill-LlamaRpcServer {
     param([string]$SourceDir, [string]$BuildDir)
     foreach ($rpcName in @('ggml-rpc-server', 'rpc-server')) {
@@ -9922,7 +9919,6 @@ if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinke
 }
 if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinked -and `
     (Test-LlamaRpcNeedsRebuild -SourceDir $LlamaCppDir -BuildDir $BuildDir)) {
-    # Its build directory was moved into place, so the target cannot be added to it.
     substep "the existing source build predates ggml-rpc-server; rebuilding once to add it"
     $CanReuseLlamaBuild = $false
 }
@@ -10309,9 +10305,7 @@ if ($LocalLlamaCppLinked) {
         $CmakeArgs += '-DLLAMA_BUILD_EXAMPLES=OFF'
         $CmakeArgs += '-DLLAMA_BUILD_SERVER=ON'
         $CmakeArgs += '-DGGML_NATIVE=ON'
-        # Configures the RPC server target Step G builds best-effort. RDMA off as on every platform:
-        # it is what every shipped prebuilt is built with, and it avoids the hard runtime dependency
-        # on a verbs library that ggml-rpc otherwise picks up whenever one is on the build host.
+        # RDMA off, as in every shipped prebuilt: ggml-rpc would otherwise link the host's verbs library.
         $CmakeArgs += '-DGGML_RPC=ON'
         $CmakeArgs += '-DGGML_RPC_RDMA=OFF'
         if ($LlamaBuildNumber) {
@@ -10426,10 +10420,8 @@ if ($LocalLlamaCppLinked) {
         $null = cmake --build $BuildDir --config Release --target llama-bench -j $NumCpu 2>&1 | Out-String
     }
 
-    # -- Step G: Build the RPC server (optional, best-effort) --
-    # The VS generator writes it to build\bin\Release, where rpc_server_binary() looks, so there
-    # is no copy step and no root-level link. A tree without the tool, or a failed link, keeps
-    # the llama-server build as is.
+    # -- Step G: Build the RPC server (best-effort) --
+    # The VS generator writes it to build\bin\Release, where rpc_server_binary() looks.
     if ($BuildOk) {
         $RpcServerTarget = Get-LlamaRpcServerTarget -SourceDir $LlamaCppDir
         if ($RpcServerTarget) {
