@@ -1394,3 +1394,15 @@ def test_physical_vendors_keep_an_amd_card_whose_kfd_is_missing(tmp_path, monkey
 
     assert path_settings.host_gpu_vendors() == {"nvidia"}
     assert path_settings.host_gpu_vendors(reachable = False) == {"amd", "nvidia"}
+
+
+def test_windows_dlls_are_not_physical_gpu_evidence(tmp_path, monkeypatch):
+    # The HIP SDK ships amdhip64.dll on hosts with no AMD card.
+    system32 = tmp_path / "System32"
+    system32.mkdir()
+    (system32 / "amdhip64_6.dll").write_bytes(b"")
+    monkeypatch.setattr(path_settings.sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+
+    assert path_settings.host_gpu_vendors() == {"amd"}
+    assert path_settings.host_gpu_vendors(reachable = False) is None

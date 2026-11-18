@@ -149,6 +149,9 @@ def host_gpu_vendors(*, reachable: bool = True) -> Optional[set[str]]:
     if sys.platform == "darwin":
         return {"apple"}
     if sys.platform == "win32":
+        if not reachable:
+            # The HIP SDK installs amdhip64.dll with no AMD card, so DLLs prove no device here.
+            return None
         system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
         for vendor, patterns in _WINDOWS_VENDOR_DLLS.items():
             if any(next(system32.glob(pattern), None) for pattern in patterns):
