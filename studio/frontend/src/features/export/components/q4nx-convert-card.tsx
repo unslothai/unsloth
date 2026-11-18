@@ -34,7 +34,7 @@ import {
   ModelSelector,
   PillTabs,
 } from "@/features/model-picker";
-import { useNpuStatus } from "@/features/npu";
+import { NPU_TAG_TEXT, useNpuCompat, useNpuStatus } from "@/features/npu";
 import { useDebouncedValue } from "@/hooks";
 import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import { getHfEndpoint } from "@/lib/hf-endpoint";
@@ -219,6 +219,7 @@ export function Q4nxConvertCard({
   const accessToken = hfApiToken(hfToken);
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
   const [npuStatus] = useNpuStatus();
+  const npuCompat = useNpuCompat();
   // Reported by the backend from #17531 on; without it rows show the need alone.
   const windowGb = npuStatus?.memory_window_gb ?? null;
   const [open, setOpen] = useState(false);
@@ -293,15 +294,15 @@ export function Q4nxConvertCard({
 
   const hubRows = useMemo(() => {
     const rows: SourceRow[] = hubResults
-      .map((r) => ({ r, fit: q4nxArchFit(r.ggufArchitecture, r.id) }))
-      // An unsupported architecture is left out; an unsupported size of a supported one stays, marked.
-      .filter(({ fit }) => fit.status !== "unsupported" || fit.sized)
+      .map((r) => ({ r, fit: q4nxArchFit(r.ggufArchitecture, r.id, npuCompat) }))
+      // "Not supported" is left out; a model that runs or only converts stays, tagged.
+      .filter(({ fit }) => fit.tag !== "unsupported")
       .map(({ r, fit }) => ({
         id: r.id,
         label: r.id,
         listingKey: q4nxVariantLookup("hub", r.id, null).key,
         folder: null,
-        hint: fit.status === "unsupported" ? "Not convertible" : undefined,
+        hint: fit.tag ? NPU_TAG_TEXT[fit.tag] : undefined,
         architecture: r.ggufArchitecture,
         totalParams: r.totalParams ?? q4nxParamsFromName(r.id),
       }));
@@ -324,7 +325,7 @@ export function Q4nxConvertCard({
       });
     }
     return rows;
-  }, [hubResults, hubQuery, repoId, hubResult, lookedArchitecture]);
+  }, [hubResults, hubQuery, repoId, hubResult, lookedArchitecture, npuCompat]);
 
   const localById = useMemo(
     () => new Map(localModels.map((row) => [row.id, row])),
@@ -528,9 +529,10 @@ export function Q4nxConvertCard({
       ? q4nxArchFit(
           selectedArchitecture,
           `${repoId} ${selectedVariant?.filename ?? ""}`,
+          npuCompat,
         )
       : localRow
-        ? q4nxArchFit(null, `${localRow.id} ${ggufPath ?? localPath}`)
+        ? q4nxArchFit(null, `${localRow.id} ${ggufPath ?? localPath}`, npuCompat)
         : null;
   const sourceReady =
     source === "hub" ? !!(repoId && selectedVariant) : !!ggufPath;

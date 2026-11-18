@@ -35,6 +35,7 @@ from core.inference.tools import (
 )
 from core.inference.web_access_policy import normalize_domain
 from loggers import get_logger
+from utils.account_context import current_account
 from routes.browser_cookies import (
     clear_cookies,
     cookie_header,
@@ -2523,6 +2524,14 @@ async def _run_in_pool(
         task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
 
 
+def _cookie_jar_key(current_subject: str) -> str:
+    """Cookie jars key on the immutable account_id: a deleted or renamed account's username can be reused."""
+    account = current_account()
+    return (
+        f"account:{account.account_id}" if account.username == current_subject else current_subject
+    )
+
+
 @router.post("/fetch")
 async def browser_fetch(
     request: BrowserFetchRequest,
@@ -2531,9 +2540,10 @@ async def browser_fetch(
 ):
     """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
     request.url = _normalize_url_scheme(request.url.strip())
+    jar_key = _cookie_jar_key(current_subject)
     return await _run_in_pool(
         _FETCH_POOL,
-        lambda request, cancel: _fetch_and_build(request, cancel, current_subject),
+        lambda request, cancel: _fetch_and_build(request, cancel, jar_key),
         request,
         http_request,
     )
@@ -2546,9 +2556,10 @@ async def browser_page_request(
     current_subject: str = Depends(get_current_subject),
 ):
     """A page's fetch or XHR to its own site, which its opaque-origin sandbox can't make (browser_network.py)."""
+    jar_key = _cookie_jar_key(current_subject)
     return await _run_in_pool(
         _REQUEST_POOL,
-        lambda request, cancel: _page_request(request, cancel, current_subject),
+        lambda request, cancel: _page_request(request, cancel, jar_key),
         request,
         http_request,
         slots = _PAGE_REQUEST_SLOTS,
@@ -2567,14 +2578,15 @@ async def browser_page_cookie(
     request: BrowserPageCookie, current_subject: str = Depends(get_current_subject)
 ):
     """A page's ``document.cookie`` write, so the site sees it on the page's next request."""
-    set_page_cookie(current_subject, request.page, request.key, request.value, request.same_site)
+    jar_key = _cookie_jar_key(current_subject)
+    set_page_cookie(jar_key, request.page, request.key, request.value, request.same_site)
     return Response(status_code = 204)
 
 
 @router.post("/clear-cookies", status_code = 204)
 async def browser_clear_cookies(current_subject: str = Depends(get_current_subject)):
     """Forget the cookies sites set on this account's pages (Clear browsing data)."""
-    clear_cookies(current_subject)
+    clear_cookies(_cookie_jar_key(current_subject))
     return Response(status_code = 204)
 
 

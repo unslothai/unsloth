@@ -475,7 +475,9 @@ test("read aloud asks for a voice of the translation's language", () => {
   assert.equal(translateSpeechTag("zh"), "zh-CN");
   assert.equal(translateSpeechTag("zh-Hant"), "zh-TW");
   assert.equal(translateSpeechTag("yue"), "zh-HK");
-  assert.equal(translateSpeechTag("fr"), "fr");
+  assert.equal(translateSpeechTag("fr", []), "fr-FR");
+  assert.equal(translateSpeechTag("fr", ["en-US", "fr-CA"]), "fr-CA");
+  assert.equal(translateSpeechTag("ja", ["en-US"]), "ja");
   const page = readText("../src/features/translate/translate-page.tsx");
   assert.match(page, /readAloud\.speak\(\s*output,\s*translateSpeechTag\(/);
 });

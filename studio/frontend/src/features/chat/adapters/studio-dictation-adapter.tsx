@@ -93,10 +93,18 @@ export class StudioDictationAdapter implements DictationAdapter {
   // undefined follows the active chat; null links no chat (e.g. Compare).
   private readonly chatId: string | null | undefined;
   private readonly language: string | undefined;
+  private readonly detectLanguage: boolean;
 
-  constructor(options: { chatId?: string | null; language?: string } = {}) {
+  constructor(
+    options: {
+      chatId?: string | null;
+      language?: string;
+      detectLanguage?: boolean;
+    } = {},
+  ) {
     this.chatId = options.chatId;
     this.language = options.language;
+    this.detectLanguage = options.detectLanguage === true;
   }
 
   static isSupported(
@@ -158,6 +166,7 @@ export class StudioDictationAdapter implements DictationAdapter {
         return new StudioModelDictationAdapter({
           chatId: this.chatId,
           language: this.language,
+          detectLanguage: this.detectLanguage,
         }).listen();
       }
       throw new Error(

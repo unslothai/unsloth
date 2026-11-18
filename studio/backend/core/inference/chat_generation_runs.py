@@ -17,8 +17,8 @@ from typing import Any, AsyncIterator, Iterator
 
 from starlette.requests import Request
 
-from core.inference.http_stream import SSE_LINE_END
 from core.inference.llama_keepwarm import InferenceActivityReservation
+from core.inference.sse import SSEDecoder
 from core.training.account_jobs import sweepable_job_accounts
 from utils.account_context import current_account_id, run_as
 from utils.first_token_timeout import FirstTokenWait, track_first_token_wait
@@ -44,23 +44,6 @@ _MAX_ADMISSION_INTERVAL_SECONDS = 24.0 * 60.0 * 60.0
 _LEASE_TIMEOUT_SECONDS = 1200.0
 _LEASE_SWEEP_INTERVAL_SECONDS = 60.0
 _LEASE_ERROR = "Generation stopped making progress"
-
-
-class _SSEDecoder:
-    def __init__(self) -> None:
-        self.buffer = ""
-
-    def feed(self, text: str) -> list[str]:
-        self.buffer += text.replace("\r\n", "\n")
-        values: list[str] = []
-        while "\n\n" in self.buffer:
-            block, self.buffer = self.buffer.split("\n\n", 1)
-            data = "\n".join(
-                line[5:].lstrip() for line in SSE_LINE_END.split(block) if line.startswith("data:")
-            )
-            if data:
-                values.append(data)
-        return values
 
 
 def _background_request(
@@ -754,7 +737,7 @@ class ChatGenerationSupervisor:
             iterator = getattr(response, "body_iterator", None)
             if iterator is None:
                 raise RuntimeError("Local generation did not return an event stream")
-            decoder = _SSEDecoder()
+            decoder = SSEDecoder()
             last_keepalive = time.monotonic()
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
@@ -790,24 +773,28 @@ class ChatGenerationSupervisor:
                     raw = next_raw_task.result()
                 except StopAsyncIteration:
                     next_raw_task = None
-                    break
-                next_raw_task = asyncio.create_task(iterator.__anext__())
-                text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                # `: keep-alive` means nothing was produced, so renewing on it would keep a wedged run alive.
-                if _ADMISSION_DONE_MARKER in text:
-                    last_keepalive = time.monotonic()
-                    await self._try_touch_progress(run_id)
-                elif (
-                    _ADMISSION_WAIT_MARKER in text
-                    or _TOOL_HEARTBEAT_MARKER in text
-                    or _PREFILL_PROGRESS_MARKER in text
-                ):
-                    now_s = time.monotonic()
-                    if now_s - last_keepalive >= _renew_interval_seconds():
-                        last_keepalive = now_s
+                    raw = None
+                if raw is None:
+                    events = decoder.flush()
+                else:
+                    next_raw_task = asyncio.create_task(iterator.__anext__())
+                    events = decoder.feed(raw)
+                    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+                    # `: keep-alive` means nothing was produced, so renewing on it would keep a wedged run alive.
+                    if _ADMISSION_DONE_MARKER in text:
+                        last_keepalive = time.monotonic()
                         await self._try_touch_progress(run_id)
-                for encoded in decoder.feed(text):
-                    if encoded == "[DONE]":
+                    elif (
+                        _ADMISSION_WAIT_MARKER in text
+                        or _TOOL_HEARTBEAT_MARKER in text
+                        or _PREFILL_PROGRESS_MARKER in text
+                    ):
+                        now_s = time.monotonic()
+                        if now_s - last_keepalive >= _renew_interval_seconds():
+                            last_keepalive = now_s
+                            await self._try_touch_progress(run_id)
+                for encoded in events:
+                    if encoded.strip() == "[DONE]":
                         saw_done = True
                         break
                     try:
@@ -820,7 +807,7 @@ class ChatGenerationSupervisor:
                     finish_reason = _chunk_finish_reason(chunk) or finish_reason
                     error = _chunk_error(chunk) or error
                     quote_cut = quote_cut or chunk.get("quote_cut") is True
-                if saw_done:
+                if saw_done or raw is None:
                     break
 
             failure = await settle_write()

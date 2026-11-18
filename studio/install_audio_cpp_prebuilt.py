@@ -905,7 +905,7 @@ def _server_in_use(server: Optional[Path]) -> bool:
 
 
 def _cuda_runtime_satisfied(record: dict) -> bool:
-    """A CUDA install that skipped its cudart archive still has torch's runtime to lean on."""
+    """A CUDA install that skipped its cudart archive still has torch's or the wheels' runtime to lean on."""
     if (
         record.get("backend") != "cuda"
         or record.get("cudart_asset")
@@ -913,7 +913,10 @@ def _cuda_runtime_satisfied(record: dict) -> bool:
     ):
         return True
     match = _CUDA_LINE.search(str(record.get("asset") or ""))
-    return bool(match) and torch_provides_cuda_runtime(int(match.group(1)))
+    if not match:
+        return False
+    major = int(match.group(1))
+    return torch_provides_cuda_runtime(major) or _windows_wheel_runtime_present(major)
 
 
 def _intact_install(target: Path, record: dict) -> Optional[Path]:
@@ -1068,6 +1071,11 @@ def _install_linux_cuda_runtime_wheels(major: Optional[int]) -> None:
     wheels = _LINUX_CUDA_RUNTIME_WHEELS.get(major or 0)
     if not wheels or not _cuda_runtime_wheels_installable():
         return
+    _pip_install_wheels(wheels, f"CUDA {major} runtime")
+
+
+def _pip_install_wheels(wheels: Sequence[str], what: str) -> None:
+    """Installs ``wheels`` into this env; never raises (each caller re-checks and falls back)."""
     try:
         if __package__:
             from .install_llama_prebuilt import _uv_for_wheels
@@ -1081,7 +1089,7 @@ def _install_linux_cuda_runtime_wheels(major: Optional[int]) -> None:
         if uv
         else [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
     )
-    print(f"audio.cpp: no CUDA {major} runtime; installing {', '.join(wheels)}", flush = True)
+    print(f"audio.cpp: no {what}; installing {', '.join(wheels)}", flush = True)
     try:
         result = subprocess.run([*cmd, "--only-binary", ":all:", *wheels], timeout = 1800)
         if result.returncode != 0:
@@ -1091,6 +1099,37 @@ def _install_linux_cuda_runtime_wheels(major: Optional[int]) -> None:
             )
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"audio.cpp: CUDA runtime wheel install failed ({exc})", flush = True)
+
+
+# Windows x64 chat-only: llama.cpp's step installed cudart + cuBLAS already; only cuFFT is missing.
+_WINDOWS_CUFFT_WHEELS = {12: "nvidia-cufft-cu12", 13: "nvidia-cufft"}
+_CUFFT_DLL = {12: "cufft64_11", 13: "cufft64_12"}
+
+
+def _windows_wheel_runtime_present(major: int, *, cufft: bool = True) -> bool:
+    """Whether the env's nvidia-* wheels (or torch) carry the DLLs a line-``major`` Windows bundle loads."""
+    if sys.platform != "win32":
+        return False
+    dirs = [Path(d) for d in _cuda_runtime_dirs("cuda")]
+    patterns = [f"cudart64_{major}*.dll", f"cublas64_{major}*.dll", f"cublasLt64_{major}*.dll"]
+    if cufft:
+        patterns.append(f"{_CUFFT_DLL.get(major, 'cufft64_')}*.dll")
+    return all(any(any(d.glob(pattern)) for d in dirs) for pattern in patterns)
+
+
+def _windows_runtime_from_wheels(major: Optional[int]) -> bool:
+    """True when llama.cpp's wheels for this line plus cuFFT replace the cudart archive. Never raises."""
+    if (
+        major not in _WINDOWS_CUFFT_WHEELS
+        or sys.platform != "win32"
+        or platform.machine().lower() not in ("amd64", "x86_64")
+        or torch_cuda_major() is not None
+        or not _windows_wheel_runtime_present(major, cufft = False)
+    ):
+        return False
+    if not _windows_wheel_runtime_present(major):
+        _pip_install_wheels((_WINDOWS_CUFFT_WHEELS[major],), f"cuFFT for CUDA {major}")
+    return _windows_wheel_runtime_present(major)
 
 
 def _runtime_wheels_marker(requested: str, detected: Optional[str]) -> bool:
@@ -1375,6 +1414,11 @@ def _install_locked(
     cuda_match = _CUDA_LINE.search(chosen)
     cuda_major = int(cuda_match.group(1)) if cuda_match else None
     torch_runtime = bool(cudart and cuda_major and torch_provides_cuda_runtime(cuda_major))
+    if cudart and not torch_runtime and _windows_runtime_from_wheels(cuda_major):
+        print(
+            f"audio.cpp: CUDA runtime from this env's nvidia wheels; skipping {cudart}", flush = True
+        )
+        cudart = None
     cudart_expected = (
         _expected_sha256(release, assets[cudart]) if cudart and not torch_runtime else None
     )
