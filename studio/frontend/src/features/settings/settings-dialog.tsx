@@ -368,7 +368,7 @@ export const SETTINGS_NAV_GROUPS: {
   },
   {
     headingKey: "settings.navGroups.connections",
-    ids: ["api-keys", "remote-lan", "connections", "agents"],
+    ids: ["api-keys", "remote-lan", "machines", "connections", "agents"],
   },
   {
     headingKey: "settings.navGroups.dataAccess",
