@@ -8983,7 +8983,7 @@ class LlamaCppBackend:
 
     @property
     def base_url(self) -> str:
-        from core.inference.spark_serving import route_base_url
+        from core.inference.rpc_serving import route_base_url
 
         routed = route_base_url(self)
         if routed is not None:
@@ -29414,6 +29414,14 @@ class LlamaCppBackend:
                         f"present. Available Vulkan devices: {_vulkan_available_ordinals}."
                     )
 
+                # A pass-through --rpc split names local devices unmasked: a fit-chosen mask would renumber them.
+                if (
+                    not gpu_ids
+                    and gpu_indices is not None
+                    and (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+                ):
+                    gpu_indices = None
+
                 # Pin the whole picked set so the model can't spill onto an unpicked GPU.
                 if gpu_ids:
                     gpu_indices, tp_tensor_split = self._picker_ordered_gpu_indices(
@@ -38252,7 +38260,7 @@ class LlamaCppBackend:
             or slot < 0
         ):
             return False
-        from core.inference.spark_serving import route_base_url
+        from core.inference.rpc_serving import route_base_url
 
         if route_base_url(self) is not None:
             # Behind the router slot N may be the peer's: erasing it would clear another chat's cache.
@@ -38347,7 +38355,7 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
-        from core.inference.spark_serving import tag_conversation
+        from core.inference.rpc_serving import tag_conversation
 
         tag_conversation(payload, thread_id)
         retry_messages = messages
@@ -39507,7 +39515,7 @@ class LlamaCppBackend:
                 "frequency_penalty": frequency_penalty,
             }
 
-            from core.inference.spark_serving import tag_conversation
+            from core.inference.rpc_serving import tag_conversation
 
             tag_conversation(payload, thread_id)
 
@@ -42157,7 +42165,7 @@ class LlamaCppBackend:
             "frequency_penalty": frequency_penalty,
         }
 
-        from core.inference.spark_serving import tag_conversation
+        from core.inference.rpc_serving import tag_conversation
 
         tag_conversation(stream_payload, thread_id)
         if logit_bias:

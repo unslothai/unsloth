@@ -2582,10 +2582,9 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     spark_topology: Optional[str] = Field(
         None,
         description = (
-            "How a GGUF is being served on a paired DGX Spark: single (this node only), "
-            "replicas (one llama-server per node behind the in-process router) or "
-            "layer_split (the peer's ggml-rpc-server holds part of the model). None off a "
-            "paired Spark. GET /api/inference/spark/status has the per-node detail."
+            "How a GGUF is being served across machines: single (this machine only) or "
+            "layer_split (other machines' ggml-rpc-server hold part of the model). None when "
+            "no machines are configured. GET /api/inference/spark/status has the per-node detail."
         ),
     )
     audio_probe_pending: bool = Field(
