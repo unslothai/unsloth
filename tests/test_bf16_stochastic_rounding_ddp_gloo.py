@@ -126,6 +126,10 @@ def test_ddp_replicas_stay_synced_with_stochastic_rounding(
     if device == "cuda":
         if not has_real_cuda():
             pytest.skip("requires CUDA (both ranks share one GPU over gloo)")
+        if sys.platform == "win32":
+            # Windows gloo crashes a spawned rank on GPU-tensor collectives before any assertion
+            # (0xC0000005 on ROCm, base and head alike); the CPU case covers the fix there.
+            pytest.skip("gloo collectives on GPU tensors are not supported on Windows")
         pytest.importorskip("triton")
     if optim == "adamw8bit":
         pytest.importorskip("bitsandbytes")
