@@ -2623,8 +2623,6 @@ type AutoLoadCandidate = {
   ggufVariant: string | null;
   maxSeqLength: number;
   successLabel: string;
-  /** Shown instead of id when they differ, e.g. a repo id for a snapshot path. */
-  label?: string;
 };
 
 // Same case rules as autoLoadSourceKey: folding a POSIX target would conflate /models/Foo and /models/foo.
@@ -3150,17 +3148,17 @@ async function resolveAutoLoadCandidate(
   rememberedVariant: string | null,
   isSkipped: (candidate: AutoLoadCandidate) => boolean,
 ): Promise<AutoLoadCandidate | null> {
-  const label = source.repoId ?? source.id;
+  // Like a cached repo row: the repo id keys saved settings and the record, the snapshot path loads.
+  const id = source.repoId ?? source.id;
   const build = (ggufVariant: string | null): AutoLoadCandidate => ({
-    id: source.id,
+    id,
     loadId: source.loadId,
     kind: source.kind,
     ggufVariant,
     maxSeqLength: source.maxSeqLength,
     successLabel: ggufVariant
-      ? `Loaded ${label} (${ggufVariant})`
-      : `Loaded ${label}`,
-    label,
+      ? `Loaded ${id} (${ggufVariant})`
+      : `Loaded ${id}`,
   });
   if (!source.listVariants) {
     const variants =

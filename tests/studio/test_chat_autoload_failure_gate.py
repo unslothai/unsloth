@@ -569,7 +569,8 @@ function recordLastLocalModelLoad(x: any) {
 function normalizeMaxSeqLength(value: any) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
-function resolveInitialConfig(_id: string, _variant: any) {
+function resolveInitialConfig(id: string, variant: any) {
+  EVENTS.push({ kind: "resolveInitialConfig", id, variant });
   return { config: {
     customContextLength: null, maxSeqLength: null, gpuMemoryMode: null,
     gpuLayers: null, nCpuMoe: null, selectedGpuIds: undefined,
@@ -1495,6 +1496,27 @@ def test_a_repo_id_snapshot_is_not_retried_when_the_exact_last_used_row_failed()
         "small",
     ]
     assert out["result"]["loaded"] is True
+
+
+def test_a_repo_id_snapshot_loads_by_path_but_keeps_the_repo_settings_and_record():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " return scenario({ ggufRepos: 'throw', modelRepos: 'throw',"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [p]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: R, kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' } }); })()"
+    )
+
+    repo = "unsloth/gemma-4-26B-A4B-it-GGUF"
+    assert _loaded_paths(out) == [
+        "/mnt/old/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/old"
+    ]
+    assert [e["id"] for e in out["events"] if e["kind"] == "resolveInitialConfig"] == [repo]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == [repo]
+    assert _toasts(out, "toast.success")[0]["msg"] == f"Loaded {repo} (UD-Q4_K_XL)"
 
 
 def test_without_a_last_used_model_a_fallback_is_recorded_as_before():
