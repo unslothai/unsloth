@@ -28,6 +28,13 @@ from . import diffusion_vae_fused as fused
 
 STRIPS_ENV = "UNSLOTH_FLUX_VAE_STRIPS"
 FULL_MAP_ENV = "UNSLOTH_FLUX_VAE_FULL_MAP"
+# Upsample stage: Triton writes the nearest-2x rows into the halo-padded strip, cuDNN writes the conv straight into the
+# output, and the conv bias is carried into the next block's GroupNorm and residual (no bias pass, no strip copy).
+# ``0`` keeps the torch copy + conv-with-bias + copy.
+STRIP_UPSAMPLE_ENV = "UNSLOTH_VAE_STRIP_UPSAMPLE"
+# Strip decode for AutoencoderKL-structured VAEs (FLUX.1, Kontext, Z-Image, HiDream, Lumina-2, Chroma, SDXL) on the
+# default path, matched by structure (``kl_strip_candidate``). ``1`` on, ``0`` off; unset: ``KL_STRIP_CAPS``.
+KL_STRIPS_ENV = "UNSLOTH_VAE_KL_STRIPS"
 STRIP_VAES = frozenset({"AutoencoderKLFlux2"})
 # Elements of the larger of a strip's input and output (None: by card). sm80+ (L4 / A100) decode fastest at 2^24
 # (32 MiB of bf16); Turing's implicit-GEMM convs lose 5-10% on strips that short, so sm75 takes 2^26.
@@ -80,6 +87,45 @@ def always_on(device: Any) -> bool:
         return True
     torch = fused._torch()
     return _card_always(device.index if device.index is not None else torch.cuda.current_device())
+
+
+# (major, minor) compute capabilities where the AutoencoderKL strip decode is the default (measured no slower).
+KL_STRIP_CAPS: frozenset = frozenset()
+
+
+def _kl_setting() -> Optional[bool]:
+    v = os.environ.get(KL_STRIPS_ENV, "").strip().lower()
+    if v in fused._FALSE:
+        return False
+    if v in ("1", "true", "yes", "on"):
+        return True
+    return None
+
+
+@lru_cache(maxsize = 16)
+def _card_kl(index: int) -> bool:
+    return tuple(fused._torch().cuda.get_device_capability(index)) in KL_STRIP_CAPS
+
+
+def kl_always_on(device: Any) -> bool:
+    """Every AutoencoderKL decode on this card takes the strip path (else only the ones the fused decode would not fit)."""
+    setting = _kl_setting()
+    if setting is not None:
+        return setting
+    torch = fused._torch()
+    return _card_kl(device.index if device.index is not None else torch.cuda.current_device())
+
+
+def kl_strip_candidate(vae: Any) -> bool:
+    """A KL VAE outside ``STRIP_VAES`` whose decode is AutoencoderKL's (post_quant_conv, then ``decoder``) and whose
+    strips are not switched off: the decoder itself is checked by ``decoder_ok``."""
+    return (
+        vae is not None
+        and type(vae).__name__ not in STRIP_VAES
+        and (_kl_setting() if _kl_setting() is not None else bool(KL_STRIP_CAPS))
+        and _plain_decode_class(type(vae))
+        and _post_quant_ok(vae)
+    )
 
 
 def fused_would_not_fit(vae: Any, z: Any) -> bool:
@@ -438,40 +484,58 @@ def _conv_add(
     scale: float,
     in_bias: Any = None,
     shortcut: Any = None,
+    res_bias: Any = None,
 ) -> None:
-    """dst = (res + conv(silu(group_norm(x + in_bias)))) / scale strip by strip (conv bias included); ``res`` is
-    ``dst`` itself, or ``shortcut`` (a 1x1 conv) of that strip's rows of its input."""
+    """dst = (res + res_bias + conv(silu(group_norm(x + in_bias)))) / scale strip by strip (conv bias included);
+    ``res`` is ``dst`` itself, or ``shortcut`` (a 1x1 conv) of that strip's rows of its input. ``res_bias`` (fp32) is a
+    bias the residual still owes (an upsample conv's, deferred); with a shortcut it is already the shortcut's total
+    bias, so the 1x1 runs bias-free."""
     import torch.nn.functional as F
 
     stats = _stats(x, norm, in_bias)
     h = x.shape[2]
+    bias = conv.bias if res_bias is None else _fold_bias(conv.bias, res_bias)
     for a, b in _strips(h, max(x.numel(), dst.numel())):
         y = _conv_rows(_norm_rows(x, a, b, norm, stats, in_bias), conv, False)
         res = None
         if shortcut is not None:
             sc, src = shortcut
-            res = F.conv2d(src.narrow(2, a, b - a), sc.weight, sc.bias)
-        _add_rows(dst.narrow(2, a, b - a), y, conv.bias, scale, res)
+            res = F.conv2d(
+                src.narrow(2, a, b - a), sc.weight, sc.bias if res_bias is None else None
+            )
+        _add_rows(dst.narrow(2, a, b - a), y, bias, scale, res)
 
 
-def _halve(block: Any, x: Any, hidden: Optional[Any]) -> tuple:
+def _halve(
+    block: Any,
+    x: Any,
+    hidden: Optional[Any],
+    pending: Any = None,
+) -> tuple:
     """A 2C -> C block whose output takes the front half of ``x``'s storage. Output rows [a, b) overwrite input rows
     [a / 2, b / 2), which only strips before b read (the shortcut is 1x1 and conv1 has finished)."""
     c = block.conv1.out_channels
     _, _, h, w = x.shape
     if hidden is None or tuple(hidden.shape) != (1, c, h, w) or not _dense_cl(hidden):
         hidden = _empty_cl(c, h, w, x)
-    _conv_into(x, block.norm1, block.conv1, hidden)
+    _conv_into(x, block.norm1, block.conv1, hidden, pending)
     out = x.as_strided((1, c, h, w), (h * w * c, 1, w * c, c), x.storage_offset())
     _conv_add(
         hidden, block.norm2, block.conv2, out, block.output_scale_factor, block.conv1.bias,
         shortcut = (block.conv_shortcut, x),
+        res_bias = None if pending is None else _shortcut_bias(block.conv_shortcut, pending),
     )  # fmt: skip
     return out, hidden
 
 
-def _resnet(block: Any, x: Any, hidden: Optional[Any]) -> tuple:
-    """(output, hidden buffer for the level's next block)."""
+def _resnet(
+    block: Any,
+    x: Any,
+    hidden: Optional[Any],
+    pending: Any = None,
+) -> tuple:
+    """(output, hidden buffer for the level's next block). ``pending``: a bias ``x`` still owes (the upsample conv's),
+    folded into norm1's input and the residual."""
     import torch.nn.functional as F
 
     cin, cout = block.conv1.in_channels, block.conv1.out_channels
@@ -480,20 +544,59 @@ def _resnet(block: Any, x: Any, hidden: Optional[Any]) -> tuple:
         hidden = _empty_cl(cout, h, w, x)
     if cin == cout and block.conv_shortcut is None:
         x = _owned_cl(x)
-        _conv_into(x, block.norm1, block.conv1, hidden)
-        _conv_add(hidden, block.norm2, block.conv2, x, block.output_scale_factor, block.conv1.bias)
+        _conv_into(x, block.norm1, block.conv1, hidden, pending)
+        _conv_add(
+            hidden, block.norm2, block.conv2, x, block.output_scale_factor, block.conv1.bias,
+            res_bias = None if pending is None else pending.float(),
+        )  # fmt: skip
         return x, hidden
     if cin == 2 * cout and _dense_cl(x):
-        return _halve(block, x, hidden)
+        return _halve(block, x, hidden, pending)
     sc = block.conv_shortcut
-    out = _owned_cl(F.conv2d(x, sc.weight, sc.bias))
-    _conv_into(x, block.norm1, block.conv1, hidden)
+    sc_bias = sc.bias if pending is None else _shortcut_bias(sc, pending).to(sc.weight.dtype)
+    out = _owned_cl(F.conv2d(x, sc.weight, sc_bias))
+    _conv_into(x, block.norm1, block.conv1, hidden, pending)
     _conv_add(hidden, block.norm2, block.conv2, out, block.output_scale_factor, block.conv1.bias)
     return out, hidden
 
 
-def _upsample(up: Any, x: Any) -> Any:
-    """conv(nearest_2x(x)) in strips of input rows; the 2x rows are written straight into the padded strip."""
+def strip_upsample_disabled() -> bool:
+    return os.environ.get(STRIP_UPSAMPLE_ENV, "").strip().lower() in fused._FALSE
+
+
+def _up_rows(
+    x: Any,
+    lo: int,
+    n: int,
+    inner: Any,
+    kernel: bool = True,
+) -> None:
+    """``inner`` (dense (1, 2n, 2W, C)) = nearest_2x(rows [lo, lo + n) of ``x``)."""
+    if not kernel or _portable() or not x.is_cuda or fused._kernels() is None:
+        _, c, _, w = x.shape
+        src = x.narrow(2, lo, n).permute(0, 2, 3, 1)
+        inner.view(1, n, 2, w, 2, c).copy_(src[:, :, None, :, None, :].expand(1, n, 2, w, 2, c))
+        return
+    k = fused._kernels()
+    _, c, _, w = x.shape
+    x5 = x.narrow(2, lo, n).unsqueeze(2)
+    block_c = min(128, fused._next_pow2(c))
+    block_p = max(1, 4096 // block_c)
+    grid = ((4 * n * w + block_p - 1) // block_p, 1, (c + block_c - 1) // block_c)
+    with fused._on_card(x):
+        k.up_nearest2x[grid](
+            x5, inner, c, 1, n, w, *x5.stride(), INTERLEAVE = False, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+        )  # fmt: skip
+
+
+def _upsample(
+    up: Any,
+    x: Any,
+    defer_bias: bool = False,
+) -> tuple:
+    """(conv(nearest_2x(x)) in strips of input rows, the conv bias still to add). The 2x rows are written straight
+    into the padded strip; ``defer_bias``: cuDNN writes the bias-free conv into the output and the bias is returned
+    for the next stage to fold in, else the bias is added here."""
     conv = up.conv
     _, c, h, w = x.shape
     out = _empty_cl(conv.out_channels, 2 * h, 2 * w, x)
@@ -502,12 +605,34 @@ def _upsample(up: Any, x: Any) -> Any:
         n = hi - lo
         top, bottom = int(a == 0), int(b == h)
         buf, inner = _padded_rows(c, 2 * n, top, bottom, 2 * w, x)
-        src = x.narrow(2, lo, n).permute(0, 2, 3, 1)
-        inner.view(1, n, 2, w, 2, c).copy_(src[:, :, None, :, None, :].expand(1, n, 2, w, 2, c))
+        _up_rows(x, lo, n, inner, defer_bias)
         # output rows [2a, 2b) read 2x rows [2a - 1, 2b + 1)
         padded = buf.permute(0, 3, 1, 2).narrow(2, 2 * (a - lo) + top - 1, 2 * (b - a) + 2)
-        out.narrow(2, 2 * a, 2 * (b - a)).copy_(_conv_rows(padded, conv, True))
+        dst = out.narrow(2, 2 * a, 2 * (b - a))
+        if defer_bias:
+            _conv_to(padded, conv, dst)
+        else:
+            dst.copy_(_conv_rows(padded, conv, True))
+    return out, (conv.bias if defer_bias else None)
+
+
+def _fold_bias(*parts: Any) -> Any:
+    """fp32 sum of the bias vectors that are present (None if none)."""
+    out = None
+    for p in parts:
+        if p is not None:
+            out = p.float() if out is None else out + p.float()
     return out
+
+
+def _shortcut_bias(sc: Any, pending: Any) -> Any:
+    """Bias of the 1x1 ``sc`` applied to ``x + pending``: sc.bias + W @ pending, fp32."""
+    fold = (
+        (sc.weight.reshape(sc.out_channels, -1).float() @ pending.float())
+        if pending is not None
+        else None
+    )
+    return _fold_bias(sc.bias, fold)
 
 
 def _decode_one(decoder: Any, z: Any) -> Any:
@@ -516,20 +641,26 @@ def _decode_one(decoder: Any, z: Any) -> Any:
     if decoder.mid_block is not None:
         h = decoder.mid_block(h, None)
     h = h.to(decoder.up_blocks[0].resnets[0].conv1.weight.dtype)
+    defer = not strip_upsample_disabled()
+    pending = None  # a bias ``h`` still owes: the last upsample conv's
     for up in decoder.up_blocks:
         h, hidden = _owned_cl(h), None
         for block in up.resnets:
-            h, hidden = _resnet(block, h, hidden)
+            h, hidden = _resnet(block, h, hidden, pending)
+            pending = None
         del hidden
         if up.upsamplers is not None:
-            h = _upsample(up.upsamplers[0], h)
+            if pending is not None:
+                h = _owned_cl(h + pending.to(h.dtype).view(1, -1, 1, 1))
+                pending = None
+            h, pending = _upsample(up.upsamplers[0], h, defer)
     conv = decoder.conv_out
     _, _, hh, ww = h.shape
     out = _empty_cl(conv.out_channels, hh, ww, h)
-    stats = _stats(h, decoder.conv_norm_out)
+    stats = _stats(h, decoder.conv_norm_out, pending)
     for a, b in _strips(hh, h.numel()):
         out.narrow(2, a, b - a).copy_(
-            _conv_rows(_norm_rows(h, a, b, decoder.conv_norm_out, stats), conv, True)
+            _conv_rows(_norm_rows(h, a, b, decoder.conv_norm_out, stats, pending), conv, True)
         )
     return out
 
@@ -735,9 +866,10 @@ def _call_ok(decoder: Any, z: Any) -> bool:
 def install(vae: Any, logger: Any = None) -> bool:
     """Route ``vae.decoder``'s forward through the strip decode. The fused per-module paths stay as the fallback."""
     decoder = getattr(vae, "decoder", None)
+    kl = vae is not None and type(vae).__name__ not in STRIP_VAES
     if (
         vae is None
-        or type(vae).__name__ not in STRIP_VAES
+        or (kl and not kl_strip_candidate(vae))
         or decoder is None
         or strips_disabled()
         or not fused.runtime_ok()
@@ -762,7 +894,11 @@ def install(vae: Any, logger: Any = None) -> bool:
             or strips_disabled()
             or not _call_ok(decoder, sample)
             or not worth_strips(decoder, sample)
-            or not (always_on(sample.device) or fused_would_not_fit(vae, sample))
+            or not (
+                (kl_always_on(sample.device) if kl else always_on(sample.device))
+                or fused_would_not_fit(vae, sample)
+            )
+            or (kl and _kl_setting() is False)
         ):
             return prev(sample, latent_embeds, *args, **kwargs)
         try:
