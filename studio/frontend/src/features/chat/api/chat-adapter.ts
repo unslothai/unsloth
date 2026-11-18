@@ -3090,11 +3090,10 @@ function buildAutoLoadSources(
   return sources;
 }
 
-/** 0 = the remembered target itself, 1 = another snapshot of its repo, null = neither. */
 function rememberedMatch(
   source: AutoLoadSource,
   remembered: { id: string; kind: LastLocalModelKind },
-): 0 | 1 | null {
+): "exact" | "repo" | null {
   if (source.kind !== remembered.kind) return null;
   // Same case rules as the dedupe key.
   const target = normalizeTarget(remembered.id);
@@ -3102,19 +3101,30 @@ function rememberedMatch(
     normalizeTarget(source.id) === target ||
     normalizeTarget(source.loadId) === target
   ) {
-    return 0;
+    return "exact";
   }
   return source.repoId !== undefined &&
     normalizeTarget(source.repoId) === target
-    ? 1
+    ? "repo"
     : null;
 }
 
-function isRememberedSource(
-  source: AutoLoadSource,
-  remembered: { id: string; kind: LastLocalModelKind },
-): boolean {
-  return rememberedMatch(source, remembered) !== null;
+/** A snapshot matched only by repo id stands in for a missing exact row, never retries a failed one. */
+function rememberedSources(
+  sources: AutoLoadSource[],
+  remembered: { id: string; kind: LastLocalModelKind } | null,
+): Set<AutoLoadSource> {
+  if (!remembered) return new Set();
+  const exact = sources.filter(
+    (source) => rememberedMatch(source, remembered) === "exact",
+  );
+  return new Set(
+    exact.length > 0
+      ? exact
+      : sources.filter(
+          (source) => rememberedMatch(source, remembered) === "repo",
+        ),
+  );
 }
 
 /** Last used first, then GGUF before safetensors, then smallest first. */
@@ -3122,10 +3132,10 @@ function orderAutoLoadSources(
   sources: AutoLoadSource[],
   remembered: { id: string; kind: LastLocalModelKind } | null,
 ): AutoLoadSource[] {
+  const preferred = rememberedSources(sources, remembered);
   const rank = (source: AutoLoadSource): number => {
-    const match = remembered ? rememberedMatch(source, remembered) : null;
-    if (match !== null) return match;
-    return source.kind === "gguf" ? 2 : 3;
+    if (preferred.has(source)) return 0;
+    return source.kind === "gguf" ? 1 : 2;
   };
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
   const size = (source: AutoLoadSource): number =>
@@ -4152,6 +4162,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     );
 
     // A target can be in several lists; a twin is tried only if the preferred row resolved nothing.
+    const remembered = rememberedSources(sources, lastLoaded);
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
       if (
@@ -4163,9 +4174,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
-      const isRemembered = lastLoaded
-        ? isRememberedSource(source, lastLoaded)
-        : false;
+      const isRemembered = remembered.has(source);
       const isTried = (entry: AutoLoadCandidate): boolean =>
         skippedAutoLoadCandidates.has(
           autoLoadCandidateKey(
