@@ -382,8 +382,11 @@ class _State:
             if not cands:
                 return []
             stacked = torch.stack(cands)
-            if not bool((stacked == ts.unsqueeze(0)).all(dim = 1).any()):
+            hits = (stacked == ts.unsqueeze(0)).all(dim = 1).nonzero()
+            if hits.numel() == 0:
                 return []
+            # the steps from this one on (a request never revisits an earlier one), nearest first
+            cands = cands[int(hits[0, 0]) :]
         except Exception:  # noqa: BLE001 - prediction is only an optimisation
             return []
         out = []
@@ -434,11 +437,14 @@ class _State:
                 del dev_mod
         for key in pending:
             ys = outs[key]
+            outs[key] = None  # released as it is stored: one key's outputs ever held twice
             if any(y.dtype != ys[0].dtype or y.device != ys[0].device for y in ys):
                 raise _Unsupported("modulation outputs mix dtypes / devices")
             layout_id = tuple((tuple(y.shape), str(y.dtype), str(y.device)) for y in ys)
             flat = torch.cat([y.reshape(-1) for y in ys])
+            del ys
             self._store(key, layout_id, flat, refs[key] if keep_refs else None, protect = protect)
+            del flat
             COUNTS["rows_computed"] += 1
         COUNTS["weight_passes"] += 1
         if device.type == "cuda":
@@ -460,9 +466,38 @@ class _State:
         self.row_bytes += _nbytes(flat)
         self._evict(protect)
 
-    def _evict(self, protect: tuple = ()) -> None:
-        """Oldest first, never a ``protect`` row (the call being served): over budget, predictions go first."""
+    def row_bytes_estimate(self, model: Any, inputs: dict) -> int:
+        """Bytes of one key's row (every site's output at this call's batch), before computing it."""
+        torch = _torch()
+        batch = int(inputs["timestep"].shape[0]) if inputs["timestep"].dim() else 1
+        doubled = bool(getattr(model, "zero_cond_t", False))
+        size = torch.empty((), dtype = inputs["_dtype"]).element_size()
+        total = 0
+        for (_name, _parent, _attr, kind), stand in zip(self.sites, self.stand_ins):
+            rows = 2 * batch if (doubled and kind == _SILU) else batch
+            total += rows * int(stand.out_features or 0) * size
+        return max(1, total)
+
+    def make_room(self, model: Any, pending: "OrderedDict[tuple, dict]", protect: tuple) -> None:
+        """Bounds what a miss computes by the table budget BEFORE any output is allocated: predictions beyond it are
+        dropped (computed lazily when their step comes), and older rows are evicted to make room for the rest."""
         budget = _table_budget_bytes()
+        est = self.row_bytes_estimate(model, next(iter(pending.values())))
+        fit = max(len(protect), budget // est)
+        for key in list(pending)[::-1]:
+            if len(pending) <= fit:
+                break
+            if key not in protect:
+                del pending[key]
+        self._evict(protect, budget = max(0, budget - len(pending) * est))
+
+    def _evict(
+        self,
+        protect: tuple = (),
+        budget: Optional[int] = None,
+    ) -> None:
+        """Oldest first, never a ``protect`` row (the call being served): over budget, predictions go first."""
+        budget = _table_budget_bytes() if budget is None else budget
         if self.row_bytes <= budget:
             return
         for k in list(self.rows):
@@ -554,6 +589,7 @@ def _serve(model: Any, st: "_State", args: tuple, kwargs: dict) -> None:
                 if pk not in st.rows and pk not in pending:
                     pending[pk] = pred
                     COUNTS["predicted_rows"] += 1
+            st.make_room(model, pending, (key,))
             st.compute(model, pending, protect = (key,))
         st.arm(key)
 
@@ -772,6 +808,16 @@ def _rebuild_streamed(model: Any, restored: list) -> set:
     return owned
 
 
+def _sequential_offload_hook(model: Any) -> Any:
+    """An Accelerate AlignDevicesHook that offloads its module's weights (enable_sequential_cpu_offload), or None."""
+    for sub in model.modules():
+        hook = getattr(sub, "_hf_hook", None)
+        for h in getattr(hook, "hooks", None) or ((hook,) if hook is not None else ()):
+            if type(h).__name__ == "AlignDevicesHook" and getattr(h, "offload", False):
+                return h
+    return None
+
+
 def uninstall(
     model: Any,
     *,
@@ -802,10 +848,21 @@ def uninstall(
             parent._modules[attr] = orig
             restored.append(orig)
         owned = _rebuild_streamed(model, restored)
+        hook = _sequential_offload_hook(model)
         for orig, target in zip(restored, targets):
             if id(orig) in owned:
                 continue
-            if target is not None and str(target) != "cpu":
+            if hook is not None:
+                # sequential CPU offload: hook it the way enable_sequential_cpu_offload hooked its siblings (its
+                # weights move into the hook's weights map, the params to meta, onloaded per forward)
+                from accelerate import cpu_offload
+                cpu_offload(
+                    orig,
+                    execution_device = hook.execution_device,
+                    offload_buffers = bool(getattr(hook, "offload_buffers", False)),
+                )
+                continue
+            if target is not None and str(target) not in ("cpu", "meta"):
                 orig.to(target)
         st.rows.clear()
         st.layouts.clear()

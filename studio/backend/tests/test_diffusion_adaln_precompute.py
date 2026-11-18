@@ -291,24 +291,26 @@ def test_layer_split_declines_and_rows_follow_block_device():
 def test_uninstall_restores_beside_owning_block():
     model = _flux()
     assert ap.install(model, _pipe(4), requested = ap.MODE_ON)
-    # the load places the denoiser after install (CPU mock: "meta" as the GPU); restore without a device
+    # the load places the denoiser after install (CPU mock: "meta" stands for the card the blocks went to)
     model.to("meta")
+    st = model.__dict__[ap.STATE_ATTR]
+    # the placement is resolved from the owning block, not the parameter-less parent (norm / Sequential)
+    for name, *_rest in st.sites:
+        assert ap._owner_device(model, name).type == "meta", name
     assert ap.uninstall(model, reason = "LoRA adapters requested")
-    for blk in model.transformer_blocks:
-        assert blk.norm1.linear.weight.device.type == "meta"
-        assert blk.norm1_context.linear.weight.device.type == "meta"
-    for blk in model.single_transformer_blocks:
-        assert blk.norm.linear.weight.device.type == "meta"
-    assert model.norm_out.linear.weight.device.type == "meta"
+    # meta is never a target: real weights are kept rather than dropped (sequential offload's meta params)
+    assert model.transformer_blocks[0].norm1.linear.weight.device.type == "cpu"
 
 
 def test_qwen_uninstall_restores_beside_owning_block():
     model = _qwen()
     assert ap.install(model, _pipe(4), requested = ap.MODE_ON)
     model.to("meta")
+    st = model.__dict__[ap.STATE_ATTR]
+    for name, *_rest in st.sites:
+        assert ap._owner_device(model, name).type == "meta", name
     assert ap.uninstall(model)
-    assert model.transformer_blocks[0].img_mod[1].weight.device.type == "meta"
-    assert model.transformer_blocks[1].txt_mod[1].weight.device.type == "meta"
+    assert model.transformer_blocks[0].img_mod[1].weight.device.type == "cpu"
 
 
 def test_predicted_rows_over_budget_keep_the_served_row(monkeypatch):
@@ -521,3 +523,70 @@ def test_baked_lora_load_declines():
     pipe = _keep(_Pipe(torch.linspace(1000.0, 30.0, 4)))
     pipe._unsloth_loras = (("a", "x.safetensors", 1.0),)
     assert ap.install(model, pipe, requested = ap.MODE_ON) is False
+
+
+# ---- review round 3 (PR #18342)
+
+
+def test_sequential_cpu_offload_restore_keeps_weights_and_renders():
+    """enable_sequential_cpu_offload = accelerate cpu_offload per component; a LoRA request restores the modules and
+    diffusers then removes and re-applies the hooks around the adapter load."""
+    from accelerate import cpu_offload
+    from accelerate.hooks import remove_hook_from_module
+
+    calls = _flux_calls(torch.float32)
+    stock = _flux()
+    cpu_offload(stock, execution_device = torch.device("cpu"))
+    ref = _run(stock, calls)
+
+    model = _flux()
+    assert ap.install(
+        model, _pipe(len(calls)), requested = ap.MODE_ON
+    )  # before placement, as in Studio
+    cpu_offload(model, execution_device = torch.device("cpu"))
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+    assert ap.uninstall(model, reason = "LoRA adapters requested")
+    lin = model.transformer_blocks[0].norm1.linear
+    hook = getattr(lin, "_hf_hook", None)
+    assert isinstance(lin, torch.nn.Linear) and hook is not None
+    align = [
+        h
+        for h in (getattr(hook, "hooks", None) or (hook,))
+        if type(h).__name__ == "AlignDevicesHook" and h.offload
+    ]
+    assert align and align[0].offload
+    assert all(align[0].weights_map[k].device.type != "meta" for k in ("weight", "bias"))
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+    # diffusers' _func_optionally_disable_offloading around load_lora_weights
+    remove_hook_from_module(model, recurse = True)
+    assert lin.weight.device.type != "meta"
+    cpu_offload(model, execution_device = torch.device("cpu"))
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+
+
+def test_precompute_holds_at_most_the_table_budget(monkeypatch):
+    import weakref
+
+    calls = _flux_calls(torch.float32, steps = 10)
+    ref = _run(_flux(), calls)
+    model = _flux()
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    st = model.__dict__[ap.STATE_ATTR]
+    # one key's row, from the stand-ins alone (batch 1, fp32): every site's output features
+    row = sum(int(stand.out_features) for stand in st.stand_ins) * 4
+    budget = int(row * 3.5)
+    monkeypatch.setattr(ap, "_table_budget_bytes", lambda: budget)
+    live: list = []
+    peak = [0]
+
+    def watch(_mod, _inp, out):
+        live.append(weakref.ref(out))
+        held = sum(r().numel() * r().element_size() for r in live if r() is not None)
+        peak[0] = max(peak[0], held + st.row_bytes)
+
+    for stand in st.stand_ins:
+        stand._unsloth_orig.register_forward_hook(watch)
+    out = _run(model, calls)
+    assert all(torch.equal(a, b) for a, b in zip(ref, out))
+    assert peak[0] <= budget + row, (peak[0], budget, row)
+    assert st.row_bytes <= budget
