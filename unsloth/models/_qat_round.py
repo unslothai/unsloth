@@ -151,10 +151,12 @@ def round_frozen_qat_weights(model):
     # Residual inits (LoRA-GA, PiSSA, ...) keep a snapshot of their initial factors, and resuming such a checkpoint
     # into a re-initialized model rebases the frozen base in place (_native_from_converted). A rounded base with its
     # quantizer off would then train on fake_quant(W) + delta instead of fake_quant(W + delta), so keep those per call.
+    # DoRA reads base_layer.weight outside the quantizer for its weight norm, so rounding would change that norm.
     residual = {
         f"{name}.base_layer" if name else "base_layer"
         for name, module in model.named_modules()
         if getattr(module, "_unsloth_initial_lora", None)
+        or any((getattr(module, "use_dora", None) or {}).values())
     }
     candidates = []
     for name, module in model.named_modules():

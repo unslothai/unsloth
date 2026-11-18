@@ -40,6 +40,7 @@ def _model(
     mode = "1",
     dtype = torch.float32,
     residual = (),
+    use_dora = False,
 ):
     monkeypatch.setenv("UNSLOTH_QAT_ROUND_INPLACE", mode)
     monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
@@ -47,7 +48,11 @@ def _model(
     model = peft.get_peft_model(
         _Block().to(dtype),
         peft.LoraConfig(
-            r = 16, lora_alpha = 16, target_modules = ["up_proj", "down_proj"], lora_dropout = 0.0
+            r = 16,
+            lora_alpha = 16,
+            target_modules = ["up_proj", "down_proj"],
+            lora_dropout = 0.0,
+            use_dora = use_dora,
         ),
     )
     for name, p in model.named_parameters():
@@ -175,3 +180,9 @@ def test_residual_init_bases_keep_per_call_fake_quant(monkeypatch):
         if n.endswith("base_layer")
     }
     assert on == {"up_proj": True, "down_proj": False}
+
+
+def test_dora_bases_keep_per_call_fake_quant(monkeypatch):
+    # DoRA's weight norm reads base_layer.weight directly: rounding it would change the norm and the gradients.
+    model = _model("int4", monkeypatch, use_dora = True)
+    assert _quantizers_on(model) == 2
