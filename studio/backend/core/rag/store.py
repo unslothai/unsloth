@@ -933,12 +933,14 @@ _COMPATIBLE_CHUNKS = (
 
 
 def _search_compatible_dense(conn, scope, query, embedding_model, untagged):
+    # Prefilter on rowid, not chunk_id: vec0 matches a TEXT metadata IN list per row x per value.
     rows = conn.execute(
         "SELECT chunk_id, distance FROM chunks_vec "
-        "WHERE scope=? AND embedding MATCH ? AND k=? AND chunk_id IN ("
+        "WHERE scope=? AND embedding MATCH ? AND k=? AND rowid IN ("
+        "SELECT v.rowid FROM chunks_vec v WHERE v.scope=? AND v.chunk_id IN ("
         "SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
-        f"WHERE c.scope=? AND {_COMPATIBLE_CHUNKS}) ORDER BY distance",
-        (scope, query, _MAX_DENSE_FETCH, scope, embedding_model, embedding_model, untagged),
+        f"WHERE c.scope=? AND {_COMPATIBLE_CHUNKS})) ORDER BY distance",
+        (scope, query, _MAX_DENSE_FETCH, scope, scope, embedding_model, embedding_model, untagged),
     ).fetchall()
     return [
         (r["chunk_id"], 1.0 - r["distance"])
