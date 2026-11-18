@@ -544,6 +544,11 @@ def test_the_batched_packing_pool_asks_the_same_veto(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC", raising = False)
     from types import SimpleNamespace
 
+    pytest.importorskip("core.training.trainer", exc_type = ImportError)
+    try:
+        import unsloth_zoo.dataset_num_proc  # noqa: F401
+    except ImportError:
+        pytest.importorskip("unsloth.dataset_num_proc", exc_type = ImportError)
     from core.training import multi_lora_trainer
     import utils.datasets.online_tokenization as online
 
