@@ -118,22 +118,18 @@ def _runtime(monkeypatch):
 def test_kl_strips_install_by_structure_and_switch(monkeypatch):
     _runtime(monkeypatch)
     monkeypatch.delenv(S.STRIPS_ENV, raising = False)
-    monkeypatch.setenv(S.KL_STRIPS_ENV, "1")
+    monkeypatch.delenv(S.KL_STRIPS_ENV, raising = False)
     vae = _kl(**CONFIGS[0])
     assert S.kl_strip_candidate(vae)
-    assert S.install(vae) is True
+    assert S.install(vae) is True  # the card policy decides per decode
     assert S.engaged(vae)
     F.uninstall(vae)
     assert not S.engaged(vae)
     monkeypatch.setenv(S.KL_STRIPS_ENV, "0")
     assert S.install(_kl(**CONFIGS[0])) is False
-    monkeypatch.delenv(S.KL_STRIPS_ENV)
-    monkeypatch.setattr(S, "KL_STRIP_CAPS", frozenset())
-    assert (
-        S.install(_kl(**CONFIGS[0])) is False
-    )  # no measured card: the default stays the fused decode
-    monkeypatch.setattr(S, "KL_STRIP_CAPS", frozenset({(8, 9)}))
-    assert S.install(_kl(**CONFIGS[0])) is True
+    monkeypatch.setenv(S.KL_STRIPS_ENV, "1")
+    monkeypatch.setenv(S.STRIPS_ENV, "0")  # the strips kill switch covers the KL family too
+    assert S.install(_kl(**CONFIGS[0])) is False
 
 
 def test_kl_strips_skip_a_vae_whose_decode_differs(monkeypatch):
@@ -155,18 +151,31 @@ def test_kl_strips_skip_a_vae_whose_decode_differs(monkeypatch):
 
 def test_kl_policy_by_card(monkeypatch):
     monkeypatch.delenv(S.KL_STRIPS_ENV, raising = False)
-    monkeypatch.setattr(S, "KL_STRIP_CAPS", frozenset({(8, 9)}))
-    S._card_kl.cache_clear()
-    caps = {0: (8, 9), 1: (8, 0)}
+    monkeypatch.delenv(S.STRIPS_ENV, raising = False)
+    monkeypatch.delenv(S.STRIP_UPSAMPLE_ENV, raising = False)
+    S._card_cap.cache_clear()
+    caps = {0: (8, 9), 1: (8, 0), 2: (7, 5), 3: (12, 0), 4: (9, 0), 5: (10, 0)}
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i: caps[i])
     try:
-        assert [S.kl_always_on(torch.device("cuda", i)) for i in range(2)] == [True, False]
+        on = lambda: [S.kl_always_on(torch.device("cuda", i)) for i in range(6)]  # noqa: E731
+        assert on() == [
+            True,
+            True,
+            True,
+            True,
+            False,
+            False,
+        ]  # H100 / B200 unmeasured: only when the fused would not fit
+        monkeypatch.setenv(
+            S.STRIP_UPSAMPLE_ENV, "0"
+        )  # the older upsample: A100 and RTX PRO 6000 measured slower
+        assert on() == [True, False, True, False, False, False]
         monkeypatch.setenv(S.KL_STRIPS_ENV, "1")
-        assert S.kl_always_on(torch.device("cuda", 1))
+        assert all(on())
         monkeypatch.setenv(S.KL_STRIPS_ENV, "0")
-        assert not S.kl_always_on(torch.device("cuda", 0))
+        assert not any(on())
     finally:
-        S._card_kl.cache_clear()
+        S._card_cap.cache_clear()
 
 
 def test_fused_path_patches_upsample2d_with_a_kill_switch(monkeypatch):
@@ -221,3 +230,20 @@ def test_kl_strip_and_upsample_paths_on_cuda(monkeypatch, dtype):
     assert strips.decoder._unsloth_vae_strips_calls == 1
     tol = 1e-4 if dtype == torch.float32 else 0.08
     assert (a - r).abs().max().item() < tol and (b - r).abs().max().item() < tol
+
+
+def test_planner_prices_the_kl_strip_decode_when_it_runs(monkeypatch):
+    from core.inference import diffusion_vae_tiling as vt
+
+    vae = _kl(**CONFIGS[0]).to(torch.bfloat16)
+    z = torch.zeros(1, 4, 256, 256)
+    monkeypatch.setattr(S, "strip_elems", lambda device: 1 << 24)
+    vae._unsloth_vae_fused_installed = 5
+    assert vt.strips_decode_mib(vae, z, 256, 256) is None  # strips not engaged: the fused figure
+    monkeypatch.setattr(S, "engaged", lambda v: v is vae)
+    assert vt.strips_decode_mib(vae, z, 256, 256) == pytest.approx(0.048 * 256 * 256 + 128)
+    # a decoder whose largest pass per latent is twice the measured one's scales the slope
+    monkeypatch.setattr(
+        S, "largest_pass_elems", lambda dec, h, w: 2 * S._REF_PASS_ELEMS_PER_LATENT * h * w
+    )
+    assert vt.strips_decode_mib(vae, z, 256, 256) == pytest.approx(0.096 * 256 * 256 + 128)

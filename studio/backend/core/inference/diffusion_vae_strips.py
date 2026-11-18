@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Row-strip decode for the FLUX.2 / FLUX.3 VAE (AutoencoderKLFlux2) on top of the fused GroupNorm kernels.
+"""Row-strip decode for the FLUX.2 / FLUX.3 VAE (AutoencoderKLFlux2) and every AutoencoderKL-structured VAE (FLUX.1,
+Kontext, Z-Image, HiDream, Lumina-2, Chroma, SDXL) on top of the fused GroupNorm kernels.
 
 GroupNorm stats are taken once over the full map; norm, SiLU, padding and the 3x3 conv then run on bounded row
 strips with a one-row halo, so no normalised activation exists at full size. Residuals are written in place (halving
-blocks into the front half of their input). Same math as the fused decode. NVIDIA CUDA only; eager only.
+blocks into the front half of their input). The nearest-2x upsample writes its rows straight into the padded strip
+and its conv bias is carried into the next block. Same math as the fused decode. NVIDIA CUDA only; eager only.
 
-Every decode on cards measured no slower (T4, L4); elsewhere (A100 4% slower) only decodes the fused path would not
-fit. ``UNSLOTH_FLUX_VAE_STRIPS``: ``0`` off, ``1`` every decode on any NVIDIA card.
+Every decode on cards measured no slower (``strip_caps``: T4, A100, L4, RTX PRO 6000); elsewhere only decodes the
+fused path would not fit. ``UNSLOTH_FLUX_VAE_STRIPS``: ``0`` off, ``1`` every decode on any NVIDIA card;
+``UNSLOTH_VAE_KL_STRIPS`` the same for the AutoencoderKL family alone.
 
 ``full_map_decode`` runs the same strip decode where the VAE would otherwise tile (speed mode off, no Triton, ROCm,
 MPS, CPU, a failed fused install, low free memory): the three Triton primitives fall back to torch ops, so every device
@@ -33,7 +36,7 @@ FULL_MAP_ENV = "UNSLOTH_FLUX_VAE_FULL_MAP"
 # ``0`` keeps the torch copy + conv-with-bias + copy.
 STRIP_UPSAMPLE_ENV = "UNSLOTH_VAE_STRIP_UPSAMPLE"
 # Strip decode for AutoencoderKL-structured VAEs (FLUX.1, Kontext, Z-Image, HiDream, Lumina-2, Chroma, SDXL) on the
-# default path, matched by structure (``kl_strip_candidate``). ``1`` on, ``0`` off; unset: ``KL_STRIP_CAPS``.
+# default path, matched by structure (``kl_strip_candidate``). ``1`` every decode, ``0`` off; unset: the FLUX.2 policy.
 KL_STRIPS_ENV = "UNSLOTH_VAE_KL_STRIPS"
 STRIP_VAES = frozenset({"AutoencoderKLFlux2"})
 # Elements of the larger of a strip's input and output (None: by card). sm80+ (L4 / A100) decode fastest at 2^24
@@ -72,25 +75,34 @@ def strips_forced() -> bool:
     return os.environ.get(STRIPS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-# (major, minor) compute capabilities where every strip decode measured within A/A noise of the fused one or faster.
+# (major, minor) compute capabilities where every strip decode measured within A/A noise of the fused one or faster:
+# with the upsample written into the strip and its bias carried (``CARRY_CAPS``: FLUX.1 / SDXL / FLUX.2 decoders at
+# 1024 and 2048 px, 3.7-6.8% faster than the fused decode on T4, A100, L4 and RTX PRO 6000), else the older upsample
+# (``ALWAYS_CAPS``: A100 3% slower). Other cards (H100, B200) take strips only for decodes the fused path would not fit.
 ALWAYS_CAPS = frozenset({(7, 5), (8, 9)})
+CARRY_CAPS = frozenset({(7, 5), (8, 0), (8, 9), (12, 0)})
+
+
+def strip_caps() -> frozenset:
+    return ALWAYS_CAPS if strip_upsample_disabled() else CARRY_CAPS
 
 
 @lru_cache(maxsize = 16)
-def _card_always(index: int) -> bool:
-    return tuple(fused._torch().cuda.get_device_capability(index)) in ALWAYS_CAPS
+def _card_cap(index: int) -> tuple:
+    return tuple(fused._torch().cuda.get_device_capability(index))
+
+
+def _card_in_caps(device: Any) -> bool:
+    torch = fused._torch()
+    return (
+        _card_cap(device.index if device.index is not None else torch.cuda.current_device())
+        in strip_caps()
+    )
 
 
 def always_on(device: Any) -> bool:
     """Every decode on this card takes the strip path (else only the ones the fused decode would not fit)."""
-    if strips_forced():
-        return True
-    torch = fused._torch()
-    return _card_always(device.index if device.index is not None else torch.cuda.current_device())
-
-
-# (major, minor) compute capabilities where the AutoencoderKL strip decode is the default (measured no slower).
-KL_STRIP_CAPS: frozenset = frozenset()
+    return strips_forced() or _card_in_caps(device)
 
 
 def _kl_setting() -> Optional[bool]:
@@ -102,18 +114,13 @@ def _kl_setting() -> Optional[bool]:
     return None
 
 
-@lru_cache(maxsize = 16)
-def _card_kl(index: int) -> bool:
-    return tuple(fused._torch().cuda.get_device_capability(index)) in KL_STRIP_CAPS
-
-
 def kl_always_on(device: Any) -> bool:
-    """Every AutoencoderKL decode on this card takes the strip path (else only the ones the fused decode would not fit)."""
+    """Every AutoencoderKL decode on this card takes the strip path (else only the ones the fused decode would not
+    fit): ``UNSLOTH_VAE_KL_STRIPS``, else ``UNSLOTH_FLUX_VAE_STRIPS=1``, else the measured cards."""
     setting = _kl_setting()
     if setting is not None:
         return setting
-    torch = fused._torch()
-    return _card_kl(device.index if device.index is not None else torch.cuda.current_device())
+    return always_on(device)
 
 
 def kl_strip_candidate(vae: Any) -> bool:
@@ -122,7 +129,7 @@ def kl_strip_candidate(vae: Any) -> bool:
     return (
         vae is not None
         and type(vae).__name__ not in STRIP_VAES
-        and (_kl_setting() if _kl_setting() is not None else bool(KL_STRIP_CAPS))
+        and _kl_setting() is not False
         and _plain_decode_class(type(vae))
         and _post_quant_ok(vae)
     )
