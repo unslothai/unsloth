@@ -311,3 +311,16 @@ def test_model_call_larger_than_measured_drops_cache_before_the_forward(monkeypa
     dc._lookup(W, absmax, _decoder([]), torch.bfloat16, 64)
     dc._model_pre_hook(None, (), {"inputs_embeds": torch.zeros(2, 32, 8)})  # measured now: kept
     assert dc.cached_count() == 1
+
+
+def test_replaced_quant_state_is_not_served_from_the_cache(monkeypatch):
+    # Same packed storage and version, but a new quant state (absmax): the cached dense weight is stale.
+    _memory(monkeypatch, usable = 10 * GiB)
+    dc._BUDGET[None] = GiB
+    W, absmax = _weight()
+    calls = []
+    first = dc._lookup(W, absmax, _decoder(calls), torch.bfloat16)
+    assert calls == [True] and dc._lookup(W, absmax, _decoder(calls), torch.bfloat16) is first
+    new_absmax = torch.full((4,), 2.0)
+    out = dc._lookup(W, new_absmax, _decoder(calls), torch.bfloat16)
+    assert calls == [True, True] and out is not first and dc.STATS["stale"] == 1

@@ -422,7 +422,13 @@ def _lookup(
     entry = _CACHE.get((W.data_ptr(), dtype))
     if entry is not None:
         _guard(index)
-        if entry[1] == W._version and entry[3] == _raw_stream(index) and not entry[0].expired():
+        # Same packed storage and version, but a replaced quant state (new absmax) is a different weight.
+        if (
+            entry[1] == W._version
+            and entry[2] == absmax.data_ptr()
+            and entry[3] == _raw_stream(index)
+            and not entry[0].expired()
+        ):
             STATS["hits"] += 1
             dense = entry[4]
             return dense.t() if W.shape[0] == 1 else dense
