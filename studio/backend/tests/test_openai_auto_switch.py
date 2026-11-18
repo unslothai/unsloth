@@ -398,6 +398,37 @@ def test_an_auto_alias_reloads_a_model_whose_extra_arguments_chose_the_speculati
     assert [c.speculative_type for c in rec.calls] == ["auto"]
 
 
+class _InheritingRecorder(_AliasLoadRecorder):
+    """A reload that omits llama_extra_args keeps the resident's, as /load does."""
+
+    async def __call__(self, request, *args, **kwargs):
+        kept = self.backend.requested_extra_args
+        await super().__call__(request, *args, **kwargs)
+        if request.llama_extra_args is None and kept:
+            self.backend.requested_extra_args = kept
+            if not request.speculative_type:
+                self.backend.requested_spec_mode = None
+
+
+def test_a_context_only_alias_serves_a_model_whose_inherited_arguments_choose_drafting(monkeypatch):
+    backend = _FakeBackend("unsloth/a-gguf")
+    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent("unsloth/a-gguf", n_ctx = 8192)
+    backend.requested_extra_args = ["--spec-type", "ngram-simple"]
+    backend.requested_spec_mode = None
+    rec = _InheritingRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/a-gguf", None, "unsloth/a-gguf"),
+        backend = backend,
+        recorder = rec,
+    )
+    alias = {**_FAST, "load_settings": {"max_seq_length": 2048}}
+    _run_alias_hook(monkeypatch, alias = alias)
+    _run_alias_hook(monkeypatch, alias = alias)
+    assert [c.max_seq_length for c in rec.calls] == [2048]
+
+
 def test_an_auto_alias_is_served_after_a_crash_recovery_relaunched_without_drafting(monkeypatch):
     rec = _loaded_with_other_settings(monkeypatch, enabled = True)
     rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(

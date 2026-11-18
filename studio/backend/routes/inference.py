@@ -10364,12 +10364,15 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
         getattr(backend, "hf_variant", None),
     )
     saved = model_override_load_kwargs(saved, is_gguf = True)
+    extras = getattr(backend, "requested_extra_args", None) or list(intent.extra_args or ())
+    # A reload keeps the saved row's extras, else inherits the resident's: --spec-type there wins.
+    load_extras = saved.get("llama_extra_args")
     # Blank alias fields mean the saved setting, else the loader default, as a cold load would.
     wanted = {
         "max_seq_length": 0,
         "kv_cache_dtype": "f16",
         "speculative_type": None
-        if _extra_args_set_spec_type(saved.get("llama_extra_args"))
+        if _extra_args_set_spec_type(extras if load_extras is None else load_extras)
         else "auto",
     }
     named = {
@@ -10385,7 +10388,6 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
     wanted |= named
     wanted["speculative_type"] = _canonicalize_spec_mode(wanted["speculative_type"])
     # Launch flags may run another cache or context; a named setting strips them, so must match.
-    extras = getattr(backend, "requested_extra_args", None) or list(intent.extra_args or ())
     if "kv_cache_dtype" in named:
         k_type, v_type = getattr(
             backend, "_requested_cache_types", None
