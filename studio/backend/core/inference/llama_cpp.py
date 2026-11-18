@@ -2354,8 +2354,7 @@ def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Option
 
 # Transport errors can beat the child to reapable; a request cannot wait the 5s MTP reload spends.
 _RESPAWN_REAP_GRACE_S = 1.0
-# Extra --fit-target per mid-session GPU OOM of one load: an identical respawn hits the same
-# allocation once the conversation is replayed (#16177).
+# Extra --fit-target per mid-session OOM; an identical respawn repeats the allocation (#16177).
 _GPU_OOM_HEADROOM_STEP_MIB = 1024.0
 _GPU_OOM_HEADROOM_MAX_STRIKES = 3
 
@@ -11331,9 +11330,8 @@ class LlamaCppBackend:
         *,
         lenient: bool = False,
     ) -> int:
-        """On-disk bytes llama-server reads for ``model_path``: with an external Engram table,
-        that table instead of the quant's own table shard, which may still be on disk.
-        ``lenient`` counts what it can read (progress, placement) instead of raising."""
+        """On-disk bytes llama-server reads; with an external Engram table, that table replaces the
+        quant's own shard; lenient counts what it can read instead of raising."""
         if self._ple_path_for(model_path) is None:
             if lenient:
                 return _gguf_set_bytes(Path(model_path))
@@ -12812,11 +12810,9 @@ class LlamaCppBackend:
         n_cpu_moe: int = 0,
         cpu_child: bool = False,
     ) -> int:
-        """Weight bytes a full-offload Windows ROCm APU load puts in the BIOS carve-out, which
-        Windows does not count as RAM; 0 unless the placement and carve-out are both known.
-
-        The carve-out comes from the registry, never the HIP total: PAL adds 50-75% of the WDDM
-        shared heap (Windows RAM) to it. Host-pinned inputs (token_embd, per-layer tables) get no credit."""
+        """Carve-out bytes of a Windows ROCm APU full-offload load, read from the registry, never
+        the HIP total (PAL adds 50-75% of WDDM shared heap); 0 unless placement and carve-out are
+        known; host-pinned inputs get no credit."""
         if sys.platform != "win32" or not model_size or model_size <= 0 or not model_path:
             return 0
         if cpu_child or not self._amd_apu_wants_unified_memory(gpu_indices):
@@ -34841,8 +34837,7 @@ class LlamaCppBackend:
             intent.model_identifier.lower()
         ):
             return False
-        # The Engram table is part of the weights. load_model has already turned a request for
-        # the quant's own table into none.
+        # Engram table is weight data; load_model already maps the quant's own table to none.
         if (intent.engram_precision or "").upper() != (
             getattr(self, "_engram_precision", None) or ""
         ).upper():
@@ -36341,8 +36336,7 @@ class LlamaCppBackend:
         saved = _SlotLaunchFingerprint(*saved)
         saved_regime = manifest.get("long_rope")
         if saved == current:
-            # Preserve strict reuse for older manifests, but never restore across
-            # a known switch hidden by identical requested and advertised sizes.
+            # Old manifests keep strict reuse; never restore across a hidden long_rope switch.
             return "long_rope" not in manifest or saved_regime is self._slot_long_rope
         neutral = {"requested_n_ctx": None, "effective_context_length": None}
         if saved._replace(**neutral) != current._replace(**neutral):
@@ -42857,8 +42851,7 @@ class LlamaCppBackend:
             )
             if system_text:
                 template_messages = [{"role": "system", "content": system_text}] + template_messages
-            # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
-            # A memo hit has no text for on_prompt.
+            # Memo skipped with prefer_native or on_prompt; a hit has no text for on_prompt.
             memo_key = (
                 None
                 if prefer_native or on_prompt is not None

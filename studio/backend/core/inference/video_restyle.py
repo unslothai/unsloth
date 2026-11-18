@@ -137,8 +137,7 @@ def frames_from_video(
             fitted = None
 
             def keep() -> Any:
-                # Fit only frames that are kept (a 120 fps source drops 3 in 4), and as they are kept:
-                # 121 full-size 4K frames would hold about 3 GB.
+                # Fit only kept frames (120 fps keeps 1 in 4): all 121 would hold about 3 GB.
                 nonlocal fitted
                 if fitted is None:
                     theta = display_rotation_degrees(prev, stream)
@@ -582,9 +581,8 @@ class RestyleRunner:
         return held
 
     def _finish(self, **fields: Any) -> None:
-        # The server is detached in the same step that ends the job: a restyle that claims the runner
-        # next can never reuse a server this worker is about to stop. Not kept resident either: an idle
-        # ~30 GB server would sit outside every other loader's VRAM accounting (stop() counts in holds_gpu).
+        # Detach in the same step that ends the job, so none reuses it; idle it would sit outside
+        # holds_gpu.
         with self._lock:
             server = self._detach_locked()
             self._update(active = False, **fields)
@@ -641,9 +639,8 @@ class RestyleRunner:
             )
 
     def unload_if_idle(self, owner: Optional[str] = None) -> bool:
-        """Detach the server under the same lock ``start`` claims, so a restyle can't begin in between.
-        A reservation counts as busy: that request is about to reuse the server. With ``owner``, only
-        a server whose last job was ``owner``'s is detached (RestyleBusy otherwise)."""
+        """Detach under the lock start claims; a reservation is busy, and a foreign owner gets
+        RestyleBusy."""
         with self._lock:
             if self._state.get("active") or self._reservation is not None:
                 return False

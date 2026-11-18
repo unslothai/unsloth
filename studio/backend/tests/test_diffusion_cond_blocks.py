@@ -543,8 +543,7 @@ def _joint_mod_shapes(model):
 @pytest.mark.parametrize("batch", [1, 2])
 @pytest.mark.parametrize("refs", [0, 1, 8])
 def test_span_modulation_matches_per_token_rows_bitwise(dtype, batch, refs, monkeypatch):
-    """One modulation row per span (image, references) is bitwise the per-token rows, and no per-token copy reaches
-    the joint blocks."""
+    """One modulation row per span matches per-token rows bitwise; no per-token copy is made."""
     cls = _flux3()
     monkeypatch.delenv(cb.COMPACT_MOD_ENV, raising = False)
     monkeypatch.delenv(cb.SPAN_MOD_ENV, raising = False)

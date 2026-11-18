@@ -1334,9 +1334,7 @@ def _fast_verify_status(requested, model):
 
 
 def _settle_fast_verify(status, model, drafter):
-    """Pin the load's decision on `model` once its drafter is built, so every later Zoo call agrees,
-    including those that take no argument and would read UNSLOTH_MLX_FAST_VERIFY. Without a drafter
-    it is off: Zoo's scopes serve only speculative calls, so a plain decode has nothing to gain."""
+    """Pins the UNSLOTH_MLX_FAST_VERIFY decision for later Zoo calls once the drafter exists; else off."""
     zoo = _fast_verify_zoo()
     if zoo is None:
         return status
@@ -5203,8 +5201,7 @@ class _VisionBatchSession:
         return plan.think_prefix
 
     def _alone(self, handle):
-        """No other row decodes beside ``handle``'s; rows ending this step count until it ends,
-        as the speculative stream frees their caches only then."""
+        """Alone means no other row decodes beside handle; leaving rows count until they end."""
         rows, leaving = self._rows, self._leaving
         return lambda: all(other == handle for other in (*rows, *leaving))
 

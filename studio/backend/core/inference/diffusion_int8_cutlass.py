@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Prebuilt CUTLASS int8 GEMM (C ABI, ctypes) with torchao's epilogue fused: sm75 fp16 out, sm8x bf16 out.
-
-Any load failure or tile failing the bit-exact probe keeps today's path; a tile replaces it only when it wins
-the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` skips the race.
-``UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE=0`` lets the 4096-row winner serve every large M (no ``_RACE_M_HUGE``);
-``UNSLOTH_DIFFUSION_INT8_CUTLASS_SUSTAINED=0`` decides every race on interleaved short timings, ``=huge`` only the
-16384-row race on sustained timings (the 4096-row race on short ones, as before)."""
+"""CUTLASS int8 GEMM: sm75 fp16 out, sm8x bf16 out; load or bit-exact probe failure keeps stock;
+wins race by _MARGIN; UNSLOTH_DIFFUSION_INT8_CUTLASS=0 disables, =1 skips race;
+UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE=0 and UNSLOTH_DIFFUSION_INT8_CUTLASS_SUSTAINED=0 or huge
+tune races"""
 
 from __future__ import annotations
 

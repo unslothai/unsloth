@@ -1228,9 +1228,8 @@ def _roomy_host(monkeypatch):
 
 
 def test_merged_quant_file_adapters_change_weight_in_place_with_no_recompile(monkeypatch):
-    """A quantized single file's adapters merged into its weights at load: a weight change or switching the adapter off
-    re-merges into the same tensors, so a compiled model reads the new weights with no recompile and no dropped graph,
-    and weight 0 is the base weights exactly."""
+    """Quantized single-file adapters merged at load change weight in place: no recompile, no
+    dropped graph; weight 0 is exactly the base weights."""
     import threading
 
     import torch

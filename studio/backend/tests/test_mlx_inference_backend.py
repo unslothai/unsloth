@@ -155,8 +155,7 @@ def _unless_failed_buffer(error):
 
 
 def _no_replay(*_args, **_kwargs):
-    """zoo's head-replay and lazy-verify helpers (unsloth_zoo #2474) need Metal and a QSA cache;
-    the stub answers as if no replay can be bound."""
+    """Stub for unsloth_zoo head-replay helpers, which need Metal and a QSA cache; no replay binds."""
     return None
 
 

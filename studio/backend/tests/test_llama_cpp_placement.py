@@ -5652,9 +5652,7 @@ def test_the_header_scan_sums_shards(tmp_path):
 def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_the_cache(
     tmp_path, _moe_cache_host
 ):
-    """Qwen3.8-Flash-Next on a 94 GB host: RAM holds the lookup table resident or the
-    experts pinned, not both. The cache beats the --fit split by far, so the table is
-    read lazily (no --lazy-mode off) and the experts stay pinned for the cache."""
+    """RAM fits either the table or pinned experts: read the table lazily (no --lazy-mode off)."""
     lazy = {"per_layer_token_embd.weight": 8 * _GIB}
     # 32 GiB with 20 GiB of experts on the 20,000 MiB card: pinning the experts needs
     # 20 + 8 (prompt cache) beside the 8 GiB table, more than 34 GiB of RAM.
@@ -5673,8 +5671,7 @@ def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_
     assert cmd[cmd.index("--lazy-mode") + 1] == "off", cmd
     assert backend._lazy_mode_flags == ["--lazy-mode", "off"]
 
-    # Too little RAM even with the table lazy: no cache, and the table decision is the
-    # one a build without the cache makes (here the table already streams).
+    # Too little RAM even with a lazy table: no cache; the table matches a build without one.
     no_cache = dict(_CACHE_CAPS_ON, supports_moe_cache = False, supports_moe_cache_auto = False)
     reference, reference_cmd = _cache_launch(tmp_path, ram_gib = 26, caps = no_cache, **shape)
     backend, cmd = _cache_launch(tmp_path, ram_gib = 26, **shape)

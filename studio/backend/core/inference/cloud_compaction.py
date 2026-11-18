@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Summary compaction for cloud connections that do not compact server-side.
-
-The oldest turns are replaced by a summary the same connection and model writes, a recent tail
-stays verbatim, and the summary is kept per thread so later turns reuse it. Local GGUF, MLX and
-managed engines never reach this module.
-"""
+"""Summarizes the oldest turns for cloud connections without server-side compaction; local GGUF, MLX
+and managed engines never reach this module."""
 
 from __future__ import annotations
 
@@ -175,9 +171,8 @@ async def stream_with_overflow_retry(
     start: Callable[[], AsyncIterator[str]],
     recover: Callable[[], Awaitable[Optional[Callable[[], AsyncIterator[str]]]]],
 ) -> AsyncIterator[str]:
-    """Relay ``start()``; if the provider refuses the prompt as too long before any output,
-    ``recover()`` compacts and returns the stream to send instead. That one is relayed as is,
-    so a second overflow reaches the client as the error it is."""
+    """Relays start(); one recover() retry on a too-long refusal before output; a second error is
+    relayed."""
     upstream = start()
     retry = None
     try:
@@ -345,9 +340,7 @@ def tail_token_budget(prompt_budget_tokens: Optional[int]) -> int:
 def summary_chunks(
     messages: list[dict], count_message: Callable[[dict], int], input_budget: Optional[int]
 ) -> list[list[dict]]:
-    """The summary call has to fit the same window, so a backlog too long for one call is
-    folded in oldest first, each call carrying the summary so far. Past SUMMARY_MAX_CALLS the
-    oldest turns are left out rather than holding the reply up indefinitely."""
+    """Backlog is folded in oldest first to fit the window; past SUMMARY_MAX_CALLS, oldest are dropped."""
     if not input_budget or input_budget <= 0:
         return [messages]
     chunks: list[list[dict]] = [[]]
@@ -364,8 +357,7 @@ def summary_chunks(
 
 
 async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_TIMEOUT_S) -> str:
-    """The text of a streamed chat completion. Raises SummaryFailed on an error line, an empty
-    reply or a timeout."""
+    """Streamed chat text; raises SummaryFailed on an error line, an empty reply or a timeout."""
 
     async def _read() -> str:
         parts: list[str] = []
@@ -524,10 +516,9 @@ def apply_summary(
     *,
     keep_ids: Optional[set[int]] = None,
 ) -> list[dict]:
-    """``messages`` with its first ``covered`` non-system turns replaced by a summary turn and its
-    acknowledgement, placed after the system prompt. Pinned instructions in that range are quoted
-    verbatim in the summary turn: kept as messages they would follow it without their replies, and
-    strict templates reject two user turns in a row. Kept dicts are the same objects."""
+    """Summary turn goes after the system prompt; pinned instructions are quoted in it, not kept as
+    messages (they would follow it without replies; strict templates reject two user turns in a
+    row); kept dicts are the same objects."""
     keep_ids = keep_ids or set()
     body = [m for m in messages if m.get("role") not in ("system", "developer")]
     pinned = [message_text(m).strip() for m in body[:covered] if id(m) in keep_ids]

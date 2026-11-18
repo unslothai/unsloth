@@ -11586,9 +11586,7 @@ def _patch_events(
     done: bool = False,
     run_ahead: bool = True,
 ):
-    """Hand out fake CUDA events, optionally already complete. Returns the list they land in.
-
-    ``run_ahead`` lets the host outrun events that never finish, as it does when the hold is skipped."""
+    """Fake CUDA events, optionally done; run_ahead lets the host outrun events that never finish."""
     import core.inference.video as video_mod
 
     if run_ahead:

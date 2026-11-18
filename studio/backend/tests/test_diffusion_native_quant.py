@@ -1370,8 +1370,7 @@ def test_blocked_torchao_holds_after_peft_cached_it_available(monkeypatch):
 
 @pytest.mark.parametrize("scheme", [nq.NATIVE_FP8, nq.NATIVE_INT8])
 def test_the_eager_stored_widen_allocates_no_full_float32_matrix(scheme):
-    """A stored fp8 / int8 layer's eager widen: the same bf16 weight, with no float32 temporary the size of the
-    whole layer (the old widen held two)."""
+    """Stored fp8/int8 eager widen: no full-layer float32 temporary (the old widen held two)."""
     from torch.utils._python_dispatch import TorchDispatchMode
 
     rows, cols = 2048, 4096

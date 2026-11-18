@@ -649,8 +649,7 @@ def _skips_table_search(doc, number: int) -> bool:
 
 
 def _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs) -> list | None:
-    """The plain path's to_markdown calls, each split into table-search and no-search pages
-    sharing one header table."""
+    """The plain path's to_markdown calls, each split into table-search and no-search pages."""
     # Bake as to_markdown would, so the guard sees the same page.
     if doc.is_form_pdf or (doc.is_pdf and doc.has_annots()):
         doc.bake()

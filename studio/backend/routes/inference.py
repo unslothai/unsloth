@@ -29704,10 +29704,8 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
 
 
 def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
-    """The cached checkpoint fit plus the loop's new turns, or None when ``messages`` diverged.
-
-    The loop may also replace the trailing user turn (a re-prompt merged into it); that edit is
-    carried onto the fitted copy, whose text may lead with an inline recall block."""
+    """Checkpoint fit plus new turns, or None if messages diverged; an edited last user turn carries
+    over."""
     seen, fitted = state.get("input"), state.get("fitted")
     if seen is None:
         return None
@@ -30020,8 +30018,7 @@ async def _finish_external_compaction(
     branch: Optional[list[dict]] = None,
     tool_loop: bool = False,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
-    """Summarise what the plan asked for (falling back to eviction when the call fails), then
-    let the evicting fit catch whatever still does not fit."""
+    """Summarise the plan's asks, or evict if the call fails; a final fit evicts the rest."""
     from core.inference import cloud_compaction
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
@@ -40554,10 +40551,7 @@ def _embedding_response_json(resp):
 
 
 def _embedding_tail_usage(content: bytes) -> Optional[dict]:
-    """``usage`` when it is the body's last top-level key, else None.
-
-    llama-server's json keeps keys sorted, so usage follows the data rows (format_embeddings_response_oaicompat).
-    """
+    """Usage if it is the body's last top-level key, else None; llama-server sorts keys, so it trails."""
     start = content.rfind(b'"usage"')
     before = start - 1
     while before >= 0 and content[before] in b" \t\r\n":

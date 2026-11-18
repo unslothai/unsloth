@@ -458,9 +458,8 @@ def _autocast_on(x: Any) -> bool:
 
 
 def fused_w8a8_serves(module: Any) -> bool:
-    """Whether ``module`` holds native int8 W8A8 linears that the compiled function serves (CUDA, not ROCm, an
-    inductor runtime, not disabled and not failed). It never runs inside a CUDA-graph capture, so a captured step
-    bakes those linears' eager kernels instead. Never raises."""
+    """Whether int8 W8A8 linears run the compiled function (CUDA, not ROCm, inductor, not disabled
+    or failed); never inside CUDA-graph capture (eager kernels baked); never raises"""
     try:
         if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
             return False
@@ -593,9 +592,8 @@ def native_linear_class():
                     and weight.is_floating_point()
                     and weight.dtype != cast
                 ):
-                    # A manual-cast Linear stores bf16 for a float16 / float32 compute: round to the compute dtype
-                    # first, as a load widened on the host would have (bf16 -> float16 is not exact), so the
-                    # codes are the same either way.
+                    # Round to the compute dtype first, as a host-widened load would, so the codes
+                    # match either way.
                     weight = weight.to(cast)
                 with torch.no_grad():
                     w = weight.float()

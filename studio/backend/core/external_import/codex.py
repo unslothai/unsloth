@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Codex text comes from user/agent message events (legacy rollouts) or completed items (paginated),
-not response_item (injected context)."""
+"""Codex text: message events or completed items, not response_item (injected context)."""
 
 from __future__ import annotations
 

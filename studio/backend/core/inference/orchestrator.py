@@ -2347,8 +2347,7 @@ class InferenceOrchestrator:
                 if audio_load_runs_on_cpu(
                     getattr(config, "audio_type", None), audio_device, config.audio_cpp
                 ):
-                    # A CPU-only runtime or package runs Auto on the CPU too: say so, so no card
-                    # is chosen and the worker hides them.
+                    # CPU-only runtimes run Auto on the CPU too; set cpu so no card is chosen.
                     audio_device = "cpu"
                     sub_config["audio_device"] = audio_device
             if audio_device_forces_cpu(audio_device) and (

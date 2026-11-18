@@ -5665,8 +5665,7 @@ def _failure_reason(exc: BaseException) -> str:
 
 
 def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
-    """A user-facing reason for a failed generation: fixed text for known classes, else the
-    redacted exception class and first line."""
+    """User-facing failure reason: fixed text for known classes, else redacted class and line."""
     try:
         from .video_minimax_h3 import H3NativeMemoryRefusal
 
@@ -13187,8 +13186,7 @@ class VideoBackend:
                 "forced" if int8_forced else "raced" if int8_auto else "not eligible",
                 h3_int8_modules,
             )
-            # FlashInfer SM120 H3 block kernels (opt-in, UNSLOTH_H3_FLASHINFER=1): resident fp8 / nvfp4 blocks, before
-            # the regional compile traces them
+            # Opt-in via UNSLOTH_H3_FLASHINFER=1: SM120 kernels before regional compile traces.
             if effective_speed != SPEED_OFF:
                 try:
                     from .video_minimax_h3_flashinfer import install_h3_flashinfer

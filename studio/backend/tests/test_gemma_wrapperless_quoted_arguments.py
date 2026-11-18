@@ -36,8 +36,7 @@ def test_unquoted_bare_bodies_are_unchanged(body):
 
 
 def test_literal_marker_inside_a_json_quoted_value_keeps_its_arguments():
-    # ``, b:<|"|>`` sits inside a JSON string, so the Gemma decoder rejects the body: keep the
-    # quote-less reading rather than running the tool with no arguments.
+    # Gemma rejects a body with the marker in a JSON string; keep the quote-less reading.
     assert _calls('call:web_search{query:"a, b:<|"|>c"}') == [
         ("web_search", {"query": 'a, b:<|"|>c'})
     ]

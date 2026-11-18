@@ -640,9 +640,8 @@ def test_a_split_priced_with_the_measured_row_is_a_calibrated_placement(monkeypa
     assert not plan_is_calibrated(flat.plan)
 
 
-# Wan2.2-TI2V-5B fp16 with a forced split on two cards: holding the split's primary to 85% of its safe budget left
-# no room for a block beside the stems, the VAE, the overhead and the clip's headroom, though a one-card resident
-# plan is priced at the full budget.
+# Wan2.2-TI2V-5B fp16 with a forced two-card split: an 85% primary cap left no room for a block
+# beside stems, VAE, overhead and headroom; a one-card resident plan is priced at full budget.
 _WAN5B_T4 = dict(dit = 9582, te = 10836, vae = 1631)
 _WAN5B_BLOCKS = {"transformer": lsp.DenoiserLayout(192, (313,) * 30)}
 _WAN5B_HEADROOM = 7839  # estimate_video_runtime_mib at the family default 1280x704, 121 frames

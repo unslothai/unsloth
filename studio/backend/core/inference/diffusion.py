@@ -638,8 +638,7 @@ def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any)
 
 
 def _remerge_quant_loras(state: Any, pipe: Any, updated: tuple) -> bool:
-    """Re-merges adapters merged into a quantized file's weights in place (no recompile, no recapture). False when
-    nothing was merged."""
+    """Re-merges adapters into quantized weights in place, no recompile; False if none merged."""
     if not lora_quant_merge.merged(pipe):
         return False
     if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE:
@@ -14476,8 +14475,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _make_vae_encode_dtype_safe(pipe: Any) -> None:
-        """Casts encode inputs to the VAE's dtype; img2img / Qwen Edit use the TE dtype, which can
-        mismatch (#16375)."""
+        """Casts encode inputs to the VAE dtype; the TE dtype can mismatch (16375)."""
         vae = getattr(pipe, "vae", None)
         if vae is None or getattr(vae, "_unsloth_dtype_safe_encode", False):
             return

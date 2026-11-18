@@ -1113,9 +1113,8 @@ _TAIL_MAX = 1 << 24
 
 @functools.lru_cache(maxsize = 64)
 def _unfused_tails(route, widths, dtype_size: int, later: int):
-    """Unfused tails of up to 8 queries, and the first longer one that fuses.
-
-    Past 8 queries mlx's kernels only switch on as queries grow, so one boundary splits the two."""
+    """Unfused tails of up to 8 queries, plus the first longer one that fuses; past 8, mlx's kernels
+    only switch on as queries grow, so one boundary splits the two."""
 
     def unfused(r):
         return not _attention_fuses(route, widths, dtype_size, r, r + later)
