@@ -357,6 +357,26 @@ def test_stale_chunks_cannot_exhaust_the_dense_candidate_limit(rag_conn, monkeyp
     assert [cid for cid, _ in hits] == ["new:0", "legacy:0", "unknown:0"]
 
 
+def test_a_scope_the_exact_cache_covers_skips_the_compatible_rescan(rag_conn, monkeypatch):
+    monkeypatch.setenv("RAG_VEC_CACHE", "1")
+    monkeypatch.setenv("RAG_VEC_ANN", "0")
+    stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
+    current = config.embedding_identity("sentence-transformers", MODEL)
+    _put(rag_conn, "kb_full", "old", ["alpha"] * 64, stale)
+    _put(rag_conn, "kb_full", "new", ["alpha bravo"], current)
+    query = _vector("alpha")
+    store.search_dense(rag_conn, "kb_full", query, 5)
+    assert vec_cache.drain()
+    assert vec_cache._entries
+
+    def rescan(*_args):
+        raise AssertionError("the cache already returned every row")
+
+    monkeypatch.setattr(store, "_search_compatible_dense", rescan)
+    hits = store.search_dense(rag_conn, "kb_full", query, 5, embedding_model = current)
+    assert [cid for cid, _ in hits] == ["new:0"]
+
+
 def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(rag_conn, monkeypatch):
     """A concurrent ST failure swaps the process embedder for the rest of its life. A
     query sentence-transformers had already encoded must still be answered by the

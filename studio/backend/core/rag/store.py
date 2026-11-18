@@ -880,7 +880,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
         widen: list[str] = []
         for s in pending:
             fetch = fetches[s]
-            rows, cap = _knn(conn, db_file, s, vector, query, fetch)
+            rows, cap, complete = _knn(conn, db_file, s, vector, query, fetch)
             kept[s] = _drop_incompatible(
                 conn,
                 # A NaN vector written by an fp16 embedder reads back as a NULL distance: skip it, or the
@@ -889,7 +889,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
                 embedding_model,
                 untagged,
             )
-            if len(kept[s]) < k and len(rows) >= fetch:
+            if len(kept[s]) < k and len(rows) >= fetch and not complete:
                 if fetch < cap:
                     fetches[s] = min(fetch * 4, cap)
                     widen.append(s)
@@ -906,7 +906,8 @@ _MAX_DENSE_FETCH = 4096
 
 
 def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
-    """(chunk_id, distance) rows plus the largest fetch worth asking for: the cache's row count, or vec0's cap."""
+    """(chunk_id, distance) rows, the largest fetch worth asking for (the cache's row count, or vec0's cap), and
+    whether the rows already cover the whole scope."""
     if db_file is not None:
         hit = vec_cache.search(conn, db_file, scope, vector, fetch)
         if hit is not None:
@@ -917,7 +918,7 @@ def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
         "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
         (scope, query, min(fetch, _MAX_DENSE_FETCH)),
     ).fetchall()
-    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH
+    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH, False
 
 
 # One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
