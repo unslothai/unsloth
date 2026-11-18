@@ -1635,8 +1635,7 @@ def LlamaModel_fast_forward(
         device_index = hidden_states.device.index
         rows = seq_length_with_past
         if isinstance(self.rotary_emb, LongRopeRotaryEmbedding):
-            # transformers' longrope_frequency_update: factors from max(position_ids) + 1 (a host
-            # sync) over the caller's whole sequence (CP shards and pads it), not max_seq_length.
+            # transformers' longrope_frequency_update: max(position_ids) + 1 of the caller's sequence.
             bound = position_ids
             cp_manager = get_cp_manager()
             if cp_manager is not None:
@@ -1646,8 +1645,7 @@ def LlamaModel_fast_forward(
         # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
         position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
         if rope_len < rows and position_embeddings[0].shape[0] < rows:
-            # Packed positions restart under original; pad so layers, which check rows against
-            # the (CP-global) length, keep the short table.
+            # Packed positions restart: pad so the layers' (CP-global) row check keeps the short table.
             position_embeddings = tuple(
                 torch.nn.functional.pad(x, (0, 0, 0, rows - x.shape[0]))
                 for x in position_embeddings
@@ -2944,7 +2942,7 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         short_inv_freq = 1.0 / (short_factor * self.base**inv_freq_shape)
         long_inv_freq = 1.0 / (long_factor * self.base**inv_freq_shape)
 
-        # Phi-3 scale factor, unless given (transformers' own, which honours attention_factor / factor).
+        # Phi-3 ratio, unless transformers' own scaling is given.
         scale = self.max_position_embeddings / self.original_max_position_embeddings
         if attention_scaling is not None:
             scaling_factor = float(attention_scaling)
@@ -4821,8 +4819,7 @@ class FastLlamaModel:
                 or getattr(config, "rope_parameters", None)
                 or {}
             )
-            # Llama only (Phi-3.5): its attention reads the model-level tables; Mistral / Qwen3 rebuild
-            # their own. patch_llama_rope_scaling only reaches pre-4.48 attention layers.
+            # Llama only (its attention reads these tables); patch_llama_rope_scaling is pre-4.48 only.
             if (
                 isinstance(rotary_emb, LlamaRotaryEmbedding)
                 and getattr(config, "model_type", None) == "llama"
