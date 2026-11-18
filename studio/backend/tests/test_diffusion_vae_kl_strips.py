@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AutoencoderKL strips and the nearest-2x upsample: the KL strip gate (structure, kill switch, default off until a card is
-measured), the upsample written into the strip with its conv bias carried into the next block (exact against the stock
-decoder in fp32 on CPU, every stage shape: identity, halving, general shortcut, conv_norm_out), and the fused path's
-Upsample2D (patched, kill switch, stock fallback off CUDA)."""
+"""AutoencoderKL strips: the KL strip gate, the in-strip upsample with its carried conv bias (exact vs the stock decoder in
+fp32 on CPU), and the fused path's Upsample2D."""
 
 import pytest
 
@@ -251,7 +249,6 @@ def test_planner_prices_the_kl_strip_decode_when_it_runs(monkeypatch):
     assert vt.strips_decode_mib(vae, z, 256, 256) is None  # strips not engaged: the fused figure
     monkeypatch.setattr(S, "engaged", lambda v: v is vae)
     assert vt.strips_decode_mib(vae, z, 256, 256) == pytest.approx(0.048 * 256 * 256 + 128)
-    # a decoder whose largest pass per latent is twice the measured one's scales the slope
     monkeypatch.setattr(
         S, "largest_pass_elems", lambda dec, h, w: 2 * S._REF_PASS_ELEMS_PER_LATENT * h * w
     )

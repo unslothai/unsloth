@@ -625,7 +625,6 @@ def _upsample(
 
 
 def _fold_bias(*parts: Any) -> Any:
-    """fp32 sum of the bias vectors that are present (None if none)."""
     out = None
     for p in parts:
         if p is not None:
