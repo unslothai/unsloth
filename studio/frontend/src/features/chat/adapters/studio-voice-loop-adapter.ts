@@ -51,6 +51,7 @@ import {
   requestVoiceEarlyInterject,
   requestVoiceResume,
   requestVoiceOff,
+  registerVoiceSessionEnd,
   requestVoiceSubmit,
   getVoiceCaptureContext,
   voiceLoopSupported,
@@ -179,7 +180,6 @@ export function voiceWroteBox(text: string): boolean {
 
 // The box minus this loop's last transcript, or null when that transcript is not its tail:
 // dictation prepends a typed draft, so a held fragment sits after it and must go before re-arming.
-// Once a send has cleared the box, its transcript no longer claims later drafts; a newer utterance's does.
 export function voiceTextReleaser(): () => void {
   const said = voiceBoxText;
   return () => {
@@ -290,8 +290,11 @@ export function getHeldTurnText(): string {
 let utterancesPending = 0;
 // Hearing ends before VAD and STT run: the coalesced reply must still wait for this phrase.
 export function voiceUtterancePending(): boolean {
-  return utterancesPending > 0;
+  // A fragment held for its continuation ("... and") is still this turn.
+  return utterancesPending > 0 || heldTurn !== null;
 }
+
+registerVoiceSessionEnd(() => liveSession?.cancel());
 
 // The recorded speech of the turn, kept only while the chat model hears audio (voiceHearsAudio).
 const turnAudio = createTurnAudio();
@@ -886,7 +889,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         } finally {
           ports.setTranscribing(false);
         }
-        // Voice was turned off while this clip was heard: its words are discarded, never held for the next session.
         if (switchedOff()) {
           dropSwitched();
           return;
@@ -1455,6 +1457,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         sink.connect(audioCtx.destination);
       } catch (error) {
         teardown();
+        // Stopped while the mic was starting: the closed context threw, not the mic.
+        if (ended) return;
         console.error("Voice mic error:", error);
         const name = error instanceof Error ? error.name : "";
         const message = error instanceof Error ? error.message : String(error);

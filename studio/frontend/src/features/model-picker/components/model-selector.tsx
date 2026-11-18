@@ -15,7 +15,13 @@ import type { HubCapabilityFilter } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
-import { isNpuModelId, NPU_MODEL_PREFIX, useNpuStatus } from "@/features/npu";
+import {
+  isNpuModelId,
+  NPU_MODEL_PREFIX,
+  npuDisplayNameNow,
+  useNpuDisplayName,
+  useNpuStatus,
+} from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { snapInlinePadding } from "@/lib/snap-padding";
@@ -455,7 +461,7 @@ function ModelSelectorContent({
 
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
     const displayName = isNpuModelId(id)
-      ? id.slice(NPU_MODEL_PREFIX.length)
+      ? (npuDisplayNameNow(id) ?? id.slice(NPU_MODEL_PREFIX.length))
       : undefined;
     setConfigTarget(modelConfigTarget(id, meta, displayName));
   };
@@ -699,8 +705,12 @@ export function ModelSelector({
         ? loadedGgufVariantOverride
         : null
       : activeGgufVariant;
+  const npuName = useNpuDisplayName(selected);
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
+    if (npuName) {
+      return { ...(optionById.get(selected) ?? { id: selected }), name: npuName };
+    }
     // A cached vendor copy loads for its unsloth mirror; name it by the mirror's option.
     const mirrorId =
       catalog && artifactForRepoId(selected, catalog)?.artifact.repoId;
@@ -739,6 +749,7 @@ export function ModelSelector({
     return found ?? { id: selected, name: fallbackName };
   }, [
     selected,
+    npuName,
     optionById,
     catalog,
     triggerGgufVariant,

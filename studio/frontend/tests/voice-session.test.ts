@@ -56,6 +56,7 @@ function fakePorts(init: { mode?: VoiceMode; voice?: string; checkpoint?: string
         }),
     }),
     releaseListening: () => log.push("releaseListening"),
+    endVoice: () => log.push("endVoice"),
     chatModelCannotSpeak: () => log.push("cannotSpeak"),
     loadFailed: () => log.push("loadFailed"),
   };
@@ -86,7 +87,7 @@ test("voice mode going off releases the listening models; other moves leave them
   assert.deepEqual(f.log, ["releaseListening"]);
 });
 
-test("leaving Chat releases the listening models only while voice mode is on", async () => {
+test("leaving Chat (sign-out) releases the listening models and ends voice, only while voice mode is on", async () => {
   const off = fakePorts();
   createVoiceSession(off.ports, "off").dispose();
   await tick();
@@ -94,7 +95,7 @@ test("leaving Chat releases the listening models only while voice mode is on", a
   const on = fakePorts();
   createVoiceSession(on.ports, "active").dispose();
   await tick();
-  assert.deepEqual(on.log, ["releaseListening"]);
+  assert.deepEqual(on.log, ["releaseListening", "endVoice"]);
 });
 
 test("StrictMode's dev remount (dispose, then activate at once) releases nothing", async () => {

@@ -36,6 +36,8 @@ export interface VoiceSessionPorts {
   slot(): Promise<VoiceSlot>;
   // The listening models: transcriber, speech detector and turn judge.
   releaseListening(): void;
+  /** Chat unmounts only on sign-out: the open recording stops and voice is off for the next login. */
+  endVoice(): void;
   chatModelCannotSpeak(): void;
   loadFailed(error: unknown): void;
 }
@@ -189,7 +191,9 @@ export function createVoiceSession(ports: VoiceSessionPorts, initialMode: VoiceM
         if (!leaving) return;
         leaving = false;
         releaseOwnVoice();
-        if (mode !== "off") ports.releaseListening();
+        if (mode === "off") return;
+        ports.releaseListening();
+        ports.endVoice();
       });
     },
   };

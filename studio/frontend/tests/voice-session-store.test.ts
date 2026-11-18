@@ -13,6 +13,7 @@ function load(unloadStt: () => Promise<void>) {
     setVadSlotLoaded: (loaded: boolean) => calls.push(`vad slot ${loaded}`),
     setSttSlotLoaded: (loaded: boolean) => calls.push(`stt slot ${loaded}`),
     setSttSlotDownload: (download: unknown) => calls.push(`stt download ${download}`),
+    setVoiceMode: (mode: string) => calls.push(`voice mode ${mode}`),
   };
   const mod = loadWithStubs<typeof SessionStore>(
     new URL("../src/features/chat/voice/voice-session-store.ts", import.meta.url),
@@ -28,7 +29,10 @@ function load(unloadStt: () => Promise<void>) {
       "../stores/chat-runtime-store.ts": { useChatRuntimeStore: { getState: () => runtime } },
       "./turn-end.ts": { unloadTurnModel: async () => void calls.push("unload turn") },
       "./vad-client.ts": { unloadVadModel: async () => void calls.push("unload vad") },
-      "./voice-loop-bridge.ts": { loadVoiceMode: async () => ({}) },
+      "./voice-loop-bridge.ts": {
+        loadVoiceMode: async () => ({}),
+        endVoiceOnSignOut: () => calls.push("end voice session"),
+      },
     },
   );
   return { mod, calls };
@@ -52,4 +56,10 @@ test("a transcriber unload that fails still releases the rest and raises nothing
   mod.releaseVoiceModels();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.ok(calls.includes("unload vad") && calls.includes("unload turn"));
+});
+
+test("ending voice on sign-out stops the open recording and leaves voice mode off for the next login", () => {
+  const { mod, calls } = load(async () => {});
+  mod.storeVoiceSessionPorts.endVoice();
+  assert.deepEqual(calls, ["end voice session", "voice mode off"]);
 });

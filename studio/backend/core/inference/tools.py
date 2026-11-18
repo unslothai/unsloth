@@ -1056,6 +1056,50 @@ def _quoted_redirection_indexes(
     )
 
 
+def _is_bare_redirection(token: str) -> bool:
+    redir = _REDIRECTION_RE.match(token)
+    return bool(redir) and redir.end() == len(token)
+
+
+def _redirect_word_is_high_risk(word: str) -> bool:
+    """A dropped redirection target still runs its substitutions, and shlex hides their extent: ask."""
+    return any(mark in word for mark in ("$(", "`", "<(", ">("))
+
+
+def _without_split_redirections(tokens: "list[str]") -> "tuple[str, list[str]] | None":
+    """The command with every shlex-split `>&` / `<&` / `>|` removed, and the removed targets."""
+    out: "list[str]" = []
+    targets: "list[str]" = []
+    i, changed = 0, False
+    while i < len(tokens):
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if _is_bare_redirection(tokens[i]) and (
+            nxt == "&" or (nxt == "|" and tokens[i].endswith(">"))
+        ):
+            targets.extend(tokens[i + 2 : i + 3])
+            i += 3
+            changed = True
+            continue
+        token = tokens[i]
+        out.append(token if token and not set(token) - set(";&|()") else shlex.quote(token))
+        i += 1
+    return (" ".join(out), targets) if changed else None
+
+
+def _unquoted_redirection_indexes(text: str, tokens: "list[str]") -> "frozenset[int] | None":
+    """Tokens that are real redirections; None when quoting cannot be told apart."""
+    if not any(char in _REDIRECT_CHARS for char in text):
+        return frozenset()
+    marked = _masked_tokens(text, tokens, ";&|()", _REDIRECT_CHARS, _QUOTED_REDIRECT_MARK)
+    if marked is None:
+        return None
+    return frozenset(
+        index
+        for index, token in enumerate(tokens)
+        if _REDIRECTION_RE.match(token) and _REDIRECTION_RE.match(marked[index])
+    )
+
+
 def _unquoted_expansion_indexes(
     text: str, tokens: "list[str]", punctuation: str
 ) -> "frozenset[int]":
@@ -7324,6 +7368,18 @@ _GIT_GLOBAL_VALUE_FLAGS = frozenset(
 )
 # Recursively screened; the hard-block only recurses for its own smaller set.
 _SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
+# `script` short options that take a value (util-linux -TIOBEom, BSD -t, -c).
+_SCRIPT_VALUE_LETTERS = "cTIOBEomt"
+_SCRIPT_LONG_VALUE_OPTS = (
+    "--command",
+    "--echo",
+    "--log-in",
+    "--log-io",
+    "--log-out",
+    "--log-timing",
+    "--logging-format",
+    "--output-limit",
+)
 # Command-position substitutions ($(printf rm) -rf build) are unreadable; argument ones are not.
 _COMMAND_SUBST_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
@@ -7823,6 +7879,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         current_command = ""  # the resolved command whose flags / git subcommand we judge
         git_subcommand = ""  # the first positional after `git`
         shell_c_pending = False  # a shell `-c` precedes its inline payload
+        command_arg_pending = False
+        script_operand_seen = False
+        redir_target_pending = False
+        split_redirects_checked = False
+        unquoted_redirs: "frozenset[int] | None | bool" = False  # False: not computed yet
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
         git_checkout_positionals = 0  # positionals seen after `git checkout`
@@ -7840,6 +7901,21 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         for _tok_idx, token in enumerate(tokens):
             after_coproc = coproc_kw
             coproc_kw = False
+            # shlex splits `2>&1` / `>|log`: also judge the command with those redirections removed.
+            if (
+                token in ("&", "|")
+                and not split_redirects_checked
+                and _tok_idx
+                and _is_bare_redirection(tokens[_tok_idx - 1])
+            ):
+                split_redirects_checked = True
+                split = _without_split_redirections(tokens)
+                if split is not None and (
+                    _depth >= 3
+                    or _terminal_is_high_risk(split[0], _depth + 1)
+                    or any(_redirect_word_is_high_risk(t) for t in split[1])
+                ):
+                    return True
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
@@ -7863,6 +7939,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_submodule_action = ""
                 awk_program_pending = False
                 shell_c_pending = False
+                command_arg_pending = False
+                script_operand_seen = False
+                redir_target_pending = False
                 git_glob_pending = False
                 chdir_pending = False
                 continue
@@ -7882,8 +7961,38 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if win_operand_pending:
                 win_operand_pending = False
                 continue
-            if expect_command and _REDIR_PREFIX_RE.match(token):
-                # Bash accepts a redirection before the command word (`</dev/null rm -rf build`); skip it.
+            # Bash drops redirections from argv anywhere (`nohup 2> log rm`); a bare `2>` takes the next word.
+            if redir_target_pending:
+                redir_target_pending = False
+                # Behind a quoted operator this word may be the pending command string itself.
+                if command_arg_pending or shell_c_pending:
+                    if _depth >= 3 or _terminal_is_high_risk(token, _depth + 1):
+                        return True
+                elif _redirect_word_is_high_risk(token):
+                    return True
+                continue
+            redir = None
+            if expect_command:
+                redir = _REDIR_PREFIX_RE.match(token)
+            elif command_arg_pending or shell_c_pending:
+                redir = _REDIRECTION_RE.match(token)
+                if redir:
+                    # Quoted (`bash -c '>out rm -rf x'`) it is the command string itself.
+                    readings = [token, " ".join(tokens[_tok_idx:])] if shell_c_pending else [token]
+                    if _depth >= 3 or any(_terminal_is_high_risk(r, _depth + 1) for r in readings):
+                        return True
+            elif (prefix_pending or scan_forward) and not wrapper_value_pending:
+                redir = _REDIRECTION_RE.match(token)
+                if redir:
+                    if unquoted_redirs is False:
+                        unquoted_redirs = _unquoted_redirection_indexes(text, tokens)
+                    # A quoted `'>log'` is a word (`exec -a '>log' git ...`); unknown quoting keeps it one.
+                    if unquoted_redirs is None or _tok_idx not in unquoted_redirs:
+                        redir = None
+            if redir:
+                if _redirect_word_is_high_risk(token[redir.end() :]):
+                    return True
+                redir_target_pending = redir.end() == len(token)
                 continue
             if exec_flag_pending and token == "--":
                 # Nothing after fd's `--` is an option.
@@ -7970,6 +8079,29 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                                 return True
                         else:
                             shell_c_pending = True
+                # getopt: the first value-taking letter owns the rest of the cluster (-chalt, -Tdoc/c.log).
+                if current_command == "script":
+                    letter, payload = "", None
+                    if token.startswith("--"):
+                        # getopt_long takes an exact name or a unique prefix (--comm=, --log-t FILE).
+                        longs = [o for o in _SCRIPT_LONG_VALUE_OPTS if o.startswith(flag)]
+                        if len(longs) == 1 or flag in longs:
+                            letter = (
+                                "c" if (flag if flag in longs else longs[0]) == "--command" else "T"
+                            )
+                            payload = token.split("=", 1)[1] if "=" in token else ""
+                    else:
+                        for i, ch in enumerate(token[1:]):
+                            if ch in _SCRIPT_VALUE_LETTERS:
+                                letter, payload = ch, token[i + 2 :]
+                                break
+                    if letter == "c" and payload:
+                        if _depth >= 3 or _terminal_is_high_risk(payload, _depth + 1):
+                            return True
+                    elif letter == "c":
+                        command_arg_pending = True
+                    elif letter and not payload:
+                        wrapper_value_pending = True
                 # env -S runs a string as a command; env -C chdirs (enabling relative sensitive reads).
                 if current_command == "env":
                     if flag in ("-C", "--chdir"):
@@ -8051,7 +8183,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     if not git_subcommand and "=" not in token and flag in _GIT_GLOBAL_VALUE_FLAGS:
                         git_glob_pending = True
                 continue
-            if _ASSIGNMENT_RE.match(token):
+            # A pending command string may itself start with an assignment (`trap 'rc=$?; rm -rf x' EXIT`).
+            if _ASSIGNMENT_RE.match(token) and not (shell_c_pending or command_arg_pending):
                 _assign_name, _, _assign_value = token.partition("=")
                 # `alias zap='rm -rf'` stores a command bash runs when invoked, like a git alias body.
                 if current_command == "alias" and _assign_value:
@@ -8069,6 +8202,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             # cmd.exe /c or /k runs the next token as a nested command; they are not dash-flags, so they are handled in argument position.
             if current_command in _CMD_SHELLS and raw.lower() in ("/c", "/k"):
                 shell_c_pending = True
+                continue
+            # Screen that one word (`trap ARG SIGNAL...`, `script -c CMD log`), not the words after it.
+            if command_arg_pending:
+                command_arg_pending = False
+                if _depth >= 3 or _terminal_is_high_risk(token, _depth + 1):
+                    return True
                 continue
             # The payload of a shell `-c`, screened recursively (bounded depth).
             if shell_c_pending:
@@ -8156,6 +8295,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     scan_forward = False
                 # Remember the resolved command so its own flags (python -c), git subcommand or chdir target are judged.
                 current_command = base
+                command_arg_pending = base == "trap"
                 if base in _CHDIR_COMMANDS:
                     chdir_pending = True
                 if base in _AWK_COMMANDS:
@@ -8241,6 +8381,22 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 and not git_submodule_action
             ):
                 git_submodule_action = base
+            elif (
+                current_command == "script"
+                and _REDIRECTION_RE.match(token)
+                and not script_operand_seen
+            ):
+                if unquoted_redirs is False:
+                    unquoted_redirs = _unquoted_redirection_indexes(text, tokens)
+                if unquoted_redirs is not None and _tok_idx in unquoted_redirs:
+                    redir_target_pending = _REDIRECTION_RE.match(token).end() == len(token)
+                else:
+                    script_operand_seen = True
+                    scan_forward = True
+            elif current_command == "script" and not script_operand_seen:
+                # util-linux permutes argv; BSD/macOS `script file command ...` runs the words after it.
+                script_operand_seen = True
+                scan_forward = True
             elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
                 # The database name is the whole request; no path is mentioned.
                 return True

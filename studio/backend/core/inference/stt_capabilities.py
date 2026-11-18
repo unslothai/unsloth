@@ -97,6 +97,22 @@ def max_seconds_for(engine: Optional[str]) -> int:
     return int(stt_sidecar._MAX_AUDIO_SECONDS)
 
 
+def accent_prompt(accent: Optional[str]) -> Optional[str]:
+    accent = " ".join(str(accent or "").split())
+    return f"Speaker accent: {accent}." if accent else None
+
+
+def takes_accent_hint(engine: Optional[str]) -> bool:
+    # Qwen3-ASR's context only: Whisper's prompt conditions style, and an accent there raised EdAcc WER.
+    return engine == "mtmd"
+
+
+def connection_takes_accent_hint(model: Optional[str]) -> bool:
+    # whisper-1 has Whisper's prompt; OpenAI: "prompt ... is not supported when using gpt-4o-transcribe-diarize".
+    model = str(model or "").lower()
+    return "diarize" not in model and "whisper" not in model
+
+
 def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
     """``timestamps``: "on_request" | "always" | "unsupported"; ``aligner`` only for "on_request".
     ``live``: the model can transcribe speech while it is spoken (stt_live)."""
@@ -106,6 +122,7 @@ def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
         "family": None,
         "timestamps": "unsupported",
         "speakers": False,
+        "accent_hint": False,
         "aligner": None,
         "cpu_only": False,
         "max_seconds": None,
@@ -115,6 +132,7 @@ def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
         resolved_engine = _engine_for(model, engine)
         result["engine"] = resolved_engine
         result["max_seconds"] = max_seconds_for(resolved_engine)
+        result["accent_hint"] = takes_accent_hint(resolved_engine)
         if resolved_engine != "audiocpp" or not model:
             return result
         family = _audio_cpp_family(model)
@@ -148,5 +166,5 @@ def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
             }
     except Exception as exc:  # noqa: BLE001 - a capability probe never fails the page
         logger.info("STT capabilities for %r unavailable (%s)", model, type(exc).__name__)
-        result.update(timestamps = "unsupported", speakers = False, aligner = None, live = False)
+        result.update(timestamps = "unsupported", speakers = False, accent_hint = False, aligner = None, live = False)
     return result

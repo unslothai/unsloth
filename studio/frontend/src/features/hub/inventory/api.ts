@@ -211,6 +211,8 @@ export interface GgufVariantDetail {
   partial?: boolean;
   partial_transport?: string | null;
   partial_resumable?: boolean;
+  /** An empty leftover quant folder, listed only so it can be deleted; no such file exists. */
+  cleanable?: boolean;
   /** Variants sharing this key share one companion download footprint. */
   dependency_key?: string | null;
   /** Precision of the Engram table this quant ships with, when the repo publishes others. */

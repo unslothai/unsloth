@@ -144,6 +144,17 @@ export function setVoiceMode(next: VoiceMode): void {
   voiceMode = next;
 }
 
+let voiceSessionEnd: (() => void) | null = null;
+export function registerVoiceSessionEnd(fn: (() => void) | null): void {
+  voiceSessionEnd = fn;
+}
+
+// Chat only unmounts on sign-out: the open recording stops now and voice is off for the next login.
+export function endVoiceOnSignOut(): void {
+  voiceSessionEnd?.();
+  setVoiceMode("off");
+}
+
 export function registerVoiceToggle(fn: (() => void) | null): void {
   voiceToggle = fn;
   if (!fn) return;

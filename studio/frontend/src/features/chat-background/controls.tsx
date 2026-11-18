@@ -394,6 +394,7 @@ export function ChatBackgroundControls() {
 							<ChatBackground
 								active={!(conversation && adjustments.scope === "newChat")}
 							/>
+							{conversation && <div className="wallpaper-preview-wash absolute inset-0" />}
 							{!value && (
 								<p className="absolute inset-x-4 top-4 text-center text-xs text-muted-foreground">
 									{t("chatBackground.noBackground")}
@@ -401,7 +402,7 @@ export function ChatBackgroundControls() {
 							)}
 							<div className="wallpaper-preview-content absolute inset-x-4 bottom-4 space-y-3 text-xs">
 								{conversation && (
-									<p className="wallpaper-preview-prose rounded-lg p-3">
+									<p className="p-3">
 										{t("chatBackground.response")}
 									</p>
 								)}

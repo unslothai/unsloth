@@ -2462,24 +2462,15 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
 
 
 _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
+_SD_CPP_LIBS = ("stable-diffusion.dll", "libstable-diffusion.so", "libstable-diffusion.dylib")
 
 
-def binary_carries_marker(
-    binary: Optional[str],
-    marker: Optional[str],
-    *,
-    unreadable: bool = True,
-) -> bool:
-    """No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the caller passes unreadable=False."""
-    if not marker:
-        return True
-    if not binary:
-        return False
+def _file_carries_marker(path: str, marker: str) -> Optional[bool]:
     try:
-        st = os.stat(binary)
-        key = (str(binary), int(st.st_size), int(st.st_mtime_ns), marker)
+        st = os.stat(path)
+        key = (str(path), int(st.st_size), int(st.st_mtime_ns), marker)
     except OSError:
-        return unreadable
+        return None
     hit = _ARCH_MARKER_CACHE.get(key)
     if hit is not None:
         return hit
@@ -2487,7 +2478,7 @@ def binary_carries_marker(
     chunk = 8 << 20
     found = False
     try:
-        with open(binary, "rb") as fh:
+        with open(path, "rb") as fh:
             tail = b""
             while True:
                 block = fh.read(chunk)
@@ -2498,9 +2489,31 @@ def binary_carries_marker(
                     break
                 tail = block[-(len(needle) - 1) :] if len(needle) > 1 else b""
     except OSError:
-        return unreadable
+        return None
     _ARCH_MARKER_CACHE[key] = found
     return found
+
+
+def binary_carries_marker(
+    binary: Optional[str],
+    marker: Optional[str],
+    *,
+    unreadable: bool = True,
+) -> bool:
+    """The binary or the libstable-diffusion beside it (shared builds keep some markers only there) carries the
+    marker. No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the
+    caller passes unreadable=False."""
+    if not marker:
+        return True
+    if not binary:
+        return False
+    found = _file_carries_marker(binary, marker)
+    if found is None:
+        return unreadable
+    return found or any(
+        _file_carries_marker(os.path.join(os.path.dirname(binary), lib), marker)
+        for lib in _SD_CPP_LIBS
+    )
 
 
 def _native_output_image(fam: Any, im: Any) -> Any:
@@ -3137,6 +3150,12 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
         return None
     per_step = (now - first_step_at) / steps_since_first
     return max(0.0, (total_steps - step) * per_step)
+
+
+def _family_rng_kwargs(fam: Any) -> dict[str, str]:
+    """``rng=`` for an sd-server start when the family pins one (``sd_cpp_rng``), else nothing."""
+    rng = getattr(fam, "sd_cpp_rng", None)
+    return {"rng": rng} if rng else {}
 
 
 def _request_extra_sample_args(state: Any) -> Optional[str]:
@@ -4058,6 +4077,7 @@ class SdCppDiffusionBackend:
                             native_speed = native_speed,
                             threads = _default_threads(),
                             env = spawn_env,
+                            **_family_rng_kwargs(fam),
                         )
                         started_ok = True
                     except SdCppCancelled:
@@ -5298,7 +5318,7 @@ class SdCppDiffusionBackend:
         watcher.start()
         failed = False
         try:
-            server.start(state.files, **start_kwargs)
+            server.start(state.files, **start_kwargs, **_family_rng_kwargs(state.family))
         except Exception:  # noqa: BLE001 -- the original server error is the more useful one
             failed = True
         finally:
@@ -5554,6 +5574,7 @@ class SdCppDiffusionBackend:
                     lora_apply_mode = "auto" if lora_dir else None,
                     ref_images = tuple(ref_paths),
                     qwen_image_layers = layers,
+                    rng = getattr(state.family, "sd_cpp_rng", None),
                 )
                 # Hold installs off while sd-cli runs; injected engines may have no binary.
                 with _tree_reader(getattr(engine, "binary", None), cancel):

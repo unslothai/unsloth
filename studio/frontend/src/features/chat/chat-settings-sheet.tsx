@@ -423,6 +423,8 @@ interface ChatSettingsPanelProps {
   open: boolean;
   onOpenChange?: (open: boolean) => void;
   modelConfig?: ReactNode;
+  /** Rendered last, collapsed by default. */
+  modelInfo?: ReactNode;
   isExternalModel?: boolean;
   providerCapabilities?: ProviderCapabilities | null;
   activeExternalProvider?: ExternalProviderConfig | null;
@@ -480,6 +482,7 @@ export function ChatSettingsPanel({
   open,
   onOpenChange,
   modelConfig = null,
+  modelInfo = null,
   isExternalModel = false,
   providerCapabilities = null,
   activeExternalProvider = null,
@@ -1705,6 +1708,10 @@ export function ChatSettingsPanel({
             <RetrievalSettingsSection />
           </CollapsibleSection>
             )}
+
+        {modelInfo && (
+          <CollapsibleSection label="Information">{modelInfo}</CollapsibleSection>
+        )}
 
       </div>
       </div>

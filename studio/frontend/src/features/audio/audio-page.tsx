@@ -1431,6 +1431,7 @@ export function AudioPage({
   const transcribePrefs = useAudioTranscribeStore(
     useShallow((state) => ({
       language: state.language,
+      speakerAccent: state.speakerAccent,
       timestamps: state.timestamps,
       speakers: state.speakers,
     })),

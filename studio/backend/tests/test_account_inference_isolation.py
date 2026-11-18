@@ -933,7 +933,6 @@ def test_a_detect_that_loads_the_detector_records_its_account(monkeypatch):
         == 200
     )
     assert bob.get("/api/inference/audio/vad/status").json()["loaded_model"] == "bob/vad-GGUF"
-    # Using a detector that was already resident claims nothing.
     alice = client_for(ALICE)
     assert (
         alice.post(
