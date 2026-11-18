@@ -663,17 +663,39 @@ def _gguf_with(path: Path, arch: str, layers: int, hidden: int, **extra) -> str:
 
 
 _EXPERTS = "{arch}.expert_count"
+_COMPAT = Path(__file__).parent / "fixtures" / "npu_compat"
+
+
+@pytest.fixture(autouse = True)
+def _fastflowlm_shapes(monkeypatch, tmp_path):
+    """FastFlowLM's runnable shapes from the fixture catalog, never this host's install."""
+    from core.inference import npu_compat
+
+    flm = tmp_path / "flm-bin" / "flm"
+    flm.parent.mkdir()
+    (flm.parent / "model_list.json").write_bytes((_COMPAT / "flm" / "model_list.json").read_bytes())
+    configs = json.loads((_COMPAT / "hf_configs.json").read_text())
+    shapes = npu_compat.flm_shapes(
+        flm,
+        tmp_path / "flm-models",
+        tmp_path / "flm-cache.json",
+        lambda url: configs.get(url.split("/FastFlowLM/")[1].split("/")[0]),
+    )
+    compat = npu_compat.build_compat(shapes, None)
+    monkeypatch.setattr(npu_compat, "current", lambda install_converter = True: compat)
+    return compat
 
 
 @pytest.mark.parametrize(
     "arch, layers, hidden, extra, nearest",
     [
-        ("llama", 80, 8192, {}, "Llama 3.1 8B"),  # Llama 3.3 70B
-        ("llama", 40, 5120, {}, "Llama 3.1 8B"),  # phi-4 14B, Llama-format GGUF
-        ("gemma4", 30, 2816, {_EXPERTS: 128}, "Gemma 4 E4B"),  # Gemma 4 26B-A4B
-        ("gemma4", 60, 5376, {}, "Gemma 4 12B"),  # Gemma 4 31B
-        ("qwen35moe", 48, 3072, {_EXPERTS: 256}, "Qwen3.5 / 3.6 35B-A3B"),  # 122B-A10B
-        ("qwen35", 64, 5120, {"general.basename": "Qwen3.5-27B"}, "Qwen3.5 9B"),
+        ("llama", 80, 8192, {}, "Llama-3.1-8B"),  # Llama 3.3 70B
+        ("llama", 40, 5120, {}, "Llama-3.1-8B"),  # phi-4 14B, Llama-format GGUF
+        ("gemma4", 30, 2816, {_EXPERTS: 128}, "Gemma4-E4B-IT"),  # Gemma 4 26B-A4B
+        ("gemma4", 60, 5376, {}, "Gemma4-12B-IT"),  # Gemma 4 31B
+        ("qwen35moe", 48, 3072, {_EXPERTS: 256}, "Qwen3.6-35B-A3B"),  # 122B-A10B
+        ("qwen35", 48, 6144, {"general.basename": "Qwen3.5-72B"}, "Qwen3.8-27B"),
+        ("qwen3", 40, 5120, {}, "Qwen3-8B"),  # Qwen3 14B
     ],
 )
 def test_unsupported_geometry_is_refused_before_installing(
@@ -701,7 +723,7 @@ def test_unsupported_geometry_is_refused_before_installing(
         ("qwen35moe", 40, 2048, {_EXPERTS: 256}, "q4k"),  # Qwen3.6 35B-A3B
         ("llama", 32, 4096, {}, "q4nx"),  # Llama 3.1 8B
         ("gpt-oss", 24, 2880, {_EXPERTS: 32}, "q4nx"),
-        ("nanbeige", 99, 999, {}, "q4nx"),  # not in the table: the converter decides
+        ("qwen35", 64, 5120, {"general.basename": "Qwen3.8-27B"}, "q4k"),  # a shape FLM runs
     ],
 )
 def test_supported_geometry_converts(monkeypatch, tmp_path, arch, layers, hidden, extra, converter):
@@ -714,6 +736,33 @@ def test_supported_geometry_converts(monkeypatch, tmp_path, arch, layers, hidden
 
     export_mod.q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
     assert installed == [converter]
+
+
+def test_an_architecture_fastflowlm_has_no_kernels_for_is_refused(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    q4nx = export_mod.q4nx
+    monkeypatch.setattr(q4nx, "require_converter_deps", lambda: None)
+    monkeypatch.setattr(q4nx, "_installer", lambda: pytest.fail("installer must not run"))
+    source = _gguf_with(tmp_path / "m.gguf", "lfm2", 16, 2048)
+
+    with pytest.raises(RuntimeError, match = "has no NPU kernels for the lfm2 architecture"):
+        q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
+
+
+def test_without_fastflowlm_installed_the_converter_decides(monkeypatch, tmp_path):
+    from core.inference import npu_compat
+
+    unknown = npu_compat.build_compat(None, None)
+    monkeypatch.setattr(npu_compat, "current", lambda install_converter = True: unknown)
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    read_architecture = export_mod.q4nx._gguf_architecture
+    installed = _stub_installer(export_mod, monkeypatch, tmp_path)
+    monkeypatch.setattr(export_mod.q4nx, "_gguf_architecture", read_architecture)
+    _fake_popen(export_mod, monkeypatch)
+    source = _gguf_with(tmp_path / "m.gguf", "llama", 80, 8192)
+
+    export_mod.q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
+    assert installed == ["q4nx"]
 
 
 def test_a_refused_source_is_a_source_mismatch(monkeypatch, tmp_path):
@@ -826,3 +875,52 @@ def test_the_converter_refuses_blocks_it_would_pack_in_the_wrong_layout(
     else:
         assert result.returncode == 0, result.stderr
         assert (out / "model.q4nx").exists()
+
+
+def test_a_nanbeige_gguf_of_a_shape_fastflowlm_runs_converts(monkeypatch, tmp_path):
+    from core.inference import npu_compat
+
+    shape = {
+        "architecture": "llama",
+        "layers": 32,
+        "hidden": 2560,
+        "experts": 0,
+        "checkpoints": ["nanbeige4.1:3b"],
+        "names": ["Nanbeige4.1-3B"],
+        "sizes": ["3b"],
+    }
+    compat = npu_compat.build_compat([shape], None)
+    monkeypatch.setattr(npu_compat, "current", lambda install_converter = True: compat)
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    read_architecture = export_mod.q4nx._gguf_architecture
+    installed = _stub_installer(export_mod, monkeypatch, tmp_path)
+    monkeypatch.setattr(export_mod.q4nx, "_gguf_architecture", read_architecture)
+    _fake_popen(export_mod, monkeypatch)
+    source = _gguf_with(tmp_path / "m.gguf", "nanbeige", 32, 2560)
+
+    export_mod.q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
+    assert installed == ["q4nx"]
+
+
+@pytest.mark.parametrize("layers, hidden, refused", [(48, 3072, True), (40, 2048, False)])
+def test_without_fastflowlm_s_table_a_fixed_config_architecture_is_still_checked(
+    monkeypatch, tmp_path, layers, hidden, refused
+):
+    from core.inference import npu_compat
+
+    unknown = npu_compat.build_compat(None, None)
+    monkeypatch.setattr(npu_compat, "current", lambda install_converter = True: unknown)
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    read_architecture = export_mod.q4nx._gguf_architecture
+    installed = _stub_installer(export_mod, monkeypatch, tmp_path)
+    monkeypatch.setattr(export_mod.q4nx, "_gguf_architecture", read_architecture)
+    _fake_popen(export_mod, monkeypatch)
+    source = _gguf_with(tmp_path / "m.gguf", "qwen35moe", layers, hidden, **{_EXPERTS: 256})
+
+    if refused:
+        with pytest.raises(RuntimeError, match = "cannot be exported for the AMD NPU"):
+            export_mod.q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
+        assert installed == []
+    else:
+        export_mod.q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
+        assert installed == ["q4k"]

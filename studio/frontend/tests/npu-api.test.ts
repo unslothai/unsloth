@@ -148,17 +148,19 @@ test("NPU rows: downloaded ones on device, all of them to browse, by query", () 
   assert.deepEqual(ids(true, "gemma"), []);
   assert.deepEqual(api.npuRowsFor(null, { onDevice: false, query: "" }), []);
 
+  // The backend lists alphabetically; the six popular models lead in their own order.
   const backendOrder = [
     ["d3-edge-FLM", "d3:edge"],
     ["gemma3-4b-FLM", "gemma3:4b"],
+    ["gemma4-it-12b-FLM", "gemma4-it:12b"],
     ["lfm3-1.7b-FLM", "lfm3:1.7b"],
     ["qwen3-4b-FLM", "qwen3:4b"],
     ["qwen3.5-0.8b-FLM", "qwen3.5:0.8b"],
-    ["qwen3.5-4b-FLM", "qwen3.5:4b"],
     ["qwen3.5-9b-FLM", "qwen3.5:9b"],
     ["qwen3.6-moe-35b-a3b-FLM", "qwen3.6-moe:35b-a3b"],
     ["qwen3.8-dflash2-27b-FLM", "qwen3.8-dflash2:27b"],
     ["qwen3.8-mtp-27b-FLM", "qwen3.8-mtp:27b"],
+    ["qwen3vl-it-4b-FLM", "qwen3vl-it:4b"],
   ].map(([id, checkpoint]) => ({ ...model(id, false), checkpoint }));
   assert.deepEqual(
     api
@@ -167,14 +169,15 @@ test("NPU rows: downloaded ones on device, all of them to browse, by query", () 
     [
       "qwen3.6-moe-35b-a3b-FLM",
       "qwen3.8-mtp-27b-FLM",
-      "qwen3.8-dflash2-27b-FLM",
+      "gemma4-it-12b-FLM",
       "qwen3.5-9b-FLM",
-      "qwen3.5-4b-FLM",
+      "qwen3vl-it-4b-FLM",
       "lfm3-1.7b-FLM",
-      "qwen3.5-0.8b-FLM",
       "d3-edge-FLM",
       "gemma3-4b-FLM",
       "qwen3-4b-FLM",
+      "qwen3.5-0.8b-FLM",
+      "qwen3.8-dflash2-27b-FLM",
     ],
   );
 });

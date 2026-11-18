@@ -11,12 +11,11 @@ import type { StudioDictationSession } from "@/features/chat/adapters/studio-web
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** A second stop while the last phrase transcribes cancels it. */
+/** A second stop while the last phrase transcribes cancels it. No `language`: models detect it. */
 export function useDictation(
   onTranscript: (transcript: string) => void,
   language?: string,
 ) {
-  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
   const [dictating, setDictating] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const sessionRef = useRef<StudioDictationSession | null>(null);
@@ -44,6 +43,7 @@ export function useDictation(
       session = new StudioDictationAdapter({
         chatId: null,
         language: languageRef.current,
+        detectLanguage: languageRef.current === undefined,
       }).listen();
     } catch {
       notifyStudioDictationUnavailable();
@@ -90,7 +90,6 @@ export function useDictation(
     finalizing,
     start,
     stop,
-    supported: StudioDictationAdapter.isSupported(dictationEngine),
   };
 }
 

@@ -89,6 +89,25 @@ test("swap moves a current translation into the text box", async () => {
   assert.equal(state().prefs.target, "en");
 });
 
+test("language tabs keep their order when one is picked and take a new language at the front", () => {
+  state().setPrefs({ target: "fr", recentTargets: ["fr", "de", "es"] });
+  state().setTarget("es");
+  assert.deepEqual(state().prefs.recentTargets, ["fr", "de", "es"]);
+  state().setTarget("ja");
+  assert.deepEqual(state().prefs.recentTargets, ["ja", "fr", "de"]);
+  state().setPrefs({ from: AUTO_SOURCE, recentSources: [] });
+  state().setFrom("en");
+  state().setFrom(AUTO_SOURCE);
+  assert.deepEqual(state().prefs.recentSources, ["en"]);
+  assert.equal(state().prefs.from, AUTO_SOURCE);
+});
+
+test("picking Detect language keeps a source tab that was never saved as recent", () => {
+  state().setPrefs({ from: "ja", recentSources: [] });
+  state().setFrom(AUTO_SOURCE);
+  assert.deepEqual(state().prefs.recentSources, ["ja"]);
+});
+
 test("swap keeps an edited draft instead of the old translation", async () => {
   state().setSource("Hello");
   await state().translate();
@@ -96,6 +115,22 @@ test("swap keeps an edited draft instead of the old translation", async () => {
   state().swap();
   assert.equal(state().source, "Hello, how are you?");
   assert.equal(state().prefs.from, "fr");
+});
+
+test("with an automatic source, swap uses the detected language", async () => {
+  state().setPrefs({ from: AUTO_SOURCE });
+  state().setSource("Hello");
+  await state().translate();
+  state().swap(null);
+  assert.equal(state().prefs.from, AUTO_SOURCE);
+  assert.equal(state().source, "Hello");
+  // Already in the target language: nothing to swap to.
+  state().swap("fr");
+  assert.equal(state().prefs.from, AUTO_SOURCE);
+  state().swap("en");
+  assert.equal(state().source, "FR:Hello");
+  assert.equal(state().prefs.from, "fr");
+  assert.equal(state().prefs.target, "en");
 });
 
 test("translating the translation onward sets its language as the source", async () => {

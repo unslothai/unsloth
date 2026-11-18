@@ -1307,6 +1307,23 @@ def _has_padding_before_tokens(attention_mask):
     return bool((real[:, 1:] & ~real[:, :-1]).any())
 
 
+def _pad_queries_attend_self(mask_4d, mask_2d):
+    # A fully masked pad query is unmasked to every key (transformers' _unmask_unattended, and the SDPA
+    # dispatch), so the label it predicts (the first real token, kept by DataCollatorForSeq2Seq) would
+    # see later tokens. In training, pad queries attend only themselves: causal and never fully masked.
+    if mask_4d is None or mask_4d.dim() != 4 or mask_2d.dim() != 2:
+        return mask_4d
+    q_len = mask_2d.shape[-1]
+    if mask_4d.shape[-2] != q_len or mask_4d.shape[-1] != q_len:
+        return mask_4d
+    pad_q = (mask_2d == 0)[:, None, :, None]
+    diag = torch.eye(q_len, dtype = torch.bool, device = mask_4d.device)
+    if mask_4d.dtype == torch.bool:
+        return (mask_4d & ~pad_q) | (pad_q & diag)
+    blocked = torch.finfo(mask_4d.dtype).min
+    return mask_4d.masked_fill(pad_q & ~diag, blocked).masked_fill(pad_q & diag, 0)
+
+
 class Gemma2AttentionMaskConverter(AttentionMaskConverter):
     """Gemma2's window counts the current key as well as the preceding keys."""
 
@@ -1508,6 +1525,7 @@ def LlamaModel_fast_forward(
             ):
                 attention_mask = None
             else:
+                mask_2d = attention_mask
                 attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                     attention_mask,
                     (batch_size, seq_length),
@@ -1515,6 +1533,8 @@ def LlamaModel_fast_forward(
                     past_key_values_length,
                     sliding_window = band,
                 )
+                if self.training and past_key_values_length == 0:
+                    attention_mask = _pad_queries_attend_self(attention_mask, mask_2d)
         # Must NOT convert to bool; that weirdly causes errors.
 
     hidden_states = inputs_embeds
@@ -1632,18 +1652,23 @@ def LlamaModel_fast_forward(
             materialize_len = rope_rows,
         )
         device_index = hidden_states.device.index
-        original = getattr(self.rotary_emb, "original_max_position_embeddings", None)
-        if (
-            position_ids is not None
-            and isinstance(self.rotary_emb, LongRopeRotaryEmbedding)
-            and rope_len <= original < rope_rows
-        ):
-            # Mirrors transformers longrope_frequency_update (factors from max(position_ids) + 1, a
-            # host sync); other models and LongRoPE without position_ids stay sync-free; in-graph
-            # choice under compile would rebuild tables each forward.
-            rope_len = max(rope_len, int(position_ids.max()) + 1)
+        rows = seq_length_with_past
+        if isinstance(self.rotary_emb, LongRopeRotaryEmbedding):
+            # transformers' longrope_frequency_update: max(position_ids) + 1 of the caller's sequence.
+            bound = position_ids
+            cp_manager = get_cp_manager()
+            if cp_manager is not None:
+                rows *= cp_manager.size
+                bound = getattr(cp_manager, "position_bound", None)
+            rope_len = rows if bound is None else int(bound.max()) + 1
         # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
         position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
+        if rope_len < rows and position_embeddings[0].shape[0] < rows:
+            # Packed positions restart: pad so the layers' (CP-global) row check keeps the short table.
+            position_embeddings = tuple(
+                torch.nn.functional.pad(x, (0, 0, 0, rows - x.shape[0]))
+                for x in position_embeddings
+            )
     else:
         position_embeddings = None
 
@@ -1820,7 +1845,10 @@ def _LlamaModel_fast_forward_inference(
         if static is not None:
             rotary_seq_len = static.rope_len
         else:
-            rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
+            rotary_seq_len = int(position_ids.max().item()) + 1
+            # LongRoPE picks factors from positions, as prefill does, not the (padded) KV length.
+            if not isinstance(getattr(self.model, "rotary_emb", None), LongRopeRotaryEmbedding):
+                rotary_seq_len = max(kv_seq_len, rotary_seq_len)
 
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
@@ -2894,6 +2922,7 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         long_factor = None,
         device = None,
         config = None,
+        attention_scaling = None,
     ):
         super().__init__()
         assert short_factor is not None
@@ -2905,7 +2934,10 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
             partial_rotary_factor = (
                 config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             )
-            dim = int((config.hidden_size // config.num_attention_heads))
+            dim = (
+                getattr(config, "head_dim", None)
+                or config.hidden_size // config.num_attention_heads
+            )
             device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
 
@@ -2929,9 +2961,11 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         short_inv_freq = 1.0 / (short_factor * self.base**inv_freq_shape)
         long_inv_freq = 1.0 / (long_factor * self.base**inv_freq_shape)
 
-        # Phi-3 scale factor.
+        # Phi-3 ratio, unless transformers' own scaling is given.
         scale = self.max_position_embeddings / self.original_max_position_embeddings
-        if scale <= 1.0:
+        if attention_scaling is not None:
+            scaling_factor = float(attention_scaling)
+        elif scale <= 1.0:
             scaling_factor = 1.0
         else:
             scaling_factor = math.sqrt(
@@ -4798,6 +4832,30 @@ class FastLlamaModel:
         # For transformers > 4.47.1, rotary_emb must be added to all attention layers.
         if IS_ATTENTION_REFACTOR or hasattr(model.model, "rotary_emb"):
             rotary_emb = model.model.rotary_emb
+            config = model.config
+            scaling = _rope_scaling_as_dict(
+                getattr(config, "rope_scaling", None)
+                or getattr(config, "rope_parameters", None)
+                or {}
+            )
+            # Llama only (its attention reads these tables); patch_llama_rope_scaling is pre-4.48 only.
+            if (
+                isinstance(rotary_emb, LlamaRotaryEmbedding)
+                and getattr(config, "model_type", None) == "llama"
+                and "longrope" in (scaling.get("rope_type"), scaling.get("type"))
+            ):
+                inv_freq, attention_scaling = _compute_config_rope_inv_freq(config, scaling)
+                rotary_emb = model.model.rotary_emb = LongRopeRotaryEmbedding(
+                    original_max_position_embeddings = int(
+                        getattr(config, "original_max_position_embeddings", None)
+                        or scaling.get("original_max_position_embeddings")
+                        or config.max_position_embeddings
+                    ),
+                    short_factor = scaling["short_factor"],
+                    long_factor = scaling["long_factor"],
+                    config = config,
+                    attention_scaling = None if inv_freq is None else attention_scaling,
+                )
             for layer in model.model.layers:
                 layer.self_attn.rotary_emb = rotary_emb
 

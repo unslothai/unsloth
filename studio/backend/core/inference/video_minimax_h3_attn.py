@@ -164,6 +164,7 @@ def _strided_processor_for(base: Any) -> Any:
         # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
+        _unsloth_int8_sinks = 0
 
         def __call__(
             self,
@@ -234,7 +235,12 @@ def _strided_processor_for(base: Any) -> Any:
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                hidden_states = _i8.int8_attention_call(query, key, value)
+                mode = self._unsloth_int8_sinks
+                hidden_states = (
+                    _i8.int8_attention_call(query, key, value, mode)
+                    if mode
+                    else _i8.int8_attention_call(query, key, value)
+                )
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             elif sage:
                 # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot

@@ -380,14 +380,22 @@ def test_a_custom_server_that_reports_no_window_is_not_asked(monkeypatch):
     assert "stream_options" not in _custom_request_body(monkeypatch, None)
 
 
-def test_the_window_is_read_before_the_first_turn():
-    transport = FakeTransport([_ANSWER_TURN])
-    reads = []
+def test_the_window_is_read_before_every_turn(monkeypatch):
+    # The window cache lasts 60 s; a slow tool must not let the next request go out without it.
+    transport = FakeTransport([_call_turn("c1"), _ANSWER_TURN])
+    events = []
+
+    def _slow_search(*a, **k):
+        events.append("tool")
+        return "ok"
+
+    monkeypatch.setattr(tools, "_web_search", _slow_search)
 
     async def _read():
-        reads.append(len(transport.requests))
+        events.append(len(transport.requests))
         return 8192
 
     _forwarded(transport, served_window = _read)
 
-    assert reads[0] == 0
+    assert events[0] == 0
+    assert 1 in events[events.index("tool") :]
