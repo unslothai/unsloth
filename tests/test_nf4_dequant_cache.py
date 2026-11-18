@@ -128,6 +128,27 @@ def test_budget_caps_admission(monkeypatch):
     assert calls == [True, False] and dc.cached_count() == 1 and dc.STATS["declined"] == 1
 
 
+@pytest.mark.parametrize("storage", [torch.bfloat16, torch.float32])
+def test_budget_counts_float_quant_storage_bytes(monkeypatch, storage):
+    # FSDP2 QLoRA packs NF4 into bf16 / float32 storage: 4 or 8 values per element, not 2.
+    _memory(monkeypatch, usable = 10 * GiB)
+    W = torch.zeros(64, 1, dtype = storage)
+    dense = 64 * W.element_size() * 2
+    dc._BUDGET[None] = dense * 2 - 1  # one bf16 byte short of the real dense size
+    calls = []
+
+    def decode(fresh):
+        calls.append(fresh)
+        return torch.zeros(8, dense // 8, dtype = torch.bfloat16)
+
+    dc._lookup(W, torch.ones(4), decode, torch.bfloat16)
+    assert calls == [False] and dc.cached_count() == 0 and dc.STATS["declined"] == 1
+    dc.clear_dequant_cache()
+    dc._BUDGET[None] = dense * 2
+    dc._lookup(W, torch.ones(4), decode, torch.bfloat16)
+    assert calls == [False, True] and dc.cached_count() == 1
+
+
 def test_guard_evicts_under_margin(monkeypatch):
     _memory(monkeypatch, usable = 10 * GiB)
     dc._BUDGET[None] = GiB

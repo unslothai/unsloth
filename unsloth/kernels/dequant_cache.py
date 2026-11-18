@@ -525,7 +525,8 @@ def _miss(W, absmax, decode, dtype, index):
             reserve = int(TRANSIENT_SLACK * _TRANSIENT.get(index, 0)) + _margin(total)
             budget = max(min(budget, _cached_bytes(index) + usable - reserve), 0)
             _BUDGET[index] = budget
-        need = W.numel() * 2 * (torch.finfo(dtype).bits // 8)
+        # Two NF4 values per packed byte; float quant storage (FSDP2 QLoRA) packs several bytes per element.
+        need = W.numel() * W.element_size() * 2 * (torch.finfo(dtype).bits // 8)
         ref = _storage_ref(W) if _cached_bytes(index) + need <= budget else None
         if ref is None:
             STATS["declined"] += 1
