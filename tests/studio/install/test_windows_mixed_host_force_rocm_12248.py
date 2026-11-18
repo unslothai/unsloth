@@ -58,7 +58,9 @@ SETUP_HELPERS = functions(
     "Write-CudaMaskHidesAmdWarning",
 )
 # The wheel tables Get-MixedHostNoticeArch reads, sliced from the live script.
-INSTALL_WHEEL_MAPS = slice_between(INSTALL_SRC, "    $archFamilyMap = @{", "    $MultiArchIndexBase")
+INSTALL_WHEEL_MAPS = slice_between(
+    INSTALL_SRC, "    $archFamilyMap = @{", "    $MultiArchIndexBase"
+)
 
 COLLECT = _script(
     "$script:Said = @()",
@@ -87,7 +89,12 @@ def _env(**values) -> str:
     return _script(*lines)
 
 
-def _install_decision(arch, wheels, hip_arches = (), **env):
+def _install_decision(
+    arch,
+    wheels,
+    hip_arches = (),
+    **env,
+):
     """The install.ps1 decision on an NVIDIA host whose AMD probe found `arch` (hipinfo listed `hip_arches`)."""
     listed = ", ".join(repr(a) for a in hip_arches)
     return _ps_kv(
@@ -323,7 +330,11 @@ def test_the_amd_probe_runs_beside_nvidia_only_when_it_can_matter(src, gate, env
 
 @pytest.mark.parametrize(
     "name",
-    ["Test-CudaMaskHidesNvidia", "Test-RocmTorchExplicitlyRequested", "Write-CudaMaskHidesAmdWarning"],
+    [
+        "Test-CudaMaskHidesNvidia",
+        "Test-RocmTorchExplicitlyRequested",
+        "Write-CudaMaskHidesAmdWarning",
+    ],
 )
 def test_install_and_setup_keep_one_copy_of_each_helper(name):
     install, setup = _ps_copies(name)
