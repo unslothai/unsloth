@@ -3005,7 +3005,7 @@ type AutoLoadSource = {
   id: string;
   /** Sent to /api/inference/load as model_path. */
   loadId: string;
-  /** Hub repo id of a Hugging Face cache row, whose id and loadId are its snapshot path. */
+  /** Hub repo id of an hf_cache row: in another cache its id and loadId are the snapshot path. */
   repoId?: string;
   sizeBytes: number;
   maxSeqLength: number;
@@ -3071,7 +3071,6 @@ function buildAutoLoadSources(
       kind: isGguf ? "gguf" : "model",
       id: row.id,
       loadId: row.load_id || row.id,
-      // The last used model is remembered by repo id, which only model_id carries here.
       repoId:
         row.source === "hf_cache" && row.model_id ? row.model_id : undefined,
       sizeBytes: row.size_bytes ?? 0,
@@ -4220,8 +4219,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         hadNonTrustFailure = true;
         continue;
       }
-      // The last used model is on the device but failed: report it rather than load a different model.
-      if (isRemembered && loadFailure.current) break;
     }
 
     // The cap gates the default download too, so the whole /load budget is MAX_AUTO_LOAD_ATTEMPTS.
