@@ -32,6 +32,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  Cursor02Icon,
   Download01Icon,
   LayoutTwoColumnIcon,
   LibrariesIcon,
@@ -107,6 +108,17 @@ const PLUS_MENU_SETTINGS: {
     icon: (
       <HugeiconsIcon
         icon={CursorInWindowIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "computerUse",
+    labelKey: "settings.chat.menu.computerUse",
+    icon: (
+      <HugeiconsIcon
+        icon={Cursor02Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />

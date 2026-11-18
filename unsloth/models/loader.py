@@ -51,6 +51,7 @@ from .mistral_format import (
 )
 from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_pissa
 from ..tokenizers_v1 import tokenizers_v1_on_return
+from .mapper import bf16_repo_loads_16bit
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     deepspeed_zero3_device_map,
@@ -721,6 +722,27 @@ def _compiled_auto_model(auto_model):
     ):
         return replacement
     return auto_model
+
+
+def _sync_registered_auto_classes(auto_model):
+    """Point registered Auto classes at their module's current class: register() stores the class object, so the
+    compiler's module swap would otherwise be missed."""
+    extra = getattr(getattr(auto_model, "_model_mapping", None), "_extra_content", None)
+    if not isinstance(extra, dict):
+        return
+    for config_class, model_class in list(extra.items()):
+        if not isinstance(model_class, type):
+            continue
+        module = sys.modules.get(getattr(model_class, "__module__", None) or "")
+        current = getattr(module, model_class.__name__, None) if module is not None else None
+        if (
+            isinstance(current, type)
+            and current is not model_class
+            and current.__name__ == model_class.__name__
+            and callable(getattr(current, "from_pretrained", None))
+            and (_built_by_unsloth_compiler(current) or _built_by_unsloth_compiler(model_class))
+        ):
+            extra[config_class] = current
 
 
 def _built_by_unsloth_compiler(cls):
@@ -1532,9 +1554,7 @@ class FastLanguageModel(FastLlamaModel):
         if on_model_resolved is not None:
             on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM whose message never mentions quantization.
-        if model_name.lower().endswith("-bf16") and (
-            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-        ):
+        if bf16_repo_loads_16bit(model_name, load_in_16bit):
             # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
             if (
                 not load_in_16bit
@@ -1760,9 +1780,7 @@ class FastLanguageModel(FastLlamaModel):
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
-            if model_name.lower().endswith("-bf16") and (
-                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-            ):
+            if bf16_repo_loads_16bit(model_name, load_in_16bit):
                 # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
                 if (
                     not load_in_16bit
@@ -2515,9 +2533,7 @@ class FastModel(FastBaseModel):
         if on_model_resolved is not None:
             on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
-        if model_name.lower().endswith("-bf16") and (
-            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-        ):
+        if bf16_repo_loads_16bit(model_name, load_in_16bit):
             # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
             if (
                 not load_in_16bit
@@ -2873,9 +2889,7 @@ class FastModel(FastBaseModel):
                 "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
             )
         elif "deepseek_v41," in model_types_all or "deepseek_v41_text," in model_types_all:
-            # DeepSeek-V4.1 port: its layers checkpoint non-reentrant, so a compiled region must save the same tensors
-            # in the recompute as in the forward. unsloth_zoo's prepare_compiled_checkpoint makes that hold; an older
-            # unsloth_zoo without it keeps torch.compile off for the model's forward as before.
+            # Non-reentrant checkpointing needs prepare_compiled_checkpoint (newer unsloth_zoo); else keep compile off.
             try:
                 from unsloth_zoo.temporary_patches.deepseek_v41 import prepare_compiled_checkpoint
             except ImportError:
@@ -3016,9 +3030,7 @@ class FastModel(FastBaseModel):
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
-            if model_name.lower().endswith("-bf16") and (
-                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-            ):
+            if bf16_repo_loads_16bit(model_name, load_in_16bit):
                 # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
                 if (
                     not load_in_16bit
@@ -3091,11 +3103,20 @@ class FastModel(FastBaseModel):
         for disable_name in FORCE_FLOAT32:
             # Add a comma to model_types_all so an exact match at the end still matches.
             if (
-                disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
-                or disable_name.lower() in model_types_all
-            ) and (
-                # An explicit bf16 load kept on XPU stays bf16, not the fp16 + float32 path.
-                dtype == torch.float16 or (not SUPPORTS_BFLOAT16 and dtype != torch.bfloat16)
+                (
+                    disable_name.lower()
+                    == model_type_arch.lower().replace("-", "").replace("_", "")
+                    or disable_name.lower() in model_types_all
+                )
+                and (
+                    # An explicit bf16 load kept on XPU stays bf16, not the fp16 + float32 path.
+                    dtype == torch.float16 or (not SUPPORTS_BFLOAT16 and dtype != torch.bfloat16)
+                )
+                and not (
+                    # An explicit float32 16-bit load stays float32 without bf16 (else bf16-loaded fp16 weights).
+                    user_float32
+                    and not (load_in_4bit or load_in_8bit or quantization_config is not None)
+                )
             ):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 do_forced_float32 = True
@@ -3415,6 +3436,7 @@ class FastModel(FastBaseModel):
                             is_vlm = False
             else:
                 auto_model = _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs)
+        _sync_registered_auto_classes(auto_model)
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit

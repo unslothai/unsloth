@@ -102,7 +102,7 @@ export function SpeakOutput(
       emptyText={
         modelReady
           ? "Generated speech lands here. Type a sentence and press Generate."
-          : "Generated speech lands here. Load a TTS model, type a sentence, and press Generate."
+          : "Generated speech lands here. Load a TTS model, type a sentence, and press Generate. For a conversation between several voices, load VibeVoice and write one line per speaker, like \"Speaker 1: Hi.\""
       }
     />
   );

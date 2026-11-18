@@ -13,6 +13,24 @@ export const formatTokenCountFull = (n: number): string => {
   return n.toLocaleString();
 };
 
+export function getSeverityColor(percent: number): {
+  bar: string;
+  stroke: string;
+  text: string;
+} {
+  if (percent > 85) {
+    return { bar: "bg-red-500", stroke: "stroke-red-500", text: "text-red-500" };
+  }
+  if (percent > 65) {
+    return { bar: "bg-amber-500", stroke: "stroke-amber-500", text: "text-amber-500" };
+  }
+  return {
+    bar: "bg-control-accent",
+    stroke: "stroke-control-accent",
+    text: "text-control-accent",
+  };
+}
+
 export type ContextUsageBarInput = {
   used?: number | null;
   total?: number | null;
@@ -28,6 +46,10 @@ export type ContextUsageBarInput = {
   contextEnforced?: boolean | null;
   contextBudget?: number | null;
   estimated?: boolean;
+  /** A cloud model: the window is the provider's, so the local limit advice does not apply. */
+  cloud?: boolean;
+  /** Tokens at which this chat auto-compacts; marked on the ring and named in the tooltip. */
+  compactAt?: number | null;
 };
 
 export type ContextUsageRows = Pick<
@@ -116,7 +138,19 @@ export type ContextUsageBarState = {
   percent: number | null;
   hasUsageDetails: boolean;
   advice: ContextLimitAdvice;
+  /** Where on the ring compaction happens, as a share of the window; null when not drawn. */
+  compactMarkPercent: number | null;
 };
+
+/** The compaction point as a share of the window, when both are known and it falls inside. */
+export function compactMarkPercent(
+  compactAt: number | null | undefined,
+  total: number | null | undefined,
+): number | null {
+  if (typeof compactAt !== "number" || !(compactAt > 0)) return null;
+  if (typeof total !== "number" || !(total > 0) || compactAt >= total) return null;
+  return (compactAt / total) * 100;
+}
 
 // An unmeasured prompt must not read as 0% of the window.
 export function deriveContextUsageBar({
@@ -132,7 +166,46 @@ export function deriveContextUsageBar({
   parallelSlots,
   contextBudget,
   estimated,
+  cloud,
+  compactAt,
 }: ContextUsageBarInput): ContextUsageBarState | null {
+  const state = deriveUsageFace({
+    used,
+    total,
+    cached,
+    cacheWrites,
+    promptTokens,
+    completionTokens,
+    isMlx,
+    contextEnforced,
+    contextUnboundedWhenBatched,
+    parallelSlots,
+    contextBudget,
+    estimated,
+  });
+  if (!state) return null;
+  return {
+    ...state,
+    // A provider's window is not a local setting: nothing here stops at it or can raise it.
+    advice: cloud ? "none" : state.advice,
+    compactMarkPercent: compactMarkPercent(compactAt, total),
+  };
+}
+
+function deriveUsageFace({
+  used,
+  total,
+  cached,
+  cacheWrites,
+  promptTokens,
+  completionTokens,
+  isMlx,
+  contextEnforced,
+  contextUnboundedWhenBatched,
+  parallelSlots,
+  contextBudget,
+  estimated,
+}: ContextUsageBarInput): Omit<ContextUsageBarState, "compactMarkPercent"> | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
     typeof used === "number" && Number.isFinite(used) && used >= 0 ? used : null;

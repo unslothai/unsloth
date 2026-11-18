@@ -667,7 +667,7 @@ def test_h3_modular_load_passes_the_mirrored_sources_to_load_components():
 
     src = inspect.getsource(video_mod.VideoBackend._load_h3_modular_pipeline)
     assert "_h3_mirrored_component_sources(" in src
-    assert src.index("_h3_mirrored_component_sources(") < src.index("pipe.load_components(")
+    assert src.index("_h3_mirrored_component_sources(") < src.index("load_components_strict(")
 
 
 def test_a_pipeline_load_of_the_ltx25_carrier_is_refused():

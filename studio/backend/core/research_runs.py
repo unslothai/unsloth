@@ -27,7 +27,9 @@ from auth import storage as auth_storage
 from core.inference.external_provider import _SERVED_WINDOW_PROVIDERS, ExternalProviderClient
 from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
+from core.inference.npu_backend import is_npu_model_path
 from core.inference.providers import validate_provider_base_url
+from core.inference.http_stream import aiter_sse_lines
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import (
@@ -146,11 +148,15 @@ _NAMED_MODEL_WAIT_SECONDS = 60.0
 # Transport keepalives prevent HTTP read timeouts without proving that a model is progressing.
 _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS = 120.0
 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
+# FastFlowLM serves one request at a time and Lemonade sends headers at once, so a queued call's wait counts.
+_NPU_FIRST_OUTPUT_TIMEOUT_SECONDS = 900.0
 # Cancellation is cooperative, so bound the unwind; a stuck iterator keeps a timed-out call open.
 _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+# Sent only while llama-server's prompt eval advances, so a long prefill is progress, not a stall.
+_PREFILL_PROGRESS_COMMENT = ": prefill-progress"
 # Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
 _ADMISSION_HEARTBEAT_MISSES = 3
 # Also the ceiling for any budget, so the poll loop stays bounded however long generation itself runs.
@@ -162,6 +168,21 @@ _MAX_RATE_LIMIT_WAIT_SECONDS = 3600.0
 _MODEL_CALL_KEY_LIFETIME_SECONDS = 2 * 60 * 60
 # Headroom so the named stall guards expire before HTTPX's own read timeout does.
 _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
+
+
+def _first_output_budget(config: dict) -> float:
+    """Seconds a call may wait for its first token; never past a finite run wall clock."""
+    budgets = config["budgets"]
+    budget = float(budgets.get("firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS))
+    inference = config.get("inferenceRequest") or {}
+    if not _external_provider_run(inference) and is_npu_model_path(
+        inference.get("model") or config.get("model")
+    ):
+        budget = max(budget, _NPU_FIRST_OUTPUT_TIMEOUT_SECONDS)
+    model_timeout = float(budgets["modelTimeoutSeconds"])
+    if model_timeout > 0:
+        budget = min(budget, model_timeout)
+    return budget
 
 
 def _model_wait_budget(run: dict) -> float:
@@ -1611,7 +1632,7 @@ class ResearchSupervisor:
         response: httpx.Response,
         semantic_deadline: Callable[[], tuple[float, type[BaseException]] | None] | None = None,
     ) -> AsyncIterator[str]:
-        iterator = response.aiter_lines().__aiter__()
+        iterator = aiter_sse_lines(response).__aiter__()
 
         def wait_timeout() -> float:
             if semantic_deadline is None:
@@ -1719,6 +1740,12 @@ class ResearchSupervisor:
             "qwen",
             "qwencloud",
             "mistral",
+            "xai",
+            "nvidia",
+            "cohere",
+            "vercel",
+            "azure",
+            "bedrock",
         ):
             # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
             # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
@@ -1816,14 +1843,7 @@ class ResearchSupervisor:
         try:
             await self._note_phase(run["id"], "phase.started", phase, call_id, step_position)
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
-            # Configurable, capped by a finite run wall clock; legacy runs use the default.
-            first_output_budget = float(
-                config["budgets"].get(
-                    "firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
-                )
-            )
-            if model_timeout > 0:
-                first_output_budget = min(first_output_budget, model_timeout)
+            first_output_budget = _first_output_budget(config)
             # Unlimited drops only the wall clock; the gap bound must still clear the queue-notice heartbeat.
             admission_gap_budget = max(
                 first_output_budget,
@@ -1996,7 +2016,10 @@ class ResearchSupervisor:
                                 first_output_deadline = (
                                     None if model_timeout else loop.time() + admission_gap_budget
                                 )
-                            elif line.startswith(_ADMISSION_DONE_COMMENT):
+                            elif line.startswith(_ADMISSION_DONE_COMMENT) or (
+                                line.startswith(_PREFILL_PROGRESS_COMMENT)
+                                and semantic_output_at is None
+                            ):
                                 first_output_deadline = loop.time() + first_output_budget
                             continue
                         data = line[5:].strip()

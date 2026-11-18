@@ -1231,6 +1231,11 @@ class ModelOverridePayload(BaseModel):
     mlx_int8_prefill: bool = False
     mlx_ane_prefill: bool = False
     mlx_fast_verify: bool = False
+    npu_power_mode: Optional[
+        Literal["default", "powersaver", "balanced", "performance", "turbo"]
+    ] = None
+    npu_prefill_chunk_len: Optional[StrictInt] = Field(default = None, ge = 1, le = 1048576)
+    npu_img_pre_resize: Optional[StrictInt] = Field(default = None, ge = 0, le = 4)
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -2964,7 +2969,14 @@ def update_openai_auto_switch_override(
                 and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
-                and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
+                and not {
+                    "mlx_ple_offload",
+                    "mlx_expert_offload",
+                    "npu_power_mode",
+                    "npu_prefill_chunk_len",
+                    "npu_img_pre_resize",
+                }
+                & payload.model_fields_set
                 and not {
                     key: value
                     for key, value in saved_fields.items()
@@ -3173,7 +3185,13 @@ def update_openai_auto_switch_override(
                     field: getattr(payload, field)
                     if field in fields_set or is_removal
                     else (_alias_row or get_model_override(target_id)).get(field)
-                    for field in ("mlx_ple_offload", "mlx_expert_offload")
+                    for field in (
+                        "mlx_ple_offload",
+                        "mlx_expert_offload",
+                        "npu_power_mode",
+                        "npu_prefill_chunk_len",
+                        "npu_img_pre_resize",
+                    )
                 },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
@@ -5061,6 +5079,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "export": False,
     "api": False,
     "tasks": False,
+    "translate": False,
 }
 
 MAX_SIDEBAR_NAV_INPUT_ITEMS = 4 * len(SIDEBAR_NAV_ITEM_DEFAULTS)
@@ -5104,6 +5123,7 @@ SidebarNavItemId = Literal[
     "export",
     "api",
     "tasks",
+    "translate",
 ]
 
 
@@ -6294,6 +6314,69 @@ async def start_sandbox_setup(
         job.id,
     )
     return _sandbox_setup_response(job)
+
+
+class LearnedMemoryPatch(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+    enabled: Optional[StrictBool] = None
+    thread_enabled: Optional[StrictBool] = None
+    key: Optional[str] = None
+    value: Optional[str] = None
+    revision: Optional[StrictInt] = None
+    clear: StrictBool = False
+
+
+@_account_settings_router.get("/learned-memory")
+def get_learned_memory(
+    project_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core import chat_memory
+    from storage import studio_db
+    return {
+        **chat_memory.read(project_id),
+        "enabled": chat_memory.enabled(),
+        "thread_enabled": not studio_db.get_app_setting("memory_disabled:" + thread_id, False)
+        if thread_id
+        else True,
+    }
+
+
+@_account_settings_router.put("/learned-memory")
+def put_learned_memory(
+    payload: LearnedMemoryPatch,
+    project_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+):
+    from core import chat_memory
+    from storage import studio_db
+
+    try:
+        if payload.key is not None or payload.clear:
+            if payload.revision is None:
+                raise ValueError("Read memory before editing it.")
+            if payload.clear:
+                chat_memory.clear(project_id, payload.revision)
+            else:
+                if "value" not in payload.model_fields_set:
+                    raise ValueError("Provide a fact, or null to forget it.")
+                chat_memory.update(project_id, payload.key, payload.value, payload.revision)
+        if payload.enabled is not None:
+            studio_db.upsert_app_settings(
+                {"learned_memory_enabled": payload.enabled}, read_back = False
+            )
+        if payload.thread_enabled is not None:
+            if not thread_id or not studio_db.get_chat_thread(thread_id):
+                raise ValueError("A saved chat is required.")
+            studio_db.upsert_app_settings(
+                {"memory_disabled:" + thread_id: not payload.thread_enabled}, read_back = False
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return get_learned_memory(project_id, thread_id, current_subject)
 
 
 router.include_router(_account_settings_router)

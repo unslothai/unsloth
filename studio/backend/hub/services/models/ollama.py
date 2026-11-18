@@ -633,6 +633,17 @@ def ollama_model_ref_files(ref: str) -> tuple[str, Optional[str]]:
     return info.path, str(projector) if projector is not None else None
 
 
+def ollama_model_ref_system_prompt(ref: str) -> str:
+    ollama_dir, manifest, _ = _ollama_model_ref_info(ref)
+    system = ""
+    for layer in manifest.get("layers") or []:
+        if layer.get("mediaType") == "application/vnd.ollama.image.system":
+            blob = _ollama_blob_path(ollama_dir / "blobs", layer.get("digest"))
+            if blob is not None and _safe_is_file(blob):
+                system = blob.read_text(encoding = "utf-8")
+    return system
+
+
 def _materialization_lock(tag_file: Path, ollama_dir: Path) -> threading.Lock:
     """Per-tag lock, keyed by the store's inode and the manifest's path inside it. Not by pathname:
     one store reached through a symlink or spelled in another case would hand out two locks."""

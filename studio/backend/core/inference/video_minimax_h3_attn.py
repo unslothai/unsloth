@@ -14,6 +14,7 @@ import contextlib
 import os
 from functools import lru_cache
 from typing import Any, Optional
+from . import diffusion_int8_attention as _i8
 from .rocm_bf16 import is_rocm_torch
 
 STRIDED_ATTN_ENV = "UNSLOTH_H3_STRIDED_ATTN"
@@ -155,6 +156,8 @@ def _strided_processor_for(base: Any) -> Any:
 
     class UnslothH3StridedAttnProcessor(MiniMaxH3AttnProcessor):
         _unsloth_qk_rope = False
+        # True: the reference kernel's single-rounding rotation (torch.ops.unsloth_h3.qk_norm_rope_once)
+        _unsloth_qk_rope_once = False
         _unsloth_shared_qkv = False
         # set from UNSLOTH_H3_STRIDED_SAGE at install: a sage backend runs here, not in the stock processor
         _unsloth_sage = False
@@ -208,7 +211,11 @@ def _strided_processor_for(base: Any) -> Any:
             ):
                 # Through torch.ops, not the Python wrapper: dynamo graph-breaks inside the wrapper's lru_cache.
                 cos, sin = rotary_emb
-                op = torch.ops.unsloth_h3.qk_norm_rope
+                op = (
+                    torch.ops.unsloth_h3.qk_norm_rope_once
+                    if self._unsloth_qk_rope_once
+                    else torch.ops.unsloth_h3.qk_norm_rope
+                )
                 query = op(query, attn.norm_q.weight, cos, sin, float(attn.norm_q.eps))
                 key = op(key, attn.norm_k.weight, cos, sin, float(attn.norm_k.eps))
             else:
@@ -227,7 +234,7 @@ def _strided_processor_for(base: Any) -> Any:
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                hidden_states = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
+                hidden_states = _i8.int8_attention_call(query, key, value)
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             elif sage:
                 # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot
@@ -316,9 +323,11 @@ def install_strided_attention(
     transformer: Any,
     logger: Any = None,
     qk_rope: Optional[bool] = None,
+    qk_rope_rounding: str = "eager",
 ) -> int:
     """Swap every H3 attention processor for the strided one, keeping its backend. Returns the count.
-    ``qk_rope=False`` keeps the stock q/k norm + rope; ``None`` follows UNSLOTH_H3_QK_ROPE."""
+    ``qk_rope=False`` keeps the stock q/k norm + rope; ``None`` follows UNSLOTH_H3_QK_ROPE.
+    ``qk_rope_rounding="once"``: the fused q/k norm + rope rounds the rotation once, as the reference kernel."""
     if not _enabled(STRIDED_ATTN_ENV):
         return 0
     modules = _h3_attention_modules(transformer)
@@ -347,6 +356,7 @@ def install_strided_attention(
             continue
         new = cls()
         new._unsloth_qk_rope = qk_rope_on
+        new._unsloth_qk_rope_once = qk_rope_on and qk_rope_rounding == "once"
         new._unsloth_shared_qkv = _enabled(SHARED_QKV_ENV)
         new._unsloth_sage = _enabled(STRIDED_SAGE_ENV)
         new._attention_backend = getattr(old, "_attention_backend", None)

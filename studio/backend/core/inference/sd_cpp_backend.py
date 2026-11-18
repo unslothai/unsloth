@@ -3152,6 +3152,12 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+def _family_rng_kwargs(fam: Any) -> dict[str, str]:
+    """``rng=`` for an sd-server start when the family pins one (``sd_cpp_rng``), else nothing."""
+    rng = getattr(fam, "sd_cpp_rng", None)
+    return {"rng": rng} if rng else {}
+
+
 def _request_extra_sample_args(state: Any) -> Optional[str]:
     """Per-checkpoint ``extra_sample_args``: only MOSS-Image sends any (its negative-branch skip window)."""
     if getattr(getattr(state, "family", None), "name", None) != MOSS_IMAGE_FAMILY_NAME:
@@ -4071,6 +4077,7 @@ class SdCppDiffusionBackend:
                             native_speed = native_speed,
                             threads = _default_threads(),
                             env = spawn_env,
+                            **_family_rng_kwargs(fam),
                         )
                         started_ok = True
                     except SdCppCancelled:
@@ -4913,7 +4920,7 @@ class SdCppDiffusionBackend:
                         model_kind = "gguf",
                         transformer_quant = None,
                     ):
-                        raise ValueError(
+                        raise diffusion_lora.LoraSelectionError(
                             f"LoRA is not supported for {state.family.name} on the native "
                             "sd.cpp engine."
                         )
@@ -5074,7 +5081,10 @@ class SdCppDiffusionBackend:
             stage = Path(server.lora_dir) / f"gen_{os.urandom(6).hex()}"
             lora_stages.append(stage)
             materialized = diffusion_lora.materialize_native_dir(
-                lora_resolved, stage, real_files = True
+                lora_resolved,
+                stage,
+                real_files = True,
+                family = getattr(state.family, "name", None),
             )
             return [
                 {"path": f"{stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
@@ -5311,7 +5321,7 @@ class SdCppDiffusionBackend:
         watcher.start()
         failed = False
         try:
-            server.start(state.files, **start_kwargs)
+            server.start(state.files, **start_kwargs, **_family_rng_kwargs(state.family))
         except Exception:  # noqa: BLE001 -- the original server error is the more useful one
             failed = True
         finally:
@@ -5535,7 +5545,9 @@ class SdCppDiffusionBackend:
             lora_dir: Optional[str] = None
             if lora_resolved:
                 materialized = diffusion_lora.materialize_native_dir(
-                    lora_resolved, Path(tmpdir) / "loras"
+                    lora_resolved,
+                    Path(tmpdir) / "loras",
+                    family = getattr(state.family, "name", None),
                 )
                 eff_prompt = diffusion_lora.inject_prompt_tags(prompt, materialized)
                 lora_dir = str(Path(tmpdir) / "loras")
@@ -5567,6 +5579,7 @@ class SdCppDiffusionBackend:
                     lora_apply_mode = "auto" if lora_dir else None,
                     ref_images = tuple(ref_paths),
                     qwen_image_layers = layers,
+                    rng = getattr(state.family, "sd_cpp_rng", None),
                 )
                 # Hold installs off while sd-cli runs; injected engines may have no binary.
                 with _tree_reader(getattr(engine, "binary", None), cancel):

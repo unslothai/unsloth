@@ -13,7 +13,7 @@ import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attribut
 
 import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
 import { monitorRefreshMs } from "./monitor-refresh";
-import { holdsModelsInVram, vramCards } from "./monitor-cards";
+import { holdsModelsInVram, npuActive, npuCard, vramCards } from "./monitor-cards";
 import {
   formatGiB,
   MeterRow,
@@ -24,6 +24,7 @@ import {
 } from "./monitor-memory";
 import { inferenceGpuDisjoint, poolSplit } from "./monitor-share";
 import type { LoadedModelEntry } from "@/features/loaded-models";
+import { useNpuStatus } from "@/features/npu";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
@@ -276,6 +277,10 @@ function FloatingMonitorPanel({
   );
   const wantsModels = showShare || showBreakdown;
   const [loadedModels, setLoadedModels] = useState<LoadedModelEntry[]>([]);
+  const [npuStatus] = useNpuStatus();
+  const npu = ramKnown
+    ? npuCard(npuStatus, loadedModels, systemInfo.npu_load_percent)
+    : null;
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
   const split = poolSplit({
@@ -379,7 +384,7 @@ function FloatingMonitorPanel({
             : { width: width ?? undefined }
         }
       >
-        {wantsModels && !suppressed && (
+        {(wantsModels || npuActive(npuStatus)) && !suppressed && (
           <Suspense fallback={null}>
             <MonitorLoadedModels onEntries={setLoadedModels} />
           </Suspense>
@@ -558,14 +563,13 @@ function FloatingMonitorPanel({
                 <div className="font-medium">
                   {t("settings.resources.gpu.sharedWithSystemRam")}
                 </div>
-                <div className="font-mono tabular-nums text-muted-foreground">
-                  {t("settings.resources.gpu.estimatedAvailable", {
-                    value:
-                      memoryDisplay.sharedAvailableGb === null
-                        ? unknownLabel
-                        : formatGiB(memoryDisplay.sharedAvailableGb),
-                  })}
-                </div>
+                {memoryDisplay.sharedAvailableGb !== null && (
+                  <div className="font-mono tabular-nums text-muted-foreground">
+                    {t("settings.resources.gpu.estimatedAvailable", {
+                      value: formatGiB(memoryDisplay.sharedAvailableGb),
+                    })}
+                  </div>
+                )}
               </div>
             )}
             {separateInferenceGpu && (
@@ -592,16 +596,50 @@ function FloatingMonitorPanel({
                   {separateInferenceGpu.available &&
                     inferenceDisplay.sharedDevices.length > 0 && (
                       <span className="block normal-case">
-                        {t("settings.resources.gpu.estimatedAvailable", {
-                          value:
-                            inferenceDisplay.sharedAvailableGb === null
-                              ? unknownLabel
-                              : formatGiB(inferenceDisplay.sharedAvailableGb),
-                        })}
+                        {inferenceDisplay.sharedAvailableGb === null
+                          ? t("settings.resources.gpu.sharedWithSystemRam")
+                          : t("settings.resources.gpu.estimatedAvailable", {
+                              value: formatGiB(inferenceDisplay.sharedAvailableGb),
+                            })}
                       </span>
                     )}
                 </span>
               </div>
+            )}
+            {npu && (
+              <MeterRow
+                testId="floating-monitor-npu"
+                label={t("settings.resources.liveMonitor.npu")}
+                readout={
+                  npu.loadPercent === null ? "" : `${Math.round(npu.loadPercent)}%`
+                }
+                readoutClassName={
+                  npu.loadPercent === null
+                    ? undefined
+                    : usageTextClass(npu.loadPercent)
+                }
+                footer={
+                  <>
+                    <div className="truncate" title={npu.name}>
+                      {npu.name}
+                    </div>
+                    <div className="truncate">
+                      {npu.model
+                        ? npu.residentGb !== null
+                          ? t("settings.resources.liveMonitor.npuModelInRam", {
+                              model: npu.model,
+                              size: formatGiB(npu.residentGb),
+                            })
+                          : npu.model
+                        : t("settings.resources.liveMonitor.noModelLoaded")}
+                    </div>
+                  </>
+                }
+              >
+                {npu.loadPercent !== null && (
+                  <UsageBar percent={clampPercent(npu.loadPercent)} />
+                )}
+              </MeterRow>
             )}
             {telemetryRows.map((row) => (
               <div

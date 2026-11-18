@@ -11,6 +11,7 @@ export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
   browseFolders,
   ChatThreadDeletedError,
+  createBrowseFolder,
   deleteChatAttachment,
   deleteFineTunedModel,
   fetchChatAttachmentBlob,
@@ -181,11 +182,27 @@ export {
   rewindTouchesConversation,
   rewindTouchesFiles,
 } from "./utils/rewind";
+export { isSkillsCommand } from "./utils/skills-command";
 export {
   isCompactCommand,
   requestThreadCompaction,
   useCompactRequestStore,
 } from "./stores/compact-request-store";
+export { countContext } from "./api/context-breakdown";
+export {
+  contextReportBranch,
+  shownContextReport,
+  useContextReportStore,
+} from "./stores/context-report-store";
+export {
+  type ContextView,
+  deriveContextView,
+  isContextCommand,
+} from "./utils/context-command";
+export {
+  formatTokenCountFull,
+  getSeverityColor,
+} from "./lib/context-usage-bar-state";
 export {
   folderRingKey,
   planKey,
@@ -259,9 +276,14 @@ export type {
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
+  COMPACTION_NOTICE_LABEL,
+  COMPACTION_NOTICE_TEXT,
+  type CompactionNoticeKind,
   type ContextTruncation,
+  compactionNoticeKind,
   promptWasShortened,
 } from "./utils/context-truncation";
+export { cloudCompactionTrigger } from "./utils/auto-compaction";
 export { SectionNameDialog } from "./components/section-name-dialog";
 export { removeCustomSectionWithUndo } from "./stores/remove-custom-section";
 export {

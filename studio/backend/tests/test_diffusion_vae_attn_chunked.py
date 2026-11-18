@@ -419,9 +419,69 @@ def test_half_math_runs_in_the_autocast_dtype(rocm, monkeypatch):
     assert torch.equal(out, want)
 
 
+def _flux1_vae_scale_qkv(dtype):
+    """512 px FLUX.1 / Z-Image VAE mid-block shape (4096 tokens, head 512) at its real magnitudes: q / k entries up to
+    ~1600 / ~900 put every score near 1e6 (the real decoder measures 1e6 to 5e7), far past fp16's 65504, while the
+    softmax over the small per-key differences stays well conditioned."""
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 4096, 512, generator = g) for _ in range(3))
+    q[..., :16] = 1600.0
+    k[..., :16] = 900.0
+    return tuple(t.to(dtype) for t in (q, k, v))
+
+
+def _gate_on_cuda(monkeypatch):
+    """CPU tensors through the real ``_half_math_call`` dtype / ROCm / env gate, as if they were on the GPU."""
+    real = C._half_math_call
+    monkeypatch.setattr(
+        C,
+        "_half_math_call",
+        lambda q: real(
+            types.SimpleNamespace(device = types.SimpleNamespace(type = "cuda"), dtype = q.dtype)
+        ),
+    )
+
+
+def test_fp16_vae_scores_past_fp16_range_stay_finite(rocm, monkeypatch):
+    """#18016: ROCm cards without native bf16 (gfx103x) run the VAE in fp16; half math stored the scores in fp16, every
+    one overflowed to inf and the decode came back NaN. fp16 now takes the fp32 upcast (UNSLOTH_VAE_ATTN_HALF_MATH=0)."""
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV, raising = False)
+    _gate_on_cuda(monkeypatch)
+    q, k, v = _flux1_vae_scale_qkv(torch.float16)
+    assert torch.isnan(C.half_math_sdpa(q, k, v)).all()  # the overflow these inputs hit
+    mode = C.chunked_attention_mode(1 << 40)
+    with mode:
+        out = F.scaled_dot_product_attention(q, k, v)
+    assert mode.half == 0
+    assert torch.isfinite(out).all()
+    monkeypatch.setenv(C.VAE_ATTN_HALF_MATH_ENV, "0")
+    with C.chunked_attention_mode(1 << 40):
+        workaround = F.scaled_dot_product_attention(q, k, v)
+    assert torch.equal(out, workaround)
+    ref = F.scaled_dot_product_attention(q.double(), k.double(), v.double())
+    torch.testing.assert_close(out.double(), ref, atol = 0.2, rtol = 0)
+
+
+def test_bf16_vae_keeps_half_math_at_the_same_scores(rocm, monkeypatch):
+    """bf16 has fp32's exponent range: the same scores stay finite, so gfx11 / gfx1151 keep the faster half math."""
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV, raising = False)
+    _gate_on_cuda(monkeypatch)
+    q, k, v = _flux1_vae_scale_qkv(torch.bfloat16)
+    mode = C.chunked_attention_mode(1 << 40)
+    with mode:
+        out = F.scaled_dot_product_attention(q, k, v)
+    assert mode.half == 1
+    assert torch.equal(out, C.half_math_sdpa(q, k, v))
+    ref = F.scaled_dot_product_attention(q.double(), k.double(), v.double())
+    torch.testing.assert_close(out.double(), ref, atol = 0.25, rtol = 0)
+
+
 def test_half_math_gates(monkeypatch):
     cuda_bf16 = types.SimpleNamespace(
         device = types.SimpleNamespace(type = "cuda"), dtype = torch.bfloat16
+    )
+    cuda_fp16 = types.SimpleNamespace(
+        device = types.SimpleNamespace(type = "cuda"), dtype = torch.float16
     )
     cuda_fp32 = types.SimpleNamespace(
         device = types.SimpleNamespace(type = "cuda"), dtype = torch.float32
@@ -430,6 +490,7 @@ def test_half_math_gates(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", "7.2.0", raising = False)
     monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV, raising = False)
     assert C._half_math_call(cuda_bf16)
+    assert not C._half_math_call(cuda_fp16)
     assert not C._half_math_call(cuda_fp32)
     assert not C._half_math_call(cpu_bf16)
     monkeypatch.setenv(C.VAE_ATTN_HALF_MATH_ENV, "0")
@@ -438,3 +499,29 @@ def test_half_math_gates(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION)
     assert not C._half_math_call(cuda_bf16)
+
+
+@pytest.mark.parametrize("redispatch", [False, True])
+def test_mode_matches_through_an_sdpa_wrapper(rocm, monkeypatch, redispatch):
+    """Something replaced F.scaled_dot_product_attention (Unsloth core's Windows ROCm wide-head guard, a
+    cuDNN workaround): the mode must still chunk, whether the wrapper re-dispatches torch functions
+    (func = the wrapper) or just calls torch's builtin (func = the builtin)."""
+    from torch.overrides import handle_torch_function, has_torch_function
+
+    builtin = torch._C._nn.scaled_dot_product_attention
+
+    def wrapper(query, key, value, *args, **kwargs):
+        if redispatch and has_torch_function((query, key, value)):
+            return handle_torch_function(
+                wrapper, (query, key, value), query, key, value, *args, **kwargs
+            )
+        return builtin(query, key, value, *args, **kwargs)
+
+    monkeypatch.setattr(F, "scaled_dot_product_attention", wrapper)
+    q = torch.randn(1, 1, 512, 32)
+    with _math():
+        ref = builtin(q, q, q)
+        with C.chunked_attention_mode(512 * 512 * 4 // 8) as mode:
+            out = F.scaled_dot_product_attention(q, q, q)
+    assert mode.chunked == 1
+    torch.testing.assert_close(out, ref, atol = 1e-5, rtol = 1e-5)

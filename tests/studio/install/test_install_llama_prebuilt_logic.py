@@ -16,9 +16,7 @@ from pathlib import Path
 
 import pytest
 
-_POSIX_ONLY = pytest.mark.skipif(
-    sys.platform == "win32", reason = "DGX Spark tooling and setup.sh assume a POSIX host"
-)
+_POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason = "setup.sh assumes a POSIX host")
 from unsloth_pwsh_runner import run_pwsh
 
 
@@ -6191,9 +6189,9 @@ def _macos_host() -> HostInfo:
     )
 
 
-def _load_spark_cluster():
-    path = PACKAGE_ROOT / "studio" / "spark_cluster.py"
-    spec = importlib.util.spec_from_file_location("studio_spark_cluster_for_installer", path)
+def _load_llama_rpc():
+    path = PACKAGE_ROOT / "studio" / "llama_rpc.py"
+    spec = importlib.util.spec_from_file_location("studio_llama_rpc_for_installer", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -6257,7 +6255,7 @@ def test_rpc_server_backfill_true_when_missing_false_once_present(
 
 def test_rpc_server_backfill_accepts_the_legacy_name(tmp_path):
     """An upstream tag from before the ggml- prefix installs rpc-server; that is the same executable
-    and spark_cluster accepts it, so it is not owed a re-extract."""
+    and the RPC lookup accepts it, so it is not owed a re-extract."""
     host = linux_host()
     choice = _rpc_choice("linux-cpu", source_label = "upstream", tag = "b9001")
     runtime_dir = tmp_path / "llama.cpp" / "build" / "bin"
@@ -6323,11 +6321,11 @@ def test_every_reuse_path_consults_the_bundle_backfill():
 
 
 @_POSIX_ONLY
-def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeypatch):
+def test_installer_places_rpc_server_where_the_rpc_lookup_looks(tmp_path, monkeypatch):
     """Layout agreement pinned on both ends: the names and directories the installer writes are the
-    ones spark_cluster searches, and a tarball whose exec bit was lost in extraction still ends up
+    ones studio/llama_rpc.py searches, and a tarball whose exec bit was lost in extraction still ends up
     executable where rpc_server_binary() finds it."""
-    sc = _load_spark_cluster()
+    sc = _load_llama_rpc()
     installer_names = set()
     for host in (linux_host(), _macos_host(), _windows_host()):
         installer_names.update(INSTALL_LLAMA_PREBUILT.rpc_server_names_for_host(host))
@@ -6402,7 +6400,6 @@ def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeyp
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(install))
     monkeypatch.setattr(sc.shutil, "which", lambda name: None)
     assert sc.rpc_server_binary() == str(server)
-    assert sc.llama_bundle_identity(install)["rpc_server"] == str(server)
     assert INSTALL_LLAMA_PREBUILT.bundle_backfill_reason(install, linux_host(), choice) is None
 
 

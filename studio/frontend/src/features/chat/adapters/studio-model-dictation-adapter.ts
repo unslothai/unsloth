@@ -18,6 +18,7 @@ import {
   type SttDevice,
   applyDictationDictionary,
   isCuratedSttModel,
+  isModelDictationLanguage,
   recordRecentDictation,
   resolveModelDictationLanguage,
   sttContextBody,
@@ -511,9 +512,11 @@ export function unloadSttModel(
 /** Long recordings split near whisper's 30s window; confirm or discard releases the mic. */
 export class StudioModelDictationAdapter implements DictationAdapter {
   private readonly chatId: string | null | undefined;
+  private readonly language: string | undefined;
 
-  constructor(options: { chatId?: string | null } = {}) {
+  constructor(options: { chatId?: string | null; language?: string } = {}) {
     this.chatId = options.chatId;
+    this.language = options.language;
   }
 
   static isSupported(): boolean {
@@ -546,8 +549,13 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     }
     beginDictationSession();
     const sessionLanguage = usesExternalEndpoint
-      ? settings.dictationLanguage
-      : resolveModelDictationLanguage(sessionModel, settings.dictationLanguage);
+      ? (this.language ?? settings.dictationLanguage)
+      : resolveModelDictationLanguage(
+          sessionModel,
+          this.language && isModelDictationLanguage(sessionModel, this.language)
+            ? this.language
+            : settings.dictationLanguage,
+        );
     const sessionEngine = usesExternalEndpoint
       ? undefined
       : sttEngineFor(sessionModel);

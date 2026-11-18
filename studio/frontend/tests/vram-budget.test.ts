@@ -397,3 +397,14 @@ test("a superseded read is refused, not handed back to the caller", () => {
   const row = vramBudgetRowSource().replace(/\s+/g, " ");
   assert.match(row, /if \(cancelled \|\| !loaded\) \{ return; \}/);
 });
+
+test("budget advice is a short muted line, the full reason in its tooltip", () => {
+  const row = vramBudgetRowSource();
+  assert.doesNotMatch(row, /text-amber-500/);
+  assert.match(row, /"Above default: may run out of memory\."/);
+  assert.match(row, /"Below default: may run slower\."/);
+  assert.match(
+    row,
+    /<InfoHint>[\s\S]*may cause an out-of-memory error\.[\s\S]*offload more of the model to CPU and slow generation\.[\s\S]*<\/InfoHint>/,
+  );
+});

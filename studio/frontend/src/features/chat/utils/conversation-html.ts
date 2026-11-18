@@ -18,9 +18,13 @@ export {
   CONVERSATION_PDF_MIME_TYPE,
 } from "./conversation-html-format.ts";
 
+export type ConversationHtmlMessage = ConversationMarkdownMessage & {
+  readonly images?: readonly string[];
+};
+
 export type NamedConversationHtml = {
   readonly title: string;
-  readonly messages: readonly ConversationMarkdownMessage[];
+  readonly messages: readonly ConversationHtmlMessage[];
 };
 
 export function escapeHtml(text: string): string {
@@ -36,6 +40,10 @@ export function escapeHtml(text: string): string {
 const ALLOWED_RAW_TAG_PATTERN = /&lt;(\/?)(details|summary)&gt;/g;
 const DATA_IMAGE_PATTERN =
   /^data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=\s]+$/i;
+
+export function isDataImage(src: string): boolean {
+  return DATA_IMAGE_PATTERN.test(src);
+}
 
 function safeHref(raw: string): string | null {
   const value = raw.trim();
@@ -65,7 +73,7 @@ const markdown = new Marked({
       return `<a href="${escapeHtml(url)}"${titleAttr} rel="noopener noreferrer">${text}</a>`;
     },
     image({ href, text }: Tokens.Image): string {
-      if (DATA_IMAGE_PATTERN.test(href)) {
+      if (isDataImage(href)) {
         return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}">`;
       }
       // A remote image would phone home when the file is opened, so keep it as a link.
@@ -89,16 +97,24 @@ function roleClass(role: string): string {
 }
 
 function renderMessages(
-  messages: readonly ConversationMarkdownMessage[],
+  messages: readonly ConversationHtmlMessage[],
 ): string {
   return messages
-    .filter(({ content }) => content.trim())
-    .map(({ role, content }) => {
+    .map(({ role, content, images = [] }) => ({
+      role,
+      content,
+      pictures: images
+        .filter(isDataImage)
+        .map((src) => `<p><img src="${escapeHtml(src)}" alt=""></p>`)
+        .join(""),
+    }))
+    .filter(({ content, pictures }) => content.trim() || pictures)
+    .map(({ role, content, pictures }) => {
       const html =
         role === "user" || role === "system"
           ? escapeHtml(content)
           : `\n${markdownToHtml(content)}`;
-      return `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}</h3>\n<div class="content">${html}</div>\n</section>`;
+      return `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}</h3>\n<div class="content">${pictures}${html}</div>\n</section>`;
     })
     .join("\n");
 }

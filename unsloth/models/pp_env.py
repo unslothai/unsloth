@@ -6,10 +6,12 @@
     UNSLOTH_PP_SIZE=2 torchrun --nproc-per-node 2 train.py
 
 - Trainer.__init__ splits the model (apply_pipeline_parallel over mesh["pp"]); the other stages' layers,
-  embedding and lm_head go to this rank's CPU memory instead of being dropped (PPConfig.keep_replica).
+  embedding and lm_head go to this rank's CPU memory instead of being dropped (PPConfig.keep_replica). A
+  checkpoint larger than the GPU loads only each rank's stages (pipeline_sharded_loading): no replica then.
 - Trainer / SFTTrainer: every training step runs through the pipeline schedule (PipelineParallel.step runs the
   backward, the Trainer does not). The Trainer batch is split into UNSLOTH_PP_MICROBATCHES micro-batches
-  (default 2 x pp, lowered to a divisor of the batch); every micro-batch loss is its summed token loss over the
+  (default 2 x pp, lowered to a divisor of the batch) under UNSLOTH_PP_SCHEDULE (default 1f1b; a
+  step with fewer micro-batches than stages runs as gpipe); every micro-batch loss is its summed token loss over the
   token count of the whole accumulation window over every dp replica, as with gradient accumulation on one
   GPU. The pp (and tp) ranks of one dp replica read the same batches; the optimizer steps each stage's own
   parameters; clipping, the fp16 GradScaler skip and the logged loss are global. Evaluation runs the pipeline
@@ -59,6 +61,14 @@ _ALLOWED_TRAINERS = {
 # Batch keys the pipeline carries (or that only shaped `labels`, already applied by the collator).
 _BATCH_KEYS = ("input_ids", "labels", "attention_mask", "position_ids")
 _DROPPED_KEYS = ("completion_mask", "assistant_masks", "return_loss", "num_items_in_batch")
+_TEXT_ONLY = "_unsloth_pp_text_only"
+_MEDIA_COLUMNS = ("image", "images", "video", "videos", "audio", "audios") + (
+    "pixel_values",
+    "pixel_values_videos",
+    "image_grid_thw",
+    "input_features",
+)
+_MEDIA_PART_TYPES = ("image", "image_url", "video", "audio", "input_audio")
 
 
 def _dist():
@@ -114,19 +124,30 @@ def pipeline_parallel_env_apply(model, layout):
         "no",
         "off",
     )
+    from .pp_load import _preload_info
+
+    if _preload_info(model)[1] is not None:
+        keep = False  # loaded per stage (larger than the GPU): there is no whole model to keep
     default = layout.microbatches or 2 * layout.pp
+    schedule = layout.schedule
+    if getattr(layout, "schedule_auto", False) and schedule == "1f1b" and default < layout.pp:
+        schedule = "gpipe"  # UNSLOTH_PP_MICROBATCHES below the stage count: every step would fall back anyway
+    text_only = None
+    for level in _model_levels(model):
+        text_only = level.__dict__.get(_TEXT_ONLY, text_only)
     try:
         stage = apply_pipeline_parallel(
             model,
             layout.pp_mesh,
             n_microbatches = default,
-            schedule = layout.schedule,
-            config = PPConfig(keep_replica = keep),
+            schedule = schedule,
+            config = PPConfig(keep_replica = keep, text_only = text_only),
         )
     except (ValueError, RuntimeError, NotImplementedError) as exc:
         from .tp_env import _reraise_with_hint
         _reraise_with_hint(exc)
     stage.env_layout = layout
+    stage.schedule_auto = bool(getattr(layout, "schedule_auto", False))
     if layout.dp > 1 and not layout.fsdp2:
         from .tp_env import _broadcast_trainable
 
@@ -168,7 +189,15 @@ def resolve_microbatches(
     layout = getattr(stage, "env_layout", None)
     explicit = layout.microbatches if layout is not None else None
     want = int(explicit or stage.n_microbatches)
-    m, pad = _plan_microbatches(want, explicit, stage.num_stages, stage.schedule, batch_size, train)
+    m, pad = _plan_microbatches(
+        want,
+        explicit,
+        stage.num_stages,
+        stage.schedule,
+        batch_size,
+        train,
+        auto = getattr(stage, "schedule_auto", False),
+    )
     if m == want and not pad:
         return m, 0
     if train and not stage.__dict__.get("_unsloth_mb_note"):
@@ -188,9 +217,23 @@ def resolve_microbatches(
     return m, pad
 
 
-def _plan_microbatches(want, explicit, num_stages, schedule, batch_size, train):
-    """(n_microbatches, padded rows); shared with the Trainer init refusals so they predict the per-step count."""
-    floor = num_stages if (schedule == "1f1b" and train) or _gpipe_needs_stage_count() else 1
+def _plan_microbatches(
+    want,
+    explicit,
+    num_stages,
+    schedule,
+    batch_size,
+    train,
+    auto = False,
+):
+    """(n_microbatches, padded rows); shared with the Trainer init refusals so they predict the per-step count.
+    `auto` (the default 1F1B, UNSLOTH_PP_SCHEDULE unset): a step with fewer micro-batches than stages runs as
+    GPipe instead of padding."""
+    floor = (
+        num_stages
+        if (schedule == "1f1b" and train and not auto) or _gpipe_needs_stage_count()
+        else 1
+    )
     if batch_size % want == 0:
         m = want
     elif explicit is not None and train:
@@ -569,6 +612,95 @@ def pp_save_adapter(model, args, kwargs):
     return None
 
 
+def _model_levels(model):
+    from .pp_native import _model_chain
+    try:
+        return _model_chain(model)
+    except Exception:
+        return [model]
+
+
+def _media_in_rows(dataset, rows = 16):
+    try:
+        n = min(len(dataset), rows)
+    except TypeError:
+        return None
+    for i in range(n):
+        try:
+            row = dataset[i]
+        except Exception:
+            return None
+        if not isinstance(row, collections.abc.Mapping):
+            return None
+        for key in ("messages", "conversations", "prompt", "completion"):
+            turns = row.get(key)
+            if not isinstance(turns, (list, tuple)):
+                continue
+            for turn in turns:
+                content = turn.get("content") if isinstance(turn, collections.abc.Mapping) else None
+                for part in content if isinstance(content, (list, tuple)) else ():
+                    kind = part.get("type") if isinstance(part, collections.abc.Mapping) else None
+                    if kind in _MEDIA_PART_TYPES:
+                        return f"row {i} {key} holds a {kind!r} part"
+    return None
+
+
+def media_evidence(
+    train_dataset = None,
+    eval_dataset = None,
+    data_collator = None,
+):
+    """Why this Trainer would feed media (columns, chat parts, collator), else None."""
+    if data_collator is not None:
+        name = type(data_collator).__name__
+        if any(word in name for word in ("Vision", "Audio", "MultiModal", "Multimodal")):
+            return f"data_collator {name}"
+    for what, dataset in (("train_dataset", train_dataset), ("eval_dataset", eval_dataset)):
+        datasets = dataset.items() if isinstance(dataset, dict) else [(None, dataset)]
+        for split, ds in datasets:
+            if ds is None:
+                continue
+            label = what if split is None else f"{what}[{split!r}]"
+            columns = getattr(ds, "column_names", None)
+            if isinstance(columns, (list, tuple)):
+                media = [c for c in columns if c in _MEDIA_COLUMNS]
+                if media:
+                    return f"{label} column {media[0]!r}"
+            found = _media_in_rows(ds)
+            if found is not None:
+                return f"{label} {found}"
+    return None
+
+
+def _resolve_text_only(layout, model, train_dataset, eval_dataset, data_collator):
+    """UNSLOTH_PP_TEXT_ONLY=1 / 0 decides; unset, the dataset and collator do."""
+    if not isinstance(model, nn.Module):
+        return
+    from .pp_native import _media_keys, _unwrap
+
+    inner = _unwrap(model)
+    media = _media_keys(inner)
+    if not media:
+        return
+    flag = os.environ.get("UNSLOTH_PP_TEXT_ONLY", "").strip().lower()
+    evidence = media_evidence(train_dataset, eval_dataset, data_collator)
+    if flag in ("0", "false", "no", "off") or (
+        evidence is not None and flag not in ("1", "true", "yes", "on")
+    ):
+        why = (
+            f"the run feeds media ({evidence})"
+            if evidence is not None
+            else "UNSLOTH_PP_TEXT_ONLY=0"
+        )
+        raise NotImplementedError(
+            f"Unsloth: {layout.env_vars} (pipeline parallel) trains {type(inner).__name__} on text only (its "
+            f"{', '.join(media)} towers stay out of the pipeline), but {why}. Use native FSDP2 (UNSLOTH_FSDP2=1) "
+            f"for multimodal training.{_hint()}"
+        )
+    for level in _model_levels(model):
+        level.__dict__[_TEXT_ONLY] = True
+
+
 def _trainer_classes(cls):
     return [c for c in cls.__mro__ if c is not object]
 
@@ -581,6 +713,7 @@ def pp_trainer_refusals(
     model = None,
     train_dataset = None,
     eval_dataset = None,
+    data_collator = None,
 ):
     """Before Trainer.__init__ splits anything: the trainers / arguments the pipeline step cannot honour."""
     hint = _hint()
@@ -614,6 +747,7 @@ def pp_trainer_refusals(
             f"Unsloth: {layout.env_vars} (pipeline parallel): Trainer(compute_loss_func = ...) would be skipped, "
             f"the pipeline schedule computes the causal LM loss on `labels`.{hint}"
         )
+    _resolve_text_only(layout, model, train_dataset, eval_dataset, data_collator)
     problems = []
     if args is None:
         return
@@ -647,6 +781,54 @@ def pp_trainer_refusals(
             + hint
         )
     _refuse_split_router_aux_at_init(trainer_cls, args, layout, model, train_dataset, eval_dataset)
+    _refuse_uncarried_router_aux_at_init(trainer_cls, args, model)
+
+
+def _refuse_uncarried_router_aux_at_init(trainer_cls, args, model):
+    """Refuse a Trainer that turns on an uncarried MoE router aux loss. TRL >= 1.x sets it later in __init__
+    (coef None = architecture's), so the stage forward re-checks."""
+    if not isinstance(model, nn.Module):
+        return
+    from ..parallel_capabilities import _trainer_kind
+    from .pp_native import (
+        _router_aux_coef_of,
+        _text_config,
+        _uncarried_moe_owner,
+        _uncarried_router_aux_message,
+    )
+
+    try:
+        inner = _uncarried_moe_owner(model)
+    except Exception:
+        return  # the split reports what it cannot find
+    if inner is None:
+        return
+    text = _text_config(model)
+    on = bool(getattr(text, "output_router_logits", False))
+    trl = (
+        args is not None
+        and _trainer_kind(trainer_cls) in ("sft", "dpo", "grpo", "other_rl")
+        and hasattr(args, "router_aux_loss_coef")
+        and hasattr(text, "router_aux_loss_coef")
+    )
+    if trl:
+        coef = args.router_aux_loss_coef
+        coef = (getattr(text, "router_aux_loss_coef", 0) or 0) if coef is None else coef
+        on = hasattr(text, "output_router_logits") and bool(coef)
+    if not on or _router_aux_coef_of(inner, text) == 0:
+        return
+    raise NotImplementedError(
+        _uncarried_router_aux_message(
+            inner,
+            "this Trainer turns it on"
+            + (
+                f" (router_aux_loss_coef = {args.router_aux_loss_coef!r} in {type(args).__name__})"
+                if trl
+                else " (config.output_router_logits = True)"
+            ),
+        )
+        + _hint()
+    )
 
 
 def _router_aux_coef_at_init(trainer_cls, args, model):
@@ -738,7 +920,13 @@ def _refuse_split_router_aux_at_init(
             continue
         try:
             m, pad = _plan_microbatches(
-                want, layout.microbatches, layout.pp, schedule, batch_size, train
+                want,
+                layout.microbatches,
+                layout.pp,
+                schedule,
+                batch_size,
+                train,
+                auto = getattr(layout, "schedule_auto", False),
             )
         except ValueError:
             continue  # the step raises its own error
@@ -760,6 +948,15 @@ def _batch(stage, inputs):
             f"got {type(inputs).__name__}.{_hint()}"
         )
     other = sorted(k for k in inputs if k not in _BATCH_KEYS and k not in _DROPPED_KEYS)
+    from .pp_native import _MEDIA_INPUT_KEYS
+
+    media = [k for k in other if k in _MEDIA_INPUT_KEYS and inputs[k] is not None]
+    if media:
+        raise NotImplementedError(
+            f"Unsloth: {_env_vars(stage)} (pipeline parallel) trains multimodal checkpoints on text only, but this "
+            f"Trainer batch carries {media}: it is not dropped, training stops. Use native FSDP2 "
+            f"(UNSLOTH_FSDP2=1) for multimodal training.{_hint()}"
+        )
     if other:
         raise NotImplementedError(
             f"Unsloth: {_env_vars(stage)} (pipeline parallel): the Trainer batch has {other}, which the pipeline "
@@ -783,10 +980,9 @@ def _refuse_split_router_aux(stage, n_microbatches):
     moe = getattr(getattr(stage, "ctx", None), "moe", None)
     if n_microbatches <= 1 or moe is None:
         return
-    owner = moe.owner
-    if not getattr(owner.config, "output_router_logits", False) or not getattr(
-        owner, "router_aux_loss_coef", 0
-    ):
+    from .pp_native import _router_aux_coef
+
+    if not getattr(moe.config, "output_router_logits", False) or not _router_aux_coef(moe):
         return
     raise NotImplementedError(_split_router_aux_message(_env_vars(stage), n_microbatches))
 
@@ -1185,7 +1381,10 @@ def pp_trainer_setup(trainer):
         trainer.__dict__[name] = types.MethodType(method, trainer)
     trainer.__dict__["_has_mixed_mesh_grads"] = lambda model: False
     from .fsdp2_native import _scaler_for_native
+    from .tp_native import _SCALE_DIVISOR
 
+    # Read by _utils._parallel_forced_scaler.
+    accelerator.__dict__[_SCALE_DIVISOR] = dp
     try:
         scaled = _scaler_for_native(trainer)
     except Exception:

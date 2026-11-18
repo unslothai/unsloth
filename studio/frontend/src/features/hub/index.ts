@@ -34,6 +34,7 @@ export type { Capability, CapabilityKey } from "./lib/model-capabilities";
 export { detectCapabilities as detectHubCapabilities } from "./lib/model-capabilities";
 export { CapabilityGlyph } from "./catalog/shared";
 export {
+  detectBaseModel,
   HUB_CAPABILITY_FILTERS,
   type HubCapabilityFilter,
 } from "./lib/model-capabilities";
@@ -83,6 +84,7 @@ export {
   DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
   deleteLocalModel,
+  deleteUploadedDataset,
   revealLocalModel,
   epochMillisecondsToSeconds,
   fetchInventorySource,
