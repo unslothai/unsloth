@@ -180,3 +180,59 @@ def test_eval_adds_the_trl_term_once(plain_helpers):
     pp_env._pp_prediction_step(_trainer(stage), inner, _batch(), prediction_loss_only = True)
     assert stage.seen == [(0.5, 1.0)]
     assert stage.ctx.trainer_aux is None
+
+
+class _WrapperStage(_Stage):
+    # A Qwen3.5-MoE / Qwen4Exp wrapper: pp_native._router_aux_coef reads the text config's coefficient.
+    def __init__(self, coef):
+        super().__init__()
+        self.ctx.moe = types.SimpleNamespace(
+            config = types.SimpleNamespace(router_aux_loss_coef = coef)
+        )
+
+    def _record(self):
+        self.seen.append(self.ctx.moe.config.router_aux_loss_coef)
+        return torch.tensor(1.0)
+
+    def step(self, input_ids, labels, **kwargs):
+        return self._record()
+
+    def eval_loss(self, input_ids, labels, **kwargs):
+        return self._record()
+
+
+@pytest.mark.parametrize("zoo_wrapped", [False, True], ids = ["gpu_trainer", "cpu_trainer"])
+def test_wrapper_stage_reads_the_trainer_coefficient_not_the_checkpoint_one(
+    plain_helpers, zoo_wrapped
+):
+    # TRL >= 1.18 leaves the checkpoint's router_aux_loss_coef in the config: the step must apply the trainer's,
+    # in training and evaluation, and leave the config as it found it.
+    stage = _WrapperStage(coef = 0.001)
+    trainer = _trainer(stage, zoo_wrapped = zoo_wrapped, coef = 0.5)
+    pp_env._pp_training_step(trainer, torch.nn.Linear(2, 2), _batch(), num_items_in_batch = 6)
+    pp_env._pp_prediction_step(trainer, torch.nn.Linear(2, 2), _batch(), prediction_loss_only = True)
+    assert stage.seen == [0.5, 0.5]
+    assert stage.ctx.moe.config.router_aux_loss_coef == 0.001
+
+
+def test_wrapper_coefficient_restored_when_the_stage_raises(plain_helpers):
+    stage = _WrapperStage(coef = 0.001)
+
+    def boom(*a, **k):
+        raise RuntimeError("stage failed")
+
+    stage.step = boom
+    with pytest.raises(RuntimeError, match = "stage failed"):
+        pp_env._pp_training_step(
+            _trainer(stage, coef = 0.5), torch.nn.Linear(2, 2), _batch(), num_items_in_batch = 6
+        )
+    assert stage.ctx.moe.config.router_aux_loss_coef == 0.001
+
+
+def test_trl_without_a_coefficient_leaves_the_config_alone(plain_helpers):
+    # TRL < 1.7: no router_aux_loss_coef on the trainer, the config's coefficient applies.
+    stage = _WrapperStage(coef = 0.001)
+    pp_env._pp_training_step(
+        _trainer(stage, coef = None), torch.nn.Linear(2, 2), _batch(), num_items_in_batch = 6
+    )
+    assert stage.seen == [0.001]
