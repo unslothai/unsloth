@@ -936,3 +936,50 @@ def test_a_load_cancelled_during_the_replica_startup_is_undone_and_refused(monke
     with pytest.raises(HTTPException) as raised:
         run(ri._run_tracked_load_model_impl(request, None, "someone"))
     assert raised.value.status_code == 409 and unloaded == [1]
+
+
+def test_a_callers_own_rpc_placement_is_never_read_as_ours():
+    """With nothing recorded, an argument list shaped like a split block is still the caller's."""
+    users = [
+        "--rpc", "10.0.0.2:50052", "--device", "RPC0,CUDA0", "-sm", "layer",
+        "--tensor-split", "0.5,0.5", "--cache-ram", "0",
+    ]  # fmt: skip
+    assert ss.strip_layer_split_extra_args(users) == users
+
+
+def test_split_extras_follow_the_same_gguf_whatever_the_reload_names_it(monkeypatch, tmp_path):
+    """A reload that names the repo instead of its snapshot, or drops a variant it sent before, loads
+    the same file; the planner must see the extras the route will inherit, not plan without them."""
+    import routes.inference as ri
+
+    cache = tmp_path / "hub"
+    snapshot = cache / "models--org--m" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "m-Q4_K_M.gguf").write_bytes(b"GGUF")
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / "m-Q4_K_M.gguf").write_bytes(b"GGUF")
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache))
+
+    class _Backend:
+        def __init__(self, typed, variant):
+            self.extra_args = ["-c", "8192", "--rope-scaling", "yarn"]
+            self.extra_args_requested_source = (typed, variant)
+            self.extra_args_source = (typed, variant)
+
+    def inherits(
+        stored,
+        request_path,
+        request_variant = None,
+    ):
+        monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Backend(*stored))
+        request = SimpleNamespace(
+            model_path = request_path, gguf_variant = request_variant, llama_extra_args = None
+        )
+        return ri._split_inherited_extra_args(request) is not None
+
+    assert inherits((str(snapshot), "Q4_K_M"), "org/m", "Q4_K_M")
+    assert inherits(("org/m", "Q4_K_M"), str(snapshot), "Q4_K_M")
+    assert inherits(("org/m", "Q4_K_M"), "org/m")  # the variant it resolves to anyway
+    assert not inherits(("org/m", "Q4_K_M"), "org/m", "Q8_0")
+    assert not inherits((str(other), "Q4_K_M"), str(snapshot), "Q4_K_M")  # a shared stem

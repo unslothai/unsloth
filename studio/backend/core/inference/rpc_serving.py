@@ -39,7 +39,6 @@ _GROUPS_REFUSED_FLAGS = frozenset(
         "--sleep-idle-seconds",
     }
 )
-SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
 HELP_PROBE_TIMEOUT_S = 20.0  # llama-server --help; a hung binary is a missing flag
 _LOG_TAIL = 60
 
@@ -854,23 +853,14 @@ def auto_projector_file(
 
 
 def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
-    """``extra`` without our appended split block, so an inheriting reload re-plans the split."""
+    """``extra`` without the split block Studio appended, so an inheriting reload re-plans the split.
+    Only a block Studio recorded is ours; a caller's own ``--rpc`` placement is kept as written."""
     from core.inference import cluster_serving
 
     tokens = cluster_serving.strip_managed_block([str(t) for t in extra])
-    fixed = ["--device", "RPC0,CUDA0", "-sm", "layer", "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN]
-    fixed += ["--cache-ram", "0"]
-    for start in range(len(tokens) - 1, -1, -1):
-        if tokens[start] != "--rpc":
-            continue
-        end = start + 2 + len(fixed)
-        if tokens[start + 2 : end] != fixed:
-            return tokens
-        tail = tokens[end:]
-        if not tail or (len(tail) == 2 and tail[0] == PIPELINE_GROUPS_FLAG):
-            return tokens[:start]
-        return tokens
-    return tokens
+    provider = _provider()
+    strip = getattr(provider, "strip_split_block", None) if provider is not None else None
+    return list(strip(tokens)) if callable(strip) else tokens
 
 
 try:
