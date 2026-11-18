@@ -209,6 +209,28 @@ def test_headless_ui_panels_are_named_by_their_tab_in_order():
             '<div><div role="tabpanel">npm i x</div><div role="tabpanel" id="p1">pnpm add x</div></div></div>',
             ["**pnpm**"],
         ),
+        # one panel several tabs control takes the selected tab's name, and none without one
+        (
+            '<div role="tablist"><button role="tab" id="a" aria-controls="p">npm</button>'
+            '<button role="tab" id="b" aria-controls="p" aria-selected="true">pnpm</button>'
+            '<button role="tab" id="c" aria-controls="p">yarn</button></div>'
+            '<div role="tabpanel" id="p">pnpm add x</div>',
+            ["**pnpm**"],
+        ),
+        (
+            '<div role="tablist"><button role="tab" id="a" aria-controls="p">npm</button>'
+            '<button role="tab" id="b" aria-controls="p">pnpm</button></div>'
+            '<div role="tabpanel" id="p">pnpm add x</div>',
+            [],
+        ),
+        # a tablist with any aria-controls is never paired by order, which could contradict it
+        (
+            '<div><div role="tablist"><button role="tab" id="a" aria-controls="p1">npm</button>'
+            '<button role="tab" id="b">pnpm</button></div>'
+            '<div><div role="tabpanel" id="p0">pnpm add x</div><div role="tabpanel" id="p1">npm i x</div>'
+            "</div></div>",
+            ["**npm**"],
+        ),
         # a panel id reused by a later tab leaves that tab's own label intact
         (
             '<div><div role="tablist"><button role="tab" id="t0">npm</button></div>'

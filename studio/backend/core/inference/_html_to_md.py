@@ -878,9 +878,14 @@ class _TabLabelScan(HTMLParser):
         self._tab_at = -1  # _open index of the tab being read
         self._tab_id = ""
         self._tab_controls = ""
+        self._tab_selected = False
+        self._selected_panels: set[str] = set()
         self._parts: list[str] = []
         self._list_at = -1  # _open index of the tablist being read
         self._list_tabs: list[str] = []
+        self._list_explicit = (
+            False  # a tab names its panel by aria-controls, so order is not trusted
+        )
         self._closed_list: tuple[int, list[str]] | None = None  # until its next sibling opens
         # (_open index of the panels' wrapper, its tab ids, its panels' ids so far), innermost last
         self._groups: list[tuple[int, list[str], list[str | None]]] = []
@@ -890,8 +895,15 @@ class _TabLabelScan(HTMLParser):
         label = " ".join("".join(self._parts).split())[:_MAX_TAB_LABEL_CHARS]
         if label:
             self.labels.setdefault(self._tab_id, label)
-            for panel_id in self._tab_controls.split():
-                self.panel_labels.setdefault(panel_id, label)
+        # a panel several tabs control shows the selected one's content; with none selected it is ambiguous
+        for panel_id in self._tab_controls.split():
+            if panel_id in self._selected_panels:
+                continue
+            if self._tab_selected:
+                self._selected_panels.add(panel_id)
+                self.panel_labels[panel_id] = label
+            else:
+                self.panel_labels[panel_id] = "" if panel_id in self.panel_labels else label
         self._tab_at = -1
         self._parts = []
 
@@ -899,7 +911,8 @@ class _TabLabelScan(HTMLParser):
         if 0 <= self._tab_at and i <= self._tab_at:
             self._finish_tab()
         if 0 <= self._list_at and i <= self._list_at:
-            self._closed_list = (self._list_at, self._list_tabs)
+            if not self._list_explicit:
+                self._closed_list = (self._list_at, self._list_tabs)
             self._list_at = -1
         if self._closed_list and i < self._closed_list[0]:
             self._closed_list = None
@@ -930,12 +943,15 @@ class _TabLabelScan(HTMLParser):
         if self._list_at < 0 and _has_role(attr_dict, "tablist"):
             self._list_at = len(self._open) - 1
             self._list_tabs = []
+            self._list_explicit = False
         if self._tab_at < 0 and attr_dict.get("id") and _has_role(attr_dict, "tab"):
             self._tab_at = len(self._open) - 1
             self._tab_id = attr_dict["id"]
             self._tab_controls = attr_dict.get("aria-controls") or ""
+            self._tab_selected = (attr_dict.get("aria-selected") or "").strip().lower() == "true"
             if self._list_at >= 0:
                 self._list_tabs.append(self._tab_id)
+                self._list_explicit |= bool(self._tab_controls.strip())
         if (
             self._groups
             and self._groups[-1][0] == len(self._open) - 2
