@@ -211,7 +211,6 @@ test("the Compact chip is offered only for a large cloud thread left past the ca
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /<CompactOnReturnChip \/>\s*<ComposerPrimitive\.Send asChild=\{true\}>/);
   const chip = readSrc("components/assistant-ui/compact-on-return-chip.tsx");
-  // Only a suggestion: a click queues the /compact request and a second click withdraws it.
   assert.match(chip, /queuedForRef\.current = threadId;\s*store\.request\(threadId\);/);
   assert.match(chip, /queuedForRef\.current = null;\s*store\.clear\(threadId\);/);
   assert.equal(chip.match(/store\.request\(/g)?.length, 1);

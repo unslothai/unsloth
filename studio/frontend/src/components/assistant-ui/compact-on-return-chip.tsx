@@ -30,11 +30,7 @@ import { cn } from "@/lib/utils";
 
 const RECHECK_MS = 30_000;
 
-/**
- * Next to send on a large cloud thread the user has come back to after the provider's prompt
- * cache lapsed. Only a suggestion: the full history is sent unless a click queues the same
- * summary /compact makes, and a second click withdraws it.
- */
+/** A suggestion only: nothing is queued until the user clicks. */
 export const CompactOnReturnChip: FC = () => {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -59,7 +55,7 @@ export const CompactOnReturnChip: FC = () => {
     const timer = window.setInterval(() => setNowMs(Date.now()), RECHECK_MS);
     return () => window.clearInterval(timer);
   }, []);
-  // The thread whose request this chip queued, so leaving eligibility withdraws only its own.
+  // Withdraw only a request this chip queued.
   const queuedForRef = useRef<string | null>(null);
 
   const eligible =
@@ -80,7 +76,6 @@ export const CompactOnReturnChip: FC = () => {
   useEffect(() => {
     const queuedFor = queuedForRef.current;
     if (eligible || queuedFor === null || queuedFor !== threadId || running) return;
-    // A switch to a local model or a thread that shrank must not leave a summary queued.
     queuedForRef.current = null;
     useCompactRequestStore.getState().clear(queuedFor);
   }, [eligible, running, threadId]);
