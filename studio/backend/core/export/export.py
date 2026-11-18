@@ -2854,7 +2854,7 @@ class ExportBackend:
             nonlocal staged_gguf_dir
             reused_writes = None if _dir_is_fresh(directory) else _ReusedFolderWrites(directory)
             written = None
-            # An untracked folder goes straight to the staged save: converting into it first is wasted work.
+            # Untracked folder: skip the wasted in-place conversion.
             if reused_writes is None or reused_writes.tracked:
                 if _IS_MLX:
                     self._save_mlx_adapter(

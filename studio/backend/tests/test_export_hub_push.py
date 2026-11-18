@@ -1070,7 +1070,6 @@ def test_lora_gguf_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
     assert success is True, message
     assert output_path == str(export_dir.resolve())
     assert Path(output_path, "model-lora-q8_0.gguf").is_file()
-    # Untracked leftovers: the one staged save is both the export and the upload.
     assert len(backend.current_model.conversions) == (2 if aged else 1)
     assert seen["folder"] != output_path
     assert Path(seen["folder"]).name == export_dir.name
