@@ -90,7 +90,10 @@ def _op_by_op(
     """torch.optim.AdamW's foreach float32 formula, one rounded op at a time (no contraction)."""
     p, g, m, v = p.float(), g.float(), m.float(), v.float()
     p = p * (1 - lr * wd)
-    m = m + (g - m) * (1 - beta1)
+    w = torch.tensor(
+        1 - beta1, dtype = torch.float32
+    ).item()  # torch.lerp: from the far end at weight >= 0.5
+    m = m + (g - m) * (1 - beta1) if w < 0.5 else g - (g - m) * (1 - w)
     v = v * beta2
     v = v + (g * (1 - beta2)) * g
     # A tensor divisor: CUDA computes `tensor / python_float` as tensor * (1 / float), one rounding more than the
@@ -390,3 +393,126 @@ def test_bitsandbytes_round_failure_after_the_probe_falls_back(sr):
         and not torch.equal(p.detach(), before)
         and torch.isfinite(p).all()
     )
+
+
+def test_step_hooks_fire_on_the_one_pass_route(sr):
+    """State offload, idle-expert gradient dropping and DP sync are step hooks: the one-pass route must run them."""
+    params = [
+        torch.nn.Parameter((torch.randn(64, 48, device = "cuda") * 0.05).to(torch.bfloat16))
+        for _ in range(2)
+    ]
+    opt = torch.optim.AdamW(params, lr = 1e-3)
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    calls, seen = [], []
+
+    def drop_second(optimizer, args, kwargs):  # like context_parallel's idle-expert pre hook
+        calls.append("pre")
+        for group in optimizer.param_groups:
+            for p in group["params"]:
+                if p is params[1]:
+                    p.grad = None
+
+    opt.register_step_pre_hook(drop_second)
+    opt.register_step_post_hook(lambda optimizer, args, kwargs: calls.append("post"))
+    from torch.optim.optimizer import register_optimizer_step_post_hook
+
+    handle = register_optimizer_step_post_hook(
+        lambda optimizer, args, kwargs: seen.append(optimizer)
+    )
+    try:
+        before = params[1].detach().clone()
+        for p in params:
+            p.grad = (torch.randn(p.shape, device = "cuda") * 1e-3).to(torch.bfloat16)
+        opt.step()
+    finally:
+        handle.remove()
+    assert calls.count("pre") >= 1 and calls.count("pre") == calls.count("post")
+    assert opt in seen
+    assert opt.__dict__["_unsloth_sr_fused_steps"] == 1
+    assert torch.equal(params[1].detach(), before) and not opt.state.get(params[1])
+
+
+def test_state_offload_keeps_offloading_on_the_one_pass_route(sr):
+    path = Path(__file__).resolve().parents[1] / "unsloth/optimizers/state_offload.py"
+    spec = importlib.util.spec_from_file_location("_test_bf16_sr_offload", path)
+    offload = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(offload)
+    offload_optimizer_state = offload.offload_optimizer_state
+
+    params = [
+        torch.nn.Parameter((torch.randn(256, 192, device = "cuda") * 0.05).to(torch.bfloat16))
+        for _ in range(2)
+    ]
+    opt = torch.optim.AdamW(params, lr = 1e-3)
+    assert offload_optimizer_state(opt) is not None
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    for step in range(1, 4):
+        for p in params:
+            p.grad = (torch.randn(p.shape, device = "cuda") * 1e-3).to(torch.bfloat16)
+        opt.step()
+        for p in params:
+            assert opt.state[p]["exp_avg"].device.type == "cpu", step
+            assert opt.state[p]["exp_avg"].dtype == torch.bfloat16
+            assert float(opt.state[p]["step"]) == step
+    assert opt.__dict__["_unsloth_sr_fused_steps"] == 6
+
+
+@pytest.mark.parametrize("fused", [False, True])
+def test_grad_scaler_is_honoured(sr, fused):
+    """A fused optimizer gets GradScaler's scale and overflow flag, not unscaled gradients. GradScaler refuses
+    bfloat16 gradients, so this needs float32 gradients on the bfloat16 weight (torch >= 2.14's grad_dtype)."""
+    torch.manual_seed(0)
+    p = torch.nn.Parameter(torch.full((4096,), 0.5, device = "cuda", dtype = torch.bfloat16))
+    if not hasattr(p, "grad_dtype"):
+        pytest.skip("bfloat16 weights get bfloat16 gradients, which GradScaler refuses")
+    p.grad_dtype = torch.float32
+    opt = torch.optim.AdamW([p], lr = 1e-3, fused = fused)
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    scaler = torch.amp.GradScaler("cuda", init_scale = 1024.0)
+    g = (torch.randn(4096, device = "cuda") * 1e-3).to(torch.bfloat16)
+    scaler.scale((p.float() * g.float()).sum()).backward()
+    scaler.step(opt)
+    scaler.update()
+    m = opt.state[p]["exp_avg"].float()
+    assert torch.allclose(m, 0.1 * g.float(), rtol = 2**-6, atol = 1e-12), (
+        m / (0.1 * g.float())
+    ).median()
+    weights, step = p.detach().clone(), float(opt.state[p]["step"])
+    p.grad = None
+    scaler.scale((p.float() * g.float()).sum()).backward()
+    p.grad[0] = float("inf")
+    scaler.step(opt)  # overflow: skipped
+    scaler.update()
+    assert torch.equal(p.detach(), weights) and float(opt.state[p]["step"]) == step
+
+
+def test_beta1_at_or_below_half_matches_torch_lerp(sr):
+    """torch.lerp computes weight >= 0.5 from the far end: beta1 = 0 must keep a tiny gradient whole."""
+    p = torch.nn.Parameter(torch.zeros(1024, device = "cuda", dtype = torch.bfloat16))
+    opt = torch.optim.AdamW([p], lr = 1e-3, betas = (0.0, 0.999))
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    p.grad = torch.ones_like(p)
+    opt.step()
+    p.grad = torch.full_like(p, 2**-30)
+    opt.step()
+    assert opt.__dict__["_unsloth_sr_fused_steps"] == 2
+    assert torch.equal(opt.state[p]["exp_avg"], torch.full_like(p, 2**-30))
+    torch.manual_seed(1)
+    n = 100_003
+    q = torch.nn.Parameter((torch.randn(n, device = "cuda") * 0.05).to(torch.bfloat16))
+    opt = torch.optim.AdamW([q], lr = 3e-4, betas = (0.3, 0.999))
+    sr.enable_bf16_stochastic_rounding(opt, seed = 5, verbose = False)
+    for step in range(1, 3):
+        q.grad = (torch.randn(n, device = "cuda") * 1e-3).to(torch.bfloat16)
+        m0 = opt.state[q]["exp_avg"].clone() if step > 1 else torch.zeros_like(q)
+        v0 = opt.state[q]["exp_avg_sq"].clone() if step > 1 else torch.zeros_like(q)
+        w0, g0 = q.detach().clone(), q.grad.clone()
+        opt.step()
+        exact = _op_by_op(w0, g0, m0, v0, step, 3e-4, 0.01, beta1 = 0.3)
+        lane = _philox(n, sr._seed_for(opt, q, 5, step))[:, 1]
+        off = (
+            opt.state[q]["exp_avg"].view(torch.int16)
+            != _round_with(exact[1], lane).view(torch.int16)
+        ).sum()
+        bitwise = torch.version.hip is None and not triton.__version__.startswith("3.6.")
+        assert off.item() <= (0 if bitwise else n >> 12), off.item()

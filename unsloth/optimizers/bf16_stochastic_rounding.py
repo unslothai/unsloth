@@ -90,7 +90,8 @@ if triton is not None:
         m = tl.load(M + i, valid, 0).to(tl.float32)
         v = tl.load(V + i, valid, 0).to(tl.float32)
         p = p * DECAY
-        m = m + W1 * (g - m)
+        # torch.lerp: from the far end once the weight reaches 0.5, so beta1 = 0 gives exactly g
+        m = tl.where(W1 < 0.5, m + W1 * (g - m), g - (g - m) * (1.0 - W1))
         v = v * B2
         v = v + W2 * g * g
         denom = tl.div_rn(tl.sqrt_rn(v), BC2_SQRT) + EPS
@@ -300,8 +301,31 @@ def _wrap_bitsandbytes(optimizer, tracked, seed):
     optimizer.update_step = types.MethodType(update_step, optimizer)
 
 
+def _step_hooks(optimizer):
+    return bool(
+        getattr(optimizer, "_optimizer_step_pre_hooks", None)
+        or getattr(optimizer, "_optimizer_step_post_hooks", None)
+    )
+
+
 def _wrap_torch(optimizer, tracked, seed):
     original = optimizer.step
+
+    def one_pass(self, closure = None):
+        """The one-pass update of self.param_groups' single group, run inside torch's step hook dispatch (the
+        class step's, so state offload and gradient hooks see it). Returns the weights left to the float32 route."""
+        if closure is not None:  # e.g. state offload's restore, swapped in by its pre hook
+            with torch.enable_grad():
+                closure()
+        (group,) = self.param_groups
+        params = [p for p in group["params"] if p.grad is not None]  # pre hooks may drop gradients
+        fused = [p for p in params if _fused_param(self, p)]
+        left = {id(p) for p in _fused_adamw_step(self, group, fused, seed)} if fused else set()
+        done = {id(p) for p in fused if id(p) not in left}
+        return [p for p in params if id(p) not in done]
+
+    profile_hook_step = getattr(torch.optim.Optimizer, "profile_hook_step", None)
+    hooked = profile_hook_step(one_pass) if profile_hook_step is not None else one_pass
 
     # A bound method: torch's LR scheduler wraps `optimizer.step.__func__`.
     @torch.no_grad()
@@ -321,11 +345,14 @@ def _wrap_torch(optimizer, tracked, seed):
                 for p in mine:  # indices in parameter order, whichever route steps them
                     _index(self, p)
                 if mine and _fused_group(self, group):
-                    fused = [p for p in mine if _fused_param(self, p)]
-                    if fused:
-                        left = {id(p) for p in _fused_adamw_step(self, group, fused, seed)}
-                        done = {id(p) for p in fused if id(p) not in left}
-                        mine = [p for p in mine if id(p) not in done]
+                    # Step hooks fire as for the float32 route: per weight when the optimizer has its own
+                    # (state offload, idle experts, DP sync), else once for the group.
+                    batches = [[p] for p in mine] if _step_hooks(self) else [mine]
+                    left = []
+                    for batch in batches:
+                        self.param_groups = [dict(group, params = batch)]
+                        left += hooked(self, None)
+                    mine = left
                 for p in mine:
                     self.param_groups = [dict(group, params = [p])]
                     state = self.state.get(p)
@@ -367,6 +394,12 @@ def _fused_group(optimizer, group):
     if group.get("amsgrad") or group.get("maximize") or group.get("differentiable"):
         return False
     if group.get("capturable"):
+        return False
+    # GradScaler hands a fused optimizer its scale and overflow flag instead of unscaling: torch's kernel uses them.
+    if (
+        getattr(optimizer, "grad_scale", None) is not None
+        or getattr(optimizer, "found_inf", None) is not None
+    ):
         return False
     betas = group.get("betas", (0.9, 0.999))
     values = [
