@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArchiveIcon, Clock01Icon } from "@hugeicons/core-free-icons";
+import { Clock01Icon } from "@hugeicons/core-free-icons";
 import type { FC, ReactNode } from "react";
 
 import {
@@ -149,9 +149,8 @@ const DividerRule: FC<{
                 type="button"
                 data-slot="compaction-divider-label"
                 // Negative margins keep the rule put; relative stops the reply covering the target.
-                className="relative -mx-2 -my-2.5 inline-flex shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-2.5 leading-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+                className="relative -mx-2 -my-2.5 inline-flex shrink-0 cursor-default items-center whitespace-nowrap rounded-full px-2 py-2.5 leading-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
               >
-                <HugeiconsIcon icon={ArchiveIcon} className="size-3.5" aria-hidden={true} />
                 {label}
               </button>
             </TooltipTrigger>
