@@ -2137,6 +2137,43 @@ def _seeded_image_block(block: Any, mime: str) -> dict:
     return {**out, "type": "image", "mimeType": mime}
 
 
+# Below this an inline "image" is too small to be one, and the text too short to be worth parsing.
+_INLINE_IMAGE_MIN_CHARS = 1024
+_INLINE_IMAGE_PLACEHOLDER = "<image data moved out of the text>"
+
+
+def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Moves {"mimeType": "image/*", "data": <base64>} out of JSON text (Unreal's CaptureViewport) onto
+    the image-block path; left in, the model gets megabytes of truncated base64, never a picture."""
+    if (
+        len(text) < _INLINE_IMAGE_MIN_CHARS
+        or '"mimeType"' not in text
+        or text.lstrip()[:1] not in ("{", "[")
+    ):
+        return text, []
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        return text, []
+    found: list[tuple[str, str]] = []
+
+    def lift(node: Any) -> Any:
+        if isinstance(node, dict):
+            mime, data = _image_mime(node.get("mimeType")), node.get("data")
+            if mime is not None and isinstance(data, str) and len(data) >= _INLINE_IMAGE_MIN_CHARS:
+                found.append((data, mime))
+                return {**node, "data": _INLINE_IMAGE_PLACEHOLDER}
+            return {key: lift(item) for key, item in node.items()}
+        if isinstance(node, list):
+            return [lift(item) for item in node]
+        return node
+
+    lifted = lift(value)
+    if not found:
+        return text, []
+    return json.dumps(lifted, ensure_ascii = False), found
+
+
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
@@ -2146,9 +2183,12 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     omitted = 0
     has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
+    lifted = []
     for block in getattr(result, "content", None) or []:
         text = _block_text(block)
         if text:
+            text, inline_images = _lift_inline_images(text)
+            lifted.extend(inline_images)
             parts.append(text)
             has_text = True
             seed.append((block, None))
@@ -2176,6 +2216,14 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             unshown.append(note)
             if data:
                 payloads.add(data)
+    # After the block images: the widget hands images out positionally to the image blocks in its seed.
+    for data, mime in lifted:
+        payloads.add(data)
+        if len(data) > budget:
+            omitted += 1
+            continue
+        budget -= len(data)
+        images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
     # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)
