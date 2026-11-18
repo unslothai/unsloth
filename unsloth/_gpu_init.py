@@ -232,7 +232,27 @@ try:
         from .distributed_debug import keep_debug_nccl_env
         _restore_nccl_debug = keep_debug_nccl_env()
         del keep_debug_nccl_env
+    from .parallel_env import (
+        ALLOCATOR_ENV as _ALLOCATOR_ENV,
+        apply_late_allocator_env,
+        cuda_started,
+    )
+
+    _allocator_env_before = {k: os.environ.get(k) for k in _ALLOCATOR_ENV}
+    # Zoo exports its allocator settings before its own import starts CUDA, so only a process whose CUDA was
+    # already running (a torchrun rank > 0 binds its device at import) missed them.
+    _cuda_started_before = cuda_started()
     import unsloth_zoo
+
+    if _cuda_started_before:
+        apply_late_allocator_env(_allocator_env_before)
+    del (
+        _ALLOCATOR_ENV,
+        _allocator_env_before,
+        _cuda_started_before,
+        apply_late_allocator_env,
+        cuda_started,
+    )
 
     if _restore_nccl_debug is not None:
         _restore_nccl_debug()

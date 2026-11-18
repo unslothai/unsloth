@@ -8,6 +8,7 @@ which FSDP2 shards the same way whatever float dtype later holds the packed byte
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import dataclasses
 import functools
@@ -456,6 +457,20 @@ def _as_storage(local, info, dtype):
 _GATHER_SLICE_BYTES = 64 << 20
 
 
+def _take_chunk(holder):
+    """The chunk out of a one-element list (the caller's only reference), or `holder` itself."""
+    if isinstance(holder, list):
+        return holder.pop()
+    return holder
+
+
+def _release_cached(device):
+    """Return freed cached blocks to the driver, so the next whole-table allocation is not served next to them
+    (reserved memory would hold both)."""
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+
 def _full_from_chunks(
     local,
     info,
@@ -463,25 +478,46 @@ def _full_from_chunks(
     dtype,
     device = None,
 ):
-    """All-gather dim-0 chunks slice by slice; whole-chunk gather (5x the chunk) OOMed a T4."""
+    """All-gather dim-0 chunks into one full tensor on `device`, slice by slice (a whole-chunk gather held 5x
+    the chunk and OOMed a T4). `local` may be a one-element list holding the caller's only reference to the
+    chunk: a chunk of at least one slice on an accelerator is then moved to host memory before the full tensor
+    is allocated, so the chunk and the full tensor never share the GPU (bytes unchanged)."""
     import torch.distributed as dist
 
     if info.get("packed"):
-        raw = local.contiguous().reshape(-1).view(torch.uint8).reshape(-1, 1)
-        full = _full_from_chunks(raw, dict(info, packed = False), mesh, torch.uint8, device)
+        chunk = _take_chunk(local)
+        raw = [chunk.contiguous().reshape(-1).view(torch.uint8).reshape(-1, 1)]
+        del chunk
+        full = _full_from_chunks(
+            raw if isinstance(local, list) else raw[0],
+            dict(info, packed = False),
+            mesh,
+            torch.uint8,
+            device,
+        )
         return _as_storage(full, info, dtype)
+    handed_over = isinstance(local, list)
+    local = _take_chunk(local)
     rows, world = info["shape"][0], info["world"]
     size = math.ceil(rows / world)
     tail = tuple(info["shape"][1:])
     row_bytes = max(1, math.prod(tail) * local.element_size())
     step = max(1, min(size, _GATHER_SLICE_BYTES // row_bytes)) if size else 1
-    full = torch.empty(
-        (rows,) + tail, dtype = local.dtype, device = local.device if device is None else device
-    )
+    comm = local.device  # the group's device: every slice is gathered there
+    target = comm if device is None else torch.device(device)
+    if (
+        handed_over
+        and comm.type != "cpu"
+        and local.numel() * local.element_size() >= _GATHER_SLICE_BYTES
+    ):
+        # The caller's chunk is the last reference: keep it on the host while the full tensor is built.
+        local = local.to("cpu")
+        _release_cached(comm)
+    full = torch.empty((rows,) + tail, dtype = local.dtype, device = target)
     group = mesh.get_group()
     for start in range(0, size, step):
         n = min(step, size - start)
-        piece = local.new_zeros((n,) + tail)
+        piece = torch.zeros((n,) + tail, dtype = local.dtype, device = comm)
         have = max(0, min(n, local.shape[0] - start))
         if have:
             piece[:have].copy_(local[start : start + have])
@@ -492,6 +528,8 @@ def _full_from_chunks(
             keep = min(n, rows - first)
             if keep > 0:
                 full[first : first + keep].copy_(got[:keep])
+        # Before the next slice is allocated: rebinding alone holds two slices' buffers at once.
+        del piece, pieces, got
     return full if full.dtype == dtype else full.to(dtype)
 
 
@@ -508,15 +546,22 @@ def gather_replicated(
         return 0
     keep = {id(p) for p in replicated}
     done = {}
+    names = collections.Counter(id(local) for local, _ in pending.values())
     for module in model.modules():
         for name, p in list(module._parameters.items()):
             key = (id(module), name)
             if key not in pending or id(p) not in keep:
                 continue
-            local, info = pending.pop(key)
+            entry = pending.pop(key)
+            info = entry[1]
+            names[id(entry[0])] -= 1
             if id(p) not in done:
+                # Hand the chunk over unless another entry (a shared parameter) still names it.
+                chunk = entry[0] if names[id(entry[0])] > 0 else [entry[0]]
+                del entry
                 with torch.no_grad():
-                    full = _full_from_chunks(local, info, mesh, p.dtype, device)
+                    full = _full_from_chunks(chunk, info, mesh, p.dtype, device)
+                del chunk
                 if info.get("packed"):
                     new = torch.Tensor._make_subclass(type(p), full, p.requires_grad)
                 else:

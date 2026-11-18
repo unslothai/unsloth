@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import math
 import os
+import sys
+import warnings
 
 __all__ = [
     "ParallelSpec",
@@ -309,6 +311,72 @@ def bind_local_cuda_device(environ = None):
     except Exception:
         return None
     return local
+
+
+ALLOCATOR_ENV = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF")
+
+
+def _allocator_env_value(torch, environ):
+    """The caching allocator settings this torch reads from the environment (None when unset): the first of its
+    variables that is set wins, an empty one included."""
+    hip = bool(getattr(torch.version, "hip", None))
+    try:
+        major, minor = (int(x) for x in torch.__version__.split(".")[:2])
+    except ValueError:
+        major, minor = 2, 10
+    if (major, minor) >= (2, 10):
+        # c10/core/AllocatorConfig.cpp from 2.10: the legacy names still come first, on every platform.
+        names = ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+    elif hip:
+        # c10/cuda/CUDAAllocatorConfig.h: ROCm builds fall back to the HIP name when the CUDA one is unset.
+        names = ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF")
+    else:
+        names = ("PYTORCH_CUDA_ALLOC_CONF",)
+    for name in names:
+        if environ.get(name) is not None:
+            return environ[name]
+    return None
+
+
+def cuda_started():
+    """Whether CUDA (or HIP) has started in this process, without importing torch or starting it."""
+    torch = sys.modules.get("torch")
+    try:
+        return bool(torch is not None and torch.cuda.is_initialized())
+    except Exception:
+        return False
+
+
+def apply_late_allocator_env(before, environ = None):
+    """`bind_local_cuda_device` starts CUDA on torchrun ranks > 0 at import, which fixes the caching allocator's
+    settings before unsloth_zoo exports its default (expandable_segments): those ranks ran without it while rank 0
+    had it (Qwen3.8-27B 4-bit FSDP2 on 2x T4: 2.2 GiB more reserved on rank 1 at sharding). After the zoo import,
+    apply what it changed (`before`: the ALLOCATOR_ENV values before it) at runtime. Returns the settings applied,
+    or None (nothing changed, or CUDA not started yet: torch then reads the environment itself)."""
+    environ = os.environ if environ is None else environ
+    if all(environ.get(k) == before.get(k) for k in ALLOCATOR_ENV):
+        return None
+    try:
+        import torch
+
+        if not torch.cuda.is_initialized():
+            return None
+        setter = getattr(torch.cuda.memory, "_set_allocator_settings", None)
+        if setter is None:
+            return None
+        value = _allocator_env_value(torch, environ) or ""
+        had = _allocator_env_value(torch, before) or ""
+        if "expandable_segments" not in value and "expandable_segments:true" in had.lower():
+            value = ",".join(x for x in (value, "expandable_segments:False") if x)
+        if not value:
+            return None
+        with warnings.catch_warnings():
+            # torch 2.10+ deprecates the name (FutureWarning) but keeps it as an alias of the accelerator setter.
+            warnings.simplefilter("ignore", FutureWarning)
+            setter(value)
+        return value
+    except Exception:
+        return None
 
 
 def env_cp_size(environ = None):
