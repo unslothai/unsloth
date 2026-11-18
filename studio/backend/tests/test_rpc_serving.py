@@ -975,8 +975,10 @@ def test_the_load_summary_is_read_after_after_load_drops_a_missing_split(monkeyp
     assert isinstance(response, LoadResponse) and response.cluster_summary is None
 
 
-def test_a_callers_own_rpc_placement_is_never_read_as_ours():
+def test_a_callers_own_rpc_placement_is_never_read_as_ours(monkeypatch):
     """With nothing recorded, an argument list shaped like a split block is still the caller's."""
+    monkeypatch.setattr(ss, "_PROVIDER", None)
+    monkeypatch.setattr(ss, "_PROVIDER_LOOKED_UP", True, raising = False)  # no provider installed
     users = [
         "--rpc", "10.0.0.2:50052", "--device", "RPC0,CUDA0", "-sm", "layer",
         "--tensor-split", "0.5,0.5", "--cache-ram", "0",
