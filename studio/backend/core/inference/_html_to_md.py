@@ -882,8 +882,8 @@ class _TabLabelScan(HTMLParser):
         self._list_at = -1  # _open index of the tablist being read
         self._list_tabs: list[str] = []
         self._closed_list: tuple[int, list[str]] | None = None  # until its next sibling opens
-        # [_open index of the panels' wrapper, its tab ids, panels paired so far], innermost last
-        self._groups: list[list] = []
+        # (_open index of the panels' wrapper, its tab ids, its panels' ids so far), innermost last
+        self._groups: list[tuple[int, list[str], list[str | None]]] = []
 
     def _finish_tab(self) -> None:
         # capped here too, so joining many long labels per panel stays linear
@@ -904,7 +904,7 @@ class _TabLabelScan(HTMLParser):
         if self._closed_list and i < self._closed_list[0]:
             self._closed_list = None
         while self._groups and self._groups[-1][0] >= i:
-            self._groups.pop()
+            self._finish_group()
         for tag in self._open[i:]:
             self._open_at[tag].pop()
         del self._open[i:]
@@ -918,7 +918,7 @@ class _TabLabelScan(HTMLParser):
         # Headless UI links panels to tabs only by order, inside the element right after the tablist
         if self._closed_list:
             if tag not in _VOID_TAGS:
-                self._groups.append([len(self._open), self._closed_list[1], 0])
+                self._groups.append((len(self._open), self._closed_list[1], []))
             self._closed_list = None
         if tag in _VOID_TAGS:
             return
@@ -936,16 +936,21 @@ class _TabLabelScan(HTMLParser):
             self._tab_controls = attr_dict.get("aria-controls") or ""
             if self._list_at >= 0:
                 self._list_tabs.append(self._tab_id)
-        if self._groups and attr_dict.get("id") and _has_role(attr_dict, "tabpanel"):
-            self._pair_panel(attr_dict["id"])
+        if (
+            self._groups
+            and self._groups[-1][0] == len(self._open) - 2
+            and _has_role(attr_dict, "tabpanel")
+        ):
+            self._groups[-1][2].append(attr_dict.get("id"))
 
-    def _pair_panel(self, panel_id: str) -> None:
-        group = self._groups[-1]
-        if group[0] == len(self._open) - 2 and group[2] < len(group[1]):
-            label = self.labels.get(group[1][group[2]])
-            group[2] += 1
-            if label:
-                self._order_labels.setdefault(panel_id, label)
+    def _finish_group(self) -> None:
+        _, tab_ids, panel_ids = self._groups.pop()
+        # order only pairs when every tab has its panel; a missing one would shift every label after it
+        if len(panel_ids) == len(tab_ids):
+            for tab_id, panel_id in zip(tab_ids, panel_ids):
+                label = self.labels.get(tab_id)
+                if label and panel_id:
+                    self._order_labels.setdefault(panel_id, label)
 
     def handle_endtag(self, tag: str) -> None:
         # stray end tags, and the </img> HTMLParser sends after <img/>, match nothing and are ignored
@@ -959,6 +964,8 @@ class _TabLabelScan(HTMLParser):
 
     def close(self) -> None:
         super().close()
+        while self._groups:
+            self._finish_group()
         self.panel_labels = self._order_labels | self.panel_labels
 
 

@@ -185,16 +185,29 @@ def test_headless_ui_panels_are_named_by_their_tab_in_order():
         # an aria-controls later in the page still outranks order
         (
             '<div><div role="tablist"><button role="tab" id="a">npm</button>'
-            '<button role="tab" id="b">pnpm</button></div>'
-            '<div><div role="tabpanel" id="p1">pnpm add x</div></div></div>'
-            '<div role="tablist"><button role="tab" id="c" aria-controls="p1">pnpm</button></div>',
-            ["**pnpm**"],
+            '<button role="tab" id="b">yarn</button></div>'
+            '<div><div role="tabpanel" id="p0">npm i x</div><div role="tabpanel" id="p1">pnpm add x</div>'
+            '</div></div><div role="tablist"><button role="tab" id="c" aria-controls="p1">pnpm</button></div>',
+            ["**npm**", "**pnpm**"],
         ),
         # only the element right after the tablist holds its panels, a void one included
         (
             '<div role="tablist"><button role="tab" id="a">npm</button></div><hr>'
             '<div><div role="tabpanel" id="q">pip i</div></div>',
             [],
+        ),
+        # order pairs only when every tab has its panel, so a missing one names nothing
+        (
+            '<div><div role="tablist"><button role="tab" id="a">npm</button>'
+            '<button role="tab" id="b">pnpm</button></div>'
+            '<div><div role="tabpanel" id="p1">pnpm add x</div></div></div>',
+            [],
+        ),
+        (
+            '<div><div role="tablist"><button role="tab" id="a">npm</button>'
+            '<button role="tab" id="b">pnpm</button></div>'
+            '<div><div role="tabpanel">npm i x</div><div role="tabpanel" id="p1">pnpm add x</div></div></div>',
+            ["**pnpm**"],
         ),
         # a panel id reused by a later tab leaves that tab's own label intact
         (
@@ -208,6 +221,15 @@ def test_headless_ui_panels_are_named_by_their_tab_in_order():
 def test_explicit_links_win_over_order(body, labels):
     out = html_to_markdown(f"<main><h1>Install</h1><p>{_INTRO}</p>{body}</main>", main_content = True)
     assert [line for line in out.splitlines() if line.startswith("**")] == labels
+
+
+def test_a_page_cut_off_inside_its_panels_still_names_them():
+    page = (
+        f"<main><h1>Install</h1><p>{_INTRO}</p>"
+        '<div><div role="tablist"><button role="tab" id="a">npm</button></div>'
+        '<div><div role="tabpanel" id="p0"><pre><code>npm i x'
+    )
+    assert "**npm**" in html_to_markdown(page, main_content = True)
 
 
 def test_panel_label_does_not_break_a_table_row():
