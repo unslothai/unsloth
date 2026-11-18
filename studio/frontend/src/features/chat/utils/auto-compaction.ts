@@ -64,11 +64,7 @@ export function normalizeAutoCompactTokens(value: unknown): number | undefined {
   return value;
 }
 
-/**
- * What a cloud chat does once it passes its trigger: "summary" asks the same model for a summary
- * of the older turns, "evict" drops whole oldest turns into the thread's archive, where
- * search_conversation finds them verbatim. Unset is "summary".
- */
+/** Unset is "summary"; "evict" archives whole oldest turns with no summary call. */
 export type ProviderCompactionMode = "summary" | "evict";
 
 export function normalizeCompactionMode(
