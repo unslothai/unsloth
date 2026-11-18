@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from utils.account_context import account_thread
 from loggers import get_logger
+import contextlib
 import importlib
 import importlib.metadata
 import importlib.util
@@ -3160,8 +3161,14 @@ def _resolve_mlx_max_grad_norm(value):
     return value
 
 
-def _run_mlx_training(event_queue, stop_queue, config):
-    """Apple Silicon MLX path via unsloth_zoo's MLXTrainer, no torch; same event_queue protocol."""
+def _run_mlx_training(
+    event_queue,
+    stop_queue,
+    config,
+    exit_stack = None,
+):
+    """Apple Silicon MLX path via unsloth_zoo's MLXTrainer, no torch; same event_queue protocol.
+    ``exit_stack`` keeps an S3 audio download until its clips are decoded."""
     import time
     import math
     from pathlib import Path
@@ -3321,7 +3328,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
             try:
                 dataset = _load_local(s3_download.files)
             finally:
-                s3_download.cleanup()
+                # Rows decode audio from the download in _mlx_audio_rows, after model load.
+                if exit_stack is not None and config.get("is_dataset_audio"):
+                    exit_stack.callback(s3_download.cleanup)
+                else:
+                    s3_download.cleanup()
         except S3DownloadCancelled:
             _send("complete", output_dir = None, status_message = "Training cancelled")
             return
@@ -4169,7 +4180,8 @@ def run_mlx_training_process(
                     from core.training.decision_trainer import run_decision_training
                     run_decision_training(event_queue, stop_queue, config)
             else:
-                _run_mlx_training(event_queue, stop_queue, config)
+                with contextlib.ExitStack() as exit_stack:
+                    _run_mlx_training(event_queue, stop_queue, config, exit_stack)
         finally:
             try:
                 stop_queue.put({"type": _MLX_WORKER_COMPLETE})
