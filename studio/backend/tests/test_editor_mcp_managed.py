@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import types
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -341,6 +342,53 @@ def test_unreal_hint_reads_the_engine_registry(
         unreal_found(entry.replace("\n", "\r\n").encode("utf-16")) is True
     )  # non-ASCII installs are saved as UTF-16
     assert unreal_found(f"[Other]\nX={engine}\n[Installations]\n".encode()) is False
+
+
+def test_unreal_hint_reads_the_windows_engine_registry(fresh_install_cache, tmp_path, monkeypatch):
+    """Windows source builds register under HKCU\\Software\\Epic Games\\Unreal Engine\\Builds."""
+    installed = fresh_install_cache
+    monkeypatch.setattr(installed.sys, "platform", "win32")
+    monkeypatch.setattr(installed, "_any", lambda patterns: False)
+    monkeypatch.setattr(installed, "_epic_launcher_has_unreal", lambda: False)
+    engine = tmp_path / "src" / "UnrealEngine"
+    builds: dict = {}
+
+    class _Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def open_key(hive, path):
+        assert (hive, path) == ("HKCU", r"Software\Epic Games\Unreal Engine\Builds")
+        if builds is None:
+            raise FileNotFoundError(path)  # never built from source
+        return _Key()
+
+    def enum_value(_key, index):
+        items = list(builds.items())
+        if index >= len(items):
+            raise OSError("no more data")
+        return items[index][0], items[index][1], 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "winreg",
+        types.SimpleNamespace(HKEY_CURRENT_USER = "HKCU", OpenKey = open_key, EnumValue = enum_value),
+    )
+
+    def unreal_found() -> bool:
+        installed._cache.clear()
+        return installed.is_installed("unreal")
+
+    assert unreal_found() is False  # key exists, no builds
+    builds["{673FCAE7-FBB2-458F-9D7C-ED83D92881D3}"] = str(engine)
+    assert unreal_found() is False  # stale entry: the engine was deleted
+    (engine / "Engine").mkdir(parents = True)
+    assert unreal_found() is True
+    builds = None
+    assert unreal_found() is False
 
 
 def test_catalog_reports_install_state(fresh_install_cache, monkeypatch):

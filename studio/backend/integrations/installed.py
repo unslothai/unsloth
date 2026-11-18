@@ -68,8 +68,33 @@ def _epic_launcher_has_unreal() -> bool:
     )
 
 
+def _engine_root_exists(root: str) -> bool:
+    # Registry entries outlive deleted engines, so only count a root that still has its Engine folder.
+    root = root.strip().strip('"')
+    return bool(root) and (Path(root).expanduser() / "Engine").is_dir()
+
+
 def _unreal_registered_engine() -> bool:
-    """Unreal's own engine registry on Linux / macOS (source builds and Linux Installed Builds never touch the Launcher manifest): every editor launch adds its root under [Installations] in Epic's Install.ini."""
+    """Unreal's own engine registry, which source builds use instead of the Launcher manifest: every editor
+    launch registers its root, on Windows under HKCU\\Software\\Epic Games\\Unreal Engine\\Builds and on
+    Linux / macOS under [Installations] in Epic's Install.ini."""
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Software\Epic Games\Unreal Engine\Builds"
+            ) as key:
+                index = 0
+                while True:
+                    try:
+                        _name, value, _kind = winreg.EnumValue(key, index)
+                    except OSError:  # no more values
+                        return False
+                    if isinstance(value, str) and _engine_root_exists(value):
+                        return True
+                    index += 1
+        except (ImportError, OSError):
+            return False
     if sys.platform == "darwin":
         ini = Path("~/Library/Application Support/Epic/UnrealEngine/Install.ini").expanduser()
     elif sys.platform.startswith("linux"):
@@ -87,11 +112,8 @@ def _unreal_registered_engine() -> bool:
         line = line.strip()
         if line.startswith("["):
             in_section = line.lower() == "[installations]"
-        elif in_section and "=" in line:
-            root = line.split("=", 1)[1].strip().strip('"')
-            # Entries outlive deleted engines, so only count a root that still has its Engine folder.
-            if root and (Path(root).expanduser() / "Engine").is_dir():
-                return True
+        elif in_section and "=" in line and _engine_root_exists(line.split("=", 1)[1]):
+            return True
     return False
 
 
