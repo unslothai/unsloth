@@ -506,3 +506,28 @@ def test_a_cached_verdict_follows_a_new_hard_link(folder):
     except OSError:
         pytest.skip("this volume does not allow hard links here")
     assert os_sandbox.trusted_tool_folder_roots() == ()
+
+
+def test_a_warm_gate_stops_trusting_a_folder_swapped_for_a_link(folder, scratch, monkeypatch):
+    # A stable db revision, so only the swap itself can end the cached trust.
+    monkeypatch.setattr(gate, "_studio_db_revision", lambda identity = (): 0)
+    gate._silent_roots_cache = None
+    assert gate._path_needs_approval(str(folder / "run.sh")) is False
+    elsewhere = scratch / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "run.sh").write_text("echo other\n")
+    folder.rename(scratch / "moved")
+    try:
+        os.symlink(elsewhere, folder, target_is_directory = True)
+    except OSError:
+        pytest.skip("this volume does not allow symlinks here")
+    # No cache reset: the swap alone has to end the trust.
+    assert gate._path_needs_approval(str(folder / "run.sh")) is True
+
+
+@pytest.mark.parametrize("relative", ["auth/session.json", "deep/auth/x"])
+def test_a_folder_holding_what_the_gate_calls_a_credential_is_not_granted(folder, relative):
+    path = folder / relative
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text("x")
+    assert os_sandbox.trusted_tool_folder_roots() == ()

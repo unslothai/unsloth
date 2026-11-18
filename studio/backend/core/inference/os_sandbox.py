@@ -797,7 +797,7 @@ def _holds_a_nested_credential(folder: str) -> bool:
     """A tree too large to check, a hard-linked file or a link out of it counts as holding one."""
     from . import tools
     from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
-    from .tool_path_approval import _references_sensitive_path
+    from .tool_path_approval import _credential_under_silent_root, _references_sensitive_path
 
     rows = _tree_fingerprint(folder)
     if rows is None:
@@ -811,6 +811,8 @@ def _holds_a_nested_credential(folder: str) -> bool:
     verdict = any(
         name.casefold() in names
         or _references_sensitive_path(path)
+        # What the gate still asks for under a silent root (an `auth/` directory and the like).
+        or _credential_under_silent_root(path)
         # A link or junction out of the folder reads its target unchecked.
         or (target is not None and not _is_within(target, folder))
         # A second name can alias a credential anywhere on the volume, as in the workdir scan.
