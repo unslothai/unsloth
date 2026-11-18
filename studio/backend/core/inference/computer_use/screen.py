@@ -46,6 +46,7 @@ class Frame:
     width: int
     height: int
     gray: Any = field(repr = False, default = None)
+    windows: Optional[list] = field(repr = False, default = None)
     # Sent because the screen changed under a target: not re-checked, or a video is never clickable.
     lenient: bool = False
 
@@ -85,10 +86,15 @@ class Shot:
 def take(backend: Backend, display: Display) -> Shot:
     from PIL import Image, ImageDraw
 
+    # Listed before the capture: a window opening in between counts as a change, not a miss.
+    try:
+        windows = backend.window_stack()
+    except Exception:  # noqa: BLE001 - the pixels are still compared without it
+        windows = None
     full = backend.capture(display)
     size = fit_size(display.width, display.height)
     image = full.resize(size, Image.Resampling.LANCZOS, reducing_gap = 2.0)
-    frame = Frame(display, size[0], size[1])
+    frame = Frame(display, size[0], size[1], windows = windows)
     # Kept without the pointer: comparing two screens must not see the pointer having moved.
     frame.gray = image.convert("L")
     try:
@@ -121,9 +127,22 @@ def _changed_pixels(
     return sum(diff.histogram()[_LEVEL_STEP:]), max(1, total)
 
 
+def _window_at(windows: list, x: float, y: float) -> Any:
+    for entry in windows:
+        left, top, width, height = entry[1]
+        if left <= x < left + width and top <= y < top + height:
+            return entry
+    return None
+
+
 def target_moved(frame: Frame, now: Frame, x: float, y: float) -> bool:
     if frame.gray is None or now.gray is None or frame.gray.size != now.gray.size:
         return True
+    # A light dialog over a light page changes too few pixels for the check below.
+    if frame.windows is not None and now.windows is not None:
+        desktop = frame.to_desktop(x, y)
+        if _window_at(frame.windows, *desktop) != _window_at(now.windows, *desktop):
+            return True
     width, height = frame.gray.size
     box = (
         int(max(0, x - _PATCH_RADIUS)),
