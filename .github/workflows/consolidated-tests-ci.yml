@@ -2054,8 +2054,7 @@ jobs:
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
-    # A passing cell takes ~35 min (35 min cap cancelled it at 99%); PYTEST_TIMEOUT
-    # below names a hung test, this cap only bounds it.
+    # PYTEST_TIMEOUT names a hung test; this job cap only bounds the cell.
     timeout-minutes: 50
     # Same contract as `consolidated`: no job-level or per-step
     # `continue-on-error`, so a failing test fails the cell.
