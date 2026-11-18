@@ -594,8 +594,7 @@ _OAUTH_METADATA_COLLECTION = "mcp-oauth-server-metadata"
 
 
 def _remember_server_metadata(auth, store) -> None:
-    """Each connection builds a new provider that never ran discovery, so the SDK refreshes at
-    <origin>/token; servers that put it elsewhere (better-auth) 404 into a new sign-in (#18164)."""
+    """Fresh providers skip discovery and refresh at <origin>/token: 404 on better-auth (#18164)."""
     from mcp.shared.auth import OAuthMetadata
 
     adapter = getattr(auth, "token_storage_adapter", None)
