@@ -216,4 +216,3 @@ def test_a_detector_refused_during_an_audio_runtime_update_is_retryable():
     finally:
         audio_cpp_server.UPDATE_IN_PROGRESS.clear()
     assert inference._vad_http_error(VadUnavailableError("no runtime")).status_code == 501
-
