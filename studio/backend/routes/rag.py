@@ -108,10 +108,12 @@ def _sanitize_filename(name: str) -> str:
     return _document_label(parts[-1])
 
 
-def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str, str]:
+def _persist_upload_stream(
+    source, filename: str, *, empty_detail: str, extra_exts: frozenset[str] = frozenset()
+) -> tuple[str, str, str]:
     """Returns the content hash so ingestion does not need a second full read of the file."""
     ext = os.path.splitext(filename)[1].lower()
-    if ext not in config.UPLOAD_EXTS:
+    if ext not in config.UPLOAD_EXTS and ext not in extra_exts:
         raise HTTPException(
             status_code = 400,
             detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
@@ -147,13 +149,14 @@ def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple
     return stored_path, filename, digest.hexdigest()
 
 
-def _save_upload(file: UploadFile) -> tuple[str, str, str]:
+def _save_upload(file: UploadFile, extra_exts: frozenset[str] = frozenset()) -> tuple[str, str, str]:
     """Persist a browser upload; returns (stored_path, filename, content_hash)."""
     filename = _sanitize_filename(file.filename or "document")
     return _persist_upload_stream(
         file.file,
         filename,
         empty_detail = "Uploaded file is empty.",
+        extra_exts = extra_exts,
     )
 
 
@@ -968,12 +971,42 @@ def folder_job_events(
 _EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
 
 
+_IMAGE_TEXT_EXTS = frozenset(".png .jpg .jpeg .webp .gif .bmp .tif .tiff".split())
+
+
+def _image_text(path: str) -> str:
+    """The loaded vision model reads the image, else local Tesseract; "" when neither can."""
+    import pymupdf
+
+    from core.rag import captioner, pdf_ocr
+
+    with pymupdf.open(path) as doc:
+        png = doc[0].get_pixmap(dpi = config.OCR_DPI).tobytes("png")
+    text = captioner.ocr_pages({1: png}).get(1, "")
+    return text or pdf_ocr.ocr_pages(path, [1]).get(1, "")
+
+
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
 @router.post("/extract-text")
 def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
     from core.rag import parsers
 
-    stored_path, filename, _digest = _save_upload(file)
+    # Images only here: ingestion has no reader for them.
+    stored_path, filename, _digest = _save_upload(file, _IMAGE_TEXT_EXTS)
+    if os.path.splitext(filename)[1].lower() in _IMAGE_TEXT_EXTS:
+        try:
+            text = _image_text(stored_path)
+        except Exception as exc:
+            raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
+        finally:
+            _remove_stored_upload(stored_path)
+        if not text.strip():
+            raise HTTPException(
+                status_code = 422,
+                detail = f"No text could be read from {filename}. Reading images needs a vision "
+                "model loaded in Chat, or Tesseract OCR installed.",
+            )
+        return {"filename": filename, "text": text, "truncated": False}
     try:
         pages = parsers.parse(stored_path)
     except ImportError as exc:

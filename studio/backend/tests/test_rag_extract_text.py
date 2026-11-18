@@ -82,3 +82,34 @@ def test_cap_stops_at_the_page_that_crosses_it(rag_home, monkeypatch):
     monkeypatch.setattr(rag_routes, "_EXTRACT_TEXT_MAX_BYTES", 1024)
     result = rag_routes.extract_text(_upload("deck.ppt", b"x"), subject = "owner")
     assert (result["text"], result["truncated"]) == ("first\n\nsecond\n\nthird", False)
+
+
+def _png() -> bytes:
+    import pymupdf
+
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 8, 8), False)
+    pix.clear_with(255)
+    return pix.tobytes("png")
+
+
+def test_an_image_is_read_by_the_vision_model(rag_home, monkeypatch):
+    from core.rag import captioner
+
+    seen = []
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: seen.append(pngs) or {1: "Hola mundo"})
+    result = rag_routes.extract_text(_upload("sign.png", _png()), subject = "owner")
+    assert result == {"filename": "sign.png", "text": "Hola mundo", "truncated": False}
+    assert list(seen[0]) == [1] and seen[0][1].startswith(b"\x89PNG")
+    assert _uploads_left() == []
+
+
+def test_an_image_nothing_can_read_is_422_and_cleaned_up(rag_home, monkeypatch):
+    from core.rag import captioner, pdf_ocr
+
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: {})
+    monkeypatch.setattr(pdf_ocr, "ocr_pages", lambda path, pages: {})
+    with pytest.raises(HTTPException) as exc:
+        rag_routes.extract_text(_upload("photo.jpg", _png()), subject = "owner")
+    assert exc.value.status_code == 422
+    assert "vision model" in exc.value.detail
+    assert _uploads_left() == []
