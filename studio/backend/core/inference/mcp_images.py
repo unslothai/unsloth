@@ -30,6 +30,7 @@ DECODE_FAILURE_ALLOWANCE = 4
 # MIME type has no length bound; metadata must not hide megabytes from the byte budgets on both sides
 MAX_MCP_IMAGE_MIME_CHARS = 256
 MAX_IMAGE_EDGE = 1024
+MAX_SCREENSHOT_EDGE = 2016
 # Bounded off the header: a small PNG can hold tens of gigapixels.
 MAX_IMAGE_PIXELS = 40_000_000
 
@@ -160,7 +161,8 @@ def _decoded_urls(
         if cache is not None and data in cache:
             url = cache[data]
         else:
-            url = _png_data_url(data)
+            edge = _max_edge(image)
+            url = _png_data_url(data, edge) if edge > MAX_IMAGE_EDGE else _png_data_url(data)
             if cache is not None:
                 cache[data] = url
         if url:
@@ -300,7 +302,14 @@ def flattened_rgb(image, background = None):
     return canvas
 
 
-def _png_data_url(data: str) -> str | None:
+def _max_edge(image: dict) -> int:
+    asked = image.get("maxEdge")
+    if isinstance(asked, int) and not isinstance(asked, bool):
+        return max(MAX_IMAGE_EDGE, min(asked, MAX_SCREENSHOT_EDGE))
+    return MAX_IMAGE_EDGE
+
+
+def _png_data_url(data: str, max_edge: int = MAX_IMAGE_EDGE) -> str | None:
     # PNG always: llama-server's stb_image reads few formats (MCP servers often send WebP).
     try:
         raw = base64.b64decode(data, validate = True)
@@ -317,14 +326,14 @@ def _png_data_url(data: str) -> str | None:
             logger.debug("MCP image is %dx%d, past the pixel budget", width, height)
             return None
         # JPEG decodes straight to a smaller raster; a no-op for every other format.
-        image.draft("RGB", (MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
+        image.draft("RGB", (max_edge, max_edge))
         image.load()
         # Apply EXIF orientation, or the model sees camera JPEGs sideways.
         from PIL import ImageOps
 
         image = ImageOps.exif_transpose(image) or image
-        if max(image.size) > MAX_IMAGE_EDGE:
-            image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
+        if max(image.size) > max_edge:
+            image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
         flattened_rgb(image).save(buffer, format = "PNG")
     except Exception:

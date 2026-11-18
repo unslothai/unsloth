@@ -226,7 +226,7 @@ class _Run:
         return next((d for d in self.displays if d.primary), self.displays[0])
 
     def _shoot(self) -> screen.Shot:
-        return screen.take(self.backend, self._display())
+        return screen.take(self.backend, self._display(), self.session.detail)
 
     def _adopt(self, shot: screen.Shot) -> None:
         self.session.frame = shot.frame

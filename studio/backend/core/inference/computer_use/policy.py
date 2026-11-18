@@ -24,8 +24,12 @@ _MAX_APP_NAME_CHARS = 80
 # Families that answer on a 0-1000 grid whatever the picture's size; the others answer in pixels.
 _GRID_MODEL_RE = re.compile(
     r"qwen[-_ ]?3(?:\.\d+)?[-_ ]?vl|qwen3vl|qwen[-_ ]?3\.[5-9](?!\d)|gemma[-_ ]?4(?!\d)"
-    r"|ui[-_ ]?tars(?![-_ ]?1\.5)|gemini",
+    r"|ui[-_ ]?tars(?![-_ ]?1\.5)|gemini|nemotron(?:[-_ ]?3\.5)?[-_ ]?bolt",
     re.IGNORECASE,
+)
+# Larger screenshots (screen.shot_edge) only where they help: Gemma 4 drifts up and misses buttons.
+_DETAIL_MODEL_RE = re.compile(
+    r"qwen[-_ ]?3(?:\.\d+)?[-_ ]?vl|qwen3vl|qwen[-_ ]?3\.[5-9](?!\d)", re.IGNORECASE
 )
 
 _TERMINALS = (
@@ -220,6 +224,10 @@ def coordinate_mode(model: Any) -> str:
     if chosen in ("pixels", "grid"):
         return chosen
     return "grid" if isinstance(model, str) and _GRID_MODEL_RE.search(model) else "pixels"
+
+
+def sees_detail(model: Any) -> bool:
+    return isinstance(model, str) and bool(_DETAIL_MODEL_RE.search(model))
 
 
 def host_problem() -> Optional[str]:
