@@ -916,6 +916,8 @@ def _folder_job_view(row: dict) -> dict:
         "removedFiles": row.get("deleted") or 0,
         "renamedFiles": row.get("renamed") or 0,
         "failedFiles": row.get("failed") or 0,
+        # Folder-wide, out of discoveredFiles; processedFiles counts only this pass's changes.
+        "syncedFiles": (row.get("up_to_date") or 0) + (row.get("checked") or 0),
         "error": row.get("error"),
         "createdAt": row.get("created_at"),
         "completedAt": row.get("completed_at"),
