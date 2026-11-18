@@ -385,7 +385,7 @@ def test_rocm_keeps_windowed_rows_off_flash_attn(monkeypatch, window):
     dispatched = []
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(torch.version, "hip", "6.4")
-    # A ROCm build whose torch varlen failed its self-check: rows reach the flash-attn backend.
+    # Torch varlen off (failed self-check), so rows reach flash-attn.
     monkeypatch.setattr(hpa, "_TORCH_VARLEN", [None])
     monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: ad.FLASH_VARLEN)
     monkeypatch.setattr(ad, "run_attention", lambda **kwargs: dispatched.append(1) or kwargs["Q"])
@@ -742,8 +742,7 @@ def test_int32_guard_splits_documents_instead_of_the_dense_fallback(monkeypatch,
         if torch.version.hip is None:
             torch.testing.assert_close(a, b, atol = 0, rtol = 0)
         else:
-            # ROCm's flash varlen (AOTriton) can round a bf16 ulp differently per launch shape: hold
-            # the groups to the self-check's tolerance instead of bit equality.
+            # ROCm AOTriton bf16 rounding varies per launch shape: self-check tolerance, not bit equality.
             assert (a.float() - b.float()).abs().max() <= 0.02 * b.float().abs().max() + 1e-3
 
 
