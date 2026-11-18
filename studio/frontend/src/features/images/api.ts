@@ -4,6 +4,7 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { isStudioUrl } from "@/lib/api-base";
 import { linkedProxyPath } from "@/features/model-picker/linked/linked-id";
 import {
   isMemoryEstimateRefusal,
@@ -601,6 +602,8 @@ export async function clearGallery(): Promise<void> {
 }
 
 export async function fetchGalleryResponse(url: string): Promise<Response> {
+  // A linked gallery names its own URLs; the bearer goes only to this Studio.
+  if (!isStudioUrl(url)) throw new Error("Gallery files must be served by this Studio.");
   const res = await authFetch(url);
   if (!res.ok) throw new Error(await readFastApiError(res));
   return res;
