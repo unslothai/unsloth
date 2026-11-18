@@ -49,7 +49,7 @@
 	min-height: round(up, 1lh + 16px * var(--ui-space-scale, 1), 1px);
 }
 
-/* Centers caps and digits, not the line box; the padding keeps descenders unclipped. */
+/* Padding keeps descenders unclipped. */
 @utility cap-centered {
 	@supports (text-box: trim-both cap alphabetic) {
 		text-box: trim-both cap alphabetic;
