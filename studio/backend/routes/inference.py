@@ -45205,9 +45205,7 @@ async def anthropic_count_tokens(
             status_code = 400,
             detail = "Token counting is not available for a Connection model.",
         )
-    await asyncio.to_thread(
-        warm_anthropic_pdf_documents, [m.model_dump() for m in payload.messages]
-    )
+    await asyncio.to_thread(warm_anthropic_pdf_documents, payload.messages)
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
@@ -45866,10 +45864,7 @@ async def anthropic_messages(
     """
     _mark_claude_code_thinking(payload, request)
     _admit_tool_access(payload)
-    # MUPDF_LOCK can be held for minutes by indexing, so parse PDFs off the event loop.
-    await asyncio.to_thread(
-        warm_anthropic_pdf_documents, [m.model_dump() for m in payload.messages]
-    )
+    await asyncio.to_thread(warm_anthropic_pdf_documents, payload.messages)
     connection = _connection_model_ref(payload.model)
     if connection is not None:
         return await _anthropic_messages_via_connection(

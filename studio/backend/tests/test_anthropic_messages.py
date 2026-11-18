@@ -1530,8 +1530,8 @@ class TestAnthropicMessagesToOpenAI:
                 ],
             }
         ]
-        anthropic_compat._pdf_document_text.cache_clear()
-        warm_anthropic_pdf_documents(msgs)
+        anthropic_compat._PDF_TEXTS.clear()
+        warm_anthropic_pdf_documents(AnthropicMessagesRequest(messages = msgs).messages)
         held, release, result = threading.Event(), threading.Event(), []
 
         def indexer():
@@ -1554,6 +1554,38 @@ class TestAnthropicMessagesToOpenAI:
             release.set()
             holder.join(5)
         assert "Quarterly revenue 42 million" in str(result[0])
+
+    def test_warmed_pdf_documents_beyond_eight_are_not_reparsed(self, monkeypatch):
+        import pymupdf
+        from core.inference import anthropic_compat, tools
+        from core.inference.anthropic_compat import warm_anthropic_pdf_documents
+
+        def pdf(i):
+            with pymupdf.open() as doc:
+                doc.new_page().insert_text((72, 100), f"Report {i}")
+                return _b64.b64encode(doc.tobytes()).decode()
+
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf(i),
+                        },
+                    }
+                ],
+            }
+            for i in range(12)
+        ]
+        anthropic_compat._PDF_TEXTS.clear()
+        warm_anthropic_pdf_documents(AnthropicMessagesRequest(messages = msgs).messages)
+        monkeypatch.setattr(tools, "_extract_pdf_text", lambda data: pytest.fail("reparsed"))
+        result = str(anthropic_messages_to_openai(msgs))
+        assert all(f"Report {i}" in result for i in range(12))
 
     def test_top_level_search_result_and_document_reach_the_user_turn(self):
         request = AnthropicMessagesRequest(
@@ -5055,7 +5087,7 @@ def test_user_unknown_block_rejected_not_silently_dropped():
 @pytest.mark.parametrize(
     "source",
     [
-        {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+        {"type": "base64", "media_type": "text/plain", "data": "aGk="},
         {"type": "url", "url": "https://example.com/a.pdf"},
         {"type": "file", "file_id": "file_1"},
     ],

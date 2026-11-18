@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import base64
-import functools
+import hashlib
 import json
 import re
+import sys
+import threading
 import uuid
+from collections import OrderedDict
 from typing import Any, Optional, Union
 
 from core.inference.tool_loop_controller import is_tool_error
@@ -96,34 +99,67 @@ def _anthropic_block_texts(content: Any) -> list[str]:
     return texts
 
 
-@functools.lru_cache(maxsize = 8)
+# Keyed by the str's cached salted hash (sha256 when PYTHONHASHSEED pins it) so the base64 is not pinned.
+_PDF_TEXTS: OrderedDict[Any, str] = OrderedDict()
+_PDF_TEXTS_LOCK = threading.Lock()
+_PDF_TEXTS_MAX = 256
+
+
 def _pdf_document_text(data: str) -> str:
+    key = (
+        (hash(data), len(data))
+        if sys.flags.hash_randomization
+        else hashlib.sha256(data.encode("ascii", "replace")).digest()
+    )
+    with _PDF_TEXTS_LOCK:
+        if key in _PDF_TEXTS:
+            _PDF_TEXTS.move_to_end(key)
+            return _PDF_TEXTS[key]
     from core.inference.tools import _extract_pdf_text
+
     try:
-        return _extract_pdf_text(base64.b64decode(data))
+        text = _extract_pdf_text(base64.b64decode(data))
     except Exception:
-        return ""
+        text = ""
+    with _PDF_TEXTS_LOCK:
+        _PDF_TEXTS[key] = text
+        while len(_PDF_TEXTS) > _PDF_TEXTS_MAX:
+            _PDF_TEXTS.popitem(last = False)
+    return text
+
+
+def _field(obj: Any, name: str) -> Any:
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+def _is_pdf_document(block: Any) -> bool:
+    source = _field(block, "source")
+    return (
+        _field(block, "type") == "document"
+        and isinstance(source, dict)
+        and source.get("type") == "base64"
+        and source.get("media_type") == "application/pdf"
+        and isinstance(source.get("data"), str)
+    )
 
 
 def warm_anthropic_pdf_documents(messages: list) -> None:
+    """Parse PDF documents ahead of conversion, which runs on the event loop and would block on MUPDF_LOCK."""
     for message in messages:
-        content = message.get("content") if isinstance(message, dict) else None
+        content = _field(message, "content")
         if not isinstance(content, list):
             continue
         for block in content:
-            if not isinstance(block, dict):
+            btype = _field(block, "type")
+            if btype == "tool_result" and isinstance(nested := _field(block, "content"), list):
+                items = nested
+            elif btype == "document":
+                items = (block,)
+            else:
                 continue
-            nested = block.get("content") if block.get("type") == "tool_result" else None
-            for item in [block, *(nested if isinstance(nested, list) else ())]:
-                source = item.get("source") if isinstance(item, dict) else None
-                if (
-                    item.get("type") == "document"
-                    and isinstance(source, dict)
-                    and source.get("type") == "base64"
-                    and source.get("media_type") == "application/pdf"
-                    and isinstance(source.get("data"), str)
-                ):
-                    _pdf_document_text(source["data"])
+            for item in items:
+                if _is_pdf_document(item):
+                    _pdf_document_text(_field(item, "source")["data"])
 
 
 def anthropic_reference_block_text(block: dict) -> str:
@@ -139,11 +175,7 @@ def anthropic_reference_block_text(block: dict) -> str:
             body = [source["data"]]
         elif stype == "content":
             body = _anthropic_block_texts(source.get("content"))
-        elif (
-            stype == "base64"
-            and source.get("media_type") == "application/pdf"
-            and isinstance(source.get("data"), str)
-        ):
+        elif _is_pdf_document(block):
             body = [_pdf_document_text(source["data"]) or DOCUMENT_OMITTED]
         else:
             body = [DOCUMENT_OMITTED]
