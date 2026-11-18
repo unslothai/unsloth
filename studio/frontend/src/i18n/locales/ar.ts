@@ -881,7 +881,6 @@ export const ar = {
     copy: "نسخ",
     addScheduledTask: "إضافة مهمة مجدولة…",
     compact: "ضغط المحادثة",
-    compactQueued: "تم طلب ضغط المحادثة للرسالة التالية",
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
   },

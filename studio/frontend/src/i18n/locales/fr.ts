@@ -881,7 +881,6 @@ export const fr = {
     copy: "Copier",
     addScheduledTask: "Ajouter une tâche planifiée…",
     compact: "Compacter la conversation",
-    compactQueued: "Compactage demandé pour le prochain message",
     compactEmpty: "Rien à compacter pour le moment",
     compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },

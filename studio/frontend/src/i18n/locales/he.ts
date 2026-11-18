@@ -919,7 +919,6 @@ export const he = {
     copy: "העתקה",
     addScheduledTask: "הוספת משימה מתוזמנת…",
     compact: "כווץ שיחה",
-    compactQueued: "התבקש כיווץ שיחה עבור ההודעה הבאה",
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
   },

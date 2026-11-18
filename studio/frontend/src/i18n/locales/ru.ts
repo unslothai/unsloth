@@ -881,7 +881,6 @@ export const ru = {
     copy: "Копировать",
     addScheduledTask: "Добавить запланированную задачу…",
     compact: "Сжать беседу",
-    compactQueued: "Запрошено сжатие для следующего сообщения",
     compactEmpty: "Пока нечего сжимать",
     compactUnsupported: "Для сжатия нужна модель GGUF или MLX с поддержкой инструментов",
   },

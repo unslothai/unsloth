@@ -979,7 +979,6 @@ export const vi = {
     copy: "Sao chép",
     addScheduledTask: "Thêm tác vụ đã lên lịch…",
     compact: "Thu gọn cuộc trò chuyện",
-    compactQueued: "Sẽ thu gọn ở tin nhắn tiếp theo",
     compactEmpty: "Chưa có gì để thu gọn",
     compactUnsupported:
       "Cần mô hình GGUF hoặc MLX có hỗ trợ công cụ để thu gọn",

@@ -975,7 +975,6 @@ export const fa = {
     copy: "کپی",
     addScheduledTask: "افزودن کار زمان‌بندی‌شده…",
     compact: "فشرده‌سازی گفتگو",
-    compactQueued: "فشرده‌سازی برای پیام بعدی درخواست شد",
     compactEmpty: "هنوز چیزی برای فشرده‌سازی وجود ندارد",
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",

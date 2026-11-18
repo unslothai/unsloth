@@ -241,7 +241,6 @@ import {
   useLibraryChatHandoffStore,
 } from "@/features/library/chat-handoff-store";
 import { resumesThought } from "@/features/model-picker";
-import { CompactOnReturnChip } from "./compact-on-return-chip";
 import { isNpuModelId } from "@/features/npu";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
@@ -1920,12 +1919,57 @@ const PendingCompactionRule: FC = () => {
   const pending = useCompactRequestStore((s) =>
     threadId === null ? false : s.requested[threadId] === true,
   );
-  const endsWithReply = useAuiState(
-    ({ message }) => message.isLast && message.role === "assistant",
+  // Any role: a branch can end on a prompt whose reply failed. Never mid-run, when the request
+  // is either already taken or waits for the next message.
+  const anchored = useAuiState(
+    ({ thread, message }) => message.isLast && !thread.isRunning,
   );
   const cloud = useChatRuntimeStore((s) => isExternalModelId(s.params.checkpoint));
-  if (!pending || !endsWithReply) return null;
-  return <CompactionDivider pending={true} cloud={cloud} className="mt-6" />;
+  if (!pending || !anchored || threadId === null) return null;
+  return (
+    <CompactionDivider
+      pending={true}
+      cloud={cloud}
+      className="mt-6"
+      onCancel={() => useCompactRequestStore.getState().clear(threadId)}
+    />
+  );
+};
+
+/**
+ * The confirmation for /compact and the chat menu: the queued rule is brought into view (the
+ * scroll-to-bottom button otherwise sits on it), and a polite status reads it out.
+ */
+const PendingCompactionStatus: FC<{ threadId: string | null }> = ({ threadId }) => {
+  const scrollToBottom = useScrollThreadToBottom();
+  const requested = useCompactRequestStore((s) =>
+    threadId === null ? false : s.requested[threadId] === true,
+  );
+  // Matches the rule: said only while it is on screen.
+  const idle = useAuiState(({ thread }) => !thread.isRunning && thread.messages.length > 0);
+  const cloud = useChatRuntimeStore((s) => isExternalModelId(s.params.checkpoint));
+  const aui = useAui();
+  useEffect(() => {
+    if (threadId === null) return;
+    return useCompactRequestStore.subscribe((state, previous) => {
+      if (
+        state.requested[threadId] &&
+        !previous.requested[threadId] &&
+        !aui.thread().getState().isRunning
+      ) {
+        scrollToBottom();
+      }
+    });
+  }, [aui, scrollToBottom, threadId]);
+  return (
+    <span role="status" className="sr-only">
+      {requested && idle
+        ? cloud
+          ? "Your next message will be sent with a summary of the older messages."
+          : "Your next message will start a fresh context."
+        : ""}
+    </span>
+  );
 };
 
 // The selector returns the persisted record, which keeps its identity between renders, so a
@@ -2384,6 +2428,7 @@ export const Thread: FC<{
           />
           <ForkChatShortcut />
           <ContextReportMount />
+          <PendingCompactionStatus threadId={threadId} />
 
           {/* Bottom slack so the last message has room above the sticky
           scroll-to-bottom button (and floating composer in single mode),
@@ -7686,7 +7731,6 @@ const ComposerRightControls: FC<{
           !thread.isRunning && !isQueueRunning && !isResearchActive
         }
       >
-        <CompactOnReturnChip />
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
             tooltip={

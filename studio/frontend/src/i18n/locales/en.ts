@@ -885,7 +885,6 @@ export const en = {
     copy: "Copy",
     addScheduledTask: "Add scheduled task…",
     compact: "Compact conversation",
-    compactQueued: "Compaction requested for the next message",
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },

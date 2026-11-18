@@ -979,7 +979,6 @@ export const cs = {
     copy: "Kopírovat",
     addScheduledTask: "Přidat naplánovanou úlohu…",
     compact: "Zkomprimovat konverzaci",
-    compactQueued: "Komprimace byla vyžádána pro další zprávu",
     compactEmpty: "Zatím není co komprimovat",
     compactUnsupported:
       "Komprimace vyžaduje model GGUF nebo MLX s podporou nástrojů",

@@ -881,7 +881,6 @@ export const zhCN = {
     copy: "复制",
     addScheduledTask: "添加定时任务…",
     compact: "压缩对话",
-    compactQueued: "已请求在下一条消息时压缩对话",
     compactEmpty: "暂无可压缩的内容",
     compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
   },

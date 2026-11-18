@@ -881,7 +881,6 @@ export const de = {
     copy: "Kopieren",
     addScheduledTask: "Geplante Aufgabe hinzufügen…",
     compact: "Unterhaltung komprimieren",
-    compactQueued: "Komprimierung für die nächste Nachricht angefordert",
     compactEmpty: "Noch nichts zu komprimieren",
     compactUnsupported: "Die Komprimierung erfordert ein GGUF- oder MLX-Modell mit Tool-Unterstützung",
   },

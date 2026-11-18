@@ -882,7 +882,6 @@ export const ja = {
     copy: "コピー",
     addScheduledTask: "スケジュールタスクを追加…",
     compact: "会話を圧縮",
-    compactQueued: "次のメッセージで会話を圧縮するようリクエストしました",
     compactEmpty: "まだ圧縮する内容がありません",
     compactUnsupported: "会話の圧縮にはツール対応のGGUFまたはMLXモデルが必要です",
   },

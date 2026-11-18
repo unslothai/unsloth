@@ -977,7 +977,6 @@ export const id = {
     copy: "Salin",
     addScheduledTask: "Tambahkan tugas terjadwal…",
     compact: "Padatkan percakapan",
-    compactQueued: "Pemadatan diminta untuk pesan berikutnya",
     compactEmpty: "Belum ada yang dapat dipadatkan",
     compactUnsupported:
       "Pemadatan memerlukan model GGUF atau MLX yang mendukung alat",
