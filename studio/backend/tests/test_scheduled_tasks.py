@@ -2940,9 +2940,7 @@ def test_an_answer_stays_under_the_turns_it_read_when_the_chat_moves_on(monkeypa
     task = make_task(threadId = "chat-1")
     answer = generate(monkeypatch, FakeProducer(completion("Summary.")), task = task)
     assert answer.chat_parent_id == "chat-1-a"
-    _chat_with(
-        "chat-1", [("chat-1-q2", "chat-1-a", "user", "Sent while it answered.", 30)]
-    )
+    _chat_with("chat-1", [("chat-1-q2", "chat-1-a", "user", "Sent while it answered.", 30)])
     db.request_run(task["id"])
     _task, run = claim()
 
