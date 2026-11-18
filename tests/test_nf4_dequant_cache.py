@@ -26,10 +26,17 @@ def _fresh(monkeypatch):
         "_ROWS_NEW",
         "_FOREIGN",
         "_CHECKED",
+        "_SHRINK_PEAK",
+        "_SHRINK_UNSAFE",
     ):
-        getattr(dc, name, {}).clear()
+        getattr(dc, name, set()).clear()
+    for name in ("_SHAPE_SEEN", "_SHAPE_NEW"):
+        if hasattr(dc, name):
+            getattr(dc, name)[:] = [0, 0]
     dc.clear_dequant_cache()
     dc.STATS.clear()
+    for name in ("_SHRINK_PEAK", "_SHRINK_UNSAFE"):
+        getattr(dc, name, set()).clear()
     yield
     dc.clear_dequant_cache()
     for name in ("_TRANSIENT", "_SEEN", "_ROWS_SEEN", "_ROWS_NEW", "_FOREIGN"):
@@ -220,7 +227,7 @@ def test_per_process_memory_fraction_caps_usable(monkeypatch):
     # Studio's training VRAM budget: the allocator stops at fraction * total even with the card free.
     stats = {"allocated_bytes.all.current": 3 * GiB, "reserved_bytes.all.current": 4 * GiB}
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda index = None: (60 * GiB, 80 * GiB))
-    monkeypatch.setattr(dc, "_raw_stats", lambda index = None: stats)
+    monkeypatch.setattr(torch.cuda, "memory_stats", lambda index = None: stats)
     monkeypatch.setattr(dc, "_fraction", lambda index: 1.0)
     assert dc._usable(0)[0] == 61 * GiB
     monkeypatch.setattr(dc, "_fraction", lambda index: 0.1)  # 8 GiB allowed, 3 GiB allocated
@@ -326,9 +333,7 @@ def test_replaced_quant_state_is_not_served_from_the_cache(monkeypatch):
     assert calls == [True, True] and out is not first and dc.STATS["stale"] == 1
 
 
-def test_freed_cache_is_not_counted_as_activation_memory(monkeypatch):
-    # The allocator's peak still holds cache bytes freed since: once the cache shrinks the peak is restarted,
-    # so the transient stays the activations' and the cache can refill (it used to stay inflated for good).
+def _fake_allocator(monkeypatch):
     fake = {"allocated": 3 * GiB, "peak": 4 * GiB}  # step 1: 3 GiB resident, 1 GiB transient
 
     def usable(index):
@@ -338,13 +343,7 @@ def test_freed_cache_is_not_counted_as_activation_memory(monkeypatch):
         }
         return 10 * GiB, 16 * GiB, stats
 
-    def restart(index):
-        fake["peak"] = fake["allocated"]
-
     monkeypatch.setattr(dc, "_usable", usable)
-    monkeypatch.setattr(dc, "_raw_stats", lambda index: {}, raising = False)
-    monkeypatch.setattr(dc, "_raw_reset", restart, raising = False)
-    monkeypatch.setattr(dc, "_install_peak_view", lambda: None, raising = False)
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
     dc._SEEN.add(None)
     dc._on_optimizer_step(None, (), {})
@@ -352,28 +351,74 @@ def test_freed_cache_is_not_counted_as_activation_memory(monkeypatch):
     W, absmax = _weight()
     dc._lookup(W, absmax, _decoder([]), torch.bfloat16)  # admitted
     fake.update(allocated = 5 * GiB, peak = 6 * GiB)  # steps with a 2 GiB cache, same 1 GiB transient
+    return fake
+
+
+def test_freed_cache_is_not_counted_as_activation_memory(monkeypatch):
+    # The allocator's peak still holds cache bytes freed since: after a plain clear (evaluation) the last measured
+    # transient is kept and the cache refills; it used to count the freed cache as activations for good.
+    fake = _fake_allocator(monkeypatch)
     fake["allocated"] = 3 * GiB  # evaluation follows: the cache is dropped (2 GiB freed)
     dc.clear_dequant_cache()
-    fake["peak"] = max(fake["peak"], 4 * GiB)  # the next step runs with the same 1 GiB transient
-    dc._on_optimizer_step(None, (), {})
+    dc._on_optimizer_step(None, (), {})  # peak 6 GiB has not risen since the clear
     assert dc._TRANSIENT[None] == GiB and dc._BUDGET[None] == 7 * GiB
+    assert dc.STATS["stale_peak_kept"] == 1
+    fake["peak"] = 9 * GiB  # a real new peak after the clear is measured as usual
+    dc._on_optimizer_step(None, (), {})
+    assert dc._TRANSIENT[None] == 6 * GiB and None not in dc._SHRINK_PEAK
 
 
-def test_user_facing_peaks_survive_restarts(monkeypatch):
-    # torch.cuda.max_memory_allocated() after training still reports the whole run's peak.
+def test_stale_peak_after_a_size_drop_stays_conservative(monkeypatch):
+    # After a drop before a larger call, the larger step's transient is unknown while the peak has not risen:
+    # keeping the last estimate could refill the cache under a step that needs that memory.
+    fake = _fake_allocator(monkeypatch)
+    fake["allocated"] = 3 * GiB
+    dc._drop_device(None, "shape_drops")
+    dc._on_optimizer_step(None, (), {})
+    # bound from the stale peak: 6 - 3 = 3 GiB transient -> budget 10 - 6 - 1
+    assert (
+        dc._BUDGET[None] == 3 * GiB
+        and dc._TRANSIENT[None] == GiB
+        and dc.STATS["stale_peak_bound"] == 1
+    )
+
+
+def test_never_resets_or_patches_torch_peak_stats(monkeypatch):
+    # Accelerate, Studio, TRL and notebooks read these: the cache must leave them alone.
     import torch.cuda.memory as M
 
-    monkeypatch.setattr(M, "memory_stats", lambda device = None: {"allocated_bytes.all.peak": 3})
-    monkeypatch.setattr(M, "reset_peak_memory_stats", lambda device = None: None)
-    monkeypatch.setattr(torch.cuda, "memory_stats", M.memory_stats)
-    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", M.reset_peak_memory_stats)
-    monkeypatch.setattr(dc, "_device_index", lambda device: 0)
-    monkeypatch.setitem(dc._PEAKS_KEPT, 0, {"allocated_bytes.all.peak": 9})
-    dc._install_peak_view()
-    assert torch.cuda.memory_stats(0)["allocated_bytes.all.peak"] == 9
-    assert M.max_memory_allocated(0) == 9
-    torch.cuda.reset_peak_memory_stats(0)  # the user's own reset drops what was kept
-    assert torch.cuda.memory_stats(0)["allocated_bytes.all.peak"] == 3 and 0 not in dc._PEAKS_KEPT
+    originals = (
+        torch.cuda.memory_stats,
+        torch.cuda.reset_peak_memory_stats,
+        M.memory_stats,
+        M.reset_peak_memory_stats,
+    )
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("reset_peak_memory_stats called")
+
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", refuse)
+    monkeypatch.setattr(M, "reset_peak_memory_stats", refuse)
+    monkeypatch.setattr(torch._C, "_cuda_resetPeakMemoryStats", refuse, raising = False)
+    fake = _fake_allocator(monkeypatch)
+    fake["allocated"] = 3 * GiB
+    dc.clear_dequant_cache(release = True)
+    dc._drop_device(None, "shape_drops")
+    dc._on_optimizer_step(None, (), {})
+    assert torch.cuda.memory_stats is originals[0] and M.memory_stats is originals[2]
+    assert not hasattr(dc, "_install_peak_view") and not hasattr(dc, "_restart_peak")
+
+
+def test_evaluation_shapes_do_not_widen_training_shapes():
+    # An eval-mode call (bigger evaluation batch) drops the cache but is not "measured" for training steps.
+    class Module:
+        training = False
+
+    dc._model_pre_hook(Module(), (), {"input_ids": torch.zeros(8, 512, dtype = torch.long)})
+    assert dc._SHAPE_NEW == [0, 0]
+    Module.training = True
+    dc._model_pre_hook(Module(), (), {"input_ids": torch.zeros(2, 64, dtype = torch.long)})
+    assert dc._SHAPE_NEW == [128, 64]
 
 
 def test_host_bookkeeping_is_skipped_while_tracing(monkeypatch):

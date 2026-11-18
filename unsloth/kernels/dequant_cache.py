@@ -16,9 +16,10 @@ UNSLOTH_NF4_DEQUANT_CACHE:
                        or user callbacks).
 Budget (the zoo moe_expert_cache design), measured at the safe point after each optimizer step, when the
 step's activations are freed: room = free + reserved-unused - 2 * transient - margin, with transient the
-largest step peak above the resident memory seen so far and margin max(1 GiB, 5% of the card). Whenever the
-cache shrinks the allocator's peak is restarted, so a peak that held now-freed cache is never counted as
-activations (torch.cuda.memory_stats / max_memory_* still report the whole run's peaks). Free memory is
+largest step peak above the resident memory seen so far and margin max(1 GiB, 5% of the card). The allocator's
+peak is only read, never reset or patched. After the cache shrinks, a peak that has not risen since may still
+hold the freed cache: after a plain clear the last measured transient is kept (the cache refills); after a size
+drop or memory pressure the conservative peak - current bound is used until a new peak is measured. Free memory is
 also capped by torch.cuda.set_per_process_memory_fraction. Nothing is cached before the first optimizer step, and
 nothing outside transformers' Trainer.train(), so inference, evaluation-only runs and custom loops are untouched.
 Between optimizer steps only the trainer's own code and its callbacks run: auto mode requires every callback to
@@ -172,7 +173,7 @@ def clear_dequant_cache(oom = False, release = False):
             STATS["oom_clears"] += 1
         STATS["bytes"] = 0
     for index in shrunk:
-        _restart_peak(index)
+        _note_shrink(index, "clear")
     if release and held:
         try:
             torch.cuda.empty_cache()
@@ -184,7 +185,7 @@ def _drop_device(index, reason):
     """Drop index's entries and admit nothing more on it until the next safe point."""
     with _lock:
         if _CACHE:
-            _evict(index, 0)
+            _evict(index, 0, kind = "size")
         _BUDGET[index] = 0
         STATS[reason] += 1
 
@@ -232,79 +233,27 @@ def _margin(total):
     return max(MARGIN_MIN_BYTES, int(MARGIN_FRAC * total))
 
 
-_PEAKS_KEPT = {}  # device index -> {"*.peak" stat: value} from before our peak resets, still shown to users
+_SHRINK_PEAK = {}  # device index -> allocator peak when the cache last shrank (it may still hold that cache)
+_SHRINK_UNSAFE = set()  # device indices whose last shrink was a size drop or memory pressure
 
 
-def _device_index(device):
-    try:
-        return torch.cuda._utils._get_device_index(device, optional = True)
-    except Exception:
-        return device
-
-
-def _raw_stats(index):
-    """The allocator's own counters (peaks since our last restart), not the user-facing view below."""
-    import torch.cuda.memory as M
-
-    raw = getattr(M.memory_stats, "_unsloth_dq_raw", M.memory_stats)
-    return raw(index)
-
-
-def _raw_reset(index):
-    torch._C._cuda_resetPeakMemoryStats(_device_index(index))
-
-
-def _install_peak_view():
-    """torch.cuda.memory_stats / max_memory_* keep reporting the peaks from before our resets (a notebook's
-    "peak reserved memory" stays the whole run's peak); a user's own reset_peak_memory_stats clears them."""
-    import torch.cuda.memory as M
-
-    if getattr(M.memory_stats, "_unsloth_dq_raw", None) is not None:
-        return
-    raw_stats, raw_reset = M.memory_stats, M.reset_peak_memory_stats
-
-    def memory_stats(device = None):
-        out = raw_stats(device = device)
-        kept = _PEAKS_KEPT.get(_device_index(device))
-        if kept:
-            out = collections.OrderedDict(out)
-            for key, value in kept.items():
-                if out.get(key, 0) < value:
-                    out[key] = value
-        return out
-
-    def reset_peak_memory_stats(device = None):
-        _PEAKS_KEPT.pop(_device_index(device), None)
-        return raw_reset(device)
-
-    memory_stats._unsloth_dq_raw = raw_stats
-    reset_peak_memory_stats._unsloth_dq_raw = raw_reset
-    for module in (M, torch.cuda):
-        module.memory_stats = memory_stats
-        module.reset_peak_memory_stats = reset_peak_memory_stats
-
-
-def _restart_peak(index):
-    """The cache just shrank: restart the allocator's peak at the current usage, so the next safe point
-    measures the transient of what ran since, not a peak that still holds the freed cache."""
-    try:
-        stats = _raw_stats(index)
-        kept = _PEAKS_KEPT.setdefault(_device_index(index), {})
-        for key, value in stats.items():
-            if key.endswith(".peak") and value > kept.get(key, -1):
-                kept[key] = value
-        _install_peak_view()
-        _raw_reset(index)
-        STATS["peak_restarts"] += 1
-    except Exception:
-        pass
+def _note_shrink(index, kind):
+    """The cache just shrank. Until the allocator's peak rises above its value now, peak - current would count
+    the freed cache as activation memory. After a plain clear (evaluation, inference, saving, end of training,
+    a smaller budget) the shapes trained on are unchanged and the last measured transient still holds; after a
+    size drop or memory pressure it may not, so those keep the conservative reading."""
+    measured = _usable(index)
+    peak = measured[2].get("allocated_bytes.all.peak", 0) if measured is not None else float("inf")
+    _SHRINK_PEAK[index] = peak
+    if kind in ("size", "pressure", "foreign"):
+        _SHRINK_UNSAFE.add(index)
 
 
 def _usable(index):
     """(memory that can still be allocated on the device, total) or None."""
     try:
         free, total = torch.cuda.mem_get_info(index)
-        stats = _raw_stats(index)
+        stats = torch.cuda.memory_stats(index)
         allocated = stats.get("allocated_bytes.all.current", 0)
         unused = stats.get("reserved_bytes.all.current", 0) - allocated
         usable = free + max(unused, 0)
@@ -344,6 +293,7 @@ def _evict(
     index,
     target_bytes,
     stat = "evictions",
+    kind = "pressure",
 ):
     """Drop the oldest entries of `index` until it holds at most target_bytes."""
     held = _cached_bytes(index)
@@ -356,7 +306,7 @@ def _evict(
         shrunk = True
     STATS["bytes"] = _cached_bytes()
     if shrunk:
-        _restart_peak(index)
+        _note_shrink(index, kind)
 
 
 def _on_optimizer_step(optimizer, args, kwargs):
@@ -389,7 +339,7 @@ def _on_optimizer_step(optimizer, args, kwargs):
                 first = _FOREIGN.setdefault(index, foreign)
                 if foreign > _margin(total) or foreign - first > _margin(total):
                     if _cached_bytes(index):
-                        _evict(index, 0)
+                        _evict(index, 0, kind = "foreign")
                         try:
                             torch.cuda.empty_cache()
                         except Exception:
@@ -399,15 +349,30 @@ def _on_optimizer_step(optimizer, args, kwargs):
                     continue
             allocated = stats.get("allocated_bytes.all.current", 0)
             peak = stats.get("allocated_bytes.all.peak", 0)
-            transient = max(_TRANSIENT.get(index, 0), peak - allocated)
-            _TRANSIENT[index] = transient
+            shrink_peak = _SHRINK_PEAK.get(index)
+            if shrink_peak is None or peak > shrink_peak:
+                # No shrink since the last measurement, or a new peak after it: peak - current is real activation
+                # memory (conservative). The allocator's peak is only read, never reset.
+                transient = max(_TRANSIENT.get(index, 0), peak - allocated)
+                _TRANSIENT[index] = transient
+                _SHRINK_PEAK.pop(index, None)
+                _SHRINK_UNSAFE.discard(index)
+            elif index in _SHRINK_UNSAFE:
+                # Stale peak after a size drop or memory pressure: the larger step's own transient is unknown
+                # and may exceed the last measurement, so use the bound the stale peak gives (no refill).
+                transient = max(_TRANSIENT.get(index, 0), peak - allocated)
+                STATS["stale_peak_bound"] += 1
+            else:
+                # Stale peak after a plain clear: same shapes as measured, keep the last measured transient.
+                transient = _TRANSIENT.get(index, 0)
+                STATS["stale_peak_kept"] += 1
             held = _cached_bytes(index)
             room = usable - int(TRANSIENT_SLACK * transient) - _margin(total)
             budget = max(held + room, 0)
             if _MODE != "auto":
                 budget = min(budget, int(_MODE))
             if held > budget:
-                _evict(index, budget)
+                _evict(index, budget, kind = "budget")
             _BUDGET[index] = budget
             STATS["safe_points"] += 1
 
@@ -821,10 +786,13 @@ def _model_pre_hook(module, args, kwargs):
     if shape is None:
         return
     tokens, length = shape
-    if tokens > _SHAPE_NEW[0]:
-        _SHAPE_NEW[0] = tokens
-    if length > _SHAPE_NEW[1]:
-        _SHAPE_NEW[1] = length
+    # Only training calls are measured by the safe point budget: an evaluation or generation call (module in
+    # eval mode) never widens what a later training step may run cached.
+    if module is None or getattr(module, "training", True):
+        if tokens > _SHAPE_NEW[0]:
+            _SHAPE_NEW[0] = tokens
+        if length > _SHAPE_NEW[1]:
+            _SHAPE_NEW[1] = length
     if (tokens > _SHAPE_SEEN[0] or length > _SHAPE_SEEN[1]) and (
         _CACHE or any(b > 0 for b in _BUDGET.values())
     ):
