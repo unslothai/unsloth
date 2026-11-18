@@ -60,7 +60,11 @@ def _run_cli(monkeypatch, **overrides):
             return model
 
     class _Dataset:
-        def map(self, func, batched = False):
+        def map(
+            self,
+            func,
+            batched = False,
+        ):
             return self
 
     class _Trainer:
@@ -199,9 +203,7 @@ def test_push_model_alone_does_not_save_merged_locally(monkeypatch):
 
 
 def test_save_gguf_saves_once_per_quantization_method(monkeypatch):
-    calls, _ = _run_cli(
-        monkeypatch, save_gguf = True, quantization = ["f16", "q4_k_m", "q8_0"]
-    )
+    calls, _ = _run_cli(monkeypatch, save_gguf = True, quantization = ["f16", "q4_k_m", "q8_0"])
     methods = [kwargs["quantization_method"] for _, _, kwargs in calls]
     assert methods == ["f16", "q4_k_m", "q8_0"]
 
