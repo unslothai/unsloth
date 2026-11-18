@@ -158,6 +158,9 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
     /ref=\{setOrgStrip\}[\s\S]{0,200}?className="composer-tab-strip[^"]*"\s*onWheel=\{wheelSideways\}/,
   );
   assert.match(picker, /useStripFades\(tabStrip\);\s*useStripFades\(orgStrip\);/);
+  // An org click must cancel an unresolved Discover pick and restart the keyboard highlight, as a tab click does.
+  assert.match(picker, /offerAbort\.current = null;[\s\S]{0,120}?\}, \[open, viewed, orgFilter\]\);/);
+  assert.match(picker, /setHighlight\(false\);\s*\}, \[query, viewed, orgFilter, setHighlight\]\);/);
   // Chips that land after mount still refresh the fades.
   assert.match(picker, /new MutationObserver\(update\);\s*chips\.observe\(strip, \{ childList: true \}\);/);
   // The org comes from the repo itself, never a fine-tune's base model.
@@ -1437,12 +1440,12 @@ test("a new search or tab restarts the keyboard highlight before the active row 
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   const reset = picker.search(
-    /useEffect\(\(\) => \{\s*setHighlight\(false\);\s*\}, \[query, viewed, setHighlight\]\);/,
+    /useEffect\(\(\) => \{\s*setHighlight\(false\);\s*\}, \[query, viewed, orgFilter, setHighlight\]\);/,
   );
   const seat = picker.indexOf(
     "// Rows paging in under the pointer must not move the highlight.",
   );
-  assert.ok(reset >= 0, "no highlight reset on query / tab change");
+  assert.ok(reset >= 0, "no highlight reset on query / tab / org change");
   assert.ok(
     reset < seat,
     "the reset must run before the effect that seats `active`",

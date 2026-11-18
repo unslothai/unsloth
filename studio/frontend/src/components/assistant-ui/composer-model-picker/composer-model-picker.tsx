@@ -3088,14 +3088,14 @@ export function ComposerModelPicker({
     },
     [],
   );
-  // A listing still in flight at close or tab change must not pick (and download) its lone quant.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `open` and `viewed` are the triggers.
+  // A listing still in flight at close, tab or org change must not pick (and download) its lone quant.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `open`, `viewed` and `orgFilter` are the triggers.
   useEffect(() => {
     resolveGen.current += 1;
     offerAbort.current?.abort();
     offerAbort.current = null;
     setOffer((now) => (now && now.quants === null ? null : now));
-  }, [open, viewed]);
+  }, [open, viewed, orgFilter]);
 
   const pickOfferQuant = (
     row: Row,
@@ -3530,11 +3530,11 @@ export function ComposerModelPicker({
     }
   }, [configRequest, adoptedRequestId, onConfigRequestAdopted]);
 
-  // A new search or tab restarts the highlight; declared before the effect that seats `active`.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `query` and `viewed` are the triggers.
+  // A new search, tab or org filter restarts the highlight; declared before the effect that seats `active`.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `query`, `viewed` and `orgFilter` are the triggers.
   useEffect(() => {
     setHighlight(false);
-  }, [query, viewed, setHighlight]);
+  }, [query, viewed, orgFilter, setHighlight]);
 
   useEffect(() => {
     if (!isExpanded) {
