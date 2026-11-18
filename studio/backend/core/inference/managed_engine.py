@@ -1128,12 +1128,20 @@ class ManagedEngine:
             for message in messages
         ]
 
-    def _reply_cap_in_window(self, messages, system_prompt, limit, params):
+    def _reply_cap_in_window(
+        self,
+        messages,
+        system_prompt,
+        limit,
+        params,
+        tools = None,
+    ):
         """vLLM and SGLang refuse prompt + max_tokens past the window, where llama-server stops at it."""
         try:
             prompt = self.count_tokens(
                 messages,
                 system_prompt,
+                tools = tools,
                 enable_thinking = params.get("enable_thinking"),
                 reasoning_effort = params.get("reasoning_effort"),
                 preserve_thinking = params.get("preserve_thinking"),
@@ -1143,14 +1151,28 @@ class ManagedEngine:
             return limit
         return max(1, min(limit, self.context - prompt))
 
+    def _completion_cap_in_window(self, prompt, limit):
+        try:
+            return max(1, min(limit, self.context - self._tokenize({"prompt": prompt})))
+        except Exception:
+            return limit
+
+    def _tokenize(self, body):
+        with httpx.Client(trust_env = False, timeout = 30) as client:
+            response = client.post(
+                self.base_url + "/tokenize",
+                headers = self.headers,
+                json = {"model": self.model, **body},
+            )
+            response.raise_for_status()
+            return int(response.json()["count"])
+
     def count_tokens(
         self,
         messages,
         system_prompt = "",
         **kwargs,
     ):
-        if kwargs.get("tools"):
-            raise ValueError("Tools are unavailable for this optional engine profile.")
         if not self.adapter.exact_token_count:
             raise RuntimeError("Exact prompt token counting is unavailable for this engine.")
         if system_prompt:
@@ -1167,19 +1189,14 @@ class ManagedEngine:
             template_kwargs = fields["chat_template_kwargs"]
             template_kwargs["reasoning_effort"] = effort
             template_kwargs.setdefault("enable_thinking", effort != "none")
-        with httpx.Client(trust_env = False, timeout = 30) as client:
-            response = client.post(
-                self.base_url + "/tokenize",
-                headers = self.headers,
-                json = {
-                    "model": self.model,
-                    "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
-                    "add_generation_prompt": True,
-                    **fields,
-                },
-            )
-            response.raise_for_status()
-            return int(response.json()["count"]), self.model
+        body = {
+            "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
+            "add_generation_prompt": True,
+            **fields,
+        }
+        if kwargs.get("tools"):
+            body["tools"] = kwargs["tools"]
+        return self._tokenize(body), self.model
 
     def generate(
         self,

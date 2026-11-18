@@ -442,13 +442,36 @@ def _format_dataset(
 
     multimodal_info = detect_multimodal_dataset(dataset)
 
-    if format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset):
+    if hasattr(dataset, "__len__") and len(dataset) == 0:
+        return {
+            "dataset": dataset,
+            "detected_format": "unknown",
+            "final_format": "unknown",
+            "chat_column": None,
+            "is_standardized": False,
+            "requires_manual_mapping": True,
+            "is_image": multimodal_info["is_image"],
+            "multimodal_info": multimodal_info,
+            "warnings": ["Dataset has no rows."],
+        }
+
+    auto_raw = (
+        format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset)
+    )
+    if auto_raw:
         # Matches the preview's "raw" verdict; auto would otherwise fail as "unknown".
         format_type = "raw"
 
     if format_type == "raw":
+        # Explicit "raw" already gets EOS from the trainer / MLXTrainingConfig.append_eos.
         raw_result = prepare_raw_text_dataset(
-            dataset, split_name = split_name, text_column = raw_text_column
+            dataset,
+            split_name = split_name,
+            # A processor without Unsloth's patch (MLX VLM) keeps eos_token on its inner tokenizer.
+            eos_token = getattr(tokenizer, "eos_token", None)
+            or getattr(getattr(tokenizer, "tokenizer", None), "eos_token", None),
+            append_eos = auto_raw,
+            text_column = raw_text_column,
         )
         return {
             "dataset": raw_result.dataset,
@@ -705,12 +728,19 @@ def _format_dataset(
                         chat_column = detected["chat_column"],
                     )
 
+                conversion_stats = {}
                 converted = convert_chatml_to_alpaca(
                     dataset,
                     batch_size,
                     num_proc,
                     chat_column = detected["chat_column"],
+                    stats = conversion_stats,
                 )
+                if conversion_stats.get("dropped"):
+                    warnings.append(
+                        f"Dropped {conversion_stats['dropped']:,} of "
+                        f"{conversion_stats['conversations']:,} conversations with no assistant response"
+                    )
                 return {
                     "dataset": converted,
                     "detected_format": detected["format"],
@@ -720,7 +750,7 @@ def _format_dataset(
                     "requires_manual_mapping": False,
                     "is_image": multimodal_info["is_image"],
                     "multimodal_info": multimodal_info,
-                    "warnings": [],
+                    "warnings": warnings,
                 }
             except Exception as e:
                 warnings.append(f"Failed to convert chat dataset to Alpaca: {e}")
@@ -860,6 +890,19 @@ def _format_dataset(
 
 
 _FORMAT_DATASET_SIGNATURE = inspect.signature(_format_dataset)
+
+
+def _tokenizer_adds_bos(tokenizer) -> bool:
+    """True when tokenizing plain text prepends <bos> (Gemma 1-3), False when it does not (Gemma 4)."""
+    inner = getattr(tokenizer, "tokenizer", None) or tokenizer
+    bos_token_id = getattr(inner, "bos_token_id", None)
+    if bos_token_id is None:
+        return False
+    try:
+        input_ids = inner("a")["input_ids"]
+    except Exception:
+        return False
+    return len(input_ids) > 0 and input_ids[0] == bos_token_id
 
 
 def format_and_template_dataset(
@@ -1310,12 +1353,17 @@ def format_and_template_dataset(
             progress_callback(
                 status_message = f"Applying chat template to {detected} ({n_rows:,} rows)..."
             )
-        # Gemma emits a leading <bos>, stripped for text-only chatml/sharegpt.
+        # Gemma's template <bos> is stripped for text-only chat only if the tokenizer adds it back.
         is_alpaca = format_type == "alpaca" or (
             format_type == "auto" and dataset_info["detected_format"] == "alpaca"
         )
         is_gemma = "gemma" in model_name.lower()
-        if is_gemma and not dataset_info["is_image"] and not is_alpaca:
+        if (
+            is_gemma
+            and not dataset_info["is_image"]
+            and not is_alpaca
+            and _tokenizer_adds_bos(tokenizer)
+        ):
             remove_bos_prefix = True
         template_result = apply_chat_template_to_dataset(
             dataset_info = dataset_info,

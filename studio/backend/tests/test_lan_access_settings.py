@@ -256,16 +256,26 @@ def test_saving_a_selection_clears_the_previous_error_and_refuses_while_online()
 
 def test_status_offers_every_detected_address_and_flags_the_public_ones(monkeypatch):
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: list(_DETECTED))
+    monkeypatch.setattr(
+        lan_access,
+        "detect_host_only_addresses",
+        lambda _ip_version = 4: ["192.168.122.1", "192.168.1.24"],
+    )
     status = lan_settings.lan_access_status(_app())
     assert status["available_addresses"] == [
-        {"address": "64.227.100.5", "public": True},
-        {"address": "192.168.1.24", "public": False},
-        {"address": "100.101.102.103", "public": False},
+        {"address": "64.227.100.5", "public": True, "host_only": False},
+        {"address": "192.168.1.24", "public": False, "host_only": False},
+        {"address": "100.101.102.103", "public": False, "host_only": False},
+        {"address": "192.168.122.1", "public": False, "host_only": True},
     ]
     assert status["configured_addresses"] is None
     response = routes.LanAccessResponse(**status)
-    assert [entry.address for entry in response.available_addresses] == _DETECTED
+    assert [entry.address for entry in response.available_addresses] == [
+        *_DETECTED,
+        "192.168.122.1",
+    ]
     assert response.available_addresses[0].public is True
+    assert response.available_addresses[-1].host_only is True
     assert (
         lan_settings.lan_access_status(_app(lan_access_launch_managed = True))["available_addresses"]
         == []

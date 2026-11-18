@@ -56,9 +56,11 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 25, guidance: 3 },
   { match: "ideogram", steps: 20, guidance: 7 },
+  { match: "minimax-h3-image", steps: 6, guidance: 1 },
   { match: "moss-image", steps: 25, guidance: 2.5 },
   { match: "moss_image", steps: 25, guidance: 2.5 },
   { match: "mossimage", steps: 25, guidance: 2.5 },
+  { match: "kromoss", steps: 25, guidance: 2.5 },
   { match: "lumina", steps: 50, guidance: 4 },
   { match: "hunyuanimage", steps: 50, guidance: 3.25 },
   { match: "hidream-i1-dev", steps: 28, guidance: 0 },
@@ -68,6 +70,14 @@ const MODEL_DEFAULTS: Array<{
   { match: "stable-diffusion-xl", steps: 25, guidance: 7 },
   { match: "sdxl", steps: 25, guidance: 7 },
 ];
+
+// Families whose checkpoint caps the step count (one head per step): the slider stops there.
+const MAX_STEPS: Readonly<Record<string, number>> = { "minimax-h3-image": 6 };
+
+/** The most steps the loaded family accepts, or null when only the request's own limit applies. */
+export function maxStepsFor(family: string | null | undefined): number | null {
+  return MAX_STEPS[(family ?? "").trim().toLowerCase()] ?? null;
+}
 
 // The Steps slider's usual top, and the request's (DiffusionGenerateRequest.steps is 1-100).
 export const STEPS_SLIDER_MAX = 50;
@@ -94,6 +104,20 @@ export function defaultsFor(repoId: string): {
   return matched
     ? { steps: matched.steps, guidance: matched.guidance }
     : DEFAULT_GEN;
+}
+
+// Families whose model card names a native output size: picking one sets it (the reference recipe renders
+// MiniMax-H3-Image at 2048x2048 by default).
+const DEFAULT_SIZES: ReadonlyArray<{ match: string; width: number; height: number }> = [
+  { match: "minimax-h3-image", width: 2048, height: 2048 },
+];
+
+/** The text-to-image size a pick of this key starts at, or null to keep the current size. */
+export function defaultSizeFor(repoId: string): { width: number; height: number } | null {
+  const fold = (text: string) => text.replace(/[-_.\s]+/g, "-");
+  const id = repoId.toLowerCase();
+  const hit = DEFAULT_SIZES.find((entry) => id.includes(entry.match) || fold(id).includes(fold(entry.match)));
+  return hit ? { width: hit.width, height: hit.height } : null;
 }
 
 // Families whose explicit choice outranks the name: FLUX.3 base and distilled share names (BFL's ComfyUI base

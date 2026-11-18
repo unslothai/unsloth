@@ -98,12 +98,15 @@ def test_family_records():
     assert base.uses_negative_prompt is True
 
 
-def test_fp16_only_cards_promote_flux3_to_fp32():
+def test_fp16_only_cards_promote_flux3_to_fp32_without_its_guard(monkeypatch):
     import torch
 
     from core.inference.diffusion import _resolve_diffusion_compute_dtype
+    from core.inference.diffusion_fp16_guard import FP16_GUARD_ENV
+
+    monkeypatch.setenv(FP16_GUARD_ENV, "0")
     for fam in (detect_family(DISTILLED), detect_family(BASE)):
-        assert fam.fp16_incompatible is True and fam.fp16_guard is None
+        assert fam.fp16_incompatible is True and fam.fp16_guard == "rescale_residual"
         assert _resolve_diffusion_compute_dtype(fam, torch.float16) is torch.float32
         assert _resolve_diffusion_compute_dtype(fam, torch.bfloat16) is torch.bfloat16
         assert _resolve_diffusion_compute_dtype(fam, torch.float32) is torch.float32

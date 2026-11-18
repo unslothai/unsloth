@@ -23,6 +23,7 @@ from typing import Any, Optional
 import torch
 
 from . import diffusion_int8_gemm as _gemm
+from .diffusion_flux3_qk_rope import is_qk_processor, qk_norm_rope
 
 FLUX_CONVROT_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED"
 FLUX3_SPAN_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX3_SPAN_FUSED"
@@ -153,7 +154,10 @@ def _has(fn: Any, key: str) -> bool:
 
 
 def _rotated(lin: Any) -> bool:
-    """``lin`` is a swapped rotated int8 Linear whose act quant the fused rotation covers."""
+    """``lin`` is a swapped rotated int8 Linear whose act quant the fused rotation covers, or a native int8 Linear on
+    the ROCm RDNA W8A8 kernels (``shared_rotq_linears`` shares its rotation + act quant)."""
+    if _gemm.rdna_native_rotated(lin):
+        return True
     rec = _gemm._swapped_rec(lin)
     return rec is not None and bool(rec[2]) and rec[1] == 256
 
@@ -330,7 +334,7 @@ def _f3_block_ready(block: Any) -> bool:
         return False
     proc = getattr(attn, "processor", None)
     return (
-        type(proc) is _CLS.get("Flux3AttnProcessor")
+        (type(proc) is _CLS.get("Flux3AttnProcessor") or is_qk_processor(proc))
         and type(attn) is _CLS.get("Flux3Attention")
         and not _gemm._hooked(attn)
         and type(ff) is _CLS.get("Flux3FeedForward")
@@ -357,13 +361,8 @@ def _f3_attn_ff(block: Any, x: Any, image_rotary_emb: Any, mod: Any) -> Optional
     query = query.unflatten(-1, (attn.heads, -1))
     key = key.unflatten(-1, (attn.heads, -1))
     value = value.unflatten(-1, (attn.heads, -1))
-    query = attn.norm_q(query.float())
-    key = attn.norm_k(key.float())
-    if image_rotary_emb is not None:
-        # looked up per call: diffusion_flux3_rope may have replaced it
-        query = mod.apply_rotary_emb(query, image_rotary_emb, sequence_dim = 1)
-        key = mod.apply_rotary_emb(key, image_rotary_emb, sequence_dim = 1)
-    query, key = query.to(value.dtype), key.to(value.dtype)
+    # looked up per call: diffusion_flux3_rope may have replaced it
+    query, key = qk_norm_rope(attn, query, key, value.dtype, image_rotary_emb, mod.apply_rotary_emb)
     hidden_states = mod.dispatch_attention_fn(
         query,
         key,
@@ -570,12 +569,13 @@ def _rotated_count(transformer: Any) -> int:
 
 
 def _rotated_linears(transformer: Any) -> int:
-    """ConvRot (group 256) Linears in the denoiser, swapped yet or not."""
+    """ConvRot (group 256) Linears, swapped or not, plus native RDNA W8A8 int8 Linears."""
     from .diffusion_convrot import is_rotated_linear
     return sum(
         1
         for m in transformer.modules()
-        if is_rotated_linear(m) and int(getattr(m, "convrot_groupsize", 0) or 0) == 256
+        if (is_rotated_linear(m) and int(getattr(m, "convrot_groupsize", 0) or 0) == 256)
+        or _gemm.rdna_native_rotated(m)
     )
 
 
@@ -609,6 +609,17 @@ def install(transformer: Any, logger: Any = None) -> dict:
         if not result["rotated"]:
             return result
         result["patches"] = _install_patches(logger)
+        native = sum(1 for m in transformer.modules() if _gemm.rdna_native_rotated(m))
+        if native:
+            result["rdna_native"] = native
+            if logger is not None:
+                logger.info(
+                    "diffusion.flux_convrot_fused: %d native int8 Linears on the ROCm RDNA W8A8 kernels share one "
+                    "rotation + act quant per block",
+                    native,
+                )
+        if native == result["rotated"]:
+            return result
         from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
         if resident_cuda_cards(transformer) and _rotated_count(transformer):

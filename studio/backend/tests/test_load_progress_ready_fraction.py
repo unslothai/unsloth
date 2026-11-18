@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import types
 from pathlib import Path
@@ -59,12 +60,22 @@ except ImportError:
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
+# A pid that is always live and readable: load_progress also reads /proc/<pid>/io (`_read_load_bytes`), so a
+# test that forgot to stub it fails every time instead of only when some runner process happens to own the pid.
+_LIVE_PID = os.getpid()
+
+
+@pytest.fixture(autouse = True)
+def _no_read_bytes(monkeypatch):
+    # These tests pin the RSS arithmetic; the read-bytes probe is covered in test_llama_weight_placement.py.
+    monkeypatch.setattr(LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: None))
+
 
 def _backend(
     gguf_path,
     *,
     healthy,
-    pid = 4321,
+    pid = _LIVE_PID,
 ):
     be = object.__new__(LlamaCppBackend)
     be._process = types.SimpleNamespace(pid = pid)

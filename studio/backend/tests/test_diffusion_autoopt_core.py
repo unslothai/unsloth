@@ -214,6 +214,7 @@ def test_builtin_specs_cover_every_former_install_site():
         "flux2_rope",
         "flux3_rope",
         "flux3_fp16_attn",
+        "flux3_qk_rope",
         "rocm_fused",
         "qwenimage_real_rope",
         "zimage_fused",

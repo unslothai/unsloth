@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 from dataclasses import dataclass
@@ -29,6 +30,16 @@ from torch.nn.attention.flex_attention import (
 
 # torch 2.6 inductor fails on the dynamic mask + flex kernel; suppress_errors then runs eager T x T flex.
 PREFIX_GROUPER_MIN_TORCH = (2, 7)
+
+
+def _strict_dynamo():
+    """Dynamo with suppress_errors off; some torch builds (AMD's ROCm torch 2.11) have no such flag."""
+    config = torch._dynamo.config
+    return (
+        config.patch(suppress_errors = False)
+        if hasattr(config, "suppress_errors")
+        else contextlib.nullcontext()
+    )
 
 
 def torch_supports_prefix_grouper(version = None) -> bool:
@@ -76,8 +87,6 @@ def _kernel_options_for_dtype(dtype, one_stage = False):
         options["num_stages"] = 1
     return options
 
-
-_FLEX_KERNEL_OPTIONS = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
 
 # The compiled backward asserts unless T is a multiple of 128; pad tokens are fully masked and sliced off.
 _PAD_MULTIPLE = 128
@@ -364,6 +373,10 @@ def _compile_failure_reason(root: BaseException) -> str:
     return f"{type(root).__name__}: {lines[0][:200] if lines else ''}"
 
 
+def _keep_saved(tensor):
+    return tensor
+
+
 @torch._dynamo.disable
 def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, key):
     """Real call plus fwd + bwd on detached copies, strict, so later calls reuse those graphs."""
@@ -371,11 +384,13 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
 
     def strict_calls(one_stage):
         nonlocal block_mask
-        with torch._dynamo.config.patch(suppress_errors = False):
+        with _strict_dynamo():
             if block_mask is None:
                 block_mask = get_block_mask(seg, q.device, compile_mask = True)
             out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
-            with torch.inference_mode(False), torch.enable_grad():
+            # Else inside a non-reentrant checkpoint the backward unpacks through it and stops recompute.
+            own_hooks = torch.autograd.graph.saved_tensors_hooks(_keep_saved, _keep_saved)
+            with torch.inference_mode(False), torch.enable_grad(), own_hooks:
                 qc, kc, vc = (x.detach().clone().requires_grad_(True) for x in (q, k, v))
                 oc = _run_flex(qc, kc, vc, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
                 torch.autograd.grad(oc.float().sum(), (qc, kc, vc))

@@ -53,6 +53,13 @@ test("a bundled folder is searched on the folder name its row shows", () => {
   assert.equal(hits("Kokoro-82M-GGUF").length, 1);
   assert.equal(hits("82M-GGUF").length, 1);
   assert.equal(hits("kokoro 82m gguf").length, 1);
+  // A capability the name does not show is findable by what it does.
+  for (const query of ["multi-speaker", "dialogue", "podcast"]) {
+    assert.deepEqual(
+      hits(query).map((model) => audioCppDisplayName(model.id)),
+      ["VibeVoice-1.5B-GGUF"],
+    );
+  }
 });
 
 test("any other row is searched on its aliases and label", () => {
@@ -351,20 +358,24 @@ test("Hub settings configure the cached alias and share the row selection", () =
   const render = new Function(
     "React", "isKnownGgufRepo", "onConfigure", "downloadedRowShellClassName",
     "isValueRow", "ROW_ACTIONS_CLASS", "ModelLoadSettingsAction", "cachedIdFor", "pipelineTagById",
+    "modelConfigTarget",
     `${compiled}; return render;`,
   )(
     React, () => false, (...args: unknown[]) => calls.push(args),
     (selected: boolean) => selected ? "selected" : "idle", () => true,
     "actions", "settings", (id: string) => id === "mirror/model" ? "vendor/model" : null,
     new Map([["mirror/model", "text-generation"]]),
+    (id: string, meta: unknown) => ({ id, meta }),
   );
   const row = render("mirror/model", "model row");
   assert.equal(row.props.className, "selected");
-  row.children[1].children[0].props.onConfigure();
+  const gear = row.children[1].children[0].props;
+  gear.onConfigure();
   assert.deepEqual(calls[0], ["vendor/model", {
     source: "hub", isLora: false, isGguf: false, isDownloaded: true,
     pipelineTag: "text-generation",
   }]);
+  assert.deepEqual(gear.savedFor, { id: calls[0][0], meta: calls[0][1] });
   render("new/model", "model row").children[1].children[0].props.onConfigure();
   assert.deepEqual(calls[1], ["new/model", {
     source: "hub", isLora: false, isGguf: false, isDownloaded: false, pipelineTag: null,

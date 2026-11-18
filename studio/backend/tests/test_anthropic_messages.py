@@ -1446,6 +1446,148 @@ class TestAnthropicMessagesToOpenAI:
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == f"Title: Handbook\nContext: Internal\n{body}"
 
+    @pytest.mark.parametrize("tool_result_images", [True, False])
+    def test_tool_result_pdf_document_reaches_the_model_as_text(self, tool_result_images):
+        import pymupdf
+
+        with pymupdf.open() as doc:
+            doc.new_page().insert_text((72, 100), "Invoice total 4242 EUR")
+            pdf = _b64.b64encode(doc.tobytes()).decode()
+        request = AnthropicMessagesRequest(
+            messages = [
+                {"role": "user", "content": "What is the invoice total in inv.pdf?"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_1",
+                            "name": "Read",
+                            "input": {"file_path": "/work/inv.pdf"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "PDF file read: /work/inv.pdf (597 bytes)",
+                                },
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "application/pdf",
+                                        "data": pdf,
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        )
+        result = anthropic_messages_to_openai(
+            [m.model_dump() for m in request.messages],
+            tool_result_images = tool_result_images,
+        )
+        tool_message = next(m for m in result if m["role"] == "tool")
+        assert "Invoice total 4242 EUR" in tool_message["content"]
+        assert DOCUMENT_OMITTED not in tool_message["content"]
+
+    def test_warmed_pdf_document_converts_while_indexing_holds_the_mupdf_lock(self):
+        import pymupdf
+        from core.inference import anthropic_compat
+        from core.inference.anthropic_compat import warm_anthropic_pdf_documents
+        from core.rag.parsers import MUPDF_LOCK
+
+        with pymupdf.open() as doc:
+            doc.new_page().insert_text((72, 100), "Quarterly revenue 42 million")
+            pdf = _b64.b64encode(doc.tobytes()).decode()
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": pdf,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        anthropic_compat._PDF_TEXTS.clear()
+        warm_anthropic_pdf_documents(AnthropicMessagesRequest(messages = msgs).messages)
+        held, release, result = threading.Event(), threading.Event(), []
+
+        def indexer():
+            with MUPDF_LOCK:
+                held.set()
+                release.wait(10)
+
+        holder = threading.Thread(target = indexer, daemon = True)
+        holder.start()
+        held.wait(5)
+        try:
+            converter = threading.Thread(
+                target = lambda: result.append(anthropic_messages_to_openai(msgs)),
+                daemon = True,
+            )
+            converter.start()
+            converter.join(5)
+            assert result, "conversion waited on MUPDF_LOCK"
+        finally:
+            release.set()
+            holder.join(5)
+        assert "Quarterly revenue 42 million" in str(result[0])
+
+    def test_warmed_pdf_text_survives_cache_eviction(self, monkeypatch):
+        import pymupdf
+        from core.inference import anthropic_compat, tools
+        from core.inference.anthropic_compat import warm_anthropic_pdf_documents
+
+        def pdf(i):
+            with pymupdf.open() as doc:
+                doc.new_page().insert_text((72, 100), f"Report {i}")
+                return _b64.b64encode(doc.tobytes()).decode()
+
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf(i),
+                        },
+                    }
+                ],
+            }
+            for i in range(12)
+        ]
+        request = AnthropicMessagesRequest(messages = msgs)
+        warm_anthropic_pdf_documents(request.messages)
+        anthropic_compat._PDF_TEXTS.clear()
+        monkeypatch.setattr(tools, "_extract_pdf_text", lambda data: pytest.fail("reparsed"))
+        result = str(anthropic_messages_to_openai([m.model_dump() for m in request.messages]))
+        assert all(f"Report {i}" in result for i in range(12))
+
     def test_top_level_search_result_and_document_reach_the_user_turn(self):
         request = AnthropicMessagesRequest(
             model = "x",
@@ -4946,7 +5088,7 @@ def test_user_unknown_block_rejected_not_silently_dropped():
 @pytest.mark.parametrize(
     "source",
     [
-        {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+        {"type": "base64", "media_type": "text/plain", "data": "aGk="},
         {"type": "url", "url": "https://example.com/a.pdf"},
         {"type": "file", "file_id": "file_1"},
     ],
@@ -6279,6 +6421,100 @@ def test_x_unsloth_effort_still_outranks_thinking_when_sent_explicitly():
     )
     assert args["enable_thinking"] is True
     assert args["reasoning_effort"] == "high"
+
+
+_CLAUDE_CODE_UA = {"user-agent": "claude-cli/2.1.322 (external, sdk-cli)"}
+_CLAUDE_CODE_BETA = {"anthropic-beta": "interleaved-thinking-2025-05-14, claude-code-20250219"}
+
+
+class _HeaderRequest:
+    state = SimpleNamespace()
+    url = SimpleNamespace(path = "/v1/messages")
+    method = "POST"
+
+    def __init__(self, headers):
+        self.headers = headers
+
+    async def is_disconnected(self):
+        return False
+
+
+@pytest.mark.parametrize(
+    "headers, expected",
+    [
+        (_CLAUDE_CODE_UA, True),
+        (_CLAUDE_CODE_BETA, True),
+        ({"user-agent": "Anthropic/Python 0.70.0"}, False),
+        ({"anthropic-beta": "interleaved-thinking-2025-05-14"}, False),
+        ({}, False),
+    ],
+)
+def test_only_claude_code_marks_an_omitted_thinking_as_off(headers, expected):
+    from routes.inference import _mark_claude_code_thinking
+
+    payload = _basic_payload(output_config = {"effort": "high"})
+    _mark_claude_code_thinking(payload, _HeaderRequest(headers))
+    assert payload.resolved_enable_thinking() is (False if expected else None)
+
+
+@pytest.mark.parametrize(
+    "fields, expected_enable, expected_effort",
+    [
+        ({}, False, None),
+        ({"thinking": None}, False, None),
+        ({"thinking": {"type": "adaptive", "display": "omitted"}}, True, None),
+        ({"thinking": {"type": "disabled"}}, False, None),
+        ({"enable_thinking": True}, True, None),
+        ({"reasoning_effort": "high"}, True, "high"),
+    ],
+)
+def test_claude_code_omitted_thinking_is_off_below_explicit_controls(
+    fields, expected_enable, expected_effort
+):
+    from routes.inference import _anthropic_reasoning_args, _mark_claude_code_thinking
+
+    payload = _basic_payload(**fields)
+    _mark_claude_code_thinking(payload, _HeaderRequest(_CLAUDE_CODE_UA))
+    args = _anthropic_reasoning_args(payload)
+    assert args["enable_thinking"] is expected_enable
+    assert args["reasoning_effort"] == expected_effort
+
+
+@pytest.mark.parametrize("headers, expected", [(_CLAUDE_CODE_UA, False), ({}, None)])
+def test_claude_code_thinking_off_reaches_generation_and_counting(monkeypatch, headers, expected):
+    from routes.inference import anthropic_count_tokens, anthropic_messages
+
+    counted: list = []
+    backend = _mock_backend(
+        monkeypatch,
+        _request_reasoning_kwargs = lambda enable, effort, preserve: (
+            None if enable is None else {"enable_thinking": enable}
+        ),
+    )
+    backend.count_chat_tokens = lambda *args, chat_template_kwargs = None, **kwargs: (
+        counted.append(chat_template_kwargs) or 2
+    )
+
+    _drive(
+        anthropic_messages(
+            _basic_payload(output_config = {"effort": "high"}),
+            request = _HeaderRequest(headers),
+            current_subject = "t",
+        )
+    )
+    _drive(
+        anthropic_count_tokens(
+            _basic_payload(output_config = {"effort": "high"}),
+            request = _HeaderRequest(headers),
+            current_subject = "t",
+        )
+    )
+
+    [(_path, kwargs)] = backend.calls
+    assert kwargs["enable_thinking"] is expected
+    assert kwargs["reasoning_effort"] is None
+    template_kwargs = None if expected is None else {"enable_thinking": False}
+    assert counted and all(kwargs == template_kwargs for kwargs in counted)
 
 
 def test_the_anthropic_paths_promote_a_replayed_mcp_envelope():

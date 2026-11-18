@@ -61,8 +61,11 @@ from backend.utils.kernel_install import (
     uninstall_command,
 )
 from backend.utils.wheel_utils import (
+    I8GEMM_DISTRIBUTION,
+    I8GEMM_VERSION,
     flash_attn_package_version,
     flash_attn_wheel_url,
+    int8_gemm_wheel_url,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -2208,20 +2211,25 @@ def _detect_windows_gfx_arch() -> str | None:
 # GPU marketing-name -> gfx arch (mirrors setup.ps1's $nameArchTable), most-specific first.
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     # RDNA 4 (Navi 48). R9700 is listed separately: its name has neither 9070 nor 9080.
-    (r"9070|9080|R9700", "gfx1201"),
-    (r"9060", "gfx1200"),  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
+    (r"9070|9080|R9700|R9600D", "gfx1201"),
+    (r"9060|RX 9050", "gfx1200"),  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
     (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
-    (r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]", "gfx1150"),
-    (r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33", "gfx1152"),
+    (r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]|Z2 Extreme", "gfx1150"),
+    (r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330", "gfx1153"),
+    (r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35", "gfx1152"),
     (r"RX 7900|PRO W7900|PRO W7800", "gfx1100"),
     (r"RX 7800|RX 7700(?!S)|PRO W7700|PRO V710", "gfx1101"),  # Navi 32
-    (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),  # Navi 33
-    (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
-    # RDNA 2: every row resolves to gfx103X-all (6850M XT is Navi 22, filed here like 6750 / 6700).
-    (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
-    (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
     (
-        r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
+        r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|RX 7400|RX 7300|PRO W7400|Steam Machine",
+        "gfx1102",
+    ),  # Navi 33
+    (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme", "gfx1103"),
+    # RDNA 2: Windows installs one device pack per exact arch, so Navi 23 laptop parts (6700S / 6800S) go first.
+    (r"RX 6750 GRE 10|RX 6800S|RX 6700S|RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
+    (r"RX 6850|RX 6800M|RX 6750|RX 6700", "gfx1031"),  # Navi 22
+    (r"RX 6950|RX 6900|RX 6800|PRO W6800|PRO W6900|PRO V620", "gfx1030"),  # Navi 21
+    (
+        r"6550S|RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
         "gfx1034",
     ),  # Navi 24
     # RDNA 1 (Navi 10 / 14), routed via _WINDOWS_MULTIARCH_GFX.
@@ -3778,12 +3786,7 @@ def _install_bnb_windows_rocm() -> bool:
         _persist_detected_version = True
     if _persist_detected_version:
         _persist_bnb_rocm_version(_ver)
-    # venv Scripts (hipInfo.exe from the AMD torch wheel) on PATH, else bnb logs a stray ERROR.
-    _scripts_dir = os.path.dirname(sys.executable)
-    if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")) and not shutil.which(
-        "hipinfo.exe"
-    ):
-        os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
+    # Venv Scripts stays off PATH: its hipInfo.exe is unsigned and children would inherit it.
     return True
 
 
@@ -7887,6 +7890,49 @@ def _remove_stale_flash_attn() -> None:
         )
 
 
+def _int8_gemm_install_disabled() -> bool:
+    if os.getenv("UNSLOTH_STUDIO_SKIP_I8GEMM_INSTALL") == "1":
+        return True
+    return (os.getenv("UNSLOTH_DIFFUSION_INT8_CUTLASS") or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _ensure_int8_gemm() -> None:
+    """Optional prebuilt int8 GEMM wheel (diffusion INT8, sm75 / sm8x); every failure only warns."""
+    if _int8_gemm_install_disabled() or NO_TORCH or IS_MACOS:
+        return
+    if _installed_distribution_version(I8GEMM_DISTRIBUTION) == I8GEMM_VERSION:
+        return
+    env = probe_torch_wheel_env(include_windows = True)
+    wheel_url = int8_gemm_wheel_url(env)
+    if not wheel_url or not url_exists(wheel_url):
+        return
+    _count_install_action()
+    with _install_heartbeat("int8 GEMM"):
+        outcome = install_prebuilt(
+            wheel_url,
+            install = install_wheel,
+            verify = lambda: _installed_distribution_version(I8GEMM_DISTRIBUTION) == I8GEMM_VERSION,
+            on_failed = lambda installer, wheel_result: _print_optional_install_failure(
+                f"Installing the prebuilt int8 GEMM wheel with {installer}",
+                wheel_result,
+            ),
+            use_uv = USE_UV,
+            uv_needs_system = UV_NEEDS_SYSTEM,
+            reinstall = _installed_distribution_version(I8GEMM_DISTRIBUTION) is not None,
+        )
+    if outcome != "installed":
+        _step(
+            "warning",
+            "Continuing without the prebuilt int8 GEMM (diffusion INT8 keeps Triton / cuBLAS)",
+            _warn,
+        )
+
+
 def _flash_attn_gpu_below_floor() -> bool:
     """Visible CUDA GPU below sm80 (a T4); no visible GPU is False, since image builds install first."""
     return gpu_below_flash_attn_floor()
@@ -10157,7 +10203,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.12"
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.8.0"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
@@ -12181,6 +12227,7 @@ def install_python_stack() -> int:
         _progress("flash-attn")
         _ensure_flash_attn()
         _remove_stale_ssm_kernels()
+        _ensure_int8_gemm()
 
     # 8. Unsloth dependencies
     if not _skip_step(REQ_ROOT / "studio.txt", "Unsloth Studio deps", no_deps = False):

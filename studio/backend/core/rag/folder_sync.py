@@ -628,10 +628,10 @@ def _delete_retired_folder(folder_id: str) -> bool | None:
             for snapshot in dict.fromkeys(doc["stored_path"] for doc in docs):
                 _remove_retired_snapshot(snapshot)
         conn.execute("DELETE FROM linked_folder_files WHERE folder_id=?", (folder_id,))
-        for doc in docs:
-            if folder["delete_remove_index"]:
-                store.delete_document(conn, doc["id"], commit = False)
-            else:
+        if folder["delete_remove_index"]:
+            store.delete_documents(conn, [doc["id"] for doc in docs], commit = False)
+        else:
+            for doc in docs:
                 conn.execute(
                     "UPDATE documents SET linked_folder_id=NULL, linked_relative_path=NULL "
                     "WHERE id=?",
@@ -857,8 +857,7 @@ def delete_retired_scope(scope: str) -> bool:
         ).fetchall()
         for stored_path in dict.fromkeys(document["stored_path"] for document in documents):
             _remove_retired_snapshot(stored_path)
-        for document in documents:
-            store.delete_document(conn, document["id"], commit = False)
+        store.delete_documents(conn, [document["id"] for document in documents], commit = False)
         conn.execute(
             "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
             "(SELECT id FROM ingestion_jobs WHERE scope=?)",
@@ -1732,7 +1731,15 @@ def _reconcile_folder(job_id: str) -> None:
     ingest_failed: dict[str, dict] = {}
     cached_grace = False
     total = len(work) + len(missing)
-    _set_job(job_id, stage = "ingesting", discovered = len(current), renamed = renamed)
+    # Files outside work are already indexed and unchanged, so they count as synced.
+    _set_job(
+        job_id,
+        stage = "ingesting",
+        discovered = len(current),
+        up_to_date = len(current) - len(work),
+        checked = 0,
+        renamed = renamed,
+    )
     added = changed_count = 0
     failures: list[str] = []
     failure_errors: dict[str, str] = {}
@@ -1756,6 +1763,7 @@ def _reconcile_folder(job_id: str) -> None:
             changed = changed_count,
             failed = len(failures),
             renamed = renamed,
+            checked = processed,
             progress = processed / max(total, 1),
         )
 

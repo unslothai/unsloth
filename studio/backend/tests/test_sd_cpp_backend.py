@@ -1515,6 +1515,7 @@ def _run_server_load(
     family_override = None,
     gpu_ordinal = None,
     asset_paths = None,
+    **load_kw,
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -1549,6 +1550,7 @@ def _run_server_load(
         hf_token = None,
         _load_token = 1,
         gpu_ordinal = gpu_ordinal,
+        **load_kw,
     )
 
 
@@ -1587,6 +1589,108 @@ def test_cpu_torch_on_the_vulkan_build_offloads_by_default(monkeypatch, accelera
     else:
         assert b._state.device == "cpu"
         assert b._state.offload_flags == ()
+
+
+def _mint_host(
+    monkeypatch,
+    tmp_path,
+    *,
+    ram_mib,
+    card_free_mib,
+    card = "AMD Radeon RX 9060 XT (RADV GFX1200)",
+):
+    # Linux Mint, RX 9060 XT 16 GB, 15 GB RAM, CPU torch, Vulkan sd.cpp: MiniMax-H3-Image Q4_K_M as cached there.
+    import core.inference.diffusion_small_host as small_host
+    import core.inference.video_minimax_h3 as h3
+
+    paths = {}
+    for name, mib in (("diffusion_model", 12132), ("llm", 17375), ("vae", 2229)):
+        f = tmp_path / f"{name}.bin"
+        with open(f, "wb") as fh:
+            fh.truncate(mib << 20)
+        paths[name] = str(f)
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "vulkan")
+    monkeypatch.setattr(bk, "sd_cpp_listed_device", lambda *_a, **_k: ("vulkan", card))
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (max(15 * 1024, ram_mib), ram_mib))
+    monkeypatch.setattr(
+        h3,
+        "amdgpu_vram_reading",
+        lambda *_a, **_k: (None, None)
+        if card_free_mib is None
+        else (card_free_mib << 20, 16_304 << 20),
+    )
+    return paths
+
+
+@pytest.mark.parametrize(
+    "ram_mib,card_free_mib,card,load_kw,offloads",
+    [
+        # RAM cannot hold the 31.0 GiB offload, the 16 GB card holds the 11.8 GiB DiT: auto-fit places the rest.
+        (12 * 1024, 15_800, "AMD Radeon RX 9060 XT (RADV GFX1200)", {}, False),
+        # Room in RAM: streaming stays the default for an unmeasured card (#13666).
+        (60 * 1024, 15_800, "AMD Radeon RX 9060 XT (RADV GFX1200)", {}, True),
+        # Even the DiT does not fit the card (just under it with the reserve, or an 8 GB card), or it cannot be read.
+        (12 * 1024, 13_600, "AMD Radeon RX 9060 XT (RADV GFX1200)", {}, True),
+        (12 * 1024, 7_800, "AMD Radeon RX 7600 (RADV NAVI33)", {}, True),
+        (12 * 1024, None, "AMD Radeon RX 9060 XT (RADV GFX1200)", {}, True),
+        # sysfs only answers for amdgpu, so another vendor's Vulkan device keeps the offload.
+        (12 * 1024, 15_800, "Intel(R) Arc(tm) A770 Graphics (DG2)", {}, True),
+        # An explicit offload ask is never overridden.
+        (12 * 1024, 15_800, "AMD Radeon RX 9060 XT (RADV GFX1200)", {"cpu_offload": True}, True),
+        (
+            12 * 1024,
+            15_800,
+            "AMD Radeon RX 9060 XT (RADV GFX1200)",
+            {"memory_mode": "low_vram"},
+            True,
+        ),
+    ],
+)
+def test_cpu_torch_vulkan_offload_respects_host_ram(
+    monkeypatch, tmp_path, ram_mib, card_free_mib, card, load_kw, offloads
+):
+    paths = _mint_host(
+        monkeypatch, tmp_path, ram_mib = ram_mib, card_free_mib = card_free_mib, card = card
+    )
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths, **load_kw)
+    assert b._state.device == "vulkan"
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
+    assert b.status()["cpu_offload"] is offloads
+
+
+@pytest.mark.parametrize("fraction,offloads", [(1.0, False), (0.95, True), (0.7, True)])
+def test_cpu_torch_offload_drop_keeps_the_vram_budget_reserve(
+    monkeypatch, tmp_path, fraction, offloads
+):
+    # sd.cpp's auto-fit takes no VRAM cap, so any lowered VRAM Budget keeps the offload.
+    import core.inference.diffusion_memory as dm
+
+    paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = 15_800)
+    monkeypatch.setattr(dm, "_vram_budget_fraction", lambda: fraction)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths)
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
+
+
+@pytest.mark.parametrize("gpu_ordinal,offloads", [(None, False), (0, False), (1, True)])
+def test_cpu_torch_cuda_offload_probes_the_pinned_card(
+    monkeypatch, tmp_path, gpu_ordinal, offloads
+):
+    # Card 0 holds the DiT, card 1 does not: the probe reads the card the load pins, not always card 0.
+    import core.inference.diffusion_device as dd
+
+    paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = None)
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cuda")
+    monkeypatch.setattr(
+        bk, "sd_cpp_listed_device", lambda *_a, **_k: ("cuda", "NVIDIA GeForce RTX 4080")
+    )
+    free = {0: 15_800, 1: 7_800}
+    monkeypatch.setattr(dd, "smi_free_total_mib", lambda ordinal: (free.get(ordinal), 16_376))
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths, gpu_ordinal = gpu_ordinal)
+    assert b._state.device == "cuda"
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
 
 
 @pytest.mark.parametrize("lands", [True, False])
@@ -3563,6 +3667,7 @@ def test_a_device_loss_retry_restages_the_loras_under_the_new_server(monkeypatch
         resolved,
         stage,
         real_files = False,
+        family = None,
     ):
         os.makedirs(stage, exist_ok = True)
         (Path(stage) / "adapter.gguf").write_bytes(b"x")
@@ -3882,3 +3987,40 @@ def test_an_unresolved_pin_judges_every_visible_card(monkeypatch, resolved, expe
     _run_server_load(monkeypatch, b, servers, device = "cuda", gpu_ordinal = 1)
     assert servers[-1].env == expected
     assert dict(b._state.child_env) == (expected or {})
+
+
+@pytest.mark.parametrize(
+    "smi_rows,mask,offloads",
+    [
+        (["16376, 576, [N/A]"], None, False),
+        (["16376, 576, Disabled"], None, False),
+        (["16376, 576, [N/A]", "16376, 576, [N/A]"], None, True),
+        (["16376, 576, Enabled"], None, True),
+        (["16376, 576, [N/A]"], "0", True),
+    ],
+)
+def test_cpu_torch_cuda_offload_reads_a_sole_card_from_nvidia_smi(
+    monkeypatch, tmp_path, smi_rows, mask, offloads
+):
+    # A CPU torch lists no CUDA devices, so the torch-ordered probe reads nothing; nvidia-smi answers for a sole card.
+    import core.inference.diffusion_device as dd
+
+    paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = None)
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cuda")
+    monkeypatch.setattr(
+        bk, "sd_cpp_listed_device", lambda *_a, **_k: ("cuda", "NVIDIA GeForce RTX 4080")
+    )
+    monkeypatch.setattr(dd, "smi_free_total_mib", lambda ordinal: (None, None))
+    bindir = tmp_path / "smi-bin"
+    bindir.mkdir()
+    smi = bindir / "nvidia-smi"
+    smi.write_text("#!/bin/sh\nprintf '%s\\n' " + " ".join(repr(r) for r in smi_rows) + "\n")
+    smi.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ.get("PATH", ""))
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths)
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads

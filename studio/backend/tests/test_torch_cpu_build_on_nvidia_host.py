@@ -2541,3 +2541,88 @@ def test_only_a_real_boolean_records_a_deliberate_cpu_choice(monkeypatch, tmp_pa
 
     assert hw._recorded_install_flavor() == ("cpu", chosen)
     assert hw._expected_cpu_flavor_was_chosen() is chosen
+
+
+_NVIDIA_SMI_ONE_CARD = "0, NVIDIA GeForce RTX 4090, 24564\n"
+
+
+def _windows_inventory_scan(monkeypatch, *, amd, intel, live):
+    """Windows host with given registry records per vendor (None = unreadable); counts live scans."""
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    scans = []
+
+    def _live():
+        scans.append(1)
+        return live
+
+    monkeypatch.setattr(hw, "_windows_live_adapter_names", _live)
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **_kw: (
+            amd if vendor_id == hw._AMD_PCI_VENDOR_ID else intel
+        ),
+    )
+    return scans
+
+
+@pytest.mark.parametrize("smi", ["nvidia", "absent"])
+def test_windows_live_scan_skipped_without_amd_or_intel_records(monkeypatch, smi):
+    """No DirectX record to corroborate, so the PowerShell WMI scan is never spawned."""
+    if smi == "nvidia":
+        _smi(monkeypatch, _NVIDIA_SMI_ONE_CARD)
+    else:
+        _smi(monkeypatch, "", raises = FileNotFoundError)
+    scans = _windows_inventory_scan(monkeypatch, amd = {}, intel = {}, live = ["NVIDIA GeForce RTX 4090"])
+    inventory = hw._probe_physical_gpu_inventory()
+    assert scans == []
+    assert all(d.get("source") != "directx-registry" for d in inventory["devices"])
+    assert "directx-registry" not in inventory["sources"]
+
+
+def test_windows_live_scan_skipped_when_registry_unreadable(monkeypatch):
+    _smi(monkeypatch, "", raises = FileNotFoundError)
+    scans = _windows_inventory_scan(monkeypatch, amd = None, intel = None, live = [])
+    inventory = hw._probe_physical_gpu_inventory()
+    assert scans == []
+    assert inventory["devices"] == []
+    assert inventory["unknown"] is True
+
+
+@pytest.mark.parametrize(
+    "amd, intel, live, expected",
+    [
+        (
+            {0x1: {"name": "AMD Radeon RX 7900 XT", "dedicated_memory_bytes": 20 * 1024**3}},
+            {0x2: {"name": "Intel(R) Arc(TM) A770 Graphics"}},
+            ["AMD Radeon RX 7900 XT", "Intel(R) Arc(TM) A770 Graphics"],
+            [
+                ("amd", "AMD Radeon RX 7900 XT", 20.0),
+                ("intel", "Intel(R) Arc(TM) A770 Graphics", None),
+            ],
+        ),
+        (
+            {},
+            {0x2: {"name": "Intel(R) Arc(TM) A770 Graphics"}},
+            ["Intel(R) Arc(TM) A770 Graphics"],
+            [("intel", "Intel(R) Arc(TM) A770 Graphics", None)],
+        ),
+        (
+            {0x1: {"name": "AMD Radeon RX 7900 XT"}},
+            {0x2: {"name": "Intel(R) Arc(TM) A770 Graphics"}},
+            None,
+            [],
+        ),
+    ],
+)
+def test_windows_live_scan_runs_once_when_records_exist(monkeypatch, amd, intel, live, expected):
+    _smi(monkeypatch, "", raises = FileNotFoundError)
+    scans = _windows_inventory_scan(monkeypatch, amd = amd, intel = intel, live = live)
+    inventory = hw._probe_physical_gpu_inventory()
+    assert scans == [1]
+    got = [(d["vendor"], d["name"], d["memory_total_gb"]) for d in inventory["devices"]]
+    assert got == expected
+    if live is None:
+        assert inventory["unknown"] is True
+    else:
+        assert inventory["sources"] == ["directx-registry"]

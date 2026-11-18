@@ -288,6 +288,22 @@ def test_the_output_cap_follows_the_length_of_the_audio():
     assert budget(120) > budget(60)
 
 
+def test_a_prompt_becomes_qwen3_asr_context_in_the_system_turn():
+    payload, prefix = mtmd_mod._transcription_payload(
+        b"wav", 1.0, "en", " Speaker accent: Chinese-accented English. "
+    )
+    messages = payload["messages"]
+    assert messages[0] == {
+        "role": "system",
+        "content": "Speaker accent: Chinese-accented English.",
+    }
+    # The language prefill still ends the turn list, so the transcript stays in English.
+    assert [m["role"] for m in messages] == ["system", "user", "assistant"]
+    assert prefix == messages[-1]["content"] == "language English<asr_text>"
+    plain, _ = mtmd_mod._transcription_payload(b"wav", 1.0, None, "  ")
+    assert [m["role"] for m in plain["messages"]] == ["user"]
+
+
 def test_the_engine_is_unavailable_without_pyav(monkeypatch):
     """whisper.cpp already refuses here; every transcription 501s on decode."""
     import builtins
@@ -1084,8 +1100,8 @@ def test_an_invalidation_mid_probe_discards_the_stale_answer(monkeypatch):
     monkeypatch.setattr(mtmd_mod, "_cached_model_paths", probe_then_invalidate)
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is False
     with mtmd_mod._downloaded_probe_lock:
-        assert (
-            "qwen3-asr-0.6b" not in mtmd_mod._downloaded_probe
+        assert not any(
+            key[0] == "qwen3-asr-0.6b" for key in mtmd_mod._downloaded_probe
         ), "a stale answer was written back over the invalidation"
 
     monkeypatch.setattr(mtmd_mod, "_cached_model_paths", lambda mid: ("m.gguf", "p.gguf"))
@@ -1107,7 +1123,9 @@ def test_the_entry_is_timestamped_after_the_probe(monkeypatch):
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
 
     with mtmd_mod._downloaded_probe_lock:
-        stored_at = mtmd_mod._downloaded_probe["qwen3-asr-0.6b"][0]
+        (stored_at, _) = next(
+            value for key, value in mtmd_mod._downloaded_probe.items() if key[0] == "qwen3-asr-0.6b"
+        )
     assert stored_at == 1001.5, "the entry was timestamped before the probe ran"
 
     clock["t"] += 0.75
@@ -1336,3 +1354,23 @@ def test_requested_language_reaches_the_decoder(
         assert progress, "prefilled responses still need to publish transcription progress"
         assert progress[-1] == {"text": "Hello world"}
         assert all("language " not in event["text"] for event in progress)
+
+
+def test_a_one_sample_recording_never_reaches_llama_server(monkeypatch):
+    """mtmd aborts llama-server on a one-sample clip; refuse it before the sidecar loads."""
+    import numpy as np
+    from core.inference.stt_sidecar import SttAudioDecodeError
+
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(mtmd_mod, "ensure_engine_available", lambda: "/bin/llama-server")
+    monkeypatch.setattr(
+        MtmdSttSidecar, "_ensure_model_downloaded", lambda self, model_id: ("m.gguf", "p.gguf")
+    )
+    monkeypatch.setattr(
+        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: np.zeros(1, np.float32)
+    )
+    loads = []
+    monkeypatch.setattr(MtmdSttSidecar, "load", lambda self, *a, **k: loads.append(a))
+    with pytest.raises(SttAudioDecodeError, match = "too short"):
+        sidecar.transcribe(b"RIFF", model = "qwen3-asr-0.6b")
+    assert loads == []

@@ -26,6 +26,7 @@ mod diagnostics;
 mod gpu_rendering;
 mod install;
 mod install_watchdog;
+mod keep_awake;
 #[cfg(target_os = "linux")]
 mod linux_gpu_supervisor;
 #[cfg(target_os = "linux")]
@@ -1085,6 +1086,13 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
+            let policy_never = matches!(
+                settings.hardware_acceleration_policy(),
+                webkit2gtk::HardwareAccelerationPolicy::Never
+            );
+            if !linux_webkit::smooth_scrolling_enabled(policy_never) {
+                settings.set_enable_smooth_scrolling(false);
+            }
         }
         // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
         // installed; deferred because loading it blocks ~40 ms. Not on a bundled AppImage: its
@@ -2383,9 +2391,10 @@ fn main() {
             webkit_rendering.nvidia_driver_branch,
             webkit_rendering.wayland_session,
         ),
+        webkit_rendering.cpu_painting,
     );
     #[cfg(not(target_os = "linux"))]
-    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None);
+    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false);
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -2424,7 +2433,7 @@ fn main() {
         }
         let (major, minor, micro) = webkit_rendering.webkit_version;
         info!(
-            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={}",
+            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} cpu_painting={}",
             gpu_setting.as_str(),
             if webkit_rendering.gpu_path.is_some() { "gpu" } else { "default-or-cpu" },
             webkit_rendering
@@ -2434,6 +2443,7 @@ fn main() {
             webkit_rendering.env_override.unwrap_or("none"),
             gpu_fallback_active,
             gpu_child.supervised,
+            webkit_rendering.cpu_painting,
         );
     }
     #[cfg(windows)]
@@ -2492,6 +2502,7 @@ fn main() {
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .manage(native_file_dialogs::NativeSaveRegistry::default())
         .manage(browser_webview::new_browser_views())
+        .manage(browser_webview::new_browser_capture_rules())
         .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(|invoke| {
             if invoke.message.webview().label() != "main" || invoke.message.webview().window().label() != "main" {
@@ -2513,6 +2524,7 @@ fn main() {
             browser_webview::browser_view_eval,
             browser_webview::browser_view_close,
             browser_webview::browser_view_clear_data,
+            browser_webview::browser_capture_rules_set,
             browser_webview::browser_view_mute,
             browser_webview::browser_view_layered,
             browser_webview::browser_view_input,
@@ -2614,6 +2626,8 @@ fn main() {
             reveal_main_window,
             get_close_to_tray,
             set_close_to_tray,
+            keep_awake::get_keep_awake,
+            keep_awake::set_keep_awake,
             get_launch_at_login,
             set_launch_at_login,
             get_tray_icon_visible,
@@ -2634,6 +2648,7 @@ fn main() {
             }
 
             initialize_close_to_tray(app.handle());
+            keep_awake::initialize(app.handle());
             #[cfg(target_os = "linux")]
             {
                 let handle = app.handle().clone();

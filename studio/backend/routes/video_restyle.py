@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from starlette.datastructures import UploadFile
 
 from auth.authentication import get_current_subject
@@ -70,7 +71,69 @@ async def _frames_from_upload(files: list[tuple[str, bytes]]) -> tuple[list[Any]
 
 @router.get("/video/restyle/status")
 async def restyle_status(current_subject: str = Depends(get_current_subject)):
+    state = await asyncio.to_thread(video_restyle.availability)
+    if state.get("can_setup"):
+        try:
+            await _require_restyle_installer(current_subject)
+        except HTTPException as exc:
+            # Only the owner may run setup; everyone else sees why instead of a button that answers 403.
+            state = {**state, "can_setup": False, "refusal": state.get("refusal") or exc.detail}
+    return state
+
+
+class RestyleSetupRequest(BaseModel):
+    hf_token: Optional[str] = Field(default = None, max_length = 512)
+
+
+async def _require_restyle_installer(current_subject: str = Depends(get_current_subject)) -> None:
+    """Setup installs sd.cpp and writes ~30 GB into Studio's cache: the installation owner's call, as for every other
+    install (an API key only where full API access is enabled)."""
+    from auth import policy
+
+    await policy.require_owner()
+    if not policy.full_access_permitted() or policy.api_full_access_refused():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Set up Restyle from the Unsloth UI as the installation owner.",
+        )
+
+
+@router.post("/video/restyle/setup", dependencies = [Depends(_require_restyle_installer)])
+async def setup_restyle(
+    body: Optional[RestyleSetupRequest] = None, current_subject: str = Depends(get_current_subject)
+):
+    """Install the sd.cpp server and fetch the weights, whichever is missing; poll /video/restyle/status."""
+    from core.inference import video_restyle_setup as setup
+
+    await asyncio.to_thread(account_access.require_model_allowed, video_restyle.MODEL_ID)
+    state = await asyncio.to_thread(video_restyle.availability)
+    if state["available"]:
+        return state
+    if state.get("refusal"):
+        raise HTTPException(status_code = 400, detail = state["refusal"])
+    if not state.get("can_setup"):
+        raise HTTPException(
+            status_code = 400, detail = state.get("reason") or "Restyle cannot be set up here."
+        )
+    token = account_access.account_hf_token((body.hf_token if body else None) or None)
+    if token is None:
+        token = account_access.ambient_hf_token()
+    try:
+        await asyncio.to_thread(
+            setup.setup_runner.start,
+            hf_token = token,
+            need_engine = "engine" in state["missing"],
+            need_weights = "weights" in state["missing"],
+        )
+    except setup.SetupError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
     return await asyncio.to_thread(video_restyle.availability)
+
+
+@router.post("/video/restyle/setup/cancel", dependencies = [Depends(_require_restyle_installer)])
+async def cancel_restyle_setup(current_subject: str = Depends(get_current_subject)):
+    from core.inference import video_restyle_setup as setup
+    return {"cancelled": setup.setup_runner.cancel()}
 
 
 @router.post("/video/restyle/preview")
@@ -87,6 +150,9 @@ async def preview_restyle(request: Request, current_subject: str = Depends(get_c
 async def start_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_allowed, video_restyle.MODEL_ID)
+    # Receive the upload before reserving: a reservation holds the GPU, so a slow or stalled body
+    # must not keep every model load and training start refused while it trickles in.
+    upload = await _read_upload(request)
     try:
         reservation = video_restyle.runner.reserve(current_account_id())
     except RestyleBusy as exc:
@@ -95,7 +161,7 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
     # a cancelled request must not free a reservation that start() is still about to use.
     lease = {"route": True}
     try:
-        return await _start_reserved(request, reservation, lease)
+        return await _start_reserved(upload, reservation, lease)
     finally:
         if lease["route"]:
             video_restyle.runner.release(reservation)
@@ -172,8 +238,8 @@ def _take_the_gpu(mode: Optional[str] = None) -> None:
         gpu_arbiter.restyle_handoff.reset(handoff)
 
 
-async def _start_reserved(request: Request, reservation: str, lease: dict):
-    fields, files = await _read_upload(request)
+async def _start_reserved(upload: tuple, reservation: str, lease: dict):
+    fields, files = upload
     seed: Optional[int] = None
     if fields.get("seed"):
         try:

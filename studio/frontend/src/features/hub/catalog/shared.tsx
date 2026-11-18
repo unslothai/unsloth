@@ -143,6 +143,28 @@ export function AccessGlyphs({
   );
 }
 
+export function CapabilityGlyph({
+  capability,
+  className,
+}: {
+  capability: Capability;
+  className?: string;
+}) {
+  const tone = CAPABILITY_TONE[capability.key]
+    .split(" ")
+    .filter((c) => !c.includes("bg-"))
+    .join(" ");
+  return capability.key === "reasoning" ? (
+    <BulbIcon className={cn("size-3 shrink-0", tone, className)} />
+  ) : (
+    <HugeiconsIcon
+      icon={capabilityIcon(capability.key, capability.label)}
+      strokeWidth={1.75}
+      className={cn("size-3 shrink-0", tone, className)}
+    />
+  );
+}
+
 export function CapabilityPill({
   capability,
   iconOnly = false,

@@ -46,6 +46,7 @@ from hub.dependencies import get_hf_token
 from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
 from utils.account_context import AccountContext, arun_as, current_account, run_as
+from utils.temporary_file_response import TemporaryFileResponse
 from loggers import get_logger
 from loggers.media_progress import (
     byte_fraction,
@@ -165,10 +166,7 @@ async def video_download_plan(
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -239,6 +237,19 @@ async def video_download_plan(
                 checkpoint_filename = request.gguf_filename,
                 checkpoint_repo = request.model_path,
             )
+        if fam is not None:
+            from core.inference.video import refuse_without_guardrail_access
+
+            # The picker stages this plan before /video/load runs, so a Nano pick without guardrail access must be
+            # refused here, not after its ~33 GB are staged.
+            await asyncio.to_thread(
+                refuse_without_guardrail_access,
+                fam,
+                kind,
+                request.model_path,
+                request.hf_token,
+                False,
+            )
         plan = await asyncio.to_thread(
             backend.download_plan,
             request.model_path,
@@ -259,6 +270,8 @@ async def video_download_plan(
             memory_mode = request.memory_mode,
             speed_mode = request.speed_mode,
             allow_device_probe = not training,
+            # A LoRA load bakes into the dense denoiser, so the plan must not stage a hosted quantized one.
+            loras = request.loras,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
@@ -320,10 +333,7 @@ async def load_video_model_gated(
         await asyncio.to_thread(account_access.require_media_references, request)
     account_access.require_idle_other_accounts()
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -369,6 +379,7 @@ async def load_video_model_gated(
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
+        refuse_without_guardrail_access,
         resolve_video_model_kind,
     )
     from utils.native_path_leases import redact_native_paths
@@ -409,6 +420,18 @@ async def load_video_model_gated(
             text_encoder_quant = request.text_encoder_quant,
             h3_task = request.h3_task,
         )
+        if request.loras:
+            from core.inference import video_lora
+
+            # Before the GPU is touched: a LoRA this load cannot bake, or one for another family, is a 400.
+            lora_refusal = video_lora.load_refusal(fam, kind, request.transformer_quant)
+            if lora_refusal and video_lora.has_active(request.loras):
+                raise ValueError(lora_refusal)
+            await asyncio.to_thread(
+                video_lora.check_families,
+                video_lora.normalize_specs(request.loras),
+                getattr(fam, "name", None),
+            )
         # Refuse while training runs, BEFORE the precision check, whose GPU probe opens a CUDA context.
         _guard_video_load_against_training()
         # begin_load repeats this check, but inside acquire_for after chat is evicted. `auto` never refused.
@@ -435,6 +458,15 @@ async def load_video_model_gated(
             request.hf_token,
             user_initiated,
         )
+        # Before chat is evicted: a Nano load without guardrail access would otherwise download ~33 GB first.
+        await asyncio.to_thread(
+            refuse_without_guardrail_access,
+            fam,
+            kind,
+            request.model_path,
+            request.hf_token,
+            not user_initiated,
+        )
         # Non-CPU loads take the GPU from chat; CPU loads only release stale VIDEO ownership, owner-guarded.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 
@@ -457,6 +489,8 @@ async def load_video_model_gated(
                 memory_mode = request.memory_mode,
                 speed_mode = request.speed_mode,
                 attention_backend = request.attention_backend,
+                # Only when set: older engines and test doubles take no such argument.
+                **({"int8_attention": request.int8_attention} if request.int8_attention else {}),
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 transformer_quant = request.transformer_quant,
@@ -467,6 +501,8 @@ async def load_video_model_gated(
                 # The already-ranked card, so free VRAM drift cannot change the pick.
                 gpu_ordinal = gpu_ordinal,
                 allow_oversized_load = request.allow_oversized_load,
+                # Only when sent, so a plain load passes exactly what it did before.
+                **({"loras": request.loras} if request.loras else {}),
                 **_nvfp4_route_kwarg(backend.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("video", backend, request.load_token, prior)
@@ -731,6 +767,8 @@ async def generate_video(
         )
         from core.inference.video_minimax_h3 import is_h3_native
         from core.inference.video_families import (
+            snap_num_frames,
+            validate_video_continuation,
             validate_video_flow_controls,
             validate_video_keyframe_conditioning,
             validate_video_reference_conditioning,
@@ -765,7 +803,16 @@ async def generate_video(
             engine = engine,
         )
         validate_video_flow_controls(
-            fam, request.flow_shift, request.audio_flow_shift, engine = engine
+            fam,
+            request.flow_shift,
+            request.audio_flow_shift,
+            engine = _flow_shift_check_engine(engine, request.audio_flow_shift),
+        )
+        validate_video_continuation(
+            fam,
+            has_video = bool(request.continuation_video),
+            keep = request.continuation_keep,
+            num_frames = snap_num_frames(fam, request.num_frames or fam.default_num_frames),
         )
 
     # Before the backend is resolved: the requested model may be the one this brings up.
@@ -804,6 +851,8 @@ async def generate_video(
         reference_image_size = request.reference_image_size,
         flow_shift = request.flow_shift,
         audio_flow_shift = request.audio_flow_shift,
+        continuation_video = request.continuation_video,
+        continuation_keep = request.continuation_keep,
         live_preview = request.live_preview,
     )
     # Authorize the reservation-pinned token: a gap load must not render weights of another account.
@@ -1267,23 +1316,12 @@ async def export_gallery_video(
         raise HTTPException(status_code = 501, detail = str(exc)) from exc
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
-    from fastapi.responses import FileResponse
-    from starlette.background import BackgroundTask
-
-    def _cleanup() -> None:
-        try:
-            path.unlink(missing_ok = True)
-        except OSError as e:  # noqa: BLE001 -- a leaked temp file must not fail the download
-            logger.debug(f"Could not remove the export temp file {path}: {e}")
-
-    # FileResponse streams from disk, so a large VP9 export is never fully resident. The temp file is deleted once sent.
-    return FileResponse(
+    return TemporaryFileResponse(
         path,
         media_type = "video/webm" if fmt == "webm" else "image/gif",
         filename = f"{video_id}.{fmt}",
         # Transcodes are deterministic per id+format; let the browser cache them.
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
-        background = BackgroundTask(_cleanup),
     )
 
 
@@ -3014,3 +3052,40 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
     if not await asyncio.to_thread(_forget_openai_job, video_id):
         raise _openai_video_error(500, "Could not delete the video job; retry the request.")
     return VideoJobDeleteResponse(id = video_id)
+
+
+def _flow_shift_check_engine(engine, audio_flow_shift):
+    """An installed sd.cpp that takes --audio-flow-shift applies any audio shift, so it is checked like Diffusers."""
+    if engine != "sd_cpp" or audio_flow_shift is None:
+        return engine
+    from core.inference.sd_cpp_args import sd_cpp_supports_flag
+    from core.inference.sd_cpp_engine import find_sd_cpp_binary
+
+    return None if sd_cpp_supports_flag(find_sd_cpp_binary(), "--audio-flow-shift") else engine
+
+
+async def _require_guardrail_installer(current_subject: str = Depends(get_current_subject)) -> None:
+    """Installing into Studio's own environment is the installation owner's call, from the Unsloth UI (an API key
+    only where full API access is enabled, as for every other full-access action)."""
+    from auth import policy
+
+    await policy.require_owner()
+    if not policy.full_access_permitted() or policy.api_full_access_refused():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Install cosmos-guardrail from the Unsloth UI as the installation owner.",
+        )
+
+
+@router.get("/video/cosmos-guardrail", dependencies = [Depends(_require_guardrail_installer)])
+async def cosmos_guardrail_status():
+    from core.inference import cosmos_guardrail_install
+    return await asyncio.to_thread(cosmos_guardrail_install.status)
+
+
+@router.post(
+    "/video/cosmos-guardrail/install", dependencies = [Depends(_require_guardrail_installer)]
+)
+async def cosmos_guardrail_install_start():
+    from core.inference import cosmos_guardrail_install
+    return await asyncio.to_thread(cosmos_guardrail_install.start_install)

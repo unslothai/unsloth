@@ -52,9 +52,11 @@ def is_h3_comfy_name(filename: Optional[str]) -> bool:
         return False
     if any(token in name for token in ("qwen", "vae", "text_encoder", "controlnet", "lora")):
         return False
-    # Packed w6a8 / nvfp4 / mxfp files have no Studio runtime.
+    # Packed W6A8 / W4A8 run as int8 ConvRot (diffusion_grouped_int8); nvfp4 / mxfp / W4A4 files have no H3 runtime.
+    if any(t in name for t in ("w6a8", "w4a8")):
+        return not any(t in name for t in ("nvfp4", "mxfp", "w4a4"))
     return any(t in name for t in ("int8", "fp8", "bf16", "fp16")) and not any(
-        t in name for t in ("w6a8", "w4a", "nvfp4", "mxfp")
+        t in name for t in ("w4a", "nvfp4", "mxfp")
     )
 
 

@@ -1747,6 +1747,64 @@ def test_every_api_write_route_is_body_capped(main_module):
         assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
 
 
+def _walk_routes(routes):
+    from fastapi import routing
+    included = getattr(routing, "_IncludedRouter", None)
+    for route in routes:
+        if included is not None and isinstance(route, included):
+            yield from _walk_routes(route.effective_candidates())
+        else:
+            yield route
+
+
+def test_every_write_route_is_body_capped_or_an_explicit_upload(main_module, monkeypatch):
+    # Walks every route the app serves, root ones included (/models/load), so a new route outside
+    # the old prefix list can't come back uncapped. Upload passthroughs carry their own cap.
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(main_module, "default_request_body_limit_bytes", lambda: 1024)
+    monkeypatch.setattr(main_module, "STT_AUDIO_RAW_MAX_BYTES", 1024)
+    monkeypatch.setattr(main_module, "STT_AUDIO_JSON_MAX_BYTES", 1024)
+    targets = set()
+    for route in _walk_routes(main_module.app.routes):
+        methods = getattr(route, "methods", None)
+        # Mounts (/mcp, static assets) have no methods; they take POSTs too.
+        writes = (methods or {"POST"}) & {"POST", "PUT", "PATCH", "DELETE"}
+        if not writes:
+            continue
+        path = re.sub(r"\{[^}]+\}", "x", route.path)
+        for form in {path.rstrip("/") or "/", path.rstrip("/") + "/"}:
+            for method in writes:
+                targets.add((method, form))
+    assert ("POST", "/models/load") in targets and ("POST", "/models/unload/") in targets
+
+    def is_upload(method, path):
+        return method != "DELETE" and (
+            path.rstrip("/") in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+            or path.startswith(main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES)
+            or main_module._UPLOAD_PASSTHROUGH_RE.match(path) is not None
+        )
+
+    def body():
+        for _ in range(4):
+            yield b"x" * 1000
+
+    uncapped = []
+    with_uploads = 0
+    client = TestClient(main_module.app, base_url = "http://127.0.0.1", follow_redirects = False)
+    for method, path in sorted(targets):
+        if is_upload(method, path):
+            with_uploads += 1
+            continue
+        r = client.request(
+            method, path, content = body(), headers = {"content-type": "application/json"}
+        )
+        if r.status_code != 413:
+            uncapped.append((method, path, r.status_code))
+    assert with_uploads
+    assert uncapped == []
+
+
 def test_rag_document_uploads_pass_through_on_their_own_cap(main_module, monkeypatch):
     from core.rag import config as rag_config
     from utils.upload_limits import upload_request_limit_bytes
@@ -1934,3 +1992,50 @@ def test_a_withheld_body_is_not_counted_as_running_inference(main_module, health
                     continue
                 headers = {"Content-Type": "application/json", **framing, **credential}
                 assert asyncio.run(counted_while_withheld(path, headers)) == 0, (path, headers)
+
+
+def test_zstd_decodes_run_one_at_a_time(main_module, monkeypatch):
+    # Decoding happens before the route's auth check, so concurrent unauthenticated bombs must not
+    # each inflate to the full cap at once.
+    import types
+    import httpx
+
+    fake = types.ModuleType("backports.zstd")
+
+    class ZstdError(Exception):
+        pass
+
+    fake.ZstdError = ZstdError
+    pkg = types.ModuleType("backports")
+    pkg.zstd = fake
+    monkeypatch.setitem(sys.modules, "backports", pkg)
+    monkeypatch.setitem(sys.modules, "backports.zstd", fake)
+    monkeypatch.setitem(sys.modules, "compression", None)
+    state = {"now": 0, "peak": 0}
+
+    import time
+
+    def slow_decode(zstd, data, limit):
+        state["now"] += 1
+        state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.2)
+        state["now"] -= 1
+        return json.dumps({"text": "x"}).encode()
+
+    monkeypatch.setattr(main_module, "_zstd_decode", slow_decode)
+    app = _make_protected_app(4096, main_module)
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as client:
+            headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"}
+            return await asyncio.gather(
+                *(
+                    client.post("/v1/systemone", content = b"z" * 64, headers = headers)
+                    for _ in range(4)
+                )
+            )
+
+    responses = asyncio.run(run())
+    assert [r.status_code for r in responses] == [200] * 4
+    assert state["peak"] == 1

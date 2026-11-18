@@ -64,6 +64,11 @@ def _claiming_shards(path: str, shards: dict) -> list:
     """Which shards would collect `path`, by pytest's own root-and-ignore rules."""
     claiming = []
     for name, (roots, ignores) in shards.items():
+        # A file root (the shell expands tests/test_x*.py into file arguments) is collected even when an
+        # --ignore / --ignore-glob matches it: pytest applies those only while recursing into directories.
+        if any(root.endswith(".py") and _covers(root, path) for root in roots):
+            claiming.append(name)
+            continue
         if any(_covers(ignore, path) for ignore in ignores):
             continue
         if any(_covers(root, path) for root in roots):

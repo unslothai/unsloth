@@ -51,23 +51,31 @@ type ThreadImportExport = {
 type ContentPart = { type: "text" | "reasoning" | "tool"; text: string; slot?: number };
 
 // Raw strings are prose without a marker; they must count as editable or slots misalign.
+// A typed part whose text is not a string cannot be edited: it joins the placeholders.
 function isEditablePart(part: any): boolean {
-  return typeof part === 'string' || part?.type === 'text' || part?.type === 'reasoning';
+  if (typeof part === 'string') return true;
+  if (part?.type !== 'text' && part?.type !== 'reasoning') return false;
+  const raw = part.text || part.content;
+  return raw == null || typeof raw === 'string';
 }
 
 function toolLabel(part: any): string {
   const name = typeof part?.toolName === 'string' && part.toolName ? part.toolName : part?.type;
-  const label = typeof name === 'string' ? name.replace(/[<>\n]+/g, ' ').trim() : "";
+  const label = typeof name === 'string' ? name.replace(/[<>\r\n]+/g, ' ').trim() : "";
   return label || "tool";
 }
 
 // Escape marker-like prose so the parser does not read it as a placeholder.
 function escapeMarkers(text: string): string {
-  return text.replace(/<(\\*)TOOL (\d+: )/g, "<\\$1TOOL $2");
+  return text
+    .replace(/<(\/?)(\\*)THINK>/g, "<$1\\$2THINK>")
+    .replace(/<(\\*)TOOL (\d+: )/g, "<\\$1TOOL $2");
 }
 
 function unescapeMarkers(text: string): string {
-  return text.replace(/<\\(\\*)TOOL (\d+: )/g, "<$1TOOL $2");
+  return text
+    .replace(/<(\/?)\\(\\*)THINK>/g, "<$1$2THINK>")
+    .replace(/<\\(\\*)TOOL (\d+: )/g, "<$1TOOL $2");
 }
 
 /**
@@ -116,7 +124,7 @@ function stripSeparators(text: string, afterTag: boolean, beforeTag: boolean): s
 function parseTaggedTextToContent(text: string): ContentPart[] {
   const parts: ContentPart[] = [];
   // Requiring the slot number keeps prose and half-deleted markers from matching.
-  const tagRegex = /<\/?THINK>|<TOOL (\d+): ([^<>\n]*)>/g;
+  const tagRegex = /<\/?THINK>|<TOOL (\d+): ([^<>\r\n]*)>/g;
   let lastIndex = 0;
   let match;
   let sawTag = false;
@@ -174,19 +182,22 @@ export async function updateThreadMessage(args: {
     const originalContent = m.message.content;
     const finalContent: any[] = [];
 
-    // Append to the previous text part so a save never multiplies parts.
+    // Merge into the previous text part this save made, so parts never multiply; restored cards keep their payload.
+    const ownTextParts = new Set<object>();
     const pushText = (text: string) => {
       const last = finalContent[finalContent.length - 1];
-      if (last && last.type === 'text') {
+      if (last && ownTextParts.has(last)) {
         last.text = `${last.text}\n\n${text}`;
         return;
       }
-      finalContent.push({ type: 'text', text });
+      const part = { type: 'text', text };
+      ownTextParts.add(part);
+      finalContent.push(part);
     };
 
     if (Array.isArray(originalContent)) {
       const nonEditableParts = originalContent.filter(
-        (part: any) => !isEditablePart(part)
+        (part: any) => part && !isEditablePart(part)
       );
       const restored = new Set<number>();
 
@@ -218,16 +229,19 @@ export async function updateThreadMessage(args: {
 
     const previousContent = m.message.content;
     const previousTools = Array.isArray(previousContent)
-      ? previousContent.filter((part) => !isEditablePart(part))
+      ? previousContent.filter((part) => part && !isEditablePart(part))
       : [];
-    const unchanged = extractTaggedText(finalContent) === extractTaggedText(previousContent)
-      && JSON.stringify(finalContent.filter((part) => !isEditablePart(part))) === JSON.stringify(previousTools);
+    const previousText = extractTaggedText(previousContent);
+    const unchanged = extractTaggedText(finalContent) === previousText
+      && JSON.stringify(finalContent.filter((part) => part && !isEditablePart(part))) === JSON.stringify(previousTools);
+    // Not `unchanged`: tagged text trims reasoning, which would drop a whitespace-only reasoning edit.
+    const untouched = newText === previousText && Array.isArray(previousContent);
 
     return {
       ...m,
       message: {
         ...m.message,
-        content: finalContent,
+        content: untouched ? previousContent : finalContent,
         metadata:
           unchanged
             ? withoutGeminiContinuationReplay(m.message.metadata)

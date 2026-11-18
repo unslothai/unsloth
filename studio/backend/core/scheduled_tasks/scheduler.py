@@ -67,6 +67,8 @@ class Answer:
     checkpoint: Optional[str] = None
     gguf_variant: Optional[str] = None
     provider: Optional[dict] = None
+    # The task chat's message the history ended on; the answer is saved under it.
+    chat_parent_id: Optional[str] = None
 
 
 @dataclass
@@ -145,6 +147,111 @@ def _run_instructions(task: dict, now_ms: int) -> str:
         system_prompt(task, now_ms),
     ]
     return "\n\n".join(part for part in parts if part)
+
+
+_HISTORY_TURNS = 40
+_HISTORY_CHARS = 48_000
+
+
+def _target_chat(task: dict) -> Optional[dict]:
+    from storage import studio_db
+
+    thread_id = task.get("threadId")
+    if not thread_id:
+        return None
+    thread = studio_db.get_chat_thread(thread_id)
+    return thread if thread is not None and not thread.get("pairId") else None
+
+
+_ROLE_ORDER = {"system": 0, "user": 1, "assistant": 2}
+
+
+def _shown_branch(messages: list[dict]) -> list[dict]:
+    """The branch Chat shows, oldest first; mirrors resolveSavedBranchHead and createParentResolver."""
+    if not messages:
+        return []
+    ordered = sorted(
+        messages,
+        key = lambda m: (m.get("createdAt") or 0, _ROLE_ORDER.get(m.get("role") or "", 99), m["id"]),
+    )
+    by_id = {message["id"]: message for message in ordered}
+    order = {message["id"]: index for index, message in enumerate(ordered)}
+    parent_of: dict[str, Optional[str]] = {}
+    children: dict[str, list[str]] = {}
+    previous: Optional[str] = None
+    saw_recorded = False
+    for message in ordered:
+        recorded = message.get("parentId")
+        parent = previous if recorded is None and not saw_recorded else recorded
+        saw_recorded = saw_recorded or recorded is not None
+        parent_of[message["id"]] = parent
+        if parent is not None:
+            children.setdefault(parent, []).append(message["id"])
+        previous = message["id"]
+    head, head_order = ordered[-1]["id"], -1
+    pending, seen = [head], set()
+    while pending:
+        node = pending.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        below = children.get(node)
+        if below:
+            pending.extend(below)
+        elif order[node] > head_order:
+            head, head_order = node, order[node]
+    branch: list[dict] = []
+    walked: set[str] = set()
+    current: Optional[str] = head
+    while current is not None and current in by_id and current not in walked:
+        walked.add(current)
+        branch.append(by_id[current])
+        current = parent_of.get(current)
+    return branch[::-1]
+
+
+def _message_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    parts = content if isinstance(content, list) else []
+    return "\n".join(
+        str(part.get("text") or "")
+        for part in parts
+        if isinstance(part, dict) and part.get("type") == "text"
+    ).strip()
+
+
+def _chat_history(task: dict) -> tuple[list[dict], Optional[str]]:
+    """Text turns, alternating and opening on the user as chat templates expect, and the branch's leaf id."""
+    from storage import studio_db
+
+    thread = _target_chat(task)
+    if thread is None:
+        return [], None
+    branch = _shown_branch(studio_db.list_chat_messages(thread["id"]))
+    turns: list[dict] = []
+    for message in branch:
+        text = _message_text(message)
+        if message.get("role") not in ("user", "assistant") or not text:
+            continue
+        if turns and turns[-1]["role"] == message["role"]:
+            turns[-1]["content"] += "\n\n" + text
+        else:
+            turns.append({"role": message["role"], "content": text})
+    kept: list[dict] = []
+    total = 0
+    for turn in reversed(turns[-_HISTORY_TURNS:]):
+        total += len(turn["content"])
+        if total > _HISTORY_CHARS and kept:
+            break
+        kept.append(turn)
+    kept.reverse()
+    while kept and kept[0]["role"] != "user":
+        kept.pop(0)
+    if kept and kept[-1]["role"] == "user":
+        kept.pop()
+    return kept, (branch[-1]["id"] if branch else None)
 
 
 def _loop_cancelled(current: Optional[asyncio.Task], stopping: bool) -> bool:
@@ -491,6 +598,25 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         )
 
 
+def _tool_fields(web_search: bool) -> dict:
+    """Web search only, never python or terminal: nobody is there to approve a call, so "off" never prompts."""
+    from state.tool_policy import get_tool_policy
+
+    # --disable-tools also covers a connection's hosted search, which the local loop's veto would not reach.
+    if not web_search or get_tool_policy() is False:
+        # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
+        # means every built-in, python and terminal included.
+        return {"tool_choice": "none", "enabled_tools": []}
+    return {
+        "enable_tools": True,
+        "enabled_tools": ["web_search"],
+        "permission_mode": "off",
+        # Studio's search, not a provider's hosted one, as Chat sends it.
+        "run_tools_locally": True,
+        "nudge_tool_calls": False,
+    }
+
+
 def _pins_local_model(model: Optional[str]) -> bool:
     from routes.inference import _connection_model_ref
     return bool(model) and _connection_model_ref(model) is None
@@ -503,7 +629,7 @@ async def generate_answer(
     cancel_event: threading.Event,
     holder: Optional[SwapHolder] = None,
 ) -> Answer:
-    """Ask the chat model to do the task, text only (tools never run unattended)."""
+    """Ask the chat model to do the task; web search is the only tool a run may use."""
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -578,8 +704,10 @@ async def generate_answer(
                 model_fields = {"model": kept}
             # A project folder on a stalled mount must not keep the scheduler from every other task.
             try:
-                instructions = await asyncio.wait_for(
-                    asyncio.to_thread(_run_instructions, task, db.now_ms()),
+                instructions, (history, chat_parent_id) = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: (_run_instructions(task, db.now_ms()), _chat_history(task))
+                    ),
                     timeout = max(0.0, deadline - loop.time()),
                 )
             except TimeoutError:
@@ -588,14 +716,18 @@ async def generate_answer(
                 {
                     "messages": [
                         {"role": "system", "content": instructions},
+                        *history,
                         {"role": "user", "content": task["prompt"]},
                     ],
                     "stream": False,
                     "cancel_id": run["id"],
-                    # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
-                    # means every built-in, python and terminal included.
-                    "tool_choice": "none",
-                    "enabled_tools": [],
+                    # History is budgeted in characters, so a small window must drop turns, not fail.
+                    **(
+                        {"context_overflow": "truncate_oldest", "context_policy": "rolling"}
+                        if history
+                        else {}
+                    ),
+                    **_tool_fields(bool(task.get("webSearch"))),
                     **model_fields,
                     **_reasoning_fields(
                         task.get("reasoningEffort"),
@@ -714,6 +846,7 @@ async def generate_answer(
         checkpoint = serving.get("checkpoint"),
         gguf_variant = serving.get("gguf_variant"),
         provider = provider,
+        chat_parent_id = chat_parent_id,
     )
 
 
@@ -734,12 +867,65 @@ def _project_or_none(project_id: Optional[str]) -> Optional[str]:
 def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_at: int) -> str:
     from storage import studio_db
 
-    thread_id = db.chat_id_for_run(run["id"])
-    user_message_id = str(uuid.uuid4())
+    target = _target_chat(task)
+    if target is not None:
+        thread_id = target["id"]
+        user_message_id, answer_message_id = db.message_ids_for_run(run["id"])
+        messages = studio_db.list_chat_messages(thread_id)
+        # Under the turns the model read, even if the chat moved on while it answered.
+        if any(message["id"] == answer.chat_parent_id for message in messages):
+            parent_id = answer.chat_parent_id
+        else:
+            branch = _shown_branch(messages)
+            parent_id = branch[-1]["id"] if branch else None
+    else:
+        thread_id = db.chat_id_for_run(run["id"])
+        user_message_id, answer_message_id = str(uuid.uuid4()), str(uuid.uuid4())
+        parent_id = None
     # After the prompt even within one millisecond, which the message order relies on.
     answered_at = max(finished_at, started_at + 1)
     model = answer.model or ""
     checkpoint = answer.checkpoint or model
+    if target is None:
+        _new_run_chat(task, thread_id, checkpoint, answer, started_at, answered_at)
+    parts, metadata = _answer_parts(task, run, answer, checkpoint, model, started_at, answered_at)
+    source = {"taskId": task["id"], "runId": run["id"]}
+    try:
+        studio_db.sync_chat_messages(
+            thread_id,
+            [
+                {
+                    "id": user_message_id,
+                    "threadId": thread_id,
+                    "parentId": parent_id,
+                    "role": "user",
+                    "content": [{"type": "text", "text": task["prompt"]}],
+                    "metadata": {"scheduledTask": source},
+                    "createdAt": started_at,
+                },
+                {
+                    "id": answer_message_id,
+                    "threadId": thread_id,
+                    "parentId": user_message_id,
+                    "role": "assistant",
+                    "content": parts,
+                    "metadata": metadata,
+                    "createdAt": answered_at,
+                },
+            ],
+        )
+    except Exception:
+        # Never leave an empty chat behind.
+        if target is None:
+            _discard_chat(thread_id)
+        raise
+    return thread_id
+
+
+def _new_run_chat(
+    task: dict, thread_id: str, checkpoint: str, answer: Answer, started_at: int, answered_at: int
+) -> None:
+    from storage import studio_db
     studio_db.upsert_chat_thread(
         {
             "id": thread_id,
@@ -754,6 +940,17 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
             "archived": bool(task.get("archiveSuccessful")),
         }
     )
+
+
+def _answer_parts(
+    task: dict,
+    run: dict,
+    answer: Answer,
+    checkpoint: str,
+    model: str,
+    started_at: int,
+    answered_at: int,
+) -> tuple[list[dict], dict]:
     parts: list[dict] = []
     source = {"taskId": task["id"], "runId": run["id"]}
     metadata: dict = {
@@ -782,41 +979,20 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
         seconds = max(0, round((answered_at - started_at) / 1000))
         metadata.update(reasoningDuration = seconds, reasoningDurations = [seconds])
     parts.append({"type": "text", "text": answer.content})
-    try:
-        studio_db.sync_chat_messages(
-            thread_id,
-            [
-                {
-                    "id": user_message_id,
-                    "threadId": thread_id,
-                    "parentId": None,
-                    "role": "user",
-                    "content": [{"type": "text", "text": task["prompt"]}],
-                    "metadata": {"scheduledTask": source},
-                    "createdAt": started_at,
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "threadId": thread_id,
-                    "parentId": user_message_id,
-                    "role": "assistant",
-                    "content": parts,
-                    "metadata": metadata,
-                    "createdAt": answered_at,
-                },
-            ],
-        )
-    except Exception:
-        # Never leave an empty chat behind.
-        _discard_chat(thread_id)
-        raise
-    return thread_id
+    return parts, metadata
 
 
 def _discard_chat(thread_id: str) -> None:
     from storage import studio_db
     try:
         studio_db.delete_chat_threads([thread_id])
+    except Exception:
+        logger.exception("scheduled_tasks.discard_chat_failed")
+
+
+def _discard_run(run_id: str) -> None:
+    try:
+        db.discard_run(run_id)
     except Exception:
         logger.exception("scheduled_tasks.discard_chat_failed")
 
@@ -1035,7 +1211,7 @@ class ScheduledTaskScheduler:
             discard = saving and outcome["status"] != "succeeded"
             settled = await self._settle(run["id"], {**outcome, "discard_chat": discard})
             if saving and settled is not True:
-                await asyncio.to_thread(_discard_chat, db.chat_id_for_run(run["id"]))
+                await asyncio.to_thread(_discard_run, run["id"])
 
     @staticmethod
     def _still_wanted(account: AccountContext, task_id: str) -> bool:

@@ -7,18 +7,24 @@ import {
   roleLabel,
 } from "./conversation-markdown.ts";
 
-export const CONVERSATION_HTML_FORMAT = "html";
-export const CONVERSATION_HTML_LABEL = "HTML";
-export const CONVERSATION_HTML_EXTENSION = "html";
-export const CONVERSATION_HTML_MIME_TYPE = "text/html";
-export const CONVERSATION_PDF_FORMAT = "pdf";
-export const CONVERSATION_PDF_LABEL = "PDF";
-export const CONVERSATION_PDF_EXTENSION = "pdf";
-export const CONVERSATION_PDF_MIME_TYPE = "application/pdf";
+export {
+  CONVERSATION_HTML_EXTENSION,
+  CONVERSATION_HTML_FORMAT,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_HTML_MIME_TYPE,
+  CONVERSATION_PDF_EXTENSION,
+  CONVERSATION_PDF_FORMAT,
+  CONVERSATION_PDF_LABEL,
+  CONVERSATION_PDF_MIME_TYPE,
+} from "./conversation-html-format.ts";
+
+export type ConversationHtmlMessage = ConversationMarkdownMessage & {
+  readonly images?: readonly string[];
+};
 
 export type NamedConversationHtml = {
   readonly title: string;
-  readonly messages: readonly ConversationMarkdownMessage[];
+  readonly messages: readonly ConversationHtmlMessage[];
 };
 
 export function escapeHtml(text: string): string {
@@ -34,6 +40,10 @@ export function escapeHtml(text: string): string {
 const ALLOWED_RAW_TAG_PATTERN = /&lt;(\/?)(details|summary)&gt;/g;
 const DATA_IMAGE_PATTERN =
   /^data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=\s]+$/i;
+
+export function isDataImage(src: string): boolean {
+  return DATA_IMAGE_PATTERN.test(src);
+}
 
 function safeHref(raw: string): string | null {
   const value = raw.trim();
@@ -63,7 +73,7 @@ const markdown = new Marked({
       return `<a href="${escapeHtml(url)}"${titleAttr} rel="noopener noreferrer">${text}</a>`;
     },
     image({ href, text }: Tokens.Image): string {
-      if (DATA_IMAGE_PATTERN.test(href)) {
+      if (isDataImage(href)) {
         return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}">`;
       }
       // A remote image would phone home when the file is opened, so keep it as a link.
@@ -87,14 +97,25 @@ function roleClass(role: string): string {
 }
 
 function renderMessages(
-  messages: readonly ConversationMarkdownMessage[],
+  messages: readonly ConversationHtmlMessage[],
 ): string {
   return messages
-    .filter(({ content }) => content.trim())
-    .map(
-      ({ role, content }) =>
-        `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}</h3>\n<div class="content">\n${markdownToHtml(content)}</div>\n</section>`,
-    )
+    .map(({ role, content, images = [] }) => ({
+      role,
+      content,
+      pictures: images
+        .filter(isDataImage)
+        .map((src) => `<p><img src="${escapeHtml(src)}" alt=""></p>`)
+        .join(""),
+    }))
+    .filter(({ content, pictures }) => content.trim() || pictures)
+    .map(({ role, content, pictures }) => {
+      const html =
+        role === "user" || role === "system"
+          ? escapeHtml(content)
+          : `\n${markdownToHtml(content)}`;
+      return `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}</h3>\n<div class="content">${pictures}${html}</div>\n</section>`;
+    })
     .join("\n");
 }
 
@@ -114,12 +135,13 @@ export function buildConversationHtmlBody(
 }
 
 export const CONVERSATION_EXPORT_CSS = `
-body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #1f2328; }
+body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #1f2328; overflow-wrap: break-word; }
 h1 { font-size: 18pt; margin: 0 0 4pt 0; }
 .meta { color: #6e7781; font-size: 9pt; margin: 0 0 16pt 0; }
 .conversation-title { font-size: 14pt; margin: 18pt 0 8pt 0; }
 .message { margin: 0 0 14pt 0; padding: 8pt 12pt; border-left: 3pt solid #d0d7de; }
 .message.user { background-color: #f6f8fa; border-left-color: #8c959f; }
+.message.user .content, .message.system .content { white-space: pre-wrap; }
 .message.system { border-left-color: #bf8700; }
 .message.tool { border-left-color: #8250df; }
 .role { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.04em; color: #57606a; margin: 0 0 4pt 0; }

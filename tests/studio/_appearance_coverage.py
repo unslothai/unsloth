@@ -34,6 +34,8 @@ CUSTOM_MEASURED = {
     "chatWidth": "full",
     "uiFontSize": 20,
     "codeFontSize": 20,
+    # Forced motion, the default until Reduce motion turned on by default.
+    "reduceMotion": "off",
 }
 # Root attributes / classes the `+custom` modes must show, so a renamed key cannot measure nothing.
 CUSTOM_EXPECT = [
@@ -47,6 +49,7 @@ CUSTOM_EXPECT = [
     "data-code-font-size",
     "pointer-cursors",
     "no-font-smoothing",
+    "force-motion",
 ]
 CUSTOM_ALLOW = {
     "colors": "custom colour tokens (CSS variables only, no effect properties)",
@@ -56,7 +59,6 @@ CUSTOM_ALLOW = {
     "codeFont": "font-family variable only",
     "importedFonts": "@font-face list for the font settings above",
     "sentAttachments": "layout of sent attachment rows only",
-    "reduceMotion": "default 'off' (forced motion) is what every mode measures; 'on' and 'system' only remove motion",
     "sidebarMenu": "which sidebar menu items show",
     "sidebarNav": "which sidebar items are pinned",
     "sidebarNavAuto": "which sidebar items auto-show",
@@ -64,7 +66,7 @@ CUSTOM_ALLOW = {
 # Enum settings: every value must be the default, measured, or listed here.
 ENUM_ALLOW = {
     ("chatWidth", "wide"): "between standard and the measured full width",
-    ("reduceMotion", "on"): "removes motion",
+    ("reduceMotion", "on"): "removes motion (the default)",
     ("reduceMotion", "system"): "follows the OS; no more than forced motion",
     ("sentAttachments", "list"): "attachment row layout",
     ("sentAttachments", "chips"): "attachment row layout",
@@ -100,6 +102,7 @@ ROOT_FLAGS = {
     "data-glass-plain": "liquid-3d",
     "data-glass-layers": "allow: WebKit only (layers for Glass surfaces); the Chromium gate cannot run it",
     "data-glass-cpu": "allow: WebKitGTK only (cheaper Glass); the Chromium gate cannot run it",
+    "webkit-cpu-paint": "allow: WebKitGTK CPU painting only (image shadows); the Chromium gate cannot run it",
     "data-glass-motion": "allow: set only while scrolling under software compositing; scroll areas measure it",
     "data-chat-wallpaper-ready": "solid+wallpaper",
     "data-chat-wallpaper-workspace-ready": "liquid-3d+wallpaper",
@@ -247,6 +250,8 @@ def _root_compound(part: str) -> str | None:
 
 def _flags(compound: str) -> set[str]:
     """Attribute names (`name=value` when the selector pins an exact value) and classes."""
+    # A flag inside :not() turns the rule off, never on.
+    compound = re.sub(r":not\((?:[^()]|\([^()]*\))*\)", "", compound)
     out = set(re.findall(r"\.([\w-]+)", compound))
     for name, op, value in re.findall(
         r"\[([\w-]+)(?:\s*([~|^$*]?=)\s*\"?([^\]\"]*)\"?)?\]", compound

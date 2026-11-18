@@ -38,6 +38,8 @@ _LICENCE_BLOCKED: dict[str, str] = {
 _UNMIRRORED: dict[str, str] = {
     "lodestones/chroma1-hd": "Chroma",
     "circlestone-labs/anima-base-v1.0-diffusers": "Anima",
+    # Native-layout release read by Studio's own loader; no unsloth mirror of it exists yet.
+    "minimaxai/minimax-h3-image": "MiniMax-H3-Image",
 }
 
 # Third-party DENOISER artifacts the catalog still offers. Not a companion fetch and not licence-blocked: there is
@@ -72,6 +74,7 @@ _CARD_BASES: dict[str, str] = {
     "unsloth/flux-3-image-klein-base-GGUF": "black-forest-labs/flux-3-image-klein-base",
     "unsloth/MOSS-Image-SFT-GGUF": "OpenMOSS-Team/MOSS-Image-SFT",
     "unsloth/MOSS-Image-Base-GGUF": "OpenMOSS-Team/MOSS-Image-Base",
+    "unsloth/MiniMax-H3-Image-GGUF": "MiniMaxAI/MiniMax-H3-Image",
 }
 
 # No mirror repo: official diffusers folders live in the unsloth repo (-FP8 if any, else -GGUF).
