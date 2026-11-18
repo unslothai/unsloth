@@ -47,69 +47,29 @@ def _bundle(cluster, monkeypatch, tmp_path: Path) -> Path:
     return root
 
 
-def test_windows_prefers_the_executable_name_over_a_stray_extensionless_file(
-    monkeypatch, tmp_path
-) -> None:
-    """The one that reported success while returning the wrong file."""
-    cluster = _cluster()
-    root = _bundle(cluster, monkeypatch, tmp_path)
-    decoy = _write(root / "build" / "bin" / "ggml-rpc-server", executable = False)
-    real = _write(root / "build" / "bin" / "ggml-rpc-server.exe", executable = False)
-
-    monkeypatch.setattr(cluster, "_on_windows", lambda windows = None: True)
-    resolved = cluster.rpc_server_binary()
-    assert resolved == str(real), f"resolved {resolved}, decoy was {decoy}"
-
-
-def test_windows_rejects_a_file_that_is_not_executable_there(monkeypatch, tmp_path) -> None:
-    """With only the extensionless file present the answer is None, not that file."""
-    cluster = _cluster()
-    root = _bundle(cluster, monkeypatch, tmp_path)
-    _write(root / "build" / "bin" / "ggml-rpc-server", executable = True)
-
-    monkeypatch.setattr(cluster, "_on_windows", lambda windows = None: True)
-    assert cluster.rpc_server_binary() is None
-
-
-def test_posix_still_resolves_the_extensionless_binary(monkeypatch, tmp_path) -> None:
-    """No regression: the extensionless name is the right one here."""
+def test_the_toolkit_resolves_through_the_shared_lookup(monkeypatch, tmp_path) -> None:
+    """spark_cluster answers exactly what studio/llama_rpc.py answers; the rules live there."""
     cluster = _cluster()
     root = _bundle(cluster, monkeypatch, tmp_path)
     real = _write(root / "build" / "bin" / "ggml-rpc-server", executable = True)
-    _write(root / "build" / "bin" / "ggml-rpc-server.exe", executable = False)
+    from studio import llama_rpc
 
-    monkeypatch.setattr(cluster, "_on_windows", lambda windows = None: False)
-    assert cluster.rpc_server_binary() == str(real)
+    monkeypatch.setattr(llama_rpc.shutil, "which", lambda name: None)
+    assert cluster.rpc_server_binary() == llama_rpc.rpc_server_binary() == str(real)
+    assert cluster.llama_bundle_dir() == llama_rpc.llama_bundle_dir() == root
+    assert cluster.rpc_server_names() == llama_rpc.rpc_server_names()
+    assert cluster._rpc_server_location() == (str(real), root)
 
 
 @_POSIX_ONLY
-def test_posix_still_rejects_a_file_without_the_exec_bit(monkeypatch, tmp_path) -> None:
+def test_the_bundle_identity_names_the_server_the_installer_placed(monkeypatch, tmp_path) -> None:
     cluster = _cluster()
     root = _bundle(cluster, monkeypatch, tmp_path)
-    _write(root / "build" / "bin" / "ggml-rpc-server", executable = False)
-
-    monkeypatch.setattr(cluster, "_on_windows", lambda windows = None: False)
-    assert cluster.rpc_server_binary() is None
-
-
-def test_the_platform_seam_follows_os_name() -> None:
-    """What the resolution asks, on whatever platform this runs."""
-    cluster = _cluster()
-    assert cluster._on_windows() is (os.name == "nt")
-    assert cluster._on_windows(True) is True
-    assert cluster._on_windows(False) is False
-
-
-@pytest.mark.parametrize(
-    "windows,leading",
-    [(True, "ggml-rpc-server.exe"), (False, "ggml-rpc-server")],
-)
-def test_the_search_order_follows_the_platform(windows: bool, leading: str) -> None:
-    cluster = _cluster()
-    names = cluster.rpc_server_names(windows = windows)
-    assert names[0] == leading
-    # Ordering only. Dropping a name would make some installs unresolvable.
-    assert set(names) == set(cluster._RPC_SERVER_NAMES)
+    server = _write(root / "build" / "bin" / "ggml-rpc-server", executable = True)
+    _write(root / "build" / "bin" / "libggml-rpc.so", executable = False)
+    identity = cluster.llama_bundle_identity(root)
+    assert identity["rpc_server"] == str(server)
+    assert identity["rpc_lib"] == str(root / "build" / "bin" / "libggml-rpc.so")
 
 
 def test_the_peer_probe_decides_for_itself() -> None:

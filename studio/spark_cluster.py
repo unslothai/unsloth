@@ -695,12 +695,21 @@ def _is_executable_file(path, windows: Optional[bool] = None) -> bool:
 
 
 def rpc_server_names(windows: Optional[bool] = None) -> Tuple[str, ...]:
-    """`_RPC_SERVER_NAMES` with the platform's own spelling first."""
-    suffixed = tuple(
-        n for n in _RPC_SERVER_NAMES if n.lower().endswith(_WINDOWS_EXECUTABLE_SUFFIXES)
-    )
-    plain = tuple(n for n in _RPC_SERVER_NAMES if n not in suffixed)
-    return (suffixed + plain) if _on_windows(windows) else (plain + suffixed)
+    """`_RPC_SERVER_NAMES` with the platform's own spelling first (``studio.llama_rpc``)."""
+    return _llama_rpc().rpc_server_names(windows)
+
+
+def _llama_rpc():
+    """``studio.llama_rpc``, which the installer, the worker CLI and serving share."""
+    try:
+        from studio import llama_rpc
+    except ImportError:
+        # Loaded by path (no ``studio`` package on sys.path): its parent directory holds one.
+        root = str(Path(__file__).resolve().parent.parent)
+        if root not in sys.path:
+            sys.path.append(root)
+        from studio import llama_rpc
+    return llama_rpc
 
 
 _RPC_LIB_NAMES = ("libggml-rpc.so", "libggml-rpc.dylib", "libggml-rpc.0.dylib", "ggml-rpc.dll")
@@ -708,18 +717,8 @@ _BUNDLE_SUBDIRS = (("build", "bin"), ("build", "bin", "Release"), ("bin",), ())
 
 
 def llama_bundle_dir() -> Path:
-    """The managed llama.cpp bundle, resolved as the installer resolves it."""
-    override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    root = _studio_root()
-    try:
-        is_default = root.resolve() == _DEFAULT_STUDIO_ROOT.resolve()
-    except (OSError, ValueError, RuntimeError):
-        is_default = root == _DEFAULT_STUDIO_ROOT
-    if not is_default:
-        return root / "llama.cpp"
-    return Path.home() / ".unsloth" / "llama.cpp"
+    """The managed llama.cpp bundle, resolved as the installer resolves it (``studio.llama_rpc``)."""
+    return _llama_rpc().llama_bundle_dir()
 
 
 def _peer_dir_exists(peer_ip: str, user: str, remote_dir: str) -> bool:
@@ -753,37 +752,17 @@ def _find_in_bundle(
     names: Tuple[str, ...],
     executable: bool = False,
 ) -> Optional[Path]:
-    for parts in _BUNDLE_SUBDIRS:
-        base = root.joinpath(*parts) if parts else root
-        for name in names:
-            candidate = base / name
-            try:
-                if not candidate.is_file():
-                    continue
-                if executable and not _is_executable_file(candidate):
-                    continue
-            except OSError:
-                continue
-            return candidate
-    return None
+    return _llama_rpc()._find_in_bundle(root, names, executable = executable)
 
 
 def _rpc_server_location() -> Tuple[Optional[str], Path]:
     """(ggml-rpc-server, the bundle root it came from); the root falls back to the managed one."""
-    for root in (llama_bundle_dir(), Path.home() / "src" / "llamacpp-rpc"):
-        found = _find_in_bundle(root, rpc_server_names(), executable = True)
-        if found is not None:
-            return str(found), root
-    found = shutil.which("ggml-rpc-server") or shutil.which("rpc-server")
-    if found is None:
-        return None, llama_bundle_dir()
-    parent = Path(found).parent
-    return found, parent.parent if parent.name == "bin" else parent
+    return _llama_rpc().rpc_server_location()
 
 
 def rpc_server_binary() -> Optional[str]:
     """Path to ggml-rpc-server, or None."""
-    return _rpc_server_location()[0]
+    return _llama_rpc().rpc_server_binary()
 
 
 _LLAMA_SERVER_NAMES = ("llama-server", "llama-server.exe")
