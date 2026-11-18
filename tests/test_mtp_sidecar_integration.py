@@ -56,7 +56,7 @@ def test_cached_mtp_sidecar_restores_tiny_model(tmp_path):
         (repo / "refs" / "main").write_text(revision)
 
         source = root / "unsloth/models/loader.py"
-        tree = ast.parse(source.read_text())
+        tree = ast.parse(source.read_text(encoding = "utf-8"))
         helper = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                       and node.name == "_reattach_saved_mtp_head")
         namespace = {"os": os, "__package__": "unsloth.models"}
