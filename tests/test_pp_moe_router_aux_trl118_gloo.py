@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TRL >= 1.18 (trl#8103) no longer writes config.output_router_logits: SFTTrainer passes output_router_logits =
-True to each forward when aux_loss_enabled. The pipeline Trainer step never calls compute_loss, so it must read
-the same switch, or it trains without the router auxiliary loss that one process (and stock TRL) keeps.
-
-gloo pp2 through pp_env's Trainer step vs one process, fp32, tiny random Qwen3-MoE (config.output_router_logits
-as each TRL version leaves it)."""
+"""TRL >= 1.18 (trl#8103) passes output_router_logits per forward instead of writing the config; the pp
+Trainer step skips compute_loss, so it must honour aux_loss_enabled. gloo pp2 vs one process, tiny Qwen3-MoE."""
 
 import multiprocessing
 import os
@@ -40,7 +36,6 @@ def _gpu_compute_loss(self, *a, **k):
 
 
 def _zoo_cpu_compute_loss(self, *a, **k):
-    # The names stock TRL >= 1.15 compute_loss reads to add coef x aux / accumulation steps itself.
     raise AssertionError((self.router_aux_loss_coef, self.current_gradient_accumulation_steps))
 
 
@@ -48,8 +43,7 @@ _zoo_cpu_compute_loss._unsloth_cpu = True  # unsloth_zoo.cpu.trainer._patch_sft_
 
 
 def _trainer(stage, aux_loss_enabled, coef, zoo_cpu):
-    """What pp_env's step reads from an SFTTrainer: aux_loss_enabled / router_aux_loss_coef as TRL sets them
-    (None = a plain transformers Trainer, which has neither)."""
+    """aux_loss_enabled None = a plain transformers Trainer."""
     body = {"compute_loss": _zoo_cpu_compute_loss if zoo_cpu else _gpu_compute_loss}
     body["_prepare_inputs"] = lambda self, x: x
     trainer = type("SFTTrainer", (), body)()
@@ -71,8 +65,6 @@ def _trainer(stage, aux_loss_enabled, coef, zoo_cpu):
 
 
 def _one_process(config_flag, kwarg, coef, ids, labels, attention_mask):
-    """The one-process forward: transformers adds router_aux_loss_coef x aux when the call's
-    output_router_logits (else the config's) is on. Unsloth's SFT compute_loss passes True when aux_loss_enabled."""
     model = build(aux = config_flag, coef = CONFIG_COEF)
     model.router_aux_loss_coef = (
         coef  # what Unsloth's SFTTrainer init hands the CausalLM (models/rl.py)
@@ -186,13 +178,10 @@ def _spawn(world = 2, **kwargs):
 CELLS = {
     # TRL >= 1.18: the config keeps the checkpoint's False; only aux_loss_enabled turns the loss on.
     "trl118_on": dict(config_flag = False, aux_loss_enabled = True, coef = 0.5, zoo_cpu = False),
-    # ... and on the CPU backend, where the stage applies TRL's own coef x aux / accumulation steps.
     "trl118_on_zoo_cpu": dict(config_flag = False, aux_loss_enabled = True, coef = 0.5, zoo_cpu = True),
-    # TRL 1.15 - 1.17 wrote config.output_router_logits = aux_loss_enabled: both switches on, added once.
+    # TRL 1.15 - 1.17 wrote the config too: both on, added once.
     "trl117_on": dict(config_flag = True, aux_loss_enabled = True, coef = 0.5, zoo_cpu = False),
-    # router_aux_loss_coef = 0.0 (any TRL): nothing added.
     "trl_off": dict(config_flag = False, aux_loss_enabled = False, coef = 0.0, zoo_cpu = False),
-    # A plain transformers Trainer has no aux_loss_enabled: the config decides, as before.
     "plain_trainer_config_on": dict(
         config_flag = True, aux_loss_enabled = None, coef = CONFIG_COEF, zoo_cpu = False
     ),
@@ -224,8 +213,7 @@ def test_pp2_trainer_step_keeps_the_trl_router_aux_loss(cell):
 
 
 def test_pp2_trainer_step_refuses_split_aux_on_trl118():
-    # Several micro-batches would sum per-micro-batch load-balancing losses (another objective): refused when the
-    # trainer turns the loss on, also when only aux_loss_enabled says so.
+    # Summing per-micro-batch aux losses is a different objective: refused.
     results = _spawn(n_mb = 2, **CELLS["trl118_on"])
     for res in results:
         assert "micro-batch" in (res["refused"] or ""), res["refused"]

@@ -878,8 +878,6 @@ def _moe_aux_plan(parts):
 
 
 def _router_aux_requested(ctx, config):
-    """output_router_logits for this step, as the model forward reads it: the call's value (ctx, set per step),
-    else the config's."""
     on = getattr(ctx, "output_router_logits", None)
     if on is None:
         on = getattr(config, "output_router_logits", False)
@@ -1019,7 +1017,7 @@ def _refuse_uncarried_router_aux(ctx, kwargs):
     )
     requested = kwargs.get("output_router_logits")
     if requested is None:
-        requested = getattr(ctx, "output_router_logits", None)  # the trainer's per-step request
+        requested = getattr(ctx, "output_router_logits", None)
     if not _router_aux_off(inner, text, requested):
         raise ValueError(
             _uncarried_router_aux_message(
@@ -1630,8 +1628,7 @@ class _StageContext:
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
-        # The step's output_router_logits request (None: the config decides), as the model forward reads it:
-        # TRL >= 1.18 passes it to each forward instead of writing the config (pp_env._router_aux_request).
+        # Per-step request (None: config decides); pp_env._router_aux_request.
         self.output_router_logits = None
         self.uncarried_moe = None
         self.ple = None
@@ -2049,7 +2046,7 @@ def _refuse_aux_with_reentrant_checkpointing(
 ):
     """Reentrant checkpointing (transformers' default, Unsloth smart checkpointing) runs the first layer forward
     under no_grad, so the captured router logits carry no graph and the auxiliary loss would add its value but
-    no gradient. `on`: the step's output_router_logits (None: the config's)."""
+    no gradient."""
     if not (getattr(config, "output_router_logits", False) if on is None else on):
         return
     if non_reentrant_checkpointing_only(model) is False:

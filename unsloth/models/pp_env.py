@@ -1126,9 +1126,7 @@ def _set_trainer_aux(stage, value):
 
 
 def _router_aux_request(trainer):
-    """The output_router_logits a TRL SFTTrainer's compute_loss passes to each forward (True when
-    aux_loss_enabled; TRL >= 1.18 no longer writes it to the config), else None: the config decides. The pipeline
-    schedule runs the stages without compute_loss, so the step hands it to them."""
+    """TRL >= 1.18 passes output_router_logits per forward, not via the config; the schedule skips compute_loss."""
     return True if getattr(trainer, "aux_loss_enabled", False) else None
 
 
