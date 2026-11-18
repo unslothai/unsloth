@@ -39,7 +39,9 @@ def _tabbed_page(hidden: str) -> str:
     )
 
 
-@pytest.mark.parametrize("hidden", [" hidden", ' hidden=""', ' hidden="true"'])
+@pytest.mark.parametrize(
+    "hidden", [" hidden", ' hidden=""', ' hidden="true"', ' hidden="" style="display:none"']
+)
 @pytest.mark.parametrize("main_content", [True, False])
 def test_every_tab_of_a_tabbed_docs_page_is_read(hidden, main_content):
     out = html_to_markdown(_tabbed_page(hidden), main_content = main_content)

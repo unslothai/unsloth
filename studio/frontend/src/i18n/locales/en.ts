@@ -883,6 +883,7 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
+    addScheduledTask: "Add scheduled task…",
     compact: "Compact conversation",
     compactQueued: "Compaction requested for the next message",
     compactEmpty: "Nothing to compact yet",
@@ -1738,7 +1739,7 @@ export const en = {
       modeInterval: "Every 3 seconds",
       modeManual: "Manual",
       refreshNow: "Refresh now",
-      privacyNote: "Credentials are masked in this view. The file on disk is not masked.",
+      privacyNote: "Known credential patterns are masked in this view. Review for secrets, file paths, and private text before sharing. The file on disk contains the original log.",
       copyVisible: "Copy visible log",
       empty: "Nothing has been logged yet.",
       disabled: "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5009,6 +5010,7 @@ export const en = {
       intervalHours: "Interval (hours)",
       hourlyNote: "The first run is one interval after saving. Changing the interval or resuming restarts the wait.",
       createTitle: "Schedule a task",
+      repliesInChat: "Each run replies in “{title}”.",
       editTitle: "Edit scheduled task",
       name: "Name",
       // Left blank, the name is taken from the first line of the instructions.

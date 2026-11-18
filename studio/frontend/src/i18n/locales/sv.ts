@@ -932,6 +932,7 @@ export const sv = {
   chatMenu: {
     more: "Chattalternativ",
     copy: "Kopiera",
+    addScheduledTask: "Lägg till schemalagd uppgift…",
     compact: "Komprimera konversationen",
     compactQueued: "Komprimering begärd för nästa meddelande",
     compactEmpty: "Inget att komprimera än",
@@ -1829,7 +1830,7 @@ export const sv = {
       modeManual: "Manuellt",
       refreshNow: "Uppdatera nu",
       privacyNote:
-        "Inloggningsuppgifter maskeras i denna vy. Filen på disken maskeras inte.",
+        "Kända format för inloggningsuppgifter maskeras i den här vyn. Kontrollera om loggen innehåller hemligheter, filsökvägar eller privat text innan du delar den. Filen på disken innehåller den ursprungliga loggen.",
       copyVisible: "Kopiera synlig logg",
       empty: "Inget har loggats ännu.",
       disabled: "Filloggning är avstängd (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5194,6 +5195,7 @@ export const sv = {
       intervalHours: "Intervall (timmar)",
       hourlyNote: "Den första körningen sker ett intervall efter att du sparat. Om du ändrar intervallet eller återupptar uppgiften börjar väntetiden om.",
       createTitle: "Schemalägg en uppgift",
+      repliesInChat: "Varje körning svarar i ”{title}”.",
       editTitle: "Redigera schemalagd uppgift",
       name: "Namn",
       namePlaceholder: "Namn (valfritt)",

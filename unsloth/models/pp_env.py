@@ -1381,7 +1381,10 @@ def pp_trainer_setup(trainer):
         trainer.__dict__[name] = types.MethodType(method, trainer)
     trainer.__dict__["_has_mixed_mesh_grads"] = lambda model: False
     from .fsdp2_native import _scaler_for_native
+    from .tp_native import _SCALE_DIVISOR
 
+    # Read by _utils._parallel_forced_scaler.
+    accelerator.__dict__[_SCALE_DIVISOR] = dp
     try:
         scaled = _scaler_for_native(trainer)
     except Exception:

@@ -1627,10 +1627,51 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
     return rec
 
 
+def rdna_native_rotated(module: Any) -> bool:
+    """Native int8 Linear on the RDNA W8A8 kernels with ConvRot group 256. Traced: plain attribute reads only."""
+    return (
+        type(module).__name__ == "NativeWeightOnlyLinear"
+        and bool(getattr(module, "act_int8", False))
+        and bool(getattr(module, "_rdna", False))
+        and getattr(module, "rot_group", 0) == 256
+    )
+
+
+def _rdna_shared(x: Any, linears: tuple) -> Optional[list]:
+    """``[m(x) for m in linears]`` for native RDNA W8A8 Linears with one rotation + act quant: each Linear's own
+    forward (``_forward_rdna``) on the same codes, so bit-identical. None when any is not on that path for ``x``."""
+    import torch
+
+    if not all(rdna_native_rotated(m) and not _hooked(m) for m in linears):
+        return None
+    d0 = linears[0]
+    k = d0.in_features
+    if x.shape[-1] != k or any(m.in_features != k for m in linears):
+        return None
+    if not all(m._rdna_on(x) for m in linears):
+        return None
+    for m in linears:
+        d = m.__dict__
+        if "_diffusers_hook" in d or "_hf_hook" in d:
+            return None
+    from . import diffusion_native_w8a8_rdna as rdna
+
+    xq, xs = rdna.rotq(x.reshape(-1, k), d0.rot_group)
+    lead = x.shape[:-1]
+    return [
+        rdna.w8a8_mm(
+            xq, xs, m.weight_q, m.weight_scale.view(torch.float32), m.bias, x.dtype
+        ).reshape(*lead, m.out_features)
+        for m in linears
+    ]
+
+
 def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
     """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered."""
     import torch
 
+    if linears and rdna_native_rotated(linears[0]):
+        return _rdna_shared(x, linears)
     if x.dtype != torch.bfloat16 or not x.is_cuda or x.numel() < _MIN_ROWS * x.shape[-1]:
         return None
     recs = [_swapped_rec(m) for m in linears]
