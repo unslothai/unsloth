@@ -490,3 +490,17 @@ def test_next_training_run_does_not_reuse_the_last_transient(monkeypatch):
     monkeypatch.setattr(dc, "_ACTIVE", 1)
     dc._on_optimizer_step(None, (), {})
     assert dc._BUDGET[None] == 3 * GiB and dc.STATS["stale_peak_bound"] == 1
+
+
+def test_evaluation_rows_do_not_mark_growth(monkeypatch):
+    # Evaluation batches run uncached and never size a training step: the refill after evaluation is kept.
+    fake = _fake_allocator(monkeypatch)
+    fake["allocated"] = 3 * GiB
+    dc.clear_dequant_cache()  # Trainer.evaluate
+    monkeypatch.setattr(dc, "_EVALUATING", [1])
+    W, absmax = _weight()
+    dc._lookup(W, absmax, _decoder([]), torch.bfloat16, rows = 4096)
+    dc._EVALUATING[0] = 0
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 7 * GiB and dc.STATS["stale_peak_kept"] == 1
+    assert dc._ROWS_SEEN.get(None, 0) < 4096

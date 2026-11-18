@@ -113,6 +113,9 @@ _CHECKED = set()
 _SHAPE_SEEN = [0, 0]  # most tokens / longest sequence of a model input before the last safe point
 _SHAPE_NEW = [0, 0]  # the same since the last safe point
 _HOOKS = []  # forward pre-hooks on the trained model, removed when training ends
+_EVALUATING = [
+    0
+]  # Trainer.evaluate / predict calls running: their batches never size a training step
 
 
 def _storage_ref(W):
@@ -464,14 +467,13 @@ def _lookup(
     oriented result of fast_dequantize. Returns the oriented tensor like fast_dequantize. rows: the matmul's
     row count (tokens), which sizes the step's activations."""
     index = W.device.index
-    if rows > _ROWS_NEW.get(index, 0):
+    if rows > _ROWS_NEW.get(index, 0) and not _EVALUATING[0]:
         _ROWS_NEW[index] = rows
     if not _CACHE and _BUDGET.get(index, 0) <= 0:
         _SEEN.add(index)
-        if rows > _ROWS_SEEN.get(index, 0) and index in _SHRINK_PEAK:
-            _mark_growth(
-                index
-            )  # a larger step while the cache is empty (after evaluation, a clear)
+        # A larger training step while the cache is empty (after evaluation or a clear).
+        if rows > _ROWS_SEEN.get(index, 0) and index in _SHRINK_PEAK and not _EVALUATING[0]:
+            _mark_growth(index)
         return decode(False)  # nothing cached and no budget (before the first optimizer step)
     if rows > _ROWS_SEEN.get(index, 0):
         # More tokens than any step the budget was measured on: its activations may need what the cache holds.
@@ -925,7 +927,11 @@ def install_trainer_scope():
         @functools.wraps(method)
         def run(self, *args, **kwargs):
             clear_dequant_cache()
-            return method(self, *args, **kwargs)
+            _EVALUATING[0] += 1
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                _EVALUATING[0] -= 1
 
         run._unsloth_dq_scope = True
         return run
