@@ -117,7 +117,7 @@ def test_database_errors_propagate_after_checkpoint_rollback(source_path, monkey
     assert _mark() is None
     assert run_import(claude.SOURCE).messages == 1
     assert _texts(_messages()) == ["first"]
-    assert _mark() == (1, "")
+    assert _mark() == (1, claude._REVISION)
 
 
 def test_incremental_import_rolls_back_and_preserves_studio_changes(source_path):
