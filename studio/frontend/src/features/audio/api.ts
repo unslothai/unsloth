@@ -493,6 +493,7 @@ export async function transcribeAudioInput(
     model: string;
     engine?: string;
     device?: string;
+    context_length?: number;
     language?: string;
     purpose?: "reference" | "convert";
   },

@@ -93,14 +93,12 @@ def _ctx(page, log = None) -> ActionContext:
 
 
 def _swallow_the_copy(page) -> None:
-    """An engine that does not copy, reproduced faithfully: the keystroke is delivered, a `copy`
-    event fires, and nothing reaches the clipboard."""
+    """A non-copying engine: the copy event fires, yet nothing reaches the clipboard."""
     page.evaluate("() => document.addEventListener('copy', (e) => { e.preventDefault(); }, true)")
 
 
 def test_a_real_copy_is_still_measured(page):
-    """THE CONTROL. Without it the guard could refuse everything and the tests below would pass on
-    an action that never reports a timing at all."""
+    """Control: a real copy must still be measured, or the guard could refuse everything."""
     got = A.select_all_copy(_ctx(page))
     assert got.ran is True, got.reason
     assert got.timings.get("copy_ms") is not None
@@ -108,8 +106,7 @@ def test_a_real_copy_is_still_measured(page):
 
 
 def test_an_engine_that_does_not_copy_is_NOT_RUN_rather_than_a_timing(page):
-    """THE DEFECT. The keystroke is sent, 250ms passes, and before this the action returned that
-    250ms as `copy_ms` -- stable, plausible, and about nothing."""
+    """A non-copying engine must be NOT RUN, never the 250ms settle returned as `copy_ms`."""
     _swallow_the_copy(page)
     got = A.select_all_copy(_ctx(page))
     assert got.ran is False, got
@@ -119,8 +116,7 @@ def test_an_engine_that_does_not_copy_is_NOT_RUN_rather_than_a_timing(page):
 
 
 def test_the_refusal_says_the_number_would_have_been_the_harness_own_settle(page):
-    """The reason has to name the failure, or the next person reads NOT RUN as a flaky run and adds
-    the action to an allow-list."""
+    """The reason must name the failure, or NOT RUN is read as flakiness and allow-listed."""
     _swallow_the_copy(page)
     said: list[str] = []
     got = A.select_all_copy(_ctx(page, said.append))
@@ -153,9 +149,8 @@ def test_a_failed_sentinel_write_does_not_re_admit_the_unchanged_clipboard(page)
 
 
 def test_a_real_copy_is_still_measured_when_the_sentinel_could_not_be_written(page):
-    """THE CONTROL FOR THE ABOVE. The fallback must not turn a missing write permission into a dead
-    action: a copy that really happened is still a measurement, and the row says which pre-copy
-    value it was confirmed against."""
+    """Control for the fallback: a missing write permission must not kill the action; a real copy is
+    still measured, and the row names the pre-copy value it was confirmed against."""
     page.evaluate("async () => await navigator.clipboard.writeText('stale')")
     _refuse_the_sentinel_write(page)
     got = A.select_all_copy(_ctx(page))

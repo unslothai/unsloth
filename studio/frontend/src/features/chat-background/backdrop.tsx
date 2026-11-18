@@ -3,6 +3,7 @@
 
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { ROOT_READY, ROOT_WORKSPACE_READY, markRoot } from "./background";
+import { useWallpaperHostFlags } from "./host-flags";
 import { ComposerGlassLenses } from "./lens";
 
 const BACKDROP_SAFE = "0.55";
@@ -24,6 +25,7 @@ export function GlassBackdrop() {
 			setAppWallpaper(null);
 		};
 	}, []);
+	useWallpaperHostFlags(host);
 	return (
 		<div
 			ref={host}

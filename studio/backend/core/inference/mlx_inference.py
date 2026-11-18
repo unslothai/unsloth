@@ -4821,6 +4821,8 @@ class _TextBatchSession:
             prefix, remainder, cache_key = all_tokens[:-1], all_tokens[-1:], None
             if row_kwargs["max_new_tokens"] is None:
                 plan.max_tokens = backend._unset_generation_budget(plan.prompt, all_tokens)
+            else:
+                backend._prompt_within_window(plan.prompt, all_tokens)
         row = _TextBatchRow(
             handle = handle,
             plan = plan,
@@ -5716,6 +5718,20 @@ class MLXInferenceBackend:
         videos = None,
     ):
         """Free context for an unset limit, or the default if the prompt cannot be counted."""
+        prompt_n = self._prompt_within_window(prompt, prompt_tokens, images, audio, videos)
+        if prompt_n is None:
+            return UNSET_GENERATION_BUDGET
+        return generation_budget_for_window(self._served_context, prompt_n, None)
+
+    def _prompt_within_window(
+        self,
+        prompt,
+        prompt_tokens = None,
+        images = None,
+        audio = None,
+        videos = None,
+    ):
+        """The prompt's length, refused when it leaves no room in the served context; None if uncountable."""
         try:
             prompt_n = (
                 len(prompt_tokens)
@@ -5723,9 +5739,13 @@ class MLXInferenceBackend:
                 else self._count_prompt_tokens(prompt, images, audio, videos)
             )
         except Exception as exc:
-            logger.debug("MLX prompt count for an unset budget failed: %s", exc)
-            return UNSET_GENERATION_BUDGET
-        return generation_budget_for_window(self._served_context, prompt_n, None)
+            logger.debug("MLX prompt count failed: %s", exc)
+            return None
+        window = self._served_context
+        # Admitted, a bounded cache would rotate the prompt's start away during prefill.
+        if window and prompt_n >= int(window):
+            raise context_refusal.ContextBudgetExceeded(prompt_n + 1, int(window))
+        return prompt_n
 
     def _generation_limit(
         self,
@@ -5746,6 +5766,8 @@ class MLXInferenceBackend:
                 max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
                 if cap is not None:
                     max_new_tokens = min(max_new_tokens, cap)
+            else:
+                self._prompt_within_window(prompt, prompt_tokens)
             return max_new_tokens
         # Max Tokens == window is the UI's "no cap"; admitting it as-is would refuse every prompt.
         if max_new_tokens is not None and int(max_new_tokens) == int(budget):
@@ -6927,24 +6949,30 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        images = None,
     ) -> int:
         """Prompt tokens this model would receive for these messages. Renders and tokenizes exactly
         as generation does."""
         if self._model is None:
             raise RuntimeError("No model loaded")
-        full_messages = self._with_system_prompt(messages, system_prompt)
+        images = list(images or ())
+        full_messages = self._conversation_to_render(messages, system_prompt, images or None)
+        if len(images) > 1 and not self._multi_image_marker:
+            # Generation serves the newest picture alone.
+            full_messages = list(full_messages)
+            trim_image_turns(full_messages, images, limit = 1, keep = (len(images) - 1,))
 
         if self._is_vlm:
-            # images=None: an image anywhere makes the structured-item check raise.
+            # One image per marker, else the structured-item check raises.
             prompt, _target, _markers = self._render_vlm_prompt(
                 full_messages,
-                None,
+                images or None,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
-            return self._count_prompt_tokens(prompt)
+            return self._count_prompt_tokens(prompt, images)
 
         render_result = self._render_text_prompt(
             full_messages,
@@ -6953,6 +6981,17 @@ class MLXInferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
         )
+        if images and self._reads_vision_input():
+            from unsloth_zoo.mlx.loader import _mlx_lm_image_inputs
+
+            # The ids generation embeds, without running the vision tower.
+            expanded = _mlx_lm_image_inputs(
+                self._tokenizer,
+                self._tokenizer._unsloth_image_processor,
+                images,
+                render_result.prompt,
+            )
+            return len(expanded["input_ids"][0])
         return self._count_prompt_tokens(render_result.prompt)
 
     def generate_chat_response(
@@ -7684,6 +7723,11 @@ class MLXInferenceBackend:
                     ),
                 ),
             )
+        if max_new_tokens is None:
+            max_tokens = self._unset_generation_budget(prompt, prompt_ids)
+        else:
+            self._prompt_within_window(prompt, prompt_ids)
+            max_tokens = max_new_tokens
         row = _RowStream(
             prefix = think_prefix,
             sequences = _mlx_stop_sequences(stop),
@@ -7697,11 +7741,7 @@ class MLXInferenceBackend:
             streamed = streamed,
             sampler = sampler,
             processors = logits_processors,
-            max_tokens = (
-                self._unset_generation_budget(prompt, prompt_ids)
-                if max_new_tokens is None
-                else max_new_tokens
-            ),
+            max_tokens = max_tokens,
         )
 
     def _render_vlm_prompt(

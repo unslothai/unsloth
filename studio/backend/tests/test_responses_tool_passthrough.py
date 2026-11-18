@@ -225,9 +225,7 @@ class TestResponsesRequestTools:
         assert req.parallel_tool_calls is True
 
     def test_builtin_tool_type_passes_validation(self):
-        """Non-function built-in tools (web_search, file_search, mcp, ...)
-        must not raise at validation so SDKs that default to them don't
-        fail on Unsloth; they're filtered out during translation."""
+        """Built-in tools like web_search must not fail validation; translation filters them out."""
         req = ResponsesRequest(
             input = "hi",
             tools = [{"type": "web_search_preview"}],
@@ -473,8 +471,7 @@ class TestToolChoiceTranslation:
         assert _translate_responses_tool_choice_to_chat(choice) is choice
 
     def test_already_chat_nested_shape_passes_through(self):
-        """A client sending the Chat Completions nested shape isn't
-        double-wrapped."""
+        """A client sending the Chat Completions nested shape must not be double-wrapped."""
         already_nested = {"type": "function", "function": {"name": "get_weather"}}
         assert _translate_responses_tool_choice_to_chat(already_nested) == already_nested
 
@@ -571,8 +568,7 @@ class TestBuildChatRequest:
         assert _extract_response_format(chat_req) == {"type": "json_object"}
 
     def test_text_format_text_carries_no_response_format(self):
-        # Codex and the Agents SDK send this on ordinary requests; constraining
-        # them would route every call onto the schema path.
+        # Codex and Agents SDK send this on ordinary calls; it must not force the schema path.
         payload = ResponsesRequest(input = "hi", text = {"format": {"type": "text"}})
         _shared_setup_5(payload)
 
@@ -763,8 +759,7 @@ class TestNormaliseResponsesInputWithTools:
         assert _normalise_responses_input(payload) == []
 
     def test_instructions_plus_developer_message_are_merged(self):
-        """Strict chat templates reject a second system message, so instructions and developer text
-        merge."""
+        """Strict templates reject a second system message; instructions and developer merge."""
         payload = ResponsesRequest(
             instructions = "Base instructions.",
             input = [
@@ -782,9 +777,8 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[1].role == "user"
 
     def test_developer_message_after_user_is_still_hoisted(self):
-        """A developer message appearing after user turns must still
-        produce a single leading system message, not a mid-conversation
-        system that strict templates reject."""
+        """Late developer messages are hoisted into one leading system message; strict templates
+        reject two."""
         payload = ResponsesRequest(
             input = [
                 {"role": "user", "content": "Hello"},
@@ -2956,6 +2950,62 @@ class TestResponsesStreamAdapter:
         assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
         assert "we said 3407" in json.dumps(captured["body"]["messages"])
 
+    def test_saved_memory_reaches_the_direct_stream(self, monkeypatch):
+        import routes.inference as inf_mod
+        from core import chat_memory
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            content = 'data: {"choices": [{"delta": {"content": "ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(
+                200, content = content.encode(), headers = {"content-type": "text/event-stream"}
+            )
+
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            inf_mod.httpx,
+            "AsyncClient",
+            lambda *a, **kw: real_async_client(transport = httpx.MockTransport(handler)),
+        )
+        monkeypatch.setattr(
+            inf_mod,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                context_length = 4096,
+                base_url = "http://llama.test",
+                supports_tools = False,
+                supports_tool_passthrough = False,
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            chat_memory,
+            "context",
+            lambda thread_id, limit: {
+                "text": "remembered: tabs" if thread_id else "",
+                "omitted": 0,
+            },
+        )
+        payload = ResponsesRequest.model_validate(
+            {"input": "hi", "stream": True, "model": "org/M-GGUF", "thread_id": "saved"}
+        )
+
+        async def run():
+            response = await _responses_stream(
+                payload, [ChatMessage(role = "user", content = "hi")], self._Request()
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        assert "remembered: tabs" in json.dumps(captured["body"]["messages"])
+
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -3125,8 +3175,7 @@ class TestCodexStyleRequestShapes:
     """Regression tests for the request shapes OpenAI Codex CLI sends."""
 
     def test_assistant_replay_output_text_accepted(self):
-        """Codex replays prior assistant turns with `output_text` content;
-        this used to 422 on every turn after the first."""
+        """Codex replays assistant turns with `output_text` content, which must validate."""
         req = ResponsesRequest(
             input = [
                 {"role": "user", "content": "Hi"},
@@ -3152,8 +3201,7 @@ class TestCodexStyleRequestShapes:
         assert parts[0].text == "Hello!"
 
     def test_reasoning_item_accepted_as_unknown(self):
-        """`reasoning` items replayed from prior o-series turns must not
-        fail validation — Codex keeps them in multi-turn."""
+        """Replayed `reasoning` items must not fail validation; Codex keeps them across turns."""
         req = ResponsesRequest(
             input = [
                 {"role": "user", "content": "Hi"},
@@ -3351,9 +3399,8 @@ class TestCodexStyleRequestShapes:
         assert msgs[4].content == "It's 20°C."
 
     def test_single_output_text_part_flattens_to_string(self):
-        """ChatMessage assistant role prefers plain string content — we
-        don't forward a single-part array that would force legacy chat
-        templates into multimodal handling."""
+        """A single output_text part flattens to a string so legacy chat templates avoid multimodal
+        paths."""
         payload = ResponsesRequest(
             input = [
                 {
@@ -3509,8 +3556,7 @@ class TestReasoningPrefilledExtractor:
 
 
 class TestResponsesStreamHealing:
-    """Text-form tool calls go through the structured item machinery, and healed text must keep its
-    order."""
+    """Healed text-form tool calls go through structured items and must keep their order."""
 
     _XML = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
     _TOOL = {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
@@ -4049,8 +4095,7 @@ class TestResponsesInProcessStream:
         headers = (),
         raise_on_stop = False,
     ):
-        # Streams an in-process run of `chunks`; taken >= 0 cancels after that many events,
-        # None disconnects before the body starts.
+        # taken >= 0 cancels after that many events; None disconnects before the body.
         import routes.inference as inf_mod
         from starlette.requests import Request
 

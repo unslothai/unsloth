@@ -79,7 +79,7 @@ function ZoomPopup() {
   return (
     // pointer-events-auto survives a modal's body lock.
     <div
-      className="interface-zoom-position pointer-events-auto fixed right-4"
+      className="modal-pe-live interface-zoom-position pointer-events-auto fixed right-4"
       style={{ zIndex: Z_LAYER.ZOOM_POPUP }}
       // Keeps an open modal from treating this as an outside click.
       onPointerDown={(event) => event.stopPropagation()}

@@ -47,13 +47,21 @@ def resource_link(
     url: str,
     name: str,
     mime: Optional[str] = None,
-) -> ResourceLink:
+) -> Union[ResourceLink, TextContent]:
+    """A resource link to ``url``. A chat call has no outer request, so its links are origin-relative,
+    which a ResourceLink cannot hold: those come back as the link in plain text instead."""
+    if not urlsplit(url).scheme:
+        return TextContent(type = "text", text = f"{name}: {url}")
     return ResourceLink(type = "resource_link", uri = url, name = name, mimeType = mime)
 
 
 def _base(caller: Caller) -> str:
     """The outer request's base, with the tunnel's scheme when it came through cloudflared, which reaches Unsloth Studio over plain http."""
+    if not caller.public_base:
+        return ""
     base = urlsplit(caller.public_base)
+    if not base.scheme:
+        return base.path.rstrip("/")
     tunnel = getattr(getattr(caller.studio_app, "state", None), "cloudflare_url", None)
     if isinstance(tunnel, str) and tunnel:
         published = urlsplit(tunnel)

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The System tab's notice for a Windows AMD driver with the idle-eviction bug
-// (ROCm/TheRock#7221), from /api/system's gpu.driver_warning. Lifted by regex like
-// gpu-torch-mismatch.test.ts, since the tab pulls in the whole app.
+// Tests the System tab notice for a Windows AMD driver with the idle-eviction bug (ROCm/TheRock
+// issue 7221), read from gpu.driver_warning; lifted by regex since the tab pulls in the whole app.
 
 import assert from "node:assert/strict";
 import test from "node:test";

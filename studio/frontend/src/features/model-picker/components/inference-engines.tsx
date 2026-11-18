@@ -18,7 +18,7 @@ import { useT } from "@/i18n";
 import { isEngineGpuDevice, useGpuDevices } from "@/hooks/use-gpu-info";
 import { formatGiB } from "@/lib/memory/format";
 import { cn } from "@/lib/utils";
-import { useEffect, useRef, useState } from "react";
+import { type Ref, useEffect, useRef, useState } from "react";
 import {
   type EngineStatus,
   type InferenceEngine,
@@ -260,7 +260,9 @@ export function EngineInstall({
   );
 }
 
-export function InferenceEnginesSection() {
+export function InferenceEnginesSection({
+  ref,
+}: { ref?: Ref<HTMLElement> } = {}) {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const { engines, error } = useEngines();
@@ -284,6 +286,7 @@ export function InferenceEnginesSection() {
   );
   return (
     <SettingsSection
+      ref={ref}
       title={t("managedEngines.title")}
       description={t("managedEngines.description")}
     >

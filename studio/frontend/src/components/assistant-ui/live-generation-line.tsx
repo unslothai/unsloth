@@ -3,34 +3,51 @@
 
 import {
   formatLiveDecode,
+  type LiveDecodeProgress,
   useChatPreferencesStore,
   useChatRuntimeStore,
+  useThrottledLiveGeneration,
 } from "@/features/chat";
 import { useLocale, useT } from "@/i18n";
 import { useAuiState } from "@assistant-ui/react";
 import type { FC } from "react";
 
-/** Gated on the preference first so a reply mounts no assistant-ui selector while it is off
- *  (composer-keystroke-subscription-budget), like AssistantMessageTime. */
+/** Gated on the preferences first so a reply mounts no assistant-ui selector while both are off
+ *  (composer-keystroke-subscription-budget). */
 export const LiveGenerationLine: FC = () => {
-  const enabled = useChatPreferencesStore((state) => state.showGenerationDetails);
-  return enabled ? <RunningGate /> : null;
+  const details = useChatPreferencesStore((state) => state.showGenerationDetails);
+  const realtime = useChatPreferencesStore(
+    (state) => state.generationStatsUpdates === "realtime",
+  );
+  return details || realtime ? <RunningGate realtime={realtime} /> : null;
 };
 
-const RunningGate: FC = () => {
+const RunningGate: FC<{ realtime: boolean }> = ({ realtime }) => {
   const running = useAuiState(({ message }) => message.status?.type === "running");
-  return running ? <LiveDecodeFigures /> : null;
+  if (!running) return null;
+  return realtime ? <ThrottledDecodeFigures /> : <LiveDecodeFigures />;
 };
+
+// Keyed like the prefill indicator: a first turn reads "__default" until the thread persists.
+const useLiveThreadKey = () =>
+  useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
 
 const LiveDecodeFigures: FC = () => {
-  const locale = useLocale();
-  const t = useT();
-  // Keyed like the prefill indicator: a first turn reads "__default" until the thread persists.
-  const threadKey =
-    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
+  const threadKey = useLiveThreadKey();
   const decode = useChatRuntimeStore(
     (s) => s.liveGenerationByThreadId[threadKey]?.decode ?? null,
   );
+  return <DecodeFigures decode={decode} />;
+};
+
+const ThrottledDecodeFigures: FC = () => {
+  const decode = useThrottledLiveGeneration(useLiveThreadKey())?.decode ?? null;
+  return <DecodeFigures decode={decode} />;
+};
+
+const DecodeFigures: FC<{ decode: LiveDecodeProgress | null }> = ({ decode }) => {
+  const locale = useLocale();
+  const t = useT();
   if (!decode) {
     return null;
   }

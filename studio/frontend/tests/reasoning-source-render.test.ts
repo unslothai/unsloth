@@ -8,15 +8,12 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-// Each render cold-starts Vite and transforms the Markdown component graph with no
-// prebundle: about 9 s on an idle Linux box. The Windows frontend job runs it beside
-// thousands of other tests and went past a 30 s cap, failing PRs that never touched
-// the renderer. The cap only stops a hung child; the assertions are what is tested.
+// Each render cold-starts Vite with no prebundle and runs beside thousands of tests on Windows, so
+// a 30 s cap failed unrelated PRs; the cap only stops a hung child.
 const RENDER_TIMEOUT_MS = 120_000;
 
-// Vite's Markdown plugin graph retains close hooks after SSR. Run the real
-// renderer in an isolated process so the assertion owns its complete lifetime
-// and can terminate those hooks after the markup has been produced.
+// Vite's Markdown plugin graph retains close hooks after SSR, so the real renderer runs in an
+// isolated process that can terminate them once the markup is produced.
 const RENDER_SOURCE_WITHOUT_PART_SCOPE = String.raw`
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";

@@ -56,7 +56,7 @@ test("Back with no page behind it stays put and says so", async () => {
 });
 
 test("Back with no page behind it still holds the page it stays on to the site rules", async () => {
-  const block = { browsing: "block", actions: "ask", downloads: "ask", unlabelled: "ask" } as const;
+  const block = { browsing: "block", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" } as const;
   useBrowserAgentStore.getState().setSiteRule("example.com", block);
   try {
     await runBrowserAction({ id: "b2", sessionId: "s", op: "back", direction: "down", policy }, run);

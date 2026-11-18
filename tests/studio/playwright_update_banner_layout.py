@@ -376,8 +376,7 @@ RESTORE_CYCLES = [((320, 400), (1920, 1080)), ((320, 400), (900, 600))]
 SCOPE = os.environ.get("STUDIO_UI_BANNER_SCOPE", "full").lower()
 SPOT = SCOPE == "spot"
 
-# At the 20px font size below 384px the action row wraps; 320x480 has a rail cap between the two
-# card heights, which is what clipped Copy command.
+# At 20px font below 384px the action row wraps; the 320x480 rail cap clipped Copy command.
 FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
 # Mirrors appearance-custom-store.ts; kept in step by test_update_release_notes.py.
 UI_FONT_SIZE_MAX = 20
@@ -1148,8 +1147,7 @@ def main() -> int:
     # add_init_script takes raw source, not a function to call.
     seed_js = (
         "(() => {"
-        # Shortens the 5s update-check timer only in this page, but keeps it a timer so the late-mount
-        # reflow is still exercised.
+        # Shortens update timer here only; still a timer, so the late-mount reflow runs.
         f"  window.{E2E_DELAY_GLOBAL} = {E2E_DELAY_MS};"
         f"  localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"
         f"  localStorage.setItem('unsloth_refresh_token', {json.dumps(session.get('refresh_token', ''))});"

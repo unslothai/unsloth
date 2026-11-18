@@ -560,10 +560,8 @@ def _drift_config(kind):
 
 @pytest.mark.parametrize("kind", ["dora", "lora_bias", "loha", "lokr", "ia3", "vera"])
 def test_bf16_non_plain_peft_never_drifts_frozen_base(kind):
-    # TRL's body merge_adapter()s and unmerge_adapter()s the live bf16 model every sync; those rounded
-    # in-place edits are not lossless, so the frozen base drifted outside the optimizer. The merge now
-    # runs on a copy: after 10 syncs every frozen tensor keeps its exact bytes, and each sync pushes
-    # exactly what PEFT's own merge of the current adapter gives.
+    # TRL's in-place merge_adapter and unmerge_adapter on the live bf16 model are lossy and drift
+    # the frozen base; merging on a copy keeps frozen tensors bit-exact across syncs.
     peft = pytest.importorskip("peft")
     model = peft.get_peft_model(_tiny_llama(torch.bfloat16), _drift_config(kind))
     frozen = {n: p.detach().clone() for n, p in model.named_parameters() if not p.requires_grad}

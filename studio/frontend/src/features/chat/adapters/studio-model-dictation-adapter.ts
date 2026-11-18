@@ -18,8 +18,10 @@ import {
   type SttDevice,
   applyDictationDictionary,
   isCuratedSttModel,
+  isModelDictationLanguage,
   recordRecentDictation,
   resolveModelDictationLanguage,
+  sttContextBody,
   sttListedQuantDownloaded,
   sttModelVariant,
   useVoiceSettingsStore,
@@ -131,6 +133,7 @@ export async function transcribeAudioBlob(
     language?: string;
     engine?: SttEngine;
     device?: SttDevice;
+    contextLength?: number;
     /** package-folder quant; defaults to the saved quant when `model` is also omitted */
     ggufVariant?: string | null;
     providerId?: string;
@@ -211,6 +214,14 @@ export async function transcribeAudioBlob(
   });
   if (language) params.set("language", language);
   params.set("device", options.device ?? settings.sttDevice);
+  const context = sttContextBody(
+    model,
+    engine,
+    options.contextLength ?? settings.sttContextLength,
+  );
+  if (context.context_length !== undefined) {
+    params.set("context_length", String(context.context_length));
+  }
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
     {
@@ -373,9 +384,16 @@ export function loadSttModel(
   signal?: AbortSignal,
   device?: SttDevice,
   ggufVariant?: string | null,
+  contextLength?: number,
 ): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
-  const resolvedDevice = device ?? useVoiceSettingsStore.getState().sttDevice;
+  const settings = useVoiceSettingsStore.getState();
+  const resolvedDevice = device ?? settings.sttDevice;
+  const context = sttContextBody(
+    model,
+    resolvedEngine,
+    contextLength ?? settings.sttContextLength,
+  );
   // Announced so the indicator shows the load immediately, as the toast does.
   return queueSttLifecycle(() =>
     withModelLoadNotice("stt", model, async () => {
@@ -386,6 +404,7 @@ export function loadSttModel(
         model,
         engine: resolvedEngine,
         device: resolvedDevice,
+        ...context,
         ...sttVariantBody(resolvedEngine, ggufVariant),
       }),
       signal,
@@ -493,9 +512,11 @@ export function unloadSttModel(
 /** Long recordings split near whisper's 30s window; confirm or discard releases the mic. */
 export class StudioModelDictationAdapter implements DictationAdapter {
   private readonly chatId: string | null | undefined;
+  private readonly language: string | undefined;
 
-  constructor(options: { chatId?: string | null } = {}) {
+  constructor(options: { chatId?: string | null; language?: string } = {}) {
     this.chatId = options.chatId;
+    this.language = options.language;
   }
 
   static isSupported(): boolean {
@@ -528,8 +549,13 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     }
     beginDictationSession();
     const sessionLanguage = usesExternalEndpoint
-      ? settings.dictationLanguage
-      : resolveModelDictationLanguage(sessionModel, settings.dictationLanguage);
+      ? (this.language ?? settings.dictationLanguage)
+      : resolveModelDictationLanguage(
+          sessionModel,
+          this.language && isModelDictationLanguage(sessionModel, this.language)
+            ? this.language
+            : settings.dictationLanguage,
+        );
     const sessionEngine = usesExternalEndpoint
       ? undefined
       : sttEngineFor(sessionModel);

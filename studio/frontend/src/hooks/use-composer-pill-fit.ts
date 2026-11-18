@@ -4,9 +4,8 @@
 import { useCallback, useLayoutEffect, useState } from "react";
 
 /**
- * - `undefined`: every pill keeps its label.
- * - `"first"`: only the leading permission pill drops to its icon.
- * - `"true"`: every pill drops to its icon.
+ * undefined keeps every pill label; first drops only the leading permission pill to its icon; true
+ * drops every pill to its icon.
  */
 export type PillCompact = undefined | "first" | "true";
 
@@ -109,6 +108,14 @@ export function useComposerPillFit(forceCompact: boolean) {
     resize.observe(row);
     if (row.parentElement) {
       resize.observe(row.parentElement);
+    }
+    // The chip after the row can widen (logo, reasoning label) without resizing either: watch it.
+    for (
+      let sibling = row.nextElementSibling;
+      sibling;
+      sibling = sibling.nextElementSibling
+    ) {
+      resize.observe(sibling);
     }
     // A capability toggle can add a pill without resizing anything observed.
     const mutations = new MutationObserver(schedule);

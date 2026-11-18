@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Detach the stable portal target so React retains message state, refs and handlers.
-const REACH = 2000;
+export const REACH = 2000;
 const FIND_FLAG = "data-find-bar-open";
 const controllers = new WeakMap<HTMLElement, MessageWindowController>();
 

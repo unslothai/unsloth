@@ -271,3 +271,102 @@ def test_the_run_banner_offers_no_endpoint_an_npu_model_refuses():
     banner = src[src.index('typer.echo("OpenAI Chat Completions:")') :]
     assert banner.index("if not npu_path:") < banner.index('typer.echo("Anthropic Messages:")')
     assert banner.index("if not npu_path:") < banner.index('typer.echo("OpenAI Responses:")')
+
+
+def _npu_load_payload(
+    monkeypatch,
+    status,
+    model = "lemonade:qwen3-0.6b-FLM",
+    max_seq_length = None,
+):
+    """The /api/inference/load body `unsloth chat` sends with `status` resident."""
+    from unsloth_cli._inference import HttpChatBackend
+
+    backend = HttpChatBackend("http://127.0.0.1:8888", "token")
+    sent = []
+
+    def _request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if path == "/api/inference/status":
+            return io.BytesIO(json.dumps(status).encode())
+        sent.append(payload)
+        return io.BytesIO(b'{"status": "already_loaded"}')
+
+    monkeypatch.setattr(backend, "_request", _request)
+    backend.ensure_loaded(model, hf_token = None, max_seq_length = max_seq_length, load_in_4bit = None)
+    return sent[0]
+
+
+def _npu_status(model_path, requested):
+    return {
+        "is_npu": True,
+        "model_identifier": model_path,
+        "context_length": requested or 65536,
+        "requested_context_length": requested,
+    }
+
+
+def test_chat_keeps_the_context_run_loaded_the_npu_model_with(monkeypatch):
+    # /load keeps an NPU model only on an exact context match, so chat's unset 0 reloaded at 65536.
+    status = _npu_status("lemonade:qwen3-0.6b-FLM", 16384)
+    assert _npu_load_payload(monkeypatch, status)["max_seq_length"] == 16384
+
+
+def test_chat_keeps_an_npu_model_loaded_under_auto(monkeypatch):
+    status = _npu_status("lemonade:qwen3-0.6b-FLM", None)
+    assert _npu_load_payload(monkeypatch, status)["max_seq_length"] == 0
+
+
+def test_chat_loads_a_different_npu_model_at_auto(monkeypatch):
+    status = _npu_status("lemonade:gemma3-1b-FLM", 16384)
+    assert _npu_load_payload(monkeypatch, status)["max_seq_length"] == 0
+
+
+def test_a_typed_context_length_wins_over_the_resident_one(monkeypatch):
+    status = _npu_status("lemonade:qwen3-0.6b-FLM", 16384)
+    assert _npu_load_payload(monkeypatch, status, max_seq_length = 8192)["max_seq_length"] == 8192
+
+
+def test_a_gguf_resident_never_lends_its_context(monkeypatch):
+    status = {
+        "is_gguf": True,
+        "model_identifier": "unsloth/Qwen3-0.6B-GGUF",
+        "requested_context_length": 4096,
+    }
+    payload = _npu_load_payload(monkeypatch, status, model = "unsloth/Qwen3-0.6B-GGUF")
+    assert payload["max_seq_length"] == 0
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [([], None), (["--context-length", "16384"], 16384), (["--max-seq-length", "8192"], 8192)],
+)
+def test_chat_takes_context_length_like_run(monkeypatch, flags, expected):
+    from unsloth_cli import app
+    from unsloth_cli.commands import chat as chat_mod
+
+    seen = {}
+
+    def _connect(_model, **kwargs):
+        seen.update(kwargs)
+        raise typer.Exit(7)
+
+    monkeypatch.setattr(chat_mod, "connect_studio_server", _connect)
+    result = CliRunner().invoke(app, ["chat", "qwen3-0.6b-FLM", *flags])
+    assert result.exit_code == 7, result.output
+    assert seen["max_seq_length"] == expected
+
+
+def test_run_and_chat_help_name_context_length(monkeypatch):
+    from unsloth_cli import app
+
+    # At 80 columns the option column cuts `--max-seq-length,--context-length` before the alias.
+    monkeypatch.setenv("COLUMNS", "80")
+    for command in ("run", "chat"):
+        result = CliRunner().invoke(app, [command, "--help"], terminal_width = 80)
+        assert result.exit_code == 0, result.output
+        assert "--context-length" in result.output, command

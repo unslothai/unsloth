@@ -242,6 +242,60 @@ def test_cpu_allocator_refusal_falls_back_to_tiled(monkeypatch):
     assert vae.use_tiling is True
 
 
+@pytest.mark.parametrize(
+    "err",
+    [
+        RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:127] err == 0. DefaultCPUAllocator: can't allocate memory: you tried to "
+            "allocate 9663676416 bytes. Error code 12 (Cannot allocate memory)"
+        ),
+        RuntimeError("decode failed"),
+    ],
+    ids = ["posix_enomem", "wrapped"],
+)
+def test_posix_cpu_allocator_refusal_falls_back_to_tiled(monkeypatch, err):
+    if str(err) == "decode failed":
+        err.__cause__ = RuntimeError(
+            "DefaultCPUAllocator: can't allocate memory: you tried to allocate 1 bytes."
+        )
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    vae = FakeVAE(error = err)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.calls == [False, True]
+    assert vae.use_tiling is True
+
+
+class _RefusingVAE(FakeVAE):
+    def decode(
+        self,
+        z,
+        return_dict = False,
+    ):
+        self.calls.append(self.use_tiling)
+        if not self.use_tiling:
+            torch.empty(
+                2**60, dtype = torch.uint8
+            )  # past any address space: the real allocator refuses
+        return ("tiled",)
+
+
+def test_real_cpu_allocator_refusal_falls_back_to_tiled(monkeypatch):
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    vae = _RefusingVAE()
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.calls == [False, True]
+
+
+def test_unrelated_runtime_error_still_raises(monkeypatch):
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    vae = FakeVAE(error = RuntimeError("shape mismatch"))
+    U.install_untiled_decode(_pipe(vae), WAN)
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        vae.decode(Z)
+
+
 class CpuOffload:
     def __init__(
         self,

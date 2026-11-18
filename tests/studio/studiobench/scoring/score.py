@@ -46,8 +46,7 @@ class MetricScore:
 
 
 def score_metric(anchor: MetricAnchor, measure: Measure) -> MetricScore:
-    """A missing reading is neither 0 nor 100, but is excluded from the mean and counted against
-    coverage."""
+    """A missing reading is neither 0 nor 100: left out of the mean, counted against coverage."""
 
     if not measure.has_reading:
         reason = measure.note or ("not attempted" if not measure.attempted else "no reading")
@@ -224,8 +223,7 @@ class LadderScore:
 
 
 def score_ladder(rungs: Sequence[RungScore]) -> LadderScore:
-    """Every declared rung must be passed in, complete or not, or a crash-beats-limp ladder slips
-    through."""
+    """Pass every declared rung, complete or not, or a crash-beats-limp ladder slips through."""
 
     ordered = sorted(rungs, key = lambda r: r.tokens)
     weights = log_rung_weights([r.tokens for r in ordered])

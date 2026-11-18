@@ -875,8 +875,7 @@ def test_silence_keeps_the_reconfigured_stdout_encoding(tmp_path):
 
 @pytest.mark.parametrize("backend", ["unsloth", "hf"])
 def test_gpu_memory_utilization_says_it_only_applies_to_vllm(env, monkeypatch, tmp_path, backend):
-    """Only the vllm branch forwards it, so a user capping memory on another backend would
-    otherwise read the dropped cap as an OOM."""
+    """Only vllm forwards it, so a cap dropped on other backends would read as an OOM."""
     result = _run(
         "org/model",
         "--tasks",

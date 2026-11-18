@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Picking a preset is not a per-model edit (#14068). Default fell back to fixed sampling for every
-// model, and a custom preset's values came back on the next load after switching to Default. These
-// drive the real store the way the settings sheet, a model load and a status poll do.
+// Picking a preset is not a per-model edit (issue 14068): switching to Default must not fall back
+// to fixed sampling for every model or revive a custom preset's values on the next load.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -59,6 +58,7 @@ function loadOrPoll(modelId: string): void {
       response: { inference: RECOMMENDED, is_gguf: true, context_length: CONTEXT },
       modelId,
       presetSource: store.activePresetSource,
+      presetEditedKeys: store.presetEditedKeys,
       loadedContextLength: CONTEXT,
     }),
     { fromModelDefaults: true, maxTokensCap: CONTEXT },
@@ -129,7 +129,7 @@ function stored(): Record<string, unknown> {
 test("picking Default with a model loaded goes back to that model's recommendation", async () => {
   loadOrPoll(GEMMA);
   const store = useChatRuntimeStore.getState();
-  store.setActivePresetSource("modified");
+  store.setActivePresetSource("modified", "temperature");
   store.setParams({ ...store.params, temperature: 0.2 });
   await settled();
   assert.equal(
@@ -259,7 +259,7 @@ test("an edit after a preset pick does not file the preset for the model", () =>
 test("a slider edit is still remembered per model over its recommendation", () => {
   loadOrPoll(GEMMA);
   const store = useChatRuntimeStore.getState();
-  store.setActivePresetSource("modified");
+  store.setActivePresetSource("modified", "temperature");
   store.setParams({ ...store.params, temperature: 0.2 });
   loadOrPoll(QWEN);
   assert.equal(sampling().temperature, 0.2, "an unremembered model keeps what is on screen");
@@ -305,7 +305,7 @@ test("a model reloaded under the user's own edits is remembered whole again", ()
   pickPreset(DEFAULT);
   useChatRuntimeStore.getState().clearCheckpoint();
   const store = useChatRuntimeStore.getState();
-  store.setActivePresetSource("modified");
+  store.setActivePresetSource("modified", "temperature");
   store.setParams({ ...store.params, temperature: 0.4 });
   loadOrPoll(GEMMA);
   const loaded = useChatRuntimeStore.getState();
@@ -386,7 +386,7 @@ test("saving a preset hands the loaded model's sampling to it, as a pick does", 
 test("a preset picked inside a chat leaves the model's remembered sampling alone", () => {
   loadOrPoll(GEMMA);
   const store = useChatRuntimeStore.getState();
-  store.setActivePresetSource("modified");
+  store.setActivePresetSource("modified", "temperature");
   store.setParams({ ...store.params, temperature: 0.2 });
   store.setActiveThreadId("chat-1" as never);
   beginThreadScopedPairing("chat-1");

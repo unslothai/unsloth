@@ -71,30 +71,13 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
     else:
         raise ValueError("ip_version must be 4 or 6")
 
-    addresses: list[str] = []
-
-    def _add(candidate: str) -> None:
-        candidate = candidate.split("%", 1)[0]
-        try:
-            parsed = ipaddress.ip_address(candidate)
-        except ValueError:
-            return
-        if parsed.version != ip_version:
-            return
-        if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast:
-            return
-        if parsed.is_unspecified or parsed.is_reserved:
-            return
-        normalized = str(parsed)
-        if normalized not in addresses:
-            addresses.append(normalized)
-
+    found: list[str] = []
     # a UDP connect only fixes the local end of the socket; nothing is sent to the target
     probe = None
     try:
         probe = socket.socket(socket_family, socket.SOCK_DGRAM)
         probe.connect(route_probe)
-        _add(probe.getsockname()[0])
+        found.append(probe.getsockname()[0])
     except OSError:
         pass
     finally:
@@ -102,15 +85,42 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
             probe.close()
 
     # Route probes and hostname lookup miss other adapters; an isolated LAN has no route at all.
-    for address in _interface_addresses(ip_version):
-        _add(address)
+    found.extend(_interface_addresses(ip_version))
+    return _usable_addresses(found, ip_version)
+
+
+def detect_host_only_addresses(ip_version: int = 4, carrier: bool = True) -> list[str]:
+    """Addresses on virtual switches (libvirt, Docker, ...) that detection skips: offered for an explicit
+    choice, e.g. serving VMs on virbr0 (#17017), never bound by Automatic. ``carrier=False`` adds
+    bridges no guest is attached to yet, whose assigned address still binds."""
+    if _wsl_networking_mode() not in (None, "mirrored"):
+        return []
+    return _usable_addresses(
+        _interface_addresses(ip_version, host_only = True, carrier = carrier), ip_version
+    )
+
+
+def _usable_addresses(found, ip_version: int) -> list[str]:
+    addresses: list[str] = []
+    for candidate in found:
+        try:
+            parsed = ipaddress.ip_address(candidate.split("%", 1)[0])
+        except ValueError:
+            continue
+        if parsed.version != ip_version:
+            continue
+        if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast:
+            continue
+        if parsed.is_unspecified or parsed.is_reserved:
+            continue
+        normalized = str(parsed)
+        if normalized not in addresses:
+            addresses.append(normalized)
     return addresses
 
 
 def _wsl_networking_mode() -> Optional[str]:
-    """The active WSL networking mode, or ``None`` outside WSL. An older WSL without ``wslinfo`` is
-    treated as unknown and therefore not advertised. Older releases use NAT, so failing closed
-    avoids handing a phone an address that only the Windows host can route to."""
+    """Older WSL without wslinfo is unknown and not advertised, since older releases use NAT."""
     global _wsl_mode_cache
 
     if sys.platform != "linux" or "microsoft" not in platform.release().casefold():
@@ -154,13 +164,18 @@ def _is_host_only_interface(name: str) -> bool:
     )
 
 
-def _interface_addresses(ip_version: int = 4) -> list[str]:
-    """Addresses for one IP version on every interface that is up. Falls back to resolving the hostname
-    where psutil is unavailable. That fallback is not an enumeration: a Linux host mapping its name
-    to 127.0.1.1 reports nothing, which is why it is the last resort rather than the source."""
+def _interface_addresses(
+    ip_version: int = 4,
+    host_only: bool = False,
+    carrier: bool = True,
+) -> list[str]:
+    """Up interfaces, or every virtual switch when ``host_only``. Without psutil, hostname lookup is a
+    last resort: it misses hosts whose name maps to 127.0.1.1."""
     try:
         import psutil
     except ImportError:
+        if host_only:
+            return []
         try:
             return [
                 info[4][0]
@@ -177,10 +192,10 @@ def _interface_addresses(ip_version: int = 4) -> list[str]:
         family = socket.AF_INET if ip_version == 4 else socket.AF_INET6
         addresses = []
         for name, entries in psutil.net_if_addrs().items():
-            if _is_host_only_interface(name):
+            if _is_host_only_interface(name) != host_only:
                 continue
             interface = stats.get(name)
-            if interface is not None and not interface.isup:
+            if carrier and interface is not None and not interface.isup:
                 continue
             addresses.extend(e.address for e in entries if e.family == family)
         return addresses
@@ -282,6 +297,11 @@ def start_lan_listener(
             return _bound_addresses
 
         candidates = detect_lan_addresses()
+        if selected_addresses is not None:
+            # a saved virbr0 must bind at launch, before any VM has started
+            candidates += [
+                a for a in detect_host_only_addresses(carrier = False) if a not in candidates
+            ]
         if not candidates:
             _error = "no_lan_address"
             raise RuntimeError(_error)
@@ -356,9 +376,8 @@ def start_lan_listener(
 
 
 def _sync_lan_trust() -> None:
-    """Publish the beyond-loopback flag from the authoritative state. Derived rather than assigned by
-    callers: a repeated stop, or a start racing a stop in another worker thread, otherwise cleared a
-    flag that a live listener or a still-draining one owned. The caller holds ``_lock``."""
+    """Derive the beyond-loopback flag from server and drain state rather than caller assignment;
+    caller must hold _lock; racing stops cannot clear it early"""
     set_lan_connector_active(_server is not None or _pending_drains > 0)
 
 
@@ -396,9 +415,7 @@ def _arm_drain_watcher(server) -> None:
 
 
 def _clear_trust_after_drain(server) -> None:
-    """Hold the beyond-loopback flag until the stopped listener's requests finish. Closing the
-    listening sockets stops new connections, but uvicorn then drains the accepted ones, and a
-    request that started on the LAN is still a remote caller for its whole life."""
+    """Keep LAN trust until drained requests finish: a LAN request stays a remote caller its whole life."""
     global _pending_drains
 
     state = getattr(server, "server_state", None)
@@ -484,9 +501,8 @@ def clear_lan_listener_error() -> None:
 
 
 def request_on_lan_listener(scope) -> bool:
-    """True when this request arrived on a LAN listener socket, not on loopback. ``scope["server"]`` is
-    the accepting socket's own address, so it identifies the listener a connection came in on
-    without trusting any client header."""
+    """True if the request came in on a LAN listener rather than loopback; judged from the accepting
+    socket address in scope, never a client header"""
     addresses = _bound_addresses
     if not addresses:
         return False

@@ -556,6 +556,7 @@ def queue(studio, monkeypatch):
     monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_RUN", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {})
+    monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED_NS", {})
     monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", set())
     monkeypatch.setattr(openai_fine_tuning, "_ensure_drainer", lambda: None)
 
@@ -592,7 +593,7 @@ def test_a_busy_gpu_queues_jobs_and_starts_them_in_order(queue):
 
     first, second, listed, events, (started, waiting) = _run(flow())
     assert first.status == second.status == "queued"
-    newest = sorted((first, second), key = lambda job: (-job.created_at, job.id))
+    newest = (second, first)
     assert [j.id for j in listed.data[:2]] == [job.id for job in newest]
     assert events.data[0].message == "Waiting for the GPU: position 2 in the queue"
     assert [r.project_name for r in calls["start"]] == ["first", "second"]
@@ -667,6 +668,7 @@ def _forget_aliases(monkeypatch):
     monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_RUN", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {})
+    monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED_NS", {})
     monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", set())
 
 
@@ -689,6 +691,61 @@ def test_a_started_queued_job_keeps_its_id_after_a_restart(queue, monkeypatch):
     assert retrieved.id == job.id and retrieved.status == "validating_files"
     assert [j.id for j in listed.data] == [job.id]
     assert paged.data == [] and not paged.has_more
+
+
+def test_an_alias_table_from_an_older_build_loads_and_gains_the_ns_column(queue):
+    table = openai_fine_tuning._ALIAS_TABLE
+    conn = studio_db.get_connection()
+    conn.execute(
+        f"CREATE TABLE {table} "
+        "(alias TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT, created_at INTEGER)"
+    )
+    conn.execute(f"INSERT INTO {table} VALUES ('ftjob_qold', 'run_old', NULL, 100)")
+    conn.commit()
+    conn.close()
+
+    openai_fine_tuning._load_aliases()
+    openai_fine_tuning._ALIAS_CREATED_NS["ftjob_qnew"] = 7
+    openai_fine_tuning._save_alias("ftjob_qnew", "run_new", None, 100)
+    conn = studio_db.get_connection()
+    rows = conn.execute(f"SELECT alias, created_ns FROM {table} ORDER BY alias").fetchall()
+    conn.close()
+    assert openai_fine_tuning._ALIAS_RUN["ftjob_qold"] == ("run_old", None)
+    assert [tuple(r) for r in rows] == [("ftjob_qnew", 7), ("ftjob_qold", None)]
+
+
+def test_jobs_created_within_one_clock_tick_list_newest_submitted_first(queue, monkeypatch):
+    client, _calls, _live, _gpu = queue
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: 1_700_000_000)
+    monkeypatch.setattr(openai_fine_tuning.time, "time_ns", lambda: 1_700_000_000 * 10**9)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = [await _create(client, uploaded.id, suffix = s) for s in "abc"]
+        return jobs, await client.fine_tuning.jobs.list()
+
+    jobs, listed = _run(flow())
+    assert [j.id for j in listed.data] == [j.id for j in jobs[::-1]]
+
+
+def test_a_job_started_directly_lists_ahead_of_an_older_same_second_job(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: 1_700_000_000)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        queued = await _create(client, uploaded.id, suffix = "queued")
+        await client.fine_tuning.jobs.cancel(queued.id)
+        gpu["busy"] = False
+        direct = await _create(client, uploaded.id, suffix = "direct")
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        _forget_aliases(monkeypatch)
+        restarted = await client.fine_tuning.jobs.list(limit = 1)
+        return direct, first, restarted
+
+    direct, first, restarted = _run(flow())
+    assert not direct.id.startswith("ftjob_q")
+    assert first.data[0].id == restarted.data[0].id == direct.id
 
 
 def test_cancelling_a_job_whose_start_is_in_flight_stops_it(queue, monkeypatch):
@@ -878,6 +935,8 @@ def test_queue_ids_are_stored_and_loaded_per_account(queue, monkeypatch):
 
     monkeypatch.setattr(openai_fine_tuning, "_alias_db", spy)
     monkeypatch.setattr(openai_fine_tuning, "_save_alias", save_spy)
+    # The drainer only starts jobs of live accounts.
+    monkeypatch.setattr("core.training.account_jobs.job_accounts", lambda: [bob])
 
     async def flow():
         uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
@@ -1081,6 +1140,10 @@ def test_jobs_differing_only_in_member_fields_batch_in_queue_order(batching, tmp
         {"optim": "adamw_torch_fused"},
         {"gpu_ids": [0, 1]},
         {"start_request_id": "retry-1"},
+        {"target_modules": ["q_proj", "embed_tokens"]},
+        {"target_modules": ["q_proj", "lm_head"]},
+        {"target_modules": ["model.embed_tokens", "v_proj"]},
+        {"target_modules": ["all-linear", "lm_head"]},
     ],
 )
 def test_an_excluded_setting_trains_alone(batching, tmp_path, fields):
@@ -1092,6 +1155,16 @@ def test_an_excluded_setting_trains_alone(batching, tmp_path, fields):
     plain = _entry(tmp_path, "c")
     batching.insert(0, plain)
     assert openai_fine_tuning._batch_for(plain) == [plain]
+
+
+@pytest.mark.parametrize(
+    "targets", [[], ["all-linear"], ["q_proj", "v_proj"], ["model.layers.0.self_attn.q_proj"]]
+)
+def test_projection_targets_still_batch(batching, tmp_path, targets):
+    head = _entry(tmp_path, "a", target_modules = targets)
+    other = _entry(tmp_path, "b", target_modules = targets)
+    batching.extend([head, other])
+    assert openai_fine_tuning._batch_for(head) == [head, other]
 
 
 @pytest.mark.parametrize(
@@ -2023,7 +2096,7 @@ def test_a_cursor_on_a_batch_member_that_starts_during_the_request_still_pages(
         return jobs, seen
 
     jobs, seen = _run(flow())
-    newest = sorted(jobs, key = lambda job: (-job.created_at, job.id))
+    newest = jobs[::-1]
     assert seen == [job.id for job in newest] + ["ftjob_20261021_101500_ab12cd34"]
 
 
@@ -2050,14 +2123,14 @@ def test_a_batch_lists_under_its_job_ids_while_its_start_is_being_saved(batch_qu
         return jobs, listed
 
     jobs, listed = _run(flow())
-    newest = sorted(jobs, key = lambda job: (-job.created_at, job.id))
+    newest = jobs[::-1]
     assert [(j.id, j.status) for j in listed.data] == [
         (job.id, "validating_files") for job in newest
     ]
 
 
 @pytest.mark.parametrize("step", [10, 0])
-@pytest.mark.parametrize("persisted", [False, True])
+@pytest.mark.parametrize("persisted", [False, True, "restart"])
 def test_a_job_batched_past_keeps_its_place_when_it_starts_between_pages(
     batch_queue, monkeypatch, persisted, step
 ):
@@ -2091,6 +2164,8 @@ def test_a_job_batched_past_keeps_its_place_when_it_starts_between_pages(
         if persisted:
             history_row("job_20261021_101500_ab12cd34", "2026-11-04T01:00:00+00:00")
             live["status"] = _Status()
+        if persisted == "restart":
+            _forget_aliases(monkeypatch)
         after = first.data[0].id
         rest = [j.id async for j in client.fine_tuning.jobs.list(after = after, limit = 1)]
         return jobs, listed, [j.id for j in first.data] + rest
@@ -2098,9 +2173,7 @@ def test_a_job_batched_past_keeps_its_place_when_it_starts_between_pages(
     (a, b, c), listed, walked = _run(flow())
     assert [r.project_name for r in calls["batch"][0][0]] == ["a", "c"]
     assert [r.project_name for r in calls["start"]] == ["b"]
-    assert walked == listed and sorted(walked) == sorted([a.id, b.id, c.id])
-    if step:
-        assert walked == [c.id, b.id, a.id]
+    assert walked == listed == [c.id, b.id, a.id]
 
 
 def test_history_lists_by_creation_time_reading_only_what_a_page_needs(monkeypatch):

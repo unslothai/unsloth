@@ -237,5 +237,78 @@ test("only a selection that ends inside a fence holds the highlight queue", () =
   const element = { nodeType: 1, closest: () => ({}) } as unknown as Node;
   assert.equal(selectionInFence({ anchorNode: element, focusNode: null }), true, "an element endpoint is checked itself");
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
-  assert.match(defer, /blocked: \(\) => inputPointerHeld\(\) \|\| highlightQuietIn\(\) > 0 \|\| selectionInFence\(liveSelection\(\)\),/);
+  assert.match(defer, /blocked: \(duringScroll\) =>\s+inputPointerHeld\(\) \|\| highlightQuietIn\(duringScroll\) > 0 \|\| selectionInFence\(liveSelection\(\)\),/);
+});
+
+test("mid-scroll only entries marked for it run, ahead of older ones that wait for quiet", () => {
+  let scrolling = true;
+  const flags: boolean[] = [];
+  const h = harness({
+    schedule: (callback, duringScroll) => {
+      flags.push(duringScroll);
+      h.callbacks.add(callback);
+      return () => { h.callbacks.delete(callback); };
+    },
+    blocked: (duringScroll) => scrolling && !duringScroll,
+  });
+  const ran: string[] = [];
+  h.queue.add(() => { ran.push("rest of a long fence"); return true; }, () => {});
+  h.queue.add(() => { ran.push("lines in view"); return true; }, () => {}, true);
+  h.run();
+  assert.deepEqual(ran, ["lines in view"]);
+  assert.equal(flags.at(-1), false, "with only waiting work left, the next slot waits for quiet");
+  scrolling = false;
+  h.run();
+  assert.deepEqual(ran, ["lines in view", "rest of a long fence"]);
+});
+
+test("with a budget one run finishes several waiting fences, each at most once, until the budget is spent", () => {
+  let clock = 0;
+  const h = harness({ budgetMs: 6, now: () => clock });
+  const ran: string[] = [];
+  let unfinished = 0;
+  h.queue.add(() => { ran.push("long"); clock += 1; return ++unfinished === 2; }, () => {});
+  h.queue.add(() => { ran.push("reach"); clock += 1; return true; }, () => {});
+  h.queue.add(() => { ran.push("answer"); clock += 1; return true; }, () => {});
+  h.run();
+  assert.deepEqual(ran, ["long", "reach", "answer"], "one task, three fences, and the unfinished one waits for the next run");
+  assert.equal(h.commits(), 3, "each fence still commits on its own");
+  assert.equal(h.queue.pending(), 1);
+  h.run();
+  assert.deepEqual(ran, ["long", "reach", "answer", "long"]);
+  assert.equal(h.queue.pending(), 0);
+
+  for (let i = 0; i < 4; i += 1) h.queue.add(() => { ran.push(`slow ${i}`); clock += 5; return true; }, () => {});
+  h.run();
+  assert.deepEqual(ran.slice(4), ["slow 0", "slow 1"], "the run stops once the budget is spent");
+  assert.equal(h.queue.pending(), 2);
+});
+
+test("a run asks whether work is blocked once per kind, not once per fence", () => {
+  let asked = 0;
+  const h = harness({
+    budgetMs: 100,
+    now: () => 0,
+    blocked: (duringScroll) => { asked += 1; return !duringScroll; },
+  });
+  const ran: number[] = [];
+  for (let i = 0; i < 5; i += 1) h.queue.add(() => { ran.push(i); return true; }, () => {}, i % 2 === 0);
+  h.run();
+  assert.deepEqual(ran, [0, 2, 4], "only the mid-scroll entries run while scrolling");
+  assert.equal(asked, 2, "a selection or a held pointer is read twice per run, not once per fence");
+});
+
+test("without a budget a run still takes exactly one fence", () => {
+  const h = harness();
+  const ran: number[] = [];
+  for (let i = 0; i < 3; i += 1) h.queue.add(() => { ran.push(i); return true; }, () => {});
+  h.run();
+  assert.deepEqual(ran, [0]);
+});
+
+test("the fence queue is given a run budget", () => {
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  assert.match(defer, /const HIGHLIGHT_RUN_MS = 6;/);
+  assert.match(defer, /commit: \(run\) => flushSync\(run\),\s*budgetMs: HIGHLIGHT_RUN_MS,/);
+  assert.match(defer, /\(\s*run, duringScroll && NO_IDLE_CALLBACK \? 0 : 100\)/, "without requestIdleCallback mid-scroll work runs after the frame instead of a 100 ms timer");
 });

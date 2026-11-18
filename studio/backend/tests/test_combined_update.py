@@ -931,9 +931,8 @@ def test_a_slim_pairing_gap_skips_instead_of_failing_the_job(monkeypatch):
 
 
 def test_the_pre_flight_probes_the_release_that_would_be_installed(monkeypatch):
-    """Probing one release and installing another can skip a valid update or wave
-    through a doomed one. The unpinned latest pointer sorts by commit date and can lag
-    the published_at pick the phase pins against (#6219)."""
+    """Probe the release that will be installed, since probing another can skip a valid update or
+    wave through a doomed one; latest can lag the published_at pin (issue 6219)."""
     seen = {}
 
     def spy(**kw):
@@ -1005,8 +1004,7 @@ def test_a_fat_target_release_is_never_reported_incompatible(monkeypatch):
     ],
 )
 def test_a_pre_flight_that_cannot_answer_still_attempts_the_install(monkeypatch, resolved):
-    """Fail towards the install: a pre-flight that cannot answer knows nothing, and
-    skipping would report a pairing gap that was never established."""
+    """A pre-flight that cannot answer must attempt the install, not skip it as a pairing gap."""
     monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", lambda **_kw: resolved)
     monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1"})
 
@@ -1024,8 +1022,7 @@ def test_a_probe_that_raises_still_attempts_the_install(monkeypatch):
 
 
 def test_an_incompatible_release_that_slips_past_the_pre_flight_still_errors(monkeypatch):
-    """The pre-flight narrows when exit 2 happens; it must not swallow it. Pinned
-    alongside test_whisper_phase_exit_2_is_a_failed_phase."""
+    """The pre-flight narrows when exit 2 happens; it must never swallow it."""
     monkeypatch.setattr(
         wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": True}
     )

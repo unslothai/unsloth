@@ -38,6 +38,7 @@ HELPERS = (
     "_unsloth_grpo_hidden_states_signal",
     "_unsloth_pref_returns_hidden_states",
     "_unsloth_gkd_dense_head",
+    "_unsloth_global_module_hooks",
     "_unsloth_gkd_logit_transforms",
     "_unsloth_pref_logit_transforms",
     "_unsloth_stock_logps_hook",
@@ -328,6 +329,35 @@ def test_use_weighting_falls_back(env):
     assert torch.allclose(loss, base_loss, atol = 1e-6)
 
 
+_GLOBAL_HOOKS = {
+    "forward": "register_module_forward_hook",
+    "forward_pre": "register_module_forward_pre_hook",
+    "full_backward": "register_module_full_backward_hook",
+    "full_backward_pre": "register_module_full_backward_pre_hook",
+}
+
+
+@pytest.mark.parametrize("hook", list(_GLOBAL_HOOKS))
+def test_global_module_hook_falls_back(env, hook):
+    # torch's global module hooks apply to every module: the fused path never calls the head.
+    from torch.nn.modules import module as module_hooks
+
+    dpo_mod, forward = env
+    _, base_loss, _, _ = _run(dpo_mod, forward, {}, chunked = False)
+    trainer, _, _, _ = _run(dpo_mod, forward, {}, chunked = True)
+    assert trainer._unsloth_dpo_chunked_calls > 0, "control: the fused path runs without hooks"
+    handle = getattr(module_hooks, _GLOBAL_HOOKS[hook])(lambda *a: None)
+    try:
+        trainer, loss, _, _ = _run(dpo_mod, forward, {}, chunked = True)
+    finally:
+        handle.remove()
+    assert getattr(trainer, "_unsloth_dpo_chunked_calls", 0) == 0
+    assert "output head has hooks or a patched forward" in trainer._unsloth_dpo_chunked_fallbacks
+    assert torch.allclose(loss, base_loss, atol = 1e-6)
+    trainer, _, _, _ = _run(dpo_mod, forward, {}, chunked = True)
+    assert trainer._unsloth_dpo_chunked_calls > 0, "removing the hook must restore the fused path"
+
+
 TRL_TAGS = [
     "v0.18.2",
     "v0.19.1",
@@ -577,6 +607,51 @@ def test_stock_logps_hook_detects_overrides():
     assert hook(WrapsForward(), "concatenated_forward")
     assert not hook(WrapsForward(), "concatenated_forward", stand_ins)
     assert hook(Patched(), "concatenated_forward", stand_ins)
+
+
+def test_stock_logps_hook_reads_through_the_prefix_share_wrapper():
+    # The prefix-share scoping wrapper must not count as a user override (ORPO / CPO keep the chunked head).
+    import functools
+
+    hook = _helpers()["_unsloth_stock_logps_hook"]
+    hooks = ("get_batch_logps", "get_batch_loss_metrics", "concatenated_forward")
+
+    class Stock:
+        def get_batch_logps(self):
+            pass
+
+        def concatenated_forward(self):
+            pass
+
+    class Patched(Stock):
+        def concatenated_forward(self):
+            return _unsloth_dpo_chunked_head  # noqa: F821  (only the name matters)
+
+    def prefix_share_wrap(function):
+        @functools.wraps(function)
+        def wrapped(self, *args, **kwargs):
+            return function(self, *args, **kwargs)
+
+        wrapped._unsloth_dpo_prefix_share = True
+        return wrapped
+
+    class Wrapped(Patched):
+        pass
+
+    Wrapped.concatenated_forward = prefix_share_wrap(Patched.concatenated_forward)
+    assert hook(Wrapped(), "concatenated_forward", hooks)
+
+    class UserOverride(Wrapped):
+        def get_batch_logps(self):
+            pass
+
+    assert not hook(UserOverride(), "concatenated_forward", hooks)
+
+    class PlainWrapper(Patched):
+        def concatenated_forward(self):
+            return super().concatenated_forward()
+
+    assert not hook(PlainWrapper(), "concatenated_forward", hooks)
 
 
 def test_router_aux_loss_falls_back():

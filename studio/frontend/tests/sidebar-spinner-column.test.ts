@@ -56,9 +56,8 @@ test("nav and Recents spinners land on one trailing column", async () => {
   );
 });
 
-// The kebab overlays the row's right edge, so a spinner row must pad past it.
-// The spinner, the waiting-for-approval dot and the unread dot take turns in one slot; a dot off
-// that centre reads as misaligned next to a spinner or a dot in the row above.
+// The kebab overlays the row's right edge, so a spinner row must pad past it; the spinner, approval
+// dot and unread dot share one slot, and a dot off that centre reads as misaligned.
 test("the Recents spinner, the approval mark and the unread dot share one centre", () => {
   const centre = (anchor: string, box: string) => inset(anchor, "right") + inset(box, "size") / 2;
   const spinnerAnchor = grab(
@@ -100,8 +99,9 @@ test("every trailing mark yields to the row actions on hover, an open menu and k
     for (const group of ["recent-item", "project-chat-item"]) {
       for (const fade of [
         `group-hover/${group}:opacity-0`,
-        `group-has-[.sidebar-row-action[data-state=open]]/${group}:opacity-0`,
-        `group-has-[.sidebar-row-action:focus-visible]/${group}:opacity-0`,
+        // The actions follow the mark in the row, so the mark looks at its later siblings.
+        "[&:has(~.sidebar-row-action[data-state=open])]:opacity-0",
+        "[&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
       ]) {
         assert.ok(block.includes(fade), `the ${name} lacks ${fade}`);
       }
@@ -131,7 +131,7 @@ test("a working Recents row clears the kebab on hover", async () => {
   );
 
   // focus-visible reveals the actions without hover, so rows reserve room there too.
-  const focusPads = [...source.matchAll(/:focus-visible\]\/[a-z-]+:pr-([0-9.]+)/g)].map(
+  const focusPads = [...source.matchAll(/:has\(~\.sidebar-row-action:focus-visible\)\]:pr-([0-9.]+)/g)].map(
     (m) => Number(m[1]) * TAILWIND_UNIT,
   );
   assert.equal(focusPads.length, 2, `expected 2 focus paddings, got ${focusPads.length}`);

@@ -180,9 +180,8 @@ def test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races(strip, tmp_path
 
 
 def test_cleanup_keeps_the_notebooks_owner_and_mode(strip, tmp_path: Path):
-    """A bind-mounted notebook matching the baked template is managed WITHOUT being
-    copied, so the host user keeps owning it -- and os.replace swaps the directory
-    entry, so a root-written staging file would hand it back root-owned."""
+    """A bind-mounted notebook matching the template is managed without a copy, keeping the host
+    owner; os.replace swaps the entry, so a root-written stage would hand back root ownership."""
     import os
     import stat as _stat
 

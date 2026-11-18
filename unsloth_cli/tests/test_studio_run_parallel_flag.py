@@ -21,8 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def _load_run_command():
-    """Import `studio` without triggering server start; backend imports
-    are lazy inside run()."""
+    """Import studio without starting the server; backend imports are lazy inside run()."""
     from unsloth_cli.commands import studio as _studio
     return _studio
 
@@ -347,8 +346,7 @@ def test_in_venv_child_reports_bound_port_before_start_api_key(
 
 
 def test_run_default_sets_tool_call_env(monkeypatch):
-    """Plain `unsloth run` enables healing and nudging via the inherited env
-    (written before the re-exec so the child server picks them up at import)."""
+    """Plain run enables healing and nudging via the inherited env, set before the re-exec."""
     studio_mod = _load_run_command()
     monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
     monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
@@ -372,8 +370,7 @@ def test_run_disable_flags_set_tool_call_env(monkeypatch):
 
 @pytest.mark.parametrize("inherited", ["0", "false", "False", "no", ""])
 def test_run_omitted_flag_respects_inherited_env(monkeypatch, inherited):
-    """When the flag is omitted, a value the parent set (e.g. `unsloth start`) wins
-    instead of being reset to the default."""
+    """Omitted flag keeps a value the parent set (e.g. unsloth start) instead of resetting it."""
     studio_mod = _load_run_command()
     monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", inherited)
     monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
@@ -514,8 +511,7 @@ def test_reexec_forwards_speculative_options(monkeypatch):
 
 
 def test_reexec_forwards_dflash_speculative_type(monkeypatch):
-    """SpeculativeType is what Typer validates the option against, so a mode missing
-    from the literal is rejected before any loading code runs."""
+    """Typer validates the option against SpeculativeType; a mode missing from it fails early."""
     result, captured = _invoke_run(
         monkeypatch,
         _BASE + ["--speculative-type", "dflash"],
@@ -704,9 +700,8 @@ def test_load_model_http_payload_for_dspark(monkeypatch):
 
 
 def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
-    """A slow load commits its 200 and pads the body (routes/inference.py
-    _tunnel_safe_json), so a late failure arrives in-band; it must still surface as the
-    RuntimeError `run` reports, not as a successful load."""
+    """A slow load commits its 200 and pads the body, so a late failure arrives in-band and must
+    still raise the RuntimeError run reports, not a successful load."""
     studio_mod = _load_run_command()
 
     def urlopen(request, timeout):
@@ -788,9 +783,8 @@ def test_context_length_banner_line_omits_unknown_values(value):
     ],
 )
 def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag, expected_in_child):
-    """Re-exec must emit the chosen polarity (or the typer default),
-    so a future default flip on one layer can't silently invert
-    behaviour for users who never typed the flag."""
+    """Re-exec must forward the chosen polarity or the typer default, so a default flip on one layer
+    cannot silently invert behaviour for users who never typed the flag."""
     extras = [user_flag] if user_flag else []
     result, captured = _invoke_run(monkeypatch, _BASE + extras)
     assert len(captured) == 1
@@ -860,8 +854,7 @@ def test_studio_default_rejects_api_only_when_subcommand_invoked():
 
 
 def test_studio_default_default_parallel_with_subcommand_does_not_error():
-    """Omitting --parallel on the group must still let subcommands
-    run; the group's default 1 is benign."""
+    """Omitting --parallel on the group must not block subcommands; its default 1 is benign."""
     studio_mod = _load_run_command()
     import typer as _typer
 

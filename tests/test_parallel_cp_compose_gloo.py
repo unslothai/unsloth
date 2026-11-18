@@ -57,6 +57,36 @@ def _checkpoint(tmp, arch = "llama"):
 
     from test_tp_native_oracle import LLAMA, QWEN3, QWEN3_MOE, build
 
+    if arch == "qwen3_5":
+        # Hybrid: Gated DeltaNet (linear attention) layers beside attention, 4 heads / 2 kv heads, 4 value heads
+        # over 2 key heads in the linear layers, so Ulysses cp 2 splits both kinds. No hub weights: random init.
+        import transformers
+
+        tok = AutoTokenizer.from_pretrained(QWEN3)
+        config = transformers.Qwen3_5TextConfig(
+            vocab_size = len(tok),
+            hidden_size = 32,
+            intermediate_size = 64,
+            num_hidden_layers = N_LAYERS,
+            layer_types = ["linear_attention", "full_attention"] * (N_LAYERS // 2),
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            head_dim = 8,
+            linear_num_key_heads = 2,
+            linear_num_value_heads = 4,
+            linear_key_head_dim = 8,
+            linear_value_head_dim = 8,
+            linear_conv_kernel_dim = 4,
+            attention_dropout = 0.0,
+            tie_word_embeddings = False,
+        )
+        torch.manual_seed(0)
+        model = transformers.Qwen3_5ForCausalLM(config)
+        model.generation_config.pad_token_id = None
+        path = os.path.join(tmp, "ckpt")
+        model.save_pretrained(path, safe_serialization = True)
+        tok.save_pretrained(path)
+        return path
     if arch in ("qwen3_moe", "qwen3", "qwen3_moe_wide"):
         # qwen3_moe: 4 heads / 2 kv heads, 4 experts (2 per token), router aux loss off as shipped.
         # qwen3_moe_wide: hidden and expert widths of 32, so Unsloth's Triton grouped GEMM takes the experts (it
@@ -344,6 +374,7 @@ def _case_train(
     probe_refusal = False,
     gc = "none",
     packed = None,
+    eval_only = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -437,6 +468,25 @@ def _case_train(
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
+    cpu_chunked_ce = False
+    if eval_only:
+        from unsloth_zoo.cpu.ops import patch_chunked_causal_lm_loss
+        cpu_chunked_ce = patch_chunked_causal_lm_loss(model)
+    gdn_calls = []
+    if arch == "qwen3_5":
+        # The torch Gated DeltaNet kernels (fla / Triton need CUDA), and a counter on Unsloth's GDN exchange.
+        from test_ulysses_hybrid import _force_torch_kernels
+
+        from unsloth.utils import ulysses_hybrid as gdn
+
+        _force_torch_kernels(model)
+        original_gdn = gdn.ulysses_gated_delta_forward
+
+        def counted_gdn(*a, **k):
+            gdn_calls.append(1)
+            return original_gdn(*a, **k)
+
+        gdn.ulysses_gated_delta_forward = counted_gdn
     gc_stats = {"checkpoint_calls": 0, "offloaded": 0, "restored": 0}
     if gc != "none":
         _install_unsloth_checkpoint(model, gc, gc_stats)
@@ -475,6 +525,8 @@ def _case_train(
         batch["labels"][
             batch["labels"] % 5 == 0
         ] = -100  # uneven token counts per row and per shard
+        if eval_only:
+            batch["attention_mask"] = torch.ones_like(input_ids)
         if packed:
             batch.update(_packed_row(batch, packed, int(rows[0]["row"])))
         return batch
@@ -524,6 +576,8 @@ def _case_train(
         dataset_kwargs = {"skip_prepare_dataset": True},
         gradient_checkpointing = False,
     )
+    if eval_only:
+        args.loss_type = "nll"
     if packed:
         # What the registry reads for a packed run (query_from): SFTConfig.padding_free; the rows come from the
         # collator above, so TRL's own padding-free collator is not involved.
@@ -603,6 +657,17 @@ def _case_train(
         processing_class = tokenizer,
         callbacks = [Grabber()],
     )
+    if eval_only:
+        trainer.args.per_device_eval_batch_size = bs
+        metrics = trainer.evaluate(eval_dataset = data)
+        stage = pp_native.pipeline_stage_of(trainer.model)
+        return {
+            "eval_loss": metrics["eval_loss"],
+            "rows_read": rows_read,
+            "stage": None if stage is None else int(stage.stage_index),
+            "cpu_compute_loss": bool(getattr(type(trainer).compute_loss, "_unsloth_cpu", False)),
+            "cpu_chunked_ce": cpu_chunked_ce,
+        }
     if device != "cpu":
         assert trainer.accelerator.mixed_precision == "no", trainer.accelerator.mixed_precision
     manager = getattr(trainer, "_context_parallel_manager", None)
@@ -716,6 +781,7 @@ def _case_train(
         "query": query,
         "exchanges": exchanges,
         "n_layers": int(trainer.model.config.num_hidden_layers),
+        "gdn_calls": len(gdn_calls),
     }
     if dist.is_initialized():
         dist.barrier()
@@ -1122,6 +1188,46 @@ def test_cp_with_native_fsdp2_matches_one_process(env, sft_cp):
         _close(res, ref, what = (env, rank))
 
 
+def _needs_qwen3_5():
+    import transformers
+    if not hasattr(transformers, "Qwen3_5TextConfig"):
+        pytest.skip(f"transformers {transformers.__version__} has no Qwen3.5")
+
+
+def test_hybrid_qwen3_5_under_cp_matches_one_process():
+    """Qwen3.5 hybrid (Gated DeltaNet + attention) under Ulysses cp 2: both layer kinds exchange, one process's
+    numbers."""
+    _needs_qwen3_5()
+    ref = _ref(2, arch = "qwen3_5")
+    assert ref["gdn_calls"] == 0 and ref["ulysses_calls"] == 0
+    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_5")):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["cp_group"] == [0, 1] and res["seen_lengths"] == [SEQ // 2]
+        # Every forward of a training step: N_LAYERS // 2 linear attention and as many attention layers.
+        assert res["gdn_calls"] >= N_LAYERS // 2 and res["ulysses_calls"] >= N_LAYERS // 2, res
+        _close(res, ref, what = ("qwen3_5 cp2", rank))
+
+
+@pytest.mark.parametrize(
+    "env, sft_cp",
+    [({"UNSLOTH_FSDP2": "1"}, True), ({"UNSLOTH_PARALLEL": "cp=2,fsdp=1"}, False)],
+    ids = ["fsdp2_env_cp_config", "unsloth_parallel"],
+)
+def test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process(env, sft_cp):
+    """The registry's hybrid cp x native FSDP2 cell: strict mode (unverified layouts refused) trains it, FSDP2
+    shards over (dp_shard, cp), the Gated DeltaNet and attention exchanges run, one process's numbers."""
+    _needs_qwen3_5()
+    ref = _ref(4, arch = "qwen3_5")
+    env = {**env, "UNSLOTH_PARALLEL_STRICT": "1"}
+    for rank, res in enumerate(_spawn("train", 4, env, bs = 2, cp = 2, sft_cp = sft_cp, arch = "qwen3_5")):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["native_fsdp2"] and res["cp_group"] == [rank - rank % 2, rank - rank % 2 + 1]
+        assert res["seen_lengths"] == [SEQ // 2]
+        assert res["gdn_calls"] >= N_LAYERS // 2 and res["ulysses_calls"] >= N_LAYERS // 2, res
+        assert "FSDP2 shards and reduces over dp_shard x cp" in (res["banner"] or ""), res["banner"]
+        _close(res, ref, what = ("qwen3_5", env, rank), state_atol = 1e-5)
+
+
 def test_dense_qwen3_under_cp_matches_one_process():
     """The control for the MoE cell below: the same family without experts trains like one process."""
     ref = _ref(2, arch = "qwen3")
@@ -1214,6 +1320,40 @@ def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(
     for rank, res in enumerate(results):
         # transformers 4.x drifts ~1.4e-4 / ~5e-6 at GA 4 even aux off; the guarded error is 13-42% of the loss
         _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (ga, aux, rank))
+
+
+@pytest.mark.parametrize(
+    "arch,aux",
+    [("llama", False), ("qwen3_moe", False), ("qwen3_moe", True)],
+    ids = ["dense", "moe_aux_off", "moe_aux_on"],
+)
+def test_cpu_pipeline_eval_matches_one_process(monkeypatch, arch, aux):
+    monkeypatch.setenv("UNSLOTH_FORCE_CPU", "1")
+    kw = dict(
+        bs = 2,
+        ga = 1,
+        steps = 3,
+        arch = arch,
+        eval_only = True,
+        router_aux = aux,
+        aux_coef = 0.5 if aux else None,
+    )
+    (ref,) = _spawn("train", 1, **kw)
+    assert "error" not in ref, ref
+    results = _spawn(
+        "train",
+        2,
+        {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"},
+        **kw,
+    )
+    _skip_if_one_microbatch_refused(results)
+    assert sorted(res.get("stage", -1) for res in results) == [0, 1], results
+    for res in [ref, *results]:
+        assert "error" not in res, res
+        assert res["cpu_compute_loss"]
+        assert res["cpu_chunked_ce"] is (arch == "llama")
+        assert res["rows_read"] == ref["rows_read"]
+        assert res["eval_loss"] == pytest.approx(ref["eval_loss"], rel = 1e-5)
 
 
 _PP_AUX_SPLIT = "load-balancing loss per micro-batch"

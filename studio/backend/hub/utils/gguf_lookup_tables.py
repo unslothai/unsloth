@@ -14,7 +14,7 @@ import time
 from collections import OrderedDict
 from typing import Callable, Optional
 
-from core.inference.lookup_tables import LAZY_READ_TENSORS, lazy_read_bytes
+from core.inference.lookup_tables import LAZY_READ_TENSORS, PLE_TABLE_TENSOR, lazy_read_bytes
 
 _SPLIT_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})(\.gguf)$", re.IGNORECASE)
 _SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
@@ -178,6 +178,20 @@ def header_of_local(path: str) -> tuple[Optional[str], dict[str, int]]:
         return _read_growing(read, file_size = lambda: size)
 
 
+def ple_only_local(path: str) -> bool:
+    """Whether a local GGUF holds nothing but the per-layer (PLE / Engram) table, which is how
+    llama.cpp decides a backbone shard may give way to an external ``--ple`` table."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+        # magic, version, then the tensor count
+        if len(head) < 24 or head[:4] != b"GGUF" or struct.unpack_from("<Q", head, 8)[0] != 1:
+            return False
+        return set(header_of_local(path)[1]) == {PLE_TABLE_TENSOR}
+    except (OSError, ValueError):
+        return False
+
+
 def shard_names(filename: str) -> list[str]:
     """Every shard of ``filename`` in order (itself alone when it is not a split)."""
     head, sep, base = str(filename).replace("\\", "/").rpartition("/")
@@ -215,8 +229,7 @@ def _scan_shards(
     max_shards: Optional[int] = MAX_SHARDS_READ,
     known_arch: Optional[str] = None,
 ):
-    """(architecture, lazy table bytes under ``mode``), stopping at the first shard carrying the
-    table."""
+    """Returns (architecture, table bytes); stops at the first shard that carries the table."""
     arch: Optional[str] = None
     order = names[:max_shards]
     hinted = lazy_architecture(known_arch) and len(names) > 1

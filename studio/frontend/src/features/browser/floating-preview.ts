@@ -14,6 +14,7 @@ import type {
 import {
   FLOATING_ATTRIBUTE,
   FLOATING_MOVE_EVENT,
+  FLOATING_PRESS_EVENT,
   FLOATING_SCALE_VAR,
 } from "./floating-events";
 
@@ -153,9 +154,9 @@ function boxIn(room: Room, intent: Geometry): Box {
   };
 }
 
-function intentOf(room: Box, box: Box): Geometry {
+function intentOf(room: Box, box: Box, snap = RIGHT_SNAP_PX): Geometry {
   const left = box.left - room.left;
-  const anchored = room.width - box.width - left <= RIGHT_SNAP_PX;
+  const anchored = room.width - box.width - left <= snap;
   return {
     left: anchored ? null : left,
     top: box.top - room.top,
@@ -278,6 +279,7 @@ const CURSORS: Record<FloatingEdge, string> = {
 };
 
 const announceMove = () => window.dispatchEvent(new Event(FLOATING_MOVE_EVENT));
+export const announceGrab = () => window.dispatchEvent(new Event(FLOATING_PRESS_EVENT));
 
 /** A move rides a transform and a resize only rescales, once per frame; a sheet keeps the page's frame off the pointer. */
 export function startFloatingGesture(
@@ -298,6 +300,7 @@ export function startFloatingGesture(
   const room = surface ? roomFor(surface) : null;
   if (!surface || !room) return;
   event.preventDefault();
+  announceGrab();
   const start = currentBox(room);
   const startX = event.clientX;
   const startY = event.clientY;
@@ -382,6 +385,7 @@ export function nudgeFloating(event: ReactKeyboardEvent<HTMLElement>): void {
   const start = currentBox(room);
   const next = resized(start, edge, delta.dx * step, delta.dy * step, room);
   paint(surface, next);
-  writeGeometry(intentOf(room, next));
+  // No snap: a key step equals it, so the window could never leave the right edge.
+  writeGeometry(intentOf(room, next, 0));
   announceMove();
 }

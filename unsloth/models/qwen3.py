@@ -28,6 +28,7 @@ from ..utils.attention_dispatch import (
     SDPA,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
 )
 from .llama import (
     LlamaRotaryEmbedding,
@@ -70,7 +71,8 @@ except:
     Qwen3FlashAttention2 = Qwen3Attention
 
 
-@context_parallel_attention
+@applies_prefix_seg_info
+@context_parallel_attention(rl = True)
 def Qwen3Attention_fast_forward(
     self,
     hidden_states: torch.Tensor,

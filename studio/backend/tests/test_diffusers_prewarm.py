@@ -192,8 +192,7 @@ def test_it_latches_so_a_second_call_is_free(warm, monkeypatch):
 
 
 def test_concurrent_callers_prewarm_once(warm, monkeypatch):
-    """Single-flight, asserted on how many callers did the work rather than on lock entries,
-    which would be a race against thread scheduling."""
+    """Single-flight is checked by how many callers did the work; lock entries would race."""
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     _stub_diffusers(monkeypatch)
 
@@ -216,8 +215,7 @@ def test_a_gate_that_raises_means_skip_not_crash(warm, monkeypatch):
 
 
 def test_a_diffusers_that_cannot_import_means_skip_not_crash(warm, monkeypatch):
-    """A --no-torch host, or a broken diffusers, reports False. The load path imports it again
-    and is the one that reports the failure to the user."""
+    """A --no-torch host or broken diffusers returns False; the load path reports the error."""
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     _stub_diffusers(monkeypatch, raises = True)
     assert warm.prewarm_diffusers_if_image_models_exist() is False
@@ -469,8 +467,7 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
 def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
     warm, monkeypatch, restore_diffusers_modules
 ):
-    """The lock must stay held without a gap from failed import to purge; a release in between is
-    the bug."""
+    """The lock stays held from failed import to purge; releasing in between is the bug."""
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
     monkeypatch.setitem(sys.modules, "diffusers.pipelines", types.ModuleType("diffusers.pipelines"))
@@ -533,8 +530,7 @@ def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
 
 
 def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):
-    """What presence alone gets wrong: a native binary or UNSLOTH_DIFFUSION_ENGINE=sd_cpp
-    serves a supported GGUF through sd.cpp, importing no diffusers."""
+    """Native binary or UNSLOTH_DIFFUSION_ENGINE=sd_cpp serves GGUF via sd.cpp, no diffusers."""
     _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]}, engine = "sd_cpp")
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
 

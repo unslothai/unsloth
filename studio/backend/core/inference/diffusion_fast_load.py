@@ -13,6 +13,8 @@ import threading
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
 PREFETCH_ENV = "UNSLOTH_DIFFUSION_PREFETCH"
+# "0": every slice is read whole, its page-cache-resident chunks included.
+PREFETCH_SKIP_CACHED_ENV = "UNSLOTH_DIFFUSION_PREFETCH_SKIP_CACHED"
 FAST_UPLOAD_ENV = "UNSLOTH_DIFFUSION_FAST_UPLOAD"
 _SWITCH_OFF = ("0", "off", "false", "no")
 
@@ -70,6 +72,57 @@ class LoadPrefetch:
 def _uncached_bytes(path: str) -> int:
     from .video_ltx2 import _uncached_bytes as uncached
     return uncached(path)
+
+
+_LSB = bytes(b & 1 for b in range(256))  # mincore defines only bit 0 of each byte
+_LIBC: list = []
+
+
+def _mincore() -> Any:
+    if not _LIBC:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno = True)
+        libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+        _LIBC.append(libc.mincore)
+    return _LIBC[0]
+
+
+def _chunk_resident(mapped: Any, start: int, length: int) -> bool:
+    """True when every page of the chunk is in the page cache; False when it cannot tell."""
+    import ctypes
+    import mmap
+
+    try:
+        page = mmap.PAGESIZE
+        first = start - start % page
+        span = start + length - first
+        pages = (span + page - 1) // page
+        mincore = _mincore()
+        anchor = ctypes.c_char.from_buffer(mapped, first)
+        try:
+            vector = (ctypes.c_ubyte * pages)()
+            if mincore(ctypes.addressof(anchor), ctypes.c_size_t(span), vector) != 0:
+                return False
+            return b"\x00" not in bytes(vector).translate(_LSB)
+        finally:
+            del anchor
+    except Exception:  # noqa: BLE001 - unknown residency: read it
+        return False
+
+
+def _residency_map(path: str) -> Any:
+    """A mapping for ``mincore``, or None (non-Linux, switch off, unmappable)."""
+    import sys
+
+    if not sys.platform.startswith("linux") or not _switch_on(PREFETCH_SKIP_CACHED_ENV):
+        return None
+    try:
+        import mmap
+        with open(path, "rb") as handle:
+            return mmap.mmap(handle.fileno(), 0, access = mmap.ACCESS_COPY)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _available_host_mib() -> Optional[int]:
@@ -138,7 +191,14 @@ def start_prefetch(
                 logger.info("diffusion.prefetch: skipped, the weights are on a rotational disk")
             return None
         available = _available_host_mib()
-        if available is None or need > (int(available) << 20) // 2:
+        threads = max(1, int(threads))
+        largest = max(os.path.getsize(path) for path in pending)
+        buffer_bytes = max(1 << 20, min(_PREFETCH_READ_BYTES, -(-largest // threads)))
+        if available is not None:
+            # each worker's read buffer counts too: fewer workers before none
+            room = (int(available) << 20) // 2 - need
+            threads = max(1, min(threads, room // buffer_bytes))
+        if available is None or need + threads * buffer_bytes > (int(available) << 20) // 2:
             if logger is not None:
                 logger.info(
                     "diffusion.prefetch: skipped, %.1f GiB uncached against %s MiB available host RAM",
@@ -146,7 +206,6 @@ def start_prefetch(
                     available,
                 )
             return None
-        threads = max(1, int(threads))
         # Thread i reads slice i of every file, files in load order, so the first file is warm first.
         plan: list[list[tuple[str, int, int]]] = [[] for _ in range(threads)]
         for path in pending:
@@ -160,20 +219,29 @@ def start_prefetch(
     stop = threading.Event()
 
     def _worker(jobs: list[tuple[str, int, int]]) -> None:
-        buffer = bytearray(_PREFETCH_READ_BYTES)
+        buffer = bytearray(buffer_bytes)
         view = memoryview(buffer)
         try:
             for path, start, end in jobs:
                 if stop.is_set():
                     return
-                with open(path, "rb", buffering = 0) as handle:
-                    handle.seek(start)
-                    at = start
-                    while at < end and not stop.is_set():
-                        got = handle.readinto(view[: min(_PREFETCH_READ_BYTES, end - at)])
-                        if not got:
-                            break
-                        at += got
+                mapped = _residency_map(path)
+                try:
+                    with open(path, "rb", buffering = 0) as handle:
+                        at = start
+                        while at < end and not stop.is_set():
+                            want = min(buffer_bytes, end - at)
+                            if mapped is not None and _chunk_resident(mapped, at, want):
+                                at += want
+                                continue
+                            handle.seek(at)
+                            got = handle.readinto(view[:want])
+                            if not got:
+                                break
+                            at += got
+                finally:
+                    if mapped is not None:
+                        mapped.close()
         except Exception:  # noqa: BLE001 - a prefetch is only a hint
             pass
 

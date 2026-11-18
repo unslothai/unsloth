@@ -108,7 +108,7 @@ export function LibraryToolbar({
             className="h-10 gap-2 rounded-full"
             aria-label={t("settings.data.library.filterSort")}
           >
-            <HugeiconsIcon icon={FilterMailIcon} className="size-4 shrink-0" />
+            <HugeiconsIcon icon={FilterMailIcon} className="size-4 shrink-0 -translate-y-[0.5px]" />
             {projects
               ? t(TYPE_LABELS[filters.type])
               : filters.sort === "default"

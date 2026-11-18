@@ -771,9 +771,8 @@ def test_a_pretokenized_stream_is_truncated_without_num_proc(tmp_path, trl_has_g
 
 
 def test_an_unrewritable_stream_is_refused_not_assumed(tmp_path, trl_has_guard):
-    """A stream the truncation cannot rewrite is unverifiable, not verified: the
-    prefix scan called the first 1024 fitting rows proof, and nothing downstream
-    truncates a pre-tokenized row."""
+    """A stream the truncation cannot rewrite is unverifiable, not verified: a prefix scan of the
+    first 1024 fitting rows is not proof, and nothing downstream truncates a pre-tokenized row."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
@@ -2001,9 +2000,8 @@ def test_probing_a_rewindable_split_hands_it_straight_back():
 
 
 def test_predict_keeps_every_row_it_was_given():
-    """`predict` returns one prediction per row IN ORDER. Dropping the
-    unsupervised ones silently shortens and shifts the output relative to the
-    dataset the caller zipped it back onto."""
+    """predict returns one prediction per row, in order; dropping the unsupervised rows silently
+    shortens and shifts the output against the dataset the caller zipped it back onto."""
     from datasets import Dataset
 
     ids = list(range(8))
@@ -2175,9 +2173,8 @@ def test_a_rewindable_stream_is_not_chained():
 
 
 def test_the_completion_only_probe_does_not_eat_a_training_row():
-    """That probe read the first TRAINING example and chained nothing back, so
-    a one-shot stream trained from row 2. Columns first, and a row only when
-    reading one is free."""
+    """A probe that read the first training example and chained nothing back made a one-shot stream
+    train from row 2; probe the columns first, and a row only when that is free."""
     block = _padding_free_codegen_block()
     assert "_unsloth_probe is train_dataset or _unsloth_probe is iter(train_dataset)" in block
     assert "next(iter(train_dataset), None)" not in block, "the destructive probe is back"
@@ -2330,9 +2327,8 @@ def test_a_transformed_tokenized_split_keeps_its_cap(tmp_path, trl_has_guard):
 
 
 def test_a_transformed_split_within_the_cap_keeps_max_length_and_trains(tmp_path, trl_has_guard):
-    """The other half: the same shape with nothing overlength must not be cleared
-    either, and must not raise. This is what shows the raise above is about the
-    rows and not about the transform."""
+    """The other half: the same transformed shape with nothing overlength must keep max_length and
+    must not raise, so the earlier raise is about the rows, not the transform."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     trainer = _build(
@@ -2619,9 +2615,8 @@ def test_a_one_shot_stream_slices_every_aligned_column():
 
 
 def test_an_unfiltered_map_style_split_is_not_scanned_up_front():
-    """With no supervision columns every row survives, so building an identity
-    index read and transformed the whole split before the dataloader could
-    start -- a second on-access tokenization pass for no information."""
+    """With no supervision columns every row survives, so an identity index would read and transform
+    the whole split before the dataloader starts: a second tokenization pass for nothing."""
     from unsloth.models.rl import _CappedRows
 
     reads = []
@@ -2664,9 +2659,8 @@ def test_a_filtered_split_still_drops_its_unsupervised_rows():
 
 
 def test_switching_truncation_mode_re_caps_the_same_split():
-    """The memo keyed on identity, cap and filtering mode but not on the SLICE,
-    so evaluating with keep_start and then keep_end handed back the cached
-    prefixes for both."""
+    """The memo must key on the slice too: keyed only on identity, cap and filtering mode,
+    keep_start then keep_end would get the cached prefixes for both."""
     _, tok = _load_plain()
     late = _tokenized_dataset(tok)
     Stub, seen = _stub_trainer_class()
@@ -2888,9 +2882,8 @@ def test_a_later_row_that_cannot_take_the_slice_does_not_raise():
 
 
 def test_a_misaligned_later_row_keeps_its_own_length():
-    """Same probe, different drift: a column that is aligned in row 0 and a
-    different width in row 1. Cutting it there would report a mask for tokens
-    the row never had."""
+    """Same probe, different drift: a column aligned in row 0 but a different width in row 1 keeps
+    its own length, since cutting it reports a mask for tokens the row never had."""
     from unsloth.models.rl import _CappedRows
 
     # Longer than the tokens, so cutting it is visible.
@@ -2902,9 +2895,8 @@ def test_a_misaligned_later_row_keeps_its_own_length():
 
 
 def test_input_ids_comes_first_so_every_column_is_measured():
-    """`_column_names` returns a SET, and the `map` path reads the width off
-    `input_ids` as it walks this list. A run that ordered `labels` first sliced
-    the labels having compared them to nothing at all."""
+    """_column_names returns a set, and the map path reads the width off input_ids as it walks the
+    list; labels ordered first were sliced with nothing to compare them to."""
     from unsloth.models.rl import _sliceable_per_token
 
     names = ("labels", "attention_mask", "input_ids")
@@ -2947,9 +2939,8 @@ def test_a_mark_is_not_trusted_after_the_split_is_mutated():
 
 
 def test_an_unfingerprintable_split_is_never_trusted_by_its_mark():
-    """The memo excludes these on purpose because their rows can change under a
-    stable identity. The mark has to reach the same conclusion, or it becomes
-    the way around the memo."""
+    """The memo excludes unfingerprintable splits because their rows can change under a stable
+    identity; the mark must reach the same conclusion or it becomes a way around the memo."""
     from unsloth.models import rl
 
     class Plain:
@@ -2978,9 +2969,8 @@ def test_our_own_wrapper_is_still_handed_straight_back():
 
 
 def test_the_late_evaluation_memo_is_bounded():
-    """Every entry pins the original split AND the capped copy for the trainer's
-    lifetime. A caller building a fresh validation subset each epoch grew this
-    dictionary without bound until the host ran out of memory."""
+    """Each memo entry pins the original split and its capped copy for the trainer's lifetime, so a
+    fresh validation subset each epoch grew it until memory ran out; the memo is bounded."""
     from unsloth.models import rl
 
     _, tok = _load_plain()
