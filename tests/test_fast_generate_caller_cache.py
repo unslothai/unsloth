@@ -54,3 +54,19 @@ def test_caller_cache_and_assisted_decoding_match_transformers(case):
         return generate(input_ids = ids, **kwargs, **extra)
 
     torch.testing.assert_close(run(model.generate), run(model._old_generate), rtol = 0, atol = 0)
+
+
+def test_kwarg_none_overrides_config_lookup_and_keeps_static_cache():
+    model = _model()
+    model.generation_config.prompt_lookup_num_tokens = 3
+    seen = {}
+    old = model._old_generate
+
+    def spy(*args, **kw):
+        seen.update(kw)
+        return old(*args, **kw)
+
+    model._old_generate = spy
+    ids = torch.randint(3, 64, (1, 8), generator = torch.Generator().manual_seed(0))
+    model.generate(input_ids = ids, max_new_tokens = 2, do_sample = False, prompt_lookup_num_tokens = None)
+    assert seen["cache_implementation"] == "static"

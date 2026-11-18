@@ -2505,7 +2505,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
     generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     if kwargs.get("past_key_values") is not None or any(
-        kwargs.get(k) is not None or getattr(generation_config, k, None) is not None
+        (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
         for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
     ):
         cache_implementation = None
