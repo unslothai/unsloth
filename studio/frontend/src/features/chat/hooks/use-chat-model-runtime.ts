@@ -1946,6 +1946,7 @@ export function useChatModelRuntime() {
       let downloadComplete = isDownloaded || isCachedLora || managedLoad;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
+      let clusterSummary: string | null = null;
       let offloadCounts: OffloadCounts = {};
       // Set once the load asks for a standalone Engram table, so the download bar counts it.
       let progressEngramPrecision: string | null = null;
@@ -2638,6 +2639,7 @@ export function useChatModelRuntime() {
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
+            clusterSummary = loadResponse.cluster_summary ?? null;
             offloadCounts = offloadCountsFrom(loadResponse);
             const evictedSlots = evictedSlotsFrom(loadResponse);
             toastEvicted(evictedSlots);
@@ -3357,11 +3359,23 @@ export function useChatModelRuntime() {
           try {
             const prog = await getLoadProgress();
             if (abortCtrl.signal.aborted || !loadingModelRef.current) return;
-            if (!prog || prog.phase == null) return;
+            if (!prog) return;
             if (prog.phase === "ready") {
               if (progressInterval) clearInterval(progressInterval);
               return;
             }
+            if (prog.message) {
+              if (loadToastDismissedRef.current) {
+                setLoadProgress({ percent: null, label: prog.message, phase: "starting" });
+              } else {
+                toast(null, {
+                  id: toastId,
+                  ...modelLoadToastOptions(renderLoadDescription("Starting model…", prog.message)),
+                });
+              }
+              return;
+            }
+            if (prog.phase == null) return;
             if ((managedLoad || engineSwitched) && prog.bytes_total <= 0) {
               const label = prog.phase === "warming_up"
                 ? "Warming up inference kernels. The first load can take several minutes."
@@ -3463,7 +3477,7 @@ export function useChatModelRuntime() {
             expertSpillNote(offloadCounts),
           );
           const loadedTitle = notice.title;
-          const loadedDescription = notice.description;
+          const loadedDescription = notice.description ?? clusterSummary ?? undefined;
           const showLoadedToast = notice.degraded ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
             showLoadedToast(loadedTitle, {
