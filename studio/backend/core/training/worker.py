@@ -3167,8 +3167,7 @@ def _run_mlx_training(
     config,
     exit_stack = None,
 ):
-    """Apple Silicon MLX path via unsloth_zoo's MLXTrainer, no torch; same event_queue protocol.
-    ``exit_stack`` keeps an S3 audio download until its clips are decoded."""
+    """Apple Silicon MLX path via unsloth_zoo's MLXTrainer, no torch; same event_queue protocol."""
     import time
     import math
     from pathlib import Path
