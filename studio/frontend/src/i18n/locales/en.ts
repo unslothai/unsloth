@@ -4848,6 +4848,8 @@ export const en = {
   translate: {
     title: "Translate",
     detectLanguage: "Detect language",
+    // Source picker while detecting: the language found in the text so far.
+    detectedLanguage: "{language} (detected)",
     sourceLanguage: "Translate from",
     targetLanguage: "Translate to",
     recentTargets: "Recent",

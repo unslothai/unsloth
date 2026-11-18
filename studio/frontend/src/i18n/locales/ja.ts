@@ -4786,6 +4786,7 @@ export const ja = {
   translate: {
     title: "翻訳",
     detectLanguage: "言語を検出",
+    detectedLanguage: "{language}（検出）",
     sourceLanguage: "翻訳元の言語",
     targetLanguage: "翻訳先の言語",
     recentTargets: "最近",

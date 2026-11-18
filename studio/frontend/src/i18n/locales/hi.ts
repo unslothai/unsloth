@@ -4846,6 +4846,7 @@ export const hi = {
   translate: {
     title: "अनुवाद",
     detectLanguage: "भाषा पहचानें",
+    detectedLanguage: "{language} (पहचानी गई)",
     sourceLanguage: "इससे अनुवाद करें",
     targetLanguage: "इसमें अनुवाद करें",
     recentTargets: "हाल के",

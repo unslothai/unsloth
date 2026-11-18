@@ -4950,6 +4950,7 @@ export const th = {
   translate: {
     title: "แปลภาษา",
     detectLanguage: "ตรวจหาภาษา",
+    detectedLanguage: "{language} (ตรวจพบ)",
     sourceLanguage: "แปลจาก",
     targetLanguage: "แปลเป็น",
     recentTargets: "ล่าสุด",

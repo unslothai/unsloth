@@ -4863,6 +4863,7 @@ export const ru = {
   translate: {
     title: "Перевод",
     detectLanguage: "Определить язык",
+    detectedLanguage: "{language} (определён)",
     sourceLanguage: "Перевести с",
     targetLanguage: "Перевести на",
     recentTargets: "Недавние",

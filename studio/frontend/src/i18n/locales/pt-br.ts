@@ -4864,6 +4864,7 @@ export const ptBR = {
   translate: {
     title: "Traduzir",
     detectLanguage: "Detectar idioma",
+    detectedLanguage: "{language} (detectado)",
     sourceLanguage: "Traduzir de",
     targetLanguage: "Traduzir para",
     recentTargets: "Recentes",

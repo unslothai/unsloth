@@ -5050,6 +5050,7 @@ export const sv = {
   translate: {
     title: "Översätt",
     detectLanguage: "Identifiera språk",
+    detectedLanguage: "{language} (identifierat)",
     sourceLanguage: "Översätt från",
     targetLanguage: "Översätt till",
     recentTargets: "Senaste",

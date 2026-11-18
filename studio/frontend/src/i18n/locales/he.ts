@@ -4917,6 +4917,7 @@ export const he = {
   translate: {
     title: "תרגום",
     detectLanguage: "זיהוי שפה",
+    detectedLanguage: "{language} (זוהתה)",
     sourceLanguage: "תרגום מ",
     targetLanguage: "תרגום ל",
     recentTargets: "אחרונות",

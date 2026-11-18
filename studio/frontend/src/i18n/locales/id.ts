@@ -5178,6 +5178,7 @@ export const id = {
   translate: {
     title: "Terjemahkan",
     detectLanguage: "Deteksi bahasa",
+    detectedLanguage: "{language} (terdeteksi)",
     sourceLanguage: "Terjemahkan dari",
     targetLanguage: "Terjemahkan ke",
     recentTargets: "Terbaru",
