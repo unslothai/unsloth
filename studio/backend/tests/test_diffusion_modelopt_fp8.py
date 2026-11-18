@@ -329,7 +329,13 @@ def test_the_w8a8_linears_match_the_dequantized_reference_within_fp8_tolerance(
         y = layer(x.to(torch.bfloat16)).float()
         dense = x.to(torch.bfloat16).float() @ w.T
         if layer.path == "reasoner":
-            # W8A16: bf16 activations on the exactly widened weight, the scale on the output (bf16 rounding only)
+            # W8A16: bitwise diffusers' Cosmos3 ``_w8a16_linear`` (codes widened, times the scale, both in bf16)
+            codes = layer.weight_q.view(torch.float8_e4m3fn)
+            scale = layer.weight_scale.view(torch.float32).to(torch.bfloat16)
+            reference = torch.nn.functional.linear(
+                x.to(torch.bfloat16), codes.to(torch.bfloat16) * scale
+            )
+            assert torch.equal(y, reference.float()), stem
             assert torch.allclose(y, dense, rtol = 2e-2, atol = 1e-2 * dense.abs().max().item()), stem
         else:
             exact = _w8a8_reference(x, w, s_x, runtime)

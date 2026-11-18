@@ -630,8 +630,6 @@ def fp8_linear_class():
             if bias is not None:
                 bias = nn.Parameter(bias.detach().to(compute_dtype), requires_grad = False)
             self.bias = bias
-            # the same scale as a Python float: the W8A16 output multiply keeps it fp32 (opmath)
-            self.weight_scale_value = float(weight_scale)
             # engagement counters (eager forwards): fp8 GEMM calls and W8A16 calls
             self.gemm_calls = 0
             self.a16_calls = 0
@@ -686,14 +684,13 @@ def fp8_linear_class():
                 # W8A16: the activation stays in its dtype, the weight widens (the step policy's a16 mode)
                 if not torch.compiler.is_compiling():
                     self.a16_calls += 1
-                # e4m3 widens to bf16 / fp16 exactly; the per-tensor scale goes on the output (one fp32-opmath
-                # multiply by a Python float), so the weight is read once and never rounded through its scale
+                # exactly diffusers' Cosmos3 W8A16 (pipelines/cosmos/mixed_precision.py ``_w8a16_linear``, the policy's
+                # reference runtime): the scale in the activation dtype, the weight widened and scaled in it
+                scale = self.weight_scale.view(torch.float32).to(out_dtype)
+                weight = self.weight_q.view(torch.float8_e4m3fn).to(out_dtype) * scale
                 out = F.linear(
-                    x2.to(out_dtype), self.weight_q.view(torch.float8_e4m3fn).to(out_dtype)
+                    x2.to(out_dtype), weight, None if bias is None else bias.to(out_dtype)
                 )
-                out.mul_(self.weight_scale_value)
-                if bias is not None:
-                    out.add_(bias.to(out_dtype))
                 return out.reshape(*shape[:-1], self.out_features)
             s_w = self.weight_scale.view(torch.float32)
             if self.act == ACT_DYNAMIC:
