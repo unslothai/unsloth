@@ -103,6 +103,8 @@ def _anthropic_block_texts(content: Any) -> list[str]:
 _PDF_TEXTS: OrderedDict[Any, str] = OrderedDict()
 _PDF_TEXTS_LOCK = threading.Lock()
 _PDF_TEXTS_MAX = 256
+# Pinned on the request's own source dict so eviction between warm-up and conversion can't force an on-loop parse.
+_PDF_TEXT_KEY = "_unsloth_pdf_text"
 
 
 def _pdf_document_text(data: str) -> str:
@@ -144,7 +146,7 @@ def _is_pdf_document(block: Any) -> bool:
 
 
 def warm_anthropic_pdf_documents(messages: list) -> None:
-    """Parse PDF documents ahead of conversion, which runs on the event loop and would block on MUPDF_LOCK."""
+    """Parse PDF documents ahead of conversion, which runs on the event loop and would wait on MUPDF_LOCK."""
     for message in messages:
         content = _field(message, "content")
         if not isinstance(content, list):
@@ -159,7 +161,8 @@ def warm_anthropic_pdf_documents(messages: list) -> None:
                 continue
             for item in items:
                 if _is_pdf_document(item):
-                    _pdf_document_text(_field(item, "source")["data"])
+                    source = _field(item, "source")
+                    source[_PDF_TEXT_KEY] = _pdf_document_text(source["data"])
 
 
 def anthropic_reference_block_text(block: dict) -> str:
@@ -176,7 +179,10 @@ def anthropic_reference_block_text(block: dict) -> str:
         elif stype == "content":
             body = _anthropic_block_texts(source.get("content"))
         elif _is_pdf_document(block):
-            body = [_pdf_document_text(source["data"]) or DOCUMENT_OMITTED]
+            text = source.get(_PDF_TEXT_KEY)
+            if not isinstance(text, str):
+                text = _pdf_document_text(source["data"])
+            body = [text or DOCUMENT_OMITTED]
         else:
             body = [DOCUMENT_OMITTED]
     else:

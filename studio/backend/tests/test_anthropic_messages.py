@@ -1555,7 +1555,7 @@ class TestAnthropicMessagesToOpenAI:
             holder.join(5)
         assert "Quarterly revenue 42 million" in str(result[0])
 
-    def test_warmed_pdf_documents_beyond_eight_are_not_reparsed(self, monkeypatch):
+    def test_warmed_pdf_text_survives_cache_eviction(self, monkeypatch):
         import pymupdf
         from core.inference import anthropic_compat, tools
         from core.inference.anthropic_compat import warm_anthropic_pdf_documents
@@ -1581,10 +1581,11 @@ class TestAnthropicMessagesToOpenAI:
             }
             for i in range(12)
         ]
+        request = AnthropicMessagesRequest(messages = msgs)
+        warm_anthropic_pdf_documents(request.messages)
         anthropic_compat._PDF_TEXTS.clear()
-        warm_anthropic_pdf_documents(AnthropicMessagesRequest(messages = msgs).messages)
         monkeypatch.setattr(tools, "_extract_pdf_text", lambda data: pytest.fail("reparsed"))
-        result = str(anthropic_messages_to_openai(msgs))
+        result = str(anthropic_messages_to_openai([m.model_dump() for m in request.messages]))
         assert all(f"Report {i}" in result for i in range(12))
 
     def test_top_level_search_result_and_document_reach_the_user_turn(self):
