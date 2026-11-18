@@ -29542,33 +29542,6 @@ def _external_fit_limits(payload, prompt_tokens: int) -> tuple[int, Optional[int
     return context_length, max_tokens
 
 
-def _overflow_floor_threshold(
-    messages: list[dict],
-    count,
-    max_tokens: Optional[int],
-    anchors: Optional[set[int]] = None,
-) -> int:
-    """Smallest trigger whose prompt budget still holds what the fit keeps (system turns, ``anchors``
-    and the newest user turn onward), so an overflow retry evicts every older turn rather than none."""
-    from core.inference.context_window import prompt_budget
-
-    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default = 0)
-    kept = [
-        m
-        for m in messages[:last_user]
-        if m.get("role") in ("system", "developer") or id(m) in (anchors or ())
-    ]
-    floor = count(kept + messages[last_user:])
-    low, high = 1, max(2, 2 * floor + (max_tokens or 0))
-    while low < high:
-        mid = (low + high) // 2
-        if prompt_budget(mid, max_tokens) >= floor:
-            high = mid
-        else:
-            low = mid + 1
-    return low
-
-
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -30907,26 +30880,22 @@ async def _proxy_to_external_provider(
             force = "manual"
         _manual_summary_pending = False
         if _evict_only and force == "overflow":
-            # Half the refused prompt, kept for the loop's later passes so they stay under it.
+            # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
+            # the loop's later passes. The window stays: the fit clamps the reply cap against it.
             refused = _last_fit if _last_fit is not None else messages
-            # The window stays: the fit clamps the reply cap against it.
-            count = _external_token_counter(payload, tools)
-            bound = {
-                "compaction_threshold": max(
-                    count(refused) // 2,
-                    _overflow_floor_threshold(
-                        messages,
-                        count,
-                        _effective_max_tokens(payload),
-                        # The fit pins the active turn only when it may reset or replay an epoch.
-                        None if _rolling_only else _active_turn_anchors(messages, _request_branch),
-                    ),
-                ),
-            }
-            _evicting_payload = _evicting_payload.model_copy(update = bound)
-            _first_payload = _first_payload.model_copy(update = bound)
-            _checkpoint_pass.clear()
-        if _evicting_fit:
+            refused_tokens = _external_token_counter(payload, tools)(refused)
+            unbounded, first_unbounded = _evicting_payload, _first_payload
+            for eighths in (4, 5, 6, 7):
+                bound = {"compaction_threshold": max(1, refused_tokens * eighths // 8)}
+                _evicting_payload = unbounded.model_copy(update = bound)
+                _first_payload = first_unbounded.model_copy(update = bound)
+                _checkpoint_pass.clear()
+                fitted, truncation, fallback_max_tokens = await _managed_context_fitter(
+                    messages, tools
+                )
+                if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
+                    break
+        elif _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
             if plan is None:

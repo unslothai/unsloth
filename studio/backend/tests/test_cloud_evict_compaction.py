@@ -513,32 +513,6 @@ def test_an_overflow_with_a_large_latest_turn_still_evicts_every_older_turn(mode
     assert len(chats) == 2 and [m["role"] for m in chats[1]["messages"]] == ["system", "user"]
 
 
-def test_the_overflow_floor_keeps_the_turns_the_fit_pins():
-    import routes.inference as ri
-    from core.inference.context_window import prompt_budget
-
-    asked = {"role": "user", "content": "Summarise the report."}
-    messages = [
-        {"role": "system", "content": "Answer in French."},
-        {"role": "user", "content": "old " * 500},
-        {"role": "assistant", "content": "old answer " * 500},
-        asked,
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
-        {"role": "tool", "tool_call_id": "c1", "content": "report " * 2000},
-        # A controller re-prompt is now the newest user turn.
-        {"role": "user", "content": "Continue."},
-    ]
-
-    def count(kept):
-        return sum(len(json.dumps(m)) for m in kept)
-
-    pinned = ri._active_turn_anchors(messages, [messages[0], asked])
-    floor = ri._overflow_floor_threshold(messages, count, 1_000, pinned)
-    needed = count([messages[0], *messages[3:]])
-    assert prompt_budget(floor, 1_000) >= needed
-    assert prompt_budget(ri._overflow_floor_threshold(messages, count, 1_000), 1_000) < needed
-
-
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError
