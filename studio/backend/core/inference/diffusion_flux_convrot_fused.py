@@ -12,7 +12,8 @@ producer writes bf16, the kernel reads it back. Here:
 Every patch checks its Linears per call and runs the stock code when they are not swapped rotated int8 Linears.
 Kill switch ``UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED=0``; ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_PRODUCER=0`` keeps only the
 shared quants. On a resident FLUX.3 denoiser Q / K / V also run as one int8 GEMM over their rows concatenated in one
-buffer (the weights become row slices of it, so memory is unchanged; bit-identical);
+buffer (the weights become row slices of it, so memory is unchanged; bit-identical) where torch attention reads them
+(the INT8 attention route keeps three GEMMs);
 ``UNSLOTH_DIFFUSION_FLUX3_FUSED_QKV=0`` keeps three GEMMs."""
 
 from __future__ import annotations
@@ -143,13 +144,20 @@ def _merged_qkv(attn: Any) -> Any:
     return merged
 
 
+def _int8_attention_route(attn: Any) -> bool:
+    """The processor sends this module's calls to the INT8 attention kernel. Its quantisers read Q / K / V as the
+    projections wrote them, and column views of one ``[M, 9216]`` output cost them more than the merged GEMM saves
+    (L4, Klein base, one race plan: +2.3% per step merged), so that route keeps three GEMMs. Traced: attribute reads."""
+    return bool(getattr(getattr(attn, "processor", None), "_unsloth_int8", False))
+
+
 def _shared_qkv(
     attn: Any,
     x: Any,
     extra: tuple = (),
 ) -> Optional[list]:
     linears = (attn.to_q, attn.to_k, attn.to_v) + extra
-    merged = _merged_qkv(attn)
+    merged = None if _int8_attention_route(attn) else _merged_qkv(attn)
     if merged is None:
         return _gemm.shared_rotq_linears(x, linears)
     return _gemm.shared_rotq_linears(x, linears, merged = merged)

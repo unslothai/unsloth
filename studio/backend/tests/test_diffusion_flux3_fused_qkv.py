@@ -168,3 +168,36 @@ def test_merge_qkv_needs_the_switch_and_a_resident_flux3(monkeypatch):
     monkeypatch.delenv(F.FLUX3_FUSED_QKV_ENV)
     assert F.merge_qkv(t) == 2 and F.fused_qkv_count(t) == 2
     assert F.merge_qkv(t) == 2  # idempotent
+
+
+def test_int8_attention_route_keeps_three_gemms(monkeypatch):
+    """The INT8 attention kernel's quantisers read Q / K / V as the projections wrote them: on that route the merged
+    rows stay unused (L4: +2.3% per step merged); torch attention takes the merged GEMM."""
+    monkeypatch.setattr(G, "_OP_HANDLE", _ref_gemm)
+    attn = _Attn()
+    merged = G.merge_payloads((attn.to_q, attn.to_k, attn.to_v))
+    attn.__dict__[F._QKV_ATTR] = (attn.to_q, attn.to_k, attn.to_v, merged)
+    seen = []
+    real = G.shared_rotq_linears
+
+    def spy(
+        x,
+        linears,
+        merged = None,
+    ):
+        seen.append(merged)
+        return real(x, linears, merged = merged) if merged is not None else real(x, linears)
+
+    monkeypatch.setattr(G, "shared_rotq_linears", spy)
+    x = torch.zeros(2, 37, 64)
+
+    class _Int8Proc:
+        _unsloth_int8 = True
+
+    attn.processor = _Int8Proc()
+    F._shared_qkv(attn, x)
+    attn.processor = types.SimpleNamespace(_unsloth_int8 = False)
+    F._shared_qkv(attn, x)
+    del attn.processor
+    F._shared_qkv(attn, x)
+    assert seen == [None, merged, merged]
