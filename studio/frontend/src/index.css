@@ -6887,8 +6887,7 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
-/* Glass: the wash moves to the unmasked thread root, so the header strip is washed like the thread
-   while the messages still fade out under it. */
+/* Glass: wash the unmasked thread root so the header strip matches the thread. */
 html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
 }
