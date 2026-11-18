@@ -314,6 +314,35 @@ def test_install_hint_finds_editors_and_fails_open(fresh_install_cache, tmp_path
     assert installed.is_installed("godot") is None
 
 
+@pytest.mark.parametrize(
+    "platform, settings_dir",
+    [("linux", ".config/Epic"), ("darwin", "Library/Application Support/Epic")],
+)
+def test_unreal_hint_reads_the_engine_registry(
+    fresh_install_cache, tmp_path, monkeypatch, platform, settings_dir
+):
+    installed = fresh_install_cache
+    monkeypatch.setattr(installed.sys, "platform", platform)
+    monkeypatch.setattr(installed, "_any", lambda patterns: False)
+    ini = tmp_path / settings_dir / "UnrealEngine" / "Install.ini"
+    ini.parent.mkdir(parents = True)
+    engine = tmp_path / "src" / "UnrealEngine"
+
+    def unreal_found(content: bytes) -> bool:
+        ini.write_bytes(content)
+        installed._cache.clear()
+        return installed.is_installed("unreal")
+
+    entry = f"[Installations]\n{{673FCAE7-FBB2-458F-9D7C-ED83D92881D3}}={engine}\n"
+    assert unreal_found(entry.encode()) is False  # stale entry: the engine was deleted
+    (engine / "Engine").mkdir(parents = True)
+    assert unreal_found(entry.encode()) is True
+    assert (
+        unreal_found(entry.replace("\n", "\r\n").encode("utf-16")) is True
+    )  # non-ASCII installs are saved as UTF-16
+    assert unreal_found(f"[Other]\nX={engine}\n[Installations]\n".encode()) is False
+
+
 def test_catalog_reports_install_state(fresh_install_cache, monkeypatch):
     installed = fresh_install_cache
     monkeypatch.setattr(installed, "_detect", lambda builtin_id, path: builtin_id == "godot")

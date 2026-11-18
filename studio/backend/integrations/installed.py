@@ -68,6 +68,33 @@ def _epic_launcher_has_unreal() -> bool:
     )
 
 
+def _unreal_registered_engine() -> bool:
+    """Unreal's own engine registry on Linux / macOS (source builds and Linux Installed Builds never touch the Launcher manifest): every editor launch adds its root under [Installations] in Epic's Install.ini."""
+    if sys.platform == "darwin":
+        ini = Path("~/Library/Application Support/Epic/UnrealEngine/Install.ini").expanduser()
+    elif sys.platform.startswith("linux"):
+        ini = Path("~/.config/Epic/UnrealEngine/Install.ini").expanduser()
+    else:
+        return False
+    try:
+        raw = ini.read_bytes()
+    except OSError:
+        return False
+    # Unreal saves ASCII as UTF-8 and anything else as UTF-16 with a BOM.
+    encoding = "utf-16" if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+    in_section = False
+    for line in raw.decode(encoding, errors = "replace").splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            in_section = line.lower() == "[installations]"
+        elif in_section and "=" in line:
+            root = line.split("=", 1)[1].strip().strip('"')
+            # Entries outlive deleted engines, so only count a root that still has its Engine folder.
+            if root and (Path(root).expanduser() / "Engine").is_dir():
+                return True
+    return False
+
+
 def _detect(builtin_id: str, configured_path: str) -> bool:
     if configured_path and Path(configured_path).expanduser().exists():
         return True
@@ -100,14 +127,18 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
     if builtin_id == "unity":
         return any(glob.glob(str(Path(root).expanduser() / "*")) for root in _unity_hub_dirs())
     if builtin_id == "unreal":
-        return _epic_launcher_has_unreal() or _any(
-            [
-                str(_env_path("ProgramFiles", "C:/Program Files") / "Epic Games/UE_*"),
-                "/Users/Shared/Epic Games/UE_*",
-                "~/UnrealEngine*",
-                "~/Epic Games/UE_*",
-                "/opt/UnrealEngine*",
-            ]
+        return (
+            _epic_launcher_has_unreal()
+            or _unreal_registered_engine()
+            or _any(
+                [
+                    str(_env_path("ProgramFiles", "C:/Program Files") / "Epic Games/UE_*"),
+                    "/Users/Shared/Epic Games/UE_*",
+                    "~/UnrealEngine*",
+                    "~/Epic Games/UE_*",
+                    "/opt/UnrealEngine*",
+                ]
+            )
         )
     if builtin_id == "figma":
         return bool(shutil.which("figma-linux")) or _any(
