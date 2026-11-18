@@ -25,7 +25,9 @@ from safetensors.torch import save_file  # noqa: E402
 from core.inference import diffusion_modelopt_fp8 as mo  # noqa: E402
 
 _LAYOUT = json.loads(
-    (Path(__file__).resolve().parent / "fixtures" / "cosmos3_modelopt_fp8_layout.json").read_text()
+    (Path(__file__).resolve().parent / "fixtures" / "cosmos3_modelopt_fp8_layout.json").read_text(
+        encoding = "utf-8"
+    )
 )
 NANO, EDGE = "nvidia/Cosmos3-Nano-FP8", "nvidia/Cosmos3-Edge-FP8"
 _CALIB = (".weight_quantizer._amax", ".weight_quantizer._scale", ".input_quantizer._amax")
@@ -122,7 +124,9 @@ def _write_checkpoint(
 def test_the_tiny_checkpoint_has_the_published_key_layout(tmp_path, repo):
     root, _ref, _scales = _write_checkpoint(tmp_path, repo)
     index = json.loads(
-        (root / "transformer" / "diffusion_pytorch_model.safetensors.index.json").read_text()
+        (root / "transformer" / "diffusion_pytorch_model.safetensors.index.json").read_text(
+            encoding = "utf-8"
+        )
     )
     layers = _LAYOUT[repo]["num_hidden_layers"]
     real = {
@@ -176,7 +180,7 @@ def test_a_plain_folder_is_not_a_modelopt_checkpoint(tmp_path):
 def test_the_quantization_config_reads_as_a_dict_or_a_repr_string(tmp_path):
     root, _ref, _scales = _write_checkpoint(tmp_path, NANO)
     path = root / "transformer" / "config.json"
-    config = json.loads(path.read_text())
+    config = json.loads(path.read_text(encoding = "utf-8"))
     config["quantization_config"] = repr(config["quantization_config"])
     path.write_text(json.dumps(config))
     assert mo.quantization_config(root)["quant_algo"] == "FP8"
@@ -239,7 +243,7 @@ def test_layouts_the_loader_cannot_run_are_refused(tmp_path, mutate, needle):
 def test_other_modelopt_formats_are_refused_before_any_weight_is_read(tmp_path, change, needle):
     root, _ref, _scales = _write_checkpoint(tmp_path, NANO)
     path = root / "transformer" / "config.json"
-    config = json.loads(path.read_text())
+    config = json.loads(path.read_text(encoding = "utf-8"))
     config["quantization_config"].update(change)
     path.write_text(json.dumps(config))
     message = mo.modelopt_fp8_error(mo.scan_modelopt_fp8(root))
@@ -452,7 +456,7 @@ def test_each_linear_runs_the_policy_of_the_token_stream_the_processor_feeds_it(
 def test_without_a_step_policy_every_step_is_w8a8(tmp_path, monkeypatch):
     root, _ref, _scales = _write_checkpoint(tmp_path, EDGE)
     path = root / "transformer" / "config.json"
-    config = json.loads(path.read_text())
+    config = json.loads(path.read_text(encoding = "utf-8"))
     config["quantization_config"].pop("runtime")
     path.write_text(json.dumps(config))
     model = mo.load_modelopt_fp8_transformer(
@@ -466,7 +470,7 @@ def test_without_a_step_policy_every_step_is_w8a8(tmp_path, monkeypatch):
 def test_a_step_policy_this_loader_does_not_run_is_refused(tmp_path):
     root, _ref, _scales = _write_checkpoint(tmp_path, EDGE)
     path = root / "transformer" / "config.json"
-    config = json.loads(path.read_text())
+    config = json.loads(path.read_text(encoding = "utf-8"))
     config["quantization_config"]["runtime"]["diffusion_step_policy"]["type"] = "sigma_threshold"
     path.write_text(json.dumps(config))
     message = mo.modelopt_fp8_error(mo.scan_modelopt_fp8(root))
