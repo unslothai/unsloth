@@ -370,7 +370,8 @@ def get_connection(*, check_same_thread: bool = True) -> sqlite3.Connection:
             username TEXT NOT NULL,
             is_desktop INTEGER NOT NULL DEFAULT 0,
             secret_gen TEXT,
-            consumed_at TEXT NOT NULL
+            consumed_at TEXT NOT NULL,
+            reuses INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -1585,6 +1586,8 @@ def save_refresh_token(
 
 # A lost rotation answer or a racing tab re-sends the spent token; rotate it again instead of a 401.
 REFRESH_REUSE_GRACE_SECONDS = 60
+# Racing tabs and a lost answer need a few re-rotations; a bound keeps one spent token from minting many.
+REFRESH_REUSE_MAX = 8
 
 
 def _delete_refresh_rows(conn: sqlite3.Connection, username: str) -> None:
@@ -1635,10 +1638,11 @@ def _take_refresh_token(
         elif row is None:
             row = conn.execute(
                 f"""
-                SELECT username, is_desktop, secret_gen FROM refresh_token_reuse
-                WHERE token_hash {_FENCED_HASH_SQL}
+                UPDATE refresh_token_reuse SET reuses = reuses + 1
+                WHERE token_hash {_FENCED_HASH_SQL} AND reuses < ?
+                RETURNING username, is_desktop, secret_gen
                 """,
-                hashes,
+                (*hashes, REFRESH_REUSE_MAX),
             ).fetchone()
     if row is None:
         return None

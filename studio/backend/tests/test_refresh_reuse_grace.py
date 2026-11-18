@@ -142,3 +142,10 @@ def test_a_legacy_unstamped_token_gets_no_window(client, owner):
     _raw("UPDATE refresh_tokens SET secret_gen = NULL")
     assert _refresh(client, spent).status_code == 200
     assert _refresh(client, spent).status_code == 401
+
+
+def test_one_spent_token_mints_a_bounded_number_of_pairs(client, owner):
+    spent = _issue(owner)
+    assert _refresh(client, spent).status_code == 200
+    replays = [_refresh(client, spent).status_code for _ in range(storage.REFRESH_REUSE_MAX + 2)]
+    assert replays == [200] * storage.REFRESH_REUSE_MAX + [401, 401]
