@@ -440,10 +440,24 @@ To choose PyTorch yourself, pin its index:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_TORCH_INDEX_FAMILY=cpu sh   # or a family like rocm7.2
 ```
+To use a full index URL instead (it takes precedence over the family), set `UNSLOTH_TORCH_INDEX_URL`.
+
 Or skip PyTorch for GGUF chat only:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
+
+#### NVIDIA and AMD GPUs in one machine:
+
+One install has one PyTorch, and one PyTorch drives one vendor. On a host with both an NVIDIA and an AMD GPU the installer picks CUDA PyTorch, so training uses the NVIDIA card and the AMD card is not used for it. To train on the AMD card instead, install ROCm PyTorch (the NVIDIA card is then not used for training):
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_FORCE_ROCM_TORCH=1 sh
+```
+For Unsloth Desktop, launch it with `UNSLOTH_FORCE_ROCM_TORCH=1` set, then use Settings > General > Repair installation. The variable is read by `install.sh` only; `install.ps1` has no equivalent yet, so Windows has no opt-in.
+
+GGUF chat is a separate program and can run on either card, whichever PyTorch is installed: pick it in Settings > System, Engine > GGUF inference engine > Compute backend. Vulkan sees both cards. ROCm needs the ROCm runtime installed, and on Linux your user in the `render` and `video` groups.
+
+To pick cards, use `CUDA_VISIBLE_DEVICES` for NVIDIA and `HIP_VISIBLE_DEVICES` or `ROCR_VISIBLE_DEVICES` among AMD cards. ROCm also reads `CUDA_VISIBLE_DEVICES` when `HIP_VISIBLE_DEVICES` is unset, so `CUDA_VISIBLE_DEVICES=""` hides the AMD cards too.
 
 #### audio.cpp audio engine:
 
