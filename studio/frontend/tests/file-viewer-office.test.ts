@@ -89,6 +89,19 @@ test("number formats", () => {
   for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, format);
 });
 
+test("number formats round a written half up, as Excel does", () => {
+  const cases: [number, string, string][] = [
+    [1.005, "0.00", "1.01"],
+    [2.675, "#,##0.00", "2.68"],
+    [-2.675, "#,##0.00;(#,##0.00)", "(2.68)"],
+    [1.45, "0.0", "1.5"],
+    [0.615, '"$"0.00', "$0.62"],
+    [1234.5675, "#,##0.000", "1,234.568"],
+    [2.674, "0.00", "2.67"],
+  ];
+  for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, `${value} ${format}`);
+});
+
 test("xlsx: reads only the parts and rows it keeps", () => {
   let rows = "";
   for (let r = 1; r <= 5200; r++) {

@@ -517,12 +517,22 @@ const digitLayout = memo((format) => {
   };
 });
 
+/** Excel rounds the 15-digit decimal it shows, halves up; toFixed rounds the binary value, so 1.005 gave "1.00". */
+function decimalFixed(number: number, places: number): string {
+  const [mantissa, exponent] = number.toExponential(14).split("e");
+  const scaled = Math.round(Number(`${mantissa}e${Number(exponent) + places}`));
+  // 1e21 and up print as exponents, which the caller already hands to generalText.
+  if (!(scaled < 1e21)) return number.toFixed(places);
+  return Number(`${scaled}e-${places}`).toFixed(places);
+}
+
 function placeDigits(number: number, format: string): string {
   const { dot, whole, part, first, places, grouped, zeros, before, after } = digitLayout(format);
   const shown = number ? 14 - Math.floor(Math.log10(Math.abs(number))) : 100;
-  const [intDigits = "", fracDigits = ""] = number
-    .toFixed(Math.max(0, Math.min(places.length, shown, 100)))
-    .split(".");
+  const [intDigits = "", fracDigits = ""] = decimalFixed(
+    number,
+    Math.max(0, Math.min(places.length, shown, 100)),
+  ).split(".");
   if (/e/i.test(intDigits)) return generalText(number);
   const significant = intDigits === "0" ? "" : intDigits;
   let integer: string;
