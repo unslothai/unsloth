@@ -1005,6 +1005,7 @@ class _MarkdownRenderer(HTMLParser):
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
+        self._link_depth: int = -1
         self._link_seq: int = 0
         # a link wrapping a heading emits after the mark pops, so the tee is told to treat it so
         self._link_had_heading: bool = False
@@ -1469,12 +1470,32 @@ class _MarkdownRenderer(HTMLParser):
                     break
             if close_at is None:
                 break
+            closed = self._open_tags[close_at]
             self._truncate_open_tags(close_at)
+            if closed == "p" and tag != "p" and self._in_link and self._link_depth > close_at:
+                # a block opened inside <p><a> stays linked: browsers reopen the anchor inside it
+                self._link_depth = close_at - 1
+            closes_header = self._finish_link_unless_header_closes(close_at)
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= close_at:
                 self._heading_marks.pop()
             self._close_header_frames(close_at)
+            if closes_header:
+                self._finish_link_closed_at(close_at)
+
+    def _finish_link_unless_header_closes(self, index: int) -> bool:
+        """Finish while heading marks still tee the title; a closing header frame drains first, or the link lands inside it."""
+        closes_header = bool(self._header_stack) and self._header_stack[-1].depth >= index
+        if not closes_header:
+            self._finish_link_closed_at(index)
+        return closes_header
+
+    def _finish_link_closed_at(self, index: int) -> None:
+        if self._in_link and self._link_depth >= index:
+            if self._header_stack:
+                self._header_stack[-1].link_chars += self._link_header_chars
+            self._finish_link()
 
     def _close_header_frames(
         self,
@@ -1698,6 +1719,8 @@ class _MarkdownRenderer(HTMLParser):
         i = -1 if tag in _VOID_TAGS else _innermost_index(self._open_tags, tag)
         if i >= 0:
             self._truncate_open_tags(i)
+            # an explicit </a> finishes in _close_rendered_tag
+            closes_header = tag != "a" and self._finish_link_unless_header_closes(i)
             while self._hidden_marks and self._hidden_marks[-1] >= i:
                 self._hidden_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= i:
@@ -1705,6 +1728,8 @@ class _MarkdownRenderer(HTMLParser):
             # _close_header_frames' own loop test
             if self._header_stack and self._header_stack[-1].depth >= i:
                 self._close_header_frames(i, own_tag = tag == "header")
+            if closes_header:
+                self._finish_link_closed_at(i)
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
             if self._scope_depth == 0 and self._scope_seg_start is not None:
@@ -1924,6 +1949,7 @@ class _MarkdownRenderer(HTMLParser):
             self._link_text_parts = []
             self._link_heading_parts = []
             self._in_link = True
+            self._link_depth = len(self._open_tags) - 1
             self._link_seq += 1
             self._link_header_chars = 0
             self._link_open_state = self._link_output_state()
