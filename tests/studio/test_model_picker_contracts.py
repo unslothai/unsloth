@@ -905,7 +905,7 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     while an explicit local row still scans only its own directory."""
     src = _read("features/chat/api/chat-adapter.ts")
     sources = src.split("function buildAutoLoadSources", 1)[1]
-    sources = sources.split("function isRememberedSource", 1)[0]
+    sources = sources.split("function rememberedMatch", 1)[0]
     assert sources.count("preferLocalCache: true") == 2
     assert "localPath: repo.load_id || repo.cache_path" in sources
     assert "loadId: repo.load_id || repo.repo_id" in sources
@@ -3408,7 +3408,7 @@ def test_remembered_matching_uses_the_same_case_rules_as_the_dedupe_key():
     """Folding a POSIX path would mark two models differing only by case as
     both being the remembered one."""
     src = _read("features/chat/api/chat-adapter.ts")
-    remembered = src.split("function isRememberedSource", 1)[1].split("\n}", 1)[0]
+    remembered = src.split("function rememberedMatch", 1)[1].split("\n}", 1)[0]
     assert "normalizeTarget(remembered.id)" in remembered
     assert "normalizeTarget(source.id)" in remembered
     assert "normalizeTarget(source.loadId)" in remembered
@@ -3491,7 +3491,7 @@ def test_sources_dedupe_on_the_load_target_alone():
 def test_variant_scans_take_the_run_signal():
     src = _read("features/chat/api/chat-adapter.ts")
     build = src.split("function buildAutoLoadSources", 1)[1]
-    build = build.split("function isRememberedSource", 1)[0]
+    build = build.split("function rememberedMatch", 1)[0]
     assert build.count("signal,") == 2
     assert "options?.abortSignal,\n      )," in src
 
@@ -3521,7 +3521,7 @@ def test_every_load_target_comparison_uses_the_same_case_rules():
     """Source dedupe, remembered matching, and tried-candidate keys all compare
     load targets, so they must agree on POSIX case."""
     src = _read("features/chat/api/chat-adapter.ts")
-    for fn in ("autoLoadSourceKey", "isRememberedSource", "autoLoadCandidateKey"):
+    for fn in ("autoLoadSourceKey", "rememberedMatch", "autoLoadCandidateKey"):
         body = src.split(f"function {fn}(", 1)[1].split("\n}", 1)[0]
         assert "normalizeTarget(" in body, fn
         assert "id.toLowerCase()" not in body, fn
