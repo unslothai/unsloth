@@ -14065,6 +14065,31 @@ def test_unindexed_alias_target_reuses_a_resident_already_running_it(
     assert rec.calls == []
 
 
+def test_alias_launch_reuses_the_runtime_it_started_whatever_the_loader_normalized(monkeypatch):
+    # load_model normalizes some settings at launch (an Engram table, tensor on one GPU or none), so
+    # its comparison can miss a runtime this alias started; the recorded launch must not.
+    launch_satisfied = inference_route._alias_launch_satisfied
+    backend, rec = _wire_alias_config(monkeypatch)
+    monkeypatch.setattr(inference_route, "_alias_launch_satisfied", launch_satisfied)
+    backend.is_diffusion = False
+    backend.load_intent_satisfied = lambda intent: False
+    monkeypatch.setattr(inference_route, "_active_gguf_intent", lambda *a, **k: None)
+    monkeypatch.setattr(inference_route, "_resolve_parallel_slots", lambda *a: 1)
+
+    _switch_alias(_ALIAS_LONG)
+    _switch_alias(_ALIAS_LONG)
+    assert len(rec.calls) == 1
+    # Another launch of the same weights is not this one.
+    _switch_alias(_ALIAS_FAST)
+    assert len(rec.calls) == 2
+    # Any other load replaces the runtime the record describes.
+    inference_route._note_replay_launch(
+        backend, LoadRequest(model_path = backend.model_identifier, gguf_variant = "Q4_K_M")
+    )
+    _switch_alias(_ALIAS_FAST)
+    assert len(rec.calls) == 3
+
+
 def test_alias_config_does_not_replay_the_idle_unload_stash(monkeypatch):
     # A stash restores what idle-unload freed; a configured alias launches its own settings.
     backend, rec = _wire_alias_config(monkeypatch)

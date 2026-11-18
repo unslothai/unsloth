@@ -765,10 +765,6 @@ def _resident(**state):
     return backend
 
 
-async def _async_true(*args, **kwargs):
-    return True
-
-
 def _satisfied(
     monkeypatch,
     backend,
@@ -933,31 +929,6 @@ def test_alias_reuse_matches_a_resident_loaded_by_file_path(monkeypatch, request
 
 
 @pytest.mark.parametrize(
-    "bundled_request, engram, satisfied",
-    [
-        # The resident was asked for the quant's own table, which the load ran as none.
-        ("Q8_0", "Q8_0", True),
-        (None, None, True),
-        # Another precision is other weights, and a resident never asked for this one is not it.
-        ("Q8_0", "BF16", False),
-        (None, "Q8_0", False),
-    ],
-)
-def test_alias_reuse_matches_the_bundled_engram_table_it_was_loaded_with(
-    monkeypatch, bundled_request, engram, satisfied
-):
-    from dataclasses import replace
-
-    backend = _resident(_engram_precision = None)
-    # In the intent itself, which a respawn or crash recovery replays unchanged.
-    backend._last_load_intent = replace(
-        backend.last_load_intent, bundled_engram_request = bundled_request
-    )
-    saved = {"engram_precision": engram} if engram else None
-    assert _satisfied(monkeypatch, backend, _CONFIG, saved = saved) is satisfied
-
-
-@pytest.mark.parametrize(
     "config, satisfied", [(_CONFIG, True), ({**_CONFIG, "max_seq_length": 4096}, False)]
 )
 def test_alias_reuse_compares_a_resident_outside_the_scan_index(monkeypatch, config, satisfied):
@@ -1008,28 +979,6 @@ def test_alias_reuse_is_no_match_when_the_resident_unloads_during_resolution(mon
     assert (
         asyncio.run(inf._configured_alias_resident_satisfies("org/model", _CONFIG, None)) is False
     )
-
-
-@pytest.mark.parametrize(
-    "saved",
-    [
-        {"tensor_parallel": True},
-        {"tensor_parallel": False},
-        {"gpu_ids": [0, 1], "tensor_split": [1.0, 1.0]},
-        {"gpu_ids": [0, 1], "tensor_split": [1.0, 1.0], "tensor_parallel": True},
-    ],
-)
-def test_alias_reuse_matches_a_cpu_only_launch_that_dropped_saved_tensor(monkeypatch, saved):
-    # load_model drops the tensor toggle and ratio for a manual zero-layer split: saved ones then match.
-    import routes.inference as inf
-
-    monkeypatch.setattr(inf, "_override_gpu_ids_still_resolve", _async_true)
-    state = {"_requested_gpu_ids": saved.get("gpu_ids"), "_gpu_ids": saved.get("gpu_ids")}
-    backend = _resident(_gpu_memory_mode = "manual", _gpu_layers = 0, _tensor_parallel = False, **state)
-    assert _satisfied(monkeypatch, backend, {**_CONFIG, "gpu_layers": 0}, saved = saved)
-    # A GPU split that kept tensor is still not this CPU-only launch.
-    backend = _resident(_gpu_memory_mode = "manual", _gpu_layers = 0, _tensor_parallel = True, **state)
-    assert not _satisfied(monkeypatch, backend, {**_CONFIG, "gpu_layers": 0}, saved = saved)
 
 
 def test_auto_speculation_matches_whatever_algorithm_auto_picked(monkeypatch):

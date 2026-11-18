@@ -3901,6 +3901,14 @@ async def _drop_stale_override_gpu_ids(
         )
 
 
+def _alias_launch_key(load_kwargs: dict) -> str:
+    """A configured alias launch as one comparable value: target and launch settings, no credentials."""
+    fields = _REPLAY_LOAD_FIELDS | {"model_path", "gguf_variant"}
+    return json.dumps(
+        {key: load_kwargs[key] for key in sorted(load_kwargs) if key in fields}, default = str
+    )
+
+
 async def _alias_launch_satisfied(
     load_kwargs: dict,
     override: dict,
@@ -3933,6 +3941,12 @@ async def _alias_launch_satisfied(
 
     def still_resident() -> bool:
         return backend.is_loaded and backend.model_identifier == model_identifier
+
+    # The runtime this alias launch started (and its automatic recoveries) serves it, whatever the
+    # loader normalized while launching; the comparison below judges runtimes started otherwise.
+    recorded = getattr(backend, "alias_launch_key", None)
+    if recorded == (model_identifier, _alias_launch_key(load_kwargs)) and still_resident():
+        return True
 
     def satisfied() -> bool:
         # Off the loop: building the intent runs drafter discovery, which reads the model's directory.
@@ -8638,6 +8652,8 @@ def _note_replay_launch(llama_backend, request: LoadRequest) -> None:
     owned = model_override_load_kwargs(override, is_gguf = True)
     fields = (request.model_fields_set & _REPLAY_LOAD_FIELDS) - owned.keys()
     llama_backend.replay_launch = request.model_dump(include = fields)
+    # Any load replaces the runtime a configured alias recorded; the alias switch records its own after.
+    llama_backend.alias_launch_key = None
     # A configured alias launch is also kept whole: with switching off, a request for that alias
     # after idle unload restores exactly it. A plain restore still re-reads the saved settings.
     llama_backend.replay_alias_launch = (
@@ -12913,6 +12929,12 @@ async def _maybe_auto_switch_model(
                                 load_request._override_alias_id = override_id
                                 await _switch_load(load_request)
                             _switch_loaded_ok = True
+                            if alias_config:
+                                # Reuse reads this, not the loader's normalized state (_alias_launch_satisfied).
+                                target_backend.alias_launch_key = (
+                                    target_backend.model_identifier,
+                                    _alias_launch_key(load_kwargs),
+                                )
                             # publish the completed load before a late cancellation is observed.
                             target_backend._openai_advertised_id = override_id
                             target_backend._loaded_by_user_action = False

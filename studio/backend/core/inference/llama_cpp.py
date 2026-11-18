@@ -803,9 +803,6 @@ class GgufLoadIntent:
     hf_token: Optional[str] = None
     # A standalone Engram table of the Hub repo, by precision, in place of the quant's own.
     engram_precision: Optional[str] = None
-    # The precision a load named when it resolved to the quant's own table (engram_precision is then
-    # None). Kept in the intent so a respawn or recovery replays it and naming it again still matches.
-    bundled_engram_request: Optional[str] = None
     audio_codec_path: Optional[str] = None
     is_vision: bool = False
     # Text-only load: no projector on GPU or CPU, freeing its VRAM; image input is off for the session.
@@ -4451,12 +4448,6 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
 # on the CPU. q4_1 / q5_0 / q5_1 did too until ggml-org/llama.cpp#28079 added an f16 fallback.
 # Mapped to a same-size type that has the kernel, so the KV budget is unchanged (#10336).
 _GPU_UNACCELERATED_CACHE_TYPES = {"iq4_nl": "q4_0"}
-
-
-def _manual_split_runs_without_tensor(intent: "GgufLoadIntent") -> bool:
-    """A manual split with zero (CPU only) or Auto layers, which load_model always launches without
-    tensor parallelism or a ratio, whatever the request or extras ask for."""
-    return intent.gpu_memory_mode == "manual" and intent.gpu_layers <= 0
 
 
 def _kv_cache_gpu_fallback_warning(
@@ -9808,10 +9799,6 @@ class LlamaCppBackend:
 
         if intent.force_reload:
             return False
-        if _manual_split_runs_without_tensor(intent):
-            # load_model drops the tensor toggle and ratio itself for this placement (the "Manual
-            # gpu_layers=0" and "Manual mode with Auto layers" branches), so compare what it launches.
-            intent = replace(intent, tensor_parallel = False, tensor_split = None)
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
@@ -9869,10 +9856,6 @@ class LlamaCppBackend:
             return False
         # Virtualised Metal never launches a tensor split, so judge the normalized request, else an extras -sm tensor the pin leaves in place would never match.
         if _metal_device_is_paravirtual():
-            if self._tensor_parallel:
-                return False
-        elif _manual_split_runs_without_tensor(intent):
-            # Extras cannot turn tensor back on for this placement either.
             if self._tensor_parallel:
                 return False
         elif not _tensor_parallel_matches_loaded(
@@ -24250,10 +24233,8 @@ class LlamaCppBackend:
                 )
             if engram_swap is None:
                 # The quant's own table: the same load as naming none, so it dedupes like one.
-                intent = replace(
-                    intent, engram_precision = None, bundled_engram_request = engram_precision
-                )
                 engram_precision = None
+                intent = replace(intent, engram_precision = None)
             else:
                 unfetchable = _engram_table_unfetchable_reason(engram_repo, engram_swap.table)
                 if unfetchable:
@@ -34851,16 +34832,11 @@ class LlamaCppBackend:
             intent.model_identifier.lower()
         ):
             return False
-        # The Engram table is part of the weights. load_model turns a request for the quant's own
-        # table into none only while loading (it asks the Hub), so the precision that load named
-        # matches too: a reuse check cannot normalize it without that network call.
-        requested_engram = (intent.engram_precision or "").upper()
-        bundled_request = getattr(
-            getattr(self, "_last_load_intent", None), "bundled_engram_request", None
-        )
-        if requested_engram != (getattr(self, "_engram_precision", None) or "").upper() and (
-            not requested_engram or requested_engram != (bundled_request or "").upper()
-        ):
+        # The Engram table is part of the weights. load_model has already turned a request for
+        # the quant's own table into none.
+        if (intent.engram_precision or "").upper() != (
+            getattr(self, "_engram_precision", None) or ""
+        ).upper():
             return False
         custom_mmproj = _extra_args_device(intent.extra_args, {"--mmproj", "-mm"})
         source_path = intent.gguf_path
