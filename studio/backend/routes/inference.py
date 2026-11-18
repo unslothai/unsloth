@@ -30797,6 +30797,8 @@ async def _proxy_to_external_provider(
     # Managed local engines keep the evicting fit, with its /compact checkpoint epochs.
     _checkpoint_pass: dict = {}
     _first_payload = _evicting_payload
+    # The prompt last sent, so an overflow refit evicts below what the provider refused.
+    _last_fit = None
 
     async def _managed_context_fitter(messages, tools):
         nonlocal _first_payload
@@ -30856,13 +30858,25 @@ async def _proxy_to_external_provider(
         """Yields a progress line when a summary has to be written first, then
         ``(messages, max_tokens, truncation_line)``."""
         nonlocal _external_truncation, _manual_summary_pending
+        nonlocal _evicting_payload, _first_payload, _last_fit
         from core.inference import cloud_compaction
 
         if force is None and _manual_summary_pending:
             force = "manual"
         _manual_summary_pending = False
-        # An overflow refit on a "Drop oldest turns" connection evicts down without a summary.
-        if _evicting_fit and not (_evict_only and force == "overflow"):
+        if _evict_only and force == "overflow":
+            # Half the refused prompt, kept for the loop's later passes so they stay under it.
+            refused = _last_fit if _last_fit is not None else messages
+            bound = {
+                "compaction_threshold": max(
+                    1, _external_token_counter(payload, tools)(refused) // 2
+                ),
+                "context_window": None,
+            }
+            _evicting_payload = _evicting_payload.model_copy(update = bound)
+            _first_payload = _first_payload.model_copy(update = bound)
+            _checkpoint_pass.clear()
+        if _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
             if plan is None:
@@ -30873,7 +30887,6 @@ async def _proxy_to_external_provider(
                     tools = tools,
                     auto = _auto_summary if auto is None else auto,
                     force = force,
-                    summarise = not _evict_only,
                 )
             if plan.to_summarise and not _non_stream_custom_responses:
                 yield cloud_compaction.COMPACTING_SSE_LINE
@@ -30888,6 +30901,7 @@ async def _proxy_to_external_provider(
             )
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
+        _last_fit = fitted
         if truncation and truncation.get("dropped_messages"):
             _external_truncation = truncation
         truncation_line = None
@@ -30961,6 +30975,7 @@ async def _proxy_to_external_provider(
         except context_refusal.ContextBudgetExceeded as exc:
             raise _context_budget_http_error(exc)
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
+        _last_fit = chat_messages
     elif _fit_active and not run_studio_tool_loop:
         _prefit_plan = await asyncio.to_thread(
             _plan_external_compaction,

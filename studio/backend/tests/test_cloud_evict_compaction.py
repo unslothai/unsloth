@@ -7,6 +7,7 @@ overflow refusal evicts and resends, as on a local model."""
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
@@ -237,6 +238,75 @@ def test_a_second_overflow_is_reported_as_the_error():
     assert summaries == [] and len(chats) == 2
     [error] = [c["error"] for c in chunks if "error" in c]
     assert "maximum context length" in error["message"]
+
+
+class _RefusedPastAFit(_SummarisingHandler):
+    """Refuses a prompt the 6,000-token trigger lets through, then calls a tool once."""
+
+    overflow_chars = 14_000
+
+    def do_POST(self) -> None:  # noqa: N802
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"
+        body = json.loads(raw)
+        fits = len(json.dumps(body["messages"])) <= self.overflow_chars
+        if (
+            self.server.calls_tool
+            and fits
+            and not any(  # type: ignore[attr-defined]
+                m.get("role") == "tool" for m in body["messages"]
+            )
+        ):
+            self.server.recorded.append(body)  # type: ignore[attr-defined]
+            call = {
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "python", "arguments": json.dumps({"code": "print(1)"})},
+            }
+            payload = (
+                "".join(
+                    "data: "
+                    + json.dumps({"choices": [{"index": 0, "delta": delta, "finish_reason": end}]})
+                    + "\n\n"
+                    for delta, end in (
+                        ({"role": "assistant", "tool_calls": [call]}, None),
+                        ({}, "tool_calls"),
+                    )
+                )
+                + "data: [DONE]\n\n"
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        self.rfile = io.BytesIO(raw)
+        super().do_POST()
+
+
+@pytest.mark.parametrize("tool_loop", [False, True])
+def test_an_overflow_after_a_fit_evicts_below_the_refused_prompt(tool_loop, monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    tools = dict(enable_tools = True, enabled_tools = ["python"], permission_mode = "off")
+
+    class Server(_RefusedPastAFit):
+        def do_POST(self) -> None:  # noqa: N802
+            self.server.calls_tool = tool_loop  # type: ignore[attr-defined]
+            super().do_POST()
+
+    chunks, summaries, chats = _bodies(
+        Server, messages = _long_chat(), **_SMALL_TRIGGER, **_EVICT, **(tools if tool_loop else {})
+    )
+    sizes = [len(json.dumps(body["messages"])) for body in chats]
+    assert summaries == [] and not [c for c in chunks if "error" in c]
+    # The retry evicts below the refused prompt, and a tool pass after it stays there.
+    assert sizes[0] > _RefusedPastAFit.overflow_chars and sizes[1] < sizes[0]
+    assert all(size <= _RefusedPastAFit.overflow_chars for size in sizes[1:])
+    assert len(chats) == (3 if tool_loop else 2)
 
 
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
