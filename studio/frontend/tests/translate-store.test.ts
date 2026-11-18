@@ -249,16 +249,21 @@ test("restoring a history entry during a run shows that entry, not the stopped t
   assert.equal(state().output, "Vieux");
 });
 
-test("a typed draft too long for the history keeps the entry it would have replaced", async () => {
+test("a long typed draft replaces its shorter draft in the history", async () => {
   const first = `${"word ".repeat(1500)}end`;
   state().setSource(first);
   await state().translate({ auto: true });
   assert.equal(state().history.length, 1);
-  state().setSource(`${first} ${"more ".repeat(1500)}`);
+  const longer = `${first} ${"more ".repeat(1500)}`;
+  state().setSource(longer);
   await state().translate({ auto: true });
   assert.deepEqual(
     state().history.map((entry: { source: string }) => entry.source),
-    [first],
+    [longer],
+  );
+  assert.equal(
+    JSON.parse(storage.get("unsloth_translate_history") ?? "[]")[0].source,
+    longer,
   );
 });
 

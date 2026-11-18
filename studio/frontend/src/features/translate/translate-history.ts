@@ -15,8 +15,6 @@ export type TranslateHistoryEntry = {
 };
 
 export const TRANSLATE_HISTORY_MAX_ENTRIES = 100;
-/** A longer translation is not kept: the list lives in localStorage, a few megabytes in all. */
-export const TRANSLATE_HISTORY_MAX_CHARS = 20_000;
 export const TRANSLATE_HISTORY_TOTAL_CHARS = 1_000_000;
 export const TRANSLATE_HISTORY_FILE_NAME = "UnslothTranslateFullHistory.txt";
 
@@ -67,12 +65,7 @@ export function addHistoryEntry(
   entry: Omit<TranslateHistoryEntry, "id" | "at">,
   now: number = Date.now(),
 ): TranslateHistoryEntry[] {
-  if (
-    entry.output.trim() === "" ||
-    entry.source.length + entry.output.length > TRANSLATE_HISTORY_MAX_CHARS
-  ) {
-    return [...history];
-  }
+  if (entry.output.trim() === "") return [...history];
   const rest = history.filter(
     (item) => !(item.source === entry.source && item.target === entry.target),
   );
