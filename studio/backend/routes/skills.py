@@ -105,14 +105,12 @@ def _http_error(exc: SkillError) -> HTTPException:
 
 @router.get("", response_model = list[SkillRecord])
 def get_skills(
-    project_id: Optional[str] = Query(None),
-    current_subject: str = Depends(get_current_subject),
+    project_id: Optional[str] = Query(None), current_subject: str = Depends(get_current_subject)
 ) -> list[dict[str, Any]]:
     try:
         project_root = None
         if project_id:
             from storage.studio_db import available_project_working_folder, get_chat_project
-
             project = get_chat_project(project_id)
             if project is not None and not project.get("archived"):
                 working = available_project_working_folder(project)
@@ -176,7 +174,6 @@ def get_skill(
         project_root = None
         if project_id:
             from storage.studio_db import available_project_working_folder, get_chat_project
-
             project = get_chat_project(project_id)
             if project is not None and not project.get("archived"):
                 working = available_project_working_folder(project)

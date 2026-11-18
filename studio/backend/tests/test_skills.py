@@ -127,9 +127,9 @@ def test_project_skills_precede_account_skills(isolated_skills, monkeypatch, tmp
     assert skills.read_skill_instructions("shared", home = home, project_root = project).endswith(
         "PROJECT_BODY"
     )
-    assert skills.read_skill_instructions(
-        "project-only", home = home, project_root = project
-    ).endswith("PROJECT_ONLY_BODY")
+    assert skills.read_skill_instructions("project-only", home = home, project_root = project).endswith(
+        "PROJECT_ONLY_BODY"
+    )
 
 
 def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills, monkeypatch):

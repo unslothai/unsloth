@@ -14942,9 +14942,9 @@ def execute_tool(
         )
         try:
             page_chars = MAX_SKILL_PAGE_CHARS
-            project_root = project_skill_root_for_thread(thread_id) or project_skill_root_for_session(
-                session_id
-            )
+            project_root = project_skill_root_for_thread(
+                thread_id
+            ) or project_skill_root_for_session(session_id)
             # A model that spells out every optional argument sends null, not nothing.
             resource = arguments.get("resource")
             offset = arguments.get("offset")

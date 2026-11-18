@@ -675,8 +675,7 @@ def _candidate_dirs(root: Path) -> list[Path]:
 
 
 def _discover(
-    home: Optional[Path],
-    project_root: Optional[Path] = None,
+    home: Optional[Path], project_root: Optional[Path] = None
 ) -> list[tuple[dict, Optional[Path], Optional[os.stat_result]]]:
     """Every record with, for a valid skill, the directory it was read from and that
     directory's identity at discovery time, so a later read can refuse a swapped tree."""
@@ -761,9 +760,7 @@ def _discover(
     return found
 
 
-def list_skills(
-    *, home: Optional[Path] = None, project_root: Optional[Path] = None
-) -> list[dict]:
+def list_skills(*, home: Optional[Path] = None, project_root: Optional[Path] = None) -> list[dict]:
     with _LOCK:
         return [record for record, _, _ in _discover(home, project_root)]
 
@@ -779,7 +776,10 @@ def enabled_skills(
 
 
 def _selected_skill(
-    name: str, *, home: Optional[Path] = None, project_root: Optional[Path] = None
+    name: str,
+    *,
+    home: Optional[Path] = None,
+    project_root: Optional[Path] = None,
 ) -> tuple[dict, Path, Optional[os.stat_result]]:
     normalized = _normalize_skill_name(name)
     for record, skill_dir, identity in _discover(home, project_root):
@@ -979,12 +979,13 @@ def _replace_skill_manifest(skill_dir: Path, manifest: bytes, identity) -> None:
 
 
 def read_skill_manifest(
-    name: str, *, home: Optional[Path] = None, project_root: Optional[Path] = None
+    name: str,
+    *,
+    home: Optional[Path] = None,
+    project_root: Optional[Path] = None,
 ) -> dict:
     with _LOCK:
-        record, skill_dir, identity = _selected_skill(
-            name, home = home, project_root = project_root
-        )
+        record, skill_dir, identity = _selected_skill(name, home = home, project_root = project_root)
         raw = _read_limited(
             skill_dir / "SKILL.md", MAX_SKILL_MD_BYTES, contained_in = skill_dir, identity = identity
         )
@@ -1339,9 +1340,7 @@ def _read_enabled_skill_text(
     project_root: Optional[Path] = None,
 ):
     with _LOCK:
-        record, skill_dir, identity = _selected_skill(
-            name, home = home, project_root = project_root
-        )
+        record, skill_dir, identity = _selected_skill(name, home = home, project_root = project_root)
         if not record["enabled"]:
             raise SkillError(f"Skill '{record['name']}' is disabled.")
         path = _normalize_resource_path(resource)
@@ -1385,12 +1384,13 @@ def _read_enabled_skill_text(
 
 
 def read_skill_instructions(
-    name: str, *, home: Optional[Path] = None, project_root: Optional[Path] = None
+    name: str,
+    *,
+    home: Optional[Path] = None,
+    project_root: Optional[Path] = None,
 ) -> str:
     """One secure snapshot, complete or refused; unlike resource reads this is not a page."""
-    _, _, content = _read_enabled_skill_text(
-        name, "SKILL.md", home = home, project_root = project_root
-    )
+    _, _, content = _read_enabled_skill_text(name, "SKILL.md", home = home, project_root = project_root)
     if len(content.encode("utf-8")) > MAX_SKILL_MD_BYTES:
         raise SkillError("Skill manifest exceeds the instruction size limit.")
     return content

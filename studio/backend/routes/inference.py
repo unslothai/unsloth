@@ -5875,7 +5875,6 @@ def _project_skill_root_for_payload(payload) -> Optional[Path]:
         project_skill_root_for_session,
         project_skill_root_for_thread,
     )
-
     return project_skill_root_for_thread(getattr(payload, "thread_id", None)) or (
         project_skill_root_for_session(getattr(payload, "session_id", None))
     )

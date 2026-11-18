@@ -1593,8 +1593,7 @@ async def _stream_with_studio_tools(
         confirm_tool_calls = confirm_tool_calls,
         session_id = session_id,
         project_root = (
-            project_skill_root_for_thread(thread_id)
-            or project_skill_root_for_session(session_id)
+            project_skill_root_for_thread(thread_id) or project_skill_root_for_session(session_id)
         ),
         cancel_event = cancel_event,
         permission_upgrade = live_permissions,
