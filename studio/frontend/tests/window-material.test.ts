@@ -266,6 +266,22 @@ test("glass gives the chat header's icon buttons the model picker's glass, not a
 	assert.match(page, /aria-label="New chat"\n\s*data-chat-new-chat=""\n\s*onClick=\{handleDesktopNewChat\}/);
 });
 
+test("the window buttons get an inset glass pill off the pinned strip, keeping the full caption hit area", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const win = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\]:not\(\[data-sidebar-glass-frame\]\) \[data-window-controls\] > button`;
+	// The pill shares the header buttons' fill, rim and hover.
+	assert.match(css, new RegExp(String.raw`${win}::before,\nhtml\[data-glass\]\[data-chat-wallpaper-ready\] :is\(\[data-chat-header-actions\] > button`));
+	assert.match(css, new RegExp(String.raw`html\[data-glass\^="liquid"\]\[data-chat-wallpaper-ready\]:not\(\[data-sidebar-glass-frame\]\) \[data-window-controls\] > button::before,\n`));
+	assert.match(css, new RegExp(String.raw`${win}:hover::before,\n`));
+	assert.match(css, new RegExp(String.raw`${win} \{\n  background-color: transparent !important;\n\}`));
+	assert.match(css, new RegExp(String.raw`${win}::before \{\n  content: "";\n  position: absolute;\n  inset: 2px 4px;\n  z-index: -1;`));
+	// Close keeps its red, on the pill.
+	assert.match(css, new RegExp(String.raw`${win}:last-child:hover::before \{\n  background-color: #c42b1c !important;`));
+	const titlebar = readFileSync(new URL("../src/components/tauri/window-titlebar.tsx", import.meta.url), "utf8");
+	assert.match(titlebar, /data-wallpaper-chrome-controls=""\n\s*data-window-controls=""\n\s*role="toolbar"\n\s*aria-label=\{t\("desktopShell\.windowControls"\)\}/);
+	assert.match(titlebar, /label=\{t\("desktopShell\.close"\)\}[\s\S]*?<CaptionGlyph kind="close" \/>\n\s*<\/WindowControlButton>\n\s*<\/div>/);
+});
+
 test("docked Run settings rounds its top corner only while no pinned sidebar strip meets it", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const panel = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\]`;
