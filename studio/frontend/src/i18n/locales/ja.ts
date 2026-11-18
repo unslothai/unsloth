@@ -906,6 +906,14 @@ export const ja = {
     temporaryChatDescription: "このチャットは履歴に表示されず、保存されません。離れると消えます。",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "ぎりぎり",
     unifiedTightFitHint: "この Mac では短いコンテキストで読み込まれるか、動作が遅くなる可能性があります。",
     residentToRun: "実行に必要",

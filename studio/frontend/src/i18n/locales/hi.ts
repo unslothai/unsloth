@@ -906,6 +906,14 @@ export const hi = {
       "यह चैट आपके इतिहास में नहीं दिखेगी और सेव नहीं होती। आपके जाने पर यह गायब हो जाती है।",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "तंग फ़िट",
     unifiedTightFitHint: "इस Mac पर छोटे कॉन्टेक्स्ट के साथ लोड हो सकता है या धीमा चल सकता है।",
     residentToRun: "चलाने के लिए",

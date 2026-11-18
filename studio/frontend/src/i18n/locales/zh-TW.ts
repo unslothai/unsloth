@@ -953,6 +953,14 @@ export const zhTW = {
       "這個聊天不會出現在您的記錄中，也不會被儲存。離開後就會消失。",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "勉強可容納",
     unifiedTightFitHint:
       "在這台 Mac 上可能會以較短的上下文載入，或執行速度較慢。",

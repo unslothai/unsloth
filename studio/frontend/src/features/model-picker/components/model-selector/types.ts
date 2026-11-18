@@ -61,6 +61,8 @@ export interface ModelSelectorChangeMeta {
   familyOverrideRequired?: boolean;
   audioType?: string | null;
   nativePathExpiresAtMs?: number | null;
+  /** Picked from a linked instance's list: the Images page loads and generates there. */
+  linkedInstanceId?: string;
 }
 
 export interface ModelDownloadFootprint {

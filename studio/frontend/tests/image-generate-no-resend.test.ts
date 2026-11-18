@@ -45,6 +45,8 @@ function loadApis(): ImagesApi {
       },
       "@/features/auth": { authFetch: auth.authFetch },
       "@/lib/format-fastapi-error": { readFastApiError: async () => "" },
+      "@/lib/api-base": { isStudioUrl: () => true },
+      "@/features/model-picker/linked/linked-id": { linkedProxyPath: (_id: string, path: string) => path },
       "@/lib/multi-model-refusal": { parseLoadJson: async () => ({}) },
       "@/lib/unified-memory-load-refusal": { withAllowOversizedLoad: (body: unknown) => body },
     },

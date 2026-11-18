@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
   CloudIcon,
+  CloudServerIcon,
   Download01Icon,
   RemoveCircleIcon,
   SparklesIcon,
@@ -73,6 +74,12 @@ import {
   resolveHubSection,
 } from "./model-selector/hub-section";
 import { PillTabs } from "./model-selector/pill-tabs";
+import { useIsAccountOwner } from "@/features/auth";
+import type { LinkedInstance } from "@/features/settings/api/linked-instances";
+import { LinkedConsentDialog, hasLinkedConsent } from "../linked/linked-consent";
+import { type LinkedPickerKind, useLinkedMachines } from "../linked/linked-machines";
+import { LinkedModelsPanel } from "../linked/linked-models-panel";
+import { MachineSwitch } from "../linked/machine-switch";
 import type {
   ExternalModelOption,
   ModelDownloadFootprintResolver,
@@ -136,6 +143,10 @@ interface ModelSelectorProps {
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
+  /** Offer linked instances beside On Device. Only the Images picker passes this. */
+  linkedPicker?: LinkedPickerKind;
+  /** Name of the linked instance the selection runs on, shown on the trigger. */
+  linkedMachine?: string | null;
 }
 
 // Drawn inside the text box so the gap truncates away with the text.
@@ -317,6 +328,8 @@ function ModelSelectorContent({
   rowFilter,
   cpuLoad,
   moreModels,
+  linkedPicker,
+  onLinkedPick,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -341,8 +354,22 @@ function ModelSelectorContent({
     label: string;
     models: (ModelOption & { sizeBytes?: number | null })[];
   };
+  linkedPicker?: LinkedPickerKind;
+  onLinkedPick?: (
+    instance: LinkedInstance,
+    id: string,
+    meta: ModelSelectorChangeMeta,
+  ) => void;
 }) {
   const t = useT();
+  const isOwner = useIsAccountOwner();
+  const machines = useLinkedMachines(
+    linkedPicker ?? "image",
+    open && !!linkedPicker && isOwner,
+  );
+  const showMachineSwitch =
+    !!linkedPicker && isOwner && machines.instances.length > 0;
+  const linkedInstance = showMachineSwitch ? machines.instance : null;
   const hasSelection = Boolean(value);
   const hasExternal = externalModels.length > 0;
   const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
@@ -383,7 +410,7 @@ function ModelSelectorContent({
   // open empty just because another page has downloaded models.
   const effectiveHubSection = resolveHubSection({
     section: hubSection,
-    hasExternal,
+    hasExternal: hasExternal && !linkedInstance,
     hasDeviceModels,
     sectionChosenThisOpen,
   });
@@ -463,6 +490,42 @@ function ModelSelectorContent({
     setConfigTarget(modelConfigTarget(id, meta, displayName));
   };
   const visibleConfigTarget = open ? configTarget : null;
+  const sectionToggle = (
+    <div className="flex max-w-full shrink-0 items-center">
+      <PillTabs
+        // The panel reserves --picker-tab-pad per pill, so keep the two in step.
+        className={cn(
+          "[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]",
+          showMachineSwitch && "rounded-r-none pr-0.5",
+        )}
+        ariaLabel={t("picker.hubSectionAriaLabel")}
+        tabs={
+          linkedInstance
+            ? hubSectionTabs.filter((tab) => tab.value !== "connected")
+            : hubSectionTabs
+        }
+        value={effectiveHubSection}
+        onValueChange={(next) => {
+          const section = next as HubSection;
+          setSectionChosenThisOpen(true);
+          setHubSection(section);
+          saveLastHubSection(section);
+        }}
+        fit={true}
+      />
+      {showMachineSwitch ? (
+        <MachineSwitch
+          instances={machines.instances}
+          statuses={machines.statuses}
+          infos={machines.infos}
+          value={linkedInstance}
+          onValueChange={machines.setMachine}
+          className="rounded-l-none border-l border-border/60"
+        />
+      ) : null}
+    </div>
+  );
+
   const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
     if (meta.source === "external") {
       onSelect(id, meta);
@@ -522,8 +585,10 @@ function ModelSelectorContent({
               "pt-4 pb-0 pl-4",
               // Widths track the controls they hold so the row does not wrap.
               hasExternal
-                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
-                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
+                ? "w-[min(calc(var(--picker-panel-w-external)_+_var(--picker-machine-w,0px)),calc(100vw-1rem))] pr-4"
+                : "w-[min(calc(var(--picker-panel-w)_+_var(--picker-machine-w,0px)),calc(100vw-1rem))] pr-2",
+              // The machine switch rides in the tab row; widen by it so the filters stay on that row.
+              showMachineSwitch && "[--picker-machine-w:3.5rem]",
             ),
       )}
     >
@@ -561,6 +626,25 @@ function ModelSelectorContent({
           </div>
         ) : (
           <>
+            {linkedInstance ? (
+              <LinkedModelsPanel
+                instance={linkedInstance}
+                info={machines.infos[linkedInstance.id]}
+                section={
+                  effectiveHubSection === "downloaded"
+                    ? "downloaded"
+                    : "recommended"
+                }
+                sectionToggle={sectionToggle}
+                catalog={catalog}
+                value={value}
+                onPickImage={(id, meta) =>
+                  onLinkedPick
+                    ? onLinkedPick(linkedInstance, id, meta)
+                    : onSelect(id, meta)
+                }
+              />
+            ) : (
             <HubModelPicker
               open={open}
               models={models}
@@ -586,23 +670,9 @@ function ModelSelectorContent({
               npu={npu}
               onDeviceInventoryChange={setHasDeviceModels}
               section={effectiveHubSection}
-              sectionToggle={
-                <PillTabs
-                  // The panel reserves --picker-tab-pad per pill, so keep the two in step.
-                  className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
-                  ariaLabel={t("picker.hubSectionAriaLabel")}
-                  tabs={hubSectionTabs}
-                  value={effectiveHubSection}
-                  onValueChange={(next) => {
-                    const section = next as HubSection;
-                    setSectionChosenThisOpen(true);
-                    setHubSection(section);
-                    saveLastHubSection(section);
-                  }}
-                  fit={true}
-                />
-              }
+              sectionToggle={sectionToggle}
             />
+            )}
           </>
         )}
       </TooltipProvider>
@@ -637,8 +707,15 @@ export function ModelSelector({
   hubTask,
   placeholder,
   loaded,
+  linkedPicker,
+  linkedMachine,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  // A first job on a linked machine says what leaves this one, once per instance address.
+  const [consent, setConsent] = useState<{
+    instance: LinkedInstance;
+    run: () => void;
+  } | null>(null);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
   const navigate = useNavigate();
@@ -734,6 +811,21 @@ export function ModelSelector({
     t,
   ]);
 
+  const triggerModel = useMemo(() => {
+    if (!currentModel || !linkedMachine) return currentModel;
+    // One description, since a suffix span beside it loses the space before its dash.
+    const suffix =
+      "descriptionSuffix" in currentModel
+        ? currentModel.descriptionSuffix
+        : undefined;
+    return {
+      ...currentModel,
+      description: suffix ? `@${linkedMachine} · ${suffix}` : `@${linkedMachine}`,
+      descriptionSuffix: undefined,
+      icon: <HugeiconsIcon icon={CloudServerIcon} className="size-4" />,
+    };
+  }, [currentModel, linkedMachine]);
+
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
     if (onValueChange) {
       onValueChange(id, meta);
@@ -771,7 +863,7 @@ export function ModelSelector({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
-        currentModel={currentModel}
+        currentModel={triggerModel}
         isLoaded={isLoaded}
         variant={variant}
         className={className}
@@ -804,6 +896,24 @@ export function ModelSelector({
         rowFilter={rowFilter}
         cpuLoad={cpuLoad}
         moreModels={moreModels}
+        linkedPicker={linkedPicker}
+        onLinkedPick={(instance, id, meta) => {
+          const run = () => handleSelect(id, meta);
+          if (hasLinkedConsent(instance)) run();
+          else {
+            setOpen(false);
+            setConsent({ instance, run });
+          }
+        }}
+      />
+      <LinkedConsentDialog
+        instance={consent?.instance ?? null}
+        onConfirm={() => {
+          const pending = consent;
+          setConsent(null);
+          pending?.run();
+        }}
+        onCancel={() => setConsent(null)}
       />
     </Popover>
   );

@@ -95,6 +95,10 @@ import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import {
+  refreshLinkedMachines,
+  useLinkedMachinesStore,
+} from "@/features/model-picker/linked/linked-machines";
+import {
   explicitFamily,
   resolvedFamilyOverrideSelection,
   useFamilyOverride,
@@ -343,6 +347,8 @@ import {
   generateDiffusionImage,
   getDiffusionLoadProgress,
   getDiffusionStatus,
+  getImagesMachine,
+  setImagesMachine,
   getGallery,
   getGenerateProgress,
   listDiffusionLoras,
@@ -3446,6 +3452,17 @@ export function ImagesPage({
     [],
   );
 
+  const [imagesMachine, setImagesMachineState] = useState(getImagesMachine);
+  const imagesMachineName = useLinkedMachinesStore((state) =>
+    imagesMachine
+      ? state.instances.find((i) => i.id === imagesMachine)?.name
+      : undefined,
+  );
+  useEffect(() => {
+    // Forced: the list may be cached from before the instance was removed in Settings.
+    if (imagesMachine) void refreshLinkedMachines(true);
+  }, [imagesMachine]);
+
   const refreshStatus = useCallback(async () => {
     // A read during teardown can still see the resident and supersede the unload response.
     if (pendingUnload.current) await pendingUnload.current;
@@ -4844,6 +4861,33 @@ export function ImagesPage({
     );
   }, [loadOrStage, status]);
 
+  const switchImagesMachine = useCallback(
+    (machine: string | null) => {
+      setImagesMachine(machine);
+      setImagesMachineState(machine);
+      // The shelf belongs to the old machine: drop it, fence any listing still in flight, refetch.
+      stripEpoch.current += 1;
+      galleryCache.images = [];
+      galleryCache.hasMore = false;
+      setImages([]);
+      setHasMore(false);
+      void loadGallery();
+      void refreshStatus();
+    },
+    [loadGallery, refreshStatus],
+  );
+
+  // A removed linked instance leaves its id stored; once the list has loaded without it, use this machine.
+  const imagesMachineGone = useLinkedMachinesStore(
+    (state) =>
+      imagesMachine !== null &&
+      state.loadedAt > 0 &&
+      !state.instances.some((i) => i.id === imagesMachine),
+  );
+  useEffect(() => {
+    if (imagesMachineGone) switchImagesMachine(null);
+  }, [imagesMachineGone, switchImagesMachine]);
+
   // Every pick supersedes the previous one; direct-local branches bypass loadOrStage.
   const abandonPick = useCallback(() => {
     if (quantRevert.current) {
@@ -4853,9 +4897,28 @@ export function ImagesPage({
   }, [revertPick]);
 
   const handleModelSelect = useCallback(
-    (id: string, meta: ModelSelectorChangeMeta) => {
+    (id: string, pickMeta: ModelSelectorChangeMeta) => {
+      // A linked pick loads and generates there; its load fetches what is missing, so it skips
+      // this machine's download manager, and its quant is the exact file the remote listed.
+      const machine = pickMeta.linkedInstanceId ?? null;
       // A Download only selection does not take over the page, or a staged load never loads.
       const downloadOnlyPick = modelSelectionAction === "download";
+      if (downloadOnlyPick && machine) {
+        toast.error("Download only fetches to this machine. Load a linked model to get it there.");
+        return;
+      }
+      if (machine !== getImagesMachine()) {
+        // Progress, Stop, the queue and the gallery follow the machine, so it never moves under work.
+        if (busy !== null || queueWaiting || queueRunningId !== null) return;
+        switchImagesMachine(machine);
+      }
+      const meta: ModelSelectorChangeMeta = machine
+        ? {
+            ...pickMeta,
+            source: "local",
+            ggufVariant: pickMeta.ggufFilename ?? pickMeta.ggufVariant,
+          }
+        : pickMeta;
       // The backend 409s a second load; download-only picks submit none, so allow them.
       if (busy !== null && !downloadOnlyPick) return;
       if (meta.source === "external") {
@@ -5025,7 +5088,10 @@ export function ImagesPage({
       pickGuard,
       pickToast,
       quant,
+      queueRunningId,
+      queueWaiting,
       revertPick,
+      switchImagesMachine,
     ],
   );
 
@@ -6440,6 +6506,8 @@ export function ImagesPage({
               />
             ) : (
               <ModelSelector
+                linkedPicker="image"
+                linkedMachine={imagesMachineName}
                 triggerDataTour="images-model"
                 models={imageModels}
                 externalModels={externalModels}

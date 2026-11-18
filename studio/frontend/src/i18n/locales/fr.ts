@@ -906,6 +906,14 @@ export const fr = {
       "Ce chat n’apparaîtra pas dans votre historique et n’est pas enregistré. Il disparaît quand vous le quittez.",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "Juste",
     unifiedTightFitHint: "Peut se charger avec un contexte plus court ou être plus lent sur ce Mac.",
     residentToRun: "pour l'exécution",
