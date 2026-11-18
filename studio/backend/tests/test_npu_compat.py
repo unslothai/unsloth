@@ -15,7 +15,7 @@ import pytest
 from core.inference import npu_compat as nc
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "npu_compat"
-_HF = json.loads((_FIXTURES / "hf_configs.json").read_text())
+_HF = json.loads((_FIXTURES / "hf_configs.json").read_text(encoding = "utf-8"))
 _Q4K_ARCHS = ("qwen35", "qwen35moe")
 
 
