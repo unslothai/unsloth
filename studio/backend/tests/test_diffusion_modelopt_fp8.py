@@ -490,6 +490,60 @@ def test_the_stored_runtime_keeps_fp8_codes_and_widens_to_the_reference(tmp_path
     assert getattr(model, mo.MODELOPT_ATTR)["runtime"] == mo.RUNTIME_STORED
 
 
+@pytest.mark.parametrize("runtime", ["static", "stored", "dequant"])
+def test_a_lora_bakes_exactly_into_the_dequantized_runtime_and_the_fp8_ones_refuse_it(
+    tmp_path, runtime
+):
+    """A LoRA load runs the dequantized runtime (video.py picks it whenever adapters bake): there the delta lands on
+    the dequantized weights exactly as on a bf16 denoiser; the fp8 runtimes hold codes, refused with the reason."""
+    if runtime == "stored":
+        pytest.importorskip("core.inference.diffusion_native_quant")
+    from safetensors.torch import save_file as save
+    from core.inference import video_lora
+
+    root, _ref, _scales = _write_checkpoint(tmp_path, EDGE)
+    model = mo.load_modelopt_fp8_transformer(Cosmos3OmniTransformer, root, runtime = runtime)
+    layers = mo.scan_modelopt_fp8(root).layers
+    targets = [
+        next(s for s in layers if s.endswith(suffix))
+        for suffix in (
+            ".self_attn.to_q",
+            ".self_attn.add_v_proj",
+            ".mlp_moe_gen.down_proj",
+            ".mlp.up_proj",
+        )
+    ]
+    gen = torch.Generator().manual_seed(0)
+    state, factors = {}, {}
+    for stem in targets:
+        rows, cols = layers[stem]
+        a = (torch.randn(4, cols, generator = gen) * 0.1).to(torch.bfloat16)
+        b = (torch.randn(rows, 4, generator = gen) * 0.1).to(torch.bfloat16)
+        state[f"transformer.{stem}.lora_A.weight"], state[f"transformer.{stem}.lora_B.weight"] = (
+            a,
+            b,
+        )
+        factors[stem] = (a.float(), b.float())
+    meta = {"transformer.r": 4, "transformer.lora_alpha": 4, "transformer.use_rslora": False}
+    path = tmp_path / "lora.safetensors"
+    save(state, str(path), metadata = {"format": "pt", "lora_adapter_metadata": json.dumps(meta)})
+    before = {k: v.clone() for k, v in model.state_dict().items()}
+    if runtime != "dequant":
+        with pytest.raises(ValueError, match = "hold quantized weights"):
+            video_lora.bake_into_module_(model, [(str(path), 0.5)])
+        assert all(torch.equal(v, before[k]) for k, v in model.state_dict().items())
+        return
+    assert video_lora.bake_into_module_(model, [(str(path), 0.5)]) == len(targets)
+    for k, v in model.state_dict().items():
+        stem = k[: -len(".weight")]
+        if k.endswith(".weight") and stem in factors:
+            a, b = factors[stem]
+            want = before[k].float().addmm_(b, a, alpha = 0.5).to(v.dtype)
+            assert torch.equal(v, want) and not torch.equal(v, before[k]), k
+        else:
+            assert torch.equal(v, before[k]), k
+
+
 def test_runtime_choice_follows_the_card(monkeypatch):
     def gemms(static, dynamic):
         return lambda target = None, device = None, act = None: {"static": static, "dynamic": dynamic}[

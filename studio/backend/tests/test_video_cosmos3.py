@@ -1936,6 +1936,44 @@ def test_an_fp8_build_loads_its_transformer_through_the_modelopt_loader(
         assert resolved["value"] != "fp8", resolved
 
 
+@pytest.mark.parametrize("runtime", ["static", "stored", "dequant"])
+def test_a_lora_load_of_an_fp8_build_dequantizes_and_prices_the_bf16_dit(
+    cosmos3_runtime, monkeypatch, tmp_path, runtime
+):
+    """Adapters bake into dense float weights, so whatever fp8 runtime the card would run, a LoRA load builds (and
+    the planner prices) the dequantized bf16 DiT and the bake gets it."""
+    from core.inference import video_lora
+
+    calls = _modelopt_fake(monkeypatch, runtime)
+    priced: list = []
+    planned = video_mod._modelopt_planned_gb
+    monkeypatch.setattr(
+        video_mod,
+        "_modelopt_planned_gb",
+        lambda *a, **k: priced.append(k["keep"]) or planned(*a, **k),
+    )
+    monkeypatch.setattr(
+        video_lora,
+        "resolve",
+        lambda specs, **k: tuple((i, f"/x/{i}.safetensors", w) for i, w in specs),
+    )
+    baked: list = []
+
+    def _bake(pipe, specs, lora_specs, **k):
+        baked.append((pipe.transformer, specs))
+        return 1
+
+    monkeypatch.setattr(VideoBackend, "_bake_video_loras", staticmethod(_bake))
+    root = _write_planned_tree(tmp_path / "Cosmos3-Edge-FP8", EDGE_FP8)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(root), model_kind = "pipeline", loras = [{"id": "my/lora", "weight": 1.0}]
+    )
+    assert [c["runtime"] for c in calls] == ["dequant"] and priced == [False]
+    ((dit, specs),) = baked
+    assert dit is backend._state.pipe.transformer and [s[0] for s in specs] == ["my/lora"]
+
+
 def test_a_pinned_bf16_dit_dequantizes_the_fp8_build(cosmos3_runtime, monkeypatch, tmp_path):
     calls = _modelopt_fake(monkeypatch, "static")
     root = _write_planned_tree(tmp_path / "Cosmos3-Edge-FP8", EDGE_FP8)

@@ -10019,6 +10019,8 @@ class VideoBackend:
         modelopt_scan = None
         modelopt_dit_gb: Optional[float] = None
         modelopt_priced_offload = False
+        # LoRAs bake into dense float weights: the loader dequantizes the codes to bf16 (exact) for them, priced so.
+        modelopt_keep = comfy_keep and not baked_loras
         if kind == "pipeline" and fam.name in COSMOS3_FAMILIES:
             from .diffusion_modelopt_fp8 import modelopt_fp8_error, scan_modelopt_fp8
 
@@ -10042,7 +10044,7 @@ class VideoBackend:
                 raise ValueError(modelopt_problem)
             if modelopt_scan is not None:
                 modelopt_dit_gb = _modelopt_planned_gb(
-                    modelopt_scan, fam, base, target, keep = comfy_keep, dtype_scale = dtype_scale
+                    modelopt_scan, fam, base, target, keep = modelopt_keep, dtype_scale = dtype_scale
                 )
         partner_path: Optional[Path] = None
         partner_scan = None
@@ -10444,7 +10446,7 @@ class VideoBackend:
         if (
             modelopt_scan is not None
             and not plan_keeps_transformer_resident(plan)
-            and _modelopt_offload_keeps_fp8(fam, base, target, keep = comfy_keep)
+            and _modelopt_offload_keeps_fp8(fam, base, target, keep = modelopt_keep)
         ):
             # Streamed and no fp8 GEMM here: the fp8 codes stay stored (widened per layer), so price those bytes.
             stored_gb = modelopt_scan.resident_bytes(True) * dtype_scale / 1000.0**3
@@ -10755,7 +10757,7 @@ class VideoBackend:
                     target,
                     plan,
                     bf16_plan,
-                    keep = comfy_keep,
+                    keep = modelopt_keep,
                     priced_offload = modelopt_priced_offload,
                 ),
                 logger = logger,
