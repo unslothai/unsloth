@@ -689,6 +689,12 @@ async def generate_answer(
                     ],
                     "stream": False,
                     "cancel_id": run["id"],
+                    # The chat's turns are budgeted in characters; on a small window drop the oldest, not the run.
+                    **(
+                        {"context_overflow": "truncate_oldest", "context_policy": "rolling"}
+                        if history
+                        else {}
+                    ),
                     **_tool_fields(bool(task.get("webSearch"))),
                     **model_fields,
                     **_reasoning_fields(

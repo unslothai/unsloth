@@ -2819,6 +2819,15 @@ def test_a_run_reads_its_chat_before_the_prompt(monkeypatch):
         ("assistant", "Exported as CSV."),
         ("user", "Write a haiku about mornings."),
     ]
+    # A small context window drops the oldest turns instead of failing the run.
+    assert producer.payload.context_overflow == "truncate_oldest"
+    assert producer.payload.context_policy == "rolling"
+
+
+def test_a_run_without_a_chat_keeps_the_default_overflow(monkeypatch):
+    producer = FakeProducer(completion("Done."))
+    generate(monkeypatch, producer)
+    assert producer.payload.context_overflow is None
 
 
 def test_a_failed_run_takes_back_only_its_own_messages(monkeypatch):
