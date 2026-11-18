@@ -34,10 +34,11 @@ FP16_FP32_MODULES: dict[str, tuple[str, ...]] = {
         r"^t_embedder$",
         r"^all_final_layer\.",
         # The attention and FFN outputs feed post-norms (attention_norm2 / ffn_norm2), so nothing bounds them. Measured
-        # on a T4 (16 training forwards, 512 px, Turbo): the refiner blocks' to_out reached inf in 14/16 and 16/16
-        # forwards and w2 in 2/16 (5.9e5 once run in fp32); the 30 main layers peaked under 300, so they stay fp16.
-        r"^(noise_refiner|context_refiner)\.\d+\.attention\.to_out\.0$",
-        r"^(noise_refiner|context_refiner)\.\d+\.feed_forward\.w2$",
+        # on a T4 (16 training forwards, 512 px, Turbo), each finite-check pass exposing the next block: the refiner
+        # to_out went inf in 14/16 and 16/16 forwards (1.4e5 in fp32) and w2 in 2/16 (5.9e5 in fp32); with those in
+        # fp32, layers.0 w2 overflowed 16/16, its INPUT alone reaching 2.3e5. So both run fp32 in every block.
+        r"^(noise_refiner|context_refiner|layers)\.\d+\.attention\.to_out\.0$",
+        r"^(noise_refiner|context_refiner|layers)\.\d+\.feed_forward\.w2$",
         r"^(noise_refiner|layers)\.\d+\.adaLN_modulation$",
     ),
     "wan2.2-ti2v-5b": (
