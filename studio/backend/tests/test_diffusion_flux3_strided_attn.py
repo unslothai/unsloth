@@ -74,6 +74,24 @@ def test_strided_processor_matches_the_cudnn_dispatch_bitwise(dtype, batch, seq)
     assert torch.equal(got, want)
 
 
+def test_strided_processor_hands_sdpa_the_projection_views(monkeypatch):
+    # a restored .contiguous() must fail this
+    attn, _stock = _attn()
+    seen = []
+    real = torch.nn.functional.scaled_dot_product_attention
+
+    def spy(q, k, v, *a, **k2):
+        seen.append(tuple(t.is_contiguous() for t in (q, k, v)))
+        return real(q, k, v, *a, **k2)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", spy)
+    new = fa.strided_processor_class()()
+    new._attention_backend = "_native_cudnn"
+    with torch.no_grad():
+        new(attn, torch.randn(2, 12, 64), None, _rope(12))
+    assert seen == [(False, False, False)]
+
+
 def test_masks_and_other_backends_take_the_stock_call(monkeypatch):
     attn, stock = _attn()
     new = fa.strided_processor_class()()
@@ -95,6 +113,32 @@ def test_masks_and_other_backends_take_the_stock_call(monkeypatch):
         new._attention_backend = "_native_cudnn"
         new(attn, x, None, _rope(12))
     assert len(calls) == 2  # the strided path did not call the stock processor
+
+
+def test_calls_below_the_int8_floor_take_the_stock_call(monkeypatch):
+    """A native-backend processor routed to the INT8 kernel runs calls below its token floor (raised where a plan
+    decided torch's attention) through the stock call, the same as before the install, not the strided SDPA."""
+    attn, stock = _attn()
+    new = fa.strided_processor_class()()
+    new._attention_backend = None
+    new._unsloth_int8 = True
+    calls, kernel = [], []
+    real = tf3.Flux3AttnProcessor.__call__
+    monkeypatch.setattr(
+        tf3.Flux3AttnProcessor,
+        "__call__",
+        lambda self, *a, **k: calls.append(1) or real(self, *a, **k),
+    )
+    monkeypatch.setattr(fa._i8, "int8_attention_call", lambda q, k, v: kernel.append(q.shape) or v)
+    x = torch.randn(1, 12, 64)
+    with torch.no_grad():
+        new._unsloth_int8_min_tokens = 13
+        stock._attention_backend = None
+        assert torch.equal(new(attn, x, None, _rope(12)), stock(attn, x, None, _rope(12)))
+        assert len(calls) == 2 and kernel == []
+        new._unsloth_int8_min_tokens = 12
+        new(attn, x, None, _rope(12))
+    assert len(calls) == 2 and len(kernel) == 1
 
 
 def _cuda_target(monkeypatch, probe = True):

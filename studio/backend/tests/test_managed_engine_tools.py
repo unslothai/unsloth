@@ -798,3 +798,71 @@ def test_managed_engine_offers_image_viewer_to_vision_models_only(native, monkey
     names = [t["function"]["name"] for t in native[1][0]["tools"]]
     assert "python" in names
     assert ("view_image" in names) == vision
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("contract", ["studio", "unmarked", "client_catalog"])
+def test_memory_replay_reaches_plain_managed_chat(native, monkeypatch, stream, engine, contract):
+    from core import chat_memory
+    from fastapi import HTTPException
+
+    backend, requests = native
+    backend.models["sf-model"].update(engine = engine, supports_tools = False)
+    route_test._install(monkeypatch, backend, supports_tools = False)
+    monkeypatch.setattr(chat_memory, "thread_context", lambda _: {"projectId": None})
+    monkeypatch.setattr(
+        chat_memory, "context", lambda *_: {"text": "Remembered fact: prefers Rust"}
+    )
+    history = [
+        {"role": "user", "content": "Remember I prefer Rust"},
+        {
+            "role": "assistant",
+            "content": "Saving that preference.",
+            "tool_calls": [
+                {
+                    "id": "memory-call",
+                    "type": "function",
+                    "function": {
+                        "name": "update_memory",
+                        "arguments": '{"scope":"personal","key":"language","value":"Rust"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "memory-call",
+            "name": "update_memory",
+            "content": "Memory updated: personal.language",
+        },
+        {"role": "user", "content": "What do you remember?"},
+    ]
+    payload = route_test._request(
+        messages = history,
+        thread_id = "saved",
+        studio_tool_history = contract != "unmarked",
+        tools = [route_test.LOOKUP_TOOL] if contract == "client_catalog" else None,
+        enable_tools = False,
+        stream = stream,
+    )
+    if contract != "studio":
+        with pytest.raises(HTTPException, match = "No native tool parser") as exc:
+            run(payload)
+        assert exc.value.status_code == 400
+        assert requests == []
+        assert backend.calls == []
+        return
+    result = run(payload)
+    assert "plain" in json.dumps(result)
+    assert requests == []
+    assert backend.calls
+    rendered = backend.calls[-1]
+    assert not rendered.get("tools")
+    assert all(m["role"] != "tool" and not m.get("tool_calls") for m in rendered["messages"])
+    text = json.dumps([rendered["system_prompt"], rendered["messages"]])
+    assert "prefers Rust" in text
+    assert "Saving that preference" in text
+    assert "update_memory" in text
+    assert "Memory updated: personal.language" in text
+    assert "What do you remember?" in text

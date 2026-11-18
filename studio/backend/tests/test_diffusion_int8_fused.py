@@ -191,6 +191,22 @@ def test_plain_tensor_is_not_eligible():
     assert fused._plain_int8_weight(None) is False
 
 
+@pytest.mark.parametrize("mapping, ok", [("SYMMETRIC", True), ("SYMMETRIC_NO_CLIPPING_ERR", False)])
+def test_only_plain_symmetric_activation_quant_is_eligible(mapping, ok):
+    quant_api = pytest.importorskip("torchao.quantization")
+    MappingType = pytest.importorskip("torchao.quantization.quant_primitives").MappingType
+    import dataclasses
+
+    lin = torch.nn.Linear(64, 64, bias = False).to(torch.bfloat16)
+    quant_api.quantize_(lin, quant_api.Int8DynamicActivationInt8WeightConfig(version = 2))
+    w = lin.weight
+    # torchao 0.18 no longer builds SYMMETRIC_NO_CLIPPING_ERR weights; a loaded one still carries it
+    w.act_quant_kwargs = dataclasses.replace(
+        w.act_quant_kwargs, mapping_type = getattr(MappingType, mapping)
+    )
+    assert fused._plain_int8_weight(w) is ok
+
+
 def test_install_noop_on_cpu_module():
     FeedForward = pytest.importorskip("diffusers.models.attention").FeedForward
 

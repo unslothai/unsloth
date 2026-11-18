@@ -135,7 +135,7 @@ def test_outer_link_text_stays_out_of_a_table_opened_inside_it():
 
 def test_outer_link_text_does_not_move_into_a_sibling_quote():
     html = '<blockquote><a href="/o">FIRST</blockquote><blockquote><a href="/i">SECOND</a></blockquote>'
-    assert "FIRST" not in html_to_markdown(html)
+    assert html_to_markdown(html) == "> [FIRST](/o)\n\n> [SECOND](/i)"
 
 
 def test_role_heading_anchor_closing_the_outer_link_keeps_its_title():
