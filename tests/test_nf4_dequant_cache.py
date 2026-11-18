@@ -18,7 +18,15 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(dc, "_auto_allowed", lambda: True)
     monkeypatch.setattr(dc, "_ACTIVE", 1, raising = False)  # inside Trainer.train()
     monkeypatch.setattr(dc, "_foreign_bytes", lambda index: 0, raising = False)
-    for name in ("_TRANSIENT", "_SEEN", "_CALLS", "_ROWS_SEEN", "_ROWS_NEW", "_FOREIGN"):
+    for name in (
+        "_TRANSIENT",
+        "_SEEN",
+        "_CALLS",
+        "_ROWS_SEEN",
+        "_ROWS_NEW",
+        "_FOREIGN",
+        "_CHECKED",
+    ):
         getattr(dc, name, {}).clear()
     dc.clear_dequant_cache()
     dc.STATS.clear()
@@ -273,11 +281,11 @@ def test_admission_keeps_the_transient_reserve(monkeypatch):
     dc._SEEN.add(None)
     dc._on_optimizer_step(None, (), {})
     assert dc._BUDGET[None] == 7 * GiB
-    _memory(monkeypatch, usable = 3 * GiB - 1)  # 7 GiB allocated by someone else since then
+    _memory(monkeypatch, usable = 3 * GiB + 4096)  # 7 GiB allocated by someone else since then
     calls = []
     W, absmax = _weight()
-    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16)
-    assert calls == [False] and dc.cached_count() == 0 and dc.STATS["declined"] == 1
-    _memory(monkeypatch, usable = 3 * GiB + 4096)
-    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16)
-    assert calls == [False, True] and dc.cached_count() == 1
+    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16)  # 256 bytes fit above the 3 GiB reserve
+    assert calls == [True] and dc.cached_count() == 1 and dc._BUDGET[None] == 4096
+    W2, absmax2 = _weight(4096)  # 16 KiB do not
+    dc._lookup(W2, absmax2, _decoder(calls, 4096), torch.bfloat16)
+    assert calls == [True, False] and dc.cached_count() == 1 and dc.STATS["declined"] == 1

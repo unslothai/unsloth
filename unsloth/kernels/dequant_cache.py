@@ -102,6 +102,9 @@ _ROWS_NEW = {}  # device index -> most matmul rows since the last safe point
 _FOREIGN = {}  # device index -> memory other processes held at the first safe point
 _FRACTIONS = {}  # device index -> set_per_process_memory_fraction (torch without the getter)
 _ACTIVE = 0  # Trainer.train() calls running: nothing is cached outside them
+_CHECKED = (
+    set()
+)  # device indices whose free memory was re-read at an admission since the last safe point
 
 
 def _storage_ref(W):
@@ -156,6 +159,7 @@ def clear_dequant_cache(oom = False, release = False):
         _CACHE.clear()
         _HELD.clear()
         _BUDGET.clear()
+        _CHECKED.clear()
         if oom:
             STATS["oom_clears"] += 1
         STATS["bytes"] = 0
@@ -228,8 +232,10 @@ def _usable(index):
         usable = free + max(unused, 0)
         fraction = _fraction(index)
         if fraction < 1.0:
-            # The allocator refuses to reserve past fraction * total whatever the driver has free.
-            usable = min(usable, int(fraction * total) - allocated)
+            # The allocator refuses to reserve past fraction * total whatever the driver has free; the margin
+            # is then a share of that capped card.
+            total = int(fraction * total)
+            usable = min(usable, total - allocated)
         return usable, total, stats
     except Exception:
         return None
@@ -283,6 +289,7 @@ def _on_optimizer_step(optimizer, args, kwargs):
         for key in [k for k, e in _CACHE.items() if e[0].expired()]:
             _pop(key)
             STATS["stale"] += 1
+        _CHECKED.clear()
         for index in list(_SEEN):
             # The budget below covers steps up to the largest matmul seen so far, no larger.
             _ROWS_SEEN[index] = max(_ROWS_SEEN.get(index, 0), _ROWS_NEW.pop(index, 0))
@@ -440,20 +447,22 @@ def _miss(W, absmax, decode, dtype, index):
         budget = _BUDGET.get(index, 0)
         if budget <= 0 or (entry is not None and key in _CACHE):
             return decode(False)  # no budget, or cached for another stream
+        if index not in _CHECKED:
+            # Once per optimizer step, at its first admission: memory taken since the safe point (a callback's
+            # tensor, a second model) shrinks this step's budget, so the cache still leaves the reserve
+            # (2 x transient + margin) usable for the rest of the step. One reading per step, not per weight.
+            _CHECKED.add(index)
+            measured = _usable(index)
+            if measured is None:
+                _BUDGET[index] = 0
+                return decode(False)
+            usable, total, _ = measured
+            reserve = int(TRANSIENT_SLACK * _TRANSIENT.get(index, 0)) + _margin(total)
+            budget = max(min(budget, _cached_bytes(index) + usable - reserve), 0)
+            _BUDGET[index] = budget
         need = W.numel() * 2 * (torch.finfo(dtype).bits // 8)
-        if _cached_bytes(index) + need > budget:
-            STATS["declined"] += 1
-            return decode(False)
-        measured = _usable(index)
-        ref = _storage_ref(W)
-        # Leave the budget's reserve (2 x transient + margin) free after every admission, whatever was allocated
-        # since the safe point (a callback's tensor, a second model): the rest of the step still fits.
-        if (
-            ref is None
-            or measured is None
-            or measured[0] - need
-            < _margin(measured[1]) + int(TRANSIENT_SLACK * _TRANSIENT.get(index, 0))
-        ):
+        ref = _storage_ref(W) if _cached_bytes(index) + need <= budget else None
+        if ref is None:
             STATS["declined"] += 1
             return decode(False)
         try:
