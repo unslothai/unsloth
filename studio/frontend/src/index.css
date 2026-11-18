@@ -3869,6 +3869,37 @@ html[data-chat-font] .aui-root {
 			content: attr(data-pill-label);
 			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-(--tooltip-fg) shadow-(--tooltip-shadow);
 		}
+
+		/* The icon chip opens the picker, which has Eject. */
+		@media (width < 48rem) {
+			.composer-model-chip [data-eject-hit] {
+				pointer-events: none;
+			}
+			.composer-model-chip [data-eject-hit] > span {
+				visibility: visible !important;
+			}
+			.composer-model-chip [data-eject-hit] > svg {
+				visibility: hidden !important;
+			}
+			.composer-model-chip[data-pill-detail]:not([data-state="open"]):hover::after {
+				content: attr(data-pill-label) " · " attr(data-pill-detail);
+			}
+			.composer-model-chip[data-pill-label]:not([data-state="open"]):hover::after {
+				left: auto;
+				right: 0;
+				translate: none;
+				max-width: calc(100vw - 2rem);
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+		}
+		/* A tap leaves :hover stuck. */
+		@media (width < 48rem) and (hover: none) {
+			.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after,
+			.composer-model-chip[data-pill-detail]:not([data-state="open"]):hover::after {
+				content: none;
+			}
+		}
 	}
 
 	/* Menu selection tick. Raised 1px so it reads level with the label. */
