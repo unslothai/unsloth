@@ -2842,3 +2842,31 @@ def test_a_full_history_replay_keeps_the_tail_of_a_partly_trimmed_result():
     history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
 
     assert _urls(promote_history(history, vision = True)) == _urls(conversation)
+
+
+def test_a_plain_non_raster_does_not_shift_the_replay_cut():
+    """Eight screenshots and then an SVG: the loop admits no picture for the SVG, so replay must not
+    count it and step down to five."""
+    svg = {
+        "data": base64.b64encode(b"<svg xmlns='http://www.w3.org/2000/svg'/>").decode(),
+        "mimeType": "image/svg+xml",
+    }
+    conversation, history, _prompts = _screenshot_chain(8)
+    history += [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "svg",
+                    "type": "function",
+                    "function": {"name": "mcp__s__x", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "svg", "content": _envelope("icon", svg)},
+        {"role": "user", "content": "next"},
+    ]
+
+    assert mcp_images.replay_image_total(history) == 8
+    assert _urls(promote_history(history, vision = True)) == _urls(conversation)

@@ -140,6 +140,19 @@ def probably_decodable(image: Any) -> bool:
     return not head.lstrip()[:16].startswith(_UNDECODABLE_PREFIXES)
 
 
+def _sniffed_undecodable(image: Any) -> bool:
+    """Only a header that plainly is not a raster; an unreadable header is left to the decoder.
+    Mirrors sniffedUndecodable in studio/frontend/src/features/chat/api/mcp-images.ts."""
+    data = image.get("data") if isinstance(image, dict) else None
+    if not isinstance(data, str):
+        return False
+    try:
+        head = base64.b64decode(data[:32], validate = False)
+    except (binascii.Error, ValueError, TypeError):
+        return False
+    return head.lstrip()[:16].startswith(_UNDECODABLE_PREFIXES)
+
+
 def count_probably_decodable(images: Sequence[dict]) -> int:
     return sum(1 for image in images if probably_decodable(image))
 
@@ -270,8 +283,8 @@ def eligible_replay_images(
 
 def replay_image_total(messages: Sequence[dict], parsed: "dict | None" = None) -> int:
     """Pictures a replay could promote with no cap, counted as the tool loop admits them (per
-    result quota, bounded MIME, at most the cap per parallel batch); parsed collects each result's
-    images for eligible_replay_images."""
+    result quota, bounded MIME, no plain non-raster, at most the cap per parallel batch); parsed
+    collects each result's images for eligible_replay_images."""
     call_names = resolve_tool_names(messages)
     total = 0
     batch = 0
@@ -289,7 +302,14 @@ def replay_image_total(messages: Sequence[dict], parsed: "dict | None" = None) -
         if parsed is not None:
             parsed[position] = images
         if images:
-            batch += min(MAX_MODEL_IMAGES, sum(1 for image in images if _mime_is_bounded(image)))
+            batch += min(
+                MAX_MODEL_IMAGES,
+                sum(
+                    1
+                    for image in images
+                    if _mime_is_bounded(image) and not _sniffed_undecodable(image)
+                ),
+            )
     return total + min(batch, MAX_TOTAL_MODEL_IMAGES)
 
 

@@ -136,6 +136,21 @@ export function planMcpImageBound(
   return out;
 }
 
+// Mirrors _UNDECODABLE_PREFIXES in studio/backend/core/inference/mcp_images.py.
+const UNDECODABLE_PREFIXES = ["<svg", "<?xml", "<!DOCTYPE", "<html", "{", "["];
+
+/** Mirrors _sniffed_undecodable: only a header that plainly is not a raster. */
+export function sniffedUndecodable(image: McpImage): boolean {
+  let head: string;
+  try {
+    head = atob(image.data.slice(0, 32));
+  } catch {
+    return false;
+  }
+  head = head.replace(/^[ \t\n\r\x0b\x0c]+/, "").slice(0, 16);
+  return UNDECODABLE_PREFIXES.some((prefix) => head.startsWith(prefix));
+}
+
 function withReturned(images: readonly McpImage[], keep: McpImage[]): McpImage[] {
   if (keep.length === images.length) return images.slice();
   const returned = Math.max(images[0]?.returned ?? 0, images.length);
@@ -152,8 +167,11 @@ function planSteppedBound(
   batches: readonly (readonly (readonly McpImage[])[])[],
   exchanges: readonly (readonly (readonly McpImage[])[])[],
 ): McpImage[][][] {
+  // What the backend's loop could admit: bounded MIME and not plainly a non-raster.
   const bounded = (images: readonly McpImage[]) =>
-    images.filter((image) => image.mimeType.length <= MAX_MCP_IMAGE_MIME_CHARS);
+    images.filter(
+      (image) => image.mimeType.length <= MAX_MCP_IMAGE_MIME_CHARS && !sniffedUndecodable(image),
+    );
   const exchangeOf = new Map<readonly McpImage[], number>();
   let total = 0;
   exchanges.forEach((exchange, e) => {

@@ -12,6 +12,7 @@ import {
   MAX_MCP_IMAGE_MIME_CHARS,
   MAX_TOTAL_MCP_IMAGE_CHARS,
   planMcpImageBound,
+  sniffedUndecodable,
   steppedKeep,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
@@ -620,4 +621,28 @@ test("large screenshots still upload the stepped count under the byte bound", ()
     (m) => splitMcpImages(m.content).images.length > 0,
   );
   assert.equal(sent.length, steppedKeep(16, MAX_TOTAL_MCP_IMAGES));
+});
+
+test("the non-raster sniff matches the backend's prefixes", () => {
+  const b64 = (text: string) => btoa(text);
+  assert.equal(sniffedUndecodable({ data: b64("<svg xmlns='x'/>"), mimeType: "image/svg+xml" }), true);
+  assert.equal(sniffedUndecodable({ data: b64("  <?xml version='1.0'?>"), mimeType: "image/png" }), true);
+  assert.equal(sniffedUndecodable({ data: b64("\x89PNG\r\n\x1a\n"), mimeType: "image/png" }), false);
+  assert.equal(sniffedUndecodable({ data: "s0", mimeType: "image/png" }), false);
+});
+
+test("a trailing SVG result does not shift the uploaded cut", () => {
+  const shots = Array.from({ length: 8 }, (_, i) => [
+    { role: "assistant", content: "" },
+    {
+      role: "tool",
+      name: "computer",
+      content: `ok${i}` + mcpImagesEnvelope([{ data: `s${i}`, mimeType: "image/jpeg" }]),
+    },
+  ]).flat();
+  const svg = { role: "tool", name: "mcp__s__x", content: "icon" + mcpImagesEnvelope([{ data: btoa("<svg/>"), mimeType: "image/svg+xml" }]) };
+  const sent = boundMcpImageEnvelopes([...shots, { role: "assistant", content: "" }, svg]).filter(
+    (m) => m.role === "tool" && m.name === "computer" && splitMcpImages(m.content).images.length > 0,
+  );
+  assert.equal(sent.length, 8);
 });
