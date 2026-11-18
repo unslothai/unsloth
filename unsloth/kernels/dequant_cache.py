@@ -16,7 +16,9 @@ UNSLOTH_NF4_DEQUANT_CACHE:
                        or user callbacks).
 Budget (the zoo moe_expert_cache design), measured at the safe point after each optimizer step, when the
 step's activations are freed: room = free + reserved-unused - 2 * transient - margin, with transient the
-largest step peak above the resident memory seen so far and margin max(1 GiB, 5% of the card). Free memory is
+largest step peak above the resident memory seen so far and margin max(1 GiB, 5% of the card). Whenever the
+cache shrinks the allocator's peak is restarted, so a peak that held now-freed cache is never counted as
+activations (torch.cuda.memory_stats / max_memory_* still report the whole run's peaks). Free memory is
 also capped by torch.cuda.set_per_process_memory_fraction. Nothing is cached before the first optimizer step, and
 nothing outside transformers' Trainer.train(), so inference, evaluation-only runs and custom loops are untouched.
 Between optimizer steps only the trainer's own code and its callbacks run: auto mode requires every callback to
@@ -161,6 +163,7 @@ def clear_dequant_cache(oom = False, release = False):
     release=True also returns the freed blocks to the driver, for other processes."""
     with _lock:
         held = bool(_CACHE)
+        shrunk = [index for index, size in _HELD.items() if size > 0]
         _CACHE.clear()
         _HELD.clear()
         _BUDGET.clear()
@@ -168,6 +171,8 @@ def clear_dequant_cache(oom = False, release = False):
         if oom:
             STATS["oom_clears"] += 1
         STATS["bytes"] = 0
+    for index in shrunk:
+        _restart_peak(index)
     if release and held:
         try:
             torch.cuda.empty_cache()
@@ -227,11 +232,79 @@ def _margin(total):
     return max(MARGIN_MIN_BYTES, int(MARGIN_FRAC * total))
 
 
+_PEAKS_KEPT = {}  # device index -> {"*.peak" stat: value} from before our peak resets, still shown to users
+
+
+def _device_index(device):
+    try:
+        return torch.cuda._utils._get_device_index(device, optional = True)
+    except Exception:
+        return device
+
+
+def _raw_stats(index):
+    """The allocator's own counters (peaks since our last restart), not the user-facing view below."""
+    import torch.cuda.memory as M
+
+    raw = getattr(M.memory_stats, "_unsloth_dq_raw", M.memory_stats)
+    return raw(index)
+
+
+def _raw_reset(index):
+    torch._C._cuda_resetPeakMemoryStats(_device_index(index))
+
+
+def _install_peak_view():
+    """torch.cuda.memory_stats / max_memory_* keep reporting the peaks from before our resets (a notebook's
+    "peak reserved memory" stays the whole run's peak); a user's own reset_peak_memory_stats clears them."""
+    import torch.cuda.memory as M
+
+    if getattr(M.memory_stats, "_unsloth_dq_raw", None) is not None:
+        return
+    raw_stats, raw_reset = M.memory_stats, M.reset_peak_memory_stats
+
+    def memory_stats(device = None):
+        out = raw_stats(device = device)
+        kept = _PEAKS_KEPT.get(_device_index(device))
+        if kept:
+            out = collections.OrderedDict(out)
+            for key, value in kept.items():
+                if out.get(key, 0) < value:
+                    out[key] = value
+        return out
+
+    def reset_peak_memory_stats(device = None):
+        _PEAKS_KEPT.pop(_device_index(device), None)
+        return raw_reset(device)
+
+    memory_stats._unsloth_dq_raw = raw_stats
+    reset_peak_memory_stats._unsloth_dq_raw = raw_reset
+    for module in (M, torch.cuda):
+        module.memory_stats = memory_stats
+        module.reset_peak_memory_stats = reset_peak_memory_stats
+
+
+def _restart_peak(index):
+    """The cache just shrank: restart the allocator's peak at the current usage, so the next safe point
+    measures the transient of what ran since, not a peak that still holds the freed cache."""
+    try:
+        stats = _raw_stats(index)
+        kept = _PEAKS_KEPT.setdefault(_device_index(index), {})
+        for key, value in stats.items():
+            if key.endswith(".peak") and value > kept.get(key, -1):
+                kept[key] = value
+        _install_peak_view()
+        _raw_reset(index)
+        STATS["peak_restarts"] += 1
+    except Exception:
+        pass
+
+
 def _usable(index):
     """(memory that can still be allocated on the device, total) or None."""
     try:
         free, total = torch.cuda.mem_get_info(index)
-        stats = torch.cuda.memory_stats(index)
+        stats = _raw_stats(index)
         allocated = stats.get("allocated_bytes.all.current", 0)
         unused = stats.get("reserved_bytes.all.current", 0) - allocated
         usable = free + max(unused, 0)
@@ -274,12 +347,16 @@ def _evict(
 ):
     """Drop the oldest entries of `index` until it holds at most target_bytes."""
     held = _cached_bytes(index)
+    shrunk = False
     for key in [k for k, e in _CACHE.items() if e[4].device.index == index]:
         if held <= target_bytes:
             break
         held -= _nbytes(_pop(key)[4])
         STATS[stat] += 1
+        shrunk = True
     STATS["bytes"] = _cached_bytes()
+    if shrunk:
+        _restart_peak(index)
 
 
 def _on_optimizer_step(optimizer, args, kwargs):
