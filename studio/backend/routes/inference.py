@@ -6279,6 +6279,7 @@ async def _select_request_tools(
         ALL_TOOLS,
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
+        set_mcp_project_scope,
     )
 
     if not tools_on:
@@ -6372,7 +6373,9 @@ async def _select_request_tools(
         )
     if mcp_allowed:
         from core.inference.media_chat_tools import remember_server_loop
+
         remember_server_loop(asyncio.get_running_loop())
+        await set_mcp_project_scope(getattr(payload, "session_id", None))
         tools = tools + await get_enabled_mcp_tools()
     # Some callers pass lighter payloads that may lack deep_research_armed, so read it with getattr.
     if getattr(payload, "deep_research_armed", None):
@@ -44221,8 +44224,13 @@ async def _mlx_count_chat_tokens(
         _mcp_tools: list[dict] = []
         if _mcp_on:
             from core.inference.mcp_client import mcp_server_snapshot_guard
-            from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+            from core.inference.tools import (
+                cached_mcp_tools,
+                set_mcp_listing_context_tokens,
+                set_mcp_project_scope,
+            )
 
+            await set_mcp_project_scope(getattr(payload, "session_id", None))
             set_mcp_listing_context_tokens(
                 _monitor_context_length(),
                 getattr(payload, "thread_id", None),
@@ -44791,8 +44799,13 @@ async def chat_count_tokens(
     _mcp_allowed = False
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
-        from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+        from core.inference.tools import (
+            cached_mcp_tools,
+            set_mcp_listing_context_tokens,
+            set_mcp_project_scope,
+        )
 
+        await set_mcp_project_scope(getattr(payload, "session_id", None))
         set_mcp_listing_context_tokens(
             getattr(llama_backend, "context_length", None),
             getattr(payload, "thread_id", None),

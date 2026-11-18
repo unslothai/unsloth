@@ -434,6 +434,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             id TEXT NOT NULL PRIMARY KEY,
             name TEXT NOT NULL,
             instructions TEXT,
+            mcp_server_ids TEXT,
             root_path TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
@@ -446,6 +447,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    if "mcp_server_ids" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN mcp_server_ids TEXT")
     # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
     if "working_folder" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
@@ -2242,6 +2245,7 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "id": data["id"],
         "name": data["name"],
         "instructions": data.get("instructions") or "",
+        "mcpServerIds": _json_loads(data.get("mcp_server_ids"), None),
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
         "workingFolder": data.get("working_folder") or None,
@@ -3347,8 +3351,8 @@ def upsert_chat_project(
         conn.execute(
             """
             INSERT INTO chat_projects
-                (id, name, instructions, root_path, archived, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, name, instructions, mcp_server_ids, root_path, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 instructions = excluded.instructions,
@@ -3361,6 +3365,7 @@ def upsert_chat_project(
                 project["id"],
                 project["name"],
                 project.get("instructions") or "",
+                json.dumps(project.get("mcpServerIds")),
                 root_path,
                 1 if project.get("archived") else 0,
                 int(project["createdAt"]),
@@ -3385,6 +3390,7 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
     allowed = {
         "name": ("name", patch.get("name")),
         "instructions": ("instructions", patch.get("instructions")),
+        "mcpServerIds": ("mcp_server_ids", json.dumps(patch.get("mcpServerIds"))),
         "archived": ("archived", 1 if patch.get("archived") else 0),
         "createdAt": ("created_at", patch.get("createdAt")),
         "updatedAt": ("updated_at", patch.get("updatedAt")),
