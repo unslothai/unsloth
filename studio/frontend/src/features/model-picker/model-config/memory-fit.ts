@@ -589,3 +589,20 @@ export function resolveDraftCacheNote(
   }
   return undefined;
 }
+
+/** GPUs whose memory a reload releases: undefined for a fresh or VRAM-free resident, null when unknown. */
+export function residentPlacementGpuIds(state: {
+  isActiveModel: boolean;
+  loadedCpuFallback: boolean;
+  loadedGpuLayers: number | null | undefined;
+  loadedGpuIds: readonly number[] | null | undefined;
+  loadedGpuIndexKind: string | null | undefined;
+  gpuIndexKind: string | null | undefined;
+}): readonly number[] | null | undefined {
+  if (!state.isActiveModel || state.loadedCpuFallback || state.loadedGpuLayers === 0) {
+    return undefined;
+  }
+  const sameNamespace =
+    state.loadedGpuIndexKind != null && state.loadedGpuIndexKind === state.gpuIndexKind;
+  return state.loadedGpuIds?.length && sameNamespace ? state.loadedGpuIds : null;
+}

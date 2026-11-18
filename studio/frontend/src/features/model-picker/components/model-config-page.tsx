@@ -141,6 +141,7 @@ import {
   mlxOffloadModePatch,
   mlxOffloadSliderValue,
   resolveReclaimableMemoryCredit,
+  residentPlacementGpuIds,
 } from "../model-config/memory-fit";
 import {
   resolveResidentEstimateRequest,
@@ -2507,6 +2508,7 @@ export function ModelConfigPage({
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
+  const loadedGpuLayers = useChatRuntimeStore((s) => s.loadedGpuLayers);
   const residentModelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const residentEstimateSettings = useChatRuntimeStore(
     useShallow(selectResidentEstimateSettings),
@@ -4168,11 +4170,14 @@ export function ModelConfigPage({
             loading={memoryEstimate.loading}
             stale={memoryEstimate.stale}
             gpuDevices={estimateGpuDevices}
-            residentGpuIds={
-              !isActiveModel || loadedCpuFallback ? undefined
-              : loadedGpuIds?.length && loadedGpuIndexKind != null && loadedGpuIndexKind === gpuIndexKind
-                ? loadedGpuIds : null
-            }
+            residentGpuIds={residentPlacementGpuIds({
+              isActiveModel,
+              loadedCpuFallback,
+              loadedGpuLayers,
+              loadedGpuIds,
+              loadedGpuIndexKind,
+              gpuIndexKind,
+            })}
             placementMode={
               target.isGguf && (pinnedGpuIds ?? gpuSelectionContext.ids ?? []).length > 1
                 ? memoryBudgetGovernsLaunch ? "auto" : "manual"
