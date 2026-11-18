@@ -151,7 +151,7 @@ import {
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
-import { useIsTouchPhone } from "@/hooks/use-mobile";
+import { useIsMobile, useIsTouchPhone } from "@/hooks/use-mobile";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import {
   ChevronDownStandardIcon,
@@ -1530,6 +1530,9 @@ export function ComposerModelPicker({
   const routeMediaPick = useRef<
     (id: string, meta: ModelSelectorChangeMeta) => boolean
   >(() => false);
+  // A small screen has no room to keep the panel up over the chat while the pick loads.
+  const closeOnPick = useRef(false);
+  closeOnPick.current = useIsMobile();
   const source = useMemo(
     () =>
       rawSource
@@ -1538,6 +1541,9 @@ export function ComposerModelPicker({
             onPick: (id: string, meta: ModelSelectorChangeMeta) => {
               if (!routeMediaPick.current(id, meta)) {
                 rawSource.onPick(id, meta);
+              }
+              if (closeOnPick.current) {
+                rawSource.onOpenChange(false);
               }
             },
           }

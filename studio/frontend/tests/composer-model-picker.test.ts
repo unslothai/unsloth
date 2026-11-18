@@ -1777,3 +1777,14 @@ test("on touch the picker keeps the keyboard down and every action within reach"
     /pointer-coarse:flex-1 pointer-coarse:self-stretch/,
   );
 });
+
+test("on a small screen a pick closes the picker at once", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /closeOnPick\.current = useIsMobile\(\);/);
+  assert.match(
+    picker,
+    /rawSource\.onPick\(id, meta\);\s+\}\s+if \(closeOnPick\.current\) \{\s+rawSource\.onOpenChange\(false\);/,
+  );
+});
