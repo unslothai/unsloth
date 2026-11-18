@@ -42,13 +42,15 @@ import {
 
 const PREFS_KEY = "unsloth_translate_prefs";
 const HISTORY_KEY = "unsloth_translate_history";
-const RECENT_TARGETS = 3;
+const RECENT_LANGUAGES = 3;
 export const AUTO_SOURCE = "auto";
 export const TRANSLATE_SOURCE_MAX_CHARS = 50_000;
 
 export type TranslatePrefs = {
   from: string;
   target: string;
+  /** The language tabs beside each picker, in a stable order: picking a shown tab never reorders them. */
+  recentSources: string[];
   recentTargets: string[];
   modelId: TranslateModelId;
   customModel: CustomTranslateModel | null;
@@ -88,6 +90,7 @@ type TranslateState = {
   readyModels: string[];
   setSource: (source: string) => void;
   setPrefs: (patch: Partial<TranslatePrefs>) => void;
+  setFrom: (from: string) => void;
   setTarget: (target: string) => void;
   /** `detected` stands in for an automatic source. */
   swap: (detected?: string | null) => void;
@@ -120,6 +123,21 @@ function writeJson(key: string, value: unknown): boolean {
   }
 }
 
+/** The tabs for a picker: its recent languages, with the current one shown even if it was never picked from a tab. */
+export function languageTabs(
+  current: string,
+  recent: readonly string[],
+): string[] {
+  if (current === AUTO_SOURCE || recent.includes(current)) return [...recent];
+  return [current, ...recent].slice(0, RECENT_LANGUAGES);
+}
+
+function withLanguage(tabs: string[], code: string): string[] {
+  return tabs.includes(code)
+    ? tabs
+    : [code, ...tabs].slice(0, RECENT_LANGUAGES);
+}
+
 function loadPrefs(): TranslatePrefs {
   const saved = (readJson(PREFS_KEY) ?? {}) as Partial<TranslatePrefs>;
   const known = (code: unknown): code is string =>
@@ -132,8 +150,11 @@ function loadPrefs(): TranslatePrefs {
       : typeof navigator === "undefined"
         ? DEFAULT_TARGET_LANGUAGE
         : suggestedTargetLanguage(navigator.languages ?? []),
+    recentSources: Array.isArray(saved.recentSources)
+      ? saved.recentSources.filter(known).slice(0, RECENT_LANGUAGES)
+      : [],
     recentTargets: Array.isArray(saved.recentTargets)
-      ? saved.recentTargets.filter(known).slice(0, RECENT_TARGETS)
+      ? saved.recentTargets.filter(known).slice(0, RECENT_LANGUAGES)
       : [],
     modelId:
       isTranslateModelId(saved.modelId) &&
@@ -277,17 +298,31 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     writeJson(PREFS_KEY, prefs);
   },
 
+  setFrom: (from) => {
+    const { prefs } = get();
+    if (from === prefs.from) return;
+    get().setPrefs(
+      from === AUTO_SOURCE
+        ? { from }
+        : {
+            from,
+            recentSources: withLanguage(
+              languageTabs(prefs.from, prefs.recentSources),
+              from,
+            ),
+          },
+    );
+  },
+
   setTarget: (target) => {
     const { prefs } = get();
     if (target === prefs.target) return;
     get().setPrefs({
       target,
-      recentTargets: [
-        prefs.target,
-        ...prefs.recentTargets.filter((code) => code !== target),
-      ]
-        .filter((code, index, all) => all.indexOf(code) === index)
-        .slice(0, RECENT_TARGETS),
+      recentTargets: withLanguage(
+        languageTabs(prefs.target, prefs.recentTargets),
+        target,
+      ),
     });
   },
 
@@ -300,7 +335,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     if (prefs.from === AUTO_SOURCE && from === prefs.target) return;
     // Only a finished translation of the current draft replaces it; an edit is never lost.
     const current = output && result !== null && !translationIsStale(state);
-    get().setPrefs({ from: prefs.target });
+    get().setFrom(prefs.target);
     get().setTarget(from);
     if (current) {
       set({
@@ -316,7 +351,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   outputToSource: () => {
     const { output, result, attempt, prefs, phase } = get();
     if (!output || phase) return;
-    get().setPrefs({ from: (result ?? attempt)?.target ?? prefs.target });
+    get().setFrom((result ?? attempt)?.target ?? prefs.target);
     set({
       source: clipText(output, TRANSLATE_SOURCE_MAX_CHARS),
       output: "",
@@ -466,12 +501,11 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   restore: (entry) => {
     get().stop();
     if (findTranslateLanguage(entry.target)) get().setTarget(entry.target);
-    get().setPrefs({
-      from:
-        entry.from && findTranslateLanguage(entry.from)
-          ? entry.from
-          : AUTO_SOURCE,
-    });
+    get().setFrom(
+      entry.from && findTranslateLanguage(entry.from)
+        ? entry.from
+        : AUTO_SOURCE,
+    );
     const shown = resultOf(entry.source, get().prefs);
     set({
       source: entry.source,

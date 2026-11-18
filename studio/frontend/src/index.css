@@ -5467,6 +5467,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
+/* A classic page scrollbar appearing as the Translate panes grow must not narrow them. */
+main:has(.translate-page) {
+	scrollbar-gutter: stable;
+}
+
 /* Classic, not overlay: a wide chat table shows it scrolls before it is touched. */
 @supports selector(::-webkit-scrollbar) {
 	.aui-md-table-scroll,

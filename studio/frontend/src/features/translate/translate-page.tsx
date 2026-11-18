@@ -6,12 +6,27 @@ import {
   ComposerModelPickerContext,
   type ComposerModelPickerSource,
 } from "@/components/assistant-ui/composer-model-picker/context";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import {
   Command,
   CommandEmpty,
-  CommandInput,
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
@@ -27,10 +42,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -60,7 +75,12 @@ import type {
   LoraModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker";
+import {
+  MAX_SERVER_DOCUMENT_BYTES,
+  SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS,
+} from "@/features/chat/open-document-accept";
 import { useNativeFileDrop } from "@/features/native-intents";
+import { extractDocumentText } from "@/features/rag/api/rag-api";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ReadAloudIcon } from "@/lib/action-bar-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -69,27 +89,31 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Settings01Icon } from "@/lib/hugeicons-derived";
 import { StopIcon } from "@/lib/media-control-icons";
 import { MicIcon } from "@/lib/mic-icon";
-import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  AiTranslateIcon,
   ArrowLeft02Icon,
   ArrowLeftRightIcon,
   Cancel01Icon,
-  ClipboardPasteIcon,
   Message01Icon,
   RemoveCircleIcon,
+  Search01Icon,
   Upload01Icon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import { Command as CommandPrimitive } from "cmdk";
 import { motion, useReducedMotion } from "motion/react";
 import {
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -131,6 +155,7 @@ import {
   AUTO_SOURCE,
   TRANSLATE_SOURCE_MAX_CHARS,
   customPromptOf,
+  languageTabs,
   translatePromptOptions,
   translationIsStale,
   useTranslateStore,
@@ -149,6 +174,24 @@ import { useDictation, useReadAloud } from "./use-translate-voice";
 const AUTO_TRANSLATE_DELAY_MS = 800;
 const TEXT_FILE_EXTENSIONS =
   ".txt,.md,.markdown,.srt,.vtt,.csv,.tsv,.json,.html,.xml,.yaml,.yml,.log,.tex,.rst";
+// Read on the server: documents through their parsers, images through the loaded vision model or OCR.
+const SERVER_FILE_EXTENSIONS = [
+  ".pdf,.docx,.xlsx,.pptx,.odt,.ods,.rtf,.eml",
+  SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS,
+  ".png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff",
+].join(",");
+const OPEN_FILE_EXTENSIONS = `${TEXT_FILE_EXTENSIONS},${SERVER_FILE_EXTENSIONS}`;
+
+function readsInBrowser(file: File): boolean {
+  const name = file.name.toLowerCase();
+  if (SERVER_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))) {
+    return false;
+  }
+  return (
+    file.type.startsWith("text/") ||
+    TEXT_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))
+  );
+}
 
 const IS_MAC =
   typeof navigator !== "undefined" &&
@@ -157,24 +200,57 @@ const IS_MAC =
 const ACTION_BUTTON =
   "relative z-10 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100";
 const GO_BUTTON =
-  "h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85";
-const STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
+  "ms-1 h-9 rounded-full px-4 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85";
+const STOP_BUTTON =
+  "ms-1 h-9 rounded-full px-3.5 text-ui-14 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
 const PANEL = "rounded-xl bg-wash-6";
-const PANE_HEIGHT = "h-52 sm:h-96 md:h-[max(13rem,calc(100dvh-22rem))]";
+// Panes grow with the longer text, up to the bottom of the window, then scroll.
+const PANE_HEIGHT =
+  "min-h-52 max-h-[70dvh] sm:min-h-[calc(18rem*var(--ui-space-scale,1))] md:max-h-[max(18rem,calc(100dvh-10rem))]";
 const PANE_HEIGHT_WITH_PROMPT =
-  "h-52 sm:h-72 md:h-[max(10rem,calc(100dvh-35rem))]";
+  "min-h-52 max-h-[60dvh] sm:min-h-[calc(13rem*var(--ui-space-scale,1))] md:max-h-[max(13rem,calc(100dvh-30rem))]";
 // The box clips and an inner element scrolls: a scrollbar on the box itself squares off its corners.
 // Its outline is an inset shadow, not a border, so the scrollbar reaches the box's very edge.
 const SOURCE_BOX =
-  "overflow-hidden rounded-xl bg-background shadow-[inset_0_0_0_1px_var(--border)] transition-[box-shadow,background-color] focus-within:shadow-[inset_0_0_0_1px_var(--ring)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:shadow-none dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:focus-within:shadow-none";
+  "overflow-hidden rounded-xl bg-background shadow-[inset_0_0_0_1px_var(--border)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none";
 // A thin scrollbar keeps a margin beside its thumb; the scroller overhangs the box by that much.
-const EDGE_SCROLL = "hover-scrollbar h-full w-[calc(100%+2px)] max-w-none";
-const SOURCE_TEXT = cn(
-  EDGE_SCROLL,
-  "rounded-none border-0 bg-transparent dark:bg-transparent dark:focus-visible:bg-transparent",
-);
+const EDGE_SCROLL = "hover-scrollbar w-[calc(100%+2px)] max-w-none";
+const SOURCE_TEXT =
+  "min-h-full rounded-none border-0 bg-transparent dark:bg-transparent dark:focus-visible:bg-transparent";
 const STOP_GLYPH = "size-3.5 fill-current";
+// While more text is below, the last lines fade out; the second layer keeps the scrollbar's strip opaque.
+const BOTTOM_FADE =
+  "data-[fade-bottom]:[mask-image:linear-gradient(to_bottom,#000_calc(100%-2.5rem),transparent),linear-gradient(#000,#000)] data-[fade-bottom]:[mask-size:100%_100%,12px_100%] data-[fade-bottom]:[mask-position:0_0,right] data-[fade-bottom]:[mask-repeat:no-repeat]";
+
+function useBottomFade(ref: RefObject<HTMLElement | null>, content: string) {
+  // biome-ignore lint/correctness/useExhaustiveDependencies: new content can change the scroll height.
+  useLayoutEffect(() => {
+    const scroller = ref.current;
+    if (!scroller) return;
+    const update = () =>
+      scroller.toggleAttribute(
+        "data-fade-bottom",
+        scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 1,
+      );
+    update();
+    scroller.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(scroller);
+    if (scroller.firstElementChild)
+      observer.observe(scroller.firstElementChild);
+    return () => {
+      scroller.removeEventListener("scroll", update);
+      observer.disconnect();
+    };
+  }, [ref, content]);
+}
+const TAB =
+  "relative flex h-9 shrink-0 cursor-pointer items-center whitespace-nowrap rounded-full px-3.5 text-ui-14 font-medium text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring";
+const LIST_ROW =
+  "h-9 cursor-pointer break-inside-avoid rounded-full py-0 text-ui-14 data-[checked=true]:font-medium data-[checked=true]:text-control-accent";
+// Footer controls share the icons' 36px row.
+const FOOTER_ICON = "size-9";
 
 const TONE_LABEL: Record<TranslateTone, TranslationKey> = {
   default: "translate.options.toneDefault",
@@ -196,23 +272,32 @@ const MODEL_NOTE: Record<
   "hy-mt2-7b": "translate.model.quality",
 };
 
+/** The full list opens under the whole row and spans its column, so it never covers the other panel. */
 function LanguagePicker({
   value,
   onChange,
   label,
   allowAuto,
+  tabs,
+  trailing,
+  className,
   detected,
 }: {
   value: string;
   onChange: (code: string) => void;
   label: string;
   allowAuto?: boolean;
+  tabs: ReactNode;
+  trailing?: ReactNode;
+  className?: string;
   detected?: string | null;
 }) {
   const t = useT();
   const locale = useLocale();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  // The highlighted row: opens on the current language, not on whichever row comes first.
+  const [active, setActive] = useState(value);
   const languages = useMemo(
     () =>
       TRANSLATE_LANGUAGES.map((language) => ({
@@ -251,46 +336,73 @@ function LanguagePicker({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) setQuery("");
+        if (next) setActive(value);
+        else setQuery("");
       }}
     >
-      <PopoverTrigger asChild={true}>
-        <Button
-          type="button"
-          variant="picker"
-          size="sm"
-          aria-label={label}
-          title={label}
-          className={cn(
-            "min-w-40 justify-between rounded-full border text-ui-13",
-            allowAuto && value === AUTO_SOURCE && "text-muted-foreground",
-          )}
-        >
-          <span className="min-w-0 truncate">{currentLabel}</span>
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            strokeWidth={2}
-            className="size-4 shrink-0 text-muted-foreground"
-          />
-        </Button>
-      </PopoverTrigger>
+      <PopoverAnchor asChild={true}>
+        <div className={cn("flex min-w-0 items-center gap-1", className)}>
+          {tabs}
+          <PopoverTrigger asChild={true}>
+            <button
+              type="button"
+              aria-label={`${label}: ${currentLabel}`}
+              title={label}
+              className={cn(
+                TAB,
+                "w-9 justify-center px-0 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))] data-[state=open]:text-foreground",
+              )}
+            >
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                strokeWidth={2}
+                className="size-4.5 transition-transform in-data-[state=open]:rotate-180"
+              />
+            </button>
+          </PopoverTrigger>
+          {trailing}
+        </div>
+      </PopoverAnchor>
       <PopoverContent
         align="start"
-        sideOffset={4}
-        className="w-64 gap-0 rounded-lg p-1"
+        // The sections' gap-3: the list's top meets its panel's.
+        sideOffset={12}
+        collisionPadding={16}
+        className="w-[var(--radix-popper-anchor-width)] max-w-none gap-0 overflow-hidden rounded-xl p-0"
       >
         {/* Filtered here: the labels are in the interface language, the search also takes English. */}
         <Command
           shouldFilter={false}
+          value={active}
+          onValueChange={setActive}
           className="rounded-none bg-transparent p-0"
         >
-          <CommandInput
-            value={query}
-            onValueChange={setQuery}
-            aria-label={t("translate.searchLanguages")}
-            placeholder={t("translate.searchLanguages")}
-          />
-          <CommandList>
+          {/* The whole row takes a click into the search; ! beats the global pointer for comboboxes. */}
+          <div
+            onMouseDown={(event) => {
+              const input = event.currentTarget.querySelector("input");
+              if (input && event.target !== input) {
+                event.preventDefault();
+                input.focus();
+              }
+            }}
+            className="flex h-12 cursor-text! items-center gap-2.5 border-b border-border/60 px-4"
+          >
+            <HugeiconsIcon
+              icon={Search01Icon}
+              strokeWidth={2}
+              className="size-4 shrink-0 text-muted-foreground"
+            />
+            <CommandPrimitive.Input
+              value={query}
+              onValueChange={setQuery}
+              aria-label={t("translate.searchLanguages")}
+              placeholder={t("translate.searchLanguages")}
+              className="h-full min-w-0 flex-1 cursor-text! bg-transparent text-ui-14 outline-hidden placeholder:text-muted-foreground"
+            />
+          </div>
+          {/* Columns read top to bottom, as many as the row's width fits. */}
+          <CommandList className="hover-scrollbar max-h-[min(24rem,calc(var(--radix-popover-content-available-height)-3rem))] p-2 **:[[cmdk-list-sizer]]:columns-[10.5rem] **:[[cmdk-list-sizer]]:gap-x-1">
             {!showAuto && shown.length === 0 && (
               <CommandEmpty>{t("translate.noLanguages")}</CommandEmpty>
             )}
@@ -298,15 +410,10 @@ function LanguagePicker({
               <CommandItem
                 value={AUTO_SOURCE}
                 onSelect={() => pick(AUTO_SOURCE)}
+                data-checked={value === AUTO_SOURCE}
+                className={LIST_ROW}
               >
                 <span className="min-w-0 flex-1 truncate">{autoLabel}</span>
-                {value === AUTO_SOURCE && (
-                  <HugeiconsIcon
-                    icon={MenuTickIcon}
-                    strokeWidth={2}
-                    className="size-4"
-                  />
-                )}
               </CommandItem>
             )}
             {shown.map((language) => (
@@ -314,23 +421,168 @@ function LanguagePicker({
                 key={language.code}
                 value={language.code}
                 onSelect={() => pick(language.code)}
+                data-checked={language.code === value}
+                className={LIST_ROW}
               >
                 <span className="min-w-0 flex-1 truncate">
                   {language.label}
                 </span>
-                {language.code === value && (
-                  <HugeiconsIcon
-                    icon={MenuTickIcon}
-                    strokeWidth={2}
-                    className="size-4"
-                  />
-                )}
               </CommandItem>
             ))}
           </CommandList>
         </Command>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** A row of language tabs over its panel, with the full list behind the chevron. */
+function LanguageTabs({
+  value,
+  tabs,
+  onChange,
+  label,
+  allowAuto,
+  detected,
+  className,
+  children,
+}: {
+  value: string;
+  tabs: readonly string[];
+  onChange: (code: string) => void;
+  label: string;
+  allowAuto?: boolean;
+  detected?: string | null;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const t = useT();
+  const locale = useLocale();
+  const pillId = useId();
+  const detectedLanguage =
+    value === AUTO_SOURCE && detected
+      ? findTranslateLanguage(detected)
+      : undefined;
+  const reduced = useReducedMotion();
+  const tab = (code: string, name: string) => {
+    const active = code === value;
+    return (
+      <button
+        key={code}
+        type="button"
+        role="tab"
+        aria-selected={active}
+        onClick={() => onChange(code)}
+        className={cn(TAB, active && "text-foreground hover:bg-transparent")}
+      >
+        {active && (
+          <motion.span
+            layoutId={pillId}
+            className="absolute inset-0 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.09*var(--contrast-wash-gain,1)))]"
+            transition={
+              reduced
+                ? { duration: 0 }
+                : { type: "spring", stiffness: 500, damping: 35, mass: 0.5 }
+            }
+          />
+        )}
+        <span className="relative z-10">{name}</span>
+      </button>
+    );
+  };
+  return (
+    <LanguagePicker
+      value={value}
+      onChange={onChange}
+      label={label}
+      allowAuto={allowAuto}
+      detected={detected}
+      className={className}
+      trailing={children}
+      tabs={
+        // Clipped, not scrolled: a narrow window drops the last tabs, the chevron still lists them all.
+        <div
+          role="tablist"
+          aria-label={label}
+          className="flex min-w-0 items-center gap-0.5 overflow-hidden"
+        >
+          {allowAuto &&
+            tab(
+              AUTO_SOURCE,
+              detectedLanguage
+                ? t("translate.detectedTab", {
+                    language: translateLanguageLabel(detectedLanguage, locale),
+                  })
+                : t("translate.detectLanguage"),
+            )}
+          {tabs.map((code) => {
+            const language = findTranslateLanguage(code);
+            return language
+              ? tab(code, translateLanguageLabel(language, locale))
+              : null;
+          })}
+        </div>
+      }
+    />
+  );
+}
+
+/** Style and tone, folded into the source box's footer. */
+function StyleMenu() {
+  const t = useT();
+  const { mode, tone } = useTranslateStore(
+    useShallow((state) => ({ mode: state.prefs.mode, tone: state.prefs.tone })),
+  );
+  const setPrefs = useTranslateStore((state) => state.setPrefs);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild={true}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          title={`${t("translate.options.mode")} · ${t("translate.options.tone")}`}
+          className="h-9 min-w-0 cursor-pointer gap-1.5 rounded-full px-3 text-ui-14 font-medium text-muted-foreground hover:text-foreground data-[state=open]:text-foreground max-sm:ms-auto"
+        >
+          {t(MODE_LABEL[mode])} · {t(TONE_LABEL[tone])}
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
+            strokeWidth={2}
+            className="size-4 transition-transform in-data-[state=open]:rotate-180"
+          />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        side="top"
+        sideOffset={6}
+        className="w-48"
+      >
+        <DropdownMenuLabel>{t("translate.options.mode")}</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={mode}
+          onValueChange={(next) => setPrefs({ mode: next as TranslateMode })}
+        >
+          {TRANSLATE_MODES.map((option) => (
+            <DropdownMenuRadioItem key={option} value={option}>
+              {t(MODE_LABEL[option])}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>{t("translate.options.tone")}</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={tone}
+          onValueChange={(next) => setPrefs({ tone: next as TranslateTone })}
+        >
+          {TRANSLATE_TONES.map((option) => (
+            <DropdownMenuRadioItem key={option} value={option}>
+              {t(TONE_LABEL[option])}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -646,7 +898,7 @@ function ModelMenu({
             type="button"
             aria-label={`${t("translate.model.label")}: ${label}`}
             title={t("translate.model.label")}
-            className="unsloth-thinking-pill composer-model-chip max-w-56"
+            className="unsloth-thinking-pill composer-model-chip max-w-56 pl-3.5 pr-3"
           >
             {preparing && (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
@@ -824,66 +1076,6 @@ function OptionRow({
   );
 }
 
-function ChoiceChips<T extends string>({
-  label,
-  options,
-  labels,
-  value,
-  onChange,
-}: {
-  label: string;
-  options: readonly T[];
-  labels: Record<T, TranslationKey>;
-  value: T;
-  onChange: (next: T) => void;
-}) {
-  const t = useT();
-  const pillId = useId();
-  const reduced = useReducedMotion();
-  return (
-    <div role="group" aria-label={label} className="flex flex-col gap-1.5">
-      <span className="text-ui-12 text-muted-foreground">{label}</span>
-      <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
-        {options.map((option) => {
-          const active = option === value;
-          return (
-            <button
-              key={option}
-              type="button"
-              aria-pressed={active}
-              onClick={() => onChange(option)}
-              className={cn(
-                "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors",
-                active
-                  ? "text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {active && (
-                <motion.span
-                  layoutId={pillId}
-                  className="hub-tab-toggle-pill absolute inset-0 rounded-full"
-                  transition={
-                    reduced
-                      ? { duration: 0 }
-                      : {
-                          type: "spring",
-                          stiffness: 500,
-                          damping: 35,
-                          mass: 0.5,
-                        }
-                  }
-                />
-              )}
-              <span className="relative z-10">{t(labels[option])}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 function OptionsPopover() {
   const t = useT();
   const { autoTranslate, saveHistory, showPrompt } = useTranslateStore(
@@ -952,50 +1144,21 @@ function OptionsPopover() {
   );
 }
 
-function RunStatus({ phase, model }: { phase: TranslatePhase; model: string }) {
+/** What the empty output panel says while a run works; download progress is the shared downloads toast's. */
+function useRunStatusText(phase: TranslatePhase | null, model: string) {
   const t = useT();
-  const downloading = phase.kind === "downloading";
-  const status = downloading
-    ? t("translate.status.downloading", { model })
-    : phase.kind === "loading"
-      ? t("translate.status.loading", { model })
-      : phase.kind === "translating"
-        ? phase.parts > 1
-          ? t("translate.status.translatingPart", {
-              part: phase.part,
-              parts: phase.parts,
-            })
-          : t("translate.status.translating")
-        : t("translate.status.preparing");
-  return (
-    <>
-      <output
-        aria-live="polite"
-        aria-atomic="true"
-        className="text-center text-ui-12 text-muted-foreground"
-      >
-        {status}
-        {downloading && (
-          <span className="ml-1.5 font-mono tabular-nums">
-            {t("translate.status.downloadProgress", {
-              done: formatModelBytes(phase.downloadedBytes) || "0 MB",
-              total: formatModelBytes(phase.totalBytes),
-            })}
-          </span>
-        )}
-      </output>
-      <Progress
-        value={
-          downloading && phase.totalBytes > 0
-            ? Math.min(100, (phase.downloadedBytes / phase.totalBytes) * 100)
-            : 0
-        }
-        indeterminate={!downloading || phase.downloadedBytes <= 0}
-        aria-label={status}
-        className="h-1.5"
-      />
-    </>
-  );
+  if (!phase) return null;
+  if (phase.kind === "downloading")
+    return t("translate.status.downloading", { model });
+  if (phase.kind === "loading") return t("translate.status.loading", { model });
+  if (phase.kind === "translating")
+    return phase.parts > 1
+      ? t("translate.status.translatingPart", {
+          part: phase.part,
+          parts: phase.parts,
+        })
+      : t("translate.status.translating");
+  return t("translate.status.preparing");
 }
 
 export function TranslatePage() {
@@ -1017,6 +1180,7 @@ export function TranslatePage() {
   const {
     setSource,
     setPrefs,
+    setFrom,
     setTarget,
     swap,
     outputToSource,
@@ -1028,6 +1192,7 @@ export function TranslatePage() {
       setSource: state.setSource,
       outputToSource: state.outputToSource,
       setPrefs: state.setPrefs,
+      setFrom: state.setFrom,
       setTarget: state.setTarget,
       swap: state.swap,
       translate: state.translate,
@@ -1040,6 +1205,9 @@ export function TranslatePage() {
   const [downloaded, setDownloaded] = useState<Downloaded>({});
   const fileInput = useRef<HTMLInputElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
+  const sourceScrollRef = useRef<HTMLDivElement>(null);
+  useBottomFade(sourceScrollRef, source);
+  useBottomFade(outputRef, output);
 
   const busy = phase !== null;
   const paneHeight = prefs.showPrompt ? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT;
@@ -1140,13 +1308,37 @@ export function TranslatePage() {
     setSource(text);
   };
 
+  const [readingFile, setReadingFile] = useState<string | null>(null);
   const openFile = async (file: File | undefined) => {
     if (!file) return;
-    try {
-      // Sliced first: only the kept characters are ever read into memory.
-      loadText(await file.slice(0, TRANSLATE_SOURCE_MAX_CHARS * 4 + 4).text());
-    } catch {
+    if (readsInBrowser(file)) {
+      try {
+        // Sliced first: only the kept characters are ever read into memory.
+        loadText(
+          await file.slice(0, TRANSLATE_SOURCE_MAX_CHARS * 4 + 4).text(),
+        );
+      } catch {
+        toast.error(t("translate.fileNotText"));
+      }
+      return;
+    }
+    if (file.size > MAX_SERVER_DOCUMENT_BYTES) {
       toast.error(t("translate.fileNotText"));
+      return;
+    }
+    setReadingFile(file.name);
+    try {
+      const { text } = await extractDocumentText(file);
+      if (text.trim()) loadText(text);
+      else toast.error(t("translate.fileNotText"));
+    } catch (error) {
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : t("translate.fileNotText"),
+      );
+    } finally {
+      setReadingFile(null);
     }
   };
 
@@ -1156,18 +1348,9 @@ export function TranslatePage() {
     dragHandlers,
   } = useNativeFileDrop({
     onFiles: (files) => void openFile(files[0]),
-    accept: TEXT_FILE_EXTENSIONS,
+    accept: OPEN_FILE_EXTENSIONS,
     multiple: false,
   });
-
-  const paste = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) loadText(source + text);
-    } catch {
-      // Clipboard reads need a permission the user may refuse; Ctrl+V still works.
-    }
-  };
 
   const errorMessage = error
     ? error.code === "other"
@@ -1230,19 +1413,33 @@ export function TranslatePage() {
   };
 
   const shortcut = `${IS_MAC ? "⌘" : "Ctrl"}+Enter`;
-  const firstRun =
-    !busy && dedicated !== null && downloaded[dedicated.id] === false;
+  const runStatus = useRunStatusText(phase, runModelLabel);
+  // A first run asks before fetching the model, as dictation does; auto-translate never downloads.
+  const [confirmDownload, setConfirmDownload] = useState<
+    (typeof DEDICATED_TRANSLATE_MODELS)[number] | null
+  >(null);
+  const startTranslate = () => {
+    if (
+      dedicated &&
+      downloaded[dedicated.id] === false &&
+      !readyModels.includes(modelKey)
+    ) {
+      setConfirmDownload(dedicated);
+      return;
+    }
+    void translate();
+  };
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 pb-10 pt-8 font-heading max-sm:px-4 sm:px-10 4xl:max-w-6xl">
+    <main className="translate-page mx-auto flex w-full max-w-[calc(96rem*var(--ui-space-scale,1))] flex-col gap-6 px-6 pb-10 pt-8 font-heading max-sm:px-4 sm:px-8 lg:px-12">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-3">
           <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
             {t("translate.title")}
           </h1>
           <Badge
             variant="secondary"
-            className="h-4 px-1.5 text-ui-10 text-muted-foreground"
+            className="h-6 -translate-y-0.5 px-2.5 pt-1.5 pb-0.5 text-ui-12 text-muted-foreground"
           >
             {t("shell.beta")}
           </Badge>
@@ -1261,15 +1458,8 @@ export function TranslatePage() {
         </div>
       </div>
 
-      <div className="grid gap-3">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <LanguagePicker
-            value={prefs.from}
-            onChange={(from) => setPrefs({ from })}
-            label={t("translate.sourceLanguage")}
-            allowAuto={true}
-            detected={detected}
-          />
+      <div className="grid gap-2">
+        <div className="relative grid grid-cols-1 gap-x-3 gap-y-3 md:grid-cols-2">
           <IconAction
             icon={ArrowLeftRightIcon}
             label={
@@ -1277,138 +1467,173 @@ export function TranslatePage() {
             }
             disabled={!canSwap || busy}
             onClick={() => swap(detected)}
+            className="absolute start-1/2 top-0 z-10 -translate-x-1/2 max-md:hidden rtl:translate-x-1/2"
           />
-          <LanguagePicker
-            value={prefs.target}
-            onChange={setTarget}
-            label={t("translate.targetLanguage")}
-          />
-          {prefs.recentTargets.length > 0 && (
-            <fieldset className="flex items-center gap-1.5 ps-2 max-sm:hidden">
-              <legend className="float-start pe-0.5 text-ui-12 leading-8 text-muted-foreground">
-                {t("translate.recentTargets")}
-              </legend>
-              {prefs.recentTargets.map((code) => {
-                const language = findTranslateLanguage(code);
-                if (!language) return null;
-                const name = translateLanguageLabel(language, locale);
-                return (
-                  <Button
-                    key={code}
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    title={`${t("translate.targetLanguage")}: ${name}`}
-                    className="rounded-full text-ui-12 font-normal text-muted-foreground hover:text-foreground"
-                    onClick={() => setTarget(code)}
-                  >
-                    {name}
-                  </Button>
-                );
-              })}
-            </fieldset>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
-          <ChoiceChips
-            label={t("translate.options.mode")}
-            options={TRANSLATE_MODES}
-            labels={MODE_LABEL}
-            value={prefs.mode}
-            onChange={(mode) => setPrefs({ mode })}
-          />
-          <ChoiceChips
-            label={t("translate.options.tone")}
-            options={TRANSLATE_TONES}
-            labels={TONE_LABEL}
-            value={prefs.tone}
-            onChange={(tone) => setPrefs({ tone })}
-          />
-        </div>
-
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <section
             ref={dropRef}
             {...dragHandlers}
             aria-label={t("translate.sourceLabel")}
-            className="relative flex flex-col gap-1.5"
+            className="relative flex min-w-0 flex-col gap-3"
           >
+            <LanguageTabs
+              value={prefs.from}
+              tabs={languageTabs(prefs.from, prefs.recentSources)}
+              onChange={setFrom}
+              label={t("translate.sourceLanguage")}
+              allowAuto={true}
+              detected={detected}
+              className="md:pe-6"
+            />
             <div
               className={cn(
                 SOURCE_BOX,
                 paneHeight,
+                "relative flex flex-1 flex-col",
                 dragging && "shadow-[inset_0_0_0_1px_var(--ring)]",
               )}
             >
-              <Textarea
-                value={source}
-                onChange={(event) => setSource(event.target.value)}
-                onKeyDown={(event) => {
-                  if (
-                    event.key === "Enter" &&
-                    (event.metaKey || event.ctrlKey) &&
-                    !busy
-                  ) {
-                    event.preventDefault();
-                    void translate();
-                  }
+              {/* The text sizes itself and this scrolls it, so the box grows until it reaches its cap. */}
+              <div
+                ref={sourceScrollRef}
+                className={cn(
+                  EDGE_SCROLL,
+                  BOTTOM_FADE,
+                  "min-h-0 flex-1 cursor-text overflow-y-auto",
+                )}
+                // Under a short text: a click there still lands in the text.
+                onPointerUp={(event) => {
+                  if (event.target === event.currentTarget)
+                    event.currentTarget.querySelector("textarea")?.focus();
                 }}
-                maxLength={TRANSLATE_SOURCE_MAX_CHARS}
-                placeholder={t("translate.sourcePlaceholder")}
-                aria-label={t("translate.sourceLabel")}
-                spellCheck={false}
-                dir="auto"
-                fieldSizing="fixed"
-                className={SOURCE_TEXT}
-              />
-            </div>
-            <div className="flex items-center">
-              {dictation.supported &&
-                (dictation.dictating ? (
-                  <IconAction
-                    icon={dictation.finalizing ? undefined : StopIcon}
-                    iconClassName={STOP_GLYPH}
-                    label={t("translate.stopDictating")}
-                    onClick={dictation.stop}
-                    className="text-destructive hover:text-destructive"
-                  >
-                    <Spinner className="size-4" />
-                  </IconAction>
-                ) : (
-                  <IconAction
-                    label={t("translate.dictate")}
-                    onClick={dictation.start}
-                  >
-                    <MicIcon className="size-4" />
-                  </IconAction>
-                ))}
-              <IconAction
-                icon={Upload01Icon}
-                label={t("translate.openFile")}
-                onClick={() => fileInput.current?.click()}
-              />
-              <IconAction
-                icon={ClipboardPasteIcon}
-                label={t("translate.paste")}
-                onClick={() => void paste()}
-              />
+              >
+                <Textarea
+                  value={source}
+                  onChange={(event) => setSource(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      (event.metaKey || event.ctrlKey) &&
+                      !busy
+                    ) {
+                      event.preventDefault();
+                      startTranslate();
+                    }
+                  }}
+                  maxLength={TRANSLATE_SOURCE_MAX_CHARS}
+                  placeholder={
+                    readingFile
+                      ? t("translate.readingFile", { name: readingFile })
+                      : t("translate.sourcePlaceholder")
+                  }
+                  aria-label={t("translate.sourceLabel")}
+                  spellCheck={false}
+                  dir="auto"
+                  className={cn(SOURCE_TEXT, "pe-11")}
+                />
+              </div>
               {source !== "" && (
                 <IconAction
                   icon={Cancel01Icon}
                   label={t("translate.clear")}
                   onClick={clear}
+                  className="absolute end-2 top-2"
                 />
               )}
-              <span className="ml-auto pr-2 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
-                {source.length.toLocaleString(locale)} /{" "}
-                {TRANSLATE_SOURCE_MAX_CHARS.toLocaleString(locale)}
-              </span>
+              <div className="flex shrink-0 items-center gap-1 px-2.5 pt-1.5 pb-2.5">
+                {dictation.supported &&
+                  (dictation.dictating ? (
+                    <IconAction
+                      icon={dictation.finalizing ? undefined : StopIcon}
+                      iconClassName={STOP_GLYPH}
+                      label={t("translate.stopDictating")}
+                      onClick={dictation.stop}
+                      className={cn(
+                        FOOTER_ICON,
+                        "text-destructive hover:text-destructive",
+                      )}
+                    >
+                      <Spinner className="size-5" />
+                    </IconAction>
+                  ) : (
+                    <IconAction
+                      label={t("translate.dictate")}
+                      onClick={dictation.start}
+                      className={FOOTER_ICON}
+                    >
+                      <MicIcon className="size-5" />
+                    </IconAction>
+                  ))}
+                <IconAction
+                  icon={readingFile ? undefined : Upload01Icon}
+                  iconClassName="size-5"
+                  className={FOOTER_ICON}
+                  label={
+                    readingFile
+                      ? t("translate.readingFile", { name: readingFile })
+                      : t("translate.openFile")
+                  }
+                  disabled={readingFile !== null}
+                  onClick={() => fileInput.current?.click()}
+                >
+                  <Spinner className="size-5" />
+                </IconAction>
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <span className="group/count ms-auto cursor-default whitespace-nowrap pe-2 font-mono text-ui-12 tabular-nums text-muted-foreground max-sm:hidden">
+                      {source.length.toLocaleString(locale)}
+                      {/* The limit only on hover, or once the draft is near it. */}
+                      <span
+                        className={cn(
+                          "group-hover/count:inline",
+                          source.length < TRANSLATE_SOURCE_MAX_CHARS * 0.9 &&
+                            "hidden",
+                        )}
+                      >
+                        {" / "}
+                        {TRANSLATE_SOURCE_MAX_CHARS.toLocaleString(locale)}
+                      </span>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    {t("translate.charLimit", {
+                      max: TRANSLATE_SOURCE_MAX_CHARS.toLocaleString(locale),
+                    })}
+                  </TooltipContent>
+                </Tooltip>
+
+                <StyleMenu />
+                <Button
+                  type="button"
+                  size="sm"
+                  className={cn(ACTION_BUTTON, busy ? STOP_BUTTON : GO_BUTTON)}
+                  variant={busy ? "outline" : "primary"}
+                  disabled={!busy && !canTranslate}
+                  onClick={busy ? stop : startTranslate}
+                  aria-keyshortcuts="Control+Enter Meta+Enter"
+                  title={
+                    busy
+                      ? undefined
+                      : `${t("translate.translate")} (${shortcut})`
+                  }
+                >
+                  {busy ? (
+                    <>
+                      <HugeiconsIcon
+                        icon={StopIcon}
+                        className={cn("mr-2", STOP_GLYPH)}
+                      />
+                      {t("translate.stop")}
+                    </>
+                  ) : (
+                    t("translate.translate")
+                  )}
+                </Button>
+              </div>
             </div>
             <input
               ref={fileInput}
               type="file"
-              accept={`text/*,${TEXT_FILE_EXTENSIONS}`}
+              accept={`text/*,${OPEN_FILE_EXTENSIONS}`}
               className="hidden"
               onChange={(event) => {
                 void openFile(event.target.files?.[0]);
@@ -1419,18 +1644,45 @@ export function TranslatePage() {
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-background/80 text-ui-13 text-muted-foreground">
                 {t("translate.dropFile")}
               </div>
-            )}
+            )}{" "}
           </section>
 
           <section
             aria-label={t("translate.outputLabel")}
             aria-busy={busy}
-            className="flex flex-col gap-1.5"
+            className="flex min-w-0 flex-col gap-3"
           >
-            <div className={cn(PANEL, paneHeight, "overflow-hidden")}>
+            <LanguageTabs
+              value={prefs.target}
+              tabs={languageTabs(prefs.target, prefs.recentTargets)}
+              onChange={setTarget}
+              label={t("translate.targetLanguage")}
+              className="md:ps-6"
+            >
+              <IconAction
+                icon={ArrowLeftRightIcon}
+                label={
+                  canSwap ? t("translate.swap") : t("translate.swapNeedsSource")
+                }
+                disabled={!canSwap || busy}
+                onClick={() => swap(detected)}
+                className="ms-auto md:hidden"
+              />
+            </LanguageTabs>
+            <div
+              className={cn(
+                PANEL,
+                paneHeight,
+                "flex flex-1 flex-col overflow-hidden",
+              )}
+            >
               <div
                 ref={outputRef}
-                className={cn(EDGE_SCROLL, "overflow-y-auto px-3.5 py-3")}
+                className={cn(
+                  EDGE_SCROLL,
+                  BOTTOM_FADE,
+                  "min-h-0 flex-1 overflow-y-auto px-3.5 py-3",
+                )}
               >
                 {output !== "" ? (
                   <p
@@ -1444,88 +1696,78 @@ export function TranslatePage() {
                     {output}
                   </p>
                 ) : (
-                  <p className="text-base text-muted-foreground md:text-sm">
-                    {t("translate.outputEmpty")}
+                  <p
+                    aria-live="polite"
+                    className="flex items-center gap-2 text-base text-muted-foreground md:text-sm"
+                  >
+                    {runStatus && <Spinner className="size-3.5" />}
+                    {runStatus ?? t("translate.outputEmpty")}
                   </p>
                 )}
               </div>
+              {output !== "" && (
+                <div className="flex shrink-0 items-center gap-1 px-2.5 pt-1.5 pb-2.5">
+                  {readAloud.available &&
+                    (readAloud.speaking ? (
+                      <IconAction
+                        iconClassName="size-5"
+                        icon={VolumeMute02Icon}
+                        label={t("translate.stopReading")}
+                        onClick={readAloud.stop}
+                        className={cn(
+                          FOOTER_ICON,
+                          "text-destructive hover:text-destructive",
+                        )}
+                      />
+                    ) : (
+                      <IconAction
+                        className={FOOTER_ICON}
+                        iconClassName="size-5"
+                        icon={ReadAloudIcon}
+                        label={t("translate.readAloud")}
+                        onClick={() =>
+                          readAloud.speak(
+                            output,
+                            translateSpeechTag(
+                              (result ?? attempt)?.target ?? prefs.target,
+                            ),
+                          )
+                        }
+                      />
+                    ))}
+                  <span className="ms-auto" />
+                  {result && !stale && !busy && (
+                    <IconAction
+                      className={FOOTER_ICON}
+                      iconClassName="size-5"
+                      icon={Message01Icon}
+                      label={t("translate.chat")}
+                      onClick={chatAboutResult}
+                    />
+                  )}
+                  {!busy && (
+                    <IconAction
+                      icon={ArrowLeft02Icon}
+                      iconClassName="size-5"
+                      label={t("translate.useAsSource")}
+                      onClick={outputToSource}
+                      className={cn(FOOTER_ICON, "rtl:rotate-180")}
+                    />
+                  )}
+                  <IconAction
+                    icon={copied ? Tick02Icon : Copy01Icon}
+                    iconClassName="size-5"
+                    className={FOOTER_ICON}
+                    label={copied ? t("translate.copied") : t("translate.copy")}
+                    onClick={() => void copyToClipboard(output).then(setCopied)}
+                  />
+                </div>
+              )}
             </div>
-            {output !== "" && (
-              <div className="flex items-center justify-end">
-                {result && !stale && !busy && (
-                  <IconAction
-                    icon={Message01Icon}
-                    label={t("translate.chat")}
-                    onClick={chatAboutResult}
-                  />
-                )}
-                {!busy && (
-                  <IconAction
-                    icon={ArrowLeft02Icon}
-                    label={t("translate.useAsSource")}
-                    onClick={outputToSource}
-                    className="rtl:rotate-180"
-                  />
-                )}
-                {readAloud.available &&
-                  (readAloud.speaking ? (
-                    <IconAction
-                      icon={VolumeMute02Icon}
-                      label={t("translate.stopReading")}
-                      onClick={readAloud.stop}
-                      className="text-destructive hover:text-destructive"
-                    />
-                  ) : (
-                    <IconAction
-                      icon={ReadAloudIcon}
-                      label={t("translate.readAloud")}
-                      onClick={() =>
-                        readAloud.speak(
-                          output,
-                          translateSpeechTag(
-                            (result ?? attempt)?.target ?? prefs.target,
-                          ),
-                        )
-                      }
-                    />
-                  ))}
-                <IconAction
-                  icon={copied ? Tick02Icon : Copy01Icon}
-                  label={copied ? t("translate.copied") : t("translate.copy")}
-                  onClick={() => void copyToClipboard(output).then(setCopied)}
-                />
-              </div>
-            )}
           </section>
         </div>
 
-        <div className="mx-auto flex w-full max-w-sm flex-col gap-2.5 pt-1">
-          {phase && <RunStatus phase={phase} model={runModelLabel} />}
-          <div className="flex items-center justify-center">
-            <Button
-              type="button"
-              className={cn(ACTION_BUTTON, busy ? STOP_BUTTON : GO_BUTTON)}
-              variant={busy ? "outline" : "primary"}
-              disabled={!busy && !canTranslate}
-              onClick={busy ? stop : () => void translate()}
-              aria-keyshortcuts="Control+Enter Meta+Enter"
-              title={
-                busy ? undefined : `${t("translate.translate")} (${shortcut})`
-              }
-            >
-              {busy ? (
-                <>
-                  <HugeiconsIcon
-                    icon={StopIcon}
-                    className={cn("mr-2", STOP_GLYPH)}
-                  />
-                  {t("translate.stop")}
-                </>
-              ) : (
-                t("translate.translate")
-              )}
-            </Button>
-          </div>
+        <div className="mx-auto flex w-full max-w-2xl flex-col gap-2.5">
           <div className="min-h-[1lh] text-center text-ui-12 leading-normal">
             {busy ? null : error ? (
               <div role="alert" className="grid gap-0.5">
@@ -1540,13 +1782,6 @@ export function TranslatePage() {
               <p className="text-muted-foreground">{t("translate.stopped")}</p>
             ) : output !== "" && stale ? (
               <p className="text-muted-foreground">{t("translate.stale")}</p>
-            ) : firstRun && dedicated ? (
-              <p className="text-muted-foreground">
-                {t("translate.firstRunHint", {
-                  model: dedicated.label,
-                  size: formatModelBytes(dedicated.sizeBytes),
-                })}
-              </p>
             ) : null}
           </div>
         </div>
@@ -1596,6 +1831,48 @@ export function TranslatePage() {
           </p>
         </section>
       )}
+
+      <AlertDialog
+        open={confirmDownload !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDownload(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogMedia>
+              <HugeiconsIcon
+                icon={AiTranslateIcon}
+                className="size-5 text-muted-foreground"
+              />
+            </AlertDialogMedia>
+            <AlertDialogTitle>
+              {t("translate.downloadConfirmTitle", {
+                model: confirmDownload?.label ?? "",
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmDownload &&
+                t("translate.firstRunHint", {
+                  model: confirmDownload.label,
+                  size: formatModelBytes(confirmDownload.sizeBytes),
+                })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="dark"
+              onClick={() => {
+                setConfirmDownload(null);
+                void translate();
+              }}
+            >
+              {t("translate.downloadConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <TranslateHistoryList />
     </main>

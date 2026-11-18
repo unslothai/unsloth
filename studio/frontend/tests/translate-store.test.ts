@@ -89,6 +89,19 @@ test("swap moves a current translation into the text box", async () => {
   assert.equal(state().prefs.target, "en");
 });
 
+test("language tabs keep their order when one is picked and take a new language at the front", () => {
+  state().setPrefs({ target: "fr", recentTargets: ["fr", "de", "es"] });
+  state().setTarget("es");
+  assert.deepEqual(state().prefs.recentTargets, ["fr", "de", "es"]);
+  state().setTarget("ja");
+  assert.deepEqual(state().prefs.recentTargets, ["ja", "fr", "de"]);
+  state().setPrefs({ from: AUTO_SOURCE, recentSources: [] });
+  state().setFrom("en");
+  state().setFrom(AUTO_SOURCE);
+  assert.deepEqual(state().prefs.recentSources, ["en"]);
+  assert.equal(state().prefs.from, AUTO_SOURCE);
+});
+
 test("swap keeps an edited draft instead of the old translation", async () => {
   state().setSource("Hello");
   await state().translate();
