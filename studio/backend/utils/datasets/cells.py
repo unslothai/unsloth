@@ -52,6 +52,28 @@ def cell_text(value):
 _SHAREGPT_ROLES = {"human": "user", "gpt": "assistant"}
 
 
+def content_text(content):
+    if isinstance(content, list):
+        return "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        )
+    return cell_text(content)
+
+
+def only_text_parts(content):
+    return (
+        isinstance(content, list)
+        and bool(content)
+        and all(isinstance(part, dict) and part.get("type") == "text" for part in content)
+    )
+
+
+def _turn_text(content):
+    return content_text(content) if only_text_parts(content) else cell_text(content)
+
+
 def _message(turn):
     if not isinstance(turn, dict):
         return None
@@ -122,7 +144,7 @@ def cell_turns(
         return [
             message
             if message["content"] is None and message.get("tool_calls")
-            else {**message, "content": cell_text(message["content"])}
+            else {**message, "content": _turn_text(message["content"])}
             for message in messages
         ]
     return [{"role": role, "content": cell_text(value)}]

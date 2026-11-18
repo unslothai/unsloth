@@ -241,6 +241,30 @@ def test_launches_on_the_current_card_skip_the_switch(monkeypatch):
     assert entered == []
 
 
+def test_cold_verdict_asks_about_capture_on_the_operand_card(monkeypatch):
+    state = {"current": 0}
+
+    class _Device:
+        def __init__(self, device):
+            self.index = device.index if hasattr(device, "index") else int(device)
+
+        def __enter__(self):
+            self.prev, state["current"] = state["current"], self.index
+
+        def __exit__(self, *exc):
+            state["current"] = self.prev
+
+    checks = []
+    monkeypatch.setattr(torch.cuda, "device", _Device)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: state["current"])
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: state["current"] == 1)
+    monkeypatch.setattr(R, "_VERDICTS", {})
+    monkeypatch.setattr(R, "_check", lambda *a: checks.append(a) or {"exact": True, "use": True})
+    x = _FakeCudaTensor(1)
+    assert R.verdict(x) is None
+    assert checks == [] and R._VERDICTS == {} and state["current"] == 0
+
+
 two_cards = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason = "needs 2 CUDA devices"
 )

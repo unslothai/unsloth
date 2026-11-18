@@ -222,6 +222,47 @@ def test_wrapped_projection_falls_back_to_stock_projections():
     assert zf._qkv_intact(attn) is None
 
 
+def test_baked_lora_switched_off_takes_the_fused_qkv(monkeypatch):
+    # A baked LoRA's wrappers declined the fusion outright, so a load with every adapter at weight 0 ran three GEMMs
+    # where a plain load runs one: compiled, Z-Image at weight 0 then differed from no LoRA (LPIPS 0.04 on A100).
+    # The fusion is now built from the wrapped Linears and serves the layers while their adapters are off.
+    from peft import LoraConfig, inject_adapter_in_model
+
+    from core.inference import diffusion_int8_fused
+
+    torch.manual_seed(0)
+    blk = (
+        zmod.ZImageTransformerBlock(0, 384, 4, 4, 1e-5, True, modulation = True)
+        .to(torch.bfloat16)
+        .eval()
+    )
+    inject_adapter_in_model(
+        LoraConfig(r = 4, lora_alpha = 4, target_modules = ["to_q", "to_k", "to_v"]),
+        blk,
+        adapter_name = "a",
+    )
+    blk.to(torch.bfloat16)
+    attn = blk.attention
+    parts = (attn.to_q, attn.to_k, attn.to_v)
+    want = torch.cat([p.base_layer.weight.detach().clone() for p in parts])
+    monkeypatch.setattr(diffusion_int8_fused, "resident_cuda_cards", lambda _root: [0])
+    monkeypatch.setitem(zf._FUSION, 0, None)
+    assert zf.install_modules(blk)["fused_qkv"] == 1
+    fused = attn.__dict__[zf._QKV_ATTR][0]
+    assert torch.equal(fused.weight, want)
+    # the base Linears read the fused storage: no second copy of the projections
+    assert (
+        parts[0].base_layer.weight.untyped_storage().data_ptr()
+        == fused.weight.untyped_storage().data_ptr()
+    )
+    assert zf._qkv_intact(attn) is None  # adapters on: the LoRA terms need the separate projections
+    for p in parts:
+        p._disable_adapters = True
+    assert zf._qkv_intact(attn) is fused
+    parts[1]._disable_adapters = False
+    assert zf._qkv_intact(attn) is None
+
+
 class ZImageTransformer2DModel(torch.nn.Module):
     def __init__(self):
         super().__init__()

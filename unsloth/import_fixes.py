@@ -7628,6 +7628,51 @@ def fix_inductor_reduction_readback_race():
     )
 
 
+def _same_tensor(tensor):
+    return tensor
+
+
+def fix_flex_attention_eager_saved_tensor_hooks():
+    """Eager flex_attention traces its score_mod backward in create_fw_bw_graph during forward; inside a
+    non-reentrant checkpoint (DDP) that trace unpacks through the checkpoint's hooks and restarts the
+    recompute mid forward. The traced graph owns no activations, so trace it under identity hooks."""
+    try:
+        import torch
+        flex_hop = importlib.import_module("torch._higher_order_ops.flex_attention")
+    except Exception:
+        return
+    original = getattr(flex_hop, "create_fw_bw_graph", None)
+    # torch < 2.7 cannot query the active hooks: always trace under identity hooks there.
+    top_hooks = getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None)
+    if original is None:
+        return
+    if getattr(original, "_unsloth_saved_hooks_free", False):
+        return
+
+    @functools.wraps(original)
+    def create_fw_bw_graph(*args, **kwargs):
+        try:
+            active = top_hooks is None or top_hooks(False) is not None
+        except Exception:
+            active = False
+        if not active:
+            return original(*args, **kwargs)
+        hooks = torch.autograd.graph.saved_tensors_hooks(_same_tensor, _same_tensor)
+        try:
+            # Raises while saved-tensor hooks are disabled; those calls keep torch's behaviour.
+            hooks.__enter__()
+        except Exception:
+            return original(*args, **kwargs)
+        try:
+            return original(*args, **kwargs)
+        finally:
+            hooks.__exit__(None, None, None)
+
+    create_fw_bw_graph._unsloth_saved_hooks_free = True
+    create_fw_bw_graph._unsloth_original = original
+    flex_hop.create_fw_bw_graph = create_fw_bw_graph
+
+
 def fix_dynamo_config_thread_visibility():
     """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
     (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
@@ -8025,6 +8070,10 @@ _SDPA_CUDNN_D256_FLAG = "_unsloth_avoids_cudnn_d256_masked_backward"
 _SDPA_CUDNN_D256_WARNED = False
 
 
+# NaN dQ reproduces on SM100; SM90 runs the same head_dim-256 kernels, guarded without a repro.
+_SDPA_CUDNN_D256_MAJORS = (9, 10)
+
+
 def _sdpa_cudnn_d256_sm100_devices():
     try:
         import torch
@@ -8033,14 +8082,14 @@ def _sdpa_cudnn_d256_sm100_devices():
         return frozenset(
             i
             for i in range(torch.cuda.device_count())
-            if torch.cuda.get_device_capability(i)[0] == 10
+            if torch.cuda.get_device_capability(i)[0] in _SDPA_CUDNN_D256_MAJORS
         )
     except Exception:
         return frozenset()
 
 
 def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
-    """True for the calls whose cuDNN backward returns NaN dQ on SM100 (no-grad never reaches it)."""
+    """True for the calls whose cuDNN backward returns NaN dQ on SM100 / SM90 (no-grad never reaches it)."""
     import torch
 
     if attn_mask is None or not torch.is_grad_enabled():
@@ -8061,7 +8110,7 @@ def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
 
 
 def fix_cudnn_sdpa_d256_masked_backward():
-    """Run masked head_dim-256 SDPA training without cuDNN attention on SM100.
+    """Run masked head_dim-256 SDPA training without cuDNN attention on SM100 and SM90.
 
     torch 2.14 (cuDNN 9.24) first dispatches such calls to cuDNN, whose backward returns NaN dQ
     (bf16 / fp16); torch <= 2.13 never picks cuDNN here, so the detour is a no-op
@@ -8100,7 +8149,7 @@ def fix_cudnn_sdpa_d256_masked_backward():
                 if not _SDPA_CUDNN_D256_WARNED:
                     _SDPA_CUDNN_D256_WARNED = True
                     logger.warning(
-                        "Unsloth: head_dim 256 attention with a mask is training on an SM100 GPU; "
+                        "Unsloth: head_dim 256 attention with a mask is training on an SM90 / SM100 GPU; "
                         "running it without cuDNN attention, whose backward returns NaN gradients "
                         "there (set UNSLOTH_ALLOW_CUDNN_SDPA_D256=1 to keep cuDNN)."
                     )
@@ -8112,7 +8161,7 @@ def fix_cudnn_sdpa_d256_masked_backward():
     setattr(scaled_dot_product_attention, _SDPA_CUDNN_D256_FLAG, True)
     F.scaled_dot_product_attention = scaled_dot_product_attention
     logger.info(
-        "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
+        "Unsloth: SM90 / SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
         f"(devices {sorted(sm100_devices)})"
     )
 
@@ -10746,28 +10795,31 @@ def _torch_rocm_device_props():
 
 
 def _iter_hipinfo_paths():
-    """Yield existing hipInfo.exe paths: PATH, interpreter scripts dir (venv
-    and conda layouts), then HIP SDK / AMD installer locations."""
+    """Yield existing hipInfo.exe paths: PATH, then HIP SDK / AMD installer locations.
+    The interpreter's scripts dir is skipped: AMD torch wheels put an unsigned uv launcher
+    there that Smart App Control blocks."""
     import shutil
     import sysconfig
 
+    skip_dirs = set()
+    try:
+        for d in (sysconfig.get_path("scripts"), os.path.dirname(sys.executable or "")):
+            if d:
+                skip_dirs.add(os.path.normcase(os.path.normpath(d)))
+    except Exception:
+        pass
     candidates = []
     try:
-        resolved = shutil.which("hipinfo.exe")
-        if resolved:
-            candidates.append(resolved)
+        # The first PATH hit outside the skipped dirs, not just which()'s first hit.
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if entry and os.path.normcase(os.path.normpath(entry)) not in skip_dirs:
+                resolved = shutil.which("hipinfo.exe", path = entry)
+                if resolved:
+                    candidates.append(resolved)
+                    break
     except Exception:
         pass
-    try:
-        scripts_dir = sysconfig.get_path("scripts")
-        if scripts_dir:
-            candidates.append(os.path.join(scripts_dir, "hipInfo.exe"))
-    except Exception:
-        pass
-    executable_dir = os.path.dirname(sys.executable or "")
-    if executable_dir:
-        candidates.append(os.path.join(executable_dir, "hipInfo.exe"))
-        candidates.append(os.path.join(executable_dir, "Scripts", "hipInfo.exe"))
     for env_key in ("HIP_PATH", "ROCM_PATH"):
         root = os.environ.get(env_key, "").strip()
         if root:
@@ -13011,8 +13063,9 @@ def _make_safe_int_mm(mod, original):
         bad_dimensions_for_cublas = not (j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8)
 
         if device_cpu or bad_dimensions_for_cublas:
+            # back to the operand's card: a bare device type is the current card
             return torch.matmul(input.cpu().to(torch.int32), mat2.cpu().to(torch.int32)).to(
-                input.device.type
+                input.device
             )
 
         # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads

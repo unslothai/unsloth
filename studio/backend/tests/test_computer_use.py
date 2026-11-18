@@ -396,6 +396,57 @@ def test_a_target_that_moved_since_the_screenshot_is_not_clicked(desktop):
     assert [event for event in desktop.events if event[0] == "click"]
 
 
+def test_a_target_moved_when_another_window_is_over_it_whatever_the_pixels():
+    from PIL import Image
+
+    display = Display(1, 0, 0, 1000, 1000, True)
+    page = ("page", (0, 0, 1000, 1000))
+
+    def frame(windows):
+        return screen.Frame(display, 1000, 1000, Image.new("L", (1000, 1000), 255), windows)
+
+    before = frame([page])
+    assert not screen.target_moved(before, frame([page]), 500, 500)
+    assert screen.target_moved(before, frame([("dialog", (400, 400, 200, 200)), page]), 500, 500)
+    assert not screen.target_moved(before, frame([("dialog", (0, 0, 200, 200)), page]), 500, 500)
+    assert screen.target_moved(before, frame([("page", (10, 0, 1000, 1000))]), 500, 500)
+    assert not screen.target_moved(before, frame(None), 500, 500)
+
+
+def test_a_light_dialog_over_a_light_target_is_not_clicked(desktop):
+    look()
+    target = at(*FIELD)
+    dialog = (300, 260, 420, 140)
+    original = desktop.capture
+
+    def light_dialog(display):
+        from PIL import ImageDraw
+
+        image = original(display)
+        left, top, width, height = (value * virtual.SCALE for value in dialog)
+        ImageDraw.Draw(image).rectangle(
+            [left, top, left + width, top + height], fill = (246, 245, 244)
+        )
+        return image
+
+    desktop.capture = light_dialog
+    desktop.front = FrontWindow(app = "Notes", title = "Delete?", pid = 1, bounds = dialog)
+    before = state.session(state.session_key(SESSION)).frame
+    now = screen.take(desktop, desktop.displays()[0]).frame
+    ix, iy = before.from_desktop(*FIELD)
+    pixels_only = screen.Frame(before.display, before.width, before.height, before.gray)
+    assert not screen.target_moved(pixels_only, now, ix, iy)
+    text = run({"action": "click", **target})
+    assert text.startswith("Error:") and "changed after the screenshot" in text
+    assert not [event for event in desktop.events if event[0] == "click"]
+
+
+def test_a_window_opening_away_from_the_target_does_not_stop_the_click(desktop):
+    look()
+    desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
+    assert run({"action": "click", **at(*BUTTON)}).startswith("Done:")
+
+
 def test_a_later_target_in_a_chain_is_checked_after_the_actions_before_it(desktop):
     look()
     original = desktop.capture
@@ -437,11 +488,76 @@ def test_a_macos_security_prompt_floating_over_an_app_is_found_under_a_click():
     prompt = FrontWindow(app = "SecurityAgent", pid = 9, bounds = (100, 100, 300, 200))
     menubar = FrontWindow(app = "Window Server", pid = 1, bounds = (0, 0, 800, 25))
     notes = FrontWindow(app = "Notes", pid = 5, bounds = (0, 0, 800, 600))
-    mac._windows = lambda: [(25, menubar), (2001, prompt), (0, notes)]
+    mac._windows = lambda: [(25, 1, menubar), (2001, 2, prompt), (0, 3, notes)]
     mac._front_app = lambda: ("Notes", "com.apple.Notes", 5)
     assert mac.window_at(150, 150).app == "SecurityAgent"
     assert mac.window_at(10, 10).app == "Notes"
     assert mac.window_at(500, 500).app_id == "com.apple.Notes"
+
+
+def _stack_frame(windows):
+    from PIL import Image
+    display = Display(1, 0, 0, 1000, 1000, True)
+    return screen.Frame(display, 1000, 1000, Image.new("L", (1000, 1000), 255), windows)
+
+
+def test_a_macos_window_of_the_same_app_and_size_coming_forward_is_a_change():
+    from core.inference.computer_use.backends.macos import MacBackend
+
+    mac = object.__new__(MacBackend)
+    first = FrontWindow(app = "Safari", pid = 5, bounds = (0, 0, 1000, 1000))
+    second = FrontWindow(app = "Safari", pid = 5, bounds = (0, 0, 1000, 1000))
+    mac._windows = lambda: [(0, 11, first), (0, 12, second)]
+    before = _stack_frame(mac.window_stack())
+    mac._windows = lambda: [(0, 12, second), (0, 11, first)]
+    assert screen.target_moved(before, _stack_frame(mac.window_stack()), 500, 500)
+
+
+def test_a_macos_floating_panel_counts_and_the_dock_layer_does_not():
+    from core.inference.computer_use.backends.macos import MacBackend
+
+    mac = object.__new__(MacBackend)
+    page = FrontWindow(app = "TextEdit", pid = 5, bounds = (0, 0, 1000, 1000))
+    dock = FrontWindow(app = "Dock", pid = 2, bounds = (0, 0, 1000, 1000))
+    panel = FrontWindow(app = "TextEdit", pid = 5, bounds = (400, 400, 200, 200))
+    mac._windows = lambda: [(20, 1, dock), (0, 11, page)]
+    before = _stack_frame(mac.window_stack())
+    mac._windows = lambda: [(20, 1, dock), (3, 12, panel), (0, 11, page)]
+    assert screen.target_moved(before, _stack_frame(mac.window_stack()), 500, 500)
+    assert not screen.target_moved(before, _stack_frame(mac.window_stack()), 100, 100)
+
+
+def test_a_windows_window_is_skipped_only_when_clicks_pass_through_it():
+    import ctypes
+
+    from core.inference.computer_use.backends import windows as win
+
+    styles = {1: win._WS_EX_TRANSPARENT, 2: win._CLICK_THROUGH, 3: 0}
+    rects = {1: (0, 0, 100, 100), 2: (0, 0, 500, 500), 3: (0, 0, 1000, 1000)}
+
+    class User32:
+        def EnumWindows(self, visit, _data):
+            return all(visit(hwnd, 0) for hwnd in rects)
+
+        def IsWindowVisible(self, hwnd):
+            return True
+
+        def IsIconic(self, hwnd):
+            return False
+
+        def GetWindowLongW(self, hwnd, _index):
+            return styles[hwnd]
+
+        def GetWindowRect(self, hwnd, rect):
+            rect = ctypes.cast(rect, ctypes.POINTER(win.wintypes.RECT)).contents
+            rect.left, rect.top, rect.right, rect.bottom = rects[hwnd]
+            return True
+
+    backend = object.__new__(win.WindowsBackend)
+    backend._user32 = User32()
+    backend._dwmapi = None
+    backend._window_proc = lambda visit: visit
+    assert backend.window_stack() == [(1, (0, 0, 100, 100)), (3, (0, 0, 1000, 1000))]
 
 
 def test_a_windows_app_name_is_looked_up_once_for_its_gate_card_and_run(monkeypatch):
@@ -499,6 +615,15 @@ def test_a_terminal_known_by_its_start_menu_name_asks_every_time(desktop, name):
     with pytest.raises(ValueError, match = "asks every time"):
         policy.allow_app(name)
     assert policy.risks([{"op": "open_app", "name": name}], FrontWindow(app = "Notes"))
+
+
+def test_the_shut_down_dialog_asks_every_time(desktop):
+    dialog = FrontWindow(app = "Cinnamon-session-quit.py", app_id = "cinnamon-session-quit.py")
+    assert policy.asks_every_time(dialog.app, dialog.app_id)
+    with pytest.raises(ValueError, match = "asks every time"):
+        policy.allow_app(dialog.app)
+    enter = [{"op": "key", "chords": [((), "enter")]}]
+    assert "shut-down" in policy.risks(enter, dialog)[0]
 
 
 def test_grid_coordinates_span_the_picture(desktop):
@@ -604,6 +729,16 @@ def test_input_to_an_app_that_cannot_be_identified_asks_first(desktop, monkeypat
         ("win32", "win+l"),
         ("win32", "ctrl+alt+del"),
         ("linux", "ctrl+alt+backspace"),
+        ("linux", "ctrl+alt+end"),
+        ("linux", "alt+ctrl+End"),
+        ("linux", "ctrl+alt+esc"),
+        ("linux", "ctrl+alt+f1"),
+        ("linux", "ctrl+alt+F12"),
+        ("linux", "ctrl+alt+super+f1"),
+        ("linux", "super+ctrl+alt+BackSpace"),
+        ("linux", "ctrl+alt+shift+delete"),
+        ("linux", "shift+ctrl+alt+Page_Down"),
+        ("linux", "ctrl+alt+shift+pgup"),
     ],
 )
 def test_keys_that_take_the_screen_away_are_never_sent(desktop, monkeypatch, platform, combo):
@@ -614,13 +749,22 @@ def test_keys_that_take_the_screen_away_are_never_sent(desktop, monkeypatch, pla
     assert not [event for event in desktop.events if event[0] == "key"]
 
 
+@pytest.mark.parametrize("combo", ["ctrl+alt+shift+f1", "ctrl+alt+super+end", "ctrl+f1"])
+def test_near_misses_of_blocked_keys_are_still_sent_on_linux(desktop, monkeypatch, combo):
+    monkeypatch.setattr(policy, "_platform", lambda: "linux")
+    look()
+    assert run({"action": "key", "keys": combo}, approved = True, full_access = True).startswith(
+        "Done:"
+    )
+
+
 @pytest.mark.parametrize(
     "title",
     ["Unsloth", "Chat - Unsloth", "Unsloth — Mozilla Firefox", "Chat - Unsloth - Google Chrome"],
 )
 def test_unsloths_own_window_is_out_of_reach(desktop, title):
-    look()
     desktop.front = FrontWindow(app = "Firefox", title = title, bounds = (0, 0, 700, 800))
+    look()
     typed = run({"action": "type", "text": "allow"}, approved = True)
     assert typed.startswith("Error:") and "own window" in typed
     inside = run({"action": "click", **at(300, 300)}, approved = True)
@@ -645,10 +789,10 @@ def test_a_browser_window_with_no_readable_title_is_treated_as_unsloth():
 
 
 def test_unsloth_showing_from_behind_cannot_be_clicked_either(desktop):
-    look()
     desktop.behind = [
         FrontWindow(app = "Firefox", title = "Chat - Unsloth", bounds = (1050, 0, 230, 800))
     ]
+    look()
     refused = run({"action": "click", **at(1150, 400)})
     assert refused.startswith("Error:") and "own window" in refused
     assert not [event for event in desktop.events if event[0] == "click"]
@@ -679,8 +823,8 @@ def test_a_security_prompt_is_left_to_the_user(desktop):
 
 
 def test_a_security_prompt_showing_from_behind_is_left_alone_too(desktop):
-    look()
     desktop.behind = [FrontWindow(app = "pinentry", title = "Passphrase", bounds = (1050, 0, 230, 800))]
+    look()
     end = at(1150, 400)
     for call in (
         {"action": "click", **end},
@@ -1027,8 +1171,8 @@ def test_apps_that_ask_every_time_cannot_be_always_allowed(desktop, name):
 
 
 def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
-    look()
     desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
+    look()
     click_mail = {"action": "click", **at(1150, 400), "then": [{"action": "type", "text": "x"}]}
     assert policy.call_asks(click_mail, SESSION)["apps"] == ["Mail"]
     assert _asks("auto", click_mail)
@@ -1036,6 +1180,7 @@ def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
     assert "Mail has not been allowed" in refused
     assert not [event for event in desktop.events if event[0] in ("click", "type")]
     desktop.behind = [FrontWindow(app = "Terminal", title = "zsh", bounds = (1050, 0, 230, 800))]
+    look()
     asks = policy.call_asks({"action": "click", **at(1150, 400)}, SESSION)
     assert asks == {"risks": ["Terminal is a terminal"], "apps": []}
     assert "Terminal has not been allowed" in run({"action": "click", **at(1150, 400)})
@@ -1068,11 +1213,11 @@ def test_a_scroll_without_a_point_asks_about_the_app_under_the_pointer(desktop):
 
 
 def test_an_app_known_as_sensitive_by_its_id_alone_asks_every_time(desktop):
-    look()
     shell = FrontWindow(
         app = "Windows Command Processor", app_id = "cmd.exe", title = "x", bounds = (1050, 0, 230, 800)
     )
     desktop.behind = [shell]
+    look()
     click = {"action": "click", **at(1150, 400)}
     scroll = {"action": "scroll", **at(1150, 400), "direction": "down"}
     assert policy.call_asks(click, SESSION) == {
@@ -1082,6 +1227,7 @@ def test_an_app_known_as_sensitive_by_its_id_alone_asks_every_time(desktop):
     assert run(click, approved = True).startswith("Done:")
     desktop.front = FrontWindow(app = "Notes", title = "Untitled", bounds = (0, 0, 1050, 800))
     desktop.behind = [shell]
+    look()
     assert _asks("auto", scroll)
     assert "has not been allowed" in run(scroll)
 

@@ -5,10 +5,12 @@ import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Both /download-plan routes share a response model.
 import type { DiffusionDownloadPlan, LoraSpecInput } from "@/features/images/api";
+import type { CosmosGuardrailStatus } from "./cosmos-guardrail";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
 import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
+import type { RestyleStatusLike } from "./restyle-setup";
 
 // `requested` null = left to the backend; `source` is "auto" or "explicit"; `reason` is the tooltip.
 export interface VideoResolvedControl {
@@ -21,6 +23,10 @@ export interface VideoResolvedControl {
   reason: string;
   // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
   artifact?: string | null;
+  // int8_attention only (absent on older backends, sd.cpp, MLX): "on" when the kernel engaged.
+  engaged?: boolean;
+  impl?: string | null;
+  modules?: number;
 }
 
 export interface VideoGenerationDefaults {
@@ -109,7 +115,7 @@ export interface VideoStatus {
   prompt_hint?: string | null;
   // Per-control provenance keyed by control name, read by the "Auto: X" badges. Null when
   // nothing is loaded or the backend does not record it.
-  // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
+  // The names are memory_mode, speed_mode, attention_backend, int8_attention and transformer_cache.
   resolved?: Record<string, VideoResolvedControl> | null;
   // Adapters merged into the denoiser at load (VideoLoadRequest.loras); absent on an older backend.
   baked_loras?: string[];
@@ -172,6 +178,7 @@ export interface VideoLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
+  int8_attention?: "auto" | "on" | "off";
   transformer_cache?: "off" | "fbcache" | "static";
   transformer_cache_threshold?: number;
   // Omit for the hardware ladder; "none" pins bf16. GGUF / single-file carry their own.
@@ -473,10 +480,7 @@ export interface VideoRestyleProgress {
   seed?: number | null;
 }
 
-export interface VideoRestyleStatus {
-  available: boolean;
-  reason: string | null;
-}
+export type VideoRestyleStatus = RestyleStatusLike;
 
 export interface VideoRestylePreview {
   frames: number;
@@ -488,8 +492,33 @@ export interface VideoRestylePreview {
   edges_jpeg: string;
 }
 
+export async function fetchCosmosGuardrailStatus(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail"));
+}
+
+export async function startCosmosGuardrailInstall(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail/install", { method: "POST" }));
+}
+
 export async function fetchVideoRestyleStatus(): Promise<VideoRestyleStatus> {
   return parseJson(await authFetch("/api/inference/video/restyle/status"));
+}
+
+/** Install whatever Restyle is missing (server, weights); progress arrives through the status. */
+export async function startVideoRestyleSetup(hfToken?: string): Promise<VideoRestyleStatus> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
+    }),
+  );
+}
+
+export async function cancelVideoRestyleSetup(): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/setup/cancel", { method: "POST" }),
+  );
 }
 
 function restyleForm(video?: File | null, frames?: File[]): FormData {

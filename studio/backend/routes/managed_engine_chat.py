@@ -3,6 +3,7 @@
 
 """Native managed-engine tool calls and Studio's shared execution loop."""
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import asyncio
 import json
 import threading
@@ -217,7 +218,13 @@ async def managed_tool_chat(
     from state.tool_policy import get_tool_policy
     from core.inference.sse_control_frames import sanitize_provider_sse_line
 
-    tools_on = bool(api._effective_enable_tools(payload))
+    info = backend.models.get(backend.active_model_name, {})
+    # Memory can still supply facts to a model that cannot execute its update tool.
+    tools_on = bool(
+        api._effective_enable_tools(payload)
+        if info.get("supports_tools")
+        else api._base_enable_tools(payload)
+    )
     ui_events = api._ui_stream_events_enabled(request)
     if tools_on and not api._launcher_tool_default_applies(payload, ui_events):
         tools_on = False
@@ -233,7 +240,6 @@ async def managed_tool_chat(
         and get_tool_policy() is not False
     )
     has_history = any(m.role == "tool" or m.tool_calls for m in payload.messages)
-    info = backend.models.get(backend.active_model_name, {})
     # A catalog sent with tool_choice "none" and no tool turns cannot produce a call, so a model
     # without a parser serves it as plain chat; one with a parser still renders the catalog.
     idle_catalog = payload.tool_choice == "none" and not has_history
@@ -406,7 +412,7 @@ async def managed_tool_chat(
                         tools = tools,
                         max_calls = payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25,
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                         timeout = payload.tool_call_timeout or 300,
                         permission_mode = payload.permission_mode or "auto",
                         sandbox_level = payload.sandbox_level,
@@ -566,7 +572,12 @@ async def managed_tool_chat(
                 return JSONResponse(line)
             if not line.startswith("data:") or line[5:].strip() == "[DONE]":
                 continue
-            event = json.loads(line[5:])
+            try:
+                event = json.loads(line[5:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
             if event.get("error"):
                 raise HTTPException(status_code = 502, detail = event)
             if event.get("usage"):
@@ -575,6 +586,8 @@ async def managed_tool_chat(
                 result["context_truncated"] = event["context_truncated"]
             message = result["choices"][0]["message"]
             for choice in event.get("choices", []):
+                if not isinstance(choice, dict):
+                    continue
                 delta = choice.get("delta") or {}
                 message["content"] += delta.get("content") or ""
                 if delta.get("reasoning_content"):

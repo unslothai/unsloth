@@ -9,6 +9,7 @@ path so the test stays CPU-only and does not import ``unsloth``.
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
 import types
@@ -105,8 +106,9 @@ def test_env_opt_out(ddp_env, monkeypatch):
     [
         # MoE: unrouted experts get no gradient.
         lambda: _lora(_llama(num_local_experts = 4)),
-        # modules_to_save: a full trainable copy Unsloth's fused paths may bypass.
-        lambda: _lora(_llama(), modules_to_save = ["lm_head"]),
+        # modules_to_save beyond the embeddings: a full trainable copy a step may not reach.
+        lambda: _lora(_llama(), modules_to_save = ["lm_head", "norm"]),
+        # LoRA on the head or the embedding: Unsloth's fused paths may read the base weight directly.
         lambda: _lora(_llama(), target_modules = ["q_proj", "lm_head"]),
         lambda: _lora(_llama(), target_modules = ["q_proj", "embed_tokens"]),
         # Full fine-tuning goes through transformers' own rule.
@@ -238,10 +240,68 @@ def test_sequence_classification_head_defaults_to_false(ddp_env):
 
 
 def test_sequence_classification_extra_modules_to_save_keep_default(ddp_env):
+    model = _lora(_llama_classifier(), task_type = "SEQ_CLS", modules_to_save = ["score", "norm"])
+    assert _helper()(_args(), model) is None
+
+
+def test_sequence_classification_trainable_embeddings_default_to_false(ddp_env):
     model = _lora(
         _llama_classifier(), task_type = "SEQ_CLS", modules_to_save = ["score", "embed_tokens"]
     )
-    assert _helper()(_args(), model) is None
+    assert _helper()(_args(), model) is False
+
+
+@pytest.mark.parametrize(
+    "modules_to_save", [["embed_tokens", "lm_head"], ["lm_head"], ["embed_tokens"]]
+)
+def test_trainable_embeddings_default_to_false(ddp_env, modules_to_save):
+    # Continued pretraining: embed_tokens / lm_head become modules_to_save; True crashed reentrant checkpointing.
+    model = _lora(_llama(), modules_to_save = modules_to_save)
+    assert any(".modules_to_save." in n and p.requires_grad for n, p in model.named_parameters())
+    assert _helper()(_args(), model) is False
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "torchrun's rendezvous needs libuv, which Windows torch builds lack",
+)
+def test_trainable_embeddings_train_under_ddp_reentrant_checkpointing(tmp_path):
+    # Two gloo ranks: before the fix the first backward raised "mark a variable ready only once".
+    import json
+    import subprocess
+    import sys
+
+    worker = Path(__file__).with_name("_ddp_trainable_embeddings_worker.py")
+    env = _rank_env(tmp_path)
+    single = _run_child([sys.executable, str(worker), str(tmp_path / "single")], env)
+    assert single.returncode == 0, (single.stdout + single.stderr)[-4000:]
+    proc = _run_child(
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node",
+            "2",
+            "--master_port",
+            str(_free_port()),
+            str(worker),
+            str(tmp_path / "ddp"),
+        ],
+        env,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out[-4000:]
+    assert out.count("RANK_OK find_unused=False") == 2, out[-4000:]
+    ref = json.loads((tmp_path / "single" / "result_0.json").read_text(encoding = "utf-8"))
+    for rank in (0, 1):
+        got = json.loads((tmp_path / "ddp" / f"result_{rank}.json").read_text(encoding = "utf-8"))
+        assert got["names"] == ref["names"]
+        assert any("embed_tokens.modules_to_save" in n for n in got["names"])
+        assert any("lm_head.modules_to_save" in n for n in got["names"])
+        for a, b in zip(got["losses"], ref["losses"]):
+            assert abs(a - b) <= 1e-5 * max(1.0, abs(b)), (got["losses"], ref["losses"])
+        for name, a, b in zip(got["names"], got["grad_norms"], ref["grad_norms"]):
+            assert abs(a - b) <= 1e-4 * max(1.0, abs(b)), (name, a, b)
 
 
 def test_lora_on_linear_embedding_projection_keeps_default(ddp_env):
@@ -407,9 +467,7 @@ def test_full_finetune_vlm_text_only_batches_train_under_ddp(tmp_path):
     import sys
 
     worker = Path(__file__).with_name("_ddp_vlm_text_only_worker.py")
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", TMPDIR = str(tmp_path))
-    env.pop("UNSLOTH_DDP_FIND_UNUSED_PARAMETERS_AUTO", None)
-    proc = subprocess.run(
+    proc = _run_child(
         [
             sys.executable,
             "-m",
@@ -421,14 +479,52 @@ def test_full_finetune_vlm_text_only_batches_train_under_ddp(tmp_path):
             str(worker),
             str(tmp_path),
         ],
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 600,
+        _rank_env(tmp_path),
+        timeout = 300,
     )
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-4000:]
     assert out.count("RANK_OK find_unused=True") == 2, out[-4000:]
+
+
+# A rank's identity comes from torchrun; one leaked into this process by an earlier test (WORLD_SIZE=2 from an
+# os.environ write) made the single-process reference wait in init_process_group until pytest-timeout fired.
+_DIST_ENV = (
+    "RANK",
+    "WORLD_SIZE",
+    "LOCAL_RANK",
+    "LOCAL_WORLD_SIZE",
+    "GROUP_RANK",
+    "ROLE_RANK",
+    "MASTER_ADDR",
+    "MASTER_PORT",
+    "UNSLOTH_DDP_FIND_UNUSED_PARAMETERS_AUTO",
+)
+
+
+def _rank_env(tmp_path):
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", TMPDIR = str(tmp_path))
+    for name in _DIST_ENV:
+        env.pop(name, None)
+    return env
+
+
+def _run_child(
+    cmd,
+    env,
+    timeout = 150,
+):
+    """Under pytest-timeout (330 s), so a hung child fails with its own output instead of a bare timeout."""
+    import subprocess
+    try:
+        return subprocess.run(cmd, env = env, capture_output = True, text = True, timeout = timeout)
+    except subprocess.TimeoutExpired as e:
+        # TimeoutExpired keeps raw bytes even with text = True, and None for a stream that wrote nothing.
+        out = "".join(
+            (s.decode(errors = "replace") if isinstance(s, bytes) else s) or ""
+            for s in (e.stdout, e.stderr)
+        )
+        pytest.fail(f"{cmd[-2:]} hung past {timeout}s:\n{out[-4000:]}")
 
 
 def _free_port():

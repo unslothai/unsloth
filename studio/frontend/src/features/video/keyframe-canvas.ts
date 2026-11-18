@@ -101,14 +101,21 @@ export function defaultVideoResolution(
 }
 
 /** The size a family declares for its first render (MiniMax-H3: the reference templates' 864x480), when it is
- *  one of its presets; null for a family that declares none, which keeps the size the page already holds. */
+ *  one of its presets. A family that declares none keeps the size the page already holds (`held`) when that is one
+ *  of its trained sizes (null), else starts at its first preset: the page's 768x512 fallback or the previous
+ *  family's size would otherwise be fitted to an untrained size. */
 export function familyFirstRenderResolution(
   defaults: Pick<VideoGenerationDefaults, "default_resolution"> | null | undefined,
   presets: ReadonlyArray<readonly [number, number]>,
+  held?: readonly [number, number] | null,
 ): [number, number] | null {
+  const isPreset = (size: readonly [number, number]) =>
+    presets.some(([w, h]) => w === size[0] && h === size[1]);
   const wanted = defaults?.default_resolution;
-  if (!wanted || !presets.some(([w, h]) => w === wanted[0] && h === wanted[1])) return null;
-  return [wanted[0], wanted[1]];
+  if (wanted && isPreset(wanted)) return [wanted[0], wanted[1]];
+  const first = presets[0];
+  if (held && first && !isPreset(held)) return [first[0], first[1]];
+  return null;
 }
 
 /** Whether staging a keyframe switches the size to "Match source". A family whose keyframes keep the chosen
