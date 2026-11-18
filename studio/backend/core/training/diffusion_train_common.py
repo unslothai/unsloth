@@ -438,7 +438,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth defaults): rank/alpha 32, lr 3e-4, 512px.
     "krea-2": {"lora_rank": 32, "learning_rate": 3e-4, "resolution": 512},
-    # The published MOSS LoRAs' recipe (rank 32 / lr 1e-4 at 512, rank 16 at 1024); 768 sits between on the 16 grid.
+    # Published MOSS LoRA recipe: rank 32 / lr 1e-4 at 512, rank 16 at 1024.
     "moss-image": {
         "lora_rank": 32,
         "learning_rate": 1e-4,
@@ -541,7 +541,6 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Trains on Krea-2-Raw, runs on Turbo.",
     },
-    # The Qwen3.5-9B encoder (15.9 GB bf16) encodes the captions and is freed before the DiT loads.
     "moss-image": {
         "params": "5B",
         "qlora_vram_gb": 18,

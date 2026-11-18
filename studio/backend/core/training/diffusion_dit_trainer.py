@@ -1813,10 +1813,7 @@ def _flux3_training_scheduler(cfg):
     return FlowMatchEulerDiscreteScheduler.from_config(shipped.config)
 
 
-# MOSS-Image: Studio's in-tree port (diffusion_moss_image); each helper mirrors MOSSImagePipeline's text-to-image call.
-# q / k / v / o and the SiTU-GLU up-gate / down of the 42 joint blocks, the 252 modules published MOSS LoRAs train under
-# these names (Angais/MOSS-Image-PixelArt-16x16, axiomofmind/Moss-image-beauty-lora), so adapters are interchangeable.
-# The text refiner's qkv / proj / ffn_* and the modulation stay frozen.
+# Same names as published MOSS LoRAs (Angais/MOSS-Image-PixelArt-16x16), so adapters are interchangeable.
 _MOSS_TARGETS = (
     "proj.q",
     "proj.k",
@@ -1825,8 +1822,7 @@ _MOSS_TARGETS = (
     "proj.ffn_up_gate",
     "proj.ffn_down",
 )
-# Dense under nf4: the inference keep-list (_MOSS_IMAGE_QUANT_KEEP) by full module name, plus the latent in / out
-# projections; bitsandbytes matches "<name>." so the names are whole.
+# Dense under nf4: _MOSS_IMAGE_QUANT_KEEP plus latent in / out; bitsandbytes matches "<name>." so names are whole.
 _MOSS_NF4_KEEP = (
     "text_embedder",
     "time_embedding",
@@ -1841,7 +1837,6 @@ def _moss_load_conditioners(cfg, device, weight_dtype):
     import torch
     from core.inference.diffusion_moss_image import load_moss_image_pipeline
 
-    # The Qwen3.5-9B encoder in bf16 (the reference); the fp32 VAE stays on host until the encoder is freed.
     pipe = load_moss_image_pipeline(
         cfg.base_model, torch.bfloat16, hf_token = cfg.hf_token, with_transformer = False
     )
@@ -1874,7 +1869,6 @@ def _moss_encode_prompts(pipe, captions, device):
     _encoders_to_device(pipe, device)
     out = []
     for cap in captions:
-        # One prompt per call, as the pipeline encodes each unpadded: [1, L, 4096], every token valid.
         embeds, _mask = pipe.encode_prompt(cap, device = device)
         out.append((embeds[0].cpu(),))
     return out
@@ -1886,8 +1880,7 @@ def _moss_collate(
     weight_dtype,
     pad_to = None,
 ):
-    """``(embeds [B, L, C], mask [B, L] or None)``: right-padded as the pipeline batches prompts; equal lengths need no
-    mask (no host sync in the forward). The DiT runs each sample at its true length either way."""
+    """Right-padded ``(embeds, mask)``; mask is None for equal lengths (no host sync in the forward)."""
     import torch
 
     rows = [e[0].to(device = device, non_blocking = True).to(dtype = weight_dtype) for e in entries]
@@ -1904,16 +1897,14 @@ def _moss_collate(
 
 def _moss_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
     embeds, mask = embeds_batch
-    # MOSSImagePipeline's call: [B, 128, h, w] latents at the flow timestep sigma * 1000; the output is the velocity
-    # noise - latents the scheduler steps with.
+    # Timestep is sigma * 1000, as MOSSImagePipeline passes it.
     kwargs = {} if mask is None else {"encoder_attention_mask": mask}
     return transformer(noisy, timesteps, encoder_hidden_states = embeds, return_dict = False, **kwargs)[
         0
     ]
 
 
-# The FLUX.2 VAE (MOSS's own small-decoder copy), patchified 2x2 and batch-norm normalised as MOSSImagePipeline.vae_decode
-# inverts it.
+# Patchified 2x2 and batch-norm normalised, the inverse of MOSSImagePipeline.vae_decode.
 _moss_encode_latents = _flux2_encode_latents
 _moss_encode_latent_stats = _flux2_encode_latent_stats
 
@@ -1924,8 +1915,7 @@ def _moss_save(
     transformer_lora_layers,
     adapter_metadata = None,
 ):
-    """``transformer.*`` keys plus diffusers' adapter metadata, the file MOSSImagePipeline.load_lora_weights reads. The
-    pipeline has no diffusers LoRA mixin, and any transformer-only mixin writes this same file."""
+    """``transformer.*`` keys plus adapter metadata, as MOSSImagePipeline.load_lora_weights reads."""
     import inspect
 
     from diffusers.loaders import QwenImageLoraLoaderMixin
@@ -1946,9 +1936,7 @@ def _moss_save(
 
 
 def _moss_training_scheduler(cfg):
-    """FlowMatchEuler with the repo's shift (5) baked into its sigmas. MOSSImageScheduler keeps an unshifted table and
-    shifts only in set_timesteps, so training from its table would draw shift-1 noise levels; previews take its
-    sgm_uniform steps (diffusion_samples.flow_sigmas)."""
+    """Shift 5 baked into the sigmas: MOSSImageScheduler's table is unshifted, so training from it draws shift-1 noise."""
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     conf = FlowMatchEulerDiscreteScheduler.load_config(
@@ -2489,7 +2477,6 @@ _SPECS: dict[str, _FamilySpec] = {
         lora_targets = _MOSS_TARGETS,
         # ComfyUI runs MOSS-Image in bf16 / fp32 only: its residual stream overflows fp16.
         force_bf16 = True,
-        # 5.1B DiT at 10.2 GB bf16; the Qwen3.5-9B encoder (15.9 GB) is freed before it loads.
         dense_bf16_gb = 10.2,
         load_conditioners = _moss_load_conditioners,
         load_transformer = _moss_load_transformer,

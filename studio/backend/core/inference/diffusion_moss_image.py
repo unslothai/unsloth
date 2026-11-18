@@ -53,7 +53,7 @@ def _env_off(name: str) -> bool:
 def _compute_dtype(linear: nn.Module) -> torch.dtype:
     """The dtype a Linear's input is cast to: the reference casts to ``weight.dtype``, which is the storage dtype under
     diffusers' ``GGUFLinear`` (uint8), so a ``compute_dtype`` the layer declares wins. Same dtype for a plain Linear."""
-    # A PEFT LoRA wrapper answers ``weight`` with its base layer's storage (uint8 under bitsandbytes nf4).
+    # A PEFT wrapper's ``weight`` is its base storage (uint8 under nf4).
     get_base = getattr(linear, "get_base_layer", None)
     if callable(get_base):
         linear = get_base()
@@ -397,7 +397,7 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
     _repeated_blocks = ["_Block", "_TextBlock"]
     _no_split_modules = ["_Block", "_TextBlock"]
     _skip_layerwise_casting_patterns = ["rope", "norm"]
-    # LoRA training (diffusion_dit_trainer) checkpoints the joint blocks; inference runs under no_grad and never does.
+    # Only LoRA training checkpoints; inference runs under no_grad.
     _supports_gradient_checkpointing = True
 
     @register_to_config
@@ -1195,7 +1195,7 @@ def load_moss_image_pipeline(
     route's ``SmallHostDecision.storage_dtypes``) loads those components at their stored dtype instead of ``dtype``, so
     they stay memory-mapped until the route converts them; a float32 load on an fp16-only card otherwise widens the
     9B encoder and the DiT in host RAM first (54 GB, more than a 51 GB Colab T4 High-RAM). ``with_transformer=False``
-    leaves the DiT out (``pipe.transformer`` is None): LoRA training conditions first and loads it later."""
+    leaves ``pipe.transformer`` None (LoRA training loads it after encoding)."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     assert_transformers_supported()

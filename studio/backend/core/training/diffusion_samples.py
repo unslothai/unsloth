@@ -106,7 +106,6 @@ def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
         # Sampled without guidance (pipeline default true_cfg_scale 1.0); Studio's 25-step default, 8 for Turbo.
         return SampleSettings(8, 1.0) if "turbo" in name else SampleSettings(25, 1.0)
     if family == "moss-image":
-        # Studio's MOSS-Image default for SFT and Base: 25 steps at CFG 2.5.
         return SampleSettings(25, 2.5)
     if family == "minimax-h3-image":
         # Distilled to 6 steps with one head each, guidance-distilled (no CFG); the trainer runs its own sampler.
@@ -255,7 +254,7 @@ def flow_sigmas(
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     if family == "moss-image":
-        # MOSSImageScheduler's default steps (ComfyUI sgm_uniform at the training table's shift), terminal 0 appended.
+        # sgm_uniform steps at the training shift, terminal 0 appended.
         from core.inference.diffusion_moss_image import sgm_uniform_sigmas
 
         num_train = int(scheduler_config.get("num_train_timesteps", 1000))

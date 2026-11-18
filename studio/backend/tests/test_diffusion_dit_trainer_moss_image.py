@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU tests for MOSS-Image LoRA training (the DiT trainer's moss-image spec). A random in-tree MOSSImageTransformer
-covers the offline checks; a tiny MOSS-Image pipeline folder (random Qwen3.5 encoder, word-level tokenizer with a chat
-template, small FLUX.2 VAE) proves the trainer conditions and denoises exactly as Studio's MOSSImagePipeline does, that
-its adapter has the published MOSS LoRA layout, and that a trained adapter loads back and changes a render."""
+"""CPU tests for MOSS-Image LoRA training on a random in-tree transformer and a tiny pipeline folder."""
 
 from __future__ import annotations
 
@@ -45,10 +42,8 @@ from core.training.diffusion_train_common import (  # noqa: E402
 FAMILY = "moss-image"
 SFT = "OpenMOSS-Team/MOSS-Image-SFT"
 BASE = "OpenMOSS-Team/MOSS-Image-Base"
-# head_dim 32 (a multiple of 8, as the RoPE needs); text_dim is the tiny encoder's hidden size.
 _TINY = dict(dim = 64, ffn_dim = 128, num_heads = 2, num_layers = 2, text_dim = 64)
-# Published MOSS LoRAs: axiomofmind/Moss-image-beauty-lora's adapter_config target_modules, and the 252 module stems of
-# Angais/MOSS-Image-PixelArt-16x16 (layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}, no prefix).
+# target_modules / module stems of axiomofmind/Moss-image-beauty-lora and Angais/MOSS-Image-PixelArt-16x16.
 _PUBLISHED_TARGETS = re.compile(r".*layers\.\d+\.proj\.(q|k|v|o|ffn_up_gate|ffn_down)")
 _PUBLISHED_PROJS = ("q", "k", "v", "o", "ffn_up_gate", "ffn_down")
 
@@ -173,9 +168,6 @@ class _Cfg:
         self.hf_token = None
 
 
-# ---------------------------------------------------------------- registry
-
-
 def test_both_releases_train_through_the_dit_trainer():
     fam = detect_family(SFT)
     assert fam is not None and fam.name == FAMILY
@@ -204,9 +196,6 @@ def test_defaults_sit_on_the_16_grid_and_fp16_and_off_grid_are_refused(tmp_path)
         DiffusionLoraConfig(**base, mixed_precision = "fp16").normalized()
 
 
-# ---------------------------------------------------------------- LoRA layout
-
-
 def test_targets_are_the_published_moss_lora_modules_and_nothing_else():
     spec = _spec()
     assert dit._select_lora_targets(DEFAULT_LORA_TARGETS, spec.lora_targets) == spec.lora_targets
@@ -214,7 +203,6 @@ def test_targets_are_the_published_moss_lora_modules_and_nothing_else():
     want = {f"layers.{i}.proj.{p}" for i in range(_TINY["num_layers"]) for p in _PUBLISHED_PROJS}
     assert names == want
     assert all(_PUBLISHED_TARGETS.fullmatch(n) for n in names)
-    # The text refiner's qkv / proj / ffn_* share suffixes with nothing targeted.
     assert not any(n.startswith("text_embedder") for n in names)
 
 
@@ -309,11 +297,7 @@ def test_saved_adapter_reloads_at_the_trained_strength(tmp_path):
     assert not torch.allclose(with_lora, off)
 
 
-# ---------------------------------------------------------------- transformer support the trainer needs
-
-
 def test_gradient_checkpointing_is_supported_and_exact(monkeypatch):
-    # The fallback path (diffusers' enable_gradient_checkpointing), as on a host without unsloth_zoo.
     monkeypatch.setitem(sys.modules, "unsloth_zoo", None)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.block_checkpointing", None)
     plain, checked = _adapted(seed = 3), _adapted(seed = 3)
@@ -337,7 +321,6 @@ def test_gradient_checkpointing_is_supported_and_exact(monkeypatch):
     assert grads[0].keys() == grads[1].keys()
     for n in grads[0]:
         assert torch.allclose(grads[0][n], grads[1][n], atol = 1e-6), n
-    # Inference runs under no_grad, where the flag changes nothing.
     calls.clear()
     with torch.no_grad():
         checked(x, torch.tensor([300.0]), encoder_hidden_states = emb)
@@ -345,8 +328,7 @@ def test_gradient_checkpointing_is_supported_and_exact(monkeypatch):
 
 
 def test_compute_dtype_reads_through_a_peft_wrapper():
-    """bitsandbytes nf4 stores uint8 weights and declares compute_dtype; a LoRA wrapper must not hide it, or the block
-    casts its activations to the storage dtype."""
+    """A LoRA wrapper must not hide nf4's compute_dtype, or the block casts activations to uint8."""
     from peft import LoraConfig, inject_adapter_in_model
 
     class Stored(torch.nn.Linear):
@@ -357,9 +339,6 @@ def test_compute_dtype_reads_through_a_peft_wrapper():
     inject_adapter_in_model(LoraConfig(r = 2, target_modules = ["q"]), holder)
     assert hasattr(holder.q, "lora_A")
     assert moss._compute_dtype(holder.q) == torch.bfloat16
-
-
-# ---------------------------------------------------------------- conditioning, forward, latents, schedule
 
 
 def test_forward_is_the_pipelines_transformer_call_and_mixed_lengths_run_unpadded():
@@ -376,7 +355,6 @@ def test_forward_is_the_pipelines_transformer_call_and_mixed_lengths_run_unpadde
     with torch.no_grad():
         got = dit._moss_forward(t, x, ts, None, batch, None, "cpu", torch.float32)
         for i, row in enumerate(rows):
-            # MOSSImagePipeline: transformer(latents, timestep, encoder_hidden_states=..., return_dict=False)[0]
             want = t(x[i : i + 1], ts[i], encoder_hidden_states = row[None], return_dict = False)[0]
             assert torch.allclose(got[i : i + 1], want, atol = 1e-6)
     same = dit._moss_collate([(rows[0],), (rows[0],)], "cpu", torch.float32)
@@ -406,7 +384,6 @@ def test_training_noise_is_shift_5_and_previews_take_the_sgm_uniform_steps(tiny_
     table = dit._training_sigma_table(sched, None)
     u = torch.linspace(1.0, 1.0 / 1000, 1000)
     assert torch.allclose(table, 5 * u / (1 + 4 * u), atol = 1e-6)
-    # The transformer's timestep is sigma * 1000, the value the pipeline's scheduler hands it.
     assert torch.allclose(sched.timesteps, table * 1000, atol = 1e-3)
     ref = moss.MOSSImageScheduler(sigma_schedule = "sgm_uniform")
     ref.set_timesteps(25)
@@ -468,9 +445,6 @@ def test_loss_falls_on_a_fixed_batch():
     assert losses[-1] < 0.8 * losses[0], losses
 
 
-# ---------------------------------------------------------------- the whole run
-
-
 def _render(pipe, prompt):
     pipe.set_progress_bar_config(disable = True)
     return pipe(
@@ -487,9 +461,7 @@ def _render(pipe, prompt):
 def test_end_to_end_run_trains_saves_and_the_adapter_changes_a_render(
     tiny_pipe_dir, tmp_path, monkeypatch
 ):
-    """run_dit_lora_training on the tiny pipe: caption + latent cache, mixed caption lengths in a batch, gradient
-    checkpointing, a CFG preview round, save, catalog publish; then Studio's MOSS LoRA loader applies the adapter to a
-    MOSSImagePipeline and the same-seed render changes."""
+    """Full run on the tiny pipe, then the saved adapter changes a same-seed render."""
     from PIL import Image
 
     data = tmp_path / "data"
