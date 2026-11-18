@@ -394,8 +394,8 @@ def get_visible_gpu_utilization(
                 env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
-            # Any failure retries the base query, so the new fields never cost telemetry it returned.
-            if result.returncode == 0:
+            # Retry the base query unless the driver itself is down (9 not loaded, 12 no NVML, 15 GPU lost).
+            if result.returncode in (0, 9, 12, 15):
                 break
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_visible_gpu_utilization: %s", e)
