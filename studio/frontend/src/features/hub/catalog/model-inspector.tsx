@@ -725,7 +725,8 @@ export const ModelInspector = memo(function ModelInspector({
               modelId={model.id}
               displayName={model.title}
               repoId={model.hubRepoId}
-              sourceLabel={model.sourceLabel}
+              // The header already names the source when there is no repo owner to show.
+              sourceLabel={model.owner === model.sourceLabel ? "" : model.sourceLabel}
               source={model.localSource ?? "custom"}
               path={model.path ?? model.displayId}
               isGguf={model.isGguf}
