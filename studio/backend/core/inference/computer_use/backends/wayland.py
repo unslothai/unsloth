@@ -34,6 +34,10 @@ _STOPPED = (
     "the screen sharing session ended (the user may have stopped it), so this action was not "
     "done. Take a screenshot to start it again."
 )
+_USER_STOPPED = (
+    "the user stopped the screen sharing, so computer use has stopped. Do not try again; tell "
+    "the user."
+)
 
 
 def _token_path() -> Optional[Path]:
@@ -107,8 +111,7 @@ class WaylandBackend(LinuxBackend):
     def _started(self) -> _portal.PortalSession:
         """Call with the lock held: the running session, started (the user may be asked) if none."""
         self._ready()
-        if self._session is not None and self._session.closed:
-            self._end()
+        self._check_stopped()
         if self._session is None:
             session = _portal.PortalSession(self._version, self._token_file, self._answer_timeout)
             streams = session.open()
@@ -130,11 +133,24 @@ class WaylandBackend(LinuxBackend):
     def _live(self) -> _portal.PortalSession:
         """Call with the lock held. Input never starts a session: only a run's displays() does."""
         self._ready()
-        if self._session is None or self._session.closed:
-            self._end()
+        self._check_stopped()
+        if self._session is None:
             raise BackendError(_STOPPED)
         self._touch()
         return self._session
+
+    def _check_stopped(self) -> None:
+        """Call with the lock held. A session the desktop closed was stopped by the user: the saved
+        grant is dropped so the portal asks again instead of restoring it unseen."""
+        if self._session is None or not self._session.closed:
+            return
+        self._end()
+        if self._token_file is not None:
+            try:
+                self._token_file.unlink(missing_ok = True)
+            except OSError:
+                pass
+        raise BackendError(_USER_STOPPED)
 
     def _touch(self) -> None:
         self._last_use = time.monotonic()
@@ -184,6 +200,7 @@ class WaylandBackend(LinuxBackend):
         except BackendError:
             raise
         except Exception as exc:  # noqa: BLE001 - a closed session or a lost bus
+            self._check_stopped()
             self._end()
             raise BackendError(_STOPPED) from exc
 

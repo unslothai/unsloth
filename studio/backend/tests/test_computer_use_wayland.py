@@ -336,18 +336,31 @@ def test_an_unanswered_prompt_times_out(bus, tmp_path):
         backend.displays()
 
 
-def test_a_session_the_user_stopped_ends_the_run_and_the_next_run_reopens(bus, tmp_path):
+def test_a_session_the_user_stopped_stops_and_the_portal_asks_again(bus, tmp_path):
     backend = _backend(tmp_path)
     backend.displays()
+    assert (tmp_path / "token").read_text() == "token-1"
     bus.close_session()
     time.sleep(0.2)
-    with pytest.raises(BackendError, match = "ended"):
+    with pytest.raises(BackendError, match = "Do not try again"):
         backend.move(5, 5)
+    assert not (tmp_path / "token").exists()
     backend.displays()
     assert [name for name, _ in bus.calls].count("CreateSession") == 2
+    reopened = [body for name, body in bus.calls if name == "SelectDevices"][-1][1]
+    assert "restore_token" not in reopened
+    backend.move(5, 5)
+
+
+def test_an_idle_closed_session_is_restored_without_asking(bus, tmp_path):
+    backend = _backend(tmp_path, idle_close = 0.3)
+    backend.displays()
+    time.sleep(0.8)
+    with pytest.raises(BackendError, match = "Take a screenshot"):
+        backend.move(5, 5)
+    backend.displays()
     restored = [body for name, body in bus.calls if name == "SelectDevices"][-1][1]
     assert restored["restore_token"] == ("s", "token-1")
-    backend.move(5, 5)
 
 
 def test_an_idle_session_is_closed(bus, tmp_path):
