@@ -757,15 +757,15 @@ def overlaps_studio_state(path: str, state = None) -> bool:
     )
 
 
-def _holds_a_nested_credential(folder: str) -> bool:
-    """A tree too large to check, a hard-linked file or a link out of it counts as holding one. scandir, not walk:
-    walk lists a whole directory before the cap could stop it."""
-    from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
-    from .tool_path_approval import _references_sensitive_path
+# folder -> (fingerprint, verdict): every launch rescans, the path-text checks dominate and only
+# change when an entry, link target or link count does.
+_nested_credential_verdicts: dict[str, tuple[tuple, bool]] = {}
 
-    # Casefolded: a case-insensitive volume opens TOKEN as token.
-    names = {name.casefold() for name in (*_CREDENTIAL_BASENAMES, *approval_names)}
-    seen = 0
+
+def _tree_fingerprint(folder: str) -> "tuple | None":
+    """Path, link target and link count of every entry; None past the cap. scandir, not walk: walk
+    lists a whole directory before the cap could stop it."""
+    rows = []
     pending = [folder]
     while pending:
         try:
@@ -774,30 +774,55 @@ def _holds_a_nested_credential(folder: str) -> bool:
             continue
         with entries:
             for entry in entries:
-                seen += 1
-                if seen > _TRUSTED_FOLDER_SCAN_LIMIT:
-                    return True
-                if entry.name.casefold() in names or _references_sensitive_path(entry.path):
-                    return True
+                if len(rows) >= _TRUSTED_FOLDER_SCAN_LIMIT:
+                    return None
+                target = nlink = None
                 try:
-                    # A link or Windows junction out of the folder reads its target unchecked: the scan
-                    # never follows it, and is_symlink() is False for a junction.
+                    # is_symlink() is False for a junction; DirEntry.is_junction is 3.12+, so on 3.11
+                    # a junction reads as a plain directory.
                     linked = entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
                     is_dir = entry.is_dir(follow_symlinks = False)
-                    # DirEntry.is_junction is 3.12+; on 3.11 a junction reads as a plain directory.
-                    if (linked or (is_dir and os.name == "nt")) and not _is_within(
-                        os.path.realpath(entry.path), folder
-                    ):
-                        return True
+                    if linked or (is_dir and os.name == "nt"):
+                        target = os.path.realpath(entry.path)
                     if is_dir:
                         pending.append(entry.path)
-                    # A second name can alias a credential anywhere on the volume, as in the workdir scan.
                     # lstat, not entry.stat: DirEntry reports st_nlink 0 on Windows.
-                    elif entry.is_file(follow_symlinks = False) and os.lstat(entry.path).st_nlink > 1:
-                        return True
+                    elif entry.is_file(follow_symlinks = False):
+                        nlink = os.lstat(entry.path).st_nlink
                 except OSError:
-                    continue
-    return False
+                    pass
+                rows.append((entry.path, entry.name, target, nlink))
+    return tuple(rows)
+
+
+def _holds_a_nested_credential(folder: str) -> bool:
+    """A tree too large to check, a hard-linked file or a link out of it counts as holding one."""
+    from . import tools
+    from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
+    from .tool_path_approval import _references_sensitive_path
+
+    rows = _tree_fingerprint(folder)
+    if rows is None:
+        return True
+    # Casefolded: a case-insensitive volume opens TOKEN as token.
+    names = frozenset(name.casefold() for name in (*_CREDENTIAL_BASENAMES, *approval_names))
+    fingerprint = (rows, names, repr(tools._studio_auth_dir_markers()))
+    cached = _nested_credential_verdicts.get(folder)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+    verdict = any(
+        name.casefold() in names
+        or _references_sensitive_path(path)
+        # A link or junction out of the folder reads its target unchecked.
+        or (target is not None and not _is_within(target, folder))
+        # A second name can alias a credential anywhere on the volume, as in the workdir scan.
+        or (nlink is not None and nlink > 1)
+        for path, name, target, nlink in rows
+    )
+    if len(_nested_credential_verdicts) > 64:  # folders dropped from the setting
+        _nested_credential_verdicts.clear()
+    _nested_credential_verdicts[folder] = (fingerprint, verdict)
+    return verdict
 
 
 def _grantable_read_roots(candidates) -> tuple[str, ...]:

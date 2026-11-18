@@ -490,3 +490,19 @@ def test_bwrap_binds_a_trusted_folder_under_tmp_after_the_tmpfs(monkeypatch, tmp
     finally:
         launch.cleanup()
         os.rmdir(root)
+
+
+def test_a_cached_verdict_follows_a_new_credential(folder):
+    assert os_sandbox.trusted_tool_folder_roots() == (os.path.realpath(folder),)
+    (folder / "sub").mkdir()
+    (folder / "sub" / ".env").write_text("KEY=x")
+    assert os_sandbox.trusted_tool_folder_roots() == ()
+
+
+def test_a_cached_verdict_follows_a_new_hard_link(folder):
+    assert os_sandbox.trusted_tool_folder_roots() == (os.path.realpath(folder),)
+    try:
+        os.link(folder / "run.sh", folder.parent / "alias.sh")
+    except OSError:
+        pytest.skip("this volume does not allow hard links here")
+    assert os_sandbox.trusted_tool_folder_roots() == ()
