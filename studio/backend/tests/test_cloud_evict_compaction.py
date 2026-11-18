@@ -546,6 +546,29 @@ def test_an_overflow_inside_one_tool_turn_drops_its_older_exchange(mode):
     assert len(chats) == 2 and "log log" not in json.dumps(chats[1]["messages"])
 
 
+@pytest.mark.parametrize("mode", ["rolling", "checkpoint"])
+def test_an_overflow_dominated_by_the_latest_turn_drops_the_older_turns(mode):
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0 " + "word " * 500},
+        {"role": "assistant", "content": "a0 " + "word " * 500},
+        {"role": "user", "content": "latest " + "doc " * 20000},
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 200_000,
+        compaction_mode = mode,
+    )
+    assert not [c for c in chunks if "error" in c]
+    assert len(chats) == 2 and [m["role"] for m in chats[1]["messages"]] == ["system", "user"]
+
+
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError

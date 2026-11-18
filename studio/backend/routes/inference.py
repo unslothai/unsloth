@@ -29542,6 +29542,21 @@ def _external_fit_limits(payload, prompt_tokens: int) -> tuple[int, Optional[int
     return context_length, max_tokens
 
 
+def _overflow_retry_thresholds(refused_tokens: int, max_tokens: Optional[int]) -> list[int]:
+    """Half the refused prompt, then looser, then the trigger whose prompt budget is one token
+    under the refused prompt: a dominant latest turn still gets the older turns dropped."""
+    from core.inference.context_window import prompt_budget
+
+    low, high = 1, max(2, 2 * refused_tokens + (max_tokens or 0))
+    while low < high:
+        mid = (low + high) // 2
+        if prompt_budget(mid, max_tokens) >= refused_tokens - 1:
+            high = mid
+        else:
+            low = mid + 1
+    return [max(1, refused_tokens * eighths // 8) for eighths in (4, 5, 6, 7)] + [low]
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -30885,8 +30900,10 @@ async def _proxy_to_external_provider(
             refused = _last_fit if _last_fit is not None else messages
             refused_tokens = _external_token_counter(payload, tools)(refused)
             unbounded, first_unbounded = _evicting_payload, _first_payload
-            for eighths in (4, 5, 6, 7):
-                bound = {"compaction_threshold": max(1, refused_tokens * eighths // 8)}
+            for threshold in _overflow_retry_thresholds(
+                refused_tokens, _effective_max_tokens(unbounded)
+            ):
+                bound = {"compaction_threshold": threshold}
                 _evicting_payload = unbounded.model_copy(update = bound)
                 _first_payload = first_unbounded.model_copy(update = bound)
                 _checkpoint_pass.clear()
