@@ -45,6 +45,9 @@ def _memory(
 ):
     stats = {"allocated_bytes.all.current": allocated, "allocated_bytes.all.peak": peak}
     monkeypatch.setattr(dc, "_usable", lambda index: (usable, total, stats))
+    # The guard reads the driver first: on a GPU host the real free memory would hide the faked reading.
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda index = None: (usable, total))
+    monkeypatch.setattr(dc, "_fraction", lambda index: 1.0, raising = False)
 
 
 def _weight(n = 64):
