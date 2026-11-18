@@ -11,6 +11,13 @@ import torch
 import core.inference.diffusion_offload_prefetch as op
 
 
+@pytest.fixture(autouse = True)
+def _old_working_set_pricing(monkeypatch):
+    # these pin plan numbers (resident blocks, host routing) priced with activation_gb + margin; the measured
+    # working-set pricing is covered in test_h3_image_resident_route.py
+    monkeypatch.setenv("UNSLOTH_H3_IMAGE_MEASURED_WORKING_SET", "0")
+
+
 class _Stop(Exception):
     pass
 

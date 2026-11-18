@@ -127,7 +127,8 @@ def install_h3_image_speed(
 
 def _dit_streamer_keeps_parameters(pipe: Any) -> bool:
     """Only the pinned streamer copies into the same parameters; ``ModuleListStreamer`` swaps in new ones per call,
-    so the GEMM would always fall back while the row pads were already lost."""
+    so the GEMM would always fall back while the row pads were already lost. A ``ModuleListStreamer`` with nothing
+    left to stream (every block resident: the pinned one refuses "nothing streams") swaps no parameter either."""
     from .diffusion_minimax_h3_image import ModuleListStreamer
 
     streamers = [
@@ -135,7 +136,29 @@ def _dit_streamer_keeps_parameters(pipe: Any) -> bool:
         for s in getattr(pipe, "_unsloth_h3_streamers", None) or ()
         if getattr(s, "_unsloth_role", None) == "transformer"
     ]
-    return bool(streamers) and not any(isinstance(s, ModuleListStreamer) for s in streamers)
+    return bool(streamers) and not any(
+        isinstance(s, ModuleListStreamer) and int(getattr(s, "streamed", 1) or 0) > 0
+        for s in streamers
+    )
+
+
+def int8_gemm_route(
+    placement: Optional[str],
+    *,
+    fp16_contract: bool = False,
+    keeps_parameters: bool = False,
+    streamed_gemm: bool = True,
+) -> Optional[str]:
+    """Which int8 GEMM a placement gets: "resident" (``h3_int8_gemm``, with the fused QKV / SwiGLU levers),
+    "streamed" (``h3_int8_gemm_streamed``, taken per call while the weight is on the card), or None (stock path).
+    ``keeps_parameters``: the DiT streamer copies into the same parameters, or streams nothing."""
+    if fp16_contract:
+        return None
+    if placement in _RESIDENT_PLACEMENTS:
+        return "resident"
+    if placement == "stream" and streamed_gemm and keeps_parameters:
+        return "streamed"
+    return None
 
 
 def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
@@ -155,19 +178,21 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
     fp16_contract = bool(transformer.__dict__.get(FP16_CONTRACT_ATTR))
     if fp16_contract:
         resident = False
+    route = int8_gemm_route(
+        getattr(plan, "placement", None),
+        fp16_contract = fp16_contract,
+        keeps_parameters = getattr(plan, "placement", None) == "stream"
+        and _dit_streamer_keeps_parameters(pipe),
+        streamed_gemm = streamed_gemm_enabled(),
+    )
     if resident and _fuse_qkv(transformer, logger):
         levers.append("h3_fused_qkv")
-    if resident:
+    if route == "resident":
         from . import diffusion_int8_gemm as int8_gemm
         if int8_gemm.install(transformer, logger):
             _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
             levers.append("h3_int8_gemm")
-    elif (
-        getattr(plan, "placement", None) == "stream"
-        and not fp16_contract
-        and streamed_gemm_enabled()
-        and _dit_streamer_keeps_parameters(pipe)
-    ):
+    elif route == "streamed":
         from . import diffusion_int8_gemm as int8_gemm
         if int8_gemm.install(transformer, logger, device = dev):
             _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
