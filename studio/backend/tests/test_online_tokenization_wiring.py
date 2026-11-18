@@ -303,6 +303,38 @@ def test_a_block_swap_run_takes_the_old_path(monkeypatch):
     _assert_untouched(config_args, wrapper, trainer, original)
 
 
+def test_an_auto_block_swap_that_offloaded_nothing_still_goes_online(monkeypatch):
+    """Auto offloads no layer when the model fits the card: no swapper, nothing in host RAM to duplicate."""
+    decision, *_ = _run(monkeypatch, self_overrides = {"_offload_layers": "auto"})
+    assert decision.enabled, decision.reason
+
+
+def test_an_auto_block_swap_with_a_swapper_takes_the_old_path(monkeypatch):
+    original = _dataset()
+    decision, config_args, wrapper, trainer = _run(
+        monkeypatch,
+        wrapper = {"dataset": original},
+        self_overrides = {
+            "_offload_layers": "auto",
+            "model": SimpleNamespace(_unsloth_block_swap = object()),
+        },
+    )
+    assert not decision.enabled and "Block Swap" in decision.reason
+    _assert_untouched(config_args, wrapper, trainer, original)
+
+
+def test_the_gate_reuses_the_reading_the_num_proc_veto_took(monkeypatch):
+    """One host memory reading per run: the num_proc site and this gate cannot disagree near the line."""
+    original = _dataset()
+    decision, config_args, wrapper, trainer = _run(
+        monkeypatch,
+        wrapper = {"dataset": original},
+        self_overrides = {"_fork_host_memory": (40 << 30, 8 << 30)},
+    )
+    assert not decision.enabled and "40.0 GiB of host RAM" in decision.reason
+    _assert_untouched(config_args, wrapper, trainer, original)
+
+
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_windows_and_macos_take_the_old_path(monkeypatch, platform):
     original = _dataset()

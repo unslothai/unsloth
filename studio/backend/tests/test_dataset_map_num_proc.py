@@ -512,8 +512,46 @@ def test_a_trainer_too_big_to_fork_tokenizes_in_process():
         if isinstance(node, ast.Assign) and any(ast.unparse(t) == "fork_veto" for t in node.targets)
     ]
     assert assigned and all(
-        "host_memory_fork_veto(" in a and "_offload_layers" in a for a in assigned
+        "host_memory_fork_veto(" in a and "_block_swap_engaged(self)" in a for a in assigned
     )
+
+
+@pytest.mark.parametrize(
+    "layers, swapper, expected",
+    [
+        (0, None, 0),
+        (28, None, 28),
+        (28, object(), 28),
+        ("auto", None, 0),
+        ("auto", object(), "auto"),
+    ],
+)
+def test_block_swap_counts_for_the_veto_only_when_it_offloads(layers, swapper, expected):
+    """Auto with nothing to offload attaches no swapper: such a run keeps its tokenizer workers."""
+    from types import SimpleNamespace
+
+    from core.training.trainer import _block_swap_engaged
+
+    model = SimpleNamespace() if swapper is None else SimpleNamespace(_unsloth_block_swap = swapper)
+    assert _block_swap_engaged(SimpleNamespace(_offload_layers = layers, model = model)) == expected
+    assert _block_swap_engaged(SimpleNamespace()) == 0
+
+
+def test_the_batched_packing_pool_asks_the_same_veto(monkeypatch):
+    """Multi-LoRA packing forks the loaded base model too."""
+    _policy_or_skip()
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC", raising = False)
+    from types import SimpleNamespace
+
+    from core.training import multi_lora_trainer
+    import utils.datasets.online_tokenization as online
+
+    monkeypatch.setattr(online, "host_memory_snapshot", lambda: (40 << 30, 8 << 30))
+    tight = SimpleNamespace(_offload_layers = 0, model = SimpleNamespace())
+    assert multi_lora_trainer._pack_num_proc(None, tight) is None
+    monkeypatch.setattr(online, "host_memory_snapshot", lambda: (1 << 30, 1 << 40))
+    assert multi_lora_trainer._pack_num_proc(None, tight) == multi_lora_trainer._pack_num_proc(None)
 
 
 def test_the_escape_hatch_still_beats_a_host_memory_serial_request(monkeypatch):

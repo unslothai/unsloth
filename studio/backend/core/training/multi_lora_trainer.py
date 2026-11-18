@@ -671,10 +671,16 @@ def _packed_forward_isolated(model) -> bool:
     return bool((packed - alone).abs().mean() <= 0.05 * alone.abs().mean())
 
 
-def _pack_num_proc(tokenizer) -> Optional[int]:
+def _pack_num_proc(tokenizer, trainer = None) -> Optional[int]:
     """The single job's packing workers: TRL packs each worker's shard on its own, so the count moves the rows."""
-    from core.training.trainer import _tokenizer_blocks_map_workers
+    from core.training.trainer import _block_swap_engaged, _tokenizer_blocks_map_workers
+    from utils.datasets.online_tokenization import host_memory_fork_veto
     from utils.hardware import dataset_map_num_proc
+
+    # The pool forks the loaded base model, as the single job's tokenize pool does.
+    fork_veto = host_memory_fork_veto(_block_swap_engaged(trainer)) if trainer is not None else None
+    if fork_veto:
+        logger.info("Packing in process: %s", fork_veto)
 
     try:
         from unsloth_zoo.dataset_num_proc import get_dataset_num_proc
@@ -682,7 +688,8 @@ def _pack_num_proc(tokenizer) -> Optional[int]:
         from unsloth.dataset_num_proc import get_dataset_num_proc
     return get_dataset_num_proc(
         dataset_map_num_proc(
-            1 if _tokenizer_blocks_map_workers(tokenizer) else None, serial_as_none = False
+            1 if (_tokenizer_blocks_map_workers(tokenizer) or fork_veto) else None,
+            serial_as_none = False,
         )
     )
 
@@ -1019,7 +1026,7 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             if member.config.get("packing") and final_format != PRETOKENIZED_FORMAT:
                 if packs is None:
                     packs = _packs(model)
-                    pack_workers = _pack_num_proc(processor) if packs else None
+                    pack_workers = _pack_num_proc(processor, trainer) if packs else None
                 if packs:
                     documents = len(member.rows)
                     member.rows, member.seq_lengths = _pack_rows(
