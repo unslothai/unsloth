@@ -93,7 +93,9 @@ def _op_by_op(
     m = m + (g - m) * (1 - beta1)
     v = v * beta2
     v = v + (g * (1 - beta2)) * g
-    denom = torch.sqrt(v) / ((1 - beta2**step) ** 0.5) + eps
+    # A tensor divisor: CUDA computes `tensor / python_float` as tensor * (1 / float), one rounding more than the
+    # true division of torch's _foreach_div_ (and of the kernel). That reciprocal was the rare ulp seen before.
+    denom = torch.sqrt(v) / torch.full_like(v, (1 - beta2**step) ** 0.5) + eps
     p = p + (m / denom) * ((lr / (1 - beta1**step)) * -1)
     return p, m, v
 
@@ -101,8 +103,12 @@ def _op_by_op(
 @pytest.mark.parametrize("fused", [False, True])
 @pytest.mark.parametrize("weight_decay", [0.0, 0.1])
 def test_one_pass_step_is_adamw_float32_then_rounded(sr, fused, weight_decay):
-    """(Near) bitwise: AdamW's float32 arithmetic op by op, rounded with the same Philox draws.
+    """Bitwise on CUDA: AdamW's float32 arithmetic op by op, rounded with the same Philox draws.
     Against torch.optim.AdamW itself (whose kernels may contract into FMAs): all but a few elements bitwise."""
+    # Bitwise where the compiler keeps enable_fp_fusion=False's separate roundings. Triton 3.6 still emits FFMAs on
+    # sm_100: on B200 about 45 of 300k exp_avg values per step keep a ~1e-12 FMA residual where the separately
+    # rounded reference cancels to exactly 0. ROCm Triton may contract too.
+    bitwise = torch.version.hip is None and not triton.__version__.startswith("3.6.")
     torch.manual_seed(0)
     n = 300_001
     p = torch.nn.Parameter((torch.randn(n, device = "cuda") * 0.05).to(torch.bfloat16))
@@ -125,8 +131,12 @@ def test_one_pass_step_is_adamw_float32_then_rounded(sr, fused, weight_decay):
             diff = (
                 a.view(torch.int16).int() - _round_with(x, lanes[:, lane]).view(torch.int16).int()
             ).abs()
-            # Bitwise but for a rare float32 ulp that lands on a draw's threshold (1 in 300k seen on B200).
-            assert diff.max().item() <= 1 and diff.sum().item() <= 3, diff.sum().item()
+            if bitwise:
+                assert diff.max().item() == 0, diff.sum().item()
+            else:  # contracted FMAs: a few outputs round elsewhere, never further than one bfloat16 step
+                off = diff > 0
+                assert off.sum().item() <= n >> 12, off.sum().item()
+                assert torch.allclose(a.float()[off], x[off], rtol = 2**-7, atol = 1e-11)
         q = torch.nn.Parameter(w0.float())
         ref = torch.optim.AdamW([q], lr = 3e-4, weight_decay = weight_decay, foreach = True)
         q.grad = g0.float()
@@ -319,3 +329,64 @@ def test_bitsandbytes_rounds_in_one_pass(sr, monkeypatch):
     assert opt.__dict__.get("_unsloth_sr_triton_rounds", 0) == 0
     kept = {k: (v @ ref / (ref @ ref)).item() for k, v in [("one", one), ("two", two)]}
     assert abs(kept["one"] - 1) < 0.05 and abs(kept["two"] - 1) < 0.05, kept
+
+
+def test_launch_failure_after_the_probe_falls_back(sr, capsys):
+    """A launch that fails after the device probe passed (a specialisation the probe never compiled) must not end
+    training: the weights it did not reach take the float32 route with a correct step count, and so does every
+    later step on that device."""
+    g = torch.Generator().manual_seed(0)
+    params = [
+        torch.nn.Parameter((torch.randn(64, 48, generator = g) * 0.05).to(torch.bfloat16).cuda())
+        for _ in range(3)
+    ]
+    opt = torch.optim.AdamW(params, lr = 1e-3, weight_decay = 0.01)
+    sr.enable_bf16_stochastic_rounding(opt, seed = 1, verbose = False)
+    assert sr._triton_ok(params[0].device)
+    real, calls = sr._adamw_kernel, []
+
+    class FailOnFifth:
+        def __getitem__(self, grid):
+            def launch(*args, **kwargs):
+                calls.append(1)
+                if len(calls) == 5:
+                    raise RuntimeError("simulated compile failure")
+                return real[grid](*args, **kwargs)
+
+            return launch
+
+    sr._adamw_kernel = FailOnFifth()
+    for _ in range(3):
+        for p in params:
+            p.grad = (torch.randn(p.shape, generator = g) * 1e-3).to(torch.bfloat16).cuda()
+        opt.step()
+    assert len(calls) == 5  # step 1: 3 launches; step 2: one launch, the failing one; step 3: none
+    assert opt.__dict__["_unsloth_sr_fused_steps"] == 4
+    assert sr._TRITON_OK[str(params[0].device)] is False
+    assert "failed on" in capsys.readouterr().out
+    for p in params:
+        assert float(opt.state[p]["step"]) == 3
+        assert opt.state[p]["exp_avg"].dtype == torch.bfloat16 and torch.isfinite(p).all()
+
+
+def test_bitsandbytes_round_failure_after_the_probe_falls_back(sr):
+    bnb = pytest.importorskip("bitsandbytes")
+    p = torch.nn.Parameter((torch.randn(256, 192, device = "cuda") * 0.05).to(torch.bfloat16))
+    opt = bnb.optim.AdamW8bit([p], lr = 1e-3, min_8bit_size = 256)
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    assert sr._triton_ok(p.device)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("simulated compile failure")
+
+    sr._round_cuda_ = broken
+    before = p.detach().clone()
+    for _ in range(2):
+        p.grad = (torch.randn(p.shape, device = "cuda") * 1e-3).to(torch.bfloat16)
+        opt.step()
+    assert opt.__dict__.get("_unsloth_sr_triton_rounds", 0) == 0
+    assert (
+        p.dtype == torch.bfloat16
+        and not torch.equal(p.detach(), before)
+        and torch.isfinite(p).all()
+    )

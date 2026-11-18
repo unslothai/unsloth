@@ -241,10 +241,20 @@ class _Float32Step:
         p.data = self.data
         if exc[0] is None:
             if self.triton_round:
-                seed = _seed_for(self.optimizer, p, self.seed, _step_of(self.optimizer, p))
-                _round_cuda_(self.data, stepped, seed)
-                _count(self.optimizer, "_unsloth_sr_triton_rounds")
-            else:
+                try:
+                    seed = _seed_for(self.optimizer, p, self.seed, _step_of(self.optimizer, p))
+                    _round_cuda_(self.data, stepped, seed)
+                    _count(self.optimizer, "_unsloth_sr_triton_rounds")
+                except torch.cuda.OutOfMemoryError:
+                    raise
+                except Exception as error:  # a launch failing after the device probe passed
+                    _TRITON_OK[str(p.device)] = False
+                    print(
+                        f"Unsloth: one-pass bfloat16 stochastic rounding failed on {p.device} ({error}); "
+                        "using the float32 route there."
+                    )
+                    self.triton_round = False
+            if not self.triton_round:
                 stochastic_round_to_bf16_(self.data, stepped, _reseed(self.optimizer, p, self.seed))
         p.grad = self.grad
         return False
@@ -313,8 +323,8 @@ def _wrap_torch(optimizer, tracked, seed):
                 if mine and _fused_group(self, group):
                     fused = [p for p in mine if _fused_param(self, p)]
                     if fused:
-                        _fused_adamw_step(self, group, fused, seed)
-                        done = {id(p) for p in fused}
+                        left = {id(p) for p in _fused_adamw_step(self, group, fused, seed)}
+                        done = {id(p) for p in fused if id(p) not in left}
                         mine = [p for p in mine if id(p) not in done]
                 for p in mine:
                     self.param_groups = [dict(group, params = [p])]
@@ -412,7 +422,8 @@ def _scalar_dtype():
 
 
 def _fused_adamw_step(optimizer, group, params, seed):
-    """One kernel per weight: AdamW in float32 registers, weight and both bfloat16 moments rounded stochastically."""
+    """One kernel per weight: AdamW in float32 registers, weight and both bfloat16 moments rounded stochastically.
+    Returns the weights it could not step (a failed launch), for the float32 route."""
     lr, eps, weight_decay = (_float(group[k]) for k in ("lr", "eps", "weight_decay"))
     beta1, beta2 = (_float(b) for b in group["betas"])
     on_device = bool(group.get("fused") or group.get("capturable"))
@@ -441,35 +452,53 @@ def _fused_adamw_step(optimizer, group, params, seed):
         here = [s for s in dev if s.device == device]
         values.update(zip(map(id, here), torch.stack([s.float() for s in here]).tolist()))
     decay = 1 - lr * weight_decay
-    for p, state, step in zip(params, states, steps):
+    stepped, left = [], []
+    for i, (p, state, step) in enumerate(zip(params, states, steps)):
         t = step.item() if step.device.type == "cpu" else values[id(step)]
         bc1 = 1 - beta1**t
         bc2 = 1 - beta2**t
         n = p.numel()
-        if not n:
-            continue
-        with torch.cuda.device(p.device):
-            _adamw_kernel[_grid(n)](
-                p.data,
-                p.grad,
-                state["exp_avg"],
-                state["exp_avg_sq"],
-                n,
-                _seed_for(optimizer, p, seed, int(t)),
-                decay,
-                1 - beta1,
-                beta2,
-                1 - beta2,
-                (lr / bc1) * -1,
-                bc2**0.5,
-                eps,
-                BLOCK = _BLOCK,
-                enable_fp_fusion = False,
-            )
+        if n:
+            try:
+                with torch.cuda.device(p.device):
+                    _adamw_kernel[_grid(n)](
+                        p.data,
+                        p.grad,
+                        state["exp_avg"],
+                        state["exp_avg_sq"],
+                        n,
+                        _seed_for(optimizer, p, seed, int(t)),
+                        decay,
+                        1 - beta1,
+                        beta2,
+                        1 - beta2,
+                        (lr / bc1) * -1,
+                        bc2**0.5,
+                        eps,
+                        BLOCK = _BLOCK,
+                        enable_fp_fusion = False,
+                    )
+            except torch.cuda.OutOfMemoryError:
+                raise
+            except Exception as exc:
+                # A launch failed after the device probe passed (a specialisation the probe did not compile).
+                # Nothing was written for this weight or the ones after it: undo their step count and hand them
+                # to the float32 route, which every later step on this device takes too.
+                _TRITON_OK[str(p.device)] = False
+                print(
+                    f"Unsloth: one-pass bfloat16 stochastic rounding failed on {p.device} ({exc}); "
+                    "using the float32 route there."
+                )
+                for s in steps[i:]:
+                    s.sub_(1)
+                left = params[i:]
+                break
+        stepped.append(p)
     increment = getattr(torch.autograd.graph, "increment_version", None)
-    if increment is not None:
-        increment([p.data for p in params])
-    _count(optimizer, "_unsloth_sr_fused_steps", len(params))
+    if increment is not None and stepped:
+        increment([p.data for p in stepped])
+    _count(optimizer, "_unsloth_sr_fused_steps", len(stepped))
+    return left
 
 
 def _kind(optimizer):
