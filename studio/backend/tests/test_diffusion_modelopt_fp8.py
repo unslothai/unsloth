@@ -329,11 +329,8 @@ def test_the_w8a8_linears_match_the_dequantized_reference_within_fp8_tolerance(
         y = layer(x.to(torch.bfloat16)).float()
         dense = x.to(torch.bfloat16).float() @ w.T
         if layer.path == "reasoner":
-            # W8A16: bf16 activations on the widened weight
-            expected = torch.nn.functional.linear(
-                x.to(torch.bfloat16), w.to(torch.bfloat16)
-            ).float()
-            assert torch.allclose(y, expected, rtol = 1e-2, atol = 1e-3), stem
+            # W8A16: bf16 activations on the exactly widened weight, the scale on the output (bf16 rounding only)
+            assert torch.allclose(y, dense, rtol = 2e-2, atol = 1e-2 * dense.abs().max().item()), stem
         else:
             exact = _w8a8_reference(x, w, s_x, runtime)
             assert torch.allclose(y, exact, rtol = 2e-2, atol = 1e-2 * exact.abs().max().item()), stem
@@ -371,8 +368,8 @@ def test_the_step_policy_runs_the_first_and_last_three_steps_w8a16(tmp_path, ste
         y = layer(x).float()
     w = ref[stem + ".weight"]
     if a16:
-        expected = torch.nn.functional.linear(x, w.to(torch.bfloat16)).float()
-        assert torch.allclose(y, expected, rtol = 1e-2, atol = 1e-3)
+        expected = x.float() @ w.T
+        assert torch.allclose(y, expected, rtol = 2e-2, atol = 1e-2 * expected.abs().max().item())
     else:
         assert torch.allclose(
             y, _w8a8_reference(x.float(), w, scales[stem], "static"), rtol = 2e-2, atol = 1e-2
