@@ -415,7 +415,7 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
 _MEMORY_SUMMARIES_MAX = 64
 _memory_summaries: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
 _memory_lock = threading.Lock()
-# A thinking model can spend the whole summary cap on reasoning; another model on the thread may not.
+# Summaries that hit the token cap or the timeout: retrying only grows the input. Per model; Compact chat still retries.
 _cut_off_summaries: "OrderedDict[tuple[str, Optional[str]], None]" = OrderedDict()
 
 
