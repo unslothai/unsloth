@@ -191,6 +191,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -3363,11 +3364,11 @@ export function ComposerModelPicker({
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
   const [roomBelow, setRoomBelow] = useState<number | null>(null);
-  const dropsDown = open && openSide === "bottom";
-  useEffect(() => {
-    if (!(dropsDown && panel)) {
-      setDropOffset(PICKER_GAP);
-      setRoomBelow(null);
+  // Not `open &&`: a closing panel keeps its offset through the exit animation.
+  const dropsDown = openSide === "bottom";
+  // Layout, not passive: the first painted frame must already sit at the measured offset.
+  useLayoutEffect(() => {
+    if (!(open && dropsDown && panel)) {
       return;
     }
     const place = () => {
@@ -3387,7 +3388,7 @@ export function ComposerModelPicker({
       observer.disconnect();
       window.removeEventListener("resize", place);
     };
-  }, [dropsDown, panel]);
+  }, [open, dropsDown, panel]);
   // The open-time rect is stale once the trigger moves or lays out late.
   useEffect(() => {
     const trigger = triggerRef.current;
@@ -3426,7 +3427,15 @@ export function ComposerModelPicker({
       // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
       const trigger = triggerRef.current;
       const rect = trigger?.getBoundingClientRect() ?? null;
-      setOpenSide(pickerSide(side, rect, window.innerHeight));
+      const nextSide = pickerSide(side, rect, window.innerHeight);
+      setOpenSide(nextSide);
+      // Seeded here: unset, the first frame lays out at the full 540px cap and rides up too far.
+      setDropOffset(PICKER_GAP);
+      setRoomBelow(
+        nextSide === "bottom" && rect
+          ? pickerRoomBelow(rect.bottom, window.innerHeight)
+          : null,
+      );
       const scale = trigger
         ? Number.parseFloat(
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
