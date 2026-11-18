@@ -553,7 +553,6 @@ export interface RowSizeInput {
   sizeBytes?: number | null;
   /** Discover only: the Hub's estimate, unquantized weights, so a GGUF repo's never shows. */
   estimatedBytes?: number | null;
-  /** Discover only: params already resolved from the search result. */
   hubParams?: string | null;
 }
 
