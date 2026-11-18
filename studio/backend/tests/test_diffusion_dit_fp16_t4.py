@@ -538,3 +538,20 @@ def test_fast_lora_matches_peft_under_fp16_autocast(monkeypatch):
         if a.requires_grad:
             assert b.grad.dtype is torch.float32
             torch.testing.assert_close(a.grad, b.grad, rtol = 1e-3, atol = 1e-5, msg = n)
+
+
+def test_dequant_cache_stays_off_on_the_fp16_path(monkeypatch):
+    """bf16 nf4 runs keep main's dequant cache; the fp16 path leaves the card's room to the checkpointing budget."""
+    from core.training import diffusion_lora_fast as fl
+
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE", raising = False)
+    assert dit._dequant_cache_wanted(True, "cuda", False)
+    assert not dit._dequant_cache_wanted(True, "cuda", True)
+    assert not dit._dequant_cache_wanted(False, "cuda", False)
+    assert not dit._dequant_cache_wanted(True, "xpu", False)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE", "0")
+    assert not fl.dequant_cache_enabled() and not dit._dequant_cache_wanted(True, "cuda", False)
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: True)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE")
+    assert not dit._dequant_cache_wanted(True, "cuda", False)

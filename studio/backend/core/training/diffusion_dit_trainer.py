@@ -3310,7 +3310,6 @@ def _train_dit(
         bucket_activation_scale,
         cache_vram_handler,
         set_vram_request_handler,
-        dequant_cache_enabled,
         fast_lora_enabled,
         fast_lora_stats,
         install_fast_lora,
@@ -3323,7 +3322,7 @@ def _train_dit(
     fast_lora_layers = 0
     fast_lora_hooks = ()
     if not compiled and device in ("cuda", "xpu") and fast_lora_enabled():
-        if base_is_bnb and device == "cuda" and not torch_is_rocm() and dequant_cache_enabled():
+        if _dequant_cache_wanted(base_is_bnb, device, fp16_amp):
             dequant_cache = Nf4DequantCache()
         fast_lora_layers = install_fast_lora(transformer, dequant_cache)
         if fast_lora_layers:
@@ -3818,6 +3817,21 @@ def _train_dit(
         discarded = bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)
+
+
+def _dequant_cache_wanted(base_is_bnb, device, fp16_amp) -> bool:
+    """nf4 dequant cache on CUDA; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget.
+
+    On a T4 both plan from step 1's free memory, so step 2 ran out of memory and fell back to checkpointing every block
+    (2.98 s/step against 2.27 with the budget alone)."""
+    from core.training.diffusion_lora_fast import dequant_cache_enabled
+    return (
+        base_is_bnb
+        and device == "cuda"
+        and not fp16_amp
+        and not torch_is_rocm()
+        and dequant_cache_enabled()
+    )
 
 
 def _optimizer_update(optimizer, lr_sched, scaler, fp16_amp) -> bool:
