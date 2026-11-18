@@ -516,3 +516,19 @@ def test_beta1_at_or_below_half_matches_torch_lerp(sr):
         ).sum()
         bitwise = torch.version.hip is None and not triton.__version__.startswith("3.6.")
         assert off.item() <= (0 if bitwise else n >> 12), off.item()
+
+
+def test_one_pass_step_bumps_the_parameters_version(sr):
+    """The kernel writes the weight's storage: a graph saved before the step must refuse to backpropagate."""
+    p = torch.nn.Parameter(torch.randn(4096, device = "cuda").to(torch.bfloat16))
+    opt = torch.optim.AdamW([p], lr = 1e-3)
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    x = torch.randn(4096, device = "cuda", dtype = torch.bfloat16)
+    (p * x).sum().backward(retain_graph = False)
+    saved = (p * p).sum()
+    before = p._version
+    opt.step()
+    assert opt.__dict__["_unsloth_sr_fused_steps"] == 1
+    assert p._version > before
+    with pytest.raises(RuntimeError, match = "modified by an inplace operation"):
+        saved.backward()

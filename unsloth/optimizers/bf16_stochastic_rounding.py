@@ -552,9 +552,12 @@ def _fused_adamw_step(optimizer, group, params, seed):
                 left = params[i:]
                 break
         stepped.append(p)
+    # The kernel writes the storage directly: bump the parameters' own version counters (not a .data alias, which
+    # has its own), one tensor at a time since torch < 2.5 takes a single tensor.
     increment = getattr(torch.autograd.graph, "increment_version", None)
-    if increment is not None and stepped:
-        increment([p.data for p in stepped])
+    if increment is not None:
+        for p in stepped:
+            increment(p)
     _count(optimizer, "_unsloth_sr_fused_steps", len(stepped))
     return left
 
