@@ -414,6 +414,7 @@ function loadRowPages(options: {
       "../utils/chat-thread-tombstones": {
         isChatThreadDeleted: (id: string) => id === "gone",
       },
+      "../utils/remote-history-watch": { watchRemoteHistory: () => () => {} },
       "../utils/sidebar-row-pager": { RowPager },
       "../utils/sidebar-row-query": rowQuery,
       "./use-chat-sidebar-items": { groupThreads },

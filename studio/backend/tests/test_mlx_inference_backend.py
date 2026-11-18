@@ -138,6 +138,8 @@ PLAIN_HELPERS = {
     ),
     "_VERIFY_GDN_MAX_ROWS": 16,
     "_FIRST_USE_WORK": [0],
+    # Read by zoo's speculative.py head replay (unsloth_zoo #2474); the stub holds no QSA cache trims.
+    "_QSA_TRIM_HELD": [],
 }
 
 
@@ -152,10 +154,20 @@ def _unless_failed_buffer(error):
     """zoo re-raises a failed Metal command buffer (unsloth_zoo #2333); the stub has none to fail."""
 
 
+def _no_replay(*_args, **_kwargs):
+    """zoo's head-replay and lazy-verify helpers (unsloth_zoo #2474) need Metal and a QSA cache;
+    the stub answers as if no replay can be bound."""
+    return None
+
+
 NEUTRAL_PLAIN_HELPERS = {
     "fused_drafter_ops": _fused_drafter_ops,
     "fused_drafter_layers": _fused_drafter_ops,
     "_unless_failed_buffer": _unless_failed_buffer,
+    "_ast_fingerprint": _no_replay,
+    "_bindings_intact": _no_replay,
+    "_resolved_bindings": _no_replay,
+    "_verify_with_lazy_replay": _no_replay,
 }
 
 
@@ -7607,6 +7619,28 @@ def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
     assert payload.tools[0]["type"] == "function"
 
 
+def test_an_mlx_count_merges_memory_into_the_normalized_developer_turn(monkeypatch):
+    from core import chat_memory
+
+    monkeypatch.setattr(
+        chat_memory, "context", lambda *_: {"text": "Remembered preference: concise answers"}
+    )
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = [
+            {"role": "developer", "content": "Follow these instructions."},
+            {"role": "user", "content": "hello"},
+        ],
+        enable_tools = False,
+    )
+    assert backend.messages == [{"role": "user", "content": "hello"}]
+    assert backend.system == (
+        "Follow these instructions.\n\nRemembered preference: concise answers"
+    )
+
+
 def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
     """Request wins verbatim; none takes the trained window; unreadable dims yield nothing."""
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -8323,6 +8357,77 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
     assert (
         _apply_compaction_nudge("", backend.tools) in backend.system
     ), "the count omitted the compaction nudge the completion appends"
+
+
+class _LengthCountingBackend(_RenderRecordingBackend):
+    """Counts system and content characters plus five per tool, so each part is predictable."""
+
+    def __init__(self):
+        super().__init__()
+        self.systems = []
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        super().count_chat_tokens(messages, system_prompt, **kwargs)
+        self.systems.append(system_prompt)
+        tokens = sum(len(str(m.get("content") or "")) for m in messages) + len(system_prompt)
+        return tokens + 5 * len(kwargs.get("tools") or []), "mlx/model"
+
+
+def test_an_mlx_breakdown_sums_to_the_total_and_has_no_prompt(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    backend = _LengthCountingBackend()
+    served = _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        enabled_tools = ["web_search"],
+        breakdown = True,
+    )
+    body = json.loads(served.body)
+    parts = body["breakdown"]
+    full, bare, no_instructions = backend.systems
+    assert no_instructions == "" and full.startswith(bare) and len(full) > len(bare)
+    # The tool nudge is in the prompt only for the tools, so it counts under them.
+    assert parts["system"] == len(bare)
+    assert parts["tools"] == 5 + len(full) - len(bare)
+    assert parts["messages"] == 2
+    assert parts["system"] + parts["tools"] + parts["messages"] == body["input_tokens"]
+    assert parts["tool_names"] == ["web_search"]
+    # The MLX count tokenizes in the worker and returns no rendered text.
+    assert body["prompt"] is None
+
+
+def test_an_mlx_count_keeps_the_nudge_when_a_forced_tool_narrows_to_none(monkeypatch):
+    """Only /context's tool-free render drops the nudge: the completion still sends it here."""
+    from core.inference import chat_template_helpers
+    from routes import inference as route
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(chat_template_helpers, "renderable_tool_catalog", lambda *a, **k: [])
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        enabled_tools = ["web_search"],
+        tool_choice = {"type": "function", "function": {"name": "web_search"}},
+    )
+    assert not backend.tools
+    nudge = route._build_tool_action_nudge(
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        model_name = "mlx/model",
+        full_access = False,
+        user_folder = None,
+    )
+    assert backend.system == nudge
 
 
 def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):

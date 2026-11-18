@@ -15,6 +15,33 @@ import { en } from "../src/i18n/locales/en.ts";
 const UPDATE_ENTRY = "settings.about.updates";
 const INTERFACE_SCALE_ENTRY = "settings.appearance.custom.interfaceScale.label";
 
+test("composer searches route to Chat, with no stale Appearance results", () => {
+  const keys = [
+    "composerSettings.title",
+    "composerSettings.sendShortcut",
+    "composerSettings.followUp",
+    "composerSettings.shareDraft",
+    "composerSettings.plainText",
+    "composerSettings.richPaste",
+    "settings.chat.pastedTextThreshold",
+    "composerSettings.showContext",
+    "settings.appearance.custom.chatWidth.label",
+    "settings.chat.composerPosition",
+    "chatBackground.outline",
+    "settings.appearance.custom.sentAttachments.label",
+  ];
+  for (const desktop of [false, true]) {
+    const index = createSettingsSearchIndex({ desktop, closeToTray: desktop, menuBarIcon: false });
+    for (const key of keys) {
+      const tabs = Object.entries(index).flatMap(([tab, entries]) =>
+        entries.filter((entry) => entry === key).map(() => tab),
+      );
+      assert.deepEqual(tabs, ["chat"], `${key} has exactly one destination`);
+    }
+    assert.ok(!index.appearance.includes("settings.appearance.composer.title"));
+  }
+});
+
 test("desktop update searches route to General", () => {
   const index = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
 
@@ -112,6 +139,18 @@ test("close to tray is searchable only on supported desktops", () => {
   assert.ok(supported.general.includes(CLOSE_TO_TRAY_ENTRY));
   assert.ok(!mac.general.includes(CLOSE_TO_TRAY_ENTRY));
   assert.ok(!browser.general.includes(CLOSE_TO_TRAY_ENTRY));
+});
+
+const KEEP_AWAKE_ENTRY = "settings.general.power.keepAwake";
+
+test("keep computer awake is searchable on every desktop and never in a browser", () => {
+  const windows = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
+  const mac = createSettingsSearchIndex({ desktop: true, closeToTray: false, menuBarIcon: true });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
+
+  assert.ok(windows.general.includes(KEEP_AWAKE_ENTRY));
+  assert.ok(mac.general.includes(KEEP_AWAKE_ENTRY));
+  assert.ok(!browser.general.includes(KEEP_AWAKE_ENTRY));
 });
 
 const MENU_BAR_ICON_ENTRY = "settings.general.startup.menuBarIcon";

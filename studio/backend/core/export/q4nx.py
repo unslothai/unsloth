@@ -21,13 +21,16 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# GGUF types FastFlowLM's Q4NX packs directly; any other quant is dequantized and rounded again.
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
+# Tried first: what each converter packs as is for its models; anything else is rounded again.
+DIRECT_QUANTS = {"q4nx": ("q4_0", "q4_1"), "q4k": ("q4_k_m",)}
 # Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
 # No config.json is written: without FLM's flm_version, FLM deletes the weights and re-pulls.
 CONFIG_FILES = ("config.json", "generation_config.json")
 CONVERTER_MODULES = ("torch", "gguf", "einops", "safetensors", "numpy", "mpmath")
+# The source GGUF's architecture and geometry, which the NPU picker matches to FastFlowLM kernels.
+SOURCE_FILE = "q4nx_source.json"
 
 
 def _installer():
@@ -39,15 +42,20 @@ def _installer():
     return install_q4nx_converter
 
 
-def source_gguf(ggufs: List[str], quant_methods: List[str]) -> Optional[str]:
-    """The exported GGUF to convert: the first selected quant Q4NX packs directly."""
-    for quant in quant_methods:
-        if quant not in SOURCE_QUANTS:
-            continue
-        for path in ggufs:
-            if os.path.basename(path).lower().endswith(f".{quant}.gguf"):
-                return path
-    return None
+def source_ggufs(ggufs: List[str], quant_methods: List[str]) -> List[str]:
+    """Selected source quants to try in order: the ones the architecture's converter packs as is first."""
+    candidates = [
+        (quant, path)
+        for quant in quant_methods
+        if quant in SOURCE_QUANTS
+        for path in ggufs
+        if os.path.basename(path).lower().endswith(f".{quant}.gguf")
+    ]
+    if not candidates:
+        return []
+    converter = _installer().converter_for_architecture(_gguf_architecture(candidates[0][1]))
+    direct = DIRECT_QUANTS[converter]
+    return [path for quant, path in sorted(candidates, key = lambda c: c[0] not in direct)]
 
 
 def require_converter_deps() -> None:
@@ -60,17 +68,69 @@ def require_converter_deps() -> None:
         )
 
 
+# Header scans: gguf.GGUFReader parses every vocab array.
 def _gguf_architecture(gguf_path: str) -> str:
+    from utils.models.gguf_metadata import read_gguf_architecture
+    return read_gguf_architecture(str(gguf_path)) or ""
+
+
+# ggml-org/llama.cpp#32102 merges these; the pinned q4k converter drops them and exits 0.
+_MERGED_LINEAR_ATTENTION = (".attn_qkv_gate.weight", ".ssm_beta_alpha.weight")
+
+
+def _has_merged_linear_attention(gguf_path: str) -> bool:
     import gguf
-    field = gguf.GGUFReader(gguf_path).fields.get("general.architecture")
-    return field.contents() if field is not None else ""
+    return any(
+        t.name.endswith(_MERGED_LINEAR_ATTENTION) for t in gguf.GGUFReader(gguf_path).tensors
+    )
 
 
-# convert.py's __main__ overwrites sys.argv and importing it first is circular.
+class SourceMismatch(RuntimeError):
+    """The GGUF holds blocks the converter would pack in a layout the model does not read."""
+
+
+_MISMATCH_EXIT = 3
+# Q4_0 / Q4_1 / Q8_0 (q4k: Q4_K) blocks are packed as is, but FastFlowLM reads each slot in the
+# config's layout, so a mismatch decodes as noise: refuse it.
+_GUARD = f"""
+from gguf import GGMLQuantizationType as T
+from q4nx.gguf_tensor import GGUFTensor
+_quant = (T.Q4_0, T.Q4_1, T.Q4_K, T.Q8_0)
+_unpack = GGUFTensor.unpack
+
+def _checked_unpack(self, target):
+    packed = self.get_used_quantization_type(target)
+    if target in _quant and packed in _quant and packed != target:
+        print(
+            f"{{self.name}} is {{packed.name}}, which the Q4NX converter packs as is into a model "
+            f"that reads {{target.name}} there, so FastFlowLM would read noise. Convert a Q4_K_M "
+            f"GGUF instead{{'' if target == T.Q4_K else ' or a ' + target.name + ' one'}}.",
+            file = sys.stderr,
+        )
+        sys.exit({_MISMATCH_EXIT})
+    return _unpack(self, target)
+
+GGUFTensor.unpack = _checked_unpack
+"""
+# convert.py's __main__ overwrites sys.argv and importing it first is circular. argv[3] names the
+# family: q4k sizes Qwen3.5 by geometry only when general.name says Qwen3.x, a fine-tune's is "Model".
 _RUN_CONVERTER = (
-    "import sys; from q4nx import create_converter; "
-    "create_converter(sys.argv[1], '').convert(q4nx_path = sys.argv[2], weights_type = 'language')"
+    "import sys; from q4nx import create_converter; family = ''\n"
+    + _GUARD
+    + "if len(sys.argv) > 3:\n"
+    "    from gguf import GGUFReader; from q4nx.constants import ModelArchNames\n"
+    "    from q4nx.model_converter import _resolve_qwen35\n"
+    "    family = ModelArchNames[_resolve_qwen35(GGUFReader(sys.argv[1]), sys.argv[3], None)][0]\n"
+    "create_converter(sys.argv[1], family).convert(q4nx_path = sys.argv[2], weights_type = 'language')"
 )
+# MiniCPM-V 4.6 also exports as qwen35, so the HF config decides, not the GGUF.
+_QWEN35_MODEL_TYPES = ("qwen3_5", "qwen3_5_text")
+
+
+def _family_hint(architecture: str, config: Optional[dict]) -> Optional[str]:
+    if architecture == "qwen35" and (config or {}).get("model_type") in _QWEN35_MODEL_TYPES:
+        return "Qwen3.5"
+    return None
 
 
 @contextlib.contextmanager
@@ -100,12 +160,93 @@ def staged_output(out_dir: Path):
         shutil.rmtree(staging, ignore_errors = True)
 
 
-def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
+# (layers, hidden, experts) of FastFlowLM's AIE2P catalog (src/xclbins/*-NPU2 config.json):
+# the architecture alone is not enough, the converter applies the 35B-A3B config to any qwen35moe.
+_NPU_SHAPES = {
+    "llama": {
+        (16, 2048, 0): "Llama 3.2 1B",
+        (28, 3072, 0): "Llama 3.2 3B",
+        (32, 2560, 0): "Nanbeige4.1 3B",
+        (32, 4096, 0): "Llama 3.1 8B",
+    },
+    "qwen2": {(36, 2048, 0): "Qwen2.5 3B"},
+    "qwen2vl": {(36, 2048, 0): "Qwen2.5-VL 3B"},
+    "qwen3": {
+        (28, 1024, 0): "Qwen3 0.6B",
+        (28, 2048, 0): "Qwen3 1.7B",
+        (36, 2560, 0): "Qwen3 4B",
+        (36, 4096, 0): "Qwen3 8B",
+    },
+    "qwen3vl": {(36, 2560, 0): "Qwen3-VL 4B"},
+    "qwen35": {
+        (24, 1024, 0): "Qwen3.5 0.8B",
+        (24, 2048, 0): "Qwen3.5 2B",
+        (32, 2560, 0): "Qwen3.5 4B",
+        (32, 4096, 0): "Qwen3.5 9B",
+    },
+    "qwen35moe": {(40, 2048, 256): "Qwen3.5 / 3.6 35B-A3B"},
+    "gemma3": {(26, 1152, 0): "Gemma 3 1B", (34, 2560, 0): "Gemma 3 4B"},
+    "gemma4": {
+        (35, 1536, 0): "Gemma 4 E2B",
+        (42, 2560, 0): "Gemma 4 E4B",
+        (48, 3840, 0): "Gemma 4 12B",
+    },
+    "lfm2": {(16, 2048, 0): "LFM2 1.2B", (30, 2048, 0): "LFM2 2.6B"},
+    "phi3": {(32, 3072, 0): "Phi-4 mini"},
+    "gpt-oss": {(24, 2880, 32): "gpt-oss 20B"},
+}
+_GEOMETRY_KEYS = frozenset(
+    {"block_count", "embedding_length", "expert_count", "nextn_predict_layers"}
+)
+
+
+def require_npu_geometry(gguf_path: str) -> None:
+    """Refuse a GGUF of a size FastFlowLM cannot run on the NPU, before installing the converter."""
+    from utils.models.gguf_metadata import _parse_gguf_arch_uints, read_gguf_general_metadata
+
+    general = read_gguf_general_metadata(gguf_path) or {}
+    arch = (general.get("general.architecture") or "").lower()
+    shapes = _NPU_SHAPES.get(arch)
+    # Omni is matched by name in the converter and has no published catalog config.
+    names = (general.get(k, "").lower() for k in ("general.basename", "general.name"))
+    if shapes is None or (arch == "qwen35" and any("omni" in n for n in names)):
+        return
+    dims = _parse_gguf_arch_uints(gguf_path, _GEOMETRY_KEYS) or {}
+    if "block_count" not in dims or "embedding_length" not in dims:
+        return
+    # The MTP block is not a decoder layer FLM runs (the converter subtracts it too).
+    layers = dims["block_count"] - dims.get("nextn_predict_layers", 0)
+    hidden = dims["embedding_length"]
+    experts = dims.get("expert_count", 0)
+    if (layers, hidden, experts) in shapes:
+        return
+    nearest = sorted(shapes, key = lambda s: (abs(s[1] - hidden), abs(s[0] - layers)))
+    shape = f"{layers} layers, hidden size {hidden}" + (f", {experts} experts" if experts else "")
+    raise RuntimeError(
+        f"This {arch} model ({shape}) cannot be exported for the AMD NPU: FastFlowLM's Q4NX "
+        f"converter and NPU kernels cover only these {arch} sizes, nearest first: "
+        f"{', '.join(shapes[s] for s in nearest)}."
+    )
+
+
+def convert_gguf_to_q4nx(
+    gguf_path: str,
+    out_dir: Path,
+    config: Optional[dict] = None,
+) -> None:
     from utils.paths.storage_roots import studio_root
 
     require_converter_deps()
+    require_npu_geometry(gguf_path)
     installer = _installer()
-    name = installer.converter_for_architecture(_gguf_architecture(gguf_path))
+    architecture = _gguf_architecture(gguf_path)
+    name = installer.converter_for_architecture(architecture)
+    family = _family_hint(architecture, config) if name == "q4k" else None
+    if name == "q4k" and _has_merged_linear_attention(gguf_path):
+        raise RuntimeError(
+            f"{os.path.basename(gguf_path)} stores Qwen3.5's linear-attention weights merged, "
+            "which the Q4NX converter cannot read yet (it would write a model missing them)."
+        )
     script = installer.install(studio_root() / "q4nx_converter", name = name)
     out_dir.mkdir(parents = True, exist_ok = True)
     logger.info(
@@ -118,7 +259,14 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     # Dies with its parent: a cancelled export's worker must not leave a converter holding a model.
     process = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
-            [sys.executable, "-c", _RUN_CONVERTER, gguf_path, str(out_dir)],
+            [
+                sys.executable,
+                "-c",
+                _RUN_CONVERTER,
+                gguf_path,
+                str(out_dir),
+                *([family] if family else []),
+            ],
             cwd = str(script.parent),
             env = utf8_child_env(),
             stderr = subprocess.PIPE,
@@ -132,12 +280,24 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     _, stderr = process.communicate()
     if process.returncode != 0:
         tail = (stderr or "").strip().splitlines()
+        if process.returncode == _MISMATCH_EXIT and tail:
+            raise SourceMismatch(tail[-1])
         raise RuntimeError(
             f"The Q4NX converter exited with code {process.returncode}"
             + (f": {tail[-1]}" if tail else "")
         )
     if not (out_dir / "model.q4nx").is_file():
         raise RuntimeError(f"The Q4NX converter wrote no model.q4nx to {out_dir}")
+    write_source_record(gguf_path, out_dir, architecture)
+
+
+def write_source_record(gguf_path: str, out_dir: Path, architecture: str) -> None:
+    from utils.models.gguf_metadata import _parse_gguf_arch_uints
+
+    keys = frozenset({"block_count", "embedding_length", "expert_count", "nextn_predict_layers"})
+    geometry = _parse_gguf_arch_uints(gguf_path, keys) or {}
+    record = {"architecture": architecture, "gguf": os.path.basename(gguf_path), **geometry}
+    (out_dir / SOURCE_FILE).write_text(json.dumps(record, indent = 2) + "\n", encoding = "utf-8")
 
 
 def _fetch_base_file(base_model: str, name: str, token) -> Optional[Path]:
@@ -161,9 +321,8 @@ def _fetch_base_file(base_model: str, name: str, token) -> Optional[Path]:
 
 
 def _gguf_chat_template(gguf_path: Path) -> Optional[str]:
-    import gguf
-    field = gguf.GGUFReader(str(gguf_path)).fields.get("tokenizer.chat_template")
-    return field.contents() if field is not None else None
+    from utils.models.gguf_metadata import read_gguf_chat_template
+    return read_gguf_chat_template(str(gguf_path))
 
 
 def _token_ids(value) -> List[int]:
@@ -235,7 +394,7 @@ def convert_existing_gguf(
     if found["tokenizer_config.json"] is None:
         raise RuntimeError(f"{base_model} has no tokenizer_config.json, which FastFlowLM needs.")
     with _CONVERT_LOCK, staged_output(out_dir) as staging:
-        convert_gguf_to_q4nx(str(gguf_path), staging)
+        convert_gguf_to_q4nx(str(gguf_path), staging, _read_json(found["config.json"]))
         for name in TOKENIZER_FILES:
             # The HF tokenizer.json replaces the one the converter rebuilds from the GGUF.
             if found[name] is not None:

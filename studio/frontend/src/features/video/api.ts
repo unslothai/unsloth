@@ -4,11 +4,13 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Both /download-plan routes share a response model.
-import type { DiffusionDownloadPlan } from "@/features/images/api";
+import type { DiffusionDownloadPlan, LoraSpecInput } from "@/features/images/api";
+import type { CosmosGuardrailStatus } from "./cosmos-guardrail";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
 import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
+import type { RestyleStatusLike } from "./restyle-setup";
 
 // `requested` null = left to the backend; `source` is "auto" or "explicit"; `reason` is the tooltip.
 export interface VideoResolvedControl {
@@ -49,6 +51,11 @@ export interface VideoGenerationDefaults {
   canvas_max_pixels?: number | null;
   // Image-to-video families without that rule take the preset nearest the first frame's aspect.
   canvas_from_presets?: boolean;
+  // True when a keyframe keeps the chosen canvas (MiniMax-H3, as the reference workflow does); "Match source" is
+  // then only an explicit choice, sent as a size. Absent on older backends.
+  keyframe_keeps_canvas?: boolean;
+  // The page's Default preset size when it is one of resolution_presets; absent means the first preset.
+  default_resolution?: [number, number] | null;
   // Released schedule shifts, or null when unsupported.
   flow_shift?: number | null;
   audio_flow_shift?: number | null;
@@ -106,6 +113,10 @@ export interface VideoStatus {
   // nothing is loaded or the backend does not record it.
   // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
   resolved?: Record<string, VideoResolvedControl> | null;
+  // Adapters merged into the denoiser at load (VideoLoadRequest.loras); absent on an older backend.
+  baked_loras?: string[];
+  baked_lora_specs?: LoraSpecInput[];
+  lora_refusal?: string | null;
 }
 
 export interface VideoGenerateProgress {
@@ -175,6 +186,8 @@ export interface VideoLoadRequest {
   text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
   // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
   allow_oversized_load?: boolean;
+  // Catalog ids merged into the bf16 denoiser at load, so a new set or weight needs a reload. Pipeline loads only.
+  loras?: LoraSpecInput[];
 }
 
 export interface VideoReferenceVideo {
@@ -246,6 +259,8 @@ export interface GalleryVideo {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  // Adapters the load baked in; absent on older sidecars.
+  baked_loras?: string[];
   created_at: string;
   // Library state, not recipe; absent on older sidecars.
   pinned?: boolean;
@@ -460,10 +475,7 @@ export interface VideoRestyleProgress {
   seed?: number | null;
 }
 
-export interface VideoRestyleStatus {
-  available: boolean;
-  reason: string | null;
-}
+export type VideoRestyleStatus = RestyleStatusLike;
 
 export interface VideoRestylePreview {
   frames: number;
@@ -475,8 +487,33 @@ export interface VideoRestylePreview {
   edges_jpeg: string;
 }
 
+export async function fetchCosmosGuardrailStatus(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail"));
+}
+
+export async function startCosmosGuardrailInstall(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail/install", { method: "POST" }));
+}
+
 export async function fetchVideoRestyleStatus(): Promise<VideoRestyleStatus> {
   return parseJson(await authFetch("/api/inference/video/restyle/status"));
+}
+
+/** Install whatever Restyle is missing (server, weights); progress arrives through the status. */
+export async function startVideoRestyleSetup(hfToken?: string): Promise<VideoRestyleStatus> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
+    }),
+  );
+}
+
+export async function cancelVideoRestyleSetup(): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/setup/cancel", { method: "POST" }),
+  );
 }
 
 function restyleForm(video?: File | null, frames?: File[]): FormData {

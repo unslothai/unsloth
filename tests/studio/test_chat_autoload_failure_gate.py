@@ -65,6 +65,44 @@ def _load_request_source() -> str:
     return source
 
 
+# Inlined, not stubbed: auto-load admits another cache's snapshot rows by this picker rule.
+LOCAL_PATH = _source_path("studio/frontend/src/lib/local-path.ts")
+LOCAL_CACHE_SNAPSHOT = _source_path(
+    "studio/frontend/src/features/model-picker/inventory/local-cache-snapshot.ts"
+)
+
+
+# Inlined, not stubbed: the fallback toast and the record gate are what #18002 scenarios assert on.
+AUTO_LOAD_REMEMBERED = _source_path(
+    "studio/frontend/src/features/chat/utils/auto-load-remembered.ts"
+)
+
+
+def _auto_load_remembered_source() -> str:
+    source = AUTO_LOAD_REMEMBERED.read_text(encoding = "utf-8")
+    assert "export function rememberedMissNote(" in source
+    return source
+
+
+def _local_cache_snapshot_source() -> str:
+    """looksLikeLocalPath and isOtherCacheSnapshot, as shipped."""
+    path_source = "\n".join(
+        line
+        for line in LOCAL_PATH.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith("import ")
+    )
+    assert "export function looksLikeLocalPath(" in path_source
+    match = re.search(
+        r"^export function isOtherCacheSnapshot\(.*?^}\n",
+        LOCAL_CACHE_SNAPSHOT.read_text(encoding = "utf-8"),
+        re.S | re.M,
+    )
+    assert (
+        match
+    ), "isOtherCacheSnapshot is no longer a top-level function in local-cache-snapshot.ts"
+    return path_source + "\n" + match.group(0)
+
+
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
 # tests/studio/test_chat_mount_cli_load_adoption.py.
 PONYFILLS = """
@@ -501,6 +539,8 @@ const toast: any = Object.assign(
       return "toast-id";
     },
     success: (msg: string) => EVENTS.push({ kind: "toast.success", msg }),
+    warning: (msg: string, opts?: any) =>
+      EVENTS.push({ kind: "toast.warning", msg, description: opts?.description }),
     error: (msg: string, opts?: any) =>
       EVENTS.push({ kind: "toast.error", msg, description: opts?.description }),
     dismiss: () => EVENTS.push({ kind: "toast.dismiss" }),
@@ -780,6 +820,13 @@ async function loadModel(payload: any) {
 // studio/frontend/src/features/chat/lib/speech-only-status.ts. Real logic rather than a
 // neutral stub: a stub that always answered false would keep every scenario green if the
 // queued path's guard were removed.
+// No scenario serves a translation model, so both read as "not one".
+export function isTranslationOnlyRepo(_id: any): boolean {
+  return false;
+}
+export function isTranslationHeldSlot(_active: any, _selection: any): boolean {
+  return false;
+}
 export function isSpeechOnlyStatus(status: any): boolean {
   return (
     Boolean(status?.is_audio) &&
@@ -935,7 +982,14 @@ def _build_harness(run_dir: Path):
     # Any mention, not just a call; comments are stripped first.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
-    preamble = PREAMBLE + PONYFILLS + _wait_gate_source() + _load_request_source()
+    preamble = (
+        PREAMBLE
+        + PONYFILLS
+        + _wait_gate_source()
+        + _load_request_source()
+        + _local_cache_snapshot_source()
+        + _auto_load_remembered_source()
+    )
     missing = sorted(
         name
         for name in imported
@@ -1335,6 +1389,56 @@ def test_the_remembered_local_model_is_tried_before_a_smaller_one():
     )
 
     assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+
+
+# #18002: a stand-in for a last used model that failed must say so and must not replace it.
+def test_a_failed_last_used_model_is_kept_and_named_on_the_fallback():
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " lastLoaded: { id: 'r2', kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' },"
+        " load: (p) => p.model_path === 'r2' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == ["r2", "r1"]
+    assert out["result"]["loaded"] is True
+    assert [e for e in out["events"] if e["kind"] == "recordLastLocal"] == []
+    assert _toasts(out, "toast.success") == []
+    [warning] = _toasts(out, "toast.warning")
+    assert warning["msg"] == "Loaded r1 (UD-Q4_K_XL)"
+    assert warning["description"].startswith(
+        "Your last used model r2 (UD-Q4_K_XL) did not load: Failed to load model: "
+        "llama-server was stopped by the operating system"
+    )
+    assert _toasts(out, "toast.error") == []
+
+
+def test_a_last_used_model_that_loads_is_still_recorded_without_a_warning():
+    """Control for the test above: the healthy path keeps its plain success and record."""
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " lastLoaded: { id: 'r2', kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' } })"
+    )
+
+    assert _loaded_paths(out) == ["r2"]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == ["r2"]
+    assert _toasts(out, "toast.warning") == []
+
+
+def test_without_a_last_used_model_a_fallback_is_recorded_as_before():
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " load: (p) => p.model_path === 'r1' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == ["r1", "r2"]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == ["r2"]
+    assert _toasts(out, "toast.warning") == []
 
 
 def test_the_default_model_is_fetched_through_the_download_manager():

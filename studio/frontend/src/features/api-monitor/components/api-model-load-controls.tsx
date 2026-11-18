@@ -1,4 +1,9 @@
 import {
+  type ComposerModelPickerSource,
+  ComposerModelPickerContext,
+} from "@/components/assistant-ui/composer-model-picker/context";
+import { ComposerModelPicker } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
+import {
   chatLocalModelOptions,
   isExternalModelId,
   type useChatModelRuntime,
@@ -16,7 +21,6 @@ import {
   type LoraModelOption,
   type ModelConfigHandoffRequest,
   type ModelOption,
-  ModelSelector,
   type ModelSelectorChangeMeta,
   currentRuntimePerModelConfig,
   resolveResidentInitialConfig,
@@ -158,6 +162,9 @@ function useLoadAfterDownload(
   }, [pending, setPending, onStartError]);
 }
 
+const NO_EXTERNAL_MODELS: ComposerModelPickerSource["externalModels"] = [];
+const NO_CONNECTIONS: ComposerModelPickerSource["externalConnections"] = [];
+
 function toModelOptions(
   models: {
     id: string;
@@ -200,12 +207,6 @@ export function ApiModelLoadControls({
   onLastLoadChanged?: () => void;
 }): ReactElement {
   const { selectModel, loadNpuModel, refresh, ejectModel } = runtime;
-  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
-  const loadedNames = useMemo(
-    () =>
-      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
-    [loadedModels],
-  );
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -349,43 +350,78 @@ export function ApiModelLoadControls({
     runtimeCheckpoint != null &&
     publicModelId(runtimeCheckpoint) === effectiveModel;
 
+  const pickerSource = useMemo<ComposerModelPickerSource>(
+    () => ({
+      models,
+      loraModels,
+      externalModels: NO_EXTERNAL_MODELS,
+      onPick: (value, meta) => {
+        handlePick(value, meta);
+      },
+      // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
+      eject: (modelId) => {
+        if (!busy) {
+          handleEject(modelId);
+        }
+      },
+      ejectAll: () => {
+        if (!busy) {
+          onEjectAll?.();
+        }
+      },
+      externalConnections: NO_CONNECTIONS,
+      open: selectorOpen && !unloading,
+      onOpenChange: setSelectorOpen,
+      configRequest,
+      onConfigRequestAdopted: onConfigRequestAdopted ?? (() => undefined),
+      onFoldersChange: refreshLocalModels,
+      onModelsChange: () => {
+        refresh();
+        refreshLocalModels();
+      },
+      deleteDisabled: modelLoading,
+      activeModelConfig: runtimeIsResident ? runtimeConfig : null,
+      loadedContextLength: runtimeIsResident ? loadedContextLength : null,
+      loaded: isLoaded,
+      connections: false,
+      selection: {
+        id: effectiveModel,
+        ggufVariant: isLoaded ? activeGgufVariant : null,
+        loaded: isLoaded && !busy,
+        loading: busy,
+        placeholder: "Load models",
+      },
+    }),
+    [
+      models,
+      loraModels,
+      handlePick,
+      busy,
+      handleEject,
+      onEjectAll,
+      selectorOpen,
+      unloading,
+      configRequest,
+      onConfigRequestAdopted,
+      refreshLocalModels,
+      refresh,
+      modelLoading,
+      runtimeIsResident,
+      runtimeConfig,
+      loadedContextLength,
+      isLoaded,
+      effectiveModel,
+      activeGgufVariant,
+    ],
+  );
+
   return (
     <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
-      <ModelSelector
-        models={models}
-        loraModels={loraModels}
-        value={effectiveModel}
-        loaded={isLoaded}
-        activeGgufVariant={isLoaded ? activeGgufVariant : null}
-        activeModelConfig={runtimeIsResident ? runtimeConfig : null}
-        activeLoadedContextLength={
-          runtimeIsResident ? loadedContextLength : null
-        }
-        configRequest={configRequest}
-        onConfigRequestAdopted={onConfigRequestAdopted}
-        onValueChange={(value, meta) => {
-          handlePick(value, meta);
-        }}
-        // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
-        onEject={busy ? undefined : handleEject}
-        onEjectAll={busy || !onEjectAll ? undefined : onEjectAll}
-        loadedCount={loadedModels.length}
-        loadedNames={loadedNames}
-        onFoldersChange={() => {
-          refreshLocalModels();
-        }}
-        onModelsChange={() => {
-          refresh();
-          refreshLocalModels();
-        }}
-        deleteDisabled={modelLoading}
-        variant="ghost"
-        placeholder="Load models"
-        open={selectorOpen && !unloading}
-        onOpenChange={setSelectorOpen}
-        className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
-        contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
-      />
+      <div className="ml-1.5 min-w-0 max-w-[62vw] md:max-w-none">
+        <ComposerModelPickerContext.Provider value={pickerSource}>
+          <ComposerModelPicker side="bottom" align="start" />
+        </ComposerModelPickerContext.Provider>
+      </div>
       {actionError ? (
         <span
           role="alert"

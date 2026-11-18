@@ -1050,6 +1050,8 @@ def refine_plan_for_multigpu(
         or plan.estimates.get("runtime_headroom_mib")
     )
     headroom = int(measured_headroom or flat_headroom or 0)
+    if measured_headroom:
+        headroom += int(plan.estimates.get("lora_activation_mib") or 0)
     if plan.estimates.get("measured_omits_references"):
         # A split has no resident groups to stream back, so a reference request needs the flat headroom.
         headroom = max(headroom, int(flat_headroom or 0))
@@ -1072,17 +1074,40 @@ def refine_plan_for_multigpu(
             if logger is not None:
                 logger.info("diffusion.multigpu: layer split not used (%s)", hidden)
             return plan
-        refined = refine_plan_for_layer_split(
-            pipe,
-            plan,
-            selection = selection,
-            sizes = sizes,
-            primary_limit_mib = int(primary_limit),
-            secondary_limit_mib = card_limit,
-            headroom_mib = headroom,
-            overhead_mib = overhead,
-            logger = logger,
-        )
+
+        def split_with(primary_mib: int, card_mib: Callable[[int], Optional[int]], log: Any) -> Any:
+            return refine_plan_for_layer_split(
+                pipe,
+                plan,
+                selection = selection,
+                sizes = sizes,
+                primary_limit_mib = int(primary_mib),
+                secondary_limit_mib = card_mib,
+                headroom_mib = headroom,
+                overhead_mib = overhead,
+                logger = log,
+            )
+
+        # A split that fits at 85% of the primary's safe budget keeps that cut (its slack pays for unpriced reference
+        # requests). One that does not is retried with the primary at the full safe budget a one-card resident plan
+        # gets, since the planner already charges it the overhead and the whole request's activations. Secondaries
+        # keep the 85% margin: their one-block working set does not grow with the request.
+        safe_primary = max(int(primary_limit), int(budget) - reserve.get(primary, 0))
+        roomier = safe_primary > int(primary_limit)
+        from .diffusion_layer_split_plan import _DECLINES, FIT_DECLINE, _record_decline
+
+        with contextlib.suppress(TypeError):
+            _DECLINES.pop(pipe, None)  # what the first try records is this attempt's own decline
+        refined = split_with(int(primary_limit), card_limit, None if roomier else logger)
+        if getattr(refined, "layer_split", None) is None and roomier:
+            try:
+                declined = str(_DECLINES.get(pipe) or "")
+            except TypeError:
+                declined = ""
+            if declined.startswith(FIT_DECLINE):
+                refined = split_with(safe_primary, card_limit, logger)
+            elif declined:
+                _record_decline(pipe, declined, logger)  # the first try's decline, logged once
         split = getattr(refined, "layer_split", None)
         if split is not None:
             _record_decision(

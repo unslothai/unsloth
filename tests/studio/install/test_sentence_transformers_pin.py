@@ -41,9 +41,17 @@ def _trains_with(transformers: Version, sentence_transformers: Version) -> bool:
     )
 
 
+def _requirement_files(root: pathlib.Path) -> list[pathlib.Path]:
+    """The shipped requirement files. install_python_stack._filter_requirements writes a
+    hidden `.<stem>-filtered-*.txt` copy beside its source and deletes it again, and tests
+    that drive the installer do that in this tree on other xdist workers, so a dot-named
+    file can vanish between rglob and the read."""
+    return [path for path in sorted(root.rglob("*.txt")) if not path.name.startswith(".")]
+
+
 def test_pinned_sentence_transformers_can_log_with_the_pinned_transformers():
     checked = 0
-    for path in sorted(REQ_ROOT.rglob("*.txt")):
+    for path in _requirement_files(REQ_ROOT):
         st_pins = _pins(path, "sentence-transformers")
         tf_pins = _pins(path, "transformers")
         for marker, st in st_pins.items():
@@ -62,3 +70,16 @@ def test_pinned_sentence_transformers_can_log_with_the_pinned_transformers():
 def test_the_pair_that_broke_embedding_training_is_rejected():
     assert not _trains_with(Version("5.5.0"), Version("5.2.0"))
     assert _trains_with(Version("4.57.6"), Version("5.1.2"))
+
+
+def test_a_filtered_copy_vanishing_mid_scan_is_not_read(tmp_path):
+    (tmp_path / "single-env").mkdir()
+    (tmp_path / "single-env" / "data-designer-deps.txt").write_text("x==1\n", encoding = "utf-8")
+    # A dangling link reads like a copy deleted between rglob and read_text.
+    (tmp_path / "single-env" / ".data-designer-deps-filtered-bpfrp0a_.txt").symlink_to(
+        tmp_path / "gone.txt"
+    )
+    files = _requirement_files(tmp_path)
+    assert [p.name for p in files] == ["data-designer-deps.txt"]
+    for path in files:
+        _pins(path, "transformers")

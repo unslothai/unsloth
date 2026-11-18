@@ -5764,6 +5764,95 @@ def test_h3_modular_load_forwards_the_hub_token_to_the_component_loads(fake_runt
     assert "token" not in pipe.load_kwargs
 
 
+class _FailingVaeSpec:
+    def __init__(self, error):
+        self.pretrained_model_name_or_path = "unsloth/MiniMax-H3"
+        self.subfolder = "vae"
+        self.type_hint = _FakeModelMixin
+        self._error = error
+
+    def load(self, **kwargs):
+        if kwargs.get("use_safetensors") and getattr(self._error, "safetensors_error", None):
+            raise self._error.safetensors_error
+        raise self._error
+
+
+class _FakeModelMixin:
+    pass
+
+
+class _SwallowingModularPipe(_FakeModularPipe):
+    error: BaseException = OSError()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.vae = None
+        self._component_specs = {"vae": _FailingVaeSpec(type(self).error)}
+
+    def load_components(self, **kwargs):
+        super().load_components(**kwargs)
+        for name, spec in self._component_specs.items():
+            try:
+                setattr(self, name, spec.load(**kwargs))
+            except Exception:  # noqa: BLE001 -- diffusers' own behaviour
+                pass
+
+
+def _disk_full_then_bin_404() -> BaseException:
+    """ENOSPC hidden behind the .bin 404 unless asked for safetensors only."""
+    import errno
+
+    error = OSError(
+        "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.bin."
+    )
+    error.safetensors_error = OSError(errno.ENOSPC, "No space left on device")
+    return error
+
+
+def _bin_404_only() -> BaseException:
+    error = OSError(
+        "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.bin."
+    )
+    error.safetensors_error = OSError(
+        "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.safetensors."
+    )
+    return error
+
+
+@pytest.mark.parametrize(
+    "error, kind, text",
+    [
+        (OSError(28, "No space left on device"), "disk_full", "Not enough disk space"),
+        (_disk_full_then_bin_404(), "disk_full", "Not enough disk space"),
+        (_bin_404_only(), "not_found", "not found on Hugging Face"),
+    ],
+)
+def test_h3_modular_load_fails_when_the_vae_cannot_be_fetched(
+    fake_runtime, monkeypatch, error, kind, text
+):
+    from core.inference.diffusion_component_fetch import ComponentFetchError
+
+    monkeypatch.setattr(_SwallowingModularPipe, "error", error)
+    monkeypatch.setattr(sys.modules["diffusers"], "ModelMixin", _FakeModelMixin, raising = False)
+    monkeypatch.setattr(
+        _FakeModularPipeline,
+        "from_pretrained",
+        classmethod(
+            lambda cls, path, **kw: (
+                setattr(_FakeModularPipeline, "last", {"path": path, **kw}),
+                setattr(_FakeModularPipeline, "instance", _SwallowingModularPipe()),
+                _FakeModularPipeline.instance,
+            )[-1]
+        ),
+    )
+    with pytest.raises(ComponentFetchError) as info:
+        _load_h3_modular(VideoBackend())
+    assert info.value.component == "vae"
+    assert info.value.kind == kind
+    assert "the vae component of MiniMaxAI/MiniMax-H3 (vae/)" in str(info.value)
+    assert text in str(info.value)
+
+
 def test_h3_modular_load_pins_the_component_loads_to_the_studio_cache(fake_runtime):
     """Component loads need the Studio cache_dir, since HF_HUB_CACHE is a snapshot taken at import."""
     from core.inference.video import hub_cache_dir
@@ -7056,7 +7145,7 @@ def test_h3_native_generate_names_each_keyframe_combination(monkeypatch):
     assert calls[-1]["params"].init_img is None
 
 
-def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
+def test_h3_omitted_size_keeps_the_reference_canvas(monkeypatch):
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
@@ -7064,10 +7153,10 @@ def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
     backend.generate(prompt = "p", first_frame = _data_url(1920, 1080))
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
 
-    # With no first frame the last one drives it, matching the Diffusers blocks.
+    # The reference keyframe node keeps its 1344x768 whatever the keyframe's aspect (the frame is cropped onto it).
     backend.generate(prompt = "p", last_frame = _data_url(1080, 1920))
-    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (768, 1344)
-    assert calls[-1]["end_size"] == (768, 1344)
+    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
+    assert calls[-1]["end_size"] == (1344, 768)
 
     backend.generate(prompt = "p")
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
@@ -11228,6 +11317,20 @@ def test_ticker_never_walks_backwards_or_past_the_total(monkeypatch):
     assert ticker.completed() == 4
 
 
+def test_ticker_caught_up_waits_only_for_steps_before_the_lead(monkeypatch):
+    ticker, events = _ticker(monkeypatch, 4)
+    ticker.record(1)
+    assert ticker.caught_up(1)
+    ticker.record(2)
+    assert not ticker.caught_up(1)
+    events[0].done = True
+    assert ticker.caught_up(1)
+    ticker.record(3)
+    ticker.record(4)
+    # The last step is enqueued: nothing is left to cancel, so the host is never held.
+    assert ticker.caught_up(1)
+
+
 def test_ticker_falls_back_to_the_host_count_without_device_events(monkeypatch):
     # A CPU host has no events and no run-ahead, so the host count IS the progress.
     import core.inference.video as video_mod
@@ -11477,10 +11580,19 @@ def test_decode_phase_covers_the_audio_decoder_too():
     assert "decode" not in audio_vae.__dict__
 
 
-def _patch_events(monkeypatch, *, done: bool = False):
-    """Hand out fake CUDA events, optionally already complete. Returns the list they land in."""
+def _patch_events(
+    monkeypatch,
+    *,
+    done: bool = False,
+    run_ahead: bool = True,
+):
+    """Hand out fake CUDA events, optionally already complete. Returns the list they land in.
+
+    ``run_ahead`` lets the host outrun events that never finish, as it does when the hold is skipped."""
     import core.inference.video as video_mod
 
+    if run_ahead:
+        monkeypatch.setattr(video_mod, "_hold_for_device", lambda ticker, cancel: None)
     events: list = []
 
     def _fake_event():
@@ -11526,6 +11638,38 @@ def test_cancellation_is_still_checked_before_the_step_runs(fake_runtime, monkey
         backend.generate(prompt = "a fox", steps = 4)
     assert pipe.scheduler.calls == 1
     assert len(events) == 1
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+    ],
+)
+def test_a_cancel_stops_a_denoise_the_device_has_not_caught_up_with(
+    fake_runtime, monkeypatch, repo
+):
+    # A step the host has enqueued cannot be cancelled, so the host must not run ahead of the device.
+    events = _patch_events(monkeypatch, run_ahead = False)
+    backend = VideoBackend()
+    backend.load_pipeline(repo, model_kind = "pipeline")
+    outcome: dict = {}
+
+    def _run():
+        try:
+            backend.generate(prompt = "a fox", steps = 20, num_frames = 9, fps = 24)
+        except BaseException as exc:  # noqa: BLE001 -- asserted below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    worker.join(0.5)
+    backend.cancel_generate()
+    worker.join(10)
+    assert not worker.is_alive()
+    assert VIDEO_CANCELLED_MSG in str(outcome.get("error"))
+    assert len(events) <= 3, len(events)
 
 
 def test_phase_reads_encode_until_the_denoise_loop_starts(fake_runtime, monkeypatch):

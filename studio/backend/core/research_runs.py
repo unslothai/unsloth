@@ -24,8 +24,12 @@ from typing import Any, AsyncIterator, Callable, NamedTuple
 import httpx
 
 from auth import storage as auth_storage
+from core.inference.external_provider import _SERVED_WINDOW_PROVIDERS, ExternalProviderClient
 from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
+from core.inference.npu_backend import is_npu_model_path
+from core.inference.providers import validate_provider_base_url
+from core.inference.http_stream import aiter_sse_lines
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import (
@@ -67,7 +71,7 @@ from core.research.prompts import (
 )
 from loggers import get_logger
 from state.tool_policy import get_tool_policy
-from storage import providers_db
+from storage import credential_secrets, providers_db
 from storage import research_runs_db as db
 from storage.studio_db import (
     get_chat_message,
@@ -83,6 +87,7 @@ from utils.host_policy import (
 )
 
 logger = get_logger(__name__)
+_served_context_lengths: dict[tuple[Any, Any], int] = {}
 _URL_BLOCK = re.compile(
     r"Title:\s*(?P<title>[^\n]*)\nURL:\s*(?P<url>https?://[^\s]+)\nSnippet:\s*(?P<snippet>.*?)(?=\n\n---|\Z)",
     re.DOTALL,
@@ -143,11 +148,15 @@ _NAMED_MODEL_WAIT_SECONDS = 60.0
 # Transport keepalives prevent HTTP read timeouts without proving that a model is progressing.
 _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS = 120.0
 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
+# FastFlowLM serves one request at a time and Lemonade sends headers at once, so a queued call's wait counts.
+_NPU_FIRST_OUTPUT_TIMEOUT_SECONDS = 900.0
 # Cancellation is cooperative, so bound the unwind; a stuck iterator keeps a timed-out call open.
 _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+# Sent only while llama-server's prompt eval advances, so a long prefill is progress, not a stall.
+_PREFILL_PROGRESS_COMMENT = ": prefill-progress"
 # Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
 _ADMISSION_HEARTBEAT_MISSES = 3
 # Also the ceiling for any budget, so the poll loop stays bounded however long generation itself runs.
@@ -159,6 +168,21 @@ _MAX_RATE_LIMIT_WAIT_SECONDS = 3600.0
 _MODEL_CALL_KEY_LIFETIME_SECONDS = 2 * 60 * 60
 # Headroom so the named stall guards expire before HTTPX's own read timeout does.
 _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
+
+
+def _first_output_budget(config: dict) -> float:
+    """Seconds a call may wait for its first token; never past a finite run wall clock."""
+    budgets = config["budgets"]
+    budget = float(budgets.get("firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS))
+    inference = config.get("inferenceRequest") or {}
+    if not _external_provider_run(inference) and is_npu_model_path(
+        inference.get("model") or config.get("model")
+    ):
+        budget = max(budget, _NPU_FIRST_OUTPUT_TIMEOUT_SECONDS)
+    model_timeout = float(budgets["modelTimeoutSeconds"])
+    if model_timeout > 0:
+        budget = min(budget, model_timeout)
+    return budget
 
 
 def _model_wait_budget(run: dict) -> float:
@@ -354,10 +378,62 @@ def _run_inference_request(run: dict) -> dict[str, Any]:
     return (run.get("config") or {}).get("inferenceRequest") or {}
 
 
+def _served_window_key(inference: dict[str, Any]) -> tuple[Any, Any]:
+    return inference.get("providerId"), inference.get("externalModel")
+
+
+def _saved_connection_client(run: dict) -> ExternalProviderClient | None:
+    inference = _run_inference_request(run)
+    provider_id = inference["providerId"]
+    provider = providers_db.get_provider(provider_id)
+    if provider is None or not provider["is_enabled"]:
+        return None
+    headers = provider.get("extra_headers")
+    client = ExternalProviderClient(
+        provider_type = provider["provider_type"],
+        base_url = validate_provider_base_url(provider["base_url"]),
+        api_key = credential_secrets.get_provider_api_key(provider_id) or "",
+        api_type = provider.get("api_type", "chat_completions"),
+        **({"extra_headers": headers} if headers else {}),
+    )
+    client.set_header_context(f"research:{run['id']}", inference["externalModel"])
+    return client
+
+
+async def _guarded_connection_client(run: dict) -> ExternalProviderClient | None:
+    from routes.provider_credentials import provider_config_guard
+
+    provider_id = _run_inference_request(run)["providerId"]
+    provider = await asyncio.to_thread(providers_db.get_provider, provider_id)
+    if provider is None:
+        return None
+    # A concurrent edit must not pair the old endpoint with the new key.
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(provider.get("shared_by_owner"))
+    ):
+        return await asyncio.to_thread(_saved_connection_client, run)
+
+
+async def _refresh_served_context_length(run: dict) -> None:
+    inference = _run_inference_request(run)
+    window = None
+    if inference.get("providerType") in _SERVED_WINDOW_PROVIDERS:
+        try:
+            client = await _guarded_connection_client(run)
+            if client is not None:
+                window = await client.served_context_window(inference["externalModel"])
+        except Exception:
+            logger.debug("research.served_window_probe_failed", exc_info = True)
+    if window:
+        _served_context_lengths[_served_window_key(inference)] = window
+    else:
+        _served_context_lengths.pop(_served_window_key(inference), None)
+
+
 def _loaded_context_length(inference: dict[str, Any] | None = None) -> int | None:
     """Active model's context window, or None; reads the orchestrator the routes use, not the ML worker."""
     if _external_provider_run(inference):
-        return None
+        return _served_context_lengths.get(_served_window_key(inference))
     try:
         from routes.inference import get_llama_cpp_backend
         llama = get_llama_cpp_backend()
@@ -424,7 +500,7 @@ def _resolve_max_tokens(
     else:
         # Re-capping a budget the caller already resolved is what truncated the report.
         requested = max(1, int(max_tokens))
-    # Defers, not short-circuits: _loaded_context_length is already None when providerType is set.
+    # Defers, not short-circuits: a provider run has no window unless its server reports one.
     return _clamp_max_tokens_for_context(requested, messages, inference = inference)
 
 
@@ -1556,7 +1632,7 @@ class ResearchSupervisor:
         response: httpx.Response,
         semantic_deadline: Callable[[], tuple[float, type[BaseException]] | None] | None = None,
     ) -> AsyncIterator[str]:
-        iterator = response.aiter_lines().__aiter__()
+        iterator = aiter_sse_lines(response).__aiter__()
 
         def wait_timeout() -> float:
             if semantic_deadline is None:
@@ -1664,6 +1740,12 @@ class ResearchSupervisor:
             "qwen",
             "qwencloud",
             "mistral",
+            "xai",
+            "nvidia",
+            "cohere",
+            "vercel",
+            "azure",
+            "bedrock",
         ):
             # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
             # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
@@ -1761,14 +1843,7 @@ class ResearchSupervisor:
         try:
             await self._note_phase(run["id"], "phase.started", phase, call_id, step_position)
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
-            # Configurable, capped by a finite run wall clock; legacy runs use the default.
-            first_output_budget = float(
-                config["budgets"].get(
-                    "firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
-                )
-            )
-            if model_timeout > 0:
-                first_output_budget = min(first_output_budget, model_timeout)
+            first_output_budget = _first_output_budget(config)
             # Unlimited drops only the wall clock; the gap bound must still clear the queue-notice heartbeat.
             admission_gap_budget = max(
                 first_output_budget,
@@ -1941,7 +2016,10 @@ class ResearchSupervisor:
                                 first_output_deadline = (
                                     None if model_timeout else loop.time() + admission_gap_budget
                                 )
-                            elif line.startswith(_ADMISSION_DONE_COMMENT):
+                            elif line.startswith(_ADMISSION_DONE_COMMENT) or (
+                                line.startswith(_PREFILL_PROGRESS_COMMENT)
+                                and semantic_output_at is None
+                            ):
                                 first_output_deadline = loop.time() + first_output_budget
                             continue
                         data = line[5:].strip()
@@ -2235,6 +2313,7 @@ class ResearchSupervisor:
             _planner_system_prompt(max_steps, run["config"].get("websitePolicy")),
             run["config"],
         )
+        await _refresh_served_context_length(run)
         # The question needs its own budget: a pasted document arrives verbatim and would overflow planning.
         planning_total = _prompt_char_budget(
             _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
@@ -2314,6 +2393,7 @@ class ResearchSupervisor:
         tool_timeout = int(budgets["toolTimeoutSeconds"])
         # default 0 preserves behavior for runs created before auto-scrape.
         max_auto_scrape = int(budgets.get("maxAutoScrape", 0))
+        await _refresh_served_context_length(run)
         # prompt overhead fills tiny context windows, so use snippets alone.
         if max_auto_scrape > 0:
             loaded_ctx = _loaded_context_length(_run_inference_request(run))
@@ -2465,6 +2545,7 @@ class ResearchSupervisor:
                 _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else ""),
                 run["config"],
             )
+            await _refresh_served_context_length(run)
             # A fixed 60k tail dwarfs small contexts and runs every step; overflow kills the run pre-synthesis.
             decision_total = _prompt_char_budget(
                 _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
@@ -2845,6 +2926,7 @@ class ResearchSupervisor:
             f"   Chunk ID: {source.get('chunkId') or '(unknown)'}"
             for index, source in enumerate(document_sources, 1)
         ]
+        await _refresh_served_context_length(run)
         # Model-derived JSON shares the evidence budget; history gets only what the fixed scaffold leaves.
         total_budget = _prompt_char_budget(
             _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
