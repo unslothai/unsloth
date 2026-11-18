@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { PROVIDER_LOGOS } from "@/features/hub/lib/provider-logos";
+import { PROVIDER_LOGOS } from "@/features/hub";
 import {
   DEFAULT_THINKING_VISIBILITY,
   DEFAULT_TOOL_VISIBILITY,
