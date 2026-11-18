@@ -13,9 +13,10 @@ import huggingface_hub
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 import pytest
 
-Glm4MoeConfig = pytest.importorskip("transformers").Glm4MoeConfig
 pytest.importorskip("unsloth_zoo.speculative")
-MTP_MODEL = types.SimpleNamespace(config = Glm4MoeConfig(num_nextn_predict_layers = 1))
+MTP_MODEL = types.SimpleNamespace(
+    config = types.SimpleNamespace(model_type = "glm4_moe", num_nextn_predict_layers = 1)
+)
 
 
 @pytest.fixture
@@ -66,7 +67,7 @@ def test_actual_offline_cache_miss_warns(reattach, tmp_path, capsys):
 
 
 def test_offline_miss_is_silent_for_models_without_mtp(reattach, tmp_path, capsys):
-    llama = types.SimpleNamespace(config = pytest.importorskip("transformers").LlamaConfig())
+    llama = types.SimpleNamespace(config = types.SimpleNamespace(model_type = "llama"))
     reattach(llama, "org/llama-lora", cache_dir = str(tmp_path), local_files_only = True)
     reattach(object(), "org/llama-lora", cache_dir = str(tmp_path), local_files_only = True)
     assert capsys.readouterr().out == ""
