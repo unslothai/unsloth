@@ -1798,10 +1798,81 @@ def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):
     return "kill" if diff >= 1.5 else "cap"
 
 
+def _unsloth_grpo_packing_leaks(self, unwrapped):
+    """True when a packed document's output depends on an earlier document in its row (e.g. OPT's plain causal mask).
+
+    The 0.7 nat self-verify misses such leaks (tiny OPT: 0.004 nats, grads 15-55% off). None = could not run."""
+    if os.environ.get("UNSLOTH_GRPO_PACKING_LEAK_PROBE", "1").lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return None
+    try:
+        from unsloth_zoo.rl_replacements import grpo_forwards_are_collective
+
+        # Rank-local forwards hang a sharded collective; those layouts never pack anyway.
+        if grpo_forwards_are_collective(unwrapped):
+            return None
+    except Exception:
+        pass
+    was_training = None
+    try:
+        embed = unwrapped.get_input_embeddings()
+        vocab = int(embed.weight.shape[0])
+        device = embed.weight.device
+        if vocab < 8 or device.type == "meta":
+            return None
+        n1, n2 = 8, 8
+        gen = torch.Generator(device = "cpu").manual_seed(3407)
+        lo = min(100, vocab // 2)
+        doc_a = torch.randint(lo, vocab, (n1,), generator = gen)
+        doc_b = torch.randint(lo, vocab, (n1,), generator = gen)
+        doc_2 = torch.randint(lo, vocab, (n2,), generator = gen)
+        pos = torch.cat([torch.arange(n1), torch.arange(n2)]).unsqueeze(0).to(device)
+        lengths = torch.tensor([n1, n2], dtype = torch.int32, device = device)
+        enabled = bool(getattr(self, "_autocast_enabled", False))
+        dtype = getattr(self, "_autocast_dtype", torch.bfloat16)
+        was_training = unwrapped.training
+        unwrapped.eval()
+        outs = []
+        with torch.no_grad():
+            with torch.amp.autocast(device_type = device.type, dtype = dtype, enabled = enabled):
+                for first in (doc_a, doc_b):
+                    ids = torch.cat([first, doc_2]).unsqueeze(0).to(device)
+                    out = unwrapped(
+                        input_ids = ids,
+                        position_ids = pos,
+                        packed_seq_lengths = lengths,
+                        use_cache = False,
+                    ).logits
+                    outs.append(out[0, n1:].float())
+        diff = float((outs[0] - outs[1]).abs().max())
+        scale = float(outs[0].abs().max())
+        leaks = not (diff <= 1e-3 * max(scale, 1.0))
+        if UNSLOTH_ENABLE_LOGGING or leaks:
+            print(
+                f"Unsloth: GRPO sequence packing leak probe on {type(unwrapped).__name__}: "
+                f"second document moved by {diff:.3g} (scale {scale:.3g}) when only the first changed"
+                + (", so packed GRPO forwards are off for this model." if leaks else "."),
+                flush = True,
+            )
+        return leaks
+    except Exception as e:
+        if UNSLOTH_ENABLE_LOGGING:
+            print(f"Unsloth: GRPO sequence packing leak probe could not run: {e!r}", flush = True)
+        return None
+    finally:
+        if was_training:
+            unwrapped.train()
+
+
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
     """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
-    recurrences mix packed rows (packing_boundary_blocker). Their leak (~0.1 nats) passes the 0.7 packed
-    self-verify. Zoo's grad PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
+    recurrences mix packed rows (packing_boundary_blocker), or whose attention lets packed documents see each other
+    (_unsloth_grpo_packing_leaks). Their leak (~0.1 nats) passes the 0.7 packed self-verify. Zoo's grad
+    PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
     try:
         unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
         if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
@@ -1813,6 +1884,8 @@ def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
         blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
     except Exception:
         return
+    if blocker is None and _unsloth_grpo_packing_leaks(self, unwrapped) is True:
+        blocker = "packing_leak_probe"
     if blocker is None:
         return
     unwrapped._unsloth_seq_packing_nograd_ok = False
@@ -5370,6 +5443,7 @@ UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_packing_leaks))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_rank_local_forwards))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))

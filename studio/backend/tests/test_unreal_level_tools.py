@@ -28,13 +28,12 @@ def test_install_writes_the_toolset_and_hooks_it_once(tmp_path):
     python_dir = root / "Content" / "Python"
     files = unreal_tools.install(str(root / "MyGame.uproject"))
     assert files == [str(python_dir / "unsloth_level_tools.py"), str(python_dir / "init_unreal.py")]
-    assert (python_dir / "unsloth_level_tools.py").read_text(
-        encoding = "utf-8"
-    ) == unreal_tools._SOURCE.read_text(encoding = "utf-8")
-    hook = (python_dir / "init_unreal.py").read_text(encoding = "utf-8")
+    installed = (python_dir / "unsloth_level_tools.py").read_text(encoding = "utf-8")
+    assert installed == unreal_tools._SOURCE.read_text(encoding = "utf-8")
+    hook = (python_dir / "init_unreal.py").read_text()
     assert "unsloth_level_tools.register_when_ready()" in hook
     unreal_tools.install(str(root))  # the folder works too, and a repeat adds nothing
-    assert (python_dir / "init_unreal.py").read_text(encoding = "utf-8") == hook
+    assert (python_dir / "init_unreal.py").read_text() == hook
 
 
 def test_install_keeps_an_existing_init_unreal(tmp_path):
@@ -45,7 +44,7 @@ def test_install_keeps_an_existing_init_unreal(tmp_path):
         "import my_tools\nmy_tools.start()", encoding = "utf-8"
     )
     unreal_tools.install(str(root))
-    text = (python_dir / "init_unreal.py").read_text(encoding = "utf-8")
+    text = (python_dir / "init_unreal.py").read_text()
     assert text.startswith("import my_tools\nmy_tools.start()\n\n# Unsloth level tools")
     assert text.count("register_when_ready()") == 1
 
@@ -61,9 +60,7 @@ def test_hook_never_stops_the_rest_of_init_unreal(tmp_path, monkeypatch, plugin_
     """Without the Unreal MCP plugin the toolset cannot import; the hook warns instead of raising."""
     root = _project(tmp_path)
     unreal_tools.install(str(root))
-    hook = (root / "Content" / "Python" / "init_unreal.py").read_text(
-        encoding = "utf-8"
-    ) + "\nafter_hook = True\n"
+    hook = (root / "Content" / "Python" / "init_unreal.py").read_text() + "\nafter_hook = True\n"
     warnings, registered = [], []
     monkeypatch.setitem(sys.modules, "unreal", types.SimpleNamespace(log_warning = warnings.append))
     if plugin_on:

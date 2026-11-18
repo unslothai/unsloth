@@ -7547,3 +7547,92 @@ def test_a_released_nudge_retry_records_its_reasoning_wrap(monkeypatch):
     assert content_texts[-1] == shown
     assert ledger["wraps"][-1] == {"len": len(trace)}
     assert ledger["later"][-1] == {"len": len("Check."), "at": shown.index("<think>Check.")}
+
+
+def _screenshot_chain_payloads(monkeypatch, calls: int, context_overflow):
+    """A chain of one-screenshot MCP calls through the real loop; returns each request's messages."""
+    import base64 as _b64
+    import io as _io
+
+    from PIL import Image as _Image
+
+    from core.inference import mcp_images
+    from core.inference.context_window import estimate_messages_tokens_dense
+
+    def shot(index):
+        buffer = _io.BytesIO()
+        _Image.new("RGB", (64, 40), ((index * 37) % 256, (index * 91) % 256, 7)).save(
+            buffer, format = "PNG"
+        )
+        image = {"data": _b64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}
+        return "[1 image returned]\n" + mcp_images.SENTINEL + json.dumps([image])
+
+    streams = [
+        _structured_tool_call("mcp__d__screenshot", {"step": i}, f"call_{i}") for i in range(calls)
+    ] + [[_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _vision_backend(monkeypatch, streams, payloads, vision = True)
+    backend._effective_context_length = 65536
+    monkeypatch.setattr("core.inference.llama_cpp._mcp_image_tokens", lambda _backend: 300)
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: estimate_messages_tokens_dense(messages),
+    )
+    counter = iter(range(calls))
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: shot(next(counter)),
+    )
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Switch the desktop to dark mode."}],
+            tools = [{"type": "function", "function": {"name": "mcp__d__screenshot"}}],
+            max_tool_iterations = calls + 2,
+            permission_mode = "off",
+            context_overflow = context_overflow,
+        )
+    )
+    return [payload["messages"] for payload in payloads]
+
+
+def _image_count(messages) -> int:
+    return sum(
+        1
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    )
+
+
+def test_a_compacting_screenshot_chain_keeps_every_picture_append_only(monkeypatch):
+    """#18231: dropping the oldest picture past 8 shifted the prompt at its first image turn, so
+    llama-server re-read the whole chain on every call; with compaction on nothing is dropped."""
+    requests = _screenshot_chain_payloads(monkeypatch, 12, "truncate_oldest")
+
+    assert [_image_count(messages) for messages in requests] == list(range(13))
+    assert all(
+        requests[index][: len(requests[index - 1])] == requests[index - 1]
+        for index in range(1, len(requests))
+    )
+
+
+def test_without_compaction_the_screenshot_cap_still_steps(monkeypatch):
+    requests = _screenshot_chain_payloads(monkeypatch, 12, None)
+
+    assert [_image_count(messages) for messages in requests] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        5,
+        6,
+        7,
+        8,
+    ]
