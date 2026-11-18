@@ -31,7 +31,7 @@ import { useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
-type Column = keyof SiteRule;
+type Column = Exclude<keyof SiteRule, "hostOnly">;
 
 export const BROWSER_USE_DOCS_URL = "https://unsloth.ai/docs/basics/browser-use";
 

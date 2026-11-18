@@ -17,6 +17,8 @@ export type SiteRule = {
   downloads: DownloadsRule;
   unlabelled: UnlabelledRule;
   scripts: ScriptsRule;
+  /** Saved from a script prompt: covers only this host, not its subdomains. */
+  hostOnly?: boolean;
 };
 export type AgentPermissions = { defaults: SiteRule; sites: Record<string, SiteRule> };
 export type HistoryAccess = "ask" | "allow" | "never";
@@ -68,7 +70,8 @@ export function ruleFor(url: string, permissions: AgentPermissions): { rule: Sit
   const host = hostOf(url);
   let best: string | null = null;
   for (const pattern of Object.keys(permissions.sites)) {
-    if (host && patternMatches(pattern, host) && (!best || specificity(pattern) > specificity(best))) best = pattern;
+    const covers = host && patternMatches(pattern, host) && (host === pattern || !permissions.sites[pattern]?.hostOnly);
+    if (covers && (!best || specificity(pattern) > specificity(best))) best = pattern;
   }
   const site = best ? permissions.sites[best] : undefined;
   return site ? { rule: site, site: best } : { rule: permissions.defaults, site: null };
@@ -89,7 +92,7 @@ export function scriptSiteRule(url: string, permissions: AgentPermissions): { si
   if (saved) return { site, rule: { ...saved, scripts: "allow" } };
   if (Object.keys(permissions.sites).length >= MAX_SITE_RULES) return null;
   const { rule } = ruleFor(url, permissions);
-  return { site, rule: { ...rule, browsing: rule.browsing === "block" ? "block" : "allow", scripts: "allow" } };
+  return { site, rule: { ...rule, browsing: rule.browsing === "block" ? "block" : "allow", scripts: "allow", hostOnly: true } };
 }
 
 const BROWSING = new Set(["allow", "ask", "block"]);
@@ -107,6 +110,7 @@ export function checkedRule(value: unknown, fallback: SiteRule = DEFAULT_RULE): 
     downloads: DOWNLOADS.has(raw.downloads as string) ? (raw.downloads as DownloadsRule) : fallback.downloads,
     unlabelled: UNLABELLED.has(raw.unlabelled as string) ? (raw.unlabelled as UnlabelledRule) : fallback.unlabelled,
     scripts: SCRIPTS.has(raw.scripts as string) ? (raw.scripts as ScriptsRule) : fallback.scripts,
+    ...(raw.hostOnly === true ? { hostOnly: true } : {}),
   };
 }
 
