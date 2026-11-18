@@ -1739,8 +1739,113 @@ def _rdna_shared(x: Any, linears: tuple) -> Optional[list]:
     ]
 
 
-def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
-    """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered."""
+class _MergedWeight:
+    """The merged rows as a weight for the CUTLASS race: its own payload, every other attribute (activation quant
+    settings) its first part's."""
+
+    def __init__(self, qdata: Any, scale: Any, part: Any):
+        self.qdata, self.scale, self._part = qdata, scale, part
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.__dict__["_part"], name)
+
+
+def merge_payloads(linears: tuple, logger: Any = None) -> Optional[tuple]:
+    """One GEMM for Linears reading one input: their int8 rows (plain torchao ``Int8Tensor``, swapped, rotated, no
+    bias, one rotation group / K / path) concatenated into one buffer, and each weight's ``qdata`` / ``scale``
+    repointed in place to its row slice of it, so the weights stay one copy (an in-place LoRA merge writes through
+    the slices). Undone when anything else still holds an old payload (the merge would then double the memory).
+    Returns ``(wq [sum N, K], ws [sum N], n, fused path)`` for ``shared_rotq_linears(merged = ...)``, else None.
+    Outside any trace or capture; races the merged shape for the prebuilt kernels like any swapped Linear."""
+    import sys
+
+    import torch
+
+    recs = [_swapped_rec(m) for m in linears]
+    if not linears or any(r is None for r in recs):
+        return None
+    if (
+        len({(r[0], r[1], bool(r[2]), bool(r[4])) for r in recs}) != 1
+        or recs[0][0] != "v2"
+        or not recs[0][2]
+    ):
+        return None
+    if any(getattr(m, "bias", None) is not None for m in linears):
+        return None
+    weights = [r[3] for r in recs]
+    if any(type(w) is not type(weights[0]) for w in weights):
+        return None
+    qd = [getattr(w, "qdata", None) for w in weights]
+    sc = [getattr(w, "scale", None) for w in weights]
+    q0, s0 = qd[0], sc[0]
+    for q, s in zip(qd, sc):
+        if not (torch.is_tensor(q) and torch.is_tensor(s)):
+            return None
+        if (
+            q.dtype != torch.int8
+            or q.dim() != 2
+            or not q.is_contiguous()
+            or q.shape[1] != q0.shape[1]
+            or q.device != q0.device
+        ):
+            return None
+        if (
+            s.dim() == 0
+            or s.shape[0] != q.shape[0]
+            or s.shape[1:] != s0.shape[1:]
+            or s.dtype != s0.dtype
+        ):
+            return None
+        if s.device != q.device or not s.is_contiguous():
+            return None
+    wq, ws = torch.cat(qd, 0), torch.cat(sc, 0)
+    olds = list(zip(qd, sc))
+    del qd, sc, q, s, q0, s0
+    rows = 0
+    for w, (q, s) in zip(weights, olds):
+        n = q.shape[0]
+        w.qdata, w.scale = wq[rows : rows + n], ws[rows : rows + n]
+        rows += n
+    del q, s
+    # each old payload is now held by ``olds`` alone (+ the loop name + getrefcount's argument)
+    if any(sys.getrefcount(t) > 3 for pair in olds for t in pair):
+        for w, (q, s) in zip(weights, olds):
+            w.qdata, w.scale = q, s
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: Q/K/V rows kept apart (another holder keeps their payloads)"
+            )
+        return None
+    del olds
+    fused = bool(recs[0][4])
+    try:
+        index = wq.device.index if wq.is_cuda else None
+        if index is not None and fused and _CUT_PLAN.get(index) is not None:
+            _cutlass_plan(
+                index,
+                [
+                    (
+                        types.SimpleNamespace(bias = None),
+                        ("v2", recs[0][1], ws.reshape(-1), _MergedWeight(wq, ws, weights[0]), True),
+                    )
+                ],
+                device_config(index) is not None,
+                logger,
+            )
+    except Exception as exc:  # noqa: BLE001 - the merged shape runs the Triton path
+        if logger is not None:
+            logger.info("diffusion.int8_gemm: merged Q/K/V shape not raced (%s)", exc)
+    return wq, ws.reshape(-1), len(linears), fused
+
+
+def shared_rotq_linears(
+    x: Any,
+    linears: tuple,
+    merged: Any = None,
+) -> Optional[list]:
+    """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered. ``merged``
+    (``merge_payloads`` of the first ``merged[2]`` Linears): those run as one GEMM, their outputs column views of
+    it, bit for bit what their own GEMMs give (int32 accumulation, per-row x per-column dequant)."""
     import torch
 
     if linears and rdna_native_rotated(linears[0]):
@@ -1764,9 +1869,39 @@ def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
     if q is None:
         return None
     xq, xs = q
-    lead = x.shape[:-1]
+    return _shared_gemms(xq, xs, x.shape[:-1], x.device, linears, recs, parts, merged)
+
+
+def _shared_gemms(
+    xq: Any,
+    xs: Any,
+    lead: Any,
+    device: Any,
+    linears: tuple,
+    recs: list,
+    parts: list,
+    merged: Any = None,
+) -> list:
+    """The GEMMs of ``shared_rotq_linears`` on its codes ``xq`` / scales ``xs``."""
     outs = []
-    for m, r, (wq, ws) in zip(linears, recs, parts):
+    first = 0
+    if merged is not None:
+        wq_m, ws_m, n_m, fused_m = merged
+        if (
+            n_m <= len(linears)
+            and wq_m.device == device
+            and all(
+                bool(r[4]) == fused_m and m.bias is None for m, r in zip(linears[:n_m], recs[:n_m])
+            )
+        ):
+            if fused_m:
+                y = _OP_HANDLE(xq, wq_m, xs.reshape(-1), ws_m, None)
+            else:
+                y = stock_gemm(xq, wq_m, xs, ws_m, None)
+            y = y.reshape(*lead, y.shape[-1])
+            outs.extend(y.split([int(wq.shape[0]) for wq, _ in parts[:n_m]], dim = -1))
+            first = n_m
+    for m, r, (wq, ws) in zip(linears[first:], recs[first:], parts[first:]):
         if r[4]:
             y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, m.bias)
         else:
