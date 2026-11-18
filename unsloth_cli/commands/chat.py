@@ -212,15 +212,24 @@ def chat(
     max_seq_length: int = typer.Option(
         0,
         "--max-seq-length",
-        help = "Context length in tokens. 0 takes the checkpoint's trained window on GGUF "
-        "and MLX, and 2048 on the transformers backend. A value that differs from a "
-        "running Unsloth server's reloads the model.",
+        "--context-length",
+        help = "Runtime context length in tokens (0 = model default for GGUF and MLX; 2048 "
+        "for hub models). --context-length works too. A value that differs from a running "
+        "Unsloth server's reloads the model; left unset, an NPU model it already has loaded "
+        "keeps its context.",
     ),
     load_in_4bit: bool = typer.Option(
         True,
         "--load-in-4bit/--no-load-in-4bit",
         help = "Load the model in 4-bit. Left unset, a running Unsloth server that already "
         "has this model loaded keeps its precision.",
+    ),
+    trust_remote_code: bool = typer.Option(
+        False,
+        "--trust-remote-code",
+        help = "Run the model repo's own code, for architectures this transformers does not "
+        "implement. Only for repositories you trust: it executes Python from the repo in "
+        "this process.",
     ),
     tensor_parallel: bool = typer.Option(
         False,
@@ -363,6 +372,8 @@ def chat(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
+    if trust_remote_code:
+        load_opts["trust_remote_code"] = trust_remote_code
     if speculative_type is not None:
         load_opts["speculative_type"] = speculative_type
     if spec_draft_n_max is not None:

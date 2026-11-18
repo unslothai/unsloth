@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import huggingface_hub.constants
 import pytest
 
 from hub.services.models import gguf_variants
@@ -48,8 +49,7 @@ _SIZES = {
 
 
 def _siblings(sizes = _SIZES, content = None):
-    """Hub siblings whose LFS hash stands for the file's bytes: by default the root and 4-bit/ hold
-    the same files, as in the issue's repo."""
+    """Siblings' LFS hash stands for their bytes; by default root and 4-bit/ copies match."""
     content = content or (lambda name: name.replace("4-bit/", "", 1))
     return [
         SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": f"sha-{content(name)}"})
@@ -172,10 +172,27 @@ def test_mlx_repo_lists_its_precision_folders_as_variants(monkeypatch):
     assert answer.cache_authorized is False
 
 
+@pytest.mark.parametrize(
+    "repo, tags, library",
+    [
+        (_REPO, ("safetensors",), None),
+        ("mlx-community/Qwen3.8-27B-4bit", ("safetensors",), None),
+        ("org/Qwen3.8-27B-4bit", ("safetensors", "mlx"), "transformers"),
+        ("org/Qwen3.8-27B-4bit", ("safetensors",), "mlx"),
+    ],
+)
+def test_a_repo_named_or_tagged_mlx_lists_its_precision_folders(monkeypatch, repo, tags, library):
+    _no_gguf_rows(monkeypatch)
+    _fake_hub(monkeypatch, tags = tags, library = library)
+    answer = asyncio.run(gguf_variants.get_gguf_variants_answer(repo))
+    assert answer.response.variant_format == "mlx"
+
+
 def test_non_mlx_repo_and_repo_without_folders_get_no_mlx_listing(monkeypatch):
     empty = _no_gguf_rows(monkeypatch)
     _fake_hub(monkeypatch, tags = ("safetensors",), library = "transformers")
-    assert asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)) is empty
+    plain = "orcarouter/Qwen3.8-27B-Uncensored"
+    assert asyncio.run(gguf_variants.get_gguf_variants_answer(plain)) is empty
     _fake_hub(monkeypatch, sizes = _folder("", [GB]))
     assert asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)) is empty
 
@@ -263,6 +280,9 @@ def test_gguf_quant_names_never_resolve_as_folders(monkeypatch, variant):
     assert reads == []
 
 
+@pytest.mark.skipif(
+    huggingface_hub.constants.HF_HUB_OFFLINE, reason = "from_identifier's GGUF probe needs the Hub"
+)
 def test_model_config_carries_the_folder_and_classifies_it(monkeypatch, tmp_path):
     from utils.models import model_config
 
@@ -296,13 +316,14 @@ def test_model_config_carries_the_folder_and_classifies_it(monkeypatch, tmp_path
     config = model_config.ModelConfig.from_identifier(_REPO, gguf_variant = "6-bit")
     assert config.identifier == _REPO
     assert config.gguf_variant == "6-bit"
+    assert config.config_dir == str(folder)
     assert config.is_gguf is False
     assert checked == [str(folder)]
     assert fetched == ["6-bit/config.json"]
 
     checked.clear()
     plain = model_config.ModelConfig.from_identifier(_REPO)
-    assert plain.gguf_variant is None
+    assert plain.gguf_variant is None and plain.config_dir is None
     assert checked == [_REPO]
 
 
@@ -455,10 +476,11 @@ def test_a_resumed_folder_download_rebuilds_its_plan_from_the_manifest():
 
 
 def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
+    from core.inference import mlx_memory
     from routes import inference as ri
 
     folder = _cached_repo(monkeypatch, tmp_path, _REPO, "6-bit")
-    (folder / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (folder / "config.json").write_text(json.dumps({"model_type": "raon1_mini"}))
     (folder / "model.safetensors").write_bytes(b"x")
     monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [str(tmp_path / "hub")])
     config = SimpleNamespace(
@@ -470,14 +492,24 @@ def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
     )
     (folder.parent / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     (folder.parent / "model.safetensors").write_bytes(b"x")
-    assert ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit")) == str(
-        folder
-    )
+    picked = ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit"))
+    assert picked == str(folder)
+    assert mlx_memory._snapshot_config(picked)["model_type"] == "raon1_mini"
 
 
-@pytest.mark.parametrize("resident_folder, expected", [(None, "reuse"), ("6-bit", "load")])
-def test_a_root_request_never_reuses_a_resident_precision_folder(
-    monkeypatch, resident_folder, expected
+@pytest.mark.parametrize(
+    "resident_folder, requested, expected",
+    [
+        (None, None, "reuse"),
+        ("6-bit", None, "reload"),
+        ("6-bit", "6-bit", "reuse"),
+        ("6-bit", "8bit", "reload"),
+        ("6-bit", "6-BIT", "reload"),
+        (None, "6-bit", "reload"),
+    ],
+)
+def test_a_request_reuses_only_the_resident_precision_folder(
+    monkeypatch, resident_folder, requested, expected
 ):
     from hub.services.models import account_access
     from models.inference import LoadRequest
@@ -527,10 +559,12 @@ def test_a_root_request_never_reuses_a_resident_precision_folder(
     with pytest.raises(Exception):
         asyncio.run(
             inference._load_model_impl(
-                LoadRequest(model_path = _REPO), fastapi_request, current_subject = "user"
+                LoadRequest(model_path = _REPO, gguf_variant = requested),
+                fastapi_request,
+                current_subject = "user",
             )
         )
-    assert calls[:1] == [expected]
+    assert (calls[:1] == ["reuse"]) == (expected == "reuse")
 
 
 def test_a_caller_refused_the_cache_learns_nothing_from_it(monkeypatch, tmp_path):
@@ -563,3 +597,16 @@ def test_offline_lists_a_cached_precision_folder(monkeypatch, tmp_path):
     with pytest.raises(HTTPException) as missing:
         asyncio.run(gguf_variants.get_gguf_variants_answer("org/absent", offline = True))
     assert missing.value.status_code == 404
+
+
+def test_the_resident_folder_survives_the_worker_hop():
+    from core.inference.orchestrator import _mirrored_model_entry
+
+    assert (
+        _mirrored_model_entry({"precision_folder": "6-bit"}, _REPO)["precision_folder"] == "6-bit"
+    )
+    worker = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text(
+        encoding = "utf-8"
+    )
+    projection = worker[worker.index('"gguf_variant",\n') :][:200]
+    assert '"precision_folder",' in projection

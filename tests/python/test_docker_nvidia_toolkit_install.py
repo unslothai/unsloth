@@ -536,9 +536,8 @@ def test_docker_desktop_on_macos_says_cpu_only(tmp_path: Path):
 
 
 def test_macos_says_cpu_only_whatever_runs_the_daemon(tmp_path: Path):
-    """colima and Rancher Desktop keep their socket outside /var/run, which took a Mac
-    to the endpoint check: it told the user to configure that daemon by hand, for a
-    toolkit no Mac can use."""
+    """On macOS, colima and Rancher Desktop sockets sit outside /var/run, so the endpoint check must
+    not ask users to configure a daemon for a toolkit no Mac can use."""
     _, _, env = _setup(tmp_path, driver = False, uid = 1000)
     _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
     res = _run(env, extra_env = {"DOCKER_HOST": "unix:///Users/u/.colima/default/docker.sock"})
@@ -685,8 +684,7 @@ def test_a_mac_never_asks_the_daemon_which_backend_it_is(tmp_path: Path):
 
 
 def test_a_mac_with_an_uninspectable_context_gets_the_error_not_nothing_to_install(tmp_path: Path):
-    """Same rule as the endpoint check further down: a context lookup failure is an
-    error, not a local daemon."""
+    """As in the endpoint check further down, a context lookup failure is an error, not a local daemon."""
     _, _, env = _setup(tmp_path, driver = False, uid = 1000)
     _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
     res = _run(env, extra_env = {"DOCKER_CONTEXT": "missing-in-root-config"})

@@ -132,7 +132,7 @@ def test_unsupported_any(case, cpu, lspci, mkt, want):
             K2_CPU,
             [SHARED, RX7900],
             "AMD Ryzen AI 5 330 w/ Radeon 820M",
-            "gfx1152",
+            "gfx1100",
         ),
     ],
 )

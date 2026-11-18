@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Triton RoPE (auto on ROCm and NVIDIA CUDA Linux) and AdaLN kernels for FLUX; inference only,
-never while compiling; AdaLN off by default (not bit-identical); UNSLOTH_DIFFUSION_FUSED_ROPE,
-UNSLOTH_DIFFUSION_FUSED_ADALN"""
+never while compiling; AdaLN auto on NVIDIA CUDA Linux off the ``off`` speed tier (one rounding instead of three, not
+bit-identical); UNSLOTH_DIFFUSION_FUSED_ROPE, UNSLOTH_DIFFUSION_FUSED_ADALN"""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def _is_nvidia_linux() -> bool:
 
 # gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).
 _AUTO_ON = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
-_AUTO_ON_NVIDIA = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
+_AUTO_ON_NVIDIA = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: True}
 
 
 def _switch_on(env: str) -> bool:
@@ -347,6 +347,13 @@ def _adaln_eligible(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[float
     return eps
 
 
+def _count(key: str) -> None:
+    """Eager census only: a counter bumped under Dynamo becomes a guard on its value, so every call recompiles."""
+    import torch
+    if not torch.compiler.is_compiling():
+        COUNTS[key] += 1
+
+
 def _fused_modulate(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[Any]:
     """``norm(x) * (1 + scale[:, None]) + shift[:, None]`` in one kernel, or None when not eligible."""
     import torch
@@ -382,16 +389,16 @@ def _adaln_zero_forward(
 ):
     cls = _CLASSES["AdaLayerNormZero"]
     if self.emb is not None or timestep is not None or class_labels is not None:
-        COUNTS["adaln_stock"] += 1
+        _count("adaln_stock")
         return _prev(cls)(self, x, timestep, class_labels, hidden_dtype, emb)
     e = self.linear(self.silu(emb))
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = e.chunk(6, dim = 1)
     out = _fused_modulate(self.norm, x, scale_msa, shift_msa)
     if out is None:
-        COUNTS["adaln_stock"] += 1
+        _count("adaln_stock")
         out = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
     else:
-        COUNTS["adaln_fused"] += 1
+        _count("adaln_fused")
     return out, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
@@ -404,10 +411,10 @@ def _adaln_zero_single_forward(
     shift_msa, scale_msa, gate_msa = e.chunk(3, dim = 1)
     out = _fused_modulate(self.norm, x, scale_msa, shift_msa)
     if out is None:
-        COUNTS["adaln_stock"] += 1
+        _count("adaln_stock")
         out = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
     else:
-        COUNTS["adaln_fused"] += 1
+        _count("adaln_fused")
     return out, gate_msa
 
 
@@ -416,10 +423,10 @@ def _adaln_continuous_forward(self, x, conditioning_embedding):
     scale, shift = e.chunk(2, dim = 1)
     out = _fused_modulate(self.norm, x, scale, shift)
     if out is None:
-        COUNTS["adaln_stock"] += 1
+        _count("adaln_stock")
         out = self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
     else:
-        COUNTS["adaln_fused"] += 1
+        _count("adaln_fused")
     return out
 
 
@@ -511,8 +518,10 @@ def install_for_pipe(
     dtype: Any,
     device: Any = "cuda",
     logger: Any = None,
+    *,
+    adaln: bool = True,
 ) -> dict:
-    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock."""
+    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock; ``adaln=False`` (speed off) keeps stock AdaLN."""
     transformer = getattr(pipe, "transformer", None)
     module_name = type(transformer).__module__ if transformer is not None else ""
     if module_name not in _MODULES:
@@ -520,7 +529,7 @@ def install_for_pipe(
         return {"rope": False, "adaln": 0}
     uninstall()
     rope = install_rope(module_name, dtype, device)
-    adaln = install_adaln(dtype, device)
+    adaln = install_adaln(dtype, device) if adaln else 0
     if logger is not None and (rope or adaln):
         try:
             logger.info(

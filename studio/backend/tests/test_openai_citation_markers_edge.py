@@ -123,8 +123,7 @@ def test_marker_split_in_source_id():
 
 
 def test_marker_split_at_start_byte():
-    """Split right after the opening ``\\ue200`` byte; the buffer must hold the
-    lone open byte until the rest arrives."""
+    """A split right after the opening byte must buffer that byte until the rest arrives."""
     full = f"Text {_marker('sid')} done"
     cut = full.index(CITE_START) + 1
     d1, d2 = full[:cut], full[cut:]
@@ -170,8 +169,7 @@ def test_split_marker_unknown_source_is_dropped_cleanly():
 
 
 def test_unterminated_marker_at_stream_end_dropped_on_flush():
-    """Stream ends mid-marker (e.g. response.incomplete); the flushed tail
-    strips private-use bytes, no `E202` text leaks."""
+    """Stream ending mid-marker: flush strips private-use bytes, so no E202 text leaks."""
     deltas = ["Some text ", f"{CITE_START}citetu", "rn0view0"]
     out = _simulate_delta_stream(deltas, [], flush = True)
     assert _no_private_use(out)
@@ -256,8 +254,7 @@ def test_back_to_back_markers_with_no_separator():
 
 
 def test_split_helper_buffers_only_after_last_open_byte():
-    """Complete marker followed by an unterminated one: head includes the
-    complete marker, buffer holds only the trailing partial."""
+    """Only the trailing unterminated marker is buffered; complete markers go to the head."""
     complete = _marker("done")
     partial = f"{CITE_START}cite{CITE_DELIM}half"
     text = f"pre {complete} mid {partial}"
@@ -299,8 +296,7 @@ def test_unknown_marker_does_not_perturb_citation_indexing():
 
 
 def test_unterminated_marker_does_not_leak_cite_residue():
-    """Stream ends mid-marker: drop the whole tail rather than strip codepoints
-    and leave ``cite<sid>`` behind."""
+    """Drop the whole unterminated tail; stripping codepoints would leave cite<sid> residue."""
     half = f"Hi there {CITE_START}cite{CITE_DELIM}turn0view0"
     out = _simulate_delta_stream([half], [], flush = True)
     assert "Hi there" in out
@@ -324,8 +320,7 @@ def test_unterminated_marker_with_prefix_emits_only_prefix():
 
 
 def test_closing_byte_arrives_after_pending_buffered_split():
-    """Closing byte arrives in a later delta after opener + source id were
-    buffered; link resolves with no residue."""
+    """A closing byte in a later delta still resolves the buffered marker cleanly."""
     cuts = [
         f"a {CITE_START}cite{CITE_DELIM}",
         f"sid{CITE_STOP} b",

@@ -134,19 +134,88 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-# GiB; resident = weights * per_weight + fixed. Generic matches Qwen3-TTS at its 8192-token cap.
+# GiB; resident = weights * per_weight + fixed. The generic lines are per-backend fallbacks for
+# unmeasured families; a lower CUDA line would run a held-out measured family out of memory.
 _GENERIC_PROFILE = (2.5, 1.5)
+_VULKAN_GENERIC_PROFILE = (1.85, 4.5)
+# Peak keeps growing with the input, so no line fit to peaks holds: the CUDA fallback everywhere.
+_UNBOUNDED_FAMILIES = frozenset({"vibevoice"})
 # family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 CUDA peak plus at least
-# 0.9 GiB. Families whose peak grows with the input (VibeVoice) must stay on the generic formula.
+# 0.9 GiB, at default options and each family's generation cap; a raised token cap can exceed it.
 _MEASURED_PROFILES = {
-    # Peak is a 240 s cover (the longest edit), above a 240 s song.
-    "ace_step": (1.0, 6.4, 9.4),
-    "chatterbox": (1.0, 3.5, 3.5),
-    "higgs_audio_tts": (1.0, 2.0, 4.8),
-    "kokoro_tts": (1.0, 3.5, 0.2),
-    "voxcpm2": (2.2, 4.7, 4.5),
-    "voxtral_tts": (1.0, 2.0, 4.4),
+    "ace_step": (0.98, 6.46, 9.4),
+    "breeze_tts": (0.55, 5.18, 6.9),
+    # Covers convert sources up to 30 s; a 60 s source peaks at 12.7 GiB.
+    "chatterbox": (0.05, 5.98, 3.5),
+    "cosyvoice3": (0.6, 2.82, 6.6),
+    "heartmula": (2.5, 1.48, 7.2),
+    # Measured at the default 2048-token chunk cap; a higher max_tokens grows the cache.
+    "higgs_audio_tts": (1.0, 2.4, 8.0),
+    # Also covers the 2.74 GiB #16514 measured for Q8_0 (whole device).
+    "kokoro_tts": (0.0, 3.65, 0.9),
+    "midashenglm_gen": (1.0, 1.69, 3.2),
+    "minimax_music3": (0.7, 8.49, 12.7),
+    "moss_tts_v15": (0.95, 0.74, 19.2),
+    "omnivoice": (0.05, 5.29, 1.6),
+    # Steeper than the tightest fit so 0.6B Q8_0 (7.2 GB) stays loadable on an 8 GB card.
+    "qwen3_tts": (1.5, 4.44, 4.3),
+    "stable_audio": (1.5, 1.17, 5.5),
+    # Kept from #16514 (whole-device peaks above these runs); also covers Vulkan, so no entry there.
+    "voxcpm2": (2.2, 4.7, 8.9),
+    "voxtral_tts": (1.0, 2.0, 7.5),
+    "yue2": (1.03, 4.88, 7.1),
 }
+# The same inputs on audio.cpp's Vulkan build (AMD hosts); a family absent here uses its CUDA line.
+_VULKAN_PROFILES = {
+    "ace_step": (1.15, 5.55, 9.4),
+    "breeze_tts": (0.0, 12.1, 6.9),
+    "chatterbox": (0.25, 5.25, 3.5),
+    "cosyvoice3": (0.6, 4.38, 6.6),
+    "heartmula": (2.5, 2.7, 7.2),
+    "higgs_audio_tts": (0.95, 2.94, 8.0),
+    "kokoro_tts": (0.1, 3.89, 0.9),
+    "midashenglm_gen": (1.0, 2.25, 3.2),
+    "minimax_music3": (0.7, 9.41, 12.7),
+    "moss_tts_v15": (1.0, 2.63, 19.2),
+    "omnivoice": (0.05, 7.67, 1.6),
+    "qwen3_tts": (1.1, 8.87, 4.3),
+    "stable_audio": (1.8, 0.65, 5.5),
+    "voxtral_tts": (1.7, -0.64, 7.5),
+    "yue2": (1.2, 4.45, 7.1),
+}
+# Families measured far higher on pre-Ampere NVIDIA cards (YuE2 on a T4): the generic formula there.
+_NOT_BEFORE_AMPERE = frozenset({"yue2"})
+
+
+def _runtime_backend() -> Optional[str]:
+    """The installed audio.cpp's backend ("cuda", "vulkan", ...), or None when none is installed."""
+    from core.inference.audio_cpp_server import find_audio_cpp_server_binary, select_backend
+
+    binary = find_audio_cpp_server_binary()
+    return select_backend(binary, False) if binary else None
+
+
+def _may_have_pre_ampere_nvidia_card() -> bool:
+    """Uncached (gpu_query caches); unreadable NVIDIA capabilities count as pre-Ampere."""
+    from utils.hardware import nvidia
+
+    capabilities = nvidia.get_compute_capabilities()
+    if not capabilities:
+        return nvidia.has_nvidia_driver()
+    return any(capability < (8, 0) for capability in capabilities.values())
+
+
+def gpu_estimate_applies(audio_type: Optional[str]) -> bool:
+    """Whether the placement check sizes an Auto load of ``audio_type`` with its estimate."""
+    import utils.hardware as hardware
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
+    from core.inference.audio_device import audio_load_runs_on_cpu
+
+    return (
+        audio_type in AUDIO_CPP_AUDIO_TYPES
+        and hardware.get_device() in (hardware.DeviceType.CUDA, hardware.DeviceType.XPU)
+        and not audio_load_runs_on_cpu(audio_type, "auto")
+    )
 
 
 def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
@@ -154,12 +223,24 @@ def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float
     A measured family uses its own profile; a package past the sizes measured for it gets the
     larger of that profile and the generic one."""
     weights_gb = size_bytes / (1024**3)
-    generic = weights_gb * _GENERIC_PROFILE[0] + _GENERIC_PROFILE[1]
+    backend = _runtime_backend()
+
+    def pick(cuda, vulkan):
+        # Not installed yet, or a build measured on neither (HIP, CPU): both, and the larger wins.
+        return {"cuda": [cuda], "vulkan": [vulkan]}.get(backend, [cuda, vulkan])
+
+    generics = (
+        [_GENERIC_PROFILE]
+        if family in _UNBOUNDED_FAMILIES
+        else pick(_GENERIC_PROFILE, _VULKAN_GENERIC_PROFILE)
+    )
+    generic = max(weights_gb * per_weight + fixed for per_weight, fixed in generics)
     profile = _MEASURED_PROFILES.get(family or "")
-    if profile is None:
+    if profile is None or (family in _NOT_BEFORE_AMPERE and _may_have_pre_ampere_nvidia_card()):
         return round(generic, 2)
-    per_weight, fixed, measured_up_to_gb = profile
-    measured = weights_gb * per_weight + fixed
+    profiles = pick(profile, _VULKAN_PROFILES[family]) if family in _VULKAN_PROFILES else [profile]
+    measured = max(weights_gb * per_weight + fixed for per_weight, fixed, _largest in profiles)
+    measured_up_to_gb = min(largest for _per_weight, _fixed, largest in profiles)
     return round(measured if weights_gb <= measured_up_to_gb else max(measured, generic), 2)
 
 
@@ -249,9 +330,10 @@ def classify_audio_cpp_failure(
         key = f"{key}_cpu" if on_cpu and key in ("out_of_memory", "capacity") else key
         need = ""
         if placement and required_gb is not None:
-            need = f" It needs about {required_gb:.1f} GB of GPU memory while running"
+            digits = 2 if free_gb is not None and f"{required_gb:.1f}" == f"{free_gb:.1f}" else 1
+            need = f" It needs about {required_gb:.{digits}f} GB of GPU memory while running"
             need += (
-                f", and the most free on one GPU is {free_gb:.1f} GB."
+                f", and the most free on one GPU is {free_gb:.{digits}f} GB."
                 if free_gb is not None
                 else "."
             )

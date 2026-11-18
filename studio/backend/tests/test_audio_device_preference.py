@@ -347,6 +347,8 @@ def test_the_mtmd_reuse_branch_still_records_the_choice(monkeypatch):
     sidecar._model_id = "m"
     sidecar._binary_path_revision = 1
     sidecar._active_requests = 0
+    sidecar._context_preference = 0
+    sidecar._context_length = 4096
     monkeypatch.setattr(sidecar, "_process_alive", lambda: True)
     monkeypatch.setattr(sidecar, "_schedule_idle_unload_locked", lambda: None)
     monkeypatch.setattr(stt_mtmd_sidecar, "_training_active", lambda: True)
@@ -357,8 +359,7 @@ def test_the_mtmd_reuse_branch_still_records_the_choice(monkeypatch):
 
 
 def test_stt_unload_can_skip_a_sidecar_that_is_mid_transcription():
-    """The Voice device switch is an early release, not a reclaim: draining a
-    live transcription for 30s and then killing it loses the recording."""
+    """Early release, not reclaim: killing a mid-transcription sidecar loses the recording."""
     import inspect
 
     from core.inference import stt_registry

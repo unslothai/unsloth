@@ -246,9 +246,8 @@ def verify_native_path_lease(
 
 
 def release_native_path_lease(lease: str) -> None:
-    """Make a grant this caller consumed usable again, once it has undone everything it read with
-    it: a batch that failed part way and kept nothing, so its retry is not refused as a replay.
-    Only for a lease the caller verified itself; the grant still expires as signed."""
+    """Makes a consumed grant usable again once the caller undid what it read, so a failed batch's
+    retry is not a replay; only for a self-verified lease; expiry is unchanged."""
     payload = _decode_payload(_split_lease(lease)[0])
     with _REPLAY_LOCK:
         _USED_NONCES.pop(str(payload.get("nonce")), None)

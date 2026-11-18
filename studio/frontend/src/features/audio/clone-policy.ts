@@ -38,9 +38,15 @@ export const QWEN3_LANGUAGE_NAMES = [
 ] as const;
 
 export const CLONE_TEXT_EXAMPLES = [
-  "Thanks for calling. How can I help you today?",
-  "The quick brown fox jumps over the lazy dog near the river bank.",
-  "Welcome back. Here is a short summary of what changed this week.",
+  { label: "Phone greeting", text: "Thanks for calling. How can I help you today?" },
+  {
+    label: "Pangram",
+    text: "The quick brown fox jumps over the lazy dog near the river bank.",
+  },
+  {
+    label: "Weekly update",
+    text: "Welcome back. Here is a short summary of what changed this week.",
+  },
 ] as const;
 
 const SPEAKER_LINE = /^\s*Speaker\s*\d+\s*:/im;

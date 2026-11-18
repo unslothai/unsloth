@@ -7,6 +7,7 @@ import {
   CubeIcon,
   Key01Icon,
   MoreHorizontalIcon,
+  PencilEdit02Icon,
   PlusSignIcon,
   Search01Icon,
   UserBlock01Icon,
@@ -55,6 +56,7 @@ import {
   deleteAccount,
   fetchAccounts,
   regenerateSetupCode,
+  renameAccount,
   setAccountActive,
   setAccountModelAllowlist,
   setOwnerLoginAlias,
@@ -87,6 +89,8 @@ function OwnerAccountsTab() {
   const [resetting, setResetting] = useState<StudioAccount | null>(null);
   const [retiring, setRetiring] = useState<StudioAccount | null>(null);
   const [modelAccess, setModelAccess] = useState<StudioAccount | null>(null);
+  const [renaming, setRenaming] = useState<StudioAccount | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const [allowlistText, setAllowlistText] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -265,7 +269,7 @@ function OwnerAccountsTab() {
         </Button>
       </div>
 
-      {error && !confirming && !editorOpen && !modelAccess && (
+      {error && !confirming && !editorOpen && !modelAccess && !renaming && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3">
           <p
             role="alert"
@@ -464,6 +468,21 @@ function OwnerAccountsTab() {
                             if (confirming) event.preventDefault();
                           }}
                         >
+                          <DropdownMenuItem
+                            disabled={busy}
+                            onSelect={() => {
+                              setError(null);
+                              setRenameDraft(account.username);
+                              setRenaming(account);
+                            }}
+                          >
+                            <HugeiconsIcon
+                              icon={PencilEdit02Icon}
+                              className="size-4"
+                              aria-hidden="true"
+                            />
+                            {t("settings.accounts.rename")}
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             disabled={busy}
                             onSelect={() => {
@@ -813,6 +832,91 @@ function OwnerAccountsTab() {
                 {t("settings.accounts.cancel")}
               </Button>
               <Button type="submit" variant="dark" disabled={busy}>
+                {busy && <Spinner label={t("common.loading")} />}
+                {t("settings.accounts.modelAccessSave")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={renaming !== null}
+        onOpenChange={(open) => {
+          if (open || busy) return;
+          setRenaming(null);
+          setError(null);
+        }}
+      >
+        <DialogContent
+          className="sm:max-w-md max-sm:max-w-[calc(100%-2rem)]"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const trigger = actionTrigger.current;
+            (trigger?.isConnected && !trigger.disabled
+              ? trigger
+              : createTrigger.current
+            )?.focus({ preventScroll: true });
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="break-words">
+              {t("settings.accounts.renameTitle", {
+                username: renaming?.username ?? "",
+              })}
+            </DialogTitle>
+            <DialogDescription>
+              {t("settings.accounts.renameDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-6"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const target = renaming;
+              if (busy || !target || !renameDraft.trim()) return;
+              void perform(async () => {
+                await renameAccount(target.account_id, renameDraft);
+                setRenaming(null);
+              });
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="rename-account-username" className="text-xs">
+                {t("settings.accounts.username")}
+              </Label>
+              <Input
+                id="rename-account-username"
+                value={renameDraft}
+                onChange={(event) => setRenameDraft(event.target.value)}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                readOnly={busy}
+                required
+              />
+            </div>
+            {error && (
+              <p role="alert" className="break-words text-xs text-destructive">
+                {error}
+              </p>
+            )}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => {
+                  setRenaming(null);
+                  setError(null);
+                }}
+              >
+                {t("settings.accounts.cancel")}
+              </Button>
+              <Button
+                type="submit"
+                variant="dark"
+                disabled={busy || !renameDraft.trim()}
+              >
                 {busy && <Spinner label={t("common.loading")} />}
                 {t("settings.accounts.modelAccessSave")}
               </Button>

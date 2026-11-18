@@ -166,8 +166,7 @@ def _install_prompt_env(
     interactive,
     scripted = _NEW_PW,
 ):
-    """Tmp STUDIO_HOME + fake tty + scripted prompt. Returns the event log that
-    records prompt calls and re-exec argv in order."""
+    """Temp STUDIO_HOME and fake tty with scripted prompts; returns the ordered event log."""
     studio_mod = _studio()
     events = []
 
@@ -218,8 +217,7 @@ def _install_run_reexec(monkeypatch, events):
     )
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
-    # Pin platform.system() too: the launcher name comes from it, so a Windows runner would miss the
-    # POSIX fixture.
+    # Pin platform.system() too: launcher names derive from it, else Windows misses POSIX.
     monkeypatch.setattr(studio_mod.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         Path,
@@ -671,9 +669,8 @@ def test_studio_default_non_tty_fails_closed_when_bootstrap_removal_fails(monkey
 
 
 class _FailingSelectConn:
-    """Wrap a real auth connection but raise on the gate's must_change SELECT,
-    so seeding + commit still happen and only the read-back fails (a locked-DB
-    window that lands after _ensure_cli_default_admin already wrote the file)."""
+    """Wrap a real auth connection, raising only on the must_change SELECT, so seeding and commit
+    still happen and only the read-back fails (a locked-DB window)."""
 
     def __init__(self, inner):
         self._inner = inner

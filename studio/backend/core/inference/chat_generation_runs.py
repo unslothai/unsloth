@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator, Iterator
 
 from starlette.requests import Request
 
+from core.inference.http_stream import SSE_LINE_END
 from core.inference.llama_keepwarm import InferenceActivityReservation
 from core.training.account_jobs import sweepable_job_accounts
 from utils.account_context import current_account_id, run_as
@@ -55,7 +56,7 @@ class _SSEDecoder:
         while "\n\n" in self.buffer:
             block, self.buffer = self.buffer.split("\n\n", 1)
             data = "\n".join(
-                line[5:].lstrip() for line in block.splitlines() if line.startswith("data:")
+                line[5:].lstrip() for line in SSE_LINE_END.split(block) if line.startswith("data:")
             )
             if data:
                 values.append(data)

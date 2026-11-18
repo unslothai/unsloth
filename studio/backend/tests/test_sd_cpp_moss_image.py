@@ -65,9 +65,12 @@ def test_the_family_row_carries_the_native_assets():
     assert detect_family("unsloth/MOSS-Image-Base-GGUF") is fam
 
 
-def test_only_moss_declares_a_tokenizer_or_native_only_transformer_files():
+def test_only_moss_declares_a_tokenizer_and_the_native_only_families_are_pinned():
     assert [f.name for f in _FAMILIES if f.sd_cpp_tokenizer] == ["moss-image"]
-    assert [f.name for f in _FAMILIES if f.native_transformer_files_only] == ["moss-image"]
+    assert [f.name for f in _FAMILIES if f.native_transformer_files_only] == [
+        "moss-image",
+        "minimax-h3-image",
+    ]
 
 
 def test_the_asset_specs_fetch_the_tokenizer():
@@ -208,20 +211,21 @@ def test_the_route_validation_passes_a_gguf_native_can_take(monkeypatch, tmp_pat
     assert r.family_buildable_here(fam, model_kind = "pipeline") == r.family_pipeline_available(fam)
 
 
-def test_diffusers_refuses_a_moss_single_file_transformer(monkeypatch, tmp_path):
+def test_diffusers_takes_a_moss_safetensors_single_file(monkeypatch, tmp_path):
     from core.inference.diffusion import DiffusionBackend
 
-    # Even with a capable native build: sd.cpp takes only the GGUF, so a loose transformer file has no engine.
     _set_device(monkeypatch, "cuda")
     _set_runnable(monkeypatch)
     _set_binary(monkeypatch, _binary(tmp_path, "sd-cli", marker = True))
-    with pytest.raises(ValueError, match = "single-file transformer only on the native"):
-        DiffusionBackend().validate_load_request(
-            _REPO, gguf_filename = "MOSS-Image-SFT-INT8.safetensors", model_kind = "single_file"
-        )
+    fam = DiffusionBackend().validate_load_request(
+        _REPO, gguf_filename = "MOSS-Image-SFT-INT8.safetensors", model_kind = "single_file"
+    )
+    assert fam.name == "moss-image"
 
 
-def test_a_loose_moss_safetensors_is_not_offered():
+def test_a_loose_moss_safetensors_is_offered():
     from hub.utils.comfy_models import _single_file_loadable
-    assert not _single_file_loadable(_moss(), None, "MOSS-Image-SFT-INT8.safetensors")
+
+    assert _single_file_loadable(_moss(), None, "MOSS-Image-SFT-INT8.safetensors")
+    assert not _single_file_loadable(_moss(), None, "MOSS-Image-SFT-Q4_K_M.gguf")
     assert _single_file_loadable(detect_family("z-image"), None, "z_image_turbo_bf16.safetensors")

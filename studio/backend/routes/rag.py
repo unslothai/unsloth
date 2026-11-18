@@ -339,9 +339,7 @@ def _require_scope_owner(
     scope_id: str,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """404 unless the scope's owner still exists. ``conn`` reuses a connection the caller already holds:
-    sqlite-vec loads per connection, so opening a second one to read a single row pays that twice.
-    """
+    """404 unless the scope owner exists; pass conn to reuse one since sqlite-vec loads per connection."""
     if scope_type == "knowledge_base":
         if conn is not None:
             exists = store.get_kb(conn, scope_id) is not None
@@ -918,6 +916,8 @@ def _folder_job_view(row: dict) -> dict:
         "removedFiles": row.get("deleted") or 0,
         "renamedFiles": row.get("renamed") or 0,
         "failedFiles": row.get("failed") or 0,
+        # Folder-wide, out of discoveredFiles; processedFiles counts only this pass's changes.
+        "syncedFiles": (row.get("up_to_date") or 0) + (row.get("checked") or 0),
         "error": row.get("error"),
         "createdAt": row.get("created_at"),
         "completedAt": row.get("completed_at"),

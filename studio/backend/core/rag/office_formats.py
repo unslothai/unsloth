@@ -51,8 +51,8 @@ _NS = {
     "opf": "http://www.idpf.org/2007/opf",
 }
 # ISO Strict OOXML names the same schemas with other URIs.
-_STRICT_NS = tuple(
-    (f"http://purl.oclc.org/ooxml/{strict}".encode(), _NS[prefix].encode())
+_STRICT_NS = {
+    f"http://purl.oclc.org/ooxml/{strict}": _NS[prefix]
     for strict, prefix in (
         ("spreadsheetml/main", "s"),
         ("presentationml/main", "p"),
@@ -61,7 +61,17 @@ _STRICT_NS = tuple(
         ("drawingml/diagram", "dgm"),
         ("officeDocument/relationships", "r"),
     )
-)
+}
+
+
+# expat also reads UTF-16, where an ASCII search for the declaration finds nothing.
+_ENTITY_DECLS = tuple("<!ENTITY".encode(codec) for codec in ("utf-8", "utf-16-le", "utf-16-be"))
+
+
+def _transitional_name(name: str) -> str:
+    namespace, separator, local = name.partition("}")
+    mapped = _STRICT_NS.get(namespace[1:]) if separator else None
+    return f"{{{mapped}}}{local}" if mapped else name
 
 
 def _q(prefix: str, tag: str) -> str:
@@ -115,18 +125,32 @@ class _Archive:
     def _xml_events(self, name: str, events: tuple[str, ...]):
         data = self.read(name)
         # Office XML never declares entities; refusing them rules out expansion attacks.
-        if b"<!ENTITY" in data:
+        if any(decl in data for decl in _ENTITY_DECLS):
             raise ValueError("XML entity declarations are not supported")
-        if b"purl.oclc.org/ooxml/" in data:
-            for strict, transitional in _STRICT_NS:
-                data = data.replace(strict, transitional)
-        parser = ET.XMLPullParser(events)
+        parser = ET.XMLPullParser((*events, "start-ns"))
+        strict = False
+
+        def read_events():
+            nonlocal strict
+            for event, element in parser.read_events():
+                if event == "start-ns":
+                    strict = strict or element[1] in _STRICT_NS
+                    continue
+                if strict and event == "start":
+                    # Expanded names identify namespaces in every XML encoding; values are data.
+                    element.tag = _transitional_name(element.tag)
+                    if element.attrib:
+                        element.attrib = {
+                            _transitional_name(key): value for key, value in element.attrib.items()
+                        }
+                yield event, element
+
         try:
             for start in range(0, len(data), 1 << 20):
                 parser.feed(data[start : start + (1 << 20)])
-                yield from parser.read_events()
+                yield from read_events()
             parser.close()
-            yield from parser.read_events()
+            yield from read_events()
         except ET.ParseError as exc:
             raise ValueError(f"malformed XML in {name}") from exc
 
@@ -406,10 +430,6 @@ def _apply_section(value: float, plan) -> str | None:
     return prefix + text + percent + suffix
 
 
-def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
-    return _apply_section(value, _section_plan(tokens))
-
-
 def _number_plan(code: str):
     """Each section of a numeric format read once (with whether it has tokens), or None if unsupported."""
     tokens = _format_tokens(code) if code else None
@@ -433,11 +453,6 @@ def _apply_number(value: float, plan) -> str | None:
         return _apply_section(0.0, plan[2][1])
     text = _apply_section(abs(value), plan[0][1])
     return None if text is None else ("-" + text if value < 0 else text)
-
-
-def _format_number(value: float, code: str) -> str | None:
-    """``value`` as a numeric format displays it, or None for formats left as stored."""
-    return _apply_number(value, _number_plan(code))
 
 
 _NUMBER_ERRORS = (ArithmeticError, ValueError, decimal.InvalidOperation)
@@ -491,16 +506,32 @@ def _column_index(ref: str) -> int:
     return index - 1
 
 
+def _decode_xstring(text: str) -> str:
+    if "_x" not in text:
+        return text
+    return re.sub(
+        r"_x005[Ff]_(x[0-9a-fA-F]{4}_)|_x([0-9a-fA-F]{4})_",
+        lambda match: f"_{match[1]}" if match[1] else chr(int(match[2], 16)),
+        text,
+    )
+
+
+def _xlsx_unicode(text: str) -> str:
+    if re.search(r"[\ud800-\udfff]", text):
+        return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    return text
+
+
 def _xlsx_text(node: ET.Element) -> str:
     # Plain <t> or rich runs <r><t>; phonetic hints (<rPh>) are skipped.
     parts = []
     for child in node:
         if child.tag == _q("s", "t"):
-            parts.append(child.text or "")
+            parts.append(_decode_xstring(child.text or ""))
         elif child.tag == _q("s", "r"):
             t = child.find(_q("s", "t"))
-            parts.append((t.text or "") if t is not None else "")
-    return "".join(parts)
+            parts.append(_decode_xstring(t.text or "") if t is not None else "")
+    return _xlsx_unicode("".join(parts))
 
 
 def xlsx(path: str) -> list[Section]:
@@ -562,7 +593,9 @@ def xlsx(path: str) -> list[Section]:
                         value = _xlsx_text(inline) if inline is not None else ""
                     elif kind == "b":
                         value = "TRUE" if raw == "1" else "FALSE"
-                    elif kind in ("str", "e"):
+                    elif kind == "str":
+                        value = _xlsx_unicode(_decode_xstring(raw))
+                    elif kind == "e":
                         value = raw
                     else:
                         try:
@@ -962,6 +995,8 @@ def _email_parts(part, html_text) -> list[str]:
     """Inline body text in order: every part of a mixed message, one choice per alternative."""
     if part.get_content_disposition() == "attachment":
         return []
+    if part.get_content_type() == "message/rfc822" and part.is_multipart():
+        return [_email_text(message, html_text) for message in part.get_payload()]
     if part.get_content_maintype() == "multipart":
         children = list(part.iter_parts())
         if part.get_content_subtype() != "alternative":
@@ -1285,8 +1320,13 @@ def doc(path: str) -> list[Section]:
                 chars.append(word[offset : offset + hi - lo].decode("cp1252", "replace"))
             else:
                 offset = fc + 2 * (lo - start)
-                chars.append(word[offset : offset + 2 * (hi - lo)].decode("utf-16-le", "replace"))
-        return _word_text("".join(chars))
+                raw = word[offset : offset + 2 * (hi - lo)]
+                if len(raw) & 1:
+                    # Corrupt piece ending mid-character: one U+FFFD.
+                    raw = raw[:-1] + b"\xfd\xff"
+                chars.append(raw.decode("utf-16-le", "surrogatepass"))
+        text = "".join(chars).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+        return _word_text(text)
 
     # Stories follow the main text in this order; headers and comments are left out, as for .docx.
     starts = [sum(ccps[:i]) for i in range(len(ccps))]
@@ -1382,10 +1422,16 @@ def _xls_string(segments: list[bytes], seg: int, pos: int) -> tuple[str, int, in
         n = min(count, max(avail, 1))
         raw = segments[seg][pos : pos + n * width]
         pos += n * width
-        parts.append(raw.decode("utf-16-le" if wide else "latin-1", "replace"))
+        if not parts and n == count:
+            take(4 * runs + ext)
+            return raw.decode("utf-16-le" if wide else "latin-1", "replace"), seg, pos
+        if wide and len(raw) & 1:
+            # A corrupt record can end mid-character; one U+FFFD keeps the rest aligned.
+            raw = raw[:-1] + b"\xfd\xff"
+        parts.append(raw if wide else raw.decode("latin-1").encode("utf-16-le"))
         count -= n
     take(4 * runs + ext)
-    return "".join(parts), seg, pos
+    return b"".join(parts).decode("utf-16-le", "replace"), seg, pos
 
 
 def _xls_short_string(body: bytes, pos: int, length_bytes: int) -> str:
@@ -1603,11 +1649,8 @@ def _ppt_record_at(data: bytes, offset: int | None, kind: int) -> tuple[int, int
 
 
 def _ppt_current(cf: CompoundFile, data: bytes) -> tuple[dict[int, int], int] | None:
-    """Persist id -> offset as of the latest save, and the document's persist id.
-
-    Incremental saves append new versions of records, so the stream also holds stale ones;
-    the edit chain from "Current User" says which are live.
-    """
+    """Returns (persist id to offset map as of the latest save, and the document's persist id);
+    stale record copies are skipped via the Current User chain."""
     if not cf.exists("Current User"):
         return None
     user = cf.read("Current User")

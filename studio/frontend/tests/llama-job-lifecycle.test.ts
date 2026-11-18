@@ -214,9 +214,8 @@ test("a bundle with nothing from the job names no single release", () => {
   );
 });
 
-// The card is muted per component, and a chained apply drops llama.cpp from the
-// status when its phase lands and the whisper.cpp phase starts. Reading the live
-// switch there hid a running update for the whole second phase.
+// The card's muting is per component, and a chained apply drops llama.cpp from status once its
+// phase lands; reading the live switch then hid a running update for the whole second phase.
 test("the switch a running card started under is held until the job is over", () => {
   let held = heldUpdateBannerPref(null, true, true);
   assert.equal(held, true);

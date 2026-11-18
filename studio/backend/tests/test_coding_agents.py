@@ -4,6 +4,9 @@
 """Tests for coding-agent CLI detection used by the API-keys settings panel."""
 
 import os
+import sys
+
+import pytest
 
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -122,6 +125,49 @@ def test_identifies_an_npm_dsh_launcher_without_executing_it(tmp_path):
         side_effect = AssertionError("advisory detection must not execute the launcher"),
     ):
         assert is_deepseek_harness_executable(str(launcher), allow_execution = False)
+
+
+# Verbatim npm cmd-shim output for `npm install -g @deepseek-ai/dsh` on Windows.
+_NPM_DSH_CMD_SHIM = (
+    "@ECHO off\r\n"
+    "GOTO start\r\n"
+    ":find_dp0\r\n"
+    "SET dp0=%~dp0\r\n"
+    "EXIT /b\r\n"
+    ":start\r\n"
+    "SETLOCAL\r\n"
+    "CALL :find_dp0\r\n"
+    "\r\n"
+    'IF EXIST "%dp0%\\node.exe" (\r\n'
+    '  SET "_prog=%dp0%\\node.exe"\r\n'
+    ") ELSE (\r\n"
+    '  SET "_prog=node"\r\n'
+    ")\r\n"
+    "\r\n"
+    "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & "
+    '"%_prog%"  "%dp0%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\n'
+)
+
+
+def test_identifies_a_windows_npm_dsh_cmd_shim_without_executing_it(tmp_path):
+    launcher = tmp_path / "dsh.cmd"
+    launcher.write_text(_NPM_DSH_CMD_SHIM, newline = "")
+    with patch(
+        "utils.coding_agents.subprocess.run",
+        side_effect = AssertionError("advisory detection must not execute the launcher"),
+    ):
+        assert is_deepseek_harness_executable(str(launcher), allow_execution = False)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "PATHEXT resolution of an npm .cmd shim")
+def test_detects_windows_npm_dsh_cmd_shim_on_path(tmp_path, monkeypatch):
+    (tmp_path / "dsh.cmd").write_text(_NPM_DSH_CMD_SHIM, newline = "")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with patch(
+        "utils.coding_agents.subprocess.run",
+        side_effect = AssertionError("advisory detection must not execute the launcher"),
+    ):
+        assert "dsh" in detect_installed_coding_agents()
 
 
 def test_explicit_launch_can_probe_a_custom_dsh_wrapper(tmp_path):

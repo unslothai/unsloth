@@ -81,6 +81,8 @@ def _fast_base_model():
         "_pipeline_keeps_replica": lambda model: False,
         "enable_fp8_lora": lambda model: [],
         "restore_fp8_lora_for_inference": lambda model: None,
+        # for_training frees kept decode graphs and their cache; none exist for these fakes.
+        "_decode_graphs": types.SimpleNamespace(release_for_training = lambda model: None),
     }
     lifted = {n.name for n in wanted} | set(stubbed)
     todo = list(wanted)

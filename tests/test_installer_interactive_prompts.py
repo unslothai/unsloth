@@ -43,6 +43,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/precompile_bytecode.py",
     "studio/backend/requirements/single-env/patch_metadata.py",
     "studio/systemd/install_user_service.sh",
+    "studio/launchd/install_user_agent.sh",
 )
 
 # Keyed by (script, normalised question) since line numbers move. Do NOT add an entry just to
@@ -223,9 +224,8 @@ def _redirected_loop_bodies(lines: list[str]) -> set[int]:
 
 
 def _outside_docstring(line: str, delimiter: str) -> tuple[str, str]:
-    """Strip triple-quoted regions from a Python line, returning what is left and the
-    delimiter still open. A docstring showing an `input()` example documents the
-    script, it does not prompt."""
+    """Strip triple-quoted regions from a Python line, returning the rest and any delimiter still
+    open; an input() example inside a docstring documents the script, it does not prompt."""
     while True:
         if delimiter:
             end = line.find(delimiter)

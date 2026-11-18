@@ -8,6 +8,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type * as BarModule from "../src/features/rag/components/thread-documents-bar.tsx";
+import * as sourceFolderCopy from "../src/features/rag/components/source-folder-copy.ts";
 import type * as FolderGroupsModule from "../src/features/rag/components/linked-folder-groups.ts";
 import type * as GateModule from "../src/features/chat/hooks/use-rag-tool-disabled.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -148,6 +149,7 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       }),
     },
     "./linked-folder-groups": folderGroups,
+    "./source-folder-copy": sourceFolderCopy,
     "@/components/ui/alert-dialog": new Proxy({}, { get: () => Passthrough }),
     "./document-status-chip": { STAGE_LABELS: {} },
     "./knowledge-base-dialog": { KnowledgeBaseDialog: Nothing },

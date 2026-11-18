@@ -1038,6 +1038,46 @@ def test_loaded_hub_dataset_rejects_cross_snapshot_symlink(tmp_path):
     assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_snapshot_unavailable")
 
 
+@pytest.mark.parametrize("local", [False, True])
+def test_loaded_hub_dataset_validates_each_snapshot_once_per_call(tmp_path, monkeypatch, local):
+    files = 60
+    snapshot = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    for index in range(files):
+        (snapshot / f"train-{index:03d}.parquet").write_bytes(b"dataset")
+    sources = [
+        str(snapshot / f"train-{index:03d}.parquet")
+        if local
+        else f"hf://datasets/org/dataset@dataset-commit/train-{index:03d}.parquet"
+        for index in range(files)
+    ]
+    original = dataset_cache.resolved_dataset_snapshot_file
+    calls = []
+
+    def counting(snapshot_path, source_path):
+        calls.append(source_path)
+        return original(snapshot_path, source_path)
+
+    monkeypatch.setattr(dataset_cache, "resolved_dataset_snapshot_file", counting)
+    train = _loaded_dataset(*sources[: files // 2])
+    evaluation = _loaded_dataset(*sources[files // 2 :])
+
+    for _ in range(2):
+        calls.clear()
+        assert attest_loaded_dataset("org/dataset", train, evaluation) == (
+            str(snapshot.resolve()),
+            None,
+        )
+        per_source = 2 if local else 1
+        assert len(calls) == files + per_source * files
+
+    (snapshot / "train-059.parquet").write_bytes(b"datase")
+    assert attest_loaded_dataset("org/dataset", train, evaluation) == (
+        None,
+        "dataset_snapshot_unavailable",
+    )
+
+
 def test_loaded_hub_dataset_rejects_mixed_train_eval_commits(tmp_path):
     _dataset_snapshot(tmp_path, "org/dataset", "train-commit")
     _dataset_snapshot(tmp_path, "org/dataset", "eval-commit")

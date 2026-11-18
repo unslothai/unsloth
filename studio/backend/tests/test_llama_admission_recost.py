@@ -47,8 +47,7 @@ class TestTheQueueSide:
 
     @pytest.mark.asyncio
     async def test_growth_that_does_not_fit_is_refused_and_changes_nothing(self):
-        """Refused, not blocked: this runs inside the generator, where a round that waited
-        could be waiting on a holder that is waiting on it."""
+        """Refused, not blocked: a waiting round can deadlock with the holder it waits on."""
         queue = LlamaAdmissionQueue("test")
         _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)
@@ -134,8 +133,7 @@ class TestTheLeaseSide:
                 barrier.wait()
                 lease.release()
 
-            # Daemon throughout this file: a failed assertion leaves a growth thread
-            # spinning, and a live non-daemon one wedges exit instead of reporting it.
+            # Daemon threads: a failed assertion must not leave a spinning thread wedging exit.
             threads = [
                 threading.Thread(target = grow, daemon = True),
                 threading.Thread(target = drop, daemon = True),
@@ -196,9 +194,8 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
     @pytest.mark.asyncio
     async def test_four_loops_growing_together_do_not_overcommit(self):
-        """The deadlock case that decides the design. Every holder wants more than a
-        share, so blocking while still holding leaves all four waiting on each other.
-        Yielding first means _committed strictly falls, so somebody fits."""
+        """Deadlock case: every holder wants more than a share, so blocking while holding deadlocks
+        all four; yielding first lets _committed fall so somebody fits."""
         queue = LlamaAdmissionQueue("test")
         budget = 4096
         leases = [_lease(queue, tokens = budget // 4, budget = budget) for _ in range(4)]
@@ -225,8 +222,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
     @pytest.mark.asyncio
     async def test_the_budget_is_never_exceeded_while_they_wait(self):
-        """Only one reparker may win the committed-is-zero escape: four racing an empty
-        cache would each see zero and each admit itself."""
+        """One reparker may take the committed-is-zero escape; four racers would all admit."""
         queue = LlamaAdmissionQueue("test")
         budget = 4096
         leases = [_lease(queue, tokens = budget // 4, budget = budget) for _ in range(4)]
@@ -360,8 +356,7 @@ class TestGivingUpTheWait:
 
     @pytest.mark.asyncio
     async def test_a_released_lease_restores_nothing(self):
-        """release() already handed back the 0 held while parked, so re-committing here
-        would strand the difference for the life of the process."""
+        """release() already returned the parked 0; re-committing would strand the difference."""
         queue = LlamaAdmissionQueue("test")
         holder = _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)
@@ -406,8 +401,7 @@ class TestYieldingIsGatedOnTheServerActuallyClearing:
 
     @pytest.mark.asyncio
     async def test_it_does_not_block(self):
-        """Declining is the pre-existing behaviour: do not wait for room that is never
-        coming back on this server."""
+        """Declining is pre-existing behaviour: do not wait for room that is not coming back."""
         queue = LlamaAdmissionQueue("test")
         holder = _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)

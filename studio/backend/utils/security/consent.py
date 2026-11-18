@@ -22,6 +22,7 @@ from utils.security.remote_code_scan import (
     MEDIUM,
     RemoteCodeUnscannable,
     config_declares_auto_map,
+    hub_config_path,
     remote_code_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
@@ -38,8 +39,7 @@ MANAGED_REMOTE_CODE_REFUSAL = (
 
 
 def managed_remote_code_refused() -> bool:
-    """Remote code runs unconfined as the Studio user, so a managed account may not
-    enable it unless the owner opted in for the whole installation."""
+    """Remote code runs unconfined, so managed accounts need the owner's whole-install opt-in."""
     if is_owner_context():
         return False
     return os.environ.get(MANAGED_REMOTE_CODE_OVERRIDE, "").lower() not in ("1", "true", "yes")
@@ -149,32 +149,15 @@ def _load_remote_code_configs(
                     configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
             return configs
 
-        from huggingface_hub import hf_hub_download
-        from hub.utils.hf_tokens import anonymous_retrying
-
-        hf_hub_download = anonymous_retrying(hf_hub_download)
-        from huggingface_hub.utils import EntryNotFoundError
-        from utils.hf_cache_settings import active_hf_hub_cache
-        from utils.hf_probe import hf_file_definitely_absent
-
         configs = []
         for name in remote_code_config_paths(load_subdirs):
-            # Probe optional configs without caching 404s; other failures still fail closed.
-            if hf_file_definitely_absent(model_name, name, token = hf_token):
-                continue
             try:
-                p = hf_hub_download(
-                    repo_id = model_name,
-                    filename = name,
-                    token = hf_token,
-                    cache_dir = active_hf_hub_cache(),
-                )
-            except EntryNotFoundError:
-                continue
+                p = hub_config_path(model_name, name, hf_token)
             except Exception:
                 # Transient/auth failure is not "absent" -> fail closed to "unknown" so the caller scans.
                 return None
-            configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
+            if p is not None:
+                configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
         # Every config was read or a genuine 404 -> an empty list is a definitive "no auto_map".
         return configs
     except Exception as exc:

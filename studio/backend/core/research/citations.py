@@ -27,8 +27,7 @@ _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>", re.IGNORECASE)
 # \x00 stops a URL glued to masked code from swallowing its placeholder.
 # Any case: a browser reads `HTTPS://` as https too.
 _RAW_URL = re.compile(r"https?://[^\s<>\x00]+", re.IGNORECASE)
-# Beside the pattern that restores them: a kind missing there leaves a raw sentinel in the
-# report. [0-9] not \d, which also matches other scripts' digits.
+# A kind missing from the restore pattern leaks a raw sentinel; [0-9] avoids other digits.
 _PLACEHOLDER_KINDS = ("research-code", "research-citation")
 _PLACEHOLDER = re.compile(rf"\x00(?:{'|'.join(_PLACEHOLDER_KINDS)})-[0-9]+\x00")
 # For a pass that deletes prose but must carry the code through.

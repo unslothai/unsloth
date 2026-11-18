@@ -152,13 +152,23 @@ def _zimage_record(**versions):
     }
 
 
-def test_the_shipped_records_cover_the_flashinfer_studio_installs():
-    from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSION
+def test_the_shipped_records_cover_the_fallback_flashinfer_and_refuse_the_unmeasured_newest():
+    # A version joins flashinfer_bit_identical only with measured evidence.
+    from core.inference.diffusion_nvfp4_install import FLASHINFER_RELEASES
 
     records = [r for r in load_gate_records() if r.get("backend") == "flashinfer"]
     assert records
-    for record in records:
-        assert FLASHINFER_VERSION in gate.record_flashinfer_versions(record), record["repo_id"]
+    for release in FLASHINFER_RELEASES:
+        covered = [release.version in gate.record_flashinfer_versions(r) for r in records]
+        assert all(covered) or not any(covered), release.version
+        for record in records:
+            message = gate.nvfp4_gate_flashinfer_mismatch(
+                record["family"], record["base_repo"], installed = release.version
+            )
+            assert (message is None) == all(covered), (release.version, record["repo_id"])
+    assert all(
+        FLASHINFER_RELEASES[-1].version in gate.record_flashinfer_versions(r) for r in records
+    )
 
 
 def test_a_flashinfer_the_record_names_or_lists_bit_identical_is_covered(tmp_path):

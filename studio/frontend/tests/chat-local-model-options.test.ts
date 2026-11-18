@@ -129,3 +129,30 @@ test("an oMLX row is offered and labelled oMLX", () => {
   assert.equal(options.length, 1);
   assert.equal(options[0].baseModel, "oMLX");
 });
+
+test("image and video checkpoints stay out of chat, and speech rows carry their audio type", () => {
+  const options = chatLocalModelOptions([
+    row({ id: "/models/flux", task: "text-to-image" }),
+    row({ id: "/models/wan", task: "text-to-video" }),
+    // biome-ignore lint/style/useNamingConvention: API schema
+    row({ id: "/models/tts", task: "text-to-speech", audio_type: "csm" }),
+    row({ id: "/models/chat", task: "text-generation" }),
+  ]);
+  assert.deepEqual(
+    options.map((option) => option.id),
+    ["/models/tts", "/models/chat"],
+  );
+  assert.equal(options[0]?.audioType, "csm");
+  assert.equal(options[1]?.audioType, undefined);
+});
+
+test("a GGUF directory without gguf in its name is still offered as GGUF", () => {
+  const [dir, plain] = chatLocalModelOptions([
+    // biome-ignore lint/style/useNamingConvention: API schema
+    row({ id: "/models/llama", path: "/models/llama", model_format: "gguf" }),
+    row({ id: "/models/qwen", path: "/models/qwen" }),
+  ]);
+  assert.equal(dir?.isGguf, true);
+  assert.equal(dir?.isDirectGguf, undefined);
+  assert.equal(plain?.isGguf, undefined);
+});

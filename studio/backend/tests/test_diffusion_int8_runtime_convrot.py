@@ -312,8 +312,7 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
         detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1"), "int8"
     )
     assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
-    # only the first name is asked (the ComfyUI-format twin of the rotated build); the unreachable Hub then
-    # answers from the cache
+    # Only the first name, the ComfyUI twin, is asked; the unreachable Hub answers from cache.
     assert asked == ["Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors"]
     plain.unlink()
     with pytest.raises(LocalEntryNotFoundError):
@@ -611,7 +610,6 @@ def test_qwen_image_21_offline_default_still_loads_the_cached_plain_artifact(mon
 
 
 def test_qwen_image_21_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch):
-    # an int8-quantized but unrotated Linear would be a silent accuracy hole
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     diffusers = pytest.importorskip("diffusers")
     cls = getattr(diffusers, "QwenImage21Transformer2DModel", None)
@@ -628,3 +626,225 @@ def test_qwen_image_21_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch
     group, suffixes = tq.convrot_spec_for_scheme(tq.TQ_INT8, "qwen-image-2.1")
     rotated = set(tq.convrot_fqns(model, filt, group, suffixes))
     assert quantized and rotated == quantized
+
+
+# FLUX.2 klein (4B) and FLUX.3 klein Linear layouts (fqn, in, out), from the published diffusers checkpoints.
+_FLUX2_KLEIN_LINEARS = (
+    [("context_embedder", 7680, 3072), ("x_embedder", 128, 3072), ("proj_out", 3072, 128)]
+    + [("norm_out.linear", 3072, 6144), ("double_stream_modulation_img.linear", 3072, 18432)]
+    + [
+        ("double_stream_modulation_txt.linear", 3072, 18432),
+        ("single_stream_modulation.linear", 3072, 9216),
+    ]
+    + [("time_guidance_embed.timestep_embedder.linear_1", 256, 3072)]
+    + [("time_guidance_embed.timestep_embedder.linear_2", 3072, 3072)]
+    + [
+        (f"transformer_blocks.{i}.{n}", k, o)
+        for i in range(5)
+        for n, k, o in (
+            ("attn.to_q", 3072, 3072),
+            ("attn.to_k", 3072, 3072),
+            ("attn.to_v", 3072, 3072),
+            ("attn.to_out.0", 3072, 3072),
+            ("attn.add_q_proj", 3072, 3072),
+            ("attn.add_k_proj", 3072, 3072),
+            ("attn.add_v_proj", 3072, 3072),
+            ("attn.to_add_out", 3072, 3072),
+            ("ff.linear_in", 3072, 18432),
+            ("ff.linear_out", 9216, 3072),
+            ("ff_context.linear_in", 3072, 18432),
+            ("ff_context.linear_out", 9216, 3072),
+        )
+    ]
+    + [
+        (f"single_transformer_blocks.{i}.{n}", k, o)
+        for i in range(20)
+        for n, k, o in (("attn.to_qkv_mlp_proj", 3072, 27648), ("attn.to_out", 12288, 3072))
+    ]
+)
+_FLUX3_BLOCK = (
+    ("attn.to_q", 3072, 3072),
+    ("attn.to_k", 3072, 3072),
+    ("attn.to_v", 3072, 3072),
+    ("attn.to_out.0", 3072, 3072),
+    ("ff.linear_in", 3072, 18432),
+    ("ff.linear_out", 9216, 3072),
+)
+_FLUX3_LINEARS = (
+    [("context_embedder", 20480, 3072), ("proj_out", 3072, 128), ("norm_out.linear", 3072, 6144)]
+    + [("x_embedders.image", 128, 3072), ("x_embedders.image_cond", 128, 3072)]
+    + [("timestep_embedder.linear_1", 256, 3072), ("timestep_embedder.linear_2", 3072, 3072)]
+    + [
+        (f"{s}_stream_modulations.{m}.linear", 3072, 9216)
+        for s in ("early", "single")
+        for m in ("image", "image_cond", "txt")
+    ]
+    + [
+        (f"mode_blocks.{m}.{i}.{n}", k, o)
+        for m in ("image", "image_cond")
+        for i in range(5)
+        for n, k, o in _FLUX3_BLOCK
+    ]
+    + [(f"txt_mode_blocks.{i}.{n}", k, o) for i in range(5) for n, k, o in _FLUX3_BLOCK]
+    + [(f"single_transformer_blocks.{i}.{n}", k, o) for i in range(28) for n, k, o in _FLUX3_BLOCK]
+)
+
+
+def _skeleton(linears):
+    """Meta-device module tree with exactly these Linear fqns and shapes."""
+    root = nn.Module()
+    for fqn, k, o in linears:
+        parent = root
+        *path, leaf = fqn.split(".")
+        for part in path:
+            if not hasattr(parent, part):
+                parent.add_module(part, nn.Module())
+            parent = getattr(parent, part)
+        parent.add_module(leaf, nn.Linear(k, o, bias = True, device = "meta"))
+    return root
+
+
+@pytest.mark.parametrize(
+    "family, linears, expect",
+    [
+        ("flux.2-klein", _FLUX2_KLEIN_LINEARS, 101),
+        ("flux.3-klein", _FLUX3_LINEARS, 228),
+        ("flux.3-klein-base", _FLUX3_LINEARS, 228),
+    ],
+)
+def test_flux_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch, family, linears, expect):
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    model = _skeleton(linears)
+    filt = _filter(family)
+    quantized = {n for n, m in model.named_modules() if isinstance(m, nn.Linear) and filt(m, n)}
+    group, suffixes = tq.convrot_spec_for_scheme(tq.TQ_INT8, family)
+    assert group == 256
+    rotated = set(tq.convrot_fqns(model, filt, group, suffixes))
+    assert len(quantized) == expect
+    assert rotated == quantized
+    # FLUX.3's keep-list (text-stream blocks, modulations, context_embedder) stays dense and unrotated
+    assert (
+        not any(n.startswith(("txt_mode_blocks.", "context_embedder")) for n in rotated)
+        or family == "flux.2-klein"
+    )
+
+
+@pytest.mark.parametrize("family", ["flux.2-klein", "flux.3-klein", "flux.3-klein-base"])
+def test_flux_convrot_is_default_on_and_the_env_is_its_kill_switch(monkeypatch, family):
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    assert tq.int8_convrot_enabled(family)
+    for off in ("0", "off", "false", "no"):
+        monkeypatch.setenv(tq.INT8_CONVROT_ENV, off)
+        assert not tq.int8_convrot_enabled(family)
+        model = _skeleton(_FLUX2_KLEIN_LINEARS if family == "flux.2-klein" else _FLUX3_LINEARS)
+        assert tq.apply_runtime_convrot(model, tq.TQ_INT8, family, _filter(family)) == ()
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    for other in ("flux.2-dev", "flux.1", "flux.1-kontext"):
+        assert tq.convrot_spec_for_scheme(tq.TQ_INT8, other) == (0, ())
+        assert not tq.int8_convrot_enabled(other)
+
+
+@pytest.mark.parametrize(
+    "repo, hosted, rotated",
+    [
+        (
+            "black-forest-labs/FLUX.2-klein-4B",
+            "unsloth/FLUX.2-klein-4B-FP8",
+            "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
+        ),
+        (
+            "black-forest-labs/flux-3-image-klein",
+            "unsloth/flux-3-image-klein-FP8",
+            "flux-3-image-klein-INT8-ConvRot.safetensors",
+        ),
+    ],
+)
+def test_flux_int8_reads_only_the_rotated_hosted_file_unless_killed(
+    monkeypatch, repo, hosted, rotated
+):
+    # Default names only the rotated file; the kill switch names only the unrotated one.
+    from core.inference import diffusion_prequant as pq
+    from core.inference import diffusion_prequant_cache as pqc
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.setattr(pqc, "lookup", lambda *a, **k: None)
+    fam = detect_family(repo)
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    assert tq.convrot_drops_plain_hosted(tq.TQ_INT8, fam.name)
+    assert not tq.convrot_drops_plain_hosted(tq.TQ_FP8, fam.name)
+    source = pq.resolve_prequant_source(fam, "int8")
+    assert source.kind == "repo" and source.location == hosted
+    assert candidate_filenames_of(source) == (rotated,)
+    monkeypatch.setenv(tq.INT8_CONVROT_ENV, "0")
+    plain = pq.resolve_prequant_source(fam, "int8")
+    assert plain.kind == "repo" and plain.location == hosted
+    names = candidate_filenames_of(plain)
+    assert names and not any("ConvRot" in n for n in names)
+    for env in ("0", "1"):
+        monkeypatch.setenv(tq.INT8_CONVROT_ENV, env)
+        fp8 = pq.resolve_prequant_source(fam, "fp8")
+        assert fp8.kind == "repo" and not any("ConvRot" in n for n in candidate_filenames_of(fp8))
+
+
+def test_flux_missing_rotated_file_falls_back_to_the_rotated_load_time_build(monkeypatch, tmp_path):
+    # Before the rotated file is published: the hub 404s, the plain file is never fetched, the load quantizes.
+    from huggingface_hub.errors import EntryNotFoundError
+
+    from core.inference import diffusion_prequant as pq
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    asked = []
+
+    def _dl(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        local_files_only = False,
+    ):
+        asked.append(filename)
+        raise EntryNotFoundError("404")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _dl)
+    source = pq.resolve_prequant_source(detect_family("black-forest-labs/FLUX.2-klein-4B"), "int8")
+    with pytest.raises(EntryNotFoundError):
+        pq._resolve_checkpoint_path(source, None, None)
+    assert asked and all("ConvRot" in n for n in asked)
+
+
+def test_flux3_base_keeps_its_hosted_rotated_int8(monkeypatch):
+    # BFL's hosted int8_convrot denoiser is already rotated: still read by default
+    from core.inference import diffusion_prequant as pq
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    fam = detect_family("black-forest-labs/flux-3-image-klein-base")
+    assert fam.name == "flux.3-klein-base"
+    assert not tq.convrot_drops_plain_hosted(tq.TQ_INT8, fam.name)
+    source = pq.resolve_prequant_source(fam, "int8")
+    assert source is not None and source.kind == "repo"
+    assert "flux-3-image-klein-base-INT8.safetensors" in candidate_filenames_of(source)
+
+
+def test_hosted_plain_skip_is_only_on_the_flux_klein_families():
+    assert tq._INT8_FAMILY_CONVROT_HOSTED_PLAIN == frozenset({"flux.2-klein", "flux.3-klein"})
+
+
+def test_flux_klein_runtime_int8_rotates_by_default(monkeypatch):
+    monkeypatch.delenv(tq.INT8_CONVROT_ENV)
+    seen = []
+    _stub_torchao(monkeypatch, seen)
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: tq.TQ_INT8
+    )
+    small = [
+        (n, 512 if k >= 512 else k, 512 if o >= 512 else o) for n, k, o in _FLUX2_KLEIN_LINEARS
+    ]
+    model = _skeleton(small).to_empty(device = "cpu")
+    pipe = types.SimpleNamespace(transformer = model)
+    assert tq.quantize_transformer(pipe, object(), mode = "int8", family = "flux.2-klein") == tq.TQ_INT8
+    assert len(seen) == 1 and len(seen[0]) == 101
+    assert getattr(model, CONVROT_ATTR)["linears"] == 101

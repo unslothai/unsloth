@@ -70,7 +70,7 @@ def test_rocm_is_not_judged_by_a_cuda_capability():
     """`get_device_capability` answers on ROCm too, with numbers that are not
     CUDA's, so reading them would disable flex on AMD for no reason."""
     cuda, hip = _cuda([(7, 5)], hip = "6.2.0")
-    with cuda, hip:
+    with cuda, hip, mock.patch.object(U, "triton_runs_on_device", lambda index = 0: True):
         assert U._flex_attention_gpu_is_supported() is True
 
 

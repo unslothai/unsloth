@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Read aloud on the "Unsloth model" engine speaks with the loaded speech model (named, so
-// one kept beside the chat model answers), in a saved Audio voice, and keeps its clips out of
-// Speak's history.
+// Read aloud on the Unsloth model engine speaks with the loaded speech model (named, so one kept
+// beside the chat model answers), in a saved Audio voice, and keeps clips out of Speak's history.
 
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import test from "node:test";
 
+import * as speechText from "../src/features/chat/voice/speech-text.ts";
+import * as ttsChunkPlan from "../src/features/chat/voice/tts-chunk-plan.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 import * as modelCatalog from "../src/features/settings/api/openai-model-catalog.ts";
@@ -34,9 +35,10 @@ const MAX_TOKENS = 1234;
 function load(
   voiceId: string,
   reply: Reply = { status: 200, body: { audio: { data: "UklGRg==" } } },
-  // GET /v1/models: the listing, or an Error for a failed request.
+  // GET /api/inference/loaded-models: the listing, or an Error for a failed request.
   models: unknown = { data: [] },
 ) {
+  const listed: string[] = [];
   const posted: Record<string, unknown>[] = [];
   const setVoiceIds: string[] = [];
   const warnings: string[] = [];
@@ -48,7 +50,11 @@ function load(
     {
       "@/features/auth": {
         authFetch: async (input: string, init?: { body?: string }) => {
-          if (input === "/v1/models") {
+          if (!init?.body) {
+            listed.push(input);
+            if (input !== "/api/inference/loaded-models") {
+              throw new Error(`unexpected listing ${input}`);
+            }
             if (models instanceof Error) throw models;
             return { ok: true, status: 200, json: async () => models };
           }
@@ -65,6 +71,8 @@ function load(
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
       },
+      "../voice/speech-text": speechText,
+      "../voice/tts-chunk-plan": ttsChunkPlan,
       "../utils/speech-text": {
         markdownToSpeechText: (text: string) => text,
       },
@@ -92,7 +100,7 @@ function load(
       },
     },
   );
-  return { adapter, posted, setVoiceIds, warnings };
+  return { adapter, listed, posted, setVoiceIds, warnings };
 }
 
 test("read aloud keeps its clip out of history and speaks in the model's voice by default", async () => {
@@ -211,6 +219,22 @@ test("read aloud names the loaded speech model, so one beside the chat model ans
     ],
   });
   await adapter.generateStudioTtsAudio("hello");
+  assert.equal(posted[0].model, KOKORO);
+});
+
+test("read aloud lists only loaded models, never the full catalog", async () => {
+  const { adapter, listed, posted } = load("", undefined, {
+    data: [
+      {
+        id: KOKORO,
+        loaded: true,
+        task: "text-to-speech",
+        audio_workflows: ["speak"],
+      },
+    ],
+  });
+  await adapter.generateStudioTtsAudio("hello");
+  assert.deepEqual(listed, ["/api/inference/loaded-models"]);
   assert.equal(posted[0].model, KOKORO);
 });
 
