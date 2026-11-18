@@ -18,7 +18,12 @@ from .rms_layernorm import (
     _traced_kernel,
     fast_rms_layernorm,
 )
-from .rope_embedding import fast_rope_embedding, _sync_if_split, DECODE_FUSED_ROPE
+from .rope_embedding import (
+    fast_rope_embedding,
+    _batch_position_ids,
+    _sync_if_split,
+    DECODE_FUSED_ROPE,
+)
 
 __all__ = [
     "fast_qk_norm_rope",
@@ -431,11 +436,7 @@ def fast_qk_norm_rope(
     Wq, Wk = q_norm.weight, k_norm.weight
     batch, seq_len, _, head_dim = Q.shape
     cos2, sin2 = cos.squeeze(), sin.squeeze()
-    if position_ids is not None and position_ids.numel() == seq_len and batch != 1:
-        # The unfused RoPE kernel launches one program row per batch element. Expand
-        # broadcast position ids before any fallback can pass them through, otherwise
-        # rows after the first read past the one-row index tensor.
-        position_ids = position_ids.reshape(1, seq_len).expand(batch, seq_len)
+    position_ids = _batch_position_ids(position_ids, batch, seq_len)
     if (
         Wq.requires_grad
         or Wk.requires_grad

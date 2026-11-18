@@ -173,13 +173,14 @@ def test_broadcast_position_ids():
 
 
 def test_broadcast_position_ids_on_unfused_fallback():
-    # Trainable norm weights take the fallback path. The fallback must receive the
-    # same expanded [batch, seq] ids as the fused path, not the original one-row view.
+    # Trainable norm weights take the fallback. [1, seq] int32 ids at the front of a buffer of
+    # ones: an unbroadcast read past them rotates batch rows >= 1 by position 1.
     bsz, seq = 2, 37
-    case = _case(bsz, seq, 8, 2, 128, torch.float32, False, trainable = True)
-    q_lin, k_lin, cos, sin, _, grads, norms = case
-    one_row = torch.arange(seq, device = "cuda")[None]
-    full = one_row.expand(bsz, seq)
+    q_lin, k_lin, cos, sin, _, grads, norms = _case(bsz, seq, 8, 2, 128, torch.float32, False, True)
+    buf = torch.ones(bsz * seq + 64, dtype = torch.int32, device = "cuda")
+    buf[:seq] = torch.arange(seq, dtype = torch.int32, device = "cuda") + 3
+    one_row = buf[:seq].view(1, seq)
+    full = one_row.expand(bsz, seq).contiguous()
     broadcast = _run(fast_qk_norm_rope, q_lin, k_lin, cos, sin, one_row, grads, norms, 128)
     expanded = _run(fast_qk_norm_rope, q_lin, k_lin, cos, sin, full, grads, norms, 128)
     for got, expected in zip(broadcast, expanded):
