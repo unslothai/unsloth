@@ -18291,8 +18291,17 @@ def _split_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
         return None
     if not _split_extras_share_a_source(request, source, resolved):
         return None
+    # The planner's extras replace the route's inheritance, so strip them exactly as it would,
+    # including the stale --chat-template-file a bundled family template (gemma-4) replaces.
+    try:
+        template = resolve_effective_chat_template_override(
+            model_identifier = getattr(request, "model_path", None),
+            user_override = getattr(request, "chat_template_override", None),
+        )
+    except Exception:
+        template = None
     # Our own split block, shadow-stripped as the route would, so it is never read as a caller --rpc.
-    return drop_managed_flags(_shadow_stripped_inherited(request, stored))[0]
+    return drop_managed_flags(_shadow_stripped_inherited(request, stored, template))[0]
 
 
 def _split_extras_share_a_source(request, source, resolved) -> bool:
