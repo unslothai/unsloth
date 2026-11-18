@@ -4029,11 +4029,8 @@ export function ComposerModelPicker({
             row.favoriteQuant,
             favoriteOnDisk ? quantBytes(favoriteOnDisk) : null,
             onDisk.length === 1 ? quantBytes(onDisk[0]) : null,
-            // Folder models carry their bytes only in the inventory listing, as their path does.
             row.sizeBytes ??
-              (row.lora?.source === "local"
-                ? localInfo.get(row.id)?.size_bytes
-                : undefined),
+              (row.lora?.source === "local" ? row.lora.sizeBytes : undefined),
           ),
           estimatedBytes: hubEstimates.get(row.id.toLowerCase()),
           hubParams: paramLabel,

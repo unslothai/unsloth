@@ -60,6 +60,8 @@ export function chatLocalModelOptions(
       isGguf: isDirectGguf || model.model_format === "gguf" ? true : undefined,
       isDirectGguf: isDirectGguf ? true : undefined,
       audioType: model.audio_type ?? undefined,
+      // This entry's own format: a folder also holding safetensors lists those bytes separately.
+      sizeBytes: model.size_bytes ?? undefined,
     });
   }
   return options;
