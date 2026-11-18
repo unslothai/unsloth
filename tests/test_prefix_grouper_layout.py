@@ -50,7 +50,7 @@ def _assert_same(ref, got):
         assert a.dtype == b.dtype and a.shape == b.shape and a.device == b.device, name
         assert torch.equal(a, b), name
         assert b.is_contiguous() and b.storage_offset() == 0, name
-    for name in ("total_rows", "L", "W", "tok_r", "signature"):
+    for name in ("total_rows", "L", "W", "tok_r", "signature", "group_sizes"):
         assert getattr(ref, name) == getattr(got, name), name
     for name in _SEG_TENSORS:
         a, b = getattr(ref.prefix_seg_info, name), getattr(got.prefix_seg_info, name)
@@ -261,7 +261,7 @@ def test_unusual_arguments_take_the_reference_decision():
         else:
             _assert_same(ref[1], got[1])
             if ref[1] is not None:
-                assert type(got[1].signature[0]) is type(ref[1].signature[0])
+                assert type(got[1].group_sizes[0]) is type(ref[1].group_sizes[0])
 
 
 def test_host_tables_ignore_the_default_device():
@@ -317,11 +317,13 @@ def test_shuffled_micro_batch_still_groups_by_prompt():
     ids, lp = ids[perm], lp[perm]
     for rows in (slice(0, 4), slice(4, 8), slice(0, 8)):
         mb_ids, mb_lp = ids[rows].contiguous(), lp[rows].contiguous()
-        got = pg.build_group_layout(mb_ids, C, 0, G, mb_lp)
+        got = pg.build_group_layout(mb_ids, C, 0, G, mb_lp, apply_tokr_gate = False)
         assert got is not None
-        assert got.signature[0] == 2 and sum(got.signature[1]) == mb_ids.shape[0]
+        assert got.group_sizes[0] == 2 and sum(got.group_sizes[1]) == mb_ids.shape[0]
         assert got.tok_r > 1.3
-        _assert_same(pg._build_group_layout_reference(mb_ids, C, 0, G, mb_lp), got)
+        _assert_same(
+            pg._build_group_layout_reference(mb_ids, C, 0, G, mb_lp, apply_tokr_gate = False), got
+        )
         _check_layout_semantics(got, mb_ids, mb_lp, C, 0)
 
 
@@ -336,3 +338,61 @@ def test_layout_semantics_on_random_cases():
         _check_layout_semantics(got, ids, lp, ltk, pad)
         checked += 1
     assert checked >= 30
+
+
+def test_shuffled_group_mixes_share_one_verify_signature():
+    # A shuffled micro-batch mixes prompts in many ways ((2, 6), (3, 5), (4, 4) ...). The first-use
+    # self-verify is keyed on layout.signature, so those mixes must map to one structural class,
+    # not one re-verify each; a singleton group (nothing shared) stays its own class.
+    rng = torch.Generator().manual_seed(1)
+    G, P, C = 8, 64, 8
+    ids, lp = _batch(rng, 2, G, P, C)
+    sigs, sizes = set(), set()
+    for k in (2, 3, 4, 5):
+        perm = torch.tensor(list(range(k)) + list(range(G, 2 * G - k)))
+        perm = perm[torch.randperm(len(perm), generator = rng)]
+        got = pg.build_group_layout(
+            ids[perm].contiguous(), C, 0, G, lp[perm].contiguous(), apply_tokr_gate = False
+        )
+        assert got is not None
+        sigs.add(got.signature)
+        sizes.add(got.group_sizes)
+    assert len(sizes) == 3 and len(sigs) == 1, (sizes, sigs)
+    perm = torch.tensor([0, G, G + 1, G + 2])
+    single = pg.build_group_layout(
+        ids[perm].contiguous(), C, 0, G, lp[perm].contiguous(), apply_tokr_gate = False
+    )
+    assert single.signature not in sigs
+
+
+def _full_prompt_batch(
+    num_groups,
+    G,
+    P,
+    C,
+    seed = 0,
+):
+    # every prompt exactly P real tokens, every completion C: the saved prompt recompute is
+    # num_groups * (G - 1) * P tokens
+    rng = torch.Generator().manual_seed(seed)
+    ids = torch.randint(1, 50, (num_groups * G, P + C), generator = rng)
+    for g in range(num_groups):
+        ids[g * G : (g + 1) * G, :P] = ids[g * G, :P]
+    return ids, torch.zeros(num_groups * G, dtype = torch.long)
+
+
+def test_cost_gate_declines_short_prompts_even_when_reuse_is_high():
+    # Unsloth's default GRPO shape on GSM8K: one prompt of ~136 tokens, 4 completions. Token reuse
+    # is 1.6 (over the 1.3 threshold) but only 408 prompt tokens are saved, and the measured
+    # shared-prefix forward overhead (~0.09 s per call on L4) outweighs that: keep the packed path.
+    ids, lp = _full_prompt_batch(1, 4, 136, 90)
+    assert pg.build_group_layout(ids, 90, 0, 4, lp, apply_tokr_gate = False).tok_r > 1.3
+    for fn in (pg.build_group_layout, pg._build_group_layout_reference):
+        assert fn(ids, 90, 0, 4, lp) is None
+
+
+def test_cost_gate_engages_long_prompts():
+    ids, lp = _full_prompt_batch(2, 4, 400, 64)  # 2 * 3 * 400 = 2400 saved
+    for fn in (pg.build_group_layout, pg._build_group_layout_reference):
+        assert fn(ids, 64, 0, 4, lp) is not None
+    assert pg.min_saved() == 1024

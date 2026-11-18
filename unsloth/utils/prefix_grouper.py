@@ -49,6 +49,11 @@ _ENABLED = _ENV_ENABLED and TORCH_SUPPORTS_PREFIX_GROUPER
 _OFF_LOGGED = False
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
+# Cost gate: prompt tokens a layout saves per call ((rows - 1) * P per group). Colab L4 LoRA GRPO,
+# trainer phase vs the packed path: Qwen3-0.6B 172 saved +24%, 2230 -34%, 4250 -40%; Qwen2.5-1.5B
+# 94 saved +47%, 2147 -40%, 3255 -57%. Break-even is about 670 (0.6B) and 560 (1.5B) tokens, so
+# 1024 keeps a margin; short GSM8K-style prompts stay on the packed path.
+_MIN_SAVED = int(float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_MIN_SAVED", "1024")))
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
 
@@ -144,6 +149,10 @@ def tokr_threshold() -> float:
     return _TOKR_THRESHOLD
 
 
+def min_saved() -> int:
+    return _MIN_SAVED
+
+
 def tol_ok() -> float:
     return _TOL_OK
 
@@ -167,7 +176,10 @@ class GroupLayout:
     L: int  # original padded seq length (input_ids.shape[1])
     W: int  # logits_to_keep + max_left_pad (scatter width)
     tok_r: float
+    # Self-verify / unsafe key: a coarse structural class (see _verify_signature), so a shuffled
+    # micro-batch's many group-size mixes share one first-use check instead of one each.
     signature: Tuple
+    group_sizes: Tuple = ()  # (num_groups, sorted rows per group): the exact structure
 
     def extract_logps(
         self,
@@ -246,6 +258,22 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
     return groups
 
 
+def _verify_signature(num_groups, sizes) -> Tuple:
+    """What can change the shared-prefix mask's structure: one group or several, and whether some
+    group has a single row (nothing shared). Exact sizes only move segment boundaries, which the
+    T / longest-segment envelope already re-checks."""
+    return ("pg", num_groups > 1, min(sizes) == 1)
+
+
+def _saved_tokens(groups) -> int:
+    # Prompt recompute the shared forward skips: (rows - 1) * P per group.
+    return sum((len(gm["R_list"]) - 1) * gm["P"] for gm in groups)
+
+
+def _not_worth_it(groups, tok_r) -> bool:
+    return tok_r < tokr_threshold() or _saved_tokens(groups) < min_saved()
+
+
 def _tok_r(groups) -> float:
     tok_full = 0
     tok_sp = 0
@@ -311,7 +339,7 @@ def _build_group_layout_reference(
                 return None
 
     tok_r = _tok_r(groups)
-    if apply_tokr_gate and tok_r < tokr_threshold():
+    if apply_tokr_gate and _not_worth_it(groups, tok_r):
         return None  # low reuse -> not worth it; use the full-row packed path
 
     group_specs = [(gm["P"], gm["R_list"]) for gm in groups]
@@ -362,7 +390,8 @@ def _build_group_layout_reference(
 
     # The logic is structural, so key on (num_groups, group_sizes), not exact lengths.
     grp_sizes = tuple(sorted(len(gm["R_list"]) for gm in groups))
-    sig = (len(groups), grp_sizes)
+    exact = (len(groups), grp_sizes)
+    sig = _verify_signature(len(groups), grp_sizes)
 
     return GroupLayout(
         flat_ids = flat_ids,
@@ -377,6 +406,7 @@ def _build_group_layout_reference(
         W = W,
         tok_r = tok_r,
         signature = sig,
+        group_sizes = exact,
     )
 
 
@@ -484,7 +514,7 @@ def build_group_layout(
                 return None
 
     tok_r = _tok_r(groups)
-    if apply_tokr_gate and tok_r < tokr_threshold():
+    if apply_tokr_gate and _not_worth_it(groups, tok_r):
         return None  # low reuse -> not worth it; use the full-row packed path
 
     from .prefix_grouper_kernel import _labels_to_device, _seg_labels_host
@@ -556,8 +586,10 @@ def build_group_layout(
     max_left_pad = int(host[:, L + 1].max().item())
     W = logits_to_keep + max_left_pad
 
-    # The logic is structural, so key on (num_groups, group_sizes), not exact lengths.
-    sig = (num_groups, tuple(sorted(len(gm["R_list"]) for gm in groups)))
+    # The logic is structural, so key on a structural class, not exact lengths or sizes.
+    grp_sizes = tuple(sorted(len(gm["R_list"]) for gm in groups))
+    exact = (num_groups, grp_sizes)
+    sig = _verify_signature(num_groups, grp_sizes)
 
     return GroupLayout(
         flat_ids = flat_ids,
@@ -572,6 +604,7 @@ def build_group_layout(
         W = W,
         tok_r = tok_r,
         signature = sig,
+        group_sizes = exact,
     )
 
 
@@ -582,6 +615,7 @@ __all__ = [
     "prefix_seg_info_applied",
     "verify_on",
     "tokr_threshold",
+    "min_saved",
     "tol_ok",
     "TOL_KILL",
     "env_on",
