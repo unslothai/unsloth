@@ -448,7 +448,7 @@ def test_audio_aliases_keep_each_recording_and_its_transcript(
         with open(files[0], encoding = "utf-8", newline = "") as handle:
             rows = list(csv.DictReader(handle))
     elif manifest_format == "json":
-        rows = json.loads(Path(files[0]).read_text())
+        rows = json.loads(Path(files[0]).read_text(encoding = "utf-8"))
     else:
         rows = _rows(files[0])
     paths = [row["audio"] for row in rows]
