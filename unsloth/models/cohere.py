@@ -123,7 +123,7 @@ def CohereAttention_fast_forward(
     Q, K, V = getattr(self, "apply_qkv", original_apply_qkv)(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads, head_dim)
     K = K.view(bsz, q_len, n_kv_heads, head_dim)
-    # The norm weights are (heads, head_dim): normalize before the heads move ahead of the sequence.
+    # q_norm / k_norm weights are (heads, head_dim): normalize before the head transpose (fast decode too).
     if self.use_qk_norm:
         Q = fast_layernorm_compiled(self.q_norm, Q)
         K = fast_layernorm_compiled(self.k_norm, K)
@@ -365,7 +365,6 @@ def CohereAttention_fast_forward_inference(
     Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads, head_dim)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim)
-    # The norm weights are (heads, head_dim): normalize before the heads move ahead of the sequence.
     if self.use_qk_norm:
         Qn = fast_layernorm_inference(self.q_norm, Qn, self.q_norm_out_weight)
         Kn = fast_layernorm_inference(self.k_norm, Kn, self.k_norm_out_weight)
