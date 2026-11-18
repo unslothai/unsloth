@@ -4,7 +4,7 @@
 import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
-import { npuVersionTag } from "./runtime-versions";
+import { npuSearchText } from "./display-name";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
 
@@ -42,6 +42,8 @@ export interface NpuStatus {
   loading_model: string | null;
   /** Installed runtime versions; absent from servers that predate them. */
   versions?: { lemonade: string | null; fastflowlm: string | null };
+  /** About how much memory this PC can give the NPU, in GB; null when unknown. */
+  memory_window_gb?: number | null;
 }
 
 export interface NpuModel {
@@ -59,6 +61,19 @@ export interface NpuModel {
   /** FastFlowLM's Hugging Face repo (owner/name) and revision; absent from older servers. */
   hf_repo?: string | null;
   hf_revision?: string | null;
+  /** Size plus load overhead, in GB. */
+  memory_needed_gb?: number | null;
+  /** false when the model is larger than the NPU memory window; null when unknown. */
+  fits_memory?: boolean | null;
+  /** A Q4NX folder converted on the Export page; absent from servers that predate them. */
+  local?: NpuLocalModel | null;
+}
+
+export interface NpuLocalModel {
+  folder: string;
+  /** FastFlowLM catalog tag whose NPU kernels run it. */
+  base: string | null;
+  problem: string | null;
 }
 
 export function npuRowsFor(
@@ -77,7 +92,9 @@ export function npuRowsFor(
       (model) =>
         (!onDevice || model.downloaded) &&
         (!needle ||
-          `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
+          `${npuSearchText(model)} ${model.local?.folder ?? ""}`
+            .toLowerCase()
+            .includes(needle)),
     )
     .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
 }
@@ -105,21 +122,6 @@ const NPU_RECOMMENDED = [
 function npuRank(checkpoint: string): number {
   const rank = NPU_RECOMMENDED.indexOf(checkpoint);
   return rank === -1 ? NPU_RECOMMENDED.length : rank;
-}
-
-/** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */
-export function npuRuntimeLabel(
-  versions: NpuStatus["versions"],
-): string | null {
-  const parts: string[] = [];
-  for (const [name, version] of [
-    ["FastFlowLM", versions?.fastflowlm],
-    ["Lemonade", versions?.lemonade],
-  ] as const) {
-    const tag = npuVersionTag(version);
-    if (tag) parts.push(`${name} ${tag}`);
-  }
-  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export interface NpuCapability {
@@ -150,18 +152,76 @@ export function npuSizeLabel(sizeGb: number | null): string | null {
     : `${sizeGb.toFixed(1)} GB`;
 }
 
+/** Row tag for a model the backend says is larger than the NPU memory window. */
+export function npuMemoryTag(model: NpuModel): string | null {
+  return model.fits_memory === false ? "May not fit NPU memory" : null;
+}
+
+/** The full warning for such a model, or null. It only warns: the window is an estimate. */
+export function npuMemoryWarning(
+  model: NpuModel,
+  status: Pick<NpuStatus, "memory_window_gb">,
+): string | null {
+  if (model.fits_memory !== false) return null;
+  const needed = model.memory_needed_gb;
+  const window = status.memory_window_gb;
+  if (needed == null || window == null) {
+    return "This model may need more NPU memory than this PC can give the NPU.";
+  }
+  return `Needs about ${Math.round(needed)} GB of NPU memory; this PC can give the NPU about ${Math.round(window)} GB.`;
+}
+
+/** FastFlowLM pins repos by branch, which moves; only a commit revision matches the hash-checked files. */
+export function npuReadmeNote(model: NpuModel): string | null {
+  return model.hf_repo && !/^[0-9a-f]{40}$/i.test(model.hf_revision ?? "")
+    ? "Latest on Hugging Face (may be newer than the installed files)"
+    : null;
+}
+
 export function npuResumeLabel(model: NpuModel): string | null {
   return model.resume_percent == null
     ? null
     : `${model.resume_percent}% downloaded`;
 }
 
+export function npuRowDetails(model: NpuModel): string[] {
+  return [
+    "NPU",
+    model.local ? "Converted" : null,
+    npuSizeLabel(model.size_gb),
+    npuMemoryTag(model),
+    npuResumeLabel(model),
+  ].filter((part): part is string => Boolean(part));
+}
+
+export function npuRowTooltip(model: NpuModel): string | null {
+  if (!model.local) return null;
+  const { folder, problem } = model.local;
+  // A folder saved outside the exports root comes as its full path.
+  const where = /^(\/|[A-Za-z]:\/)/.test(folder) ? folder : `exports/${folder}`;
+  return problem
+    ? `Can't load ${folder}: ${problem}`
+    : `Converted on the Export page, from ${where}`;
+}
+
+export function npuDeleteDescription(model: NpuModel): string {
+  return model.local
+    ? "This removes the model from the NPU list. Your exported folder stays on disk."
+    : "This removes the model's NPU files from this device.";
+}
+
+/** Rehashing kept files before a resume, or Lemonade registering the files after the download. */
+export type NpuDownloadPhase = "verifying" | "finishing";
+
 export function npuDownloadLabel(
   percent: number | null | undefined,
   reconnecting = false,
+  phase?: NpuDownloadPhase,
 ): string {
   const done = percent == null ? "" : ` ${Math.round(percent)}%`;
-  return reconnecting ? `Reconnecting${done}` : `Downloading${done}`;
+  if (reconnecting) return `Reconnecting${done}`;
+  if (phase === "finishing") return "Finishing";
+  return phase === "verifying" ? `Verifying${done}` : `Downloading${done}`;
 }
 
 export interface NpuDownloadEvent {
@@ -235,6 +295,34 @@ export async function deleteNpuModel(id: string): Promise<void> {
   }
 }
 
+export async function cancelNpuModelDownload(id: string): Promise<void> {
+  const response = await authFetch(
+    `/api/npu/models/${encodeURIComponent(id)}/download/cancel`,
+    { method: "POST" },
+  );
+  // 404: the pull already ended.
+  if (!response.ok && response.status !== 404) {
+    throw new Error(
+      await readFastApiError(response, "Could not cancel the download"),
+    );
+  }
+}
+
+export async function deleteNpuModelByCheckpoint(
+  checkpoint: string,
+): Promise<string> {
+  const response = await authFetch(
+    `/api/npu/checkpoints/${encodeURIComponent(checkpoint)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Could not delete the model"),
+    );
+  }
+  return ((await response.json()) as { model: string }).model;
+}
+
 export async function downloadNpuModel(
   id: string,
   onProgress: (event: NpuDownloadEvent) => void,
@@ -270,6 +358,8 @@ export async function followNpuModelDownload(
 
 export class NpuDownloadError extends Error {}
 
+export class NpuDownloadCancelled extends NpuDownloadError {}
+
 async function readDownloadStream(
   body: ReadableStream<Uint8Array>,
   onProgress: (event: NpuDownloadEvent) => void,
@@ -277,6 +367,9 @@ async function readDownloadStream(
   for await (const event of readSseJsonEvents<NpuDownloadEvent>(body)) {
     if (event.event === "error") {
       throw new NpuDownloadError(event.error || "The download failed");
+    }
+    if (event.event === "cancelled") {
+      throw new NpuDownloadCancelled("The download was cancelled");
     }
     onProgress(event);
     if (event.event === "complete") return;

@@ -18,6 +18,21 @@ export const ENHANCE_PROMPT_LABEL = "Enhance prompt";
 export const ENHANCE_PROMPT_HINT =
   "Rewrites your prompt into a detailed caption with FLUX.3's prompt upsampler before generating. Fixes most broken poses and hands. Turn off to use your prompt exactly as typed.";
 
+/** MiniMax-H3-Image runs its reference workflow's own enhancer (Qwen3.5-9B), not FLUX.3's upsampler. */
+export const H3_IMAGE_FAMILY = "minimax-h3-image";
+export const H3_IMAGE_ENHANCE_PROMPT_HINT =
+  "Rewrites your prompt into a detailed caption with Qwen3.5-9B before generating, as MiniMax-H3-Image's reference workflow does (on by default there). Edits show it the reference pictures. Turn off to use your prompt exactly as typed.";
+
+/** The hint for the loaded family's enhancer. */
+export function enhancePromptHint(family: string | null | undefined): string {
+  return family === H3_IMAGE_FAMILY ? H3_IMAGE_ENHANCE_PROMPT_HINT : ENHANCE_PROMPT_HINT;
+}
+
+/** A route for one family's enhancer. With no family the backend reads the loaded one. */
+export function upsamplerRouteFor(route: string, family: string | null | undefined): string {
+  return family ? `${route}?family=${encodeURIComponent(family)}` : route;
+}
+
 export type PromptEnhancement = "applied" | "off" | "unavailable" | "failed";
 
 /** Same shape as the speech-to-text model download status (SttDownloadStatus). */
@@ -57,6 +72,7 @@ export interface PromptUpsamplerPreviewRequest {
   prompt: string;
   reference_images?: string[];
   variant?: "distilled" | "base";
+  family?: string;
 }
 
 const IDLE_DOWNLOAD: PromptUpsamplerDownload = {

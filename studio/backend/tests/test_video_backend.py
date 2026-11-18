@@ -5764,6 +5764,95 @@ def test_h3_modular_load_forwards_the_hub_token_to_the_component_loads(fake_runt
     assert "token" not in pipe.load_kwargs
 
 
+class _FailingVaeSpec:
+    def __init__(self, error):
+        self.pretrained_model_name_or_path = "unsloth/MiniMax-H3"
+        self.subfolder = "vae"
+        self.type_hint = _FakeModelMixin
+        self._error = error
+
+    def load(self, **kwargs):
+        if kwargs.get("use_safetensors") and getattr(self._error, "safetensors_error", None):
+            raise self._error.safetensors_error
+        raise self._error
+
+
+class _FakeModelMixin:
+    pass
+
+
+class _SwallowingModularPipe(_FakeModularPipe):
+    error: BaseException = OSError()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.vae = None
+        self._component_specs = {"vae": _FailingVaeSpec(type(self).error)}
+
+    def load_components(self, **kwargs):
+        super().load_components(**kwargs)
+        for name, spec in self._component_specs.items():
+            try:
+                setattr(self, name, spec.load(**kwargs))
+            except Exception:  # noqa: BLE001 -- diffusers' own behaviour
+                pass
+
+
+def _disk_full_then_bin_404() -> BaseException:
+    """ENOSPC hidden behind the .bin 404 unless asked for safetensors only."""
+    import errno
+
+    error = OSError(
+        "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.bin."
+    )
+    error.safetensors_error = OSError(errno.ENOSPC, "No space left on device")
+    return error
+
+
+def _bin_404_only() -> BaseException:
+    error = OSError(
+        "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.bin."
+    )
+    error.safetensors_error = OSError(
+        "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.safetensors."
+    )
+    return error
+
+
+@pytest.mark.parametrize(
+    "error, kind, text",
+    [
+        (OSError(28, "No space left on device"), "disk_full", "Not enough disk space"),
+        (_disk_full_then_bin_404(), "disk_full", "Not enough disk space"),
+        (_bin_404_only(), "not_found", "not found on Hugging Face"),
+    ],
+)
+def test_h3_modular_load_fails_when_the_vae_cannot_be_fetched(
+    fake_runtime, monkeypatch, error, kind, text
+):
+    from core.inference.diffusion_component_fetch import ComponentFetchError
+
+    monkeypatch.setattr(_SwallowingModularPipe, "error", error)
+    monkeypatch.setattr(sys.modules["diffusers"], "ModelMixin", _FakeModelMixin, raising = False)
+    monkeypatch.setattr(
+        _FakeModularPipeline,
+        "from_pretrained",
+        classmethod(
+            lambda cls, path, **kw: (
+                setattr(_FakeModularPipeline, "last", {"path": path, **kw}),
+                setattr(_FakeModularPipeline, "instance", _SwallowingModularPipe()),
+                _FakeModularPipeline.instance,
+            )[-1]
+        ),
+    )
+    with pytest.raises(ComponentFetchError) as info:
+        _load_h3_modular(VideoBackend())
+    assert info.value.component == "vae"
+    assert info.value.kind == kind
+    assert "the vae component of MiniMaxAI/MiniMax-H3 (vae/)" in str(info.value)
+    assert text in str(info.value)
+
+
 def test_h3_modular_load_pins_the_component_loads_to_the_studio_cache(fake_runtime):
     """Component loads need the Studio cache_dir, since HF_HUB_CACHE is a snapshot taken at import."""
     from core.inference.video import hub_cache_dir
@@ -7056,7 +7145,7 @@ def test_h3_native_generate_names_each_keyframe_combination(monkeypatch):
     assert calls[-1]["params"].init_img is None
 
 
-def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
+def test_h3_omitted_size_keeps_the_reference_canvas(monkeypatch):
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
@@ -7064,10 +7153,10 @@ def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
     backend.generate(prompt = "p", first_frame = _data_url(1920, 1080))
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
 
-    # With no first frame the last one drives it, matching the Diffusers blocks.
+    # The reference keyframe node keeps its 1344x768 whatever the keyframe's aspect (the frame is cropped onto it).
     backend.generate(prompt = "p", last_frame = _data_url(1080, 1920))
-    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (768, 1344)
-    assert calls[-1]["end_size"] == (768, 1344)
+    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
+    assert calls[-1]["end_size"] == (1344, 768)
 
     backend.generate(prompt = "p")
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)

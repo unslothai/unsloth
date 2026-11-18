@@ -432,13 +432,13 @@
   },
   "hunyuanvideo-1.5": {
    "cudnn_benchmark": false,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
   "hunyuanvideo-1.5-720p": {
    "cudnn_benchmark": false,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -4711,6 +4711,11 @@
     "fp8",
     "mxfp8"
    ],
+   "minimax-h3-image": [
+    "fp8",
+    "mxfp8",
+    "nf4"
+   ],
    "qwen-image": [
     "fp8"
    ],
@@ -4991,6 +4996,7 @@
    "minimax-h3-image": "MiniMax-H3-Image",
    "moss-image": "MOSS-Image",
    "qwen-image": "Qwen-Image",
+   "qwen-image-2.1": "Qwen-Image-2.1",
    "sdxl": "SDXL",
    "wan2.2-ti2v-5b": "Wan2.2 TI2V 5B",
    "z-image": "Z-Image"

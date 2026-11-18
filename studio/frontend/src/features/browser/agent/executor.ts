@@ -31,7 +31,7 @@ import {
   useBrowserAgentStore,
 } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks, siteOfUrl } from "./gate";
-import { type SiteRule, ruleFor, scriptRunsWithoutAsking } from "./permissions";
+import { type SiteRule, ruleFor, scriptRunsWithoutAsking, scriptSiteRule } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
 import { type FileTabKind, MAX_EDIT_BYTES, applyFileEdit, numberedLines } from "./file-tab";
 import { waitForPage } from "./page-wait";
@@ -545,11 +545,12 @@ async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal)
   return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal, FILL_IDLE_QUIET_MS)) === "loading";
 }
 
-async function pass(gate: Gate, context: Run, remember = true): Promise<string | null> {
+async function pass(gate: Gate, context: Run, remember = true, onAlways?: () => void): Promise<string | null> {
   if (gate.kind === "allow") return null;
   if (gate.kind === "block") return `Not done: ${gate.reason}.`;
   const { ask, host, name, detail } = gate;
-  const allowed = await askInPanel({ ask, host, name, detail }, context, remember);
+  const allowed = await askInPanel({ ask, host, name, detail }, context, remember, Boolean(onAlways));
+  if (allowed === "always") onAlways?.();
   // Not gate.prompt: it quotes the page's label, and errors reach the model outside the fence.
   return allowed ? null : `The user declined ${DECLINED[ask]} on ${host || "this page"}. Do something else, or ask them.`;
 }
@@ -577,8 +578,8 @@ function notifyOffScreenQuestion(chat: string): void {
 }
 
 /** Questions show in the chat's agent bar: the panel opens for one in the chat on screen, and one
- *  from a chat off screen waits there, with a toast to go answer it. A script is asked every time. */
-async function askInPanel(question: Question, context: Run, remember = true): Promise<Answer> {
+ *  from a chat off screen waits there, with a toast to go answer it. A script is never kept for the chat. */
+async function askInPanel(question: Question, context: Run, remember = true, offerAlways = false): Promise<Answer> {
   // As askUser does: a stopped action isn't answered, even by Always allow.
   if (context.signal?.aborted) return false;
   // A click is asked about by its label, so Always allow covers that button, not every risky one.
@@ -593,12 +594,18 @@ async function askInPanel(question: Question, context: Run, remember = true): Pr
   // Even when already open: a project's overlay or Research can be hiding it, and only a new open shows it.
   if (chatOnScreen(context)) store.openPanel();
   else notifyOffScreenQuestion(context.session.chat);
-  const answer = await askUser(context.session.chat, question, context.signal, keep);
+  const answer = await askUser(context.session.chat, question, context.signal, keep || offerAlways);
   if (answer === "always" && keep) granted.add(key);
   return answer;
 }
 
-async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
+async function observe(
+  tab: BrowserTab,
+  context: Run,
+  note?: string,
+  op: Record<string, unknown> = { op: "snapshot" },
+  rereads = 2,
+): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind === "file") return observeFile(tab, entry, context, note, op);
   if (entry.kind !== "web") return { ok: false, error: "No web page is open. Use browser_navigate first." };
@@ -614,6 +621,9 @@ async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<
   const fresh = findTab(tab.id) ?? tab;
   // A page that moved during the read is one nobody checked: its words and links stay out.
   if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
+    // A router rewriting the address on the same entry and site (Google's results pages) is read again there.
+    const rewrote = !fresh.loading && currentEntry(fresh) === entry && siteOfUrl(tabUrl(fresh)) === siteOfUrl(tabUrl(tab));
+    if (rereads > 0 && rewrote) return observe(fresh, context, note, op, rereads - 1);
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
   }
   if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set(context.fullAccess === true ? [] : linkedPages(answer.links ?? []));
@@ -1478,7 +1488,15 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, b
   const doc = (await pageCall(tab, { op: "status" })).doc;
   if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
   if (!scriptAllowed(before, context)) {
-    const refused = await pass({ kind: "ask", ask: "script", host: siteOfUrl(before), name: "", detail: script, prompt: "" }, context);
+    // Always allow saves the site's Scripts rule, as Settings would: no chat keeps a script answer.
+    const agent = useBrowserAgentStore.getState;
+    const save = () => {
+      const saved = scriptSiteRule(before, agent().permissions);
+      if (saved) agent().setSiteRule(saved.site, saved.rule);
+    };
+    const offer = scriptSiteRule(before, agent().permissions) !== null;
+    const gate: Gate = { kind: "ask", ask: "script", host: siteOfUrl(before), name: "", detail: script, prompt: "" };
+    const refused = await pass(gate, context, true, offer ? save : undefined);
     if (refused) return { ok: false, error: refused };
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };

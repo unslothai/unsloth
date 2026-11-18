@@ -125,6 +125,38 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     assert by_id["msg-2"]["content"] == [{"type": "text", "text": "updated text"}]
 
 
+def test_chat_history_revisions_move_on_every_write(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    assert studio_db.get_chat_history_revisions(["thread-1"]) == (0, {"thread-1": 0})
+
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_thread(_thread("thread-2"))
+    total, threads = studio_db.get_chat_history_revisions(["thread-1", "thread-2"])
+    assert total > 0 and threads["thread-1"] > 0 and threads["thread-2"] > 0
+
+    def snapshot():
+        return studio_db.get_chat_history_revisions(["thread-1", "thread-2"])
+
+    before = snapshot()
+    studio_db.upsert_chat_message(_message("msg-1", 1, "hi"))
+    after_insert = snapshot()
+    assert after_insert[0] > before[0]
+    assert after_insert[1]["thread-1"] > before[1]["thread-1"]
+    assert after_insert[1]["thread-2"] == before[1]["thread-2"]
+
+    # An in-place content edit does not move updatedAt, so the counter is what other devices see.
+    updated_at = studio_db.get_chat_thread("thread-1")["updatedAt"]
+    studio_db.sync_chat_messages("thread-1", [_message("msg-1", 1, "streamed more")])
+    after_edit = snapshot()
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == updated_at
+    assert after_edit[1]["thread-1"] > after_insert[1]["thread-1"]
+
+    studio_db.delete_chat_threads(["thread-1"])
+    after_delete = snapshot()
+    assert after_delete[0] > after_edit[0]
+    assert after_delete[1] == {"thread-1": 0, "thread-2": before[1]["thread-2"]}
+
+
 def test_chat_thread_updated_at_bumps_on_message_writes(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     thread = studio_db.upsert_chat_thread(_thread())

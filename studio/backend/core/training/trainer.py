@@ -100,6 +100,7 @@ from utils.datasets.pretokenized import (
 )
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
+    EVAL_SPLITS,
     dataset_files_in_dir,
     ensure_dir,
     resolve_dataset_path,
@@ -3144,14 +3145,14 @@ class UnslothTrainer:
         return load_saved_dataset(UnslothTrainer._resolve_local_path(file_paths[0]))
 
     @staticmethod
-    def _resolve_local_files(file_paths: list) -> list[str]:
+    def _resolve_local_files(file_paths: list, splits: tuple[str, ...] = ("train",)) -> list[str]:
         """Resolve a list of local dataset paths to concrete file paths."""
         all_files: list[str] = []
         for dataset_file in file_paths:
             file_path_obj = UnslothTrainer._resolve_local_path(dataset_file)
 
             if file_path_obj.is_dir():
-                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj, splits))
             else:
                 all_files.append(str(file_path_obj))
         return all_files
@@ -3322,7 +3323,7 @@ class UnslothTrainer:
                     eval_all_files = (
                         []
                         if eval_saved is not None
-                        else self._resolve_local_files(local_eval_datasets)
+                        else self._resolve_local_files(local_eval_datasets, EVAL_SPLITS)
                     )
                     if eval_saved is not None:
                         eval_dataset = eval_saved
@@ -3849,6 +3850,7 @@ class UnslothTrainer:
             logger.info(f"Dataset formatted successfully ({final_n} samples, {detected})\n")
 
             if has_separate_eval_source and eval_dataset is not None:
+                _raise_if_empty_train_split(eval_dataset, "in the eval split")
                 eval_n = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
                 logger.info(f"Formatting eval dataset ({eval_n} rows)...\n")
                 eval_info = format_and_template_dataset(

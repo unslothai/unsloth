@@ -35,7 +35,9 @@ MAX_IMAGE_PIXELS = 40_000_000
 
 
 def is_image_tool(name: str) -> bool:
-    return name in ("view_image", "browser_screenshot") or name.startswith(MCP_TOOL_PREFIX)
+    return name in ("view_image", "browser_screenshot", "computer") or name.startswith(
+        MCP_TOOL_PREFIX
+    )
 
 
 # The tool loop's own notes, which results saved before #11367 carry after the array (#11358).

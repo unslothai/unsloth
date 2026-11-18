@@ -316,3 +316,12 @@ test("Continue response leads the More menu and yields to the Resume bar", () =>
   );
   assert.equal(thread.match(/\[CONTINUATION_RUN_CONFIG_KEY\]/g)?.length, 1);
 });
+
+test("Vertex shares Gemini's thought replay and resume in the adapter", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.doesNotMatch(adapter, /providerType === "gemini"/);
+  assert.match(
+    adapter,
+    /const hasGeminiReplayContinuation = Boolean\(\s*continuation &&\s*isGeminiApiProviderType\(externalProvider\?\.providerType\)/,
+  );
+});

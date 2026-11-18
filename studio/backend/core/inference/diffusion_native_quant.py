@@ -457,6 +457,35 @@ def _autocast_on(x: Any) -> bool:
         return bool(torch.is_autocast_enabled() or torch.is_autocast_cpu_enabled())
 
 
+def fused_w8a8_serves(module: Any) -> bool:
+    """Whether ``module`` holds native int8 W8A8 linears that the compiled function serves (CUDA, not ROCm, an
+    inductor runtime, not disabled and not failed). It never runs inside a CUDA-graph capture, so a captured step
+    bakes those linears' eager kernels instead. Never raises."""
+    try:
+        if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
+            return False
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
+            return False
+        from .diffusion_speed import torch_compile_runtime_available
+
+        if not torch_compile_runtime_available():
+            return False
+        cards = set()
+        for m in module.modules():
+            if is_native_linear(m) and bool(getattr(m, "act_int8", False)):
+                device = getattr(getattr(m, "weight_q", None), "device", None)
+                cards.add(_device_key(device if getattr(device, "type", None) == "cuda" else None))
+        failed = _FUSED_STATE.get("devices", {})
+        # A card whose compiled linear failed runs eager kernels there: no compiled linear left to keep out of a graph.
+        return any(failed.get(card) is None for card in cards)
+    except Exception:  # noqa: BLE001 - unknown keeps the caller's default
+        return False
+
+
 def fused_w8a8_state() -> dict:
     """``failed``: the process-wide reason, else the first card's; ``devices``: each card's (None = runs it)."""
     devices = dict(_FUSED_STATE.get("devices", {}))
