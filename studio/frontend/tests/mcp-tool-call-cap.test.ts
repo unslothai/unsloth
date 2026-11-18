@@ -99,3 +99,27 @@ test("Deep Research switching MCP off restores the cap", async (t) => {
   assert.equal(state().mcpEnabledForChat, false);
   assert.equal(cap(runtime), 50);
 });
+
+test("switching to a chat with MCP off restores the cap, and back lifts it", async (t) => {
+  const runtime = await boot(t);
+  const state = () => runtime.useChatRuntimeStore.getState();
+  state().setMaxToolCallsPerMessage(12);
+  state().setActiveThreadId("mcp-chat");
+  state().applyThreadScopedSettings("mcp-chat", null);
+  await runtime.awaitThreadScopedSettingsWrite("mcp-chat");
+  state().setMcpEnabledForChat(true);
+  assert.equal(cap(runtime), MAX);
+  await runtime.awaitThreadScopedSettingsWrite("mcp-chat");
+  state().setActiveThreadId("plain-chat");
+  state().applyThreadScopedSettings("plain-chat", {
+    mcpEnabledForChat: false,
+  } as never);
+  assert.equal(state().mcpEnabledForChat, false);
+  assert.equal(cap(runtime), 12);
+  state().setActiveThreadId("mcp-chat");
+  state().applyThreadScopedSettings("mcp-chat", {
+    mcpEnabledForChat: true,
+  } as never);
+  assert.equal(state().mcpEnabledForChat, true);
+  assert.equal(cap(runtime), MAX);
+});

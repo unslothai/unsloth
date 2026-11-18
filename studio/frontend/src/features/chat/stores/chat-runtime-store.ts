@@ -5431,6 +5431,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         applied.reasoningEnabled = false;
         if (state.reasoningEnabled !== false) target.reasoningEnabled = false;
       }
+      // The cap is global but MCP is per chat: follow the incoming chat like a toggle would.
+      if (typeof target.mcpEnabledForChat === "boolean") {
+        Object.assign(
+          nextState,
+          mcpToolCallCapPatch(state, target.mcpEnabledForChat),
+        );
+      }
       if (threadId !== null && (stored === null || heldFields.size > 0)) {
         scheduleThreadScopedSettingsWrite(
           threadId,
