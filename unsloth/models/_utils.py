@@ -10700,6 +10700,9 @@ def _prepare_model_for_qat(
 
     install_qat_weight_memo(model)
     _record_qat_engagement(model, torchao_config)
+    from ._qat_round import round_frozen_qat_weights
+
+    round_frozen_qat_weights(model)
 
     return model
 
