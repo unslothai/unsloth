@@ -209,8 +209,9 @@ def native_speed_flags(
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
     ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None.
-    ``binary``: on builds listing ``--conv-direct`` (master-963+) a rejected direct conv is sent as ``--conv-direct off``,
-    since an omitted flag means auto there (direct conv on for HIP MMA / Vulkan regardless of this policy)."""
+    ``binary``: on builds listing ``--conv-direct`` (master-963+) a rejected direct conv is sent explicitly
+    (``rejected_conv_direct_mode``: ``off``, or ``off,vae=auto`` on Vulkan), since an omitted flag means auto there
+    (direct conv on for HIP MMA / Vulkan regardless of this policy)."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
@@ -219,7 +220,11 @@ def native_speed_flags(
         if not conv_direct_wanted(args, accelerator):
             user_set = any(f in _CONV_DIRECT_FLAGS for f in args)
             if not user_set and binary and sd_cpp_supports_conv_direct_mode(binary):
-                return ["--diffusion-fa", "--conv-direct", "off"]
+                return [
+                    "--diffusion-fa",
+                    "--conv-direct",
+                    rejected_conv_direct_mode(args, accelerator),
+                ]
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
@@ -241,6 +246,54 @@ def speed_flags_without(speed: Sequence[str], offload: Sequence[str]) -> list[st
             out += list(speed[i : i + width])
         i += width
     return out
+
+
+# VAE devices whose own direct-conv decision Studio keeps when it rejects direct conv for the denoiser. Vulkan: the
+# fork's auto runs direct conv2d in the VAE only after its output check against im2col passes (3D convs and every
+# other module stay im2col), measured faster and smaller in VAE decodes on RADV and AMD's Windows driver; CPU: the
+# row-run direct kernels, bit-identical to im2col. HIP is not listed: its auto picks implicit GEMM, never faster on
+# gfx1151, so it keeps the global off.
+_VAE_CONV_DIRECT_AUTO_BACKENDS = ("vulkan", "cpu")
+
+
+def _vae_backend(backend_args: Sequence[str], accelerator: Optional[str]) -> Optional[str]:
+    """The backend the VAE gets: ``--vae-on-cpu``, else a ``vae=`` assignment beats a bare default, else
+    ``accelerator``."""
+    args = list(backend_args)
+    if "--vae-on-cpu" in args:
+        return "cpu"
+    explicit = default = None
+    for spec in (args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"):
+        for part in str(spec).split(","):
+            key, sep, value = part.strip().partition("=")
+            if not sep:
+                default = key or default
+            elif key.strip().lower() == "vae":
+                explicit = value.strip()
+    return explicit or default or accelerator
+
+
+def rejected_conv_direct_mode(
+    backend_args: Sequence[str] = (), accelerator: Optional[str] = None
+) -> str:
+    """``--conv-direct`` value when Studio's policy rejects direct conv: ``off,vae=auto`` (denoiser and ControlNet
+    off, the VAE keeps the fork's per-device decision) when the denoiser runs on Vulkan and the VAE on Vulkan or CPU,
+    else ``off``. The module syntax arrived with ``--conv-direct`` itself (sd.cpp #2134), so a build that lists the
+    flag accepts it. ``UNSLOTH_SD_CPP_CONV_DIRECT=0`` (kill switch) and Metal send ``off``."""
+    import os
+
+    forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
+    if forced in ("0", "off", "false", "no") or _runs_on_apple_metal(backend_args):
+        return "off"
+    args = list(backend_args)
+    diffusion = _diffusion_backend(
+        [args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"]
+    )
+    diffusion = (diffusion or accelerator or "").strip().lower().rstrip("0123456789")
+    vae = (_vae_backend(args, accelerator) or "").strip().lower().rstrip("0123456789")
+    if diffusion == "vulkan" and vae in _VAE_CONV_DIRECT_AUTO_BACKENDS:
+        return "off,vae=auto"
+    return "off"
 
 
 def sd_cpp_supports_conv_direct_mode(binary: str) -> bool:
