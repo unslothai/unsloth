@@ -2158,7 +2158,10 @@ function boundMcpImageResults(
   const plan = readsImages
     ? planMcpImageBound(
         batches.map((batch) => batch.map((carrier) => carrier.images)),
-        { localMarkers },
+        {
+          localMarkers,
+          exchanges: perExchange.map((batch) => batch.map((carrier) => carrier.images)),
+        },
       )
     : batches.map((batch) => batch.map((): McpImage[] => []));
   const edits = new Map<number, Map<number, McpImage[]>>();

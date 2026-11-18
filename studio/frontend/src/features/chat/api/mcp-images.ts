@@ -87,39 +87,29 @@ interface EnvelopeCarrier {
  */
 export function planMcpImageBound(
   batches: readonly (readonly (readonly McpImage[])[])[],
-  { localMarkers = false }: { localMarkers?: boolean } = {},
+  {
+    localMarkers = false,
+    exchanges = batches,
+  }: {
+    localMarkers?: boolean;
+    // Parallel results of one tool turn, admitted at most the cap between them; defaults to batches.
+    exchanges?: readonly (readonly (readonly McpImage[])[])[];
+  } = {},
 ): McpImage[][][] {
+  if (!localMarkers) return planSteppedBound(batches, exchanges);
   let budget = MAX_TOTAL_MCP_IMAGES;
   // Shared across results, bounding total candidates to MAX_TOTAL_MCP_IMAGES plus the allowance.
   let spare = DECODE_FAILURE_ALLOWANCE;
   let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
-  const perResult = localMarkers ? LOCAL_MAX_IMAGES_PER_TURN : MAX_MODEL_IMAGES;
-  if (!localMarkers) {
-    // The backend steps its cut off the count it receives, so send one step past the cap, congruent
-    // to the whole history's count: it then keeps what the tool loop last showed (#18231).
-    let total = 0;
-    for (const batch of batches) {
-      for (const images of batch) {
-        let bounded = 0;
-        for (const image of images) {
-          if (image.mimeType.length <= MAX_MCP_IMAGE_MIME_CHARS) bounded++;
-        }
-        total += Math.min(perResult, bounded);
-      }
-    }
-    budget = steppedKeep(total, MAX_TOTAL_MCP_IMAGES + MCP_IMAGE_TRIM_STEP);
-    // The upload stays within the old cap plus allowance.
-    spare = Math.min(spare, Math.max(0, MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE - budget));
-  }
+  const perResult = LOCAL_MAX_IMAGES_PER_TURN;
   const out: McpImage[][][] = batches.map((batch) => batch.map(() => []));
   // Newest first: those are the ones the backend would have kept.
   for (let b = batches.length - 1; b >= 0; b--) {
     const batch = batches[b];
     const room = Math.min(budget, perResult);
     // Charge only what the backend can promote; shared spares keep corrupt entries from stranding
-    // valid older images. Off the marker path they ride only past a full quota, which the
-    // backend's count ignores.
-    let allowance = room + (localMarkers || room === perResult ? spare : 0);
+    // valid older images.
+    let allowance = room + spare;
     let taken = 0;
     for (let r = batch.length - 1; r >= 0; r--) {
       const images = batch[r];
@@ -136,17 +126,84 @@ export function planMcpImageBound(
       }
       allowance -= keep.length;
       taken += keep.length;
-      if (keep.length === images.length) {
-        out[b][r] = images.slice();
-        continue;
-      }
-      const returned = Math.max(images[0]?.returned ?? 0, images.length);
-      out[b][r] = keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
+      out[b][r] = withReturned(images, keep);
     }
     // Fallback candidates consume spares so they cannot evict older results.
     const charged = Math.min(taken, room);
     budget -= charged;
     spare -= taken - charged;
+  }
+  return out;
+}
+
+function withReturned(images: readonly McpImage[], keep: McpImage[]): McpImage[] {
+  if (keep.length === images.length) return images.slice();
+  const returned = Math.max(images[0]?.returned ?? 0, images.length);
+  return keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
+}
+
+/**
+ * The data-URL path. The backend steps its cut off the count it receives (per result quota, the cap
+ * per parallel turn), so this sends exactly the pictures its tool loop last showed (#18231): what the
+ * loop admitted per turn, then the newest stepped count of those. A spare rides only where the
+ * backend's recount and admission ignore it.
+ */
+function planSteppedBound(
+  batches: readonly (readonly (readonly McpImage[])[])[],
+  exchanges: readonly (readonly (readonly McpImage[])[])[],
+): McpImage[][][] {
+  const bounded = (images: readonly McpImage[]) =>
+    images.filter((image) => image.mimeType.length <= MAX_MCP_IMAGE_MIME_CHARS);
+  const exchangeOf = new Map<readonly McpImage[], number>();
+  let total = 0;
+  exchanges.forEach((exchange, e) => {
+    let admitted = 0;
+    for (const images of exchange) {
+      exchangeOf.set(images, e);
+      admitted += Math.min(MAX_MODEL_IMAGES, bounded(images).length);
+    }
+    total += Math.min(MAX_TOTAL_MCP_IMAGES, admitted);
+  });
+  let budget = steppedKeep(total, MAX_TOTAL_MCP_IMAGES);
+  let spare = DECODE_FAILURE_ALLOWANCE;
+  let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
+  const admittedBefore = new Map<number | string, number>();
+  const sentBefore = new Map<number | string, number>();
+  const out: McpImage[][][] = batches.map((batch) => batch.map(() => []));
+  for (let b = batches.length - 1; b >= 0; b--) {
+    for (let r = batches[b].length - 1; r >= 0; r--) {
+      const images = batches[b][r];
+      const e = exchangeOf.get(images) ?? `${b}:${r}`;
+      const candidates = bounded(images);
+      const capRoom = Math.max(0, MAX_TOTAL_MCP_IMAGES - (admittedBefore.get(e) ?? 0));
+      // The loop admits each result's head; the later cut drops the oldest, so the tail survives.
+      const live = candidates.slice(0, Math.min(MAX_MODEL_IMAGES, capRoom));
+      const shown = live.slice(Math.max(0, live.length - budget));
+      const keep = new Set<McpImage>();
+      const take = (image: McpImage) => {
+        if (charsLeft - image.data.length < 0) return false;
+        charsLeft -= image.data.length;
+        keep.add(image);
+        return true;
+      };
+      let sent = 0;
+      for (const image of shown) if (take(image)) sent++;
+      // Pictures past the byte bound leave their slot to later ones of the same result.
+      const rest = candidates.slice(live.length);
+      while (sent < shown.length && rest.length > 0) if (take(rest.shift()!)) sent++;
+      budget -= sent;
+      const before = sentBefore.get(e) ?? 0;
+      if (shown.length === live.length) {
+        for (const image of rest) {
+          if (spare <= 0) break;
+          if (sent < MAX_MODEL_IMAGES && before + sent < MAX_TOTAL_MCP_IMAGES) break;
+          if (take(image)) spare--;
+        }
+      }
+      admittedBefore.set(e, (admittedBefore.get(e) ?? 0) + live.length);
+      sentBefore.set(e, before + Math.min(MAX_MODEL_IMAGES, keep.size));
+      out[b][r] = withReturned(images, images.filter((image) => keep.has(image)));
+    }
   }
   return out;
 }
@@ -188,9 +245,20 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     if (sameBatch && previous) previous.push(carrier);
     else batches.push([carrier]);
   }
+  // Adjacent tool messages are one parallel turn, as the backend's replay count groups them.
+  const exchanges: McpImage[][][] = [];
+  carriers.forEach((carrier, c) => {
+    const previous = carriers[c - 1];
+    let adjacent = previous !== undefined;
+    for (let j = (previous?.index ?? 0) + 1; adjacent && j < carrier.index; j++) {
+      if (out[j]?.role !== "tool") adjacent = false;
+    }
+    if (adjacent) exchanges[exchanges.length - 1].push(carrier.images);
+    else exchanges.push([carrier.images]);
+  });
   const plan = planMcpImageBound(
     batches.map((batch) => batch.map((carrier) => carrier.images)),
-    { localMarkers },
+    { localMarkers, exchanges },
   );
   batches.forEach((batch, b) =>
     batch.forEach((carrier, r) => {

@@ -268,11 +268,15 @@ def eligible_replay_images(
 
 def replay_image_total(messages: Sequence[dict], parsed: "dict | None" = None) -> int:
     """Pictures a replay could promote with no cap, counted as the tool loop admits them (per
-    result quota, bounded MIME); parsed collects each result's images for eligible_replay_images."""
+    result quota, bounded MIME, at most the cap per parallel batch); parsed collects each result's
+    images for eligible_replay_images."""
     call_names = resolve_tool_names(messages)
     total = 0
+    batch = 0
     for position, message in enumerate(messages):
         if not isinstance(message, dict) or message.get("role") != "tool":
+            total += min(batch, MAX_TOTAL_MODEL_IMAGES)
+            batch = 0
             continue
         content = message.get("content")
         images = None
@@ -283,8 +287,8 @@ def replay_image_total(messages: Sequence[dict], parsed: "dict | None" = None) -
         if parsed is not None:
             parsed[position] = images
         if images:
-            total += min(MAX_MODEL_IMAGES, sum(1 for image in images if _mime_is_bounded(image)))
-    return total
+            batch += min(MAX_MODEL_IMAGES, sum(1 for image in images if _mime_is_bounded(image)))
+    return total + min(batch, MAX_TOTAL_MODEL_IMAGES)
 
 
 def content_parts(images: Sequence[dict]) -> list[dict]:

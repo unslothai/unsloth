@@ -2775,10 +2775,38 @@ def test_a_follow_up_replays_the_pictures_the_loop_last_sent(calls):
 
 
 def test_a_frontend_bounded_replay_keeps_the_loop_cut():
-    """The frontend sends one step past the cap (steppedKeep(total, 12)); recounting that must land
-    on the same cut as the whole history."""
+    """The frontend uploads stepped_keep(total); recounting that must keep all of it."""
     limit = mcp_images.MAX_TOTAL_MODEL_IMAGES
-    step = mcp_images.IMAGE_TRIM_STEP
     for total in range(0, 40):
-        sent = mcp_images.stepped_keep(total, limit + step)
-        assert mcp_images.stepped_keep(sent, limit) == mcp_images.stepped_keep(total, limit), total
+        sent = mcp_images.stepped_keep(total, limit)
+        assert mcp_images.stepped_keep(sent, limit) == sent, total
+
+
+def test_a_parallel_batch_past_the_cap_replays_what_the_loop_admitted():
+    """The live loop admits at most the cap per parallel batch; the replay count must too, or a
+    follow-up steps from a count the loop never held."""
+    results = [[_distinct_image(3 * r + i) for i in range(3)] for r in range(3)]
+    call = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": f"c{r}",
+                "type": "function",
+                "function": {"name": "mcp__s__shot", "arguments": "{}"},
+            }
+            for r in range(3)
+        ],
+    }
+    conversation = [{"role": "user", "content": "go"}, call]
+    history = [{"role": "user", "content": "go"}, call]
+    for r, images in enumerate(results):
+        conversation.append({"role": "tool", "tool_call_id": f"c{r}", "content": "[3]"})
+        history.append(
+            {"role": "tool", "tool_call_id": f"c{r}", "content": _envelope("[3]", *images)}
+        )
+    mcp_images.append_image_turn(conversation, results, per_result = True, owned = [])
+    history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+
+    assert mcp_images.replay_image_total(history) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    assert _urls(promote_history(history, vision = True)) == _urls(conversation)
