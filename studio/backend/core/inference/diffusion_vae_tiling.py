@@ -706,7 +706,6 @@ def _log_stock_fallback(vae: Any, reason: str) -> None:
 
 
 def _log_full_map_once(vae: Any, engaged: bool, reason: str) -> None:
-    """Log once per VAE and outcome which decode a tiled request took (whole map or tiles), and why."""
     logger = vae.__dict__.get("_unsloth_wide_logger")
     seen = vae.__dict__.setdefault("_unsloth_full_map_logged", set())
     if logger is None or engaged in seen:

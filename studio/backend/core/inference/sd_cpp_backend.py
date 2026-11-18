@@ -3111,6 +3111,91 @@ def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
     return OFFLOAD_NONE
 
 
+def _unmeasured_card_free_mib(
+    klass: Optional[str], description: Optional[str], ordinal: Optional[int]
+) -> "tuple[Optional[int], Optional[int]]":
+    """(free, total) MiB of the card a CPU torch never measured, read without a device context: amdgpu sysfs for an
+    AMD Vulkan device (sole card only), nvidia-smi for the CUDA card the load pins (sd.cpp's first when unpinned).
+    (None, None) when unsure."""
+    try:
+        if klass == "cuda":
+            from core.inference.diffusion_device import smi_free_total_mib
+
+            free, total = smi_free_total_mib(0 if ordinal is None else int(ordinal))
+            # A CPU torch lists no CUDA devices, so that reads nothing; a sole unmasked card is unambiguous.
+            if free is None and not ordinal and os.environ.get("CUDA_VISIBLE_DEVICES") is None:
+                free, total = _sole_nvidia_card_mib()
+            return free, total
+        from core.inference.video_minimax_h3 import amdgpu_vram_reading, vulkan_device_is_amd
+        if klass == "vulkan" and vulkan_device_is_amd(description):
+            free, total = amdgpu_vram_reading()
+            if free is not None:
+                return free >> 20, None if total is None else total >> 20
+    except Exception:  # noqa: BLE001 -- an unreadable card keeps the offload
+        pass
+    return None, None
+
+
+def _sole_nvidia_card_mib() -> "tuple[Optional[int], Optional[int]]":
+    """(free, total) MiB of the machine's only NVIDIA GPU from nvidia-smi, without torch; (None, None) otherwise."""
+    import subprocess
+
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None, None
+    out = subprocess.run(
+        [
+            smi,
+            "--query-gpu=memory.total,memory.used,mig.mode.current",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 10,
+    )
+    rows = [r.split(",") for r in out.stdout.strip().splitlines() if r.strip()]
+    if out.returncode != 0 or len(rows) != 1 or rows[0][2].strip().lower() == "enabled":
+        return None, None
+    total, used = int(float(rows[0][0])), int(float(rows[0][1]))
+    return max(total - used, 0), total
+
+
+def _offload_would_exhaust_host_ram(
+    files: Any,
+    klass: Optional[str],
+    description: Optional[str],
+    ordinal: Optional[int] = None,
+) -> bool:
+    """--offload-to-cpu forces every weight into anonymous host RAM (``*=cpu`` params, which also turns off sd.cpp's
+    auto-fit). When RAM cannot hold them, auto drops it as long as the card holds the diffusion model: auto-fit then
+    places the DiT on the card first and spills the text encoder / VAE to RAM or disk itself. Unreadable keeps it."""
+    from core.inference.diffusion_small_host import host_ram_mib, host_reserve_mib
+    from core.inference.sd_cpp_multigpu import CARD_RESERVE_MIB, TEXT_ENCODER_FIELDS, file_mib
+
+    dit = file_mib(getattr(files, "diffusion_model", None))
+    weights = dit + sum(file_mib(getattr(files, f, None)) for f in ("vae", *TEXT_ENCODER_FIELDS))
+    total, available = host_ram_mib()
+    if not dit or available is None or weights <= available - host_reserve_mib(total):
+        return False
+    from core.inference.diffusion_memory import _user_budget_reserve_mib
+
+    free, card_total = _unmeasured_card_free_mib(klass, description, ordinal)
+    # sd.cpp's auto-fit takes no VRAM cap, so a lowered VRAM Budget keeps the offload it can enforce.
+    if free is None or _user_budget_reserve_mib(card_total or free) > 0:
+        return False
+    if dit + CARD_RESERVE_MIB > free:
+        return False
+    logger.info(
+        "sd_cpp.placement: offloading %s MiB of weights exceeds host RAM (%s MiB available); the card's %s MiB "
+        "free holds the %s MiB diffusion model, so auto-fit places them",
+        weights,
+        available,
+        free,
+        dit,
+    )
+    return True
+
+
 def _native_speed_for(speed_mode: Optional[str]) -> str:
     mode = (speed_mode or "off").strip().lower()
     return mode if mode in ("default", "max") else "off"
@@ -3626,6 +3711,8 @@ class SdCppDiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         # Accepted for parity; native never raises the unified-memory refusal.
         allow_oversized_load: bool = False,
+        # Accepted for parity and ignored: sd.cpp has no Studio INT8 attention kernel.
+        int8_attention: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch on a daemon thread, returns at once; an empty token must become None, since a literal empty string breaks the anonymous fallback."""
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
@@ -3928,6 +4015,13 @@ class SdCppDiffusionBackend:
                 # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
                 if placed == "cpu":
                     return placed, ()
+                if unmeasured and _offload_would_exhaust_host_ram(
+                    files,
+                    klass,
+                    sd_cpp_listed_device(binary)[1] if binary else None,
+                    gpu_ordinal,
+                ):
+                    unmeasured = False
                 return placed, tuple(
                     offload_flags(_memory_policy(memory_mode, cpu_offload or unmeasured))
                 )
