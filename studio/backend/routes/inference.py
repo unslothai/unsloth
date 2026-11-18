@@ -1978,8 +1978,8 @@ _MMPROJ_IMAGE_TOKEN_MAX = {
     "lightonocr": 1024,
     "kimivl": 1024,
     "minimax_m3": 576,
-    "gemma4v": 280,
-    "gemma4uv": 280,
+    "gemma4v": 1120,
+    "gemma4uv": 1120,
     "lfm2": 256,
 }
 

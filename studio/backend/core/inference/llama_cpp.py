@@ -29589,14 +29589,16 @@ class LlamaCppBackend:
                     try:
                         from utils.models.gguf_metadata import (
                             mmproj_capabilities,
-                            read_mmproj_projector_type,
+                            read_mmproj_vision_projector_type,
                         )
 
                         has_audio, accepts_image = mmproj_capabilities(_mmproj_probe)
                         self._mmproj_has_audio = has_audio
                         self._mmproj_accepts_image = accepts_image
                         # KV admission needs the projector family to look up per-image token cost.
-                        self._mmproj_projector_type = read_mmproj_projector_type(_mmproj_probe)
+                        self._mmproj_projector_type = read_mmproj_vision_projector_type(
+                            _mmproj_probe
+                        )
                     except Exception as e:
                         logger.debug(f"mmproj capability read failed: {e}")
 
