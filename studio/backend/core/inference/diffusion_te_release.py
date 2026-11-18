@@ -196,7 +196,6 @@ class TextEncoderReleaser:
         self._from_source: dict[str, tuple[int, str]] = {}
         # key -> (owner module, leaf name, is_parameter)
         self._slots: dict[str, tuple[Any, str, bool]] = {}
-        # key -> every (module, leaf) holding that tensor, tied aliases included
         self._aliases: dict[str, list[tuple[Any, str]]] = {}
         self._released_bytes = 0
         self._bytes: dict[str, int] = {}
