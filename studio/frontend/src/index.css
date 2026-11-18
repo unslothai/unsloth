@@ -5474,7 +5474,7 @@ main:has(.translate-page) {
 	scrollbar-gutter: stable;
 }
 
-/* Dark keeps its own wash: the segmented pill's --accent reads as a second selection colour here. */
+/* Dark keeps its wash: --accent would read as a second selection colour. */
 html.dark .translate-page .hub-tab-toggle-pill {
 	background-color: rgb(255 255 255 / calc(0.09 * var(--contrast-wash-gain, 1)));
 }

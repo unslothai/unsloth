@@ -49,7 +49,6 @@ export const TRANSLATE_SOURCE_MAX_CHARS = 50_000;
 export type TranslatePrefs = {
   from: string;
   target: string;
-  /** Stable: picking a shown tab never reorders them. */
   recentSources: string[];
   recentTargets: string[];
   modelId: TranslateModelId;
@@ -300,7 +299,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   setFrom: (from) => {
     const { prefs } = get();
     if (from === prefs.from) return;
-    // The tabs shown now, so Detect language never drops one (prefs saved before recentSources had none).
+    // The shown tabs: Detect must not drop one saved before recentSources.
     const shown = languageTabs(prefs.from, prefs.recentSources);
     get().setPrefs({
       from,

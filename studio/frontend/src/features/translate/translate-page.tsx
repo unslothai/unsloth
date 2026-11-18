@@ -202,7 +202,6 @@ const GO_BUTTON =
 const STOP_BUTTON =
   "ms-1 h-9 rounded-full px-3.5 text-ui-14 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
-// glass-inset: index.css frosts it over a wallpaper in glass mode.
 const PANEL = "glass-inset rounded-xl bg-wash-6";
 const PANE_HEIGHT =
   "min-h-52 max-h-[70dvh] sm:min-h-[calc(18rem*var(--ui-space-scale,1))] md:max-h-[max(18rem,calc(100dvh-10rem))]";
@@ -294,7 +293,6 @@ function LanguagePicker({
   const locale = useLocale();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  // Opens on the current language, not the first row.
   const [active, setActive] = useState(value);
   const languages = useMemo(
     () =>
@@ -363,7 +361,6 @@ function LanguagePicker({
       </PopoverAnchor>
       <PopoverContent
         align="start"
-        // Matches the sections' gap-3.
         sideOffset={12}
         collisionPadding={16}
         className="w-[var(--radix-popper-anchor-width)] max-w-none gap-0 overflow-hidden rounded-xl p-0"
@@ -474,7 +471,6 @@ function LanguageTabs({
         {active && (
           <motion.span
             layoutId={pillId}
-            // The segmented controls' pill: white and shadowed in light, glass-aware.
             className="hub-tab-toggle-pill absolute inset-0 rounded-full"
             transition={
               reduced
@@ -497,8 +493,7 @@ function LanguageTabs({
       className={className}
       trailing={children}
       tabs={
-        // Clipped, not scrolled: the chevron lists any dropped tab. The padding, taken back by the
-        // margin, leaves room for the selected pill's shadow inside the clip.
+        // Clipped, not scrolled (the chevron lists dropped tabs); the padding keeps the pill's shadow.
         <div
           role="tablist"
           aria-label={label}
@@ -901,7 +896,6 @@ function ModelMenu({
             type="button"
             aria-label={`${t("translate.model.label")}: ${label}`}
             title={t("translate.model.label")}
-            // unsloth-model-selector-trigger: the glass the other pages' model buttons get.
             className="unsloth-thinking-pill composer-model-chip unsloth-model-selector-trigger max-w-56 pl-3.5 pr-3"
           >
             {preparing && (
@@ -1316,7 +1310,6 @@ export function TranslatePage() {
     if (!file) return;
     if (readsInBrowser(file)) {
       try {
-        // Sliced first: only the kept characters are ever read into memory.
         loadText(
           await file.slice(0, TRANSLATE_SOURCE_MAX_CHARS * 4 + 4).text(),
         );
@@ -1330,7 +1323,7 @@ export function TranslatePage() {
       return;
     }
     setReadingFile(file.name);
-    // The box is read-only meanwhile, but swap or a history entry can still replace it: those win.
+    // Read-only meanwhile; a swap or history pick still wins.
     const before = useTranslateStore.getState().source;
     try {
       const { text } = await extractDocumentText(file);
@@ -1358,7 +1351,6 @@ export function TranslatePage() {
     onFiles: (files) => void openFile(files[0]),
     accept: OPEN_FILE_EXTENSIONS,
     multiple: false,
-    // Like Open file: a second read would race the first into the text box.
     disabled: readingFile !== null,
     disabledReason: readingFile
       ? t("translate.readingFile", { name: readingFile })
@@ -1427,12 +1419,10 @@ export function TranslatePage() {
 
   const shortcut = `${IS_MAC ? "⌘" : "Ctrl"}+Enter`;
   const runStatus = useRunStatusText(phase, runModelLabel);
-  // Auto-translate never downloads, so only a click can ask.
   const [confirmDownload, setConfirmDownload] = useState<
     (typeof DEDICATED_TRANSLATE_MODELS)[number] | null
   >(null);
   const checkingDownload = useRef(false);
-  // Clicked before the page's check answered: ask it now rather than download unasked.
   const onDiskNow = async (
     model: (typeof DEDICATED_TRANSLATE_MODELS)[number],
   ): Promise<boolean | null> => {
@@ -1455,7 +1445,7 @@ export function TranslatePage() {
       const onDisk = await onDiskNow(dedicated).finally(() => {
         checkingDownload.current = false;
       });
-      // Another model picked meanwhile: this answer is not about it, so start nothing.
+      // Another model picked meanwhile: start nothing.
       if (useTranslateStore.getState().prefs.modelId !== dedicated.id) {
         return;
       }
@@ -1527,7 +1517,6 @@ export function TranslatePage() {
               className={cn(
                 SOURCE_BOX,
                 paneHeight,
-                // @container: the footer fits the pane, not the window (two panes share a narrow one).
                 "@container relative flex flex-1 flex-col",
                 dragging && "shadow-[inset_0_0_0_1px_var(--ring)]",
               )}
@@ -1579,7 +1568,7 @@ export function TranslatePage() {
                 />
               )}
               <div className="flex shrink-0 items-center gap-1 px-2.5 pt-1.5 pb-2.5">
-                {/* Shown even where this browser cannot dictate: a click explains why or offers local dictation. */}
+                {/* Always shown: a click explains why it cannot dictate or offers local dictation. */}
                 {dictation.dictating ? (
                   <IconAction
                     icon={dictation.finalizing ? undefined : StopIcon}

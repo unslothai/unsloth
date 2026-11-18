@@ -11,8 +11,7 @@ import type { StudioDictationSession } from "@/features/chat/adapters/studio-web
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** A second stop while the last phrase transcribes cancels it. No `language`: a local or
- *  custom model detects what is spoken; the browser's engine cannot and hears the user's. */
+/** A second stop while the last phrase transcribes cancels it. No `language`: models detect it. */
 export function useDictation(
   onTranscript: (transcript: string) => void,
   language?: string,

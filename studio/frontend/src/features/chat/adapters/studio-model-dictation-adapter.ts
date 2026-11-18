@@ -515,7 +515,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
   private readonly language: string | undefined;
   private readonly detectLanguage: boolean;
 
-  /** `detectLanguage`: the model identifies the spoken language instead of assuming the user's. */
   constructor(
     options: {
       chatId?: string | null;
@@ -533,7 +532,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     external: boolean,
     setting: string,
   ): string {
-    // "" sends no language, so the model detects it (an explicit "auto" means the user's).
+    // "" omits the language so the model detects it; "auto" means the user's.
     if (this.detectLanguage) {
       return "";
     }

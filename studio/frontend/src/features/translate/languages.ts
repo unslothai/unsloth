@@ -81,7 +81,6 @@ const SPEECH_TAGS: Record<string, string> = {
   tl: "fil",
 };
 
-// A bare "fr" took the first French voice listed (Canadian on macOS) and left recognition to guess.
 const SPEECH_REGIONS: Record<string, string> = {
   en: "en-US",
   fr: "fr-FR",
@@ -93,7 +92,6 @@ const SPEECH_REGIONS: Record<string, string> = {
   ar: "ar-SA",
 };
 
-/** The user's own region for a language they list, else the language's main one. */
 export function translateSpeechTag(
   code: string,
   preferred: readonly string[] = typeof navigator === "undefined"

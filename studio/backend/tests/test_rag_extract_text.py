@@ -127,7 +127,6 @@ def _image(fmt: str, size: tuple[int, int], **save) -> bytes:
     "name, data, expected",
     [
         ("shot.webp", _image("WEBP", (40, 30)), (40, 30)),
-        # A 72 dpi tag must not upscale it; past the page budget it shrinks instead.
         ("photo.jpg", _image("JPEG", (40, 30), dpi = (72, 72)), (40, 30)),
         ("scan.tiff", _image("TIFF", (40, 30), dpi = (600, 600)), (40, 30)),
         ("huge.png", _image("PNG", (4000, 3000)), None),

@@ -475,7 +475,6 @@ test("read aloud asks for a voice of the translation's language", () => {
   assert.equal(translateSpeechTag("zh"), "zh-CN");
   assert.equal(translateSpeechTag("zh-Hant"), "zh-TW");
   assert.equal(translateSpeechTag("yue"), "zh-HK");
-  // The language's main region, unless the user lists their own.
   assert.equal(translateSpeechTag("fr", []), "fr-FR");
   assert.equal(translateSpeechTag("fr", ["en-US", "fr-CA"]), "fr-CA");
   assert.equal(translateSpeechTag("ja", ["en-US"]), "ja");

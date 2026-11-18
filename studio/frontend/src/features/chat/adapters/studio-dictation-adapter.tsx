@@ -95,7 +95,6 @@ export class StudioDictationAdapter implements DictationAdapter {
   private readonly language: string | undefined;
   private readonly detectLanguage: boolean;
 
-  /** `detectLanguage`: recorded engines detect the spoken language; the browser's uses `language`. */
   constructor(
     options: {
       chatId?: string | null;

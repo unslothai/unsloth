@@ -980,9 +980,8 @@ _EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
 
 
 _IMAGE_TEXT_EXTS = frozenset(".png .jpg .jpeg .webp .gif .bmp .tif .tiff".split())
-# A letter page at OCR_DPI, what PDF OCR already sends the vision model.
+# A letter page at OCR_DPI, as PDF OCR sends.
 _IMAGE_MAX_PIXELS = int(8.5 * 11 * config.OCR_DPI**2)
-# A 48 MP phone photo fits (as mcp_images caps at 40 MP); its decode is the one full-size buffer.
 _IMAGE_DECODE_MAX_PIXELS = 50_000_000
 
 
@@ -994,15 +993,13 @@ def _image_png(path: str) -> bytes:
 
     with Image.open(path) as opened:
         width, height = opened.size
-        # Header only so far: refuse before any full-size decode (a small PNG can be 12k x 12k).
         if width * height > _IMAGE_DECODE_MAX_PIXELS:
             raise ValueError(f"the image is too large ({width} x {height} pixels)")
         scale = min(1.0, (_IMAGE_MAX_PIXELS / (width * height)) ** 0.5)
         size = (max(1, int(width * scale)), max(1, int(height * scale)))
-        # Shrunk first, so every copy below is at most the page budget.
         opened.thumbnail(size, Image.Resampling.LANCZOS)
         rgba = ImageOps.exif_transpose(opened).convert("RGBA")
-    # On white, as PyMuPDF renders it: dark text on a transparent PNG must not turn black on black.
+    # On white like PyMuPDF, or dark text on a transparent PNG turns black on black.
     image = Image.new("RGB", rgba.size, "white")
     image.paste(rgba, mask = rgba.getchannel("A"))
     out = io.BytesIO()
@@ -1033,7 +1030,6 @@ def _image_text(path: str) -> str:
 def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
     from core.rag import parsers
 
-    # Images only here: ingestion has no reader for them.
     stored_path, filename, _digest = _save_upload(file, _IMAGE_TEXT_EXTS)
     if os.path.splitext(filename)[1].lower() in _IMAGE_TEXT_EXTS:
         try:
