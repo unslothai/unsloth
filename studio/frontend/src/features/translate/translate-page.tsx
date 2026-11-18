@@ -249,7 +249,7 @@ const LIST_ROW =
   "h-9 cursor-pointer break-inside-avoid rounded-full py-0 text-ui-14 data-[checked=true]:font-medium data-[checked=true]:text-control-accent";
 const CONTROL_HOVER =
   "hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]";
-const FOOTER_ICON = cn("size-9", CONTROL_HOVER);
+const FOOTER_ICON = cn("size-9 shrink-0", CONTROL_HOVER);
 
 const TONE_LABEL: Record<TranslateTone, TranslationKey> = {
   default: "translate.options.toneDefault",
@@ -540,12 +540,14 @@ function StyleMenu() {
           size="sm"
           title={`${t("translate.options.mode")} · ${t("translate.options.tone")}`}
           className={cn(
-            "h-9 min-w-0 cursor-pointer gap-1.5 rounded-full px-3 text-ui-14 font-medium text-muted-foreground hover:text-foreground data-[state=open]:text-foreground max-sm:ms-auto",
+            "h-9 min-w-0 shrink cursor-pointer gap-1.5 rounded-full px-3 text-ui-14 font-medium text-muted-foreground hover:text-foreground data-[state=open]:text-foreground @max-[26rem]:ms-auto",
             CONTROL_HOVER,
             "data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]",
           )}
         >
-          {t(MODE_LABEL[mode])} · {t(TONE_LABEL[tone])}
+          <span className="truncate">
+            {t(MODE_LABEL[mode])} · {t(TONE_LABEL[tone])}
+          </span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={2}
@@ -1525,7 +1527,8 @@ export function TranslatePage() {
               className={cn(
                 SOURCE_BOX,
                 paneHeight,
-                "relative flex flex-1 flex-col",
+                // @container: the footer fits the pane, not the window (two panes share a narrow one).
+                "@container relative flex flex-1 flex-col",
                 dragging && "shadow-[inset_0_0_0_1px_var(--ring)]",
               )}
             >
@@ -1576,29 +1579,30 @@ export function TranslatePage() {
                 />
               )}
               <div className="flex shrink-0 items-center gap-1 px-2.5 pt-1.5 pb-2.5">
-                {dictation.supported &&
-                  (dictation.dictating ? (
-                    <IconAction
-                      icon={dictation.finalizing ? undefined : StopIcon}
-                      iconClassName={STOP_GLYPH}
-                      label={t("translate.stopDictating")}
-                      onClick={dictation.stop}
-                      className={cn(
-                        FOOTER_ICON,
-                        "text-destructive hover:text-destructive",
-                      )}
-                    >
-                      <Spinner className="size-5" />
-                    </IconAction>
-                  ) : (
-                    <IconAction
-                      label={t("translate.dictate")}
-                      onClick={dictation.start}
-                      className={FOOTER_ICON}
-                    >
-                      <MicIcon className="size-5" />
-                    </IconAction>
-                  ))}
+                {/* Shown even where this browser cannot dictate: a click explains why or offers local dictation. */}
+                {dictation.dictating ? (
+                  <IconAction
+                    icon={dictation.finalizing ? undefined : StopIcon}
+                    iconClassName={STOP_GLYPH}
+                    label={t("translate.stopDictating")}
+                    onClick={dictation.stop}
+                    className={cn(
+                      FOOTER_ICON,
+                      "text-destructive hover:text-destructive",
+                    )}
+                  >
+                    <Spinner className="size-5" />
+                  </IconAction>
+                ) : (
+                  <IconAction
+                    label={t("translate.dictate")}
+                    onClick={dictation.start}
+                    disabled={readingFile !== null}
+                    className={FOOTER_ICON}
+                  >
+                    <MicIcon className="size-5" />
+                  </IconAction>
+                )}
                 <IconAction
                   icon={readingFile ? undefined : Upload01Icon}
                   iconClassName="size-5"
@@ -1615,7 +1619,7 @@ export function TranslatePage() {
                 </IconAction>
                 <Tooltip>
                   <TooltipTrigger asChild={true}>
-                    <span className="group/count ms-auto cursor-default whitespace-nowrap pe-2 font-mono text-ui-12 tabular-nums text-muted-foreground max-sm:hidden">
+                    <span className="group/count ms-auto cursor-default whitespace-nowrap pe-2 font-mono text-ui-12 tabular-nums text-muted-foreground @max-[26rem]:hidden">
                       {source.length.toLocaleString(locale)}
                       <span
                         className={cn(
@@ -1640,7 +1644,11 @@ export function TranslatePage() {
                 <Button
                   type="button"
                   size="sm"
-                  className={cn(ACTION_BUTTON, busy ? STOP_BUTTON : GO_BUTTON)}
+                  className={cn(
+                    ACTION_BUTTON,
+                    "shrink-0",
+                    busy ? STOP_BUTTON : GO_BUTTON,
+                  )}
                   variant={busy ? "outline" : "primary"}
                   disabled={!busy && !canTranslate}
                   onClick={busy ? stop : () => void startTranslate()}
