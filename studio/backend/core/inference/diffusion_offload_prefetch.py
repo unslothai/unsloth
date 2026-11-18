@@ -1408,6 +1408,8 @@ class PrefetchedListStreamer:
         pf = self.prefetcher
         if pf is not None and getattr(pf, "active", False):
             pf.end()
+        if offload and pf is not None and callable(getattr(pf, "drop_carried", None)):
+            pf.drop_carried()  # a copy carried into the next forward goes back with the rest
         out = {}
         for group in self.groups:
             for name in ("onload_", "offload_", "_unsloth_prefetch_onload", "_unsloth_prefetcher"):
