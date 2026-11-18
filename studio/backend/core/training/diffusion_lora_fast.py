@@ -3,29 +3,8 @@
 
 """Eager DiT LoRA forward without PEFT's per-call casts, plus a budgeted nf4 dequant cache.
 
-PEFT's LoRA linear under bf16 autocast, per call and again in every checkpoint recompute:
-casts an fp32 input to bf16 twice (bnb base, then autocast for lora_A), casts the base output
-back to fp32, clones it, casts both fp32 LoRA weights, scales and adds in fp32; backward casts
-both input grads back to fp32 and adds them. ``install_fast_lora`` swaps that forward for:
-
-* one input cast shared by the base and the LoRA branch;
-* bf16 copies of the fp32 masters A and B made once per optimizer step (``mark_lora_updated``
-  after each step; the parameters' version counters also catch any other in-place write);
-* ``B(A(x))`` in a custom autograd function on those copies whose backward runs PEFT's GEMMs and
-  returns fp32 grads to the masters; no clone of the base output, no multiply by a scale of 1.
-
-Same GEMMs, same roundings and the same base + LoRA add as PEFT (an fp32 input still gets PEFT's
-fp32 sum): one LoRA linear matches PEFT bit for bit (CPU tests; A100, nf4 and dense bases). A
-whole deterministic training run still drifts from PEFT's at bf16-noise level from step 3 on, inside
-the run-to-run loss band. Folding the add into one ``addmm`` was measured and gained nothing.
-
-``Nf4DequantCache`` keeps dequantised nf4 base weights (frozen) in VRAM the step does not use,
-so the forward, the checkpoint recompute and the backward of every grad-accum micro-batch stop
-re-running ``kDequantizeBlockwise`` for the cached layers. The budget is planned after step 1
-from free memory and step 1's peak; with no room it caches nothing and memory stays as before.
-
-Eager only: a compiled run already fuses these elementwise ops. Kill switches:
-``UNSLOTH_DIFFUSION_FAST_LORA=0`` and ``UNSLOTH_DIFFUSION_DEQUANT_CACHE=0``
+Matches PEFT bit for bit per LoRA linear (same GEMMs, roundings and add); a folded ``addmm`` gained nothing.
+Kill switches: ``UNSLOTH_DIFFUSION_FAST_LORA=0``, ``UNSLOTH_DIFFUSION_DEQUANT_CACHE=0``
 (``UNSLOTH_DIFFUSION_DEQUANT_CACHE_GB=N`` pins the budget).
 """
 
@@ -38,11 +17,10 @@ from typing import Optional
 import torch
 
 GIB = 1 << 30
-# Room left for the allocator, the next step's transients and anything else on the card.
 _MARGIN_MIN_BYTES = 2 * GIB
 _MARGIN_FRAC = 0.10
 _BUDGET_FRAC = 0.85
-# Room the per-step rebalance must see before it grows a shrunk budget again (no evict / refill churn).
+# Hysteresis before regrowing a shrunk budget (avoids evict / refill churn).
 _GROW_HYSTERESIS = 1 * GIB
 
 
@@ -93,18 +71,15 @@ _GEN = [0]
 
 
 def mark_lora_updated() -> None:
-    """Drop every bf16 master copy: call after each optimizer step and anything else that writes the
-    LoRA weights (resume load, EMA swap)."""
+    """Call after anything that writes the LoRA weights (optimizer step, resume load, EMA swap)."""
     _GEN[0] += 1
 
 
 def _lp_weights(module, adapter: str, dtype: torch.dtype):
-    """bf16 A and B, recast only when a master changed (optimizer step, resume load, EMA swap)."""
     a = module.lora_A[adapter].weight
     b = module.lora_B[adapter].weight
     scale = float(module.scaling[adapter])
-    # The fused AdamW writes the masters without bumping their version counters, so the trainer's
-    # update generation is the primary key; the version counters still catch any other in-place write.
+    # Fused AdamW does not bump version counters, so the update generation is the primary key.
     key = (_GEN[0], a._version, b._version, a.data_ptr(), b.data_ptr(), scale, dtype)
     cached = module.__dict__.get("_unsloth_lp")
     if cached is not None and cached[0] == key:
@@ -121,8 +96,7 @@ STATS = {"calls": 0, "fallback": 0, "casts": 0}
 
 
 class _SplitCast(torch.autograd.Function):
-    """One cast of ``x`` serving the base and the LoRA branch (two aliases of one tensor). The backward adds
-    the two branch grads in ``x``'s dtype, as PEFT's two separate casts do, so an fp32 input keeps its fp32 sum."""
+    """One cast of ``x`` for both branches; backward adds the grads in ``x``'s dtype, as PEFT does."""
 
     @staticmethod
     def forward(ctx, x, dtype):
@@ -139,7 +113,6 @@ class _SplitCast(torch.autograd.Function):
 
 
 def fast_lora_stats() -> dict:
-    """Engagement counters since import: fast calls, PEFT fallbacks, bf16 master recasts."""
     return {"fast_lora_" + k: v for k, v in STATS.items()}
 
 
@@ -177,10 +150,8 @@ def _fast_forward(self, x, *args, **kwargs):
         x_base, x_lora = _SplitCast.apply(x, dtype)
     else:
         x_base = x_lora = x
-    # An nf4 base reads the dequant cache through its own patched forward (``_nf4_forward``).
     result = base(x_base)
-    # bnb hands back the caller's dtype, so an fp32 input (a norm output, Wan's fp32 residual stream) gets an
-    # fp32 sum, exactly as on PEFT; a dense base under autocast returns the autocast dtype.
+    # bnb returns the caller's dtype, so an fp32 input gets an fp32 sum, exactly as on PEFT.
     if self.__dict__["_unsloth_bnb4"] and result.dtype != x.dtype:
         result = result.to(x.dtype)
     a, b, a_lp, b_lp, scale = _lp_weights(self, adapter, dtype)
@@ -192,7 +163,6 @@ def _fast_forward(self, x, *args, **kwargs):
 
 
 def _nf4_forward(self, x, *args, **kwargs):
-    """bnb Linear4bit with its dequantised weight from the cache when it holds (or can take) it."""
     orig = self.__dict__["_unsloth_orig_forward"]
     cd = self.compute_dtype
     if args or kwargs or cd is None or not x.is_floating_point():
@@ -221,8 +191,7 @@ def _lora_linear_classes():
 
 
 def install_fast_lora(model, dequant_cache: Optional["Nf4DequantCache"] = None) -> int:
-    """Route every plain LoRA linear (dense nn.Linear or bnb nf4 base) through ``_fast_forward``.
-    Returns the number of modules patched; other LoRA layer types keep PEFT's forward."""
+    """Route plain LoRA linears (dense or nf4 base) through ``_fast_forward``; returns the count patched."""
     classes = _lora_linear_classes()
     if not classes:
         return 0
@@ -270,9 +239,6 @@ def dequant_budget_bytes(
     total: int,
     frac: float = _BUDGET_FRAC,
 ) -> int:
-    """Bytes the cache may hold: what the card has beyond step 1's peak, minus a margin.
-    ``free`` is the driver's free memory, ``reserved`` this process's allocator pool and
-    ``peak_alloc`` step 1's allocated peak, which the following steps need again."""
     margin = max(_MARGIN_MIN_BYTES, int(total * _MARGIN_FRAC))
     room = free + reserved - peak_alloc - margin
     return max(0, int(room * frac))
@@ -292,10 +258,7 @@ def plan_dequant_cache(
     pre_opt_alloc: int,
     act_scale: float = 1.0,
 ) -> None:
-    """Size ``cache`` right after step 1's optimizer step. ``step_peak`` / ``pre_opt_alloc`` are the allocated
-    peak and the allocated bytes just before that step; its activations (peak minus what stays allocated)
-    are scaled to the largest bucket and the optimizer state it just created is added. The activation
-    figure is kept on the cache so every later step can rebalance against what is free then."""
+    """Size ``cache`` after step 1's optimizer step: activations scaled to the largest bucket plus new optimizer state."""
     pinned = None
     override = os.environ.get("UNSLOTH_DIFFUSION_DEQUANT_CACHE_GB", "").strip()
     if override:
@@ -322,10 +285,7 @@ def plan_dequant_cache(
 
 
 def rebalance_dequant_cache(cache) -> int:
-    """Per-step check against what is free NOW: another process (a dictation model, a second app) that
-    took memory since the plan makes the cache evict until the next step's activations plus the margin
-    fit again; room coming back lets it grow toward its plan. Returns the bytes evicted (the caller
-    then hands them back to the driver)."""
+    """Evict if another process took memory since the plan, regrow when it returns. Returns bytes evicted."""
     try:
         free, _total = torch.cuda.mem_get_info()
         allocated = torch.cuda.memory_allocated()
@@ -342,9 +302,7 @@ def attach_training_hooks(
     on_planned = None,
     on_event = None,
 ):
-    """Optimizer hooks: every step bumps the LoRA update generation (the fused AdamW does not bump version
-    counters); the first step this process runs sizes ``cache``, every later one rebalances it against
-    the memory free then. Returns the hook handles."""
+    """Every step bumps the LoRA generation; the first plans ``cache``, later ones rebalance it."""
     state = {"pending": cache is not None}
 
     def pre(_opt, _args, _kwargs):
@@ -364,7 +322,6 @@ def attach_training_hooks(
             return
         evicted = rebalance_dequant_cache(cache)
         if evicted:
-            # Freed entries go back to torch's pool; empty it so another process can have them.
             torch.cuda.empty_cache()
             if on_event is not None:
                 on_event(
@@ -375,8 +332,7 @@ def attach_training_hooks(
     return (optimizer.register_step_pre_hook(pre), optimizer.register_step_post_hook(post))
 
 
-# A parent request (``DiffusionTrainingService.lend_vram``) reaches the trainer through its stop queue;
-# the trainer that owns a cache registers the handler, everything else just acknowledges.
+# ``DiffusionTrainingService.lend_vram`` requests arrive via the stop queue; no handler = plain ack.
 _VRAM_HANDLER: list = []
 
 
@@ -385,8 +341,7 @@ def set_vram_request_handler(handler) -> None:
 
 
 def handle_vram_request(kind: str) -> dict:
-    """``kind`` is "lend" (drop the cache now, cache nothing until "return") or "return". Runs between
-    steps (from the trainer's stop check), where no graph holds a cache entry. Returns the ack payload."""
+    """``kind`` is "lend" or "return". Runs between steps, where no graph holds a cache entry."""
     if _VRAM_HANDLER:
         return _VRAM_HANDLER[0](kind)
     return {"kind": kind, "cached_gib": 0.0, "freed_gib": 0.0}
@@ -407,8 +362,7 @@ def cache_vram_handler(cache: "Nf4DequantCache"):
 
 
 class Nf4DequantCache:
-    """Dequantised nf4 base weights kept while they fit in ``budget`` bytes. Frozen weights, so an
-    entry stays valid for the whole run; once the budget is full the rest dequantise per call."""
+    """Dequantised (frozen) nf4 base weights kept while they fit in ``budget`` bytes."""
 
     def __init__(self, budget: int = 0):
         self.budget = int(budget)
@@ -433,12 +387,10 @@ class Nf4DequantCache:
         self.full = self.used >= self.budget
 
     def reserve(self, nbytes: int) -> None:
-        """Bytes some other part of the step will hold on top of step 1's activations (a budgeted
-        checkpointing plan that keeps activations from step 2 on). Rebalancing makes room for them."""
+        """Bytes held on top of step 1's activations from step 2 on (budgeted checkpointing)."""
         self.extra_reserved = max(0, int(nbytes))
 
     def _evict(self, nbytes: int) -> int:
-        """Drop the newest entries until ``nbytes`` are freed (or nothing is left)."""
         freed = 0
         for key in reversed(list(self.entries)):
             if freed >= nbytes:
@@ -449,16 +401,12 @@ class Nf4DequantCache:
         return freed
 
     def rebalance(self, *, free: int, reserved: int, allocated: int) -> int:
-        """``room`` = what the card has beyond this process's live tensors, the next step's activations
-        and the margin. Negative: evict that much and stop growing. Comfortably positive: let the
-        budget grow back toward the plan. Returns the bytes evicted."""
         if self.cap <= 0:
             return 0
         room = free + (reserved - allocated) - self.transient - self.extra_reserved - self.margin
         pending = 0 if self.full else max(0, self.budget - self.used)
         if room < pending:
-            # First stop growing (entries still to come under the budget would take from this room),
-            # then evict whatever is still short.
+            # Stop growing first (pending entries would take this room), then evict the shortfall.
             self.budget = self.used
             self.full = True
             evicted = self._evict(-room) if room < 0 else 0
@@ -473,7 +421,6 @@ class Nf4DequantCache:
         return 0
 
     def lend(self) -> int:
-        """Free every entry for another Studio GPU load; cache nothing until ``unlend``."""
         freed = self.used
         self.clear()
         self.lent = True
@@ -481,8 +428,6 @@ class Nf4DequantCache:
         return freed
 
     def unlend(self) -> None:
-        """The load is done: the next step's rebalance sizes the budget from what is free now, which
-        counts the new resident."""
         self.lent = False
         self.full = False
 
@@ -522,7 +467,6 @@ class Nf4DequantCache:
         self.full = False
 
     def suspend(self) -> None:
-        """Free every entry and cache nothing until ``resume`` (a preview render needs the room)."""
         self.clear()
         self.paused = True
 
@@ -530,7 +474,6 @@ class Nf4DequantCache:
         self.paused = False
 
     def release(self) -> None:
-        """Drop every entry and stop caching (the end of the run)."""
         self.clear()
         self.budget = 0
         self.cap = 0
