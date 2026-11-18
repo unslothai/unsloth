@@ -528,3 +528,70 @@ def test_the_pageable_last_resort_pads_the_int8_rows_again(h3i, speed, monkeypat
         got = blocks[1].attn.to_q(x)
     assert seen == [64] and torch.equal(got, want)
     assert h3i.restore_row_pads(transformer) == 0  # idempotent
+
+
+def _per_prompt_host(h3i, pipe, monkeypatch, host_gb):
+    """The load's host plan of a machine that loads the 27.2 GB encoder per prompt, no DiT block on the host."""
+    plan = pipe._unsloth_h3_plan
+    plan.te_gb, plan.te_kept_on_host, plan.host_gb = 27.2, False, host_gb
+    plan.host_need_gb = (
+        0.0 + 27.2 + 4.0
+    )  # dit on host + encoder + 4 GB: over host_gb, hence per prompt
+    monkeypatch.setattr(h3i, "_host_available_gb", lambda: 100.0)
+    return plan
+
+
+def test_a_larger_render_demotes_when_system_memory_holds_the_blocks(h3i, tmp_path, monkeypatch):
+    import torch
+
+    root, te = _tiny(h3i, tmp_path, monkeypatch, resident = 2)
+    pipe = h3i.load_minimax_h3_image_pipeline(
+        str(root), device = "cpu", text_encoder = copy.deepcopy(te)
+    )
+    try:
+        want = _image(pipe)
+        # peak with both blocks on the host: 0.8 + 27.2 + 1 = 29.0 GB of the 30
+        plan = _per_prompt_host(h3i, pipe, monkeypatch, 30.0)
+        monkeypatch.setattr(h3i, "stream_working_gb", lambda *a, **k: 3.15)
+        assert torch.equal(want, _image(pipe))
+        assert pipe._unsloth_h3_last_stats["fit"] == {"resident": 0, "demoted": True}
+        assert plan.dit_resident_blocks == 0 and _dit_streamer(pipe).streamed == 2
+        assert plan.host_need_gb == pytest.approx(31.2 + 0.8)
+    finally:
+        pipe.release()
+
+
+@pytest.mark.parametrize("where", ["plan", "live"])
+def test_a_larger_render_is_refused_when_system_memory_cannot_take_the_blocks(
+    h3i, tmp_path, monkeypatch, where
+):
+    import torch
+
+    root, te = _tiny(h3i, tmp_path, monkeypatch, resident = 2)
+    pipe = h3i.load_minimax_h3_image_pipeline(
+        str(root), device = "cpu", text_encoder = copy.deepcopy(te)
+    )
+    try:
+        want = _image(pipe)
+        if where == "plan":  # the load's budget: 29.0 GB peak over the 28.5 planned with
+            plan = _per_prompt_host(h3i, pipe, monkeypatch, 28.5)
+        else:  # the plan has room, but 0.8 GB of blocks + 1 GB do not fit what is free now
+            plan = _per_prompt_host(h3i, pipe, monkeypatch, 30.0)
+            monkeypatch.setattr(h3i, "_host_available_gb", lambda: 1.5)
+        before = _dit_streamer(pipe)
+        need = plan.host_need_gb
+        monkeypatch.setattr(h3i, "stream_working_gb", lambda *a, **k: 3.15)
+        with pytest.raises(RuntimeError, match = "system memory cannot take them"):
+            _image(pipe)
+        # placement unchanged: the streamer, the plan and every block where they were
+        assert _dit_streamer(pipe) is before and before.streamed == 0
+        assert plan.dit_resident_blocks == 2 and plan.host_need_gb == need
+        assert all(
+            p.device == pipe._device()
+            for b in pipe.transformer.transformer_blocks
+            for p in b.parameters()
+        )
+        monkeypatch.undo()
+        assert torch.equal(want, _image(pipe))  # a render the plan covers still runs
+    finally:
+        pipe.release()

@@ -2210,11 +2210,21 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         resident = int(plan.dit_resident_blocks or 0)
         if keep >= resident:
             return {"resident": resident}
+        self.__dict__.pop("_unsloth_h3_demotion_refusal", None)
         done = demote_dit_blocks(
             self,
             keep,
             f"{width}x{height} with {references} reference(s) needs more working set than planned",
         )
+        refusal = self.__dict__.pop("_unsloth_h3_demotion_refusal", None)
+        if refusal is not None:
+            # neither the card (the working set) nor system memory (the blocks it would give back) holds it
+            raise RuntimeError(
+                f"MiniMax-H3-Image: a {width}x{height} render with {references} reference picture(s) needs "
+                f"{resident - keep} DiT blocks moved off the GPU, and system memory cannot take them: {refusal}. "
+                f"Render at a smaller size or with fewer references, or free system memory and load the model "
+                f"again."
+            )
         return {"resident": int(plan.dit_resident_blocks or 0), "demoted": bool(done)}
 
     def _oom_demotable(self) -> bool:
@@ -4487,6 +4497,50 @@ def _place_streamed_dit(
     return streamer
 
 
+def _host_available_gb() -> Optional[float]:
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1e9
+    except Exception:  # noqa: BLE001 - psutil missing: the plan's own budget still applies
+        return None
+
+
+def demotion_host_refusal(
+    plan: "H3ImagePlan",
+    count: int,
+    encoder_loaded: bool = True,
+) -> Optional[str]:
+    """Why ``count`` more DiT blocks cannot move to system memory, or None. Checks the load's host plan again with
+    them on the host (the DiT blocks there plus the whole encoder, kept or loaded for each prompt, as
+    ``plan_placement`` budgets it) and what is free now (the blocks, plus the encoder when it is not loaded)."""
+    extra = max(0, int(count)) * float(plan.block_gb or 0.0)
+    if extra <= 0:
+        return None
+    if plan.host_gb is not None and plan.host_need_gb is not None:
+        dit_host = float(plan.host_need_gb) - float(plan.te_gb) - 4.0
+        # kept: the plan keeps 4 GB beside the encoder; per prompt: the encoder's load peak beside the blocks
+        need = dit_host + extra + float(plan.te_gb) + (4.0 if plan.te_kept_on_host else 1.0)
+        if need > float(plan.host_gb):
+            return (
+                f"{extra:.1f} GB more of DiT blocks in system memory would need {need:.1f} GB beside the "
+                f"{plan.te_gb:.1f} GB text encoder, over the {plan.host_gb:.1f} GB this load planned with"
+            )
+    available = _host_available_gb()
+    if available is not None:
+        want = extra + (0.0 if encoder_loaded else float(plan.te_gb)) + 1.0
+        if want > available:
+            return (
+                f"{extra:.1f} GB more of DiT blocks in system memory"
+                + (
+                    ""
+                    if encoder_loaded
+                    else f" plus the {plan.te_gb:.1f} GB text encoder it loads per prompt"
+                )
+                + f" would need {want:.1f} GB, and {available:.1f} GB is free"
+            )
+    return None
+
+
 def demote_dit_blocks(
     pipe: Any,
     keep: int,
@@ -4505,6 +4559,16 @@ def demote_dit_blocks(
     resident = int(getattr(old, "_unsloth_resident", plan.dit_resident_blocks or 0) or 0)
     keep = max(0, min(int(keep), resident))
     if keep >= resident:
+        return False
+    refusal = demotion_host_refusal(
+        plan, resident - keep, encoder_loaded = getattr(pipe, "text_encoder", None) is not None
+    )
+    if refusal is not None:
+        # placement unchanged: nothing has moved yet
+        logger.warning(
+            "diffusion.minimax_h3_image: %s, but %s: keeping %d resident", why, refusal, resident
+        )
+        pipe.__dict__["_unsloth_h3_demotion_refusal"] = refusal
         return False
     transformer = pipe.transformer
     device = pipe._device()
