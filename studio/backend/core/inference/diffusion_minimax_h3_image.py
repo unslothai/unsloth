@@ -4358,6 +4358,7 @@ def install_checkpoint_attention(
     *,
     scheme: Optional[str] = None,
     logger: Any = None,
+    int8_policy: Any = None,
 ) -> Optional[str]:
     """Route the DiT blocks to the declared backend (SageAttention must pass its probe here first); the token refiner
     keeps its own. Returns the engaged backend, or None with every processor unchanged."""
@@ -4385,7 +4386,14 @@ def install_checkpoint_attention(
     dtype = _module_dtype(transformer, skip_fp32 = True)
     target = types.SimpleNamespace(device = dev.type, dtype = dtype, torch_device = str(dev))
     try:
-        engaged = apply_attention_backend(pipe, want, logger = log, target = target)
+        engaged = apply_attention_backend(
+            pipe,
+            want,
+            logger = log,
+            target = target,
+            # only a load's own policy: a direct call keeps the env switch, as before
+            **({"int8_policy": int8_policy} if int8_policy is not None else {}),
+        )
     except Exception as exc:  # noqa: BLE001 - native attention stays
         engaged = None
         log.warning("diffusion.minimax_h3_image: INT8 attention unavailable (%s)", exc)
@@ -4412,6 +4420,7 @@ def install_checkpoint_attention(
         (None if not forced else True) if sage_on else False,
         forced,
         log,
+        **({"policy": int8_policy} if int8_policy is not None else {}),
     )
     if race is None and sage_on and not forced and not kernel_blocks:
         race = race_checkpoint_attention(transformer, saved, dtype, device = dev)
@@ -4631,6 +4640,7 @@ def _race_int8_kernel(
     sage: Optional[bool],
     forced: bool,
     log: Any,
+    policy: Any = None,
 ) -> tuple:
     """Route the DiT blocks to Studio's INT8 attention kernel when it matches fp32 attention on this card and is more
     than 2% faster than what they would run (SageAttention or their native backend) on a resident block.
@@ -4642,7 +4652,7 @@ def _race_int8_kernel(
 
     from . import diffusion_int8_attention as int8_attention
 
-    setting = int8_attention.mode()
+    setting = int8_attention.mode(policy)
     if (
         not block_modules
         or setting == "off"
@@ -4655,7 +4665,13 @@ def _race_int8_kernel(
     race = None
     try:
         ready = int8_attention.install_int8_attention(
-            transformer, device = dev, dtype = dtype, modules = block_modules, force = True, logger = log
+            transformer,
+            device = dev,
+            dtype = dtype,
+            modules = block_modules,
+            force = True,
+            logger = log,
+            policy = policy,
         )
         record["checked_s"] = round(time.perf_counter() - started, 3)
         # which INT8 implementation passed the card check: the CUDA kernel, or Triton where it cannot load
@@ -4679,6 +4695,7 @@ def _race_int8_kernel(
                 if sage is not False
                 else int8_attention._sdpa_incumbent(saved.get(block_modules[0])),
                 logger = log,
+                policy = policy,
             )
             record.update(blocks = routed, timed = "attention")
             return routed, None
@@ -4848,8 +4865,12 @@ def load_minimax_h3_image_pipeline(
     plan_width: int = 2048,
     plan_height: int = 2048,
     loras: Sequence[tuple] = (),
+    int8_policy: Any = None,
 ) -> Any:
     """A ready ``MiniMaxH3ImagePipeline`` for ``repo_id`` (Hub id or local folder) placed for ``device``.
+
+    ``int8_policy``: the load's ``diffusion_int8_attention.Int8Policy`` (or ``int8_attention`` request) for Studio's
+    INT8 attention kernel; None reads the env switch.
 
     ``loras``: ``[(path, weight), ...]`` merged into the dense DiT weights at load, before quantization, so every
     placement and speed lever runs them unchanged; a load with LoRAs therefore streams the release DiT (the hosted
@@ -5112,9 +5133,11 @@ def load_minimax_h3_image_pipeline(
         early_streamer.remove()
     from .diffusion_minimax_h3_image_speed import install_h3_image_speed
 
-    speed_levers = install_h3_image_speed(pipe, plan, device, logger)
+    speed_levers = install_h3_image_speed(pipe, plan, device, logger, int8_policy = int8_policy)
     speed_levers = tuple(speed_levers) + install_h3_image_vae_canvas(vae, device, logger)
-    int8_attention = install_checkpoint_attention(pipe, device, scheme = scheme, logger = logger)
+    int8_attention = install_checkpoint_attention(
+        pipe, device, scheme = scheme, logger = logger, int8_policy = int8_policy
+    )
     if int8_attention:
         speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)
     parked_gb = park_session_pieces(pipe, device, plan)

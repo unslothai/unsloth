@@ -3626,6 +3626,8 @@ class SdCppDiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         # Accepted for parity; native never raises the unified-memory refusal.
         allow_oversized_load: bool = False,
+        # Accepted for parity and ignored: sd.cpp has no Studio INT8 attention kernel.
+        int8_attention: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch on a daemon thread, returns at once; an empty token must become None, since a literal empty string breaks the anonymous fallback."""
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
