@@ -11,7 +11,12 @@ from core.inference.mcp_client import (
     stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
 )
-from integrations.blender import MIN_BLENDER_VERSION, MIN_PYTHON_VERSION, launch_command
+from integrations.blender import (
+    MIN_BLENDER_VERSION,
+    MIN_PYTHON_VERSION,
+    launch_command,
+    runtime_ready,
+)
 from integrations.blender.runtime import ensure_runtime
 from integrations.installed import is_installed
 from models.mcp_servers import BlenderSettings, McpBuiltinResponse, McpServerProbeResult
@@ -51,13 +56,17 @@ def resolve_server(row: dict) -> dict:
 
 def catalog_item(row = None):
     reason = unavailable_reason()
+    available = reason is None
     settings = settings_for(row)
+    is_enabled = bool(row and row["is_enabled"])
+    if available and is_enabled and not runtime_ready():
+        reason = "The Blender MCP runtime is not downloaded, so Blender tools are unavailable. It downloads with the next chat message or Test connection, which needs the backend to be online."
     return McpBuiltinResponse(
         **settings.model_dump(),
         installed = is_installed("blender", settings.blender_path),
         server_id = row["id"] if row else None,
-        is_enabled = bool(row and row["is_enabled"]),
-        available = reason is None,
+        is_enabled = is_enabled,
+        available = available,
         unavailable_reason = reason,
         min_blender_version = MIN_BLENDER_VERSION,
     )

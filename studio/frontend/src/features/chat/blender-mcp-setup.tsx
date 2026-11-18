@@ -117,6 +117,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
       if (mounted.current) {
         setBusy(false);
         onBusyChange(false);
+        if (action === "test") void refresh(false);
       }
     }
   }
