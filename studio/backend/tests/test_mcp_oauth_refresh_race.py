@@ -64,7 +64,7 @@ async def _connect(server):
         await gen.aclose()
 
 
-def test_parallel_connections_refresh_once(tmp_path, monkeypatch):
+def _run_parallel_refresh(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
 
@@ -98,3 +98,18 @@ def test_parallel_connections_refresh_once(tmp_path, monkeypatch):
     assert server.refreshes == 1
     stored = asyncio.run(mcp_client._oauth(URL).token_storage_adapter.get_tokens())
     assert stored.refresh_token in (server.current, server.previous)
+
+
+def test_parallel_connections_refresh_once(tmp_path, monkeypatch):
+    _run_parallel_refresh(tmp_path, monkeypatch)
+
+
+def test_racing_store_init_still_refreshes_once(tmp_path, monkeypatch):
+    original = mcp_client._oauth_store
+
+    def fresh_store():
+        mcp_client._oauth_token_store = None
+        return original()
+
+    monkeypatch.setattr(mcp_client, "_oauth_store", fresh_store)
+    _run_parallel_refresh(tmp_path, monkeypatch)

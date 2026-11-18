@@ -51,7 +51,7 @@ OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
 _account_oauth_token_stores: dict[str, Any] = {}
-_oauth_refresh_locks: dict[tuple[int, str], threading.Lock] = {}
+_oauth_refresh_locks: dict[Any, threading.Lock] = {}
 _oauth_refresh_locks_guard = threading.Lock()
 
 
@@ -643,7 +643,7 @@ def _oauth(
     _strip_client_id_under_basic_auth(auth)
     _accept_root_issuer_slash(auth)
     with _oauth_refresh_locks_guard:
-        lock = _oauth_refresh_locks.setdefault((id(store), auth.mcp_url), threading.Lock())
+        lock = _oauth_refresh_locks.setdefault(_account_key(auth.mcp_url), threading.Lock())
     _serialize_token_refresh(auth, lock)
     return auth
 
