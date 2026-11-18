@@ -10437,7 +10437,8 @@ async def _refuse_ignored_alias_load_settings(
     request: Request, _subject: str = Depends(get_current_subject)
 ) -> None:
     """Load settings only apply when a local GGUF model generates text. Refuse the alias where
-    they would be ignored: embeddings, a Connection target, a request sent to a provider."""
+    they would be ignored: embeddings, a Connection target, a non-GGUF model, a request sent to a
+    provider."""
     alias = _request_alias(request)
     if alias is None:
         return
@@ -10445,6 +10446,9 @@ async def _refuse_ignored_alias_load_settings(
         request.url.path.rstrip("/").endswith("/embeddings")
         or _connection_model_ref(alias["model"]) is not None
     )
+    if not ignored:
+        from core.inference.local_model_resolver import local_target_is_gguf
+        ignored = not await asyncio.to_thread(local_target_is_gguf, alias["model"], alias["model"])
     if not ignored:
         body = await request.json()
         ignored = isinstance(body, dict) and bool(

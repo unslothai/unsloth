@@ -559,6 +559,15 @@ def test_an_alias_with_load_settings_is_refused_where_they_would_be_ignored(path
     assert excinfo.value.detail["error"]["code"] == "alias_load_settings_unsupported"
 
 
+def test_an_alias_with_load_settings_is_refused_for_a_non_gguf_model(monkeypatch):
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda path, _id = None: path != "org/mlx")
+    request = _alias_request("/v1/chat/completions", {**_FAST, "model": "org/mlx"})
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._refuse_ignored_alias_load_settings(request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["error"]["code"] == "alias_load_settings_unsupported"
+
+
 @pytest.mark.parametrize(
     "path, alias",
     [
