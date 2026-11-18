@@ -385,6 +385,8 @@ def test_rocm_keeps_windowed_rows_off_flash_attn(monkeypatch, window):
     dispatched = []
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(torch.version, "hip", "6.4")
+    # Torch varlen off (failed self-check), so rows reach flash-attn.
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [None])
     monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: ad.FLASH_VARLEN)
     monkeypatch.setattr(ad, "run_attention", lambda **kwargs: dispatched.append(1) or kwargs["Q"])
     lengths = [3, 5]
@@ -737,7 +739,11 @@ def test_int32_guard_splits_documents_instead_of_the_dense_fallback(monkeypatch,
     assert hpa.HF_PACKED_ATTENTION_STATS["int32_split"] == before["int32_split"] + 1
     assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"]
     for a, b in zip(split, whole):
-        torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+        if torch.version.hip is None:
+            torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+        else:
+            # ROCm AOTriton bf16 rounding varies per launch shape: self-check tolerance, not bit equality.
+            assert (a.float() - b.float()).abs().max() <= 0.02 * b.float().abs().max() + 1e-3
 
 
 def test_block_varlen_kwargs_sends_rows_past_int32_to_the_eager_wrapper(monkeypatch):
