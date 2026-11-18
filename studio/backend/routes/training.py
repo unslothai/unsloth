@@ -2390,6 +2390,8 @@ async def start_training(
                 except S3DependencyUnavailable as exc:
                     raise HTTPException(status_code = 501, detail = str(exc)) from exc
 
+        if _run_finished(backend):
+            await asyncio.to_thread(backend.wait_for_finished_worker)
         if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             _reject_start_request(

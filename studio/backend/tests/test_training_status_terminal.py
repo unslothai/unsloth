@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -259,6 +260,77 @@ def test_surfaces_tolerate_a_backend_without_is_run_finished(monkeypatch):
     st = asyncio.run(rt.get_training_status(current_subject = "t"))
     assert st.is_training_running is False
     assert rt._run_finished(_Minimal()) is False
+
+
+class _ExitingProc(_WedgedProc):
+    def join(self, timeout = None):
+        self._alive = False
+
+
+class _NeverJoinedProc(_WedgedProc):
+    def join(self, timeout = None):
+        raise AssertionError("a run that is still training must not be waited on")
+
+
+def _start_next_run(monkeypatch, b):
+    started: list[dict] = []
+    b.start_training = lambda **kwargs: started.append(kwargs) or True
+    monkeypatch.setattr(rt, "_hub_unreachable", lambda: False)
+    monkeypatch.setattr(rt, "_preflight_hf_dataset_request", lambda *a, **kw: None)
+    monkeypatch.setattr(rt, "_remote_untrainable_model_format", lambda *a, **kw: None)
+    monkeypatch.setattr(rt, "load_model_defaults", lambda *a, **kw: {})
+    request = rt.TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/dataset",
+    )
+    with (
+        patch("utils.transformers_version.latest_tier_active_for", return_value = False),
+        patch(
+            "core.inference.get_inference_backend",
+            return_value = type("InferenceBackend", (), {"active_model_name": None})(),
+        ),
+        patch(
+            "core.export.get_export_backend",
+            return_value = type("ExportBackend", (), {"current_checkpoint": None})(),
+        ),
+    ):
+        response = asyncio.run(rt.start_training(request, current_subject = "t"))
+    return response, started
+
+
+@pytest.mark.parametrize(
+    "terminal_event",
+    [dict(_DONE), {"type": "error", "error": "CUDA OOM", "stack": ""}],
+    ids = ["completed", "error"],
+)
+def test_start_right_after_a_finished_run_waits_for_the_worker_to_exit(monkeypatch, terminal_event):
+    b = _running(monkeypatch)
+    b._proc = _ExitingProc()
+    b._handle_event(terminal_event)
+    status = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert status.is_training_running is False
+    response, started = _start_next_run(monkeypatch, b)
+    assert response.status == "queued"
+    assert response.job_id != "job_1"
+    assert len(started) == 1
+
+
+def test_start_is_still_refused_while_a_finished_worker_will_not_exit(monkeypatch):
+    b = _running(monkeypatch)
+    b._handle_event(dict(_DONE))
+    response, started = _start_next_run(monkeypatch, b)
+    assert response.error == "Training already active"
+    assert started == []
+
+
+def test_start_mid_run_is_refused_without_waiting(monkeypatch):
+    b = _running(monkeypatch)
+    b._proc = _NeverJoinedProc()
+    response, started = _start_next_run(monkeypatch, b)
+    assert response.error == "Training already active"
+    assert started == []
 
 
 def test_status_retains_resolved_repo_through_preparation_and_clears_on_next_load(monkeypatch):
