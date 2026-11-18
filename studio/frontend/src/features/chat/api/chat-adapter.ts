@@ -3090,18 +3090,31 @@ function buildAutoLoadSources(
   return sources;
 }
 
+/** 0 = the remembered target itself, 1 = another snapshot of its repo, null = neither. */
+function rememberedMatch(
+  source: AutoLoadSource,
+  remembered: { id: string; kind: LastLocalModelKind },
+): 0 | 1 | null {
+  if (source.kind !== remembered.kind) return null;
+  // Same case rules as the dedupe key.
+  const target = normalizeTarget(remembered.id);
+  if (
+    normalizeTarget(source.id) === target ||
+    normalizeTarget(source.loadId) === target
+  ) {
+    return 0;
+  }
+  return source.repoId !== undefined &&
+    normalizeTarget(source.repoId) === target
+    ? 1
+    : null;
+}
+
 function isRememberedSource(
   source: AutoLoadSource,
   remembered: { id: string; kind: LastLocalModelKind },
 ): boolean {
-  if (source.kind !== remembered.kind) return false;
-  // Same case rules as the dedupe key.
-  const target = normalizeTarget(remembered.id);
-  return (
-    normalizeTarget(source.id) === target ||
-    normalizeTarget(source.loadId) === target ||
-    (source.repoId !== undefined && normalizeTarget(source.repoId) === target)
-  );
+  return rememberedMatch(source, remembered) !== null;
 }
 
 /** Last used first, then GGUF before safetensors, then smallest first. */
@@ -3110,8 +3123,9 @@ function orderAutoLoadSources(
   remembered: { id: string; kind: LastLocalModelKind } | null,
 ): AutoLoadSource[] {
   const rank = (source: AutoLoadSource): number => {
-    if (remembered && isRememberedSource(source, remembered)) return 0;
-    return source.kind === "gguf" ? 1 : 2;
+    const match = remembered ? rememberedMatch(source, remembered) : null;
+    if (match !== null) return match;
+    return source.kind === "gguf" ? 2 : 3;
   };
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
   const size = (source: AutoLoadSource): number =>

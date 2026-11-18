@@ -107,6 +107,7 @@ test("a remembered repo still ranks first when only its Hugging Face cache path 
   const declarations = [
     "normalizeTarget",
     "buildAutoLoadSources",
+    "rememberedMatch",
     "isRememberedSource",
     "orderAutoLoadSources",
   ].map((name) => {

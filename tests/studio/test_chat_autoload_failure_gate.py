@@ -1454,6 +1454,25 @@ def test_a_failed_last_used_model_in_another_cache_is_still_named_and_kept():
     )
 
 
+def test_an_exact_last_used_row_outranks_a_snapshot_matched_by_repo_id():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " const v = (q, size) => ({ quant: q, filename: `${q}/m-${q}.gguf`, downloaded: true, size_bytes: size });"
+        " return scenario({ ggufRepos: [{ ...GEMMA, repo_id: R, load_id: R, size_bytes: 30 }],"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [R]: { variants: [v('Q4_K_M', 10), v('Q8_0', 20)] }, [p]: { variants: [v('Q4_K_M', 10)] } },"
+        " lastLoaded: { id: R, kind: 'gguf', ggufVariant: 'Q8_0' } }); })()"
+    )
+
+    loads = [
+        (e["model_path"], e["gguf_variant"]) for e in out["events"] if e["kind"] == "loadModel"
+    ]
+    assert loads == [("unsloth/gemma-4-26B-A4B-it-GGUF", "Q8_0")]
+
+
 def test_without_a_last_used_model_a_fallback_is_recorded_as_before():
     out = _run(
         "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
