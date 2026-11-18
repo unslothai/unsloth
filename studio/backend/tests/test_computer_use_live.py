@@ -235,6 +235,13 @@ def test_macos_reads_displays_pointer_and_front_app(mac):
         assert front.bounds[2] > 0 and front.bounds[3] > 0
 
 
+def test_macos_lists_shown_windows_topmost_first(mac):
+    stack = mac.window_stack()
+    numbers = [number for number, _bounds in stack]
+    assert len(set(numbers)) == len(numbers) and all(number > 0 for number in numbers)
+    assert all(len(bounds) == 4 and bounds[2] >= 0 and bounds[3] >= 0 for _n, bounds in stack)
+
+
 def test_macos_without_its_grants_refuses_before_any_event(mac):
     grants = mac.permissions()
     if grants["screen"] and grants["input"]:
@@ -297,6 +304,33 @@ def test_windows_pointer_keys_and_capture(windows):
         assert isinstance(windows.front_window(), FrontWindow)
     finally:
         windows.move(*start)
+
+
+def test_windows_lists_a_shown_window_and_drops_it_once_minimised(windows):
+    tkinter = pytest.importorskip("tkinter")
+    root = tkinter.Tk()
+    try:
+        root.geometry("300x200+120+140")
+        root.update()
+        hwnd = int(root.wm_frame(), 16)
+
+        def listed():
+            root.update()
+            return {window: bounds for window, bounds in windows.window_stack()}
+
+        shown = listed()
+        assert hwnd in shown and shown[hwnd][2] > 0 and shown[hwnd][3] > 0
+        root.iconify()
+        _wait_for(lambda: hwnd not in listed(), 10)
+        assert hwnd not in listed()
+        root.deiconify()
+        _wait_for(lambda: hwnd in listed(), 10)
+        assert hwnd in listed()
+        root.withdraw()
+        _wait_for(lambda: hwnd not in listed(), 10)
+        assert hwnd not in listed()
+    finally:
+        root.destroy()
 
 
 def test_windows_names_an_app_as_the_start_menu_does(windows):
