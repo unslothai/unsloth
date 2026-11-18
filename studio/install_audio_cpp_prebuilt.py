@@ -1101,8 +1101,7 @@ def _pip_install_wheels(wheels: Sequence[str], what: str) -> None:
         print(f"audio.cpp: CUDA runtime wheel install failed ({exc})", flush = True)
 
 
-# Windows x64 chat-only: llama.cpp's step already installed cudart + cuBLAS for its CUDA line, so only
-# cuFFT is missing, a fraction of the cudart archive that would carry cuBLAS a second time.
+# Windows x64 chat-only: llama.cpp's step installed cudart + cuBLAS already; only cuFFT is missing.
 _WINDOWS_CUFFT_WHEELS = {12: "nvidia-cufft-cu12", 13: "nvidia-cufft"}
 _CUFFT_DLL = {12: "cufft64_11", 13: "cufft64_12"}
 
@@ -1119,8 +1118,7 @@ def _windows_wheel_runtime_present(major: int, *, cufft: bool = True) -> bool:
 
 
 def _windows_runtime_from_wheels(major: Optional[int]) -> bool:
-    """True when the Windows bundle can skip its cudart archive: the wheels llama.cpp installed for this
-    line are here and cuFFT is (or now is, after installing its wheel). Never raises."""
+    """True when llama.cpp's wheels for this line plus cuFFT replace the cudart archive. Never raises."""
     if (
         major not in _WINDOWS_CUFFT_WHEELS
         or sys.platform != "win32"

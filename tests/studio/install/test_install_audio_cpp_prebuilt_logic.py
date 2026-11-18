@@ -2784,7 +2784,6 @@ def _windows_chat_only_host(
     *,
     pip_adds = (),
 ):
-    """Windows x64, no torch, one wheel DLL dir holding ``dlls``; the pip stub writes ``pip_adds``."""
     monkeypatch.undo()
     wheel_dir = tmp_path / "site-packages" / "nvidia" / "cu13" / "bin" / "x86_64"
     wheel_dir.mkdir(parents = True)
