@@ -83,6 +83,7 @@ from core.inference.mcp_image import (
     strip_attached_image_note,
 )
 from core.inference.mcp_client import (
+    UNREACHABLE_SERVER,
     MCP_RESOURCE_TOOL,
     MCP_TOOL_PREFIX,
     MCP_IMAGES_SENTINEL,
@@ -15096,6 +15097,13 @@ def execute_tool(
             config_check = _config_current,
             ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
         )
+        if isinstance(result, str) and UNREACHABLE_SERVER in result:
+            result = result.replace(UNREACHABLE_SERVER, f"'{display}' is not reachable")
+            from integrations.editors import EDITORS  # noqa: PLC0415 (editors imports this package's mcp_client)
+
+            editor = EDITORS.get(server.get("builtin_id") or "")
+            if editor is not None:
+                result += f" {editor.not_ready}"
         if mcp_image is not None and isinstance(result, str):
             # Returned images may be resized copies of the user's; none of them reach the model on this call.
             result, returned_images, _ = result.partition(MCP_IMAGES_SENTINEL)

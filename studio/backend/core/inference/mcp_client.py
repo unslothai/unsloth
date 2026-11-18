@@ -2530,10 +2530,35 @@ def call_tool_sync(
         suffix = f" after {timeout:g}s" if timeout is not None else ""
         return f"Error: MCP tool '{name}' timed out{suffix}"
     except Exception as exc:
+        if server_unreachable(exc):
+            # Nothing listens there: the editor or app behind the server is closed. Say so plainly, or models sleep and
+            # retry the same call for minutes.
+            logger.warning("MCP server unreachable for %s: %s", name, exc)
+            return (
+                f"Error: MCP tool '{name}' did not run: {UNREACHABLE_SERVER}. {UNREACHABLE_ADVICE}"
+            )
         logger.exception("MCP call_tool failed for %s: %s", name, exc)
         return f"Error: MCP tool '{name}' failed: {exc}"
 
     return _flatten_result(result, ui_resource_uri)
+
+
+UNREACHABLE_SERVER = "the MCP server is not reachable (nothing answered the connection)"
+UNREACHABLE_ADVICE = "It is probably not running. Tell the user to start it; waiting or calling it again will not help until it runs."
+
+
+def server_unreachable(exc: BaseException) -> bool:
+    """A refused or unanswered connection anywhere in the cause chain (httpx is vendored, so match by type name)."""
+    seen = 0
+    while exc is not None and seen < 10:
+        if type(exc).__name__ in (
+            "ConnectError",
+            "ConnectionRefusedError",
+        ) or "All connection attempts failed" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
 
 
 MAX_UI_TOOL_RESULT_CHARS = 4_000_000
