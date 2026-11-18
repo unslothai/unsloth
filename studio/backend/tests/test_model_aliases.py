@@ -917,7 +917,8 @@ def test_alias_reuse_matches_a_resident_loaded_by_file_path(monkeypatch, request
     quant = requested.split(":")[1] if ":" in requested else "Q4_K_M"
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(settings, "get_model_overrides", lambda: {})
-    monkeypatch.setattr(inf, "_innermost_indexed_owner", lambda path: "/models/Group")
+    # Normalized like _resolves_to_resident's own comparison (Windows adds a drive and folds case).
+    monkeypatch.setattr(inf, "_innermost_indexed_owner", lambda path: inf._norm_path("/models/Group"))
     monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
     monkeypatch.setattr(
         resolver, "resolve_local_gguf_for_switch", lambda *a, **k: (base, quant, base)
