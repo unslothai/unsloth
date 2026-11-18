@@ -30,6 +30,14 @@ from unsloth_cli._npu import NpuCliError, npu_model_path, prepare_npu_model
         ("unsloth/Qwen3-0.6B-GGUF", None),
         ("unsloth/Qwen3-0.6B-GGUF:Q4_K_M", None),
         ("org/name-FLM", None),
+        ("Qwen3.6-35B-A3B-NPU2", "lemonade:Qwen3.6-35B-A3B-NPU2"),
+        ("qwen3-0.6b-npu2", "lemonade:qwen3-0.6b-npu2"),
+        ("FastFlowLM/Qwen3.6-35B-A3B-NPU2", "lemonade:FastFlowLM/Qwen3.6-35B-A3B-NPU2"),
+        ("fastflowlm/qwen3-0.6b-npu2", "lemonade:fastflowlm/qwen3-0.6b-npu2"),
+        ("FastFlowLM/", None),
+        ("FastFlowLM/a/b", None),
+        ("unsloth/Qwen3-0.6B-NPU2-GGUF", None),
+        ("Qwen3-0.6B-GGUF", None),
         ("lemonade:", None),
         ("", None),
         (None, None),
@@ -72,8 +80,29 @@ class _Studio:
             return io.BytesIO(json.dumps(self.status).encode())
         if path == "/api/npu/models":
             models = [
-                {"id": "qwen3-0.6b-FLM", "downloaded": self.downloaded, "size_gb": 0.66},
-                {"id": "gemma3-1b-FLM", "downloaded": False, "size_gb": 1.2},
+                {
+                    "id": "qwen3-0.6b-FLM",
+                    "downloaded": self.downloaded,
+                    "size_gb": 0.66,
+                    "hf_repo": "FastFlowLM/Qwen3-0.6B-NPU2",
+                },
+                {
+                    "id": "gemma3-1b-FLM",
+                    "downloaded": False,
+                    "size_gb": 1.2,
+                    "hf_repo": "FastFlowLM/Gemma3-1B-NPU2",
+                },
+                {
+                    "id": "qwen3.5-2b-FLM",
+                    "downloaded": True,
+                    "hf_repo": "FastFlowLM/Qwen3.5-2B-NPU2",
+                },
+                {
+                    "id": "qwen3.5-flash-2b-FLM",
+                    "downloaded": True,
+                    "hf_repo": "FastFlowLM/Qwen3.5-2B-NPU2",
+                },
+                {"id": "qwen3-0.6b-core-FLM", "downloaded": True, "hf_repo": None},
             ]
             return io.BytesIO(json.dumps({"models": models}).encode())
         if path.endswith("/download"):
@@ -115,6 +144,98 @@ def test_an_npu_left_off_names_the_flag():
 def test_an_unknown_model_lists_the_real_ones():
     with pytest.raises(NpuCliError, match = "gemma3-1b-FLM"):
         prepare_npu_model(_Studio(ready = True), "lemonade:nope-FLM", print)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Qwen3-0.6B-NPU2",
+        "qwen3-0.6b-npu2",
+        "FastFlowLM/Qwen3-0.6B-NPU2",
+        "FASTFLOWLM/QWEN3-0.6B-NPU2",
+        "QWEN3-0.6B-flm",
+    ],
+)
+def test_the_name_unsloth_studio_shows_resolves_to_the_lemonade_id(name):
+    studio = _Studio(ready = True, downloaded = True)
+    path = prepare_npu_model(studio, npu_model_path(name), print)
+    assert path == "lemonade:qwen3-0.6b-FLM"
+
+
+def test_a_resolved_name_downloads_by_its_lemonade_id():
+    studio = _Studio(ready = True)
+    path = prepare_npu_model(studio, "lemonade:Qwen3-0.6B-NPU2", lambda _line: None)
+    assert path == "lemonade:qwen3-0.6b-FLM"
+    assert studio.calls[-1] == ("POST", "/api/npu/models/qwen3-0.6b-FLM/download")
+
+
+@pytest.mark.parametrize(
+    ("name", "suggested"),
+    [
+        ("Qwen3-0.6B-NPU", "Qwen3-0.6B-NPU2"),
+        ("FastFlowLM/Gemma3-1B-NPU3", "FastFlowLM/Gemma3-1B-NPU2"),
+        ("qwen3-0.6-FLM", "qwen3-0.6b-FLM"),
+    ],
+)
+def test_a_near_miss_suggests_the_closest_names(name, suggested):
+    with pytest.raises(NpuCliError, match = "Did you mean") as caught:
+        prepare_npu_model(_Studio(ready = True), npu_model_path(name), print)
+    assert suggested in str(caught.value)
+    assert f"No NPU model named {name}." in str(caught.value)
+
+
+def test_a_name_two_models_share_asks_for_an_id():
+    # FastFlowLM's flash builds reuse the base build's Hugging Face repo.
+    with pytest.raises(
+        NpuCliError, match = "more than one NPU model: qwen3.5-2b-FLM, qwen3.5-flash-2b-FLM"
+    ):
+        prepare_npu_model(_Studio(ready = True), "lemonade:Qwen3.5-2B-NPU2", print)
+
+
+def test_a_gguf_repo_stays_on_the_gguf_path_even_when_an_npu_model_names_it():
+    # FastFlowLM's qwen3-core:0.6b downloads from unsloth/Qwen3-0.6B-GGUF.
+    assert npu_model_path("unsloth/Qwen3-0.6B-GGUF") is None
+
+
+def test_a_running_studio_loads_a_display_name_by_its_lemonade_id(monkeypatch):
+    import unsloth_cli._inference as inference
+
+    seen = {}
+
+    class _Backend:
+        def __init__(self, *_args):
+            pass
+
+        def _request(
+            self,
+            method,
+            path,
+            payload = None,
+            timeout = None,
+        ):
+            return _Studio(ready = True, downloaded = True)(method, path, payload, timeout)
+
+        def ensure_loaded(self, model, **_kwargs):
+            seen["loaded"] = model
+
+    monkeypatch.setattr(inference, "find_studio_server", lambda *a, **k: "http://127.0.0.1:8888")
+    monkeypatch.setattr(inference, "verify_studio_identity", lambda *a, **k: True)
+    monkeypatch.setattr(inference, "_studio_token", lambda: "token")
+    monkeypatch.setattr(inference, "HttpChatBackend", _Backend)
+    inference.connect_studio_server(
+        "Qwen3-0.6B-NPU2", hf_token = None, max_seq_length = 0, load_in_4bit = None
+    )
+    assert seen == {"loaded": "lemonade:qwen3-0.6b-FLM"}
+
+
+def test_run_loads_the_resolved_lemonade_id():
+    import inspect
+
+    from unsloth_cli.commands import studio as studio_mod
+
+    src = inspect.getsource(studio_mod.run)
+    # The display name went to /api/inference/load, which only knows Lemonade ids.
+    assert "model = prepare_npu_model(" in src
 
 
 @pytest.mark.parametrize(
