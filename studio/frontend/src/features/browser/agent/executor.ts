@@ -1290,8 +1290,7 @@ async function sameBytes(blob: Blob | undefined, bytes: Uint8Array): Promise<boo
   return shown.every((byte, index) => byte === bytes[index]);
 }
 
-/** A file the model wrote in its tool workspace, sent by the server, shown as a file tab: an HTML
- *  page runs in the same sandboxed preview as one made in chat. */
+/** A workspace file the server sent, shown as a file tab in the same sandboxed preview as a chat page. */
 async function openWorkspaceFile(action: BrowserAction, context: Run): Promise<Result> {
   const { name, data } = action;
   if (!name || data === undefined) return { ok: false, error: "the file did not arrive; open it again." };

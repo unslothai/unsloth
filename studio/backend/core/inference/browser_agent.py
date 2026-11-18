@@ -556,7 +556,7 @@ def _redirect_target(url: str) -> Optional[str]:
     return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
 
 
-# Workspace files the panel opens as a file tab; inline in the action, so kept small.
+# Sent inline in the action.
 _MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024
 # A bare first segment ending in one of these is a file name, not a host: none is a top-level domain.
 _FILE_SUFFIXES = (
@@ -650,7 +650,6 @@ def _workspace_file_request(path: str, session_id: Optional[str]) -> dict:
     try:
         inside = os.path.commonpath([workdir, full]) == workdir
     except ValueError:
-        # Another drive on Windows.
         inside = False
     if not inside:
         raise ValueError(
@@ -734,8 +733,7 @@ def _validated_request(
         if target.lower() in ("back", "forward", "reload"):
             return {"op": target.lower()}
         if len(target) <= _MAX_URL_CHARS:
-            # Only a target workspace_path_of recognises opens a file: the approval check
-            # (tools._browser_opens_workspace_file) sees the same syntax, never the disk.
+            # Syntax only, so tools._browser_opens_workspace_file asks for exactly these.
             path = workspace_path_of(target)
             if path is not None:
                 return _workspace_file_request(path, session_id)
