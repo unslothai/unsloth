@@ -30,6 +30,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import { takeSseFrame } from "@/lib/sse-framing";
 import type { AgentsMdRecord } from "../utils/agents-md";
 import { showLoadWarning } from "../utils/load-warning-toast";
 import { readAdvertisedPatchGuards } from "../utils/openapi-support";
@@ -1088,6 +1089,27 @@ export async function getChatThread(
   }
 }
 
+export type ChatHistoryRevision = {
+  revision: number;
+  threads: Record<string, number>;
+};
+
+/** Null when the server predates the endpoint. */
+export async function getChatHistoryRevision(
+  threadIds: readonly string[],
+  signal?: AbortSignal,
+): Promise<ChatHistoryRevision | null> {
+  const query = new URLSearchParams();
+  for (const threadId of threadIds) query.append("threadId", threadId);
+  const encoded = query.toString();
+  const response = await authFetch(
+    `/api/chat/revision${encoded ? `?${encoded}` : ""}`,
+    { signal },
+  );
+  if (response.status === 404 || response.status === 405) return null;
+  return parseJsonOrThrow<ChatHistoryRevision>(response);
+}
+
 export class ChatThreadDeletedError extends Error {
   constructor(message: string) {
     super(message);
@@ -2025,7 +2047,17 @@ export async function* streamChatCompletions(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        // A dropped socket rejects with TypeError: treat it as a cut stream.
+        if (!signal.aborted && error instanceof TypeError) {
+          throw new StreamInterruptedError();
+        }
+        throw error;
+      }
+      const { done, value } = chunk;
       if (done) {
         completed = true;
         if (!sawTerminalSignal) {
@@ -2037,15 +2069,16 @@ export async function* streamChatCompletions(
 
       buffer += decoder.decode(value, { stream: true });
 
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
+      for (
+        let frame = takeSseFrame(buffer);
+        frame;
+        frame = takeSseFrame(buffer)
+      ) {
+        const rawEvent = frame.event;
+        buffer = frame.remainder;
 
         const dataLines = parseSseEvent(rawEvent);
         if (dataLines.length === 0) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
 
@@ -2065,21 +2098,18 @@ export async function* streamChatCompletions(
         }
         if ("type" in parsed && parsed.type === "skill_load") {
           yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "tool_status") {
           yield {
             _toolStatus: parsed.content ?? "",
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "diffusion_frame") {
           yield {
             _diffusionFrame: parsed,
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if (
@@ -2092,7 +2122,6 @@ export async function* streamChatCompletions(
             parsed.type === "tool_approved")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if (
@@ -2105,18 +2134,15 @@ export async function* streamChatCompletions(
             _reasoningDurationMs: (parsed as { duration_ms?: number })
               .duration_ms,
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         // A tool loop's context as it hands off to a tool, so the meter moves mid-turn.
         if ("type" in parsed && parsed.type === "context_usage") {
           yield { _contextUsage: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "generation_progress") {
           yield { _generationProgress: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         const {
@@ -2165,7 +2191,6 @@ export async function* streamChatCompletions(
           sawTerminalSignal = true;
         }
         yield parsed as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
     }
   } finally {

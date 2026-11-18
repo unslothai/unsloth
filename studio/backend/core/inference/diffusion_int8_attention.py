@@ -45,6 +45,7 @@ from __future__ import annotations
 import math
 import os
 import threading
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
@@ -55,6 +56,11 @@ _OP = "unsloth_studio::int8_attention_nhd"
 HEAD_DIMS = (64, 128)
 RACE_MARGIN = 0.98
 RACE_TOKENS = (4096, 1024)
+# (large, small) race tokens per DiT class, replacing RACE_TOKENS: H3 video runs 15k-45k tokens and A100 lost at 4096
+# but won at 27k, so a 4096-token race would wrongly reject it.
+FAMILY_RACE_TOKENS: dict = {
+    "MiniMaxH3Transformer3DModel": (16384, 8192),
+}
 # the accuracy every card must reach against fp32 attention on the probe before the kernel may run at all
 MIN_COSINE = 0.999
 MAX_REL_L1 = 0.05
@@ -179,6 +185,46 @@ _CUDA_FAILED: dict = {}
 STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 _KINDS: dict = {}  # torch dtype -> _OUT_KIND, filled on first use (torch is imported lazily)
+# Card verdicts and long / mid race floors persist per card + toolchain + these sources; sink decisions stay per
+# load. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+PERSIST_SOURCES = (
+    "diffusion_int8_attention.py",
+    "diffusion_int8_attention_cuda.py",
+    "diffusion_int8_attention_triton.py",
+    "diffusion_int8_attention_dispatch.py",
+    "diffusion_qwenimage21_attn.py",
+)
+_PERSISTED: list = [None]
+WARM_TOKENS = 128
+
+
+def _library_versions() -> dict:
+    """Library versions the races depend on beyond torch / triton / the driver."""
+    import torch
+
+    from .diffusion_int8_attention_cuda import nvrtc_version
+    from .diffusion_probe_cache import _version
+
+    try:
+        nvrtc = list(nvrtc_version())
+    except Exception:  # noqa: BLE001
+        nvrtc = None
+    return {
+        "diffusers": _version("diffusers"),
+        "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+        "nvrtc": nvrtc,
+    }
+
+
+def persisted() -> Any:
+    if _PERSISTED[0] is None:
+        from .diffusion_probe_cache import Namespace
+        _PERSISTED[0] = Namespace("int8_attention", PERSIST_SOURCES, extra = _library_versions)
+    return _PERSISTED[0]
+
+
+def card_name(index: int) -> str:
+    return f"cuda:{int(index)}"
 
 
 def _dtype_kinds() -> dict:
@@ -189,7 +235,7 @@ def _dtype_kinds() -> dict:
     return _KINDS
 
 
-def mode() -> str:
+def _env_mode() -> str:
     """``off`` | ``auto`` | ``force`` from ``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``."""
     raw = (os.environ.get(INT8_ATTENTION_ENV) or "auto").strip().lower()
     if raw in ("0", "off", "false", "no"):
@@ -197,6 +243,73 @@ def mode() -> str:
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
     return "auto"
+
+
+INT8_ATTENTION_CHOICES = ("auto", "on", "off")
+
+
+def normalize_int8_attention(value: Any) -> Optional[str]:
+    """Fold a request to ``auto`` / ``on`` / ``off`` (None if unset); ValueError otherwise."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"int8_attention must be one of {INT8_ATTENTION_CHOICES}, got {value!r}")
+    text = value.strip().lower()
+    if not text:
+        return None
+    if text not in INT8_ATTENTION_CHOICES:
+        raise ValueError(f"int8_attention must be one of {INT8_ATTENTION_CHOICES}, got {value!r}")
+    return text
+
+
+@dataclass(frozen = True)
+class Int8Policy:
+    """Resolved once per load so later renders never re-read the env. Precedence: per-load on/off > env switch >
+    family default."""
+
+    request: Optional[str] = None
+    env: str = "auto"
+
+    @property
+    def mode(self) -> str:
+        if self.request == "on":
+            return "force"
+        if self.request == "off":
+            return "off"
+        return self.env
+
+    @property
+    def env_force(self) -> bool:
+        """The env switch ``1`` decided this load (it alone skips the Triton stand-in's race)."""
+        return self.request not in ("on", "off") and self.env == "force"
+
+    @property
+    def source(self) -> str:
+        if self.request in ("on", "off"):
+            return "load"
+        return "env" if self.env != "auto" else "default"
+
+
+def resolve_policy(override: Any = None) -> Int8Policy:
+    """Invalid requests read as none here: the request models and ``begin_load`` already refuse them."""
+    if isinstance(override, Int8Policy):
+        return override
+    try:
+        request = normalize_int8_attention(override)
+    except ValueError:
+        request = None
+    return Int8Policy(request = request, env = _env_mode())
+
+
+def mode(override: Any = None) -> str:
+    """``off`` | ``auto`` | ``force`` from the load's policy, else the env switch."""
+    if override is None:
+        return _env_mode()
+    return resolve_policy(override).mode
+
+
+def env_forced(override: Any = None) -> bool:
+    return resolve_policy(override).env_force
 
 
 def impl_setting() -> str:
@@ -875,6 +988,7 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                 elif known is not None:
                     plan["sinks"] = known
                 else:
+                    # never persisted: the race checks accuracy on this model's own inputs (_pick_path)
                     plan["sinks"] = True if race is None else race()
                     if key is not None:
                         _decisions()[key] = plan["sinks"]
@@ -1581,6 +1695,79 @@ def _check(
     return out
 
 
+def _verdict_key(key: tuple) -> str:
+    import json
+    return json.dumps(list(key[1:]))
+
+
+def _storable(found: dict) -> bool:
+    """Reusable only if exception-free (failures may be transient) and, when timed and passing, has all race sizes."""
+    if found.get("error") or found.get("failed") or (found.get("long") or {}).get("failed"):
+        return False
+    return not (
+        found.get("ok") and found.get("timed") and len(found.get("ms") or {}) < len(RACE_TOKENS)
+    )
+
+
+def _persist_verdict(index: int, key: tuple, found: dict) -> None:
+    if key[-1] is None or not _storable(dict(found, timed = key[-2])):
+        return
+    try:
+        persisted().put(card_name(index), _verdict_key(key), found)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _warm(index: int, dtype: Any, head_dim: int, impl: str, found: dict) -> None:
+    """Eagerly load the vouched kernels (before CUDA graph capture); raises if they no longer run here."""
+    import torch
+
+    device = torch.device("cuda", index)
+    with torch.no_grad():
+        q, k, v = probe_inputs(device, dtype, WARM_TOKENS, 1, head_dim)
+        _run(q, k, v, impl, config = select_config(device_config(index, head_dim, impl), 0))
+        if (found.get("long") or {}).get("ok"):
+            config = device_config(index, head_dim, impl)
+            keys = int(config["long_keys"]) + LONG_PROBE_EXTRA
+            q, k, v = probe_inputs(device, dtype, keys, 1, head_dim, seed = keys)
+            _run(q[:, :WARM_TOKENS], k, v, impl, config = config)
+        torch.cuda.synchronize(device)
+
+
+def _adopt_verdict(index: int, dtype: Any, head_dim: int, key: tuple) -> Optional[dict]:
+    """The persisted verdict for ``key`` installed as ``_check`` would leave it, or None to re-check."""
+    import torch
+
+    impl = key[-1]
+    if impl is None:
+        return None
+    try:
+        stored = persisted().get(card_name(index), _verdict_key(key))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(stored, dict) or stored.get("impl") != impl:
+        return None
+    found = dict(stored, persisted = True)
+    found["ms"] = {
+        int(t): v for t, v in (found.get("ms") or {}).items()
+    }  # JSON keys come back as strings
+    if found.get("ok"):
+        try:
+            _warm(index, dtype, head_dim, impl, found)
+        except torch.OutOfMemoryError:
+            raise
+        except Exception:  # noqa: BLE001
+            return None
+        _VERIFIED.add((index, int(head_dim), str(dtype), impl))
+        long = found.get("long")
+        if isinstance(long, dict):
+            long_key = (index, int(head_dim), str(dtype), impl)
+            _LONG_CHECKS[long_key] = long
+            if long.get("ok"):
+                _LONG_VERIFIED.add(long_key)
+    return found
+
+
 def verdict(
     device: Any,
     dtype: Any,
@@ -1622,9 +1809,18 @@ def verdict(
                 _VERDICTS[key] = found
             if found is None:
                 with torch.cuda.device(index):
-                    found = _check(
-                        torch.device("cuda", index), dtype, int(heads), hd, incumbent, timed, impl
-                    )
+                    found = _adopt_verdict(index, dtype, hd, key)
+                    if found is None:
+                        found = _check(
+                            torch.device("cuda", index),
+                            dtype,
+                            int(heads),
+                            hd,
+                            incumbent,
+                            timed,
+                            impl,
+                        )
+                        _persist_verdict(index, key, found)
                 _VERDICTS[key] = found
             if impl == "cuda" and found.get("failed") and (index, hd) not in _CUDA_FAILED:
                 _CUDA_FAILED[(index, hd)] = found.get("error")
@@ -1713,6 +1909,7 @@ def install_int8_attention(
     force: bool = False,
     logger: Any = None,
     floor: Optional[Callable] = None,
+    policy: Any = None,
 ) -> int:
     """Route strided attention processors to the INT8 kernel. Returns how many now run it.
 
@@ -1722,9 +1919,12 @@ def install_int8_attention(
     more than 2% faster than the incumbent on the timed probe. The Triton stand-in for a CUDA kernel that cannot load
     must be faster also under ``force`` (not under the env switch). ``floor(device, dtype, heads, head_dim, incumbent,
     name)`` -> ``(verdict, token floor or None)`` replaces the card race when not forced (``install_auto``: the
-    dispatch route's races and token floor). Never raises."""
+    dispatch route's races and token floor). ``policy``: the load's ``Int8Policy`` (or ``int8_attention`` request);
+    None reads the env switch. Never raises."""
     try:
-        return _install(transformer, device, dtype, modules, incumbent, force, logger, floor)
+        return _install(
+            transformer, device, dtype, modules, incumbent, force, logger, floor, policy
+        )
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors stay as they were
         if logger is not None:
             logger.info("diffusion.int8_attention: skipped (%s)", exc)
@@ -1740,10 +1940,11 @@ def _install(
     force: bool,
     logger: Any,
     floor: Optional[Callable] = None,
+    policy: Any = None,
 ) -> int:
     import torch
 
-    setting = mode()
+    setting = mode(policy)
     if transformer is None or setting == "off":
         return 0
     dev = torch.device(device)
@@ -1757,8 +1958,9 @@ def _install(
     ]
     if not candidates:
         return 0
-    env_force = setting == "force"
-    force = force or env_force
+    env_force = setting == "force" and env_forced(policy)
+    # a per-load "on" forces like a request by name: the Triton stand-in still races
+    force = force or setting == "force"
     int8_attention_op()
     engaged = 0
     report: dict = {}
@@ -1866,13 +2068,15 @@ def install_requested(
     request: Any,
     target: Any,
     logger: Any = None,
+    policy: Any = None,
 ) -> int:
     """For ``apply_attention_backend``: engage on the pipeline's DiT when the load asked for ``unsloth_int8`` by name
     or the env switch forces it (no race either way: the accuracy check still gates it; the Triton stand-in for a CUDA
-    kernel that cannot load still races when only the name asked for it). Returns the count."""
+    kernel that cannot load still races when only the name asked for it). ``policy``: the load's ``Int8Policy``, whose
+    ``on`` forces it like the name. Returns the count."""
     import torch
 
-    setting = mode()
+    setting = mode(policy)
     if setting == "off" or not (setting == "force" or requested(request)):
         return 0
     transformer = getattr(pipe, "transformer", None)
@@ -1894,7 +2098,7 @@ def install_requested(
     except Exception:  # noqa: BLE001 -- other families bring their own strided processors
         pass
     return install_int8_attention(
-        transformer, device = device, dtype = dtype, force = True, logger = logger
+        transformer, device = device, dtype = dtype, force = True, logger = logger, policy = policy
     )
 
 
@@ -1904,13 +2108,15 @@ def install_auto(
     logger: Any = None,
     speed_active: bool = True,
     speed_unset_only: bool = False,
+    policy: Any = None,
 ) -> int:
     """For ``apply_attention_backend`` with the switch unset: the strided processors of a DiT in the dispatch route's
     ``AUTO_DITS`` race their incumbent the way that route does (accuracy check, card race, the 2048 / long races,
-    ``MIN_TOKENS`` floor). Off with speed off (bit-identical), on ROCm, and off CUDA. Returns the count."""
+    ``MIN_TOKENS`` floor; on ROCm the ``ROCM_AUTO_DITS`` of the card's gfx arch and the OS). Off with speed off
+    (bit-identical) and off CUDA. Returns the count."""
     import torch
 
-    if mode() != "auto" or not speed_active:
+    if mode(policy) != "auto" or not speed_active:
         return 0
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
@@ -1919,12 +2125,18 @@ def install_auto(
         from . import diffusion_int8_attention_dispatch as dispatch
     except Exception:  # noqa: BLE001
         return 0
-    if not dispatch.enabled() or type(transformer).__name__ not in dispatch.AUTO_DITS:
+    if not dispatch.enabled():
         return 0
     if speed_unset_only and type(transformer).__name__ not in dispatch.SPEED_UNSET_DITS:
         return 0
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
-    if not device.startswith("cuda") or not torch.cuda.is_available() or _is_rocm():
+    if not device.startswith("cuda") or not torch.cuda.is_available():
+        return 0
+    rocm = _is_rocm()
+    listed = (
+        dispatch.rocm_auto_dits(_device_index(torch.device(device))) if rocm else dispatch.AUTO_DITS
+    )
+    if type(transformer).__name__ not in listed:
         return 0
     dtype = getattr(target, "dtype", None)
     if str(dtype) not in ("torch.float16", "torch.bfloat16"):
@@ -1938,7 +2150,7 @@ def install_auto(
     except Exception:  # noqa: BLE001 -- other families bring their own strided processors
         pass
 
-    cuda_only = type(transformer).__name__ in dispatch.AUTO_CUDA_ONLY
+    cuda_only = not rocm and type(transformer).__name__ in dispatch.AUTO_CUDA_ONLY
 
     def floor(dev: Any, dt: Any, heads: int, head_dim: int, fn: Any, name: str) -> tuple:
         if cuda_only and implementation(_device_index(dev), head_dim) != "cuda":
@@ -1954,10 +2166,168 @@ def install_auto(
         return found, minimum
 
     engaged = install_int8_attention(
-        transformer, device = device, dtype = dtype, logger = logger, floor = floor
+        transformer, device = device, dtype = dtype, logger = logger, floor = floor, policy = policy
     )
     _give_back_unengaged(transformer)
     return engaged
+
+
+def family_race_tokens(transformer: Any) -> Optional[tuple]:
+    """``FAMILY_RACE_TOKENS`` of this DiT's class, or None (the family does not race automatically that way)."""
+    tokens = FAMILY_RACE_TOKENS.get(type(transformer).__name__)
+    return tuple(int(t) for t in tokens) if tokens else None
+
+
+def install_family_auto(
+    transformer: Any,
+    *,
+    device: Any,
+    dtype: Any,
+    policy: Any = None,
+    logger: Any = None,
+) -> int:
+    """Policy ``auto``: race a ``FAMILY_RACE_TOKENS`` DiT's strided processors at its own sizes (CUDA kernel only:
+    accuracy was measured on it); the token floor keeps short calls on the incumbent. Never raises."""
+    if transformer is None or mode(policy) != "auto":
+        return 0
+    tokens = family_race_tokens(transformer)
+    if tokens is None:
+        return 0
+    try:
+        import torch
+
+        from . import diffusion_int8_attention_dispatch as dispatch
+        if _is_rocm():
+            return 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+    def floor(dev: Any, dt: Any, heads: int, head_dim: int, fn: Any, name: str) -> tuple:
+        if implementation(_device_index(dev), head_dim) != "cuda":
+            return {
+                "ok": False,
+                "impl": implementation(_device_index(dev), head_dim),
+                "error": "CUDA kernel only",
+            }, None
+        # the accuracy check alone: the family's own race below replaces the RACE_TOKENS one
+        found = verdict(dev, dt, heads, head_dim, fn, name, timed = False)
+        if not found.get("ok"):
+            return found, None
+        if found.get("impl") != "cuda":
+            return {**found, "ok": False, "error": "CUDA kernel only"}, None
+        minimum = dispatch.long_verdict(dev, dt, heads, head_dim, fn, name, tokens = tokens)
+        found = {**found, "long_min_tokens": minimum}
+        if minimum is None:
+            return found, None
+        return found, max(int(minimum), int(dispatch.MIN_TOKENS))
+
+    with torch.no_grad():
+        return install_int8_attention(
+            transformer,
+            device = device,
+            dtype = dtype,
+            logger = logger,
+            floor = floor,
+            policy = policy,
+        )
+
+
+def _pipe_dits(pipe: Any) -> list:
+    pipes = list(pipe) if isinstance(pipe, (list, tuple)) else [pipe]
+    out: list = []
+    for p in pipes:
+        try:
+            from . import diffusion_int8_attention_dispatch as dispatch
+            dits = dispatch._dits(p)
+        except Exception:  # noqa: BLE001
+            dits = []
+        if not dits and getattr(p, "transformer", None) is not None:
+            dits = [p.transformer]
+        out.extend(
+            d
+            for d in dits
+            if callable(getattr(d, "modules", None)) and not any(d is x for x in out)
+        )
+    return out
+
+
+def _routed(dit: Any) -> list:
+    try:
+        from .diffusion_int8_attention_dispatch import Int8Route
+    except Exception:  # noqa: BLE001
+        return []
+    modules = getattr(dit, "modules", None)
+    if not callable(modules):
+        return []
+    return [
+        b
+        for m in modules()
+        if isinstance(
+            b := getattr(getattr(m, "processor", None), "_attention_backend", None), Int8Route
+        )
+    ]
+
+
+def engaged_count(pipe: Any) -> int:
+    """Census of attention modules running the kernel (strided + dispatch); never raises."""
+    try:
+        return sum(int8_attention_count(d) + len(_routed(d)) for d in _pipe_dits(pipe))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def resolved_entry(
+    policy: Any,
+    pipe: Any,
+    *,
+    reason: Optional[str] = None,
+    supported: bool = True,
+) -> tuple:
+    """(explicit, engaged, reason, status) for ``build_resolved_record``; ``supported=False`` for sd.cpp, MLX, CPU."""
+    p = resolve_policy(policy)
+    count = engaged_count(pipe) if pipe is not None else 0
+    engaged = "on" if count else "off"
+    explicit = p.request
+    if reason is None:
+        if count:
+            reason = f"{BACKEND} ({'/'.join(sorted(_pipe_impls(pipe))) or 'cuda'}) on {count} attention modules"
+        elif not supported:
+            reason = "this engine has no INT8 attention kernel"
+        elif p.mode == "off":
+            reason = "off for this load" if p.request == "off" else f"off by {INT8_ATTENTION_ENV}=0"
+        elif p.mode == "force":
+            reason = "requested, but the kernel did not pass its accuracy check on this card or cannot run here"
+        else:
+            reason = "not measured faster and accurate for this model and GPU; the selected attention runs"
+    status_value = None
+    if explicit == "on" and not count:
+        status_value = "unsupported" if not supported else "fell_back"
+    return (
+        (explicit, engaged, reason, status_value) if status_value else (explicit, engaged, reason)
+    )
+
+
+def _pipe_impls(pipe: Any) -> set:
+    impls: set = set()
+    try:
+        for dit in _pipe_dits(pipe):
+            impls |= engaged_implementations(dit)
+            impls |= {str(r.impl) for r in _routed(dit) if r.impl}
+    except Exception:  # noqa: BLE001 - a census only
+        pass
+    return impls
+
+
+def annotate_resolved(resolved: Any, policy: Any, pipe: Any) -> Any:
+    entry = resolved.get("int8_attention") if isinstance(resolved, dict) else None
+    if not isinstance(entry, dict):
+        return resolved
+    count = engaged_count(pipe) if pipe is not None else 0
+    entry["engaged"] = bool(count)
+    entry["modules"] = int(count)
+    entry["impl"] = ("/".join(sorted(_pipe_impls(pipe))) or None) if count else None
+    entry["mode"] = resolve_policy(policy).mode
+    return resolved
 
 
 def _give_back_unengaged(transformer: Any) -> None:
@@ -2010,11 +2380,14 @@ def engaged_implementations(transformer: Any) -> set:
     }
 
 
-def status(transformer: Any = None) -> dict:
-    """What the status panel and the logs report."""
+def status(transformer: Any = None, policy: Any = None) -> dict:
+    """What the status panel and the logs report (``policy``: the loaded pipeline's ``Int8Policy``)."""
+    p = resolve_policy(policy)
     return {
         "backend": BACKEND,
-        "mode": mode(),
+        "mode": p.mode,
+        "requested": p.request,
+        "source": p.source,
         "impl_setting": impl_setting(),
         "modules": int8_attention_count(transformer),
         "impl": sorted(engaged_implementations(transformer)),

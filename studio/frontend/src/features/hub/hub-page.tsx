@@ -509,6 +509,7 @@ export function ModelsPage() {
               checkpoint: store.params.checkpoint,
               checkpointIsExternal: isExternalModelId(store.params.checkpoint),
               activeGgufVariant: store.activeGgufVariant,
+              residentCheckpoint: store.residentCheckpoint,
               modelLoading: store.modelLoading,
               idleUnloadArmed: preserveIdleUnloaded && idleUnloadArmed,
             },
@@ -518,6 +519,9 @@ export function ModelsPage() {
               },
               clearCheckpoint: () => {
                 store.clearCheckpoint();
+              },
+              markEvicted: () => {
+                useChatRuntimeStore.setState({ residentCheckpoint: null });
               },
               applyStatus: (previous) => {
                 applyActiveModelStatusToStore(status, {

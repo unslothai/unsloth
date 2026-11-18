@@ -7,6 +7,7 @@ Manages a llama-server subprocess and proxies chat completions through its
 OpenAI-compatible /v1/chat/completions endpoint.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import ast
 import atexit
 import bisect
@@ -133,6 +134,7 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     ctx_checkpoints_within_host_budget,
     effective_ctx_checkpoints,
+    selects_spec_type,
     parse_ctx_checkpoints_override,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
@@ -4604,7 +4606,7 @@ def _mla_mtp_auto_enabled() -> bool:
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
-    return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
+    return selects_spec_type(extra_args)
 
 
 # Shared with llama_server_args so detection and stripping cannot drift.
@@ -5912,6 +5914,36 @@ _MMPROJ_OFFLOAD_FLAGS: frozenset = frozenset({"--mmproj-offload", "--no-mmproj-o
 def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
     """Matched via _flag_name: arg.cpp folds underscores to dashes, so --mmproj_offload counts too."""
     return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS)
+
+
+def _spec_start_failure(output: str) -> tuple[str, str]:
+    """(log reason, spec_fallback_reason) for a llama-server that died with a drafter attached."""
+    lo = output.lower()
+    # Only an unknown arch proves the binary is outdated; a context that could not be created is usually memory.
+    if "unknown model architecture" in lo:
+        return (
+            "the prebuilt may predate it; retrying without speculative decoding -- run "
+            "`unsloth studio update` for this drafter",
+            "binary_outdated",
+        )
+    if any(
+        marker in lo
+        for marker in (
+            "failed to measure draft model memory",
+            "failed to measure mtp context memory",
+            "failed to create mtp context",
+            "failed to create llama_context",
+        )
+    ):
+        return (
+            "its context could not be created, usually too little memory for the drafter at "
+            "this context length and slot count; retrying without speculative decoding",
+            "runtime_error",
+        )
+    return (
+        "retrying without speculative decoding in case the drafter is the cause",
+        "runtime_error",
+    )
 
 
 def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
@@ -8540,6 +8572,29 @@ def _local_ssl_context() -> ssl.SSLContext:
 # Freeing a large model's GPU memory on a busy driver took over 5 s after SIGKILL; this only bounds a stuck process.
 _SIGKILL_REAP_TIMEOUT_S = 30
 _QUIT_SIGNAL_EXIT_GRACE_S = 2
+
+
+# llama.cpp's `<arch>.decision.type` values whose only output is decisions
+# (server_model_output_modalities); granite-switch also generates text.
+_DECISION_ONLY_GGUF_TYPES = frozenset(
+    {
+        "openjev",
+        "lev",
+        "kev",
+        "nimble",
+        "laya",
+        "clef",
+        "pplx-decider",
+        "vllm-decision2",
+        "vllm-d3",
+        "lfm2-d1",
+        "lfm2-d1-omni",
+        "h2o-lightning",
+        "openbmb-minicpm-ocr-jev",
+        "lfm3-d1",
+        "lfm3-d1-omni",
+    }
+)
 
 
 class LlamaCppBackend:
@@ -19516,6 +19571,7 @@ class LlamaCppBackend:
         self._nextn_predict_layers = None
         self._architecture = None
         self._gguf_type = None
+        self._decision_type = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
         self._gguf_split_index = None
@@ -19548,6 +19604,7 @@ class LlamaCppBackend:
             pooling_by_arch: dict[str, int] = {}
 
             nextn_by_arch: dict[str, int] = {}
+            decision_by_arch: dict[str, str] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -19595,10 +19652,13 @@ class LlamaCppBackend:
                             or key in arch_keys
                             or key.endswith(".pooling_type")
                             or key.endswith(".nextn_predict_layers")
+                            or key.endswith(".decision.type")
                         ):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
+                                if key.endswith(".decision.type"):
+                                    decision_by_arch[key] = val_s
                                 if key.startswith("general.") and key != "general.architecture":
                                     general[key] = val_s
                                 if key == "general.type":
@@ -19711,6 +19771,7 @@ class LlamaCppBackend:
                     f"{arch}.nextn_predict_layers",
                     self._nextn_predict_layers,
                 )
+                self._decision_type = decision_by_arch.get(f"{arch}.decision.type")
 
             # Decide diffusion routing before the SWA resolver: it can raise on an unknown arch and drop DiffusionGemma to plain llama-server.
             self._is_diffusion = bool(
@@ -21470,6 +21531,14 @@ class LlamaCppBackend:
             return (
                 "This GGUF is a LoRA adapter and needs a matching base model. "
                 "Select a full model GGUF for chat, or use this adapter with its base model."
+            )
+        decision_type = (getattr(self, "_decision_type", None) or "").strip().lower()
+        if decision_type in _DECISION_ONLY_GGUF_TYPES:
+            return (
+                f"This is a decision model ({decision_type}), not a chat model: llama.cpp "
+                "only answers decision requests with it (POST /v1/systemone) and cannot "
+                "generate text. Pick a chat GGUF, or use a decision model from Settings > "
+                "API > Decision API."
             )
         arch = (self._architecture or "").strip().lower()
         # A media arch is KV 0 so a partial remote prefix can carry it; the walk still gates the no-arch fallback, since an incomplete read looks like none.
@@ -32586,7 +32655,8 @@ class LlamaCppBackend:
                 _cpu_route_reason = None
                 if not intent.cpu_fallback and _cpu_fallback_eligible:
                     _vk_outcome = self._vulkan_probe_outcome(binary)
-                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed")
+                    # A probe that failed listed no device either, so its stall gets the same CPU replay.
+                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed", "error")
                     # Only when a replay can be built, so the block below never fails the load.
                     if (
                         _vk_outcome == "none"
@@ -33412,29 +33482,9 @@ class LlamaCppBackend:
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)
                     # Launched without spec group; keep MTP only in requested state or the next Apply repeats the crash.
-                    _lo = "\n".join(self._stdout_lines).lower()
-                    # Only an unknown arch proves the binary is outdated; other failures are runtime.
-                    _arch_unsupported = "unknown model architecture" in _lo
-                    if (
-                        _arch_unsupported
-                        or "failed to measure draft model memory" in _lo
-                        or "failed to measure mtp context memory" in _lo
-                        or "failed to create mtp context" in _lo
-                        or "failed to create llama_context" in _lo
-                    ):
-                        _retry_reason = (
-                            "the prebuilt may predate it; retrying without "
-                            "speculative decoding -- run `unsloth studio "
-                            "update` for this drafter"
-                        )
-                        self._spec_fallback_reason = (
-                            "binary_outdated" if _arch_unsupported else "runtime_error"
-                        )
-                    else:
-                        _retry_reason = (
-                            "retrying without speculative decoding in case the drafter is the cause"
-                        )
-                        self._spec_fallback_reason = "runtime_error"
+                    _retry_reason, self._spec_fallback_reason = _spec_start_failure(
+                        "\n".join(self._stdout_lines)
+                    )
                     _drafter = (
                         Path(launch_mtp_draft_path).name
                         if launch_mtp_draft_path
@@ -37507,9 +37557,9 @@ class LlamaCppBackend:
                 line, pending = pending.split("\n", 1)
                 data = None
                 stripped = line.strip()
-                if stripped.startswith("data: ") and stripped != "data: [DONE]":
+                if stripped.startswith("data:") and stripped[5:].strip() != "[DONE]":
                     try:
-                        data = json.loads(stripped[6:])
+                        data = json.loads(stripped[5:])
                     except json.JSONDecodeError:
                         pass
                 if is_tool_parse_rejection(data):
@@ -38518,11 +38568,13 @@ class LlamaCppBackend:
                                     yield cumulative
                             _stream_done = True
                             break  # exit inner while
-                        if not line.startswith("data: "):
+                        if not line.startswith("data:"):
                             continue
 
                         try:
-                            data = json.loads(line[6:])
+                            data = json.loads(line[5:])
+                            if not isinstance(data, dict):
+                                continue
                             _report_live_llama_timings(perf_callback, data)
                             # Diffusion frame from the shim: forward untouched, never into content.
                             if data.get("type") == "diffusion_frame":
@@ -38666,7 +38718,7 @@ class LlamaCppBackend:
         # False when the caller knows the history held reasoning its conversion dropped.
         replay_preserve_thinking: bool = True,
         continue_final_message: bool = False,
-        max_tool_iterations: int = 25,
+        max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
@@ -39726,11 +39778,13 @@ class LlamaCppBackend:
                                             }
                                 _stream_done = True
                                 break  # exit inner while
-                            if not line.startswith("data: "):
+                            if not line.startswith("data:"):
                                 continue
 
                             try:
-                                chunk_data = json.loads(line[6:])
+                                chunk_data = json.loads(line[5:])
+                                if not isinstance(chunk_data, dict):
+                                    continue
                                 if on_decode_slot is not None:
                                     slot = self.decode_slot_from_chunk(chunk_data)
                                     if slot is not None:
@@ -42370,11 +42424,13 @@ class LlamaCppBackend:
                                         yield {"type": "content", "text": cumulative}
                                 _stream_done = True
                                 break  # exit inner while
-                            if not line.startswith("data: "):
+                            if not line.startswith("data:"):
                                 continue
 
                             try:
-                                chunk_data = json.loads(line[6:])
+                                chunk_data = json.loads(line[5:])
+                                if not isinstance(chunk_data, dict):
+                                    continue
 
                                 _report_live_llama_timings(perf_callback, chunk_data)
                                 # Capture server timings/usage from final chunks.

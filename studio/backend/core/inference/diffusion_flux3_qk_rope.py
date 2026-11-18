@@ -296,8 +296,10 @@ def verdict(x: Any, weight: Any, eps: float) -> Optional[dict]:
     found = _VERDICTS.get(key)
     if found is not None:
         return found
-    if torch.cuda.is_current_stream_capturing():
-        return None
+    # capture query reads the current device: ask on the operand's card
+    with torch.cuda.device(x.device):
+        if torch.cuda.is_current_stream_capturing():
+            return None
     with _LOCK:
         found = _VERDICTS.get(key)
         if found is None:

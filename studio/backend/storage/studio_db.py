@@ -708,6 +708,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         END
         """
     )
+    _ensure_chat_history_revision_triggers(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_model_type_created_at ON chat_threads(model_type, created_at)"
     )
@@ -891,7 +892,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             allow_model_load INTEGER NOT NULL DEFAULT 0,
             archive_successful INTEGER NOT NULL DEFAULT 0,
             project_id TEXT,
-            web_search INTEGER NOT NULL DEFAULT 0
+            web_search INTEGER NOT NULL DEFAULT 0,
+            thread_id TEXT
         )
         """
     )
@@ -918,6 +920,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN project_id TEXT")
     if "web_search" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN web_search INTEGER NOT NULL DEFAULT 0")
+    if "thread_id" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN thread_id TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)"
     )
@@ -2577,6 +2581,87 @@ def get_chat_thread(id: str) -> Optional[dict]:
         return _chat_thread_from_row(row) if row is not None else None
     finally:
         conn.close()
+
+
+# Scope '' counts every chat write, a thread id that thread's; triggers catch every writer.
+_CHAT_HISTORY_REVISION_ALL = ""
+
+
+def _bump_revision_sql(scope_expr: str, only_live_thread: bool = False) -> str:
+    # A message deleted by the thread's cascade must not recreate the row the thread delete dropped.
+    guard = (
+        f"WHERE EXISTS (SELECT 1 FROM chat_threads WHERE id = {scope_expr})"
+        if only_live_thread
+        else "WHERE true"
+    )
+    return (
+        "INSERT INTO chat_history_revisions (scope, revision) "
+        f"SELECT {scope_expr}, 1 {guard} "
+        "ON CONFLICT(scope) DO UPDATE SET revision = revision + 1;"
+    )
+
+
+def _ensure_chat_history_revision_triggers(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_history_revisions (
+            scope TEXT NOT NULL PRIMARY KEY,
+            revision INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    everything = _bump_revision_sql(f"'{_CHAT_HISTORY_REVISION_ALL}'")
+    for event, row in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")):
+        conn.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS chat_history_revision_message_{event.lower()}
+            AFTER {event} ON chat_messages
+            BEGIN
+                {everything}
+                {_bump_revision_sql(f"{row}.thread_id", only_live_thread = True)}
+            END
+            """
+        )
+    for event in ("INSERT", "UPDATE"):
+        conn.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS chat_history_revision_thread_{event.lower()}
+            AFTER {event} ON chat_threads
+            BEGIN
+                {everything}
+                {_bump_revision_sql("NEW.id")}
+            END
+            """
+        )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS chat_history_revision_thread_delete
+        AFTER DELETE ON chat_threads
+        BEGIN
+            {everything}
+            DELETE FROM chat_history_revisions WHERE scope = OLD.id;
+        END
+        """
+    )
+
+
+def get_chat_history_revisions(thread_ids: list[str]) -> tuple[int, dict[str, int]]:
+    """The whole history's revision and each listed thread's; a thread never written reads 0."""
+    scopes = [_CHAT_HISTORY_REVISION_ALL, *dict.fromkeys(thread_ids)]
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT scope, revision FROM chat_history_revisions "
+            f"WHERE scope IN ({', '.join('?' for _ in scopes)})",
+            scopes,
+        ).fetchall()
+    finally:
+        conn.close()
+    found = {row["scope"]: int(row["revision"]) for row in rows}
+    return (
+        found.get(_CHAT_HISTORY_REVISION_ALL, 0),
+        {thread_id: found.get(thread_id, 0) for thread_id in scopes[1:]},
+    )
 
 
 def list_chat_threads(
@@ -5926,25 +6011,35 @@ def get_chat_pins() -> Optional[list[str]]:
         conn.close()
 
 
+def _merge_legacy_chat_pins_in_conn(
+    conn: sqlite3.Connection, ids: list[str], *, repair: bool
+) -> tuple[Optional[list[str]], list[str], bool]:
+    current, dirty = _load_chat_pins_in_conn(conn, repair = repair)
+    incoming = _existing_chat_pin_ids(conn, _normalized_chat_pin_ids(ids))
+    blocked: set[str] = set()
+    for start in range(0, len(incoming), _SQLITE_IN_CHUNK_SIZE):
+        chunk = incoming[start : start + _SQLITE_IN_CHUNK_SIZE]
+        placeholders = ",".join("?" for _ in chunk)
+        blocked.update(
+            row["id"]
+            for row in conn.execute(
+                f"SELECT id FROM chat_pin_tombstones WHERE id IN ({placeholders})", chunk
+            )
+        )
+    present = set(current or [])
+    additions = [id for id in incoming if id not in present and id not in blocked]
+    return current, [*(current or []), *additions][:MAX_PINNED_CHAT_IDS], dirty
+
+
 def migrate_chat_pins(ids: list[str]) -> Optional[list[str]]:
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
+        # Clients re-send legacy pins on every refresh: take the writer lock only when that changes something.
+        current, pins, dirty = _merge_legacy_chat_pins_in_conn(conn, ids, repair = False)
+        if not dirty and pins == (current or []):
+            return current
         conn.execute("BEGIN IMMEDIATE")
-        current, _ = _load_chat_pins_in_conn(conn, repair = True)
-        incoming = _existing_chat_pin_ids(conn, _normalized_chat_pin_ids(ids))
-        blocked: set[str] = set()
-        for start in range(0, len(incoming), _SQLITE_IN_CHUNK_SIZE):
-            chunk = incoming[start : start + _SQLITE_IN_CHUNK_SIZE]
-            placeholders = ",".join("?" for _ in chunk)
-            blocked.update(
-                row["id"]
-                for row in conn.execute(
-                    f"SELECT id FROM chat_pin_tombstones WHERE id IN ({placeholders})", chunk
-                )
-            )
-        present = set(current or [])
-        additions = [id for id in incoming if id not in present and id not in blocked]
-        pins = [*(current or []), *additions][:MAX_PINNED_CHAT_IDS]
+        current, pins, _ = _merge_legacy_chat_pins_in_conn(conn, ids, repair = True)
         if pins != (current or []):
             _store_chat_pins_in_conn(conn, pins)
             current = pins

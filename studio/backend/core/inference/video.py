@@ -50,6 +50,9 @@ from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
+from .diffusion_int8_attention import annotate_resolved as int8_annotate_resolved
+from .diffusion_int8_attention import resolve_policy as int8_attention_policy
+from .diffusion_int8_attention import resolved_entry as int8_resolved_entry
 from .diffusion_attention import (
     SDPA_MATH_ONLY_MESSAGE,
     apply_attention_backend,
@@ -1748,6 +1751,7 @@ class _VideoLoadState:
     speed_optims: tuple = ()
     backend_flags: Optional[dict] = None
     attention_backend: Optional[str] = None
+    int8_policy: Any = None
     # Only fbcache breaks the graph (cache_breaks_graph); static keeps fullgraph and CUDA-graph eligibility.
     transformer_cache: Optional[str] = None
     # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles.
@@ -6179,8 +6183,15 @@ class VideoBackend:
         allow_oversized_load: bool = False,
         nvfp4_route: Any = None,
         loras: Any = None,
+        int8_attention: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Validate, then run the (slow) load on a daemon thread. Returns at once."""
+        """Validate, then run the (slow) load on a daemon thread. Returns at once.
+
+        ``int8_attention``: ``auto`` / ``on`` / ``off`` for Studio's INT8 attention kernel on this load (None: auto),
+        resolved once here into the load's ``Int8Policy``."""
+        from .diffusion_int8_attention import normalize_int8_attention, resolve_policy
+
+        int8_policy = resolve_policy(normalize_int8_attention(int8_attention))
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
 
@@ -6331,6 +6342,7 @@ class VideoBackend:
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 attention_backend = attention_backend,
+                int8_attention = int8_policy,
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
                 transformer_quant = transformer_quant,
@@ -9627,6 +9639,7 @@ class VideoBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         attention_backend: Optional[str] = None,
+        int8_attention: Any = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         transformer_quant: Optional[str] = None,
@@ -9649,6 +9662,11 @@ class VideoBackend:
         _denoiser_prequant_skipped: tuple[str, ...] = (),
         loras: Any = None,
     ) -> dict[str, Any]:
+        from .diffusion_int8_attention import Int8Policy, normalize_int8_attention, resolve_policy
+
+        if not isinstance(int8_attention, Int8Policy):
+            normalize_int8_attention(int8_attention)
+        int8_policy = resolve_policy(int8_attention)
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -9862,6 +9880,7 @@ class VideoBackend:
                 # The speed layer is below this dispatch, which the modular branch never reaches.
                 speed_mode = speed_mode,
                 attention_backend = attention_backend,
+                int8_policy = int8_policy,
                 h3_task = h3_task,
                 _load_token = _load_token,
                 _base_local_dir = _base_local_dir,
@@ -11534,6 +11553,7 @@ class VideoBackend:
                 # unsloth_int8 by name routes the DiT's attention dispatch to the INT8 kernel
                 requested = attention_backend,
                 speed_active = effective_speed != SPEED_OFF,
+                int8_policy = int8_policy,
             )
             # The optimizer's speed layer (diffusion_autoopt), shared with the image backend. Its family hooks are
             # what used to be inline here: LTX static compile (token counts depend only on (w, h, frames): one
@@ -11761,6 +11781,11 @@ class VideoBackend:
                         attention_engaged or "native",
                         attention_status_reason(attention_backend, attention_engaged),
                     ),
+                    "int8_attention": int8_resolved_entry(
+                        int8_policy,
+                        views,
+                        supported = str(getattr(target, "device", "")) == "cuda",
+                    ),
                     "transformer_cache": (
                         None if cache_auto else transformer_cache,
                         cache_engaged or "off",
@@ -11834,6 +11859,7 @@ class VideoBackend:
                     ),
                 }
             )
+            int8_annotate_resolved(resolved, int8_policy, views)
             # The optimizer's per-step audit, beside the speed_mode entry (same record as the image backend).
             autoopt.record_load_steps(
                 load_audit,
@@ -11948,6 +11974,7 @@ class VideoBackend:
                     speed_optims = speed_optims,
                     backend_flags = backend_flags,
                     attention_backend = attention_engaged,
+                    int8_policy = int8_policy,
                     transformer_cache = cache_engaged,
                     cache_auto = cache_may_toggle,
                     cache_quant_active = cache_quant_active,
@@ -12122,6 +12149,7 @@ class VideoBackend:
         text_encoder_quant: Optional[str] = None,
         speed_mode: Optional[str] = None,
         attention_backend: Optional[str] = None,
+        int8_policy: Any = None,
         h3_task: Optional[str] = None,
         target: Any = None,
         _load_token: Optional[int] = None,
@@ -12539,7 +12567,11 @@ class VideoBackend:
             for name, source in mirrored_sources.items()
             if _base_fetch_revision and source == fetch_base
         }
-        pipe.load_components(
+        # Strict: diffusers logs a failed component and registers None, which then fails at the first render.
+        from .diffusion_component_fetch import load_components_strict
+
+        load_components_strict(
+            pipe,
             workflow = workflow,
             dtype = dtype,
             cache_dir = hub_cache_dir(),
@@ -13004,11 +13036,13 @@ class VideoBackend:
         except Exception:  # noqa: BLE001 -- optimisation only, never fail a load
             pass
         h3_attn_levers: tuple = ()
+        h3_int8_reason: Optional[str] = None
         try:
             from .video_minimax_h3_attn import (
                 fuse_h3_qkv_,
                 h3_attention_backend,
                 install_strided_attention,
+                strided_attention_count,
                 strided_install_backend,
             )
             h3_denoiser = getattr(pipe, denoiser_component, None)
@@ -13036,28 +13070,46 @@ class VideoBackend:
                 )
             except Exception:  # noqa: BLE001 -- keep the generic pick
                 pass
+            from . import diffusion_int8_attention as int8_attention
+            from .diffusion_attention import _auto_request
+
+            h3_policy = int8_attention.resolve_policy(int8_policy)
+            int8_mode = h3_policy.mode
+            int8_forced = int8_mode == "force" or (
+                int8_mode != "off" and int8_attention.requested(attention_backend)
+            )
+            # Auto only on the evidenced config: Studio attention, speed on, hosted INT8 ConvRot, diffusers, no adapters
+            int8_auto = (
+                not int8_forced
+                and int8_mode == "auto"
+                and effective_speed != SPEED_OFF
+                and _auto_request(attention_backend)
+                and transformer_quant_engaged == "int8"
+                and not comfy_checkpoint
+                and not baked_loras
+                and not lora_specs
+            )
+            h3_torch_device = str(getattr(umem_target, "torch_device", None) or device)
+            # Install after the strided processors exist, else the dispatch route takes it and loses fused q/k norm + RoPE
             attention_engaged = apply_attention_backend(
                 speed_view,
                 h3_attn_backend,
                 logger = logger,
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
                 target = types.SimpleNamespace(device = device, dtype = dtype),
+                int8_policy = int8_attention.Int8Policy(request = "off", env = h3_policy.env),
             )
-            from . import diffusion_int8_attention as int8_attention
-
+            h3_denoiser = getattr(pipe, denoiser_component, None)
+            strided_installed = False
             # INT8 route also over a default SDPA pick (sm75, gfx1151), where the strided processor is otherwise not installed
-            int8_mode = int8_attention.mode()
-            int8_wanted = int8_mode == "force" or (
-                int8_mode != "off" and int8_attention.requested(attention_backend)
-            )
             # speed off stays bit-identical: the fused q/k norm + RoPE only matches stock within a rounding step
             if effective_speed != SPEED_OFF and (
-                strided_install_backend(attention_engaged) or int8_wanted
+                strided_install_backend(attention_engaged) or int8_forced
             ):
                 try:
                     from .video_minimax_h3_qknorm import video_qk_rope_rounding
                     if install_strided_attention(
-                        getattr(pipe, denoiser_component, None),
+                        h3_denoiser,
                         logger = logger,
                         qk_rope = None if strided_install_backend(attention_engaged) else False,
                         qk_rope_rounding = video_qk_rope_rounding(),
@@ -13065,19 +13117,76 @@ class VideoBackend:
                         h3_attn_levers += ("h3_strided_attn",)
                         if any(
                             getattr(getattr(m, "processor", None), "_unsloth_qk_rope_once", False)
-                            for m in getattr(pipe, denoiser_component).modules()
+                            for m in h3_denoiser.modules()
                         ):
                             h3_attn_levers += ("h3_qk_rope_once",)
-                        if int8_wanted and int8_attention.install_int8_attention(
-                            getattr(pipe, denoiser_component, None),
-                            device = device,
+                    strided_installed = strided_attention_count(h3_denoiser) > 0
+                except Exception as exc:  # noqa: BLE001 -- stock processor stays
+                    logger.warning("video.h3_attn: strided attention skipped: %s", exc)
+            h3_int8_modules = 0
+            h3_int8_reason = None
+            if strided_installed and (int8_forced or int8_auto):
+                try:
+                    if int8_forced:
+                        h3_int8_modules = int8_attention.install_int8_attention(
+                            h3_denoiser,
+                            device = h3_torch_device,
                             dtype = dtype,
                             force = True,
                             logger = logger,
-                        ):
-                            h3_attn_levers += ("h3_int8_attention",)
-                except Exception as exc:  # noqa: BLE001 -- stock processor stays
-                    logger.warning("video.h3_attn: strided attention skipped: %s", exc)
+                            policy = h3_policy,
+                        )
+                    else:
+                        h3_int8_modules = int8_attention.install_family_auto(
+                            h3_denoiser,
+                            device = h3_torch_device,
+                            dtype = dtype,
+                            policy = h3_policy,
+                            logger = logger,
+                        )
+                except Exception as exc:  # noqa: BLE001 -- the strided processors keep their backend
+                    logger.warning("video.h3_attn: INT8 attention skipped: %s", exc)
+            elif int8_forced and not strided_installed:
+                # no strided processor: a forced kernel falls back to the stock dispatch
+                try:
+                    from .diffusion_int8_attention_dispatch import install as install_int8_dispatch
+                    h3_int8_modules = install_int8_dispatch(
+                        speed_view,
+                        types.SimpleNamespace(
+                            device = device, dtype = dtype, torch_device = h3_torch_device
+                        ),
+                        requested = attention_backend,
+                        logger = logger,
+                        policy = h3_policy,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- the stock processors keep their backend
+                    logger.warning("video.h3_attn: INT8 attention dispatch skipped: %s", exc)
+            if not h3_int8_modules:
+                h3_int8_reason = (
+                    None
+                    if int8_mode == "off"
+                    else "speed_mode=off keeps the output bit-identical, so the kernel is not installed"
+                    if effective_speed == SPEED_OFF
+                    else None
+                    if int8_forced
+                    else f"attention_backend={attention_backend!r} was picked explicitly; Auto keeps it"
+                    if not _auto_request(attention_backend)
+                    else "Auto engages it on MiniMax-H3 video only over Studio's hosted INT8 denoiser "
+                    "without adapters"
+                    if not int8_auto
+                    else None
+                )
+            if h3_int8_modules:
+                h3_attn_levers += ("h3_int8_attention",)
+                attention_engaged = int8_attention.BACKEND
+            logger.info(
+                "video.h3_attn: INT8 attention %s (policy %s from %s, %s): %d attention modules",
+                "engaged" if h3_int8_modules else "not engaged",
+                int8_mode,
+                h3_policy.source,
+                "forced" if int8_forced else "raced" if int8_auto else "not eligible",
+                h3_int8_modules,
+            )
             # FlashInfer SM120 H3 block kernels (opt-in, UNSLOTH_H3_FLASHINFER=1): resident fp8 / nvfp4 blocks, before
             # the regional compile traces them
             if effective_speed != SPEED_OFF:
@@ -13347,6 +13456,12 @@ class VideoBackend:
                     attention_engaged or "native",
                     attention_status_reason(attention_backend, attention_engaged),
                 ),
+                "int8_attention": int8_resolved_entry(
+                    int8_policy,
+                    speed_view,
+                    reason = h3_int8_reason,
+                    supported = str(getattr(umem_target, "device", device)) == "cuda",
+                ),
                 "transformer_cache": (
                     (
                         transformer_cache,
@@ -13384,6 +13499,7 @@ class VideoBackend:
                 ),
             }
         )
+        int8_annotate_resolved(resolved, int8_policy, speed_view)
         autoopt.record_load_steps(
             h3_audit,
             attention = attention_engaged,
@@ -13448,6 +13564,7 @@ class VideoBackend:
                 speed_optims = speed_optims,
                 backend_flags = backend_flags,
                 attention_backend = attention_engaged,
+                int8_policy = int8_attention_policy(int8_policy),
                 # Report the engaged scheme, not the requested one; a dense fallback must not claim a quant it lacks.
                 transformer_quant = transformer_quant_engaged,
                 # Preflight sizes from this; a dense fallback recorded as int8 understates by 39 GB.
@@ -14304,6 +14421,7 @@ class VideoBackend:
                         is_moe = bool(getattr(fam, "is_moe", False)),
                         offload_policy = state.offload_policy,
                         device = state.device,
+                        memory_mode = getattr(state, "memory_mode", None),
                     )
                     # Key on the cache mode this request runs; corrected after the runner-aware toggle.
                     if state.cache_auto:
