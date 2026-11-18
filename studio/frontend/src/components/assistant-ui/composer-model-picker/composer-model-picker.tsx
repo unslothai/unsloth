@@ -955,7 +955,7 @@ const FAVORITE_STAR =
   "text-[rgb(0_0_0_/_0.42)] hover:text-[rgb(0_0_0_/_0.62)] dark:text-[rgb(255_255_255_/_0.5)] dark:hover:text-[rgb(255_255_255_/_0.72)]";
 // Lifts the ⋮ ink 0.3px so the hover circle centres on it.
 const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))] [&>svg]:-translate-y-[0.3px]`;
-// No hover on touch, and an invisible button still takes the tap: show the ⋮, drop what its menu holds.
+// An invisible button still takes a tap: show the ⋮ and drop what its menu holds.
 const TOUCH_DOTS = "max-md:size-8 max-md:opacity-100";
 const TOUCH_IN_MENU = "max-md:hidden";
 const TOUCH_ACTION = "max-md:size-8";
@@ -1530,7 +1530,6 @@ export function ComposerModelPicker({
   const routeMediaPick = useRef<
     (id: string, meta: ModelSelectorChangeMeta) => boolean
   >(() => false);
-  // A small screen has no room to keep the panel up over the chat while the pick loads.
   const smallScreen = useIsMobile();
   const closeOnPick = useRef(false);
   closeOnPick.current = smallScreen;
@@ -1612,7 +1611,7 @@ export function ComposerModelPicker({
     setConfigStandalone(false);
   };
   const [expanded, setExpandedState] = useState(readExpanded);
-  // Phones skip the collapsed view: its toggle jumped under the thumb, and the footer has its controls.
+  // Phones skip the collapsed view: its toggle jumped under the thumb.
   // From pointerdown: WebKit reports a tap's click as "mouse". A tap must not raise the keyboard.
   const touchPress = useRef(false);
   // undefined: not checked yet since mount.
@@ -3754,7 +3753,7 @@ export function ComposerModelPicker({
   const chipDetail =
     [formatDetail, loadedDetail].filter(Boolean).join(" · ") || undefined;
   const [chipTipOpen, setChipTipOpen] = useState(false);
-  // An icon-only chip on a small screen shows its own tooltip with the detail folded in (index.css).
+  // Small icon-only chips use their index.css tooltip, which carries the detail.
   const chipIconOnly = () => {
     const label = triggerRef.current?.querySelector(".composer-model-chip-name");
     return (

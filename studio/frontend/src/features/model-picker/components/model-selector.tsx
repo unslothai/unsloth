@@ -326,7 +326,6 @@ function ModelSelectorContent({
   moreModels,
 }: {
   open: boolean;
-  /** A tap opened it: focusing search would raise the keyboard over the list. */
   openedByTouch?: RefObject<boolean>;
   models: ModelOption[];
   additionalOnDeviceModels?: ModelOption[];

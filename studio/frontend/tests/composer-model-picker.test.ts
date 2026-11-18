@@ -1799,7 +1799,6 @@ test("hiding the star on small screens never strands Favorite", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  // Both row menus carry Favorite, since the standalone star drops out below 768px.
   const menus =
     picker.match(
       /<ModelRowMenu\s+ariaLabel=\{`More options for \$\{row\.label\}`\}[\s\S]*?items=\{\[/g,

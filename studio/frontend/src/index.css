@@ -3881,7 +3881,6 @@ html[data-chat-font] .aui-root {
 			.composer-model-chip [data-eject-hit] > svg {
 				visibility: hidden !important;
 			}
-			/* One tooltip, carrying the quant the hidden label's tooltip held, kept on screen. */
 			.composer-model-chip[data-pill-detail]:not([data-state="open"]):hover::after {
 				content: attr(data-pill-label) " · " attr(data-pill-detail);
 			}
@@ -3894,7 +3893,7 @@ html[data-chat-font] .aui-root {
 				text-overflow: ellipsis;
 			}
 		}
-		/* A tap leaves :hover stuck, which pinned the name over the chip once the picker closed. */
+		/* A tap leaves :hover stuck. */
 		@media (width < 48rem) and (hover: none) {
 			.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after,
 			.composer-model-chip[data-pill-detail]:not([data-state="open"]):hover::after {
