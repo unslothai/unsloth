@@ -733,6 +733,7 @@ def invalidate(model):
     global BUFFER_EPOCH
     for state in _states(model):
         state.clear()
+        state.disabled = None
     for module in model.modules():
         generic = module.__dict__.get("_unsloth_generic_decode_graphs")
         if generic is not None:
@@ -752,6 +753,8 @@ def release(model):
             found = True
             state.clear()
             state.statics.clear()
+            # Decided against the buffers / pool just dropped: the next decode re-checks.
+            state.disabled = None
         generic = d.get("_unsloth_generic_decode_graphs")
         if generic is not None:
             generic.invalidate()

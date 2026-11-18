@@ -31,6 +31,8 @@ def _clean(monkeypatch):
     monkeypatch.setattr(I, "_BROKEN", set())
     monkeypatch.setattr(I, "_LOADED", {})
     monkeypatch.setattr(K, "_FUNCTIONS", {})
+    monkeypatch.setattr(K, "_BINARIES", {})
+    monkeypatch.setattr(K, "_IDENTITY", {})
     stats = dict(I.STATS)
     yield
     I.STATS.clear()
@@ -75,6 +77,9 @@ def _fake_nvidia(
     monkeypatch.setattr(I, "triton_available", lambda: triton)
     monkeypatch.setattr(I, "int8_attention_op", lambda: None)
     monkeypatch.setattr(I, "unsupported_reason", lambda q, k, v: None)
+    monkeypatch.setattr(
+        I, "_call_route", lambda q, k, v: (None, 0, *I._serving(0, int(q.shape[-1])))
+    )
     probe = I.probe_inputs
     monkeypatch.setattr(I, "probe_inputs", lambda device, *a, **k: probe("cpu", *a, **k))
     calls = []

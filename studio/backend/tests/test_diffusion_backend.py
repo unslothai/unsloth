@@ -1093,7 +1093,7 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod,
         "apply_attention_backend",
-        lambda pipe, backend, logger = None, target = None, requested = None: backend,
+        lambda pipe, backend, logger = None, target = None, requested = None, speed_active = True: backend,
     )
     monkeypatch.setattr(
         dmod,
@@ -1388,7 +1388,7 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
     monkeypatch.setattr(
         dmod,
         "apply_attention_backend",
-        lambda pipe, backend, logger = None, target = None, requested = None: backend,
+        lambda pipe, backend, logger = None, target = None, requested = None, speed_active = True: backend,
     )
 
     def fake_select(

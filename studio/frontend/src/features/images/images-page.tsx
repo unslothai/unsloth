@@ -245,9 +245,10 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
   DEFAULT_GEN,
+  defaultSizeFor,
   defaultsFor,
   defaultsKeyFor,
-  fixedStepsFor,
+  maxStepsFor,
   loadedRecipeFor,
   residentDefaultsKey,
   residentRecipeFor,
@@ -2305,11 +2306,17 @@ export function ImagesPage({
       }
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename));
+      const recipeKey = defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename);
+      const recommended = defaultsFor(recipeKey);
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
+      const nativeSize = defaultSizeFor(recipeKey);
+      if (nativeSize) {
+        setWidth(nativeSize.width);
+        setHeight(nativeSize.height);
+      }
       if (revert) {
         revert.appliedSteps = recommended.steps;
         revert.appliedGuidance = recommended.guidance;
@@ -2440,10 +2447,10 @@ export function ImagesPage({
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
-  const fixedSteps = !external && status?.loaded === true ? fixedStepsFor(status.family) : null;
+  const maxSteps = !external && status?.loaded === true ? maxStepsFor(status.family) : null;
   useEffect(() => {
-    if (fixedSteps !== null && steps !== fixedSteps) setSteps(fixedSteps);
-  }, [fixedSteps, steps]);
+    if (maxSteps !== null && steps > maxSteps) setSteps(maxSteps);
+  }, [maxSteps, steps]);
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
@@ -5154,8 +5161,15 @@ export function ImagesPage({
 
   const editSize = useMemo(
     () =>
-      resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
-    [editSizing, sourceDims, matchResolution, width, height, sizeLimits],
+      resolveEditSize(
+        editSizing,
+        sourceDims,
+        matchResolution,
+        { width, height },
+        sizeLimits,
+        status?.family ?? null,
+      ),
+    [editSizing, sourceDims, matchResolution, width, height, sizeLimits, status?.family],
   );
   const loadedFamily = status?.family ?? null;
   const officialPresets = useMemo(
@@ -6953,6 +6967,7 @@ export function ImagesPage({
                 enabled={enhanceOn}
                 onEnabledChange={changeEnhancePrompt}
                 modelKey={`${status?.repo_id ?? ""}|${status?.gguf_filename ?? ""}|${loadEpoch}`}
+                family={status?.family ?? null}
                 prompt={prompt}
                 previewRequest={() => {
                   // Edit and Reference condition on their images, so the caption describes them too.
@@ -6963,6 +6978,7 @@ export function ImagesPage({
                   return {
                     prompt: prompt.trim(),
                     variant: upsamplerVariantFor(status?.family),
+                    ...(status?.family ? { family: status.family } : {}),
                     ...(images.length ? { reference_images: images } : {}),
                   };
                 }}
@@ -7160,16 +7176,15 @@ export function ImagesPage({
                   <SliderField
                     label="Steps"
                     hint={
-                      fixedSteps !== null
-                        ? `The loaded model is distilled to exactly ${fixedSteps} steps, one output head per step, so the count is fixed.`
+                      maxSteps !== null
+                        ? `The loaded model is distilled to ${maxSteps} steps, one output head per step: it runs 1 to ${maxSteps}, and the reference workflows use ${maxSteps}.`
                         : "Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
                     }
-                    value={fixedSteps ?? steps}
+                    value={maxSteps !== null ? Math.min(steps, maxSteps) : steps}
                     min={1}
-                    max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
+                    max={maxSteps ?? stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
-                    disabled={fixedSteps !== null}
                   />
                 </div>
                 <SliderField

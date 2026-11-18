@@ -114,6 +114,7 @@ from utils.helper_precache_settings import (
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils import video_cpu_settings
 from utils.download_speed_limit import (
+    DownloadSpeedLimitUnavailableError,
     get_download_speed_limit_mbps,
     set_download_speed_limit_mbps,
 )
@@ -1230,6 +1231,11 @@ class ModelOverridePayload(BaseModel):
     mlx_int8_prefill: bool = False
     mlx_ane_prefill: bool = False
     mlx_fast_verify: bool = False
+    npu_power_mode: Optional[
+        Literal["default", "powersaver", "balanced", "performance", "turbo"]
+    ] = None
+    npu_prefill_chunk_len: Optional[StrictInt] = Field(default = None, ge = 1, le = 1048576)
+    npu_img_pre_resize: Optional[StrictInt] = Field(default = None, ge = 0, le = 4)
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -2175,7 +2181,10 @@ def update_download_transport(
 def get_download_speed_limit(
     current_subject: str = Depends(get_current_subject),
 ) -> DownloadSpeedLimitResponse:
-    return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+    try:
+        return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+    except DownloadSpeedLimitUnavailableError as exc:
+        raise HTTPException(status_code = 503, detail = str(exc)) from None
 
 
 @_owner_settings_router.put("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
@@ -2960,7 +2969,14 @@ def update_openai_auto_switch_override(
                 and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
-                and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
+                and not {
+                    "mlx_ple_offload",
+                    "mlx_expert_offload",
+                    "npu_power_mode",
+                    "npu_prefill_chunk_len",
+                    "npu_img_pre_resize",
+                }
+                & payload.model_fields_set
                 and not {
                     key: value
                     for key, value in saved_fields.items()
@@ -3169,7 +3185,13 @@ def update_openai_auto_switch_override(
                     field: getattr(payload, field)
                     if field in fields_set or is_removal
                     else (_alias_row or get_model_override(target_id)).get(field)
-                    for field in ("mlx_ple_offload", "mlx_expert_offload")
+                    for field in (
+                        "mlx_ple_offload",
+                        "mlx_expert_offload",
+                        "npu_power_mode",
+                        "npu_prefill_chunk_len",
+                        "npu_img_pre_resize",
+                    )
                 },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,

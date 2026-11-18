@@ -532,6 +532,14 @@ def _save_pretrained_gguf(
         print(f"Unsloth: Uploading to {repo_id}...")
         try:
             api.create_repo(repo_id = repo_id, exist_ok = True, private = kwargs.get("private", False))
+        except Exception as e:
+            print(f"Unsloth: Upload failed: {e}")
+            return result
+        from ..save import _refuse_private_push_to_public_repo
+
+        # Outside the try below: a refusal must stop the upload, not print as a failed one.
+        _refuse_private_push_to_public_repo(repo_id, kwargs.get("private", False), api = api)
+        try:
             api.upload_folder(
                 folder_path = save_directory,
                 repo_id = repo_id,
@@ -636,6 +644,9 @@ def _push_to_hub_gguf(
         )
     except Exception as e:
         print(f"Unsloth Warning: Could not create repo: {e}")
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(full_repo_id, private, api = api)
 
     with tempfile.TemporaryDirectory(prefix = "unsloth_st_gguf_") as temp_dir:
         print(f"Unsloth: Converting SentenceTransformer to GGUF format...")
@@ -2786,6 +2797,9 @@ class FastSentenceTransformer(FastModel):
                     )
                 except:
                     pass
+                from ..save import _refuse_private_push_to_public_repo
+
+                _refuse_private_push_to_public_repo(repo_id, push_kwargs.get("private"), api = api)
                 with tempfile.TemporaryDirectory() as temp_dir:
                     self.save_pretrained_merged(temp_dir, **push_kwargs)
                     api.upload_folder(
@@ -3059,6 +3073,9 @@ class FastSentenceTransformer(FastModel):
                 )
             except:
                 pass
+            from ..save import _refuse_private_push_to_public_repo
+
+            _refuse_private_push_to_public_repo(repo_id, private, api = api)
 
             with tempfile.TemporaryDirectory() as temp_dir:
                 self.save_pretrained_merged(temp_dir, **kwargs)

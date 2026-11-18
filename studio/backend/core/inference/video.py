@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
+from hub.utils.hf_cache_state import blob_bytes_present, incomplete_blob_hash
 from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
@@ -1746,6 +1747,8 @@ class _VideoLoadingState:
     # that owns this state (under the load-token check), replaced whole by a re-estimate, never patched by a fetch site.
     # The fetch sites read their repo + revision from it, and load_progress reads nothing else.
     fetch_plan: dict[str, "_PlannedFetch"] = field(default_factory = dict)
+    # Dead ``<key>.<8 hex>.incomplete`` sizes when a plan first named the file; a re-plan only adds entries.
+    incomplete_baseline: dict[str, int] = field(default_factory = dict)
 
 
 class _PlannedFetch(NamedTuple):
@@ -2187,6 +2190,17 @@ def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
         return False
     slot.stop(reason)
     return True
+
+
+def _h3_shift_check_engine(state: Any) -> Optional[str]:
+    """Engine name for the flow-shift check: an sd.cpp build that takes --audio-flow-shift checks like Diffusers."""
+    if getattr(state, "engine", None) != "sd_cpp":
+        return getattr(state, "engine", None)
+    from .sd_cpp_args import sd_cpp_supports_flag
+
+    runtime = getattr(state, "pipe", None)
+    binary = getattr(getattr(runtime, "engine", None), "binary", None)
+    return None if sd_cpp_supports_flag(binary, "--audio-flow-shift") else "sd_cpp"
 
 
 def _refuse_h3_native_nan_render(path: Any) -> None:
@@ -6451,6 +6465,8 @@ class VideoBackend:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
                     if hasattr(self._loading, "fetch_plan"):
+                        # Baseline first: load_progress reads lock-free and counts partials once a plan is set.
+                        self._loading.incomplete_baseline = self._plan_partials(planned_files)
                         self._loading.fetch_plan = planned_files
                     # The conditioner artifact comes from a THIRD repo, neither repo_id nor base_repo, so without this
                     # the delete-cached guard would let it be deleted out from under the in-flight fetch (or out from
@@ -6573,13 +6589,21 @@ class VideoBackend:
                         planned_files = (replanned := {}),
                         pin_revisions = _fetched_pins(planned_files),
                     )
-                    planned_files = _keep_fetched_checkpoint(replanned, planned_files)
+                    previous_plan, planned_files = (
+                        planned_files,
+                        _keep_fetched_checkpoint(replanned, planned_files),
+                    )
                     # The total follows the plan actually kept: the retained checkpoint entry, not a re-listed one.
                     expected = _plan_total(planned_files) if expected else expected
+                    added = self._plan_partials(planned_files, known = previous_plan)
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
                             if hasattr(self._loading, "fetch_plan"):
+                                self._loading.incomplete_baseline = {
+                                    **added,
+                                    **self._loading.incomplete_baseline,
+                                }
                                 self._loading.fetch_plan = planned_files
             # Only a pre-cast checkpoint actually on disk earns the dense skip below.
             te_failed: dict = {}
@@ -6667,13 +6691,21 @@ class VideoBackend:
                     skip_te_override = actual_te_skip,
                     pin_revisions = _fetched_pins(planned_files),
                 )
-                planned_files = _keep_fetched_checkpoint(replanned, planned_files)
+                previous_plan, planned_files = (
+                    planned_files,
+                    _keep_fetched_checkpoint(replanned, planned_files),
+                )
                 # The total follows the plan actually kept: the retained checkpoint entry, not a re-listed newer one.
                 expected = _plan_total(planned_files) if expected else expected
+                added = self._plan_partials(planned_files, known = previous_plan)
                 with self._lock:
                     if self._load_token == token and self._loading is not None:
                         self._loading.expected_bytes = expected
                         if hasattr(self._loading, "fetch_plan"):
+                            self._loading.incomplete_baseline = {
+                                **added,
+                                **self._loading.incomplete_baseline,
+                            }
                             self._loading.fetch_plan = planned_files
                 base_plan = planned_files.get(_FETCH_BASE)
             checkpoint_plan = planned_files.get(_FETCH_CHECKPOINT)
@@ -6877,6 +6909,7 @@ class VideoBackend:
             SdCppModelFiles,
             device_backend_flags,
             offload_flags,
+            with_h3_vae_tile_overlap,
         )
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
@@ -7210,7 +7243,7 @@ class VideoBackend:
         }[requested_mode]
         # NOT --vae-on-cpu: H3 audio VAE conv1d aborts on CPU (ggml F16 im2col assert, exit 134).
         # Keep dropped even after the fork fix: under --offload-to-cpu it saves no VRAM and is 4.8x slower.
-        native_offload = tuple(
+        native_offload = with_h3_vae_tile_overlap(
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
         # H3's 20.5 GB DiT and 17 GB encoder OOM in auto and fast; --max-vram segments them, and streaming needs CPU offload.
@@ -9285,16 +9318,8 @@ class VideoBackend:
             return 0
 
     @staticmethod
-    def _planned_bytes(plan: dict[str, "_PlannedFetch"]) -> int:
-        """Bytes of the load's planned files present in the cache, read by blob key from the plan's repo.
-
-        A blob is named by its content key, so this counts exactly the planned file whichever revision it lands under
-        (a superseded snapshot's same-named file has another key), never a carrier's other checkpoints or an unrelated
-        partial, and the in-flight ``<key>.incomplete`` while it downloads. Both cache roots are read, as every fetch
-        passes ``reuse_other_cache_root``. A file with no key falls back to its entry in the pinned revision (else
-        ``refs/main``). Each file is capped at its listed size and counted once."""
-        import os
-
+    def _plan_cache_roots() -> list[Path]:
+        """The live cache root, then huggingface_hub's own when it differs: every fetch passes ``reuse_other_cache_root``."""
         roots = [Path(hub_cache_dir())]
         try:
             from huggingface_hub import constants
@@ -9302,6 +9327,73 @@ class VideoBackend:
                 roots.append(Path(constants.HF_HUB_CACHE))
         except Exception:  # noqa: BLE001 -- the live root alone
             pass
+        return roots
+
+    @staticmethod
+    def _unique_partials(folder: Path) -> dict[str, list[Path]]:
+        """``{key: [<key>.<8 hex>.incomplete, ...]}`` (huggingface_hub >= 1.18) from one listing of ``folder/blobs``."""
+        import os
+
+        out: dict[str, list[Path]] = {}
+        try:
+            with os.scandir(folder / "blobs") as entries:
+                for item in entries:
+                    key = incomplete_blob_hash(item.name)
+                    if key and item.name != f"{key}.incomplete":
+                        out.setdefault(key, []).append(Path(item.path))
+        except OSError:
+            pass
+        return out
+
+    @staticmethod
+    def _plan_blob_keys(plan: dict[str, "_PlannedFetch"]) -> set[tuple[str, str]]:
+        return {
+            ((entry.repo or "").strip().lower(), etag)
+            for entry in plan.values()
+            for _name, etag, _size in entry.files
+            if etag
+        }
+
+    @staticmethod
+    def _plan_partials(
+        plan: dict[str, "_PlannedFetch"], known: Optional[dict[str, "_PlannedFetch"]] = None
+    ) -> dict[str, int]:
+        """``{path: bytes}`` of the process-unique partials of ``plan``'s files not already in ``known``."""
+        skip = VideoBackend._plan_blob_keys(known or {})
+        out: dict[str, int] = {}
+        for root in VideoBackend._plan_cache_roots():
+            for entry in plan.values():
+                repo = (entry.repo or "").strip()
+                if not repo:
+                    continue
+                partials = VideoBackend._unique_partials(
+                    root / ("models--" + repo.replace("/", "--"))
+                )
+                for _name, etag, _size in entry.files:
+                    if not etag or (repo.lower(), etag) in skip:
+                        continue
+                    for path in partials.get(etag, ()):
+                        try:
+                            out[str(path)] = blob_bytes_present(path)
+                        except OSError:
+                            continue
+        return out
+
+    @staticmethod
+    def _planned_bytes(
+        plan: dict[str, "_PlannedFetch"], baseline: Optional[dict[str, int]] = None
+    ) -> int:
+        """Bytes of the load's planned files present in the cache, read by blob key from the plan's repo.
+
+        A blob is named by its content key, so this counts exactly the planned file whichever revision it lands under
+        (a superseded snapshot's same-named file has another key), never a carrier's other checkpoints or an unrelated
+        partial, and the in-flight partial while it downloads: ``<key>.incomplete`` in full (a resume appends to it),
+        ``<key>.<8 hex>.incomplete`` only past ``baseline``. Both cache roots are read. A file with no key falls back
+        to its entry in the pinned revision (else ``refs/main``). Each file is capped at its size and counted once."""
+        import os
+
+        roots = VideoBackend._plan_cache_roots()
+        partials: dict[Path, dict[str, list[Path]]] = {}
         total = 0
         seen: set[tuple[str, str]] = set()
         for entry in plan.values():
@@ -9318,10 +9410,10 @@ class VideoBackend:
                     folder = root / ("models--" + repo.replace("/", "--"))
                     try:
                         if etag:
-                            candidates = [
-                                folder / "blobs" / etag,
-                                folder / "blobs" / f"{etag}.incomplete",
-                            ]
+                            candidates = [folder / "blobs" / etag]
+                            stable = folder / "blobs" / f"{etag}.incomplete"
+                            if stable.is_file():
+                                best = max(best, blob_bytes_present(stable))
                         else:
                             ref = folder / "refs" / "main"
                             rev = entry.revision or (
@@ -9331,6 +9423,13 @@ class VideoBackend:
                         for path in candidates:
                             if path.is_file():
                                 best = max(best, os.path.getsize(path))
+                        if etag and folder not in partials:
+                            partials[folder] = VideoBackend._unique_partials(folder)
+                        for path in partials[folder].get(etag, ()) if etag else ():
+                            best = max(
+                                best,
+                                blob_bytes_present(path) - (baseline or {}).get(str(path), 0),
+                            )
                     except OSError:
                         continue
                 total += min(best, size) if size else best
@@ -9347,7 +9446,7 @@ class VideoBackend:
         # every fetch site reads, and each file's blob key and size. Nothing else is consulted.
         plan = dict(getattr(loading, "fetch_plan", None) or {})
         if plan:
-            downloaded = self._planned_bytes(plan)
+            downloaded = self._planned_bytes(plan, getattr(loading, "incomplete_baseline", None))
         else:
             # No plan (offline, a failed estimate, or a state built outside _run_load): the whole cache of each id's
             # default fetch side.
@@ -11288,6 +11387,9 @@ class VideoBackend:
                 logger = logger,
                 # Probe at the post-promotion dtype: fused SDPA is half-only, fp32 falls to math backend.
                 target = types.SimpleNamespace(device = target.device, dtype = dtype),
+                # unsloth_int8 by name routes the DiT's attention dispatch to the INT8 kernel
+                requested = attention_backend,
+                speed_active = effective_speed != SPEED_OFF,
             )
             # The optimizer's speed layer (diffusion_autoopt), shared with the image backend. Its family hooks are
             # what used to be inline here: LTX static compile (token counts depend only on (w, h, frames): one
@@ -13768,7 +13870,7 @@ class VideoBackend:
                     if continuation is not None:
                         conditioning = VIDEO_CONTINUATION_CONDITIONING
                     shift, audio_shift = self._resolve_flow_shifts(
-                        fam, state.engine, flow_shift, audio_flow_shift
+                        fam, _h3_shift_check_engine(state), flow_shift, audio_flow_shift
                     )
                 else:
                     first_pil = _resolved_inputs.first_frame
@@ -13819,6 +13921,7 @@ class VideoBackend:
                         references = references,
                         conditioning = conditioning,
                         flow_shift = shift,
+                        audio_flow_shift = audio_shift,
                         cancel = cancel,
                     )
 
@@ -14191,7 +14294,15 @@ class VideoBackend:
                 if last_pil is not None and video_family_accepts_last_frame(fam):
                     kwargs["last_image"] = last_pil
                 if references:
-                    from .video_minimax_h3 import h3_diffusers_references
+                    from .video_minimax_h3 import (
+                        h3_diffusers_references,
+                        keep_h3_reference_image_sizes,
+                    )
+                    if not keep_h3_reference_image_sizes(pipe):
+                        logger.warning(
+                            "video.h3_references: no Ref2VA setup step found; Diffusers may rescale "
+                            "the references and cut their soundtracks"
+                        )
                     kwargs["references"] = h3_diffusers_references(references)
                 if continuation is not None:
                     kwargs["video"], kwargs["condition_video_keep"] = continuation
@@ -14214,9 +14325,14 @@ class VideoBackend:
                     # H3 grid includes the terminal 0: `steps` evaluations need steps + 1 points.
                     kwargs["num_inference_steps"] = h3_num_inference_steps(steps)
                     # PDD bank is distilled for ComfyUI's count, so it keeps steps + 1 even under the kill switch.
-                    if bind_h3_pdd_render(pipe, shift, audio_shift):
+                    h3_pdd = bool(bind_h3_pdd_render(pipe, shift, audio_shift))
+                    if h3_pdd:
                         kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
                         request_shape["pdd"] = True
+                    from .video_minimax_h3_sampling import install_h3_reference_recipe
+
+                    # Reference grid, sampler, noise layout and vision input; Euler stays for PDD.
+                    request_shape["h3_recipe"] = install_h3_reference_recipe(pipe, pdd = h3_pdd)
 
                 # What the clip records; LTX-2.5's two-stage render reports its stage-2 steps in the progress below.
                 recorded_steps = steps
@@ -14575,6 +14691,13 @@ class VideoBackend:
                     audio = output.get("audio")
                     audio_track = audio[0] if audio is not None else None
                     audio_sample_rate = output.get("sampling_rate")
+                    if fam.name == "minimax-h3" and audio_track is not None and audio_sample_rate:
+                        from .video_minimax_h3 import h3_output_audio
+
+                        # Loudness-limited, and ending with the last frame: ceil(rate / fps * frames) samples.
+                        audio_track = h3_output_audio(
+                            audio_track, int(audio_sample_rate), int(out_fps), len(video_frames)
+                        )
                 elif fam.name in COSMOS3_FAMILIES:
                     video_frames = (
                         output.video
@@ -14841,9 +14964,10 @@ class VideoBackend:
         decoded_audios: Optional[Any] = None,
         decoded_images: Optional[list] = None,
     ) -> Any:
-        """Sizing is settled here so both engines' min(1, ...) scales are no-ops; native refuses max."""
+        """Image sizing is settled here: Diffusers' rescale is skipped, sd.cpp gets "max" (#2177); native refuses "max"."""
         from .video_minimax_h3 import (
             MiniMaxH3References,
+            conform_h3_reference_audio,
             decode_h3_reference_audio,
             decode_h3_reference_video,
             validate_h3_reference_trim,
@@ -14899,6 +15023,8 @@ class VideoBackend:
                     trim_start_seconds = None if clip is None else 0.0,
                     trim_end_seconds = None if clip is None else clip[1] - clip[0],
                 )
+            if waveform is not None:
+                waveform, sample_rate = conform_h3_reference_audio(waveform, sample_rate)
             decoded_videos.append((frames, waveform, sample_rate))
         if engine == "sd_cpp":
             soundtrack_gap = False
@@ -14921,7 +15047,10 @@ class VideoBackend:
         return MiniMaxH3References(
             images = fitted_images,
             videos = tuple(decoded_videos),
-            audios = reused_audios,
+            audios = tuple(
+                conform_h3_reference_audio(waveform, sample_rate)
+                for waveform, sample_rate in reused_audios
+            ),
         )
 
     def _h3_native_server_render(
@@ -14948,6 +15077,7 @@ class VideoBackend:
         from .sd_cpp_args import (
             build_vid_gen_request,
             h3_reference_media_keys,
+            h3_server_output_format,
             h3_server_refs_enabled,
             sd_cli_frame_files,
         )
@@ -15039,6 +15169,11 @@ class VideoBackend:
                     slot.refs_unsupported = True
                     slot.release("this sd-server does not take reference video / audio")
                     return None
+                # Uncompressed AVI only from a server that lists it; older builds keep MJPG.
+                output_formats = getattr(server, "vid_gen_output_formats", None)
+                payload["output_format"] = h3_server_output_format(
+                    output_formats() if callable(output_formats) else ()
+                )
                 try:
                     data = server.vid_gen(payload, on_step = on_log, cancel_event = cancel)
                 except SdCppServerUnsupported as exc:
@@ -15106,6 +15241,7 @@ class VideoBackend:
         conditioning: str,
         flow_shift: Optional[float],
         cancel: threading.Event,
+        audio_flow_shift: Optional[float] = None,
     ) -> dict[str, Any]:
         import random
         import re
@@ -15120,6 +15256,7 @@ class VideoBackend:
             stage_h3_references,
             transcode_video_to_mp4,
         )
+        from .sd_cpp_args import sd_cpp_supports_ref_video_audio_index
 
         runtime = state.pipe
         render_flags = list(runtime.offload_flags)
@@ -15214,7 +15351,28 @@ class VideoBackend:
                 eta_seconds = (elapsed / max(1, done)) * max(0, total - done),
             )
 
-        tmp = tempfile.NamedTemporaryFile(suffix = ".webm", delete = False)
+        from .sd_cpp_args import (
+            h3_lossless_enabled,
+            h3_sd_cpp_sampler,
+            sd_cpp_supports_lossless_video,
+        )
+        from .video_families import video_generation_variant
+
+        # The reference recipe (res_multistep on the simple schedule); distilled / PDD files keep Euler.
+        h3_variant = video_generation_variant(
+            state.variant_id,
+            state.gguf_filename,
+            state.display_repo_id,
+            state.repo_id,
+            state.base_repo,
+            family = state.family.name,
+        )
+        sample_method, scheduler = h3_sd_cpp_sampler(h3_variant in ("pdd", "distilled"))
+        # sd-cli writes .avi results uncompressed when asked, so the x264 / AAC export is the only lossy step.
+        lossless_cli = h3_lossless_enabled() and sd_cpp_supports_lossless_video(
+            getattr(runtime.engine, "binary", None)
+        )
+        tmp = tempfile.NamedTemporaryFile(suffix = ".avi" if lossless_cli else ".webm", delete = False)
         tmp.close()
         output_path = Path(tmp.name)
         # Stage in-memory conditioning in sd-cli's temporary disk format.
@@ -15229,7 +15387,15 @@ class VideoBackend:
 
             init_img = stage(first_frame, "first")
             end_img = stage(last_frame, "last")
-            staged = stage_h3_references(references, Path(scratch))
+            # Builds with --ref-video-audio-index (sd-server: the ref_video_audio_indices feature, else sd-cli)
+            # accept a silent reference video before one with a soundtrack.
+            staged = stage_h3_references(
+                references,
+                Path(scratch),
+                explicit_pairing = sd_cpp_supports_ref_video_audio_index(
+                    getattr(runtime.engine, "binary", None)
+                ),
+            )
             # Take the reader claim, or an install sweep unlinks the CLI this runtime resolved at load.
             from .sd_cpp_backend import _tree_reader
 
@@ -15266,7 +15432,18 @@ class VideoBackend:
                             ref_videos = staged.videos,
                             ref_video_audios = staged.video_audios,
                             ref_audios = staged.audios,
+                            ref_video_audio_indices = staged.video_audio_indices,
                             flow_shift = flow_shift,
+                            # Only a non-default shift is sent: builds without --audio-flow-shift were refused earlier.
+                            audio_flow_shift = (
+                                audio_flow_shift
+                                if audio_flow_shift is not None
+                                and audio_flow_shift != state.family.default_audio_flow_shift
+                                else None
+                            ),
+                            sample_method = sample_method,
+                            scheduler = scheduler,
+                            lossless_output = lossless_cli,
                         )
                         generated = self._h3_native_server_render(
                             runtime,
@@ -15342,8 +15519,12 @@ class VideoBackend:
                     # sd-cli vid_gen has no negative-prompt input.
                     "negative_prompt": None,
                     "flow_shift": flow_shift,
-                    # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
-                    "audio_flow_shift": state.family.default_audio_flow_shift,
+                    # What sd.cpp ran: the requested shift on builds that take it, else the pinned default.
+                    "audio_flow_shift": (
+                        audio_flow_shift
+                        if audio_flow_shift is not None
+                        else state.family.default_audio_flow_shift
+                    ),
                     # Built from the ENGAGED state, not the request; without these six, native GGUF recipes save blank.
                     "model_kind": state.kind,
                     "gguf_filename": state.gguf_filename,

@@ -5,6 +5,7 @@ import {
   buildExternalModelId,
   parseExternalModelId,
 } from "../external-providers";
+import { isNpuModelId } from "../../npu/api";
 import { encryptProviderApiKey } from "../api/providers-api";
 import {
   type CustomReasoningConfig,
@@ -315,6 +316,8 @@ export function titleCheckpoint(
   activeCheckpoint: string,
 ): string {
   if (parseExternalModelId(answeredWith) !== null) return answeredWith;
+  // A title request takes one of FastFlowLM's few conversation caches and can evict the chat's.
+  if (isNpuModelId(activeCheckpoint)) return "";
   return parseExternalModelId(activeCheckpoint) === null
     ? activeCheckpoint
     : "";

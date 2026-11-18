@@ -32,6 +32,7 @@ SETTINGS = {
     "codeToolsEnabled": False,
     "deepResearchEnabled": False,
     "permissionMode": "auto",
+    "fullAccess": True,
     "ragEnabled": True,
     "ragSource": {"type": "kb", "kbId": "notes"},
     "ragMode": "dense",
@@ -70,6 +71,7 @@ def test_thread_settings_round_trip():
     "field, value",
     [
         ("permissionMode", "full"),
+        ("fullAccess", "full"),
         ("ragTopK", 51),
         ("ragAutoInjectMinScore", 1.5),
         ("ragMode", "vector"),
@@ -144,7 +146,10 @@ def test_fork_inherits_the_snapshot(tmp_path, monkeypatch):
     )
 
     assert forked is not None
-    assert studio_db.get_chat_thread("thread-2")["settings"] == SETTINGS
+    # Full access was granted to the source chat only.
+    expected = {k: v for k, v in SETTINGS.items() if k != "fullAccess"}
+    assert studio_db.get_chat_thread("thread-2")["settings"] == expected
+    assert studio_db.get_chat_thread("thread-1")["settings"] == SETTINGS
 
 
 def test_settings_column_is_added_to_an_existing_database(tmp_path, monkeypatch):

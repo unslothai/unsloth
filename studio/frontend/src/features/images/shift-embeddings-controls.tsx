@@ -80,7 +80,7 @@ export function ShiftField({
     <div className="flex flex-col gap-1.5 pt-2">
       <Label
         label="Shift (base / max)"
-        hint="Resolution-dependent shift, as ComfyUI's ModelSamplingFlux: base shift applies at 256 latent tokens, max shift at 4096 (1024x1024), interpolated for your size. Higher spends more steps on composition. Empty boxes keep the value Studio already uses for this model (shown in grey)."
+        hint="Resolution-dependent shift, as ComfyUI's ModelSamplingFlux: base shift applies at 256 latent tokens, max shift at 4096 (1024x1024), interpolated for your size. Higher spends more steps on composition. Empty boxes keep the value Unsloth already uses for this model (shown in grey)."
       />
       <div className="flex items-center gap-2">
         <NumberBox
@@ -144,7 +144,7 @@ export function EmbeddingsField({
         hint={
           <>
             Textual inversion embeddings (.safetensors) such as EasyNegative. Put files in{" "}
-            {dir ? <code className="break-all">{dir}</code> : "the Studio embeddings folder"}; the file name is the
+            {dir ? <code className="break-all">{dir}</code> : "the Unsloth embeddings folder"}; the file name is the
             trigger word, so writing it in the prompt or negative prompt uses the embedding.
           </>
         }

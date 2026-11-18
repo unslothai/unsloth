@@ -108,6 +108,28 @@ test("a loaded NPU model's runtime length is not read back as a context pin", ()
   );
 });
 
+test("a freshly loaded NPU model under Auto is at the defaults, not an unsaved change", () => {
+  // The store as an Auto NPU load's status leaves it: no pin, no speculative mode, settings unset.
+  const config = useActiveConfigFor(
+    {
+      params: { checkpoint: "lemonade:qwen3.5-9b-FLM", maxSeqLength: 4096, loadIn4bit: true },
+      customContextLength: null,
+      speculativeType: null,
+      reasoningBudget: -1,
+      reasoningBudgetMessage: "",
+      npuPowerMode: null,
+      npuPrefillChunkLen: null,
+      npuImgPreResize: null,
+    },
+    false,
+  );
+  assert.equal(config.speculativeType, null);
+  assert.equal(config.customContextLength ?? config.maxSeqLength ?? null, null);
+  assert.ok(configsEqual("auto")({ ...config, customContextLength: null }, BASE));
+  const gguf = useActiveConfigFor({ speculativeType: null });
+  assert.equal(gguf.speculativeType, "auto");
+});
+
 test("unreported or non-llama.cpp arguments stay absent so the stored row can hydrate", () => {
   assert.equal("llamaExtraArgs" in useActiveConfigFor({}), false);
   assert.equal(
@@ -131,4 +153,18 @@ test("between stored configs a null mode stays distinct from an explicit one", (
   const offEqual = configsEqual("off");
   assert.ok(!offEqual(BASE, { ...BASE, speculativeType: "off" }));
   assert.ok(offEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }));
+});
+
+test("a GPU model loaded after an NPU one does not carry the NPU settings", () => {
+  const stale = { npuPowerMode: "turbo", npuPrefillChunkLen: 1024, npuImgPreResize: 448 };
+  const gpu = useActiveConfigFor(stale);
+  assert.equal(gpu.npuPowerMode, null);
+  assert.equal(gpu.npuPrefillChunkLen, null);
+  assert.equal(gpu.npuImgPreResize, null);
+  const npu = useActiveConfigFor({
+    ...stale,
+    params: { checkpoint: "lemonade:qwen3-0.6b-FLM", maxSeqLength: 8192 },
+  }, false);
+  assert.equal(npu.npuPowerMode, "turbo");
+  assert.equal(npu.npuPrefillChunkLen, 1024);
 });

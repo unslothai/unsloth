@@ -286,6 +286,7 @@ from ._utils import _ignore_block_swap_params_for_ddp
 from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
+from ._lora_fold_generate import lora_fold_generate as _lora_fold_generate
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
@@ -2464,7 +2465,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if kwargs.get("past_key_values") is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
-            with _get_inference_mode_context_manager(self), autocaster:
+            with (
+                _get_inference_mode_context_manager(self),
+                autocaster,
+                _lora_fold_generate(self, args, kwargs),
+            ):
                 return self._old_generate(*args, **kwargs)
         finally:
             _clear_generation_caches(self)
@@ -2561,6 +2566,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             _decode_graphs.plan_scope(plan),
             _get_inference_mode_context_manager(self),
             autocaster,
+            _lora_fold_generate(self, args, kwargs),
         ):
             out = self._old_generate(*args, **kwargs)
             if isinstance(scope, _GraphDecodeSteps):
@@ -5571,6 +5577,31 @@ class FastBaseModel:
             return model
         transformers_set_seed(random_state)
 
+        # Models with their own projection names (native DeepSeek-V4.1) map the standard aliases to real Linears.
+        _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
+        _targets_remapped = False
+        _remapped_moe_targets = None
+        if callable(_remap_targets) and finetune_language_layers:
+            _requested_targets = target_modules
+            _remapped = _remap_targets(
+                target_modules,
+                attention = finetune_attention_modules,
+                mlp = finetune_mlp_modules,
+            )
+            if _remapped is not target_modules:
+                # Routed-expert intent comes from the caller's bare aliases; remapped MLP names are shared-expert only.
+                if _requested_targets is None or _requested_targets == "all-linear":
+                    _requested_targets = ["gate_proj", "up_proj", "down_proj"]
+                _remapped_moe_targets = [
+                    name
+                    for name in _requested_targets
+                    if finetune_mlp_modules
+                    and name in ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
+                ]
+                target_modules = _remapped
+                # Final module-name suffixes: get_peft_regex would read the qualified ones as leaves.
+                _targets_remapped = True
+
         if type(r) is not int:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
         if r <= 0:
@@ -5653,6 +5684,8 @@ class FastBaseModel:
                 ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+        if _targets_remapped:
+            _moe_detect_target = _remapped_moe_targets
         # Auto regex is built after MXFP4 expert stacking, so it no longer names per-expert Linears.
         _auto_targets = target_modules is None or target_modules == "all-linear"
 
@@ -5737,8 +5770,10 @@ class FastBaseModel:
                 "." not in str(name) for name in target_modules
             )
             # Qualified paths already name their module; get_peft_regex treats every entry as a leaf.
-            if type(target_modules) in (list, tuple) and (
-                _scoping or finetune_audio_layers or (_core_prefix and _leaf_list)
+            if (
+                type(target_modules) in (list, tuple)
+                and not _targets_remapped
+                and (_scoping or finetune_audio_layers or (_core_prefix and _leaf_list))
             ):
                 if _scoping:
                     print(

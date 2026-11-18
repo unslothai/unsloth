@@ -473,6 +473,35 @@ def _packed_base(base_layer):
     return base_layer.weight_packed, base_layer.mxfp4_quant_state()
 
 
+_QAT_MODULE_PREFIXES = ("torchao.quantization.qat.", "torchao.prototype.qat.")
+_IS_QAT_LINEAR = {}
+
+
+def _is_qat_linear(module):
+    # torchao QAT linears fake-quantize the weight and / or input inside forward(); memoized per class.
+    cls = type(module)
+    is_qat = _IS_QAT_LINEAR.get(cls)
+    if is_qat is None:
+        is_qat = _IS_QAT_LINEAR[cls] = any(
+            c.__module__.startswith(_QAT_MODULE_PREFIXES) for c in cls.__mro__
+        )
+    return is_qat
+
+
+def _has_qat_linear(proj):
+    # Decode reads raw weights, so QAT (base or adapter) must run the module forward.
+    modules = proj._modules
+    if _is_qat_linear(modules.get("base_layer", proj)):
+        return True
+    for name in ("lora_A", "lora_B"):
+        adapters = modules.get(name)
+        if adapters is not None:
+            for module in adapters._modules.values():
+                if _is_qat_linear(module):
+                    return True
+    return False
+
+
 def _has_packed_qweight(proj):
     # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
     base_layer = proj._modules.get("base_layer", proj)
@@ -1782,6 +1811,7 @@ def fast_linear_forward(
         or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_packed_qweight(proj)
+        or _has_qat_linear(proj)
     ):
         result = proj(X)
         return result if out is None else out.copy_(result)

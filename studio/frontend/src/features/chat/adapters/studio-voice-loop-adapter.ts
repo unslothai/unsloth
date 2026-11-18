@@ -94,7 +94,7 @@ const BARGE_PREROLL_MS = 600;
 const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
 const VAD_MIN_SPEECH_MS = 300;
-// The probe clip holds only ~BARGE_CONFIRMED_MS of voice: the full bar failed the first check every time.
+// The probe clip holds only ~BARGE_CONFIRMED_MS of voice: the full bar always failed it.
 const BARGE_VAD_MIN_SPEECH_MS = 200;
 
 // Scoped to the detector pick that failed: choosing another one asks again.
@@ -140,8 +140,7 @@ function isHallucinatedTranscript(text: string): boolean {
 }
 
 let heldTurn: { text: string; at: number } | null = null;
-// The fragment cut into the reply: the next session keeps listening as that barge-in,
-// not as the paused reply's barge gate, which never records and never times out.
+// The fragment cut into the reply: the next session resumes it as a barge-in, not via the reset barge gate.
 let heldFromBarge = false;
 // The last transcript this loop put in the composer: the re-arm clears only that, never a typed draft.
 let voiceBoxText = "";
@@ -152,7 +151,6 @@ export function voiceWroteBox(text: string): boolean {
 
 // The box minus this loop's last transcript, or null when that transcript is not its tail:
 // dictation prepends a typed draft, so a held fragment sits after it and must go before re-arming.
-// Once a send has cleared the box, its transcript no longer claims later drafts; a newer utterance's does.
 export function voiceTextReleaser(): () => void {
   const said = voiceBoxText;
   return () => {
@@ -679,7 +677,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         } finally {
           store.setVoiceTranscribing(false);
         }
-        // Voice was turned off while this clip was heard: its words are discarded, never held for the next session.
         if (switchedOff()) {
           dropSwitched();
           return;
@@ -1088,7 +1085,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
         };
 
-        // onaudioprocess only fires while the processor reaches a destination; a muted sink
+        // onaudioprocess only fires while the processor reaches a destination.
         const sink = audioCtx.createGain();
         sink.gain.value = 0;
         source.connect(processor);
@@ -1096,6 +1093,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         sink.connect(audioCtx.destination);
       } catch (error) {
         teardown();
+        // Stopped while the mic was starting: the closed context threw, not the mic.
+        if (ended) return;
         console.error("Voice mic error:", error);
         const name = error instanceof Error ? error.name : "";
         const message = error instanceof Error ? error.message : String(error);

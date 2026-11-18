@@ -72,7 +72,7 @@ import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
 
-function ViewRepositoryButton({
+export function ViewRepositoryButton({
   repoId,
   isDataset,
 }: {
@@ -128,7 +128,7 @@ function ViewRepositoryButton({
   );
 }
 
-function CopyRepoButton({ repoId }: { repoId: string }) {
+export function CopyRepoButton({ repoId }: { repoId: string }) {
   const { copied, copy } = useCopyFeedback();
 
   const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -160,7 +160,7 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
   );
 }
 
-function StatRow({
+export function StatRow({
   label,
   value,
   icon,
@@ -190,11 +190,11 @@ function StatRow({
   );
 }
 
-function StatGrid({ children }: { children: React.ReactNode }) {
+export function StatGrid({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-wrap items-center gap-1.5">{children}</div>;
 }
 
-function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
+export function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
   return <div className="max-w-[calc(680px*var(--ui-space-scale,1))] pt-3">{children}</div>;
 }
 
@@ -226,7 +226,7 @@ function StatusChip({
   );
 }
 
-function BaseModelSearchChip({
+export function BaseModelSearchChip({
   baseModel,
   searchTerm,
   onSearchHub,

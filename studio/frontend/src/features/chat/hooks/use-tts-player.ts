@@ -106,6 +106,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   // A reply sentence is at the synthesizer: an aside now would land right before it.
   const realSynthRef = useRef(false);
   const failedReqRef = useRef(-1);
+  // ensure() keeps no failure state: one failed voice load per reply, not one load and toast per sentence.
+  const slotFailedReqRef = useRef(-1);
   const rafRef = useRef<number | null>(null);
   const pausedRef = useRef(false);
   const heldRef = useRef(false);
@@ -182,10 +184,21 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       };
       // A named generation lets "switch model by request" swap the chat model out for the voice: own the slot first.
       // A pick changed while it loaded resolves the old load: ask again until the slot holds the current pick.
+      // Per sentence even when the flag says loaded: a voice ejected from Loaded models keeps the flag set.
+      const check = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
+      if (check && (slotFailedReqRef.current === reqId || !(await check()))) {
+        slotFailedReqRef.current = reqId;
+        return null;
+      }
+      if (reqRef.current !== reqId) return null;
       for (let tries = 0; !useChatRuntimeStore.getState().voiceSlotLoaded; tries++) {
         const ensure = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
         if (!ensure) break;
-        if (tries >= 3 || !(await ensure())) return null;
+        if (slotFailedReqRef.current === reqId) return null;
+        if (tries >= 3 || !(await ensure())) {
+          slotFailedReqRef.current = reqId;
+          return null;
+        }
         if (reqRef.current !== reqId) return null;
       }
       let url: string;

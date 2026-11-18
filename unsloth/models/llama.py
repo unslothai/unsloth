@@ -163,6 +163,7 @@ from ..kernels.fused_add_rms_layernorm import (
 )
 from ..kernels import fast_lora as _fast_lora
 from . import _decode_graphs
+from ._lora_fold_generate import lora_fold_generate as _lora_fold_generate
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from ..context_parallel import get_cp_manager
@@ -260,6 +261,12 @@ def lm_head_needs_forward(lm_head_module):
 
 
 def original_apply_o(self, X):
+    # run_attention downcasts fp32 Q/K/V to bf16 / fp16 for kernels without fp32 support (FlashAttention,
+    # xformers on sm_100+), so an fp32 model outside autocast hands a half-precision X to an fp32 o_proj.
+    if X.dtype in (torch.float16, torch.bfloat16) and not torch.is_autocast_enabled():
+        o_weight = getattr(getattr(self.o_proj, "base_layer", self.o_proj), "weight", None)
+        if o_weight is not None and o_weight.dtype == torch.float32:
+            X = X.to(torch.float32)
     O = self.o_proj(X)
     return O
 
@@ -1990,7 +1997,7 @@ def _decode_logits(self, hidden_states):
     """The decode branch of CausalLM_fast_forward's head (q_len == 1, no labels), for captured steps."""
     lm_head = self.lm_head.weight
     dtype = lm_head.dtype
-    if hidden_states.shape[0] == 1:
+    if hidden_states.shape[0] == 1 and type(self.lm_head) is torch.nn.Linear:
         logits = torch.mv(lm_head, hidden_states.ravel().to(dtype)).unsqueeze(0).unsqueeze(0)
     else:
         logits = self.lm_head(hidden_states.to(dtype))
@@ -2118,7 +2125,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 attentions = outputs.attentions,
             )
 
-        if bsz == 1 and q_len == 1:
+        if bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
@@ -3170,6 +3177,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
                 _decode_graphs.plan_scope("graph" if graphs else "eager"),
                 _get_inference_mode_context_manager(self),
                 torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
+                # After eager_scope: the fold's graphs-on threshold follows this call's plan.
+                _lora_fold_generate(self, args, kwargs),
             ):
                 output = _decode_graphs.generate_with_fallback(
                     self, self._old_generate, graphs, args, kwargs
@@ -4839,7 +4848,9 @@ class FastLlamaModel:
             layers_to_transform = [layers_to_transform]
         # The flag reflects the LAST load, not this model.
         _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
-        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq:
+        # Read from the class so an already wrapped PeftModel keeps the legacy path.
+        _has_lora_remap = callable(getattr(type(model), "unsloth_lora_target_modules", None))
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq or _has_lora_remap:
             for peft_arg, flag in (
                 ("finetune_vision_layers", False),
                 ("finetune_language_layers", True),
@@ -4849,8 +4860,9 @@ class FastLlamaModel:
             ):
                 if peft_arg not in kwargs:
                     kwargs[peft_arg] = flag
-            # Identity, not equality: only an omitted argument is replaced; the causal default names no T5 leaf.
-            if target_modules is _DEFAULT_TARGET_MODULES and _text_seq2seq:
+            # Identity, not equality: only an omitted argument is replaced; the causal default names no T5 leaf, and
+            # a remapping model reads None as its own full default.
+            if target_modules is _DEFAULT_TARGET_MODULES and (_text_seq2seq or _has_lora_remap):
                 target_modules = None
             return FastBaseModel.get_peft_model(
                 model = model,

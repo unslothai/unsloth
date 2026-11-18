@@ -170,6 +170,16 @@ def test_plain_generate_on_by_default_bitwise_and_released(runtime):
     assert _Stats(model)()["graphs"] == 0
 
 
+def test_release_rearms_a_disabled_model():
+    """A capture failure (e.g. an OOM mid-GRPO) must not keep the model eager for life."""
+    model = torch.nn.Linear(2, 2)
+    state = G._state(model)
+    for drop in (G.release, G.invalidate):
+        state.disabled = "capture failed: OutOfMemoryError"
+        drop(model)
+        assert state.disabled is None
+
+
 def test_generate_scope_turns_graphs_on(runtime):
     runtime.setattr(G, "_DEFAULT_OK", True)
     runtime.setattr(G, "_STUDIO_DEFAULT_OK", True)

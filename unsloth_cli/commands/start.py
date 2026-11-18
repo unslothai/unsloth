@@ -218,6 +218,16 @@ _CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
 _CLAUDE_COMPACT_BUFFER = 3_000
 # claude 2.1 ignores a smaller CLAUDE_CODE_AUTO_COMPACT_WINDOW and warns about it on every launch.
 _CLAUDE_MIN_AUTO_COMPACT_WINDOW = 100_000
+# Headroom for the agent's token estimate running low: 10% of the window, so a 1M window keeps
+# ~33k free (96%, near Claude Code's own ~967K) instead of 100k.
+_CLAUDE_COMPACT_HEADROOM_MAX = 32_768
+
+
+def claude_autocompact_pct(window: int) -> str:
+    headroom = min(window // 10, _CLAUDE_COMPACT_HEADROOM_MAX)
+    return str((window - headroom) * 100 // window)
+
+
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
@@ -3342,7 +3352,7 @@ def _claude_local_env(
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = (
             str(int(window)) if int(window) >= _CLAUDE_MIN_AUTO_COMPACT_WINDOW else ""
         )
-        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = claude_autocompact_pct(int(window))
         # claude reserves min(max output, 20k) + 3k before compacting, so its 32k default output would take 20k of a 32k window; above 20k the cap gains no room.
         output = opencode_output_limit(int(window))
         if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:

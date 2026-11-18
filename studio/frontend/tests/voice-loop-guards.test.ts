@@ -397,8 +397,23 @@ test("the orb's Escape stays out of other pages while Chat is hidden; speech own
   assert.match(orb, /\sref=\{rootRef\}/);
   const player = readSrc("features/chat/hooks/use-tts-player.ts");
   const synth = player.slice(player.indexOf("const synthesize = useCallback("));
-  const own = synth.indexOf("if (tries >= 3 || !(await ensure())) return null;");
+  const own = synth.indexOf("if (tries >= 3 || !(await ensure())) {");
   assert.ok(own > 0 && own < synth.indexOf("url = await request();"));
+  assert.ok(synth.indexOf("if (slotFailedReqRef.current === reqId) return null;") < own);
+  // Residency is rechecked for every sentence, before the cached flag is trusted.
+  const check = synth.indexOf("if (check && (slotFailedReqRef.current === reqId || !(await check()))) {");
+  assert.ok(check > 0 && check < synth.indexOf("!useChatRuntimeStore.getState().voiceSlotLoaded; tries++"));
+});
+
+test("voice off during mic startup shows no microphone error", () => {
+  assert.match(loop, /teardown\(\);\s*\/\/[^\n]*\n\s*if \(ended\) return;\s*console\.error\("Voice mic error:"/);
+});
+
+test("the dictation mic stays a direct child of the composer controls", () => {
+  // The narrow-composer CSS shrinks `.aui-composer-action-wrapper > button`; a wrapper div would skip it.
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(thread, /\{!voiceEngaged && \(\s*<ComposerPrimitive\.If dictation=\{false\}>/);
+  assert.doesNotMatch(thread, /voiceEngaged \? "hidden" : "contents"/);
 });
 
 test("signing out ends voice; a held continuation keeps the coalesced reply waiting", () => {
