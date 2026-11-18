@@ -37,6 +37,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.training.diffusion_gc_budget import enable_budgeted_checkpointing, is_out_of_memory
 from core.training.diffusion_load_progress import report_model_load_progress
 from core._torchao_stub import is_stubbed, torch_is_rocm
 from core.training.diffusion_train_common import (
@@ -3190,8 +3191,12 @@ def _train_dit(
             target_modules = list(use_lora_targets),
         )
     )
+    gc_budget = None
     if cfg.gradient_checkpointing:
-        enable_diffusion_gradient_checkpointing(transformer)
+        # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+        gc_budget = enable_budgeted_checkpointing(transformer, device)
+        if gc_budget is None:
+            enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
@@ -3425,6 +3430,41 @@ def _train_dit(
     if sample_plan is not None and resumed < cfg.train_steps:
         _sample(resumed)
 
+    def _forward_backward(latents, noise, timesteps, sigmas, noisy, embeds):
+        with autocast:
+            model_pred = spec.forward(
+                transformer, noisy, timesteps, sigmas, embeds, cfg, device, weight_dtype
+            )
+            target = noise - latents
+            if bell_weights is None:
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+            else:
+                per = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                w_idx = (sigmas.flatten().float() * num_train_ts).long().clamp(0, num_train_ts - 1)
+                w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
+                loss = (per * w).mean()
+        (loss / cfg.gradient_accumulation_steps).backward()
+        return loss
+
+    def _retry_fully_checkpointed(micro_inputs):
+        # Partial gradients of the failed micro-step are already accumulated, so the whole step reruns from its inputs.
+        gc_budget.fall_back()
+        optimizer.zero_grad(set_to_none = True)
+        gc.collect()
+        _empty_device_cache(device)
+        _emit(
+            on_event,
+            "warning",
+            message = (
+                "Ran out of GPU memory while keeping block activations; every block is checkpointed "
+                "from this step on."
+            ),
+        )
+        acc = None
+        for inputs in micro_inputs:
+            acc = accumulate_loss(acc, _forward_backward(*inputs), cfg.gradient_accumulation_steps)
+        return acc
+
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(resumed, cfg.train_steps):
@@ -3433,6 +3473,8 @@ def _train_dit(
             break
         optimizer.zero_grad(set_to_none = True)
         step_acc = None
+        # This step's drawn inputs, so an out-of-memory retry reruns it from the same draws.
+        micro_inputs = []
         for _ in range(cfg.gradient_accumulation_steps):
             idxs = index_sampler.next_batch(batch_size)
             if canvases is not None:
@@ -3483,30 +3525,41 @@ def _train_dit(
                 weight_dtype,
                 pad_to = qwen_pad_to,
             )
-            with autocast:
-                model_pred = spec.forward(
-                    transformer, noisy, timesteps, sigmas, embeds, cfg, device, weight_dtype
-                )
-                target = noise - latents
-                if bell_weights is None:
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
-                else:
-                    per = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
-                    w_idx = (
-                        (sigmas.flatten().float() * num_train_ts).long().clamp(0, num_train_ts - 1)
-                    )
-                    w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
-                    loss = (per * w).mean()
-            (loss / cfg.gradient_accumulation_steps).backward()
-            step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
+            micro_inputs.append((latents, noise, timesteps, sigmas, noisy, embeds))
+            if gc_budget is not None and not gc_budget.planned and canvases is not None:
+                # Bucketed runs: the plan is measured on this step's canvas and scaled to the largest bucket.
+                gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idxs))
+            oom = False
+            try:
+                loss = _forward_backward(*micro_inputs[-1])
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+                if gc_budget is None or gc_budget.disabled or not is_out_of_memory(exc):
+                    raise
+                oom = True
+            if oom:
+                # Handled outside the except block, so the failed step's tensors are already released.
+                step_acc = _retry_fully_checkpointed(micro_inputs)
+            else:
+                step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
 
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
             # Pre-clip norm: the UI's health signal.
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         step_loss = loss_value(step_acc)
+        plan_now = gc_budget is not None and not gc_budget.planned
+        if plan_now:
+            fb_peak = torch.cuda.max_memory_allocated()
+            alloc_before_step = torch.cuda.memory_allocated()
         optimizer.step()
         lr_sched.step()
+        if plan_now:
+            _plan_gc_budget(
+                gc_budget,
+                fb_peak,
+                alloc_before_step,
+                max(c[0] * c[1] for c in canvases) if canvases is not None else None,
+            )
         if ema is not None:
             ema.update(transformer)
 
@@ -3613,6 +3666,37 @@ def _train_dit(
         discarded = bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)
+
+
+def _plan_gc_budget(
+    gc_budget,
+    fb_peak,
+    alloc_before_step,
+    max_canvas_area = None,
+) -> None:
+    """After the first step: keep as many blocks' activations as the measured free memory allows. Never raises."""
+    import logging
+
+    import torch
+
+    log = logging.getLogger(__name__)
+    try:
+        # The optimizer's first step allocates its moments, which every later step carries.
+        projected = int(fb_peak) + max(0, torch.cuda.memory_allocated() - int(alloc_before_step))
+        free, total = torch.cuda.mem_get_info()
+        kept = gc_budget.plan(
+            projected, free, torch.cuda.memory_reserved(), total, max_canvas_area = max_canvas_area
+        )
+    except Exception as exc:  # noqa: BLE001 -- an optimisation only: every block stays checkpointed
+        gc_budget.fall_back()
+        log.info("gradient checkpointing budget not applied: %s", exc)
+        return
+    log.info(
+        "gradient checkpointing: keeping activations for %d of %d blocks (%.2f GiB)",
+        kept,
+        gc_budget.total_blocks,
+        gc_budget.kept_bytes / (1 << 30),
+    )
 
 
 def _make_optimizer(
