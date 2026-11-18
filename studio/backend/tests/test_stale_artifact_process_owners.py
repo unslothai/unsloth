@@ -16,15 +16,18 @@ PROBES = [(snapshots, "_pid_alive"), (downloads, "_process_alive")]
 
 @pytest.fixture
 def exited_owner():
-    if sys.platform == "win32":
-        pytest.skip("Windows does not retain POSIX zombies.")
+    # POSIX: an unreaped zombie. Windows: an exited process whose handle Popen still holds, so OpenProcess succeeds.
     process = subprocess.Popen([sys.executable, "-c", "pass"], stdout = subprocess.PIPE)
     try:
         process.stdout.read()
-        deadline = time.monotonic() + 5
-        while not process_lifetime._pid_is_zombie(process.pid):
-            if time.monotonic() >= deadline:
-                pytest.fail("The exited child did not become a zombie.")
+        if sys.platform == "win32":
+            process.wait(timeout = 10)
+        else:
+            deadline = time.monotonic() + 5
+            while not process_lifetime._pid_is_zombie(process.pid):
+                if time.monotonic() >= deadline:
+                    pytest.fail("The exited child did not become a zombie.")
+                time.sleep(0.01)
         yield process.pid
     finally:
         process.stdout.close()
