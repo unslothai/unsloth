@@ -82,7 +82,8 @@ To help a local model reuse its prompt cache when a follow-up mentions a new
 topic, start Studio with `UNSLOTH_STUDIO_MCP_SEARCH_ONLY=1`. For oversized
 catalogs, Studio advertises only `mcp_tool_search`, forced tools and tools
 mapped to an attached image. The model may need extra search calls to find a
-tool, and smaller models may miss tools they need.
+tool, and smaller models may miss tools they need. Only the value `1` turns it
+on, and it is an environment variable only, with no toggle in Settings.
 
 ```sh
 UNSLOTH_STUDIO_MCP_SEARCH_ONLY=1 unsloth studio

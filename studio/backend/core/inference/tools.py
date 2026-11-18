@@ -14157,6 +14157,7 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         search = _mcp_tool_search_spec(catalog, max_chars)
     listing = [search]
     listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
+    # Opt-in: a fixed tool block keeps the prompt cache warm across topic changes.
     if os.environ.get("UNSLOTH_STUDIO_MCP_SEARCH_ONLY") == "1":
         return listing
     room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
