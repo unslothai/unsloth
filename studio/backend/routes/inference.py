@@ -30800,6 +30800,11 @@ async def _proxy_to_external_provider(
     # The prompt last sent, so an overflow refit evicts below what the provider refused.
     _last_fit = None
 
+    # As the plain fit decides it: a cloud model that never gets Studio tools cannot search an epoch.
+    _model_can_reset = managed is not None or provider_model_runs_local_tools(
+        provider_type, payload.external_model or payload.model
+    )
+
     async def _managed_context_fitter(messages, tools):
         nonlocal _first_payload
         # After a checkpoint fit, later passes extend its result, as the GGUF loop does.
@@ -30814,7 +30819,7 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
                 # The NPU has no compaction of its own, so /compact resets here as on GGUF.
-                can_reset = not _tool_calls_are_disabled(payload),
+                can_reset = not _tool_calls_are_disabled(payload) and _model_can_reset,
                 first_pass = first_pass,
                 replays_manual = True,
             )
@@ -30962,13 +30967,7 @@ async def _proxy_to_external_provider(
             _evicting_payload,
             tools = _external_fit_tools,
             # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
-            can_reset = (
-                bool(managed.supports_tools)
-                if managed is not None
-                else provider_model_runs_local_tools(
-                    provider_type, payload.external_model or payload.model
-                )
-            )
+            can_reset = (bool(managed.supports_tools) if managed is not None else _model_can_reset)
             and not _tool_calls_are_disabled(payload),
             replays_manual = True,
         )

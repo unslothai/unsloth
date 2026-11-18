@@ -356,6 +356,26 @@ def test_an_overflow_after_a_fit_evicts_below_the_refused_prompt(tool_loop, monk
     assert len(chats) == (3 if tool_loop else 2)
 
 
+def test_an_overflow_on_a_model_without_studio_tools_evicts_without_a_checkpoint(
+    rag_home, rag_conn, stub_embeddings, monkeypatch
+):
+    import routes.inference as ri
+
+    monkeypatch.setattr(ri, "provider_model_runs_local_tools", lambda *_: False)
+    thread = "thread-evict-overflow-no-tools"
+    chunks, summaries, chats = _bodies(
+        _OverflowAt8k,
+        messages = _recall_chat(thread),
+        thread_id = thread,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 100_000,
+        **_EVICT,
+    )
+    assert summaries == [] and len(chats) == 2
+    [truncation] = _truncations(chunks)
+    assert truncation["dropped_messages"] > 0 and not truncation.get("checkpoint_started")
+
+
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError
