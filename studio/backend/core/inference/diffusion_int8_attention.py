@@ -569,7 +569,6 @@ def _drop_routes(plan: dict) -> None:
             else:
                 raised += 1
     if restored or raised:
-        # the install logged the kernel on these modules; say what runs now
         _log().info(
             "diffusion.int8_attention: torch attention beat the sink path on cuda:%d at %d tokens: %d attention "
             "modules back on their stock processor, %d below %d tokens stay on %s",
@@ -587,7 +586,6 @@ def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
     its calls compile as they did before the install; any other raises its token floor."""
 
     def raise_floor(tokens: int) -> bool:
-        """True when the module got its stock processor back."""
         stock = getattr(proc, "_unsloth_stock", None)
         if stock is not None and module is not None and getattr(module, "processor", None) is proc:
             module.processor = stock
@@ -2152,9 +2150,7 @@ INCUMBENT_ATTR = "_unsloth_int8_incumbent"
 
 
 def live_backend(pipe: Any, engaged: Any) -> Any:
-    """``engaged`` as it runs now. A load that engaged the kernel on the strided processors reports it only while a
-    module still routes to it: a sink race that found torch's attention faster gives every module its stock processor
-    back (``_drop_routes``), and the incumbent the install raced runs from then on."""
+    """``engaged`` while any module still routes to the kernel, else the incumbent after a sink race dropped them."""
     if engaged != BACKEND or pipe is None or not hasattr(pipe, INCUMBENT_ATTR):
         return engaged
     dits = [getattr(pipe, name, None) for name in ("transformer", "transformer_2")]

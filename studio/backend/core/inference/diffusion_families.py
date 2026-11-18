@@ -721,8 +721,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3ModularPipeline",
-        # As FLUX.2 Klein (same q/k RMSNorm, same VAE): fresh L4 processes (Klein base, int8, cold inductor caches)
-        # rendered one seed 0.003-0.007 LPIPS apart from per-process reduction-config and cuDNN conv picks.
+        # As FLUX.2 Klein: per-process reduction-config / cuDNN picks moved one seed 0.003-0.007 LPIPS on L4.
         filter_reduction_configs = True,
         cudnn_benchmark = False,
         # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
@@ -799,8 +798,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
-        # As FLUX.2 Klein (same q/k RMSNorm, same VAE): fresh L4 processes (Klein base, int8, cold inductor caches)
-        # rendered one seed 0.003-0.007 LPIPS apart from per-process reduction-config and cuDNN conv picks.
+        # As FLUX.2 Klein: per-process reduction-config / cuDNN picks moved one seed 0.003-0.007 LPIPS on L4.
         filter_reduction_configs = True,
         cudnn_benchmark = False,
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;

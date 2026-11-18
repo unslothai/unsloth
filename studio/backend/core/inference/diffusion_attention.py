@@ -3696,7 +3696,6 @@ def apply_attention_backend(
                 install_requested,
             )
 
-            # the status names this once a sink race hands every module back (``live_backend``)
             try:
                 setattr(pipe, INCUMBENT_ATTR, engaged)
             except Exception:  # noqa: BLE001 - a slotted pipeline: the status keeps the kernel's name

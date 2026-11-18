@@ -683,8 +683,7 @@ def _rows_cache_key(ckey: str) -> str:
 
 
 def _note_rows(index: int, key: tuple, m: int) -> None:
-    """Record a large call's row bucket; a new one is written to the race cache outside any capture, so the next load
-    races the row counts this model runs (``diffusion_int8_cutlass.large_points``). No race here: no added cost."""
+    """Record a large call's row bucket for the next load's race; writes the cache only outside capture."""
     from . import diffusion_int8_cutlass as cut
 
     if cut._LARGE_M <= m < cut._HUGE_M:
@@ -905,8 +904,7 @@ def _cutlass_plan(
                 and all((v is None or v in cut.probed_tiles(index)) for v in hit.values())
                 else {}
             )
-            # a cache holding every fixed point keeps its winners and races only a newly recorded row bucket; one
-            # from before a fixed point existed races them all
+            # a cache missing a fixed point (older format) races everything again
             fixed = {min(cut._RACE_M)} | (
                 {cut._RACE_M_HUGE} if cut._RACE_M_HUGE in points else set()
             )
@@ -1740,8 +1738,7 @@ def _rdna_shared(x: Any, linears: tuple) -> Optional[list]:
 
 
 class _MergedWeight:
-    """The merged rows as a weight for the CUTLASS race: its own payload, every other attribute (activation quant
-    settings) its first part's."""
+    """Merged rows as a weight for the CUTLASS race; other attributes come from the first part."""
 
     def __init__(self, qdata: Any, scale: Any, part: Any):
         self.qdata, self.scale, self._part = qdata, scale, part
@@ -1751,12 +1748,8 @@ class _MergedWeight:
 
 
 def merge_payloads(linears: tuple, logger: Any = None) -> Optional[tuple]:
-    """One GEMM for Linears reading one input: their int8 rows (plain torchao ``Int8Tensor``, swapped, rotated, no
-    bias, one rotation group / K / path) concatenated into one buffer, and each weight's ``qdata`` / ``scale``
-    repointed in place to its row slice of it, so the weights stay one copy (an in-place LoRA merge writes through
-    the slices). Undone when anything else still holds an old payload (the merge would then double the memory).
-    Returns ``(wq [sum N, K], ws [sum N], n, fused path)`` for ``shared_rotq_linears(merged = ...)``, else None.
-    Outside any trace or capture; races the merged shape for the prebuilt kernels like any swapped Linear."""
+    """Concatenate same-input int8 rows into one buffer and repoint each weight to its slice (one copy; LoRA merges
+    write through). Undone if another holder keeps an old payload. Returns ``(wq, ws, n, path)`` or None. Eager only."""
     import sys
 
     import torch

@@ -66,9 +66,7 @@ def text_cond_enabled() -> bool:
 
 
 def _text_only(module: Any) -> bool:
-    """A render without a reference stream caches its text stream: by default on a resident denoiser (an offloaded
-    one keeps the stock forward, its prefetch order unchanged); ``_unsloth_cond_text_only`` in the instance dict
-    decides when present."""
+    """Cache the text stream when there is no reference stream; offloaded denoisers keep stock (prefetch order)."""
     flag = module.__dict__.get("_unsloth_cond_text_only")
     if flag is not None:
         return bool(flag)

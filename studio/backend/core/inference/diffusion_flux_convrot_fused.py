@@ -132,9 +132,7 @@ def fused_qkv_disabled() -> bool:
 
 
 def _merged_qkv(attn: Any) -> Any:
-    """The merged Q / K / V rows of ``attn`` while its projections are still the modules merged (a LoRA wrapper or
-    a replaced module runs the three GEMMs; ``shared_rotq_linears`` re-checks each one's swapped weight). Traced:
-    plain attribute reads only."""
+    """Merged Q / K / V rows while the projections are still the merged modules (LoRA / replaced: three GEMMs)."""
     rec = attn.__dict__.get(_QKV_ATTR)
     if rec is None:
         return None
@@ -145,9 +143,7 @@ def _merged_qkv(attn: Any) -> Any:
 
 
 def _int8_attention_route(attn: Any) -> bool:
-    """The processor sends this module's calls to the INT8 attention kernel. Its quantisers read Q / K / V as the
-    projections wrote them, and column views of one ``[M, 9216]`` output cost them more than the merged GEMM saves
-    (L4, Klein base, one race plan: +2.3% per step merged), so that route keeps three GEMMs. Traced: attribute reads."""
+    """INT8 attention route: keeps three GEMMs, column views of the merged output cost +2.3% per step (L4)."""
     return bool(getattr(getattr(attn, "processor", None), "_unsloth_int8", False))
 
 
@@ -164,8 +160,7 @@ def _shared_qkv(
 
 
 def merge_qkv(transformer: Any, logger: Any = None) -> int:
-    """Concatenate each FLUX.3 attention's swapped Q / K / V int8 rows into one GEMM (``merge_payloads``). Resident
-    denoisers only, eagerly, before the regional compile; returns the attention modules merged (idempotent)."""
+    """Merge each FLUX.3 attention's Q / K / V into one int8 GEMM; resident denoisers, before compile. Idempotent."""
     if fused_qkv_disabled() or type(transformer).__name__ != "Flux3Transformer2DModel":
         return 0
     attn_cls = _CLS.get("Flux3Attention")

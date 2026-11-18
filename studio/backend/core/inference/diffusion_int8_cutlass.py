@@ -79,8 +79,7 @@ def row_bucket(m: int) -> int:
 
 
 def large_points(rows: Any = None) -> tuple:
-    """The large race points of a weight shape: the row buckets an earlier load recorded for it (``rows``, oldest
-    first) in place of the 4096-row race, which stays when none were recorded or the switch is off."""
+    """Recorded row buckets (``rows``, oldest first) in place of the 4096-row race when any exist."""
     if row_race_enabled() and rows:
         picks = [int(b) for b in rows if _LARGE_M <= int(b) < _HUGE_M][-_MAX_ROW_RACES:]
         if picks:
@@ -89,8 +88,6 @@ def large_points(rows: Any = None) -> tuple:
 
 
 def race_points(rows: Any = None) -> tuple:
-    """Race M values for a weight shape's plan entry: the small race, ``large_points`` and ``_RACE_M_HUGE`` unless
-    switched off."""
     return (min(_RACE_M),) + large_points(rows) + ((_RACE_M_HUGE,) if huge_race_enabled() else ())
 
 
