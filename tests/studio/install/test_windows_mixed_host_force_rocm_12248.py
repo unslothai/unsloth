@@ -34,7 +34,12 @@ stack_mod = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = stack_mod
 _spec.loader.exec_module(stack_mod)
 
-_MASK_ENV = ("UNSLOTH_FORCE_ROCM_TORCH", "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+_MASK_ENV = (
+    "UNSLOTH_FORCE_ROCM_TORCH",
+    "CUDA_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+)
 
 INSTALL_HELPERS = functions(
     INSTALL_SRC,
@@ -43,7 +48,9 @@ INSTALL_HELPERS = functions(
     "Get-MixedHostTorchRoute",
     "Write-MixedHostCudaNotice",
 )
-SETUP_HELPERS = functions(SETUP_SRC, "Test-CudaMaskHidesNvidia", "Test-RocmTorchExplicitlyRequested")
+SETUP_HELPERS = functions(
+    SETUP_SRC, "Test-CudaMaskHidesNvidia", "Test-RocmTorchExplicitlyRequested"
+)
 
 COLLECT = _script(
     "$script:Said = @()",
@@ -55,10 +62,14 @@ INSTALL_DECISION = slice_between(
     INSTALL_SRC, '    # "rocm": from here on this is an AMD host', "    # ── Intel GPU detection"
 )
 INSTALL_NOTICE = slice_between(
-    INSTALL_SRC, "    $TorchIndexUrl = Get-TorchIndexUrl\n", "    # Must run AFTER Get-TorchIndexUrl"
+    INSTALL_SRC,
+    "    $TorchIndexUrl = Get-TorchIndexUrl\n",
+    "    # Must run AFTER Get-TorchIndexUrl",
 )
 SETUP_DECISION = slice_between(
-    SETUP_SRC, "if ($script:ProbeAmdBesideNvidia) {\n    if ($AmdHasGpuWheels)", "# Mirrors install.ps1's Intel scan"
+    SETUP_SRC,
+    "if ($script:ProbeAmdBesideNvidia) {\n    if ($AmdHasGpuWheels)",
+    "# Mirrors install.ps1's Intel scan",
 )
 
 
@@ -82,12 +93,12 @@ def _install_decision(arch, wheels, **env):
             "$HasROCm = $true; $HipSdkInstalled = $true; $ROCmGpuLabel = 'x'; $ROCmGpuName = 'x'",
             "$ROCmUnsupportedGfxArch = $null",
             INSTALL_DECISION,
-            "Write-Output \"ROUTE=$MixedHostRoute\"",
-            "Write-Output \"OVER=$RocmTorchOverNvidia\"",
-            "Write-Output \"NVIDIA=$HasNvidiaSmi\"",
-            "Write-Output \"ARCH=$ROCmGfxArch\"",
-            "Write-Output \"HASROCM=$HasROCm\"",
-            "Write-Output \"NOTICE=$MixedHostAmdArch\"",
+            'Write-Output "ROUTE=$MixedHostRoute"',
+            'Write-Output "OVER=$RocmTorchOverNvidia"',
+            'Write-Output "NVIDIA=$HasNvidiaSmi"',
+            'Write-Output "ARCH=$ROCmGfxArch"',
+            'Write-Output "HASROCM=$HasROCm"',
+            'Write-Output "NOTICE=$MixedHostAmdArch"',
             "Write-Output (\"SAID=\" + ($script:Said -join ' | '))",
         )
     )
@@ -136,7 +147,9 @@ class TestInstallPs1Decision:
         assert kv["ROUTE"] == "cuda" and kv["NVIDIA"] == "True"
 
     def test_a_cuda_mask_naming_a_device_changes_nothing(self):
-        assert _install_decision("gfx1201", True, CUDA_VISIBLE_DEVICES = "0")["ROUTE"] == "cuda-notice"
+        assert (
+            _install_decision("gfx1201", True, CUDA_VISIBLE_DEVICES = "0")["ROUTE"] == "cuda-notice"
+        )
 
 
 def _install_notice(route, arch, index, **env):
@@ -159,13 +172,18 @@ def _install_notice(route, arch, index, **env):
 class TestInstallPs1Notice:
     def test_mixed_host_on_cuda_prints_the_install_sh_notice(self):
         said = _install_notice("cuda-notice", "gfx1201", "https://download.pytorch.org/whl/cu130")
-        assert "An AMD GPU (gfx1201) was also found. CUDA PyTorch was installed for the NVIDIA GPU," in said
+        assert (
+            "An AMD GPU (gfx1201) was also found. CUDA PyTorch was installed for the NVIDIA GPU,"
+            in said
+        )
         assert '$env:UNSLOTH_FORCE_ROCM_TORCH = "1"' in said
         assert "Settings > System > GGUF inference engine > Compute backend." in said
         assert "HIP_VISIBLE_DEVICES" not in said
 
     def test_a_hip_mask_adds_the_flag_is_still_needed_line(self):
-        said = _install_notice("cuda-notice", "gfx1201", "https://x/whl/cu128", HIP_VISIBLE_DEVICES = "0")
+        said = _install_notice(
+            "cuda-notice", "gfx1201", "https://x/whl/cu128", HIP_VISIBLE_DEVICES = "0"
+        )
         assert "UNSLOTH_FORCE_ROCM_TORCH=1 is needed as well" in said
 
     def test_a_cpu_index_on_a_pre_r450_driver_stays_quiet(self):
@@ -189,7 +207,7 @@ def test_get_torch_index_url_hands_a_forced_host_to_the_amd_route():
             _function_source(INSTALL_SRC, "Get-TorchIndexUrl"),
             "$NvidiaSmiExe = 'C:\\nvidia-smi.exe'; $script:WoaNativeCudaTorch = $false",
             "$RocmTorchOverNvidia = $true",
-            "Write-Output \"URL=$(Get-TorchIndexUrl)\"",
+            'Write-Output "URL=$(Get-TorchIndexUrl)"',
         )
     )
     assert kv["URL"] == "https://download.pytorch.org/whl/cpu"
@@ -207,9 +225,9 @@ def _setup_decision(arch, wheels, **env):
             f"$AmdHasGpuWheels = ${str(wheels).lower()}",
             "$HasROCm = $true; $HipSdkInstalled = $true; $ROCmGpuLabel = 'x'; $ROCmGpuName = 'x'",
             SETUP_DECISION,
-            "Write-Output \"NVIDIA=$HasNvidiaSmi\"",
-            "Write-Output \"ARCH=$script:ROCmGfxArch\"",
-            "Write-Output \"HASROCM=$HasROCm\"",
+            'Write-Output "NVIDIA=$HasNvidiaSmi"',
+            'Write-Output "ARCH=$script:ROCmGfxArch"',
+            'Write-Output "HASROCM=$HasROCm"',
             "Write-Output (\"SAID=\" + ($script:Said -join ' | '))",
         )
     )
@@ -245,7 +263,11 @@ class TestSetupPs1Decision:
     [
         ({"UNSLOTH_FORCE_ROCM_TORCH": "1"}, True, "True"),
         ({"UNSLOTH_FORCE_ROCM_TORCH": "1"}, False, "False"),
-        ({"UNSLOTH_FORCE_ROCM_TORCH": "1", "UNSLOTH_TORCH_INDEX_URL": "https://x/whl/cu130"}, True, "False"),
+        (
+            {"UNSLOTH_FORCE_ROCM_TORCH": "1", "UNSLOTH_TORCH_INDEX_URL": "https://x/whl/cu130"},
+            True,
+            "False",
+        ),
         ({"CUDA_VISIBLE_DEVICES": "-1"}, True, "True"),
         ({}, True, None),
     ],
@@ -278,13 +300,15 @@ def test_install_and_setup_keep_one_copy_of_each_helper(name):
 
 
 @requires_pwsh
-@pytest.mark.parametrize("value", ["1", "true", " TRUE ", "yes", "on", "0", "false", "", "2", "enabled"])
+@pytest.mark.parametrize(
+    "value", ["1", "true", " TRUE ", "yes", "on", "0", "false", "", "2", "enabled"]
+)
 def test_the_flag_parses_like_install_python_stack(value):
     kv = _ps_kv(
         _script(
             SETUP_HELPERS,
             _env(UNSLOTH_FORCE_ROCM_TORCH = value),
-            "Write-Output \"FORCE=$(Test-RocmTorchExplicitlyRequested)\"",
+            'Write-Output "FORCE=$(Test-RocmTorchExplicitlyRequested)"',
         )
     )
     with patch.dict(os.environ, {"UNSLOTH_FORCE_ROCM_TORCH": value}):
@@ -307,7 +331,9 @@ class TestStackWindowsForce:
                 patch.object(stack_mod, "IS_MACOS", False),
                 patch.object(stack_mod, "_TORCH_BACKEND", ""),
                 patch.object(stack_mod, "_explicit_rocm_torch_index_url", return_value = None),
-                patch.object(stack_mod, "_explicit_unknown_family_torch_index_url", return_value = None),
+                patch.object(
+                    stack_mod, "_explicit_unknown_family_torch_index_url", return_value = None
+                ),
                 patch.object(stack_mod, "_explicit_torch_index_is_unusable", return_value = False),
                 patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True),
                 patch.object(stack_mod, "_detect_windows_gfx_arch", detect),
