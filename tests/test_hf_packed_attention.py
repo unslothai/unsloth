@@ -2151,8 +2151,6 @@ def test_packed_fp32_rows_under_autocast_take_varlen(monkeypatch, autocast):
 
 
 def _fake_varlen(leak = False):
-    """CPU stand-in for torch's varlen_attn: per-document (or, leaking, whole-row) causal attention."""
-
     def fn(
         q,
         k,
