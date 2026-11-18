@@ -1410,17 +1410,12 @@ def nccl_bandwidth(
 
     try:
         time.sleep(4)  # let the peer's rendezvous come up before we dial in
-        try:
-            out = subprocess.run(
-                f"env {local_common} --node_rank=0 {shlex.quote(local_probe)}",
-                shell = True,
-                capture_output = True,
-                text = True,
-                timeout = timeout,
-            )
-        except Exception:
+        stdout = _run_in_own_group(
+            f"env {local_common} --node_rank=0 {shlex.quote(local_probe)}", timeout
+        )
+        if stdout is None:
             return None
-        for line in (out.stdout or "").splitlines():
+        for line in stdout.splitlines():
             if line.startswith("SPARK_NCCL_BUSBW"):
                 try:
                     return float(line.split()[1])
@@ -1429,6 +1424,48 @@ def nccl_bandwidth(
         return None
     finally:
         stop_peer_nccl_probe(peer_ip, user, ssh_opts, port)
+
+
+def _run_in_own_group(command: str, timeout: float) -> Optional[str]:
+    """``command``'s stdout, or None when it fails to start or times out. It runs in its own
+    session, so a timeout or an interrupt stops torchrun and its workers, not just the shell."""
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell = True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            start_new_session = True,
+        )
+    except OSError:
+        return None
+    done = False
+    try:
+        out = proc.communicate(timeout = timeout)[0]
+        done = True
+        return out
+    except subprocess.TimeoutExpired:
+        return None
+    finally:
+        if not done:
+            # The shell may be gone while torchrun still holds the pipe: stop the whole group.
+            _stop_group(proc)
+
+
+def _stop_group(proc: subprocess.Popen) -> None:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            proc.wait(timeout = 5.0)
+            os.killpg(proc.pid, 0)  # members left behind the shell: escalate
+        except (ProcessLookupError, PermissionError):
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _nccl_probe_file(kind: str, port: Optional[int]) -> str:

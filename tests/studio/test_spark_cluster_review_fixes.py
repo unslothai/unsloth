@@ -505,3 +505,29 @@ def test_training_plan_refuses_a_model_beyond_the_layer_split_capacity(cluster) 
     one = cluster.plan_training(300.0, n_nodes = 1, model = "m")
     assert one["axis"] == "none"
     assert "Pair a second Spark" not in one["recommendation"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "process groups are POSIX")
+def test_a_timed_out_local_probe_stops_its_whole_process_group(tmp_path) -> None:
+    """subprocess.run(shell=True, timeout=...) kills only the shell; torchrun and its workers would
+    keep the GPU and wait for rendezvous long after the doctor gave up."""
+    import time as _time
+
+    sc = _load("spark_cluster_for_probe_group", "studio/spark_cluster.py")
+    pid_file = tmp_path / "child.pid"
+    started = _time.monotonic()
+    out = sc._run_in_own_group(f"sleep 120 & echo $! > {pid_file}; wait", 1.0)
+    assert out is None and _time.monotonic() - started < 20
+    child = int(pid_file.read_text().strip())
+    deadline = _time.monotonic() + 10
+    while _time.monotonic() < deadline:
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        _time.sleep(0.1)
+    else:
+        raise AssertionError("the probe's child outlived the timeout")
+    assert (
+        sc._run_in_own_group("echo SPARK_NCCL_BUSBW 12.5", 10.0).strip() == "SPARK_NCCL_BUSBW 12.5"
+    )
