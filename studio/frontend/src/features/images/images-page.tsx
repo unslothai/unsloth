@@ -1798,6 +1798,11 @@ const GalleryStripTile = memo(function GalleryStripTile({
   );
 });
 
+// Refused before beginPick(), so no superseded state needs handing back.
+function refuseLinkedDownloadOnly(): void {
+  toast.error("Download only fetches to this machine. Load a linked model to get it there.");
+}
+
 export function ImagesPage({
   active = true,
   onInitialReady,
@@ -4904,7 +4909,7 @@ export function ImagesPage({
       // A Download only selection does not take over the page, or a staged load never loads.
       const downloadOnlyPick = modelSelectionAction === "download";
       if (downloadOnlyPick && machine) {
-        toast.error("Download only fetches to this machine. Load a linked model to get it there.");
+        refuseLinkedDownloadOnly();
         return;
       }
       if (machine !== getImagesMachine()) {
