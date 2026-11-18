@@ -16,15 +16,16 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(dc, "_MODE", "auto")
     monkeypatch.setattr(dc, "_DISABLED", False)
     monkeypatch.setattr(dc, "_auto_allowed", lambda: True)
+    monkeypatch.setattr(dc, "_ACTIVE", 1, raising = False)  # inside Trainer.train()
+    monkeypatch.setattr(dc, "_foreign_bytes", lambda index: 0, raising = False)
+    for name in ("_TRANSIENT", "_SEEN", "_CALLS", "_ROWS_SEEN", "_ROWS_NEW", "_FOREIGN"):
+        getattr(dc, name, {}).clear()
     dc.clear_dequant_cache()
-    dc._TRANSIENT.clear()
-    dc._SEEN.clear()
-    dc._CALLS.clear()
     dc.STATS.clear()
     yield
     dc.clear_dequant_cache()
-    dc._TRANSIENT.clear()
-    dc._SEEN.clear()
+    for name in ("_TRANSIENT", "_SEEN", "_ROWS_SEEN", "_ROWS_NEW", "_FOREIGN"):
+        getattr(dc, name, {}).clear()
 
 
 def _memory(
@@ -162,3 +163,104 @@ def test_dead_weight_dropped_on_gc(monkeypatch):
     del W
     gc.collect()  # the gc callback frees the dense copy of a weight whose storage died
     assert dc.cached_count() == 0 and dc.STATS["stale"] == 1
+
+
+def _admit_at_safe_point(monkeypatch, rows):
+    # One step with `rows`-row matmuls, then the safe point that measures it and sets the budget.
+    _memory(monkeypatch, usable = 10 * GiB)
+    W, absmax = _weight()
+    dc._lookup(W, absmax, _decoder([]), torch.bfloat16, rows)
+    dc._on_optimizer_step(None, (), {})
+    calls = []
+    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, rows)
+    assert calls == [True] and dc.cached_count() == 1
+    return W, absmax
+
+
+def test_longer_batch_than_measured_drops_cache(monkeypatch):
+    # The budget was measured on 128-row steps: a 4096-row batch (a long sequence late in training, a larger
+    # evaluation batch) has a transient nobody measured, so it runs with nothing cached, like the base code.
+    W, absmax = _admit_at_safe_point(monkeypatch, rows = 128)
+    calls = []
+    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, 128)
+    assert calls == [] and dc.cached_count() == 1  # same size: served from the cache
+    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, 4096)
+    assert calls == [False] and dc.cached_count() == 0 and dc._BUDGET[None] == 0
+    assert dc.STATS["rows_drops"] == 1
+    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, 128)
+    assert (
+        calls == [False, False] and dc.cached_count() == 0
+    )  # nothing re-admitted before the safe point
+    # The next safe point has measured the 4096-row step: caching resumes, also for 4096 rows.
+    dc._on_optimizer_step(None, (), {})
+    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, 4096)
+    assert calls == [False, False, True] and dc.cached_count() == 1
+
+
+def test_nothing_cached_outside_trainer_train(monkeypatch):
+    W, absmax = _admit_at_safe_point(monkeypatch, rows = 64)
+    monkeypatch.setattr(dc, "_ACTIVE", 0)  # a custom loop, or a step after train() returned
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    dc._on_optimizer_step(None, (), {})
+    assert dc.cached_count() == 0 and dc._BUDGET == {}
+
+
+def test_per_process_memory_fraction_caps_usable(monkeypatch):
+    # Studio's training VRAM budget: the allocator stops at fraction * total even with the card free.
+    stats = {"allocated_bytes.all.current": 3 * GiB, "reserved_bytes.all.current": 4 * GiB}
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda index = None: (60 * GiB, 80 * GiB))
+    monkeypatch.setattr(torch.cuda, "memory_stats", lambda index = None: stats)
+    monkeypatch.setattr(dc, "_fraction", lambda index: 1.0)
+    assert dc._usable(0)[0] == 61 * GiB
+    monkeypatch.setattr(dc, "_fraction", lambda index: 0.1)  # 8 GiB allowed, 3 GiB allocated
+    assert dc._usable(0)[0] == 5 * GiB
+
+
+def test_other_process_on_the_gpu_turns_auto_off(monkeypatch):
+    W, absmax = _admit_at_safe_point(monkeypatch, rows = 64)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(
+        dc, "_foreign_bytes", lambda index: 3 * GiB
+    )  # e.g. a chat model loaded meanwhile
+    dc._on_optimizer_step(None, (), {})
+    assert dc.cached_count() == 0 and dc._BUDGET[None] == 0 and dc.STATS["foreign_off"] == 1
+
+
+def test_trainer_scope_hooks(monkeypatch):
+    transformers_trainer = pytest.importorskip("transformers.trainer")
+    from types import SimpleNamespace
+
+    assert dc.install_trainer_scope()
+    scope = [
+        c
+        for c in transformers_trainer.DEFAULT_CALLBACKS
+        if c.__name__ == "UnslothDequantCacheScope"
+    ]
+    assert len(scope) == 1
+    Trainer = transformers_trainer.Trainer
+    assert getattr(Trainer.train, "_unsloth_dq_scope", False)
+    assert getattr(Trainer.evaluate, "_unsloth_dq_scope", False)
+    callback = scope[0]()
+    monkeypatch.setattr(dc, "_ACTIVE", 0)
+    callback.on_train_begin(None, None, SimpleNamespace())
+    assert dc._ACTIVE == 1
+    _admit_at_safe_point(monkeypatch, rows = 64)
+    callback.on_step_end(None, None, SimpleNamespace(should_evaluate = True))  # evaluation comes next
+    assert dc.cached_count() == 0 and dc._BUDGET == {}
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    callback.on_train_end(None, None, SimpleNamespace())
+    assert dc._ACTIVE == 0
+
+
+def test_auto_holds_weights_for_one_step_only(monkeypatch):
+    # Between optimizer steps (callbacks, evaluation, saving, user code) auto mode holds nothing.
+    W, absmax = _admit_at_safe_point(monkeypatch, rows = 64)
+    dc._on_optimizer_step(None, (), {})
+    assert dc.cached_count() == 0 and dc._BUDGET[None] > 0 and dc.STATS["step_drops"] == 1
+    calls = []
+    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, 64)  # the next step admits again
+    assert calls == [True] and dc.cached_count() == 1
+    # An explicit GiB cap keeps its weights across steps.
+    monkeypatch.setattr(dc, "_MODE", float(GiB))
+    dc._on_optimizer_step(None, (), {})
+    assert dc.cached_count() == 1

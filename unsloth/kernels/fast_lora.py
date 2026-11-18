@@ -333,7 +333,7 @@ def _base_dgrad_accum(dX, dY, W, W_quant):
     # dX += dY @ base weight: fast_dequantize(W.t()).t() is the weight, read from the dequant cache when it holds it.
     if _dq.traced_route(W, W_quant):
         return _dq.nf4_addmm_(dX, dY, W.t(), W_quant)
-    W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype)
+    W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
     return addmm_(dX, dY, W.t())
 
 
@@ -346,7 +346,7 @@ def _base_dgrad(
     # dY @ base weight into a new tensor (or out, eager only).
     if out is None and _dq.traced_route(W, W_quant):
         return _dq.nf4_matmul(dY, W.t(), W_quant)
-    W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype)
+    W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
     return torch.matmul(dY, W.t(), out = out)
 
 

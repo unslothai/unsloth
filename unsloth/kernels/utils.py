@@ -2208,7 +2208,11 @@ def matmul_lora(
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             if W_quant is not None:
                 W = _dequant_cache.dequantize(
-                    W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype
+                    W,
+                    W_quant,
+                    use_global_buffer = use_global_buffer,
+                    dtype = dtype,
+                    rows = X.shape[0],
                 )
             out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
         elif (
@@ -2225,7 +2229,11 @@ def matmul_lora(
             # Unquantized, fast_dequantize returns W as is (FP8 never takes this branch).
             if W_quant is not None:
                 W = _dequant_cache.dequantize(
-                    W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype
+                    W,
+                    W_quant,
+                    use_global_buffer = use_global_buffer,
+                    dtype = dtype,
+                    rows = X.shape[0],
                 )
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
@@ -2245,7 +2253,9 @@ def matmul_lora(
     elif out is None and _dequant_cache.traced_route(W, W_quant):
         out = _dequant_cache.nf4_matmul(X, W, W_quant)
     else:
-        W = _dequant_cache.dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+        W = _dequant_cache.dequantize(
+            W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype, rows = X.shape[0]
+        )
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W

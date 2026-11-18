@@ -8,17 +8,27 @@ Under Unsloth gradient checkpointing a frozen NF4 linear is dequantized three ti
 of as many weights as fit in otherwise idle VRAM is exact and removes those decodes.
 
 UNSLOTH_NF4_DEQUANT_CACHE:
-  auto (default) / 1   on, sized from free memory at every optimizer step (below); off while vLLM is loaded
-                       or several ranks share a GPU.
+  auto (default) / 1   on, sized from free memory at every optimizer step (below), holding weights for one
+                       optimizer step at a time; off while vLLM is loaded, several ranks share a GPU or
+                       another process uses it.
   0 / off              off: every call site runs its original code.
-  <float>              on, at most that many GiB per device (also with vLLM loaded).
+  <float>              on, at most that many GiB per device, kept across optimizer steps (also with vLLM
+                       loaded or another process on the GPU).
 Budget (the zoo moe_expert_cache design), measured at the safe point after each optimizer step, when the
 step's activations are freed: room = free + reserved-unused - 2 * transient - margin, with transient the
-largest step peak above the resident memory seen so far and margin max(1 GiB, 5% of the card). Nothing is
-cached before the first optimizer step, so inference and evaluation-only runs are untouched.
-Safety: weights are only admitted while room is left; every 8th hit re-reads free memory and drops the oldest
-entries while it is under the margin (and admits nothing more until the next safe point); an out-of-memory
-error while admitting drops the cache for the rest of the process. Entries die with their packed weight
+largest step peak above the resident memory seen so far and margin max(1 GiB, 5% of the card). Free memory is
+also capped by torch.cuda.set_per_process_memory_fraction. Nothing is cached before the first optimizer step, and
+nothing outside transformers' Trainer.train(), so inference, evaluation-only runs and custom loops are untouched.
+Safety: the budget only covers steps no larger than those already measured, so the cache is dropped (until the
+next safe point) when it is needed for anything else:
+  * a matmul with more rows (tokens) than any measured before the last safe point (a longer batch, a larger
+    evaluation or generation batch): its transient was never measured;
+  * Trainer.evaluate() / predict(), for_inference() and saving; the end of Trainer.train() also returns it to
+    the driver;
+  * auto mode only: another process holding more than the margin on the device, or growing by more than it.
+Weights are only admitted while room is left; every 8th hit re-reads free memory and drops the oldest entries
+while it is under the margin (and admits nothing more until the next safe point); an out-of-memory error while
+admitting drops the cache for the rest of the process. Entries die with their packed weight
 (storage weak reference, also swept after every gc collection), on any in-place change to it (version
 counter), at the end of SFTTrainer.train(), in for_inference() and before saving, and are never served on
 another stream or during CUDA graph capture.
@@ -87,6 +97,11 @@ _SEEN = set()  # device indices with eligible lookups
 _CALLS = collections.Counter()  # device index -> lookups since the last memory check
 _HELD = collections.Counter()  # device index -> bytes cached
 _DISABLED = False  # set for good after an out-of-memory error while anything was cached
+_ROWS_SEEN = {}  # device index -> most matmul rows of any lookup before the last safe point (budget covers these)
+_ROWS_NEW = {}  # device index -> most matmul rows since the last safe point
+_FOREIGN = {}  # device index -> memory other processes held at the first safe point
+_FRACTIONS = {}  # device index -> set_per_process_memory_fraction (torch without the getter)
+_ACTIVE = 0  # Trainer.train() calls running: nothing is cached outside them
 
 
 def _storage_ref(W):
@@ -133,15 +148,70 @@ def cached_count():
     return len(_CACHE)
 
 
-def clear_dequant_cache(oom = False):
-    """Drop every cached weight (and the budgets: they are recomputed at the next optimizer step)."""
+def clear_dequant_cache(oom = False, release = False):
+    """Drop every cached weight (and the budgets: they are recomputed at the next optimizer step).
+    release=True also returns the freed blocks to the driver, for other processes."""
     with _lock:
+        held = bool(_CACHE)
         _CACHE.clear()
         _HELD.clear()
         _BUDGET.clear()
         if oom:
             STATS["oom_clears"] += 1
         STATS["bytes"] = 0
+    if release and held:
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
+def _drop_device(index, reason):
+    """Drop index's entries and admit nothing more on it until the next safe point."""
+    with _lock:
+        if _CACHE:
+            _evict(index, 0)
+        _BUDGET[index] = 0
+        STATS[reason] += 1
+
+
+def _fraction(index):
+    """The caching allocator's set_per_process_memory_fraction for the device (1.0 when unset)."""
+    get = getattr(torch.cuda, "get_per_process_memory_fraction", None)
+    if get is not None:
+        try:
+            return float(get(index))
+        except Exception:
+            pass
+    return _FRACTIONS.get(index, 1.0)
+
+
+def _record_fraction_setter():
+    # torch without get_per_process_memory_fraction: remember what is set from now on.
+    if hasattr(torch.cuda, "get_per_process_memory_fraction"):
+        return
+    setter = getattr(torch.cuda, "set_per_process_memory_fraction", None)
+    if setter is None or getattr(setter, "_unsloth_dq_recorded", False):
+        return
+
+    def set_per_process_memory_fraction(fraction, device = None):
+        out = setter(fraction, device)
+        try:
+            index = torch.cuda._utils._get_device_index(device, optional = True)
+            _FRACTIONS[index] = float(fraction)
+        except Exception:
+            pass
+        return out
+
+    set_per_process_memory_fraction._unsloth_dq_recorded = True
+    torch.cuda.set_per_process_memory_fraction = set_per_process_memory_fraction
+    try:
+        torch.cuda.memory.set_per_process_memory_fraction = set_per_process_memory_fraction
+    except Exception:
+        pass
+
+
+_record_fraction_setter()
 
 
 def _margin(total):
@@ -153,12 +223,25 @@ def _usable(index):
     try:
         free, total = torch.cuda.mem_get_info(index)
         stats = torch.cuda.memory_stats(index)
-        unused = stats.get("reserved_bytes.all.current", 0) - stats.get(
-            "allocated_bytes.all.current", 0
-        )
-        return free + max(unused, 0), total, stats
+        allocated = stats.get("allocated_bytes.all.current", 0)
+        unused = stats.get("reserved_bytes.all.current", 0) - allocated
+        usable = free + max(unused, 0)
+        fraction = _fraction(index)
+        if fraction < 1.0:
+            # The allocator refuses to reserve past fraction * total whatever the driver has free.
+            usable = min(usable, int(fraction * total) - allocated)
+        return usable, total, stats
     except Exception:
         return None
+
+
+def _foreign_bytes(index):
+    """Device memory held outside this process's caching allocator (other processes, CUDA contexts)."""
+    try:
+        free, total = torch.cuda.mem_get_info(index)
+        return max(total - free - torch.cuda.memory_reserved(index), 0)
+    except Exception:
+        return 0
 
 
 def _auto_allowed():
@@ -173,14 +256,18 @@ def _auto_allowed():
     return True
 
 
-def _evict(index, target_bytes):
+def _evict(
+    index,
+    target_bytes,
+    stat = "evictions",
+):
     """Drop the oldest entries of `index` until it holds at most target_bytes."""
     held = _cached_bytes(index)
     for key in [k for k, e in _CACHE.items() if e[4].device.index == index]:
         if held <= target_bytes:
             break
         held -= _nbytes(_pop(key)[4])
-        STATS["evictions"] += 1
+        STATS[stat] += 1
     STATS["bytes"] = _cached_bytes()
 
 
@@ -188,24 +275,51 @@ def _on_optimizer_step(optimizer, args, kwargs):
     """Safe point: the step's activations are freed; size every device's budget from what is free now."""
     if _MODE is None or _DISABLED or not _SEEN:
         return
-    if _MODE == "auto" and not _auto_allowed():
+    if (_MODE == "auto" and not _auto_allowed()) or not _ACTIVE:
         if _CACHE:
-            clear_dequant_cache()
+            clear_dequant_cache(release = True)
         return
     with _lock:
         for key in [k for k, e in _CACHE.items() if e[0].expired()]:
             _pop(key)
             STATS["stale"] += 1
         for index in list(_SEEN):
+            # The budget below covers steps up to the largest matmul seen so far, no larger.
+            _ROWS_SEEN[index] = max(_ROWS_SEEN.get(index, 0), _ROWS_NEW.pop(index, 0))
             measured = _usable(index)
             if measured is None:
                 continue
             usable, total, stats = measured
+            if _MODE == "auto":
+                # Another process on this GPU (a kept chat model, a server) may grow into what the cache
+                # takes: stay off while one holds more than the margin, or once one grew by more than it.
+                foreign = _foreign_bytes(index)
+                first = _FOREIGN.setdefault(index, foreign)
+                if foreign > _margin(total) or foreign - first > _margin(total):
+                    if _cached_bytes(index):
+                        _evict(index, 0)
+                        try:
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                    _BUDGET[index] = 0
+                    STATS["foreign_off"] += 1
+                    continue
             allocated = stats.get("allocated_bytes.all.current", 0)
             peak = stats.get("allocated_bytes.all.peak", 0)
             transient = max(_TRANSIENT.get(index, 0), peak - allocated)
             _TRANSIENT[index] = transient
             held = _cached_bytes(index)
+            if _MODE == "auto" and held:
+                # Auto keeps weights for one optimizer step only: callbacks, evaluation, saving and any other
+                # code between steps see the memory the base code leaves free. The next step's first
+                # micro-batch decodes and admits again; its other passes and micro-batches hit.
+                _evict(index, 0, "step_drops")
+                measured = _usable(index)
+                if measured is None:
+                    continue
+                usable, total, _ = measured
+                held = 0
             room = usable - int(TRANSIENT_SLACK * transient) - _margin(total)
             budget = max(held + room, 0)
             if _MODE != "auto":
@@ -247,8 +361,9 @@ def _guard(index):
     _CALLS[index] = 0
     try:
         # The driver's free memory alone is cheap; only when it is short count the allocator's unused cache too.
+        # Under a per-process memory fraction the driver's free memory does not bound the allocator.
         free, total = torch.cuda.mem_get_info(index)
-        if free >= _margin(total):
+        if free >= _margin(total) and _fraction(index) >= 1.0:
             return
     except Exception:
         pass
@@ -278,13 +393,26 @@ def _eligible(W, quant_state_dtype):
     )
 
 
-def _lookup(W, absmax, decode, dtype):
+def _lookup(
+    W,
+    absmax,
+    decode,
+    dtype,
+    rows = 0,
+):
     """Dense [N, K] for the packed W (or its .t() view), from the cache or decode(); decode(fresh) returns the
-    oriented result of fast_dequantize. Returns the oriented tensor like fast_dequantize."""
+    oriented result of fast_dequantize. Returns the oriented tensor like fast_dequantize. rows: the matmul's
+    row count (tokens), which sizes the step's activations."""
     index = W.device.index
+    if rows > _ROWS_NEW.get(index, 0):
+        _ROWS_NEW[index] = rows
     if not _CACHE and _BUDGET.get(index, 0) <= 0:
         _SEEN.add(index)
         return decode(False)  # nothing cached and no budget (before the first optimizer step)
+    if rows > _ROWS_SEEN.get(index, 0):
+        # More tokens than any step the budget was measured on: its activations may need what the cache holds.
+        _drop_device(index, "rows_drops")
+        return decode(False)
     # Hit path kept short: it runs for every frozen linear, three times per micro-batch.
     entry = _CACHE.get((W.data_ptr(), dtype))
     if entry is not None:
@@ -346,14 +474,20 @@ def _is_bnb_nf4(quant_state):
     )
 
 
+def rows_of(X):
+    """Rows of the matmul X @ W.t() (tokens): what the activations of the step scale with."""
+    return X.numel() // X.shape[-1] if X.dim() > 1 and X.shape[-1] else X.numel()
+
+
 def dequantize(
     W,
     quant_state,
     use_global_buffer = False,
     dtype = None,
+    rows = 0,
 ):
     """fast_dequantize(W, quant_state, ...) for the LoRA kernels' matmul sites, from the cache when it
-    holds W. Eager only; callers must not write into the result."""
+    holds W. Eager only; callers must not write into the result. rows: rows_of(X) of the matmul."""
     from .utils import fast_dequantize
 
     if (
@@ -370,7 +504,7 @@ def dequantize(
             return fast_dequantize(W, quant_state, use_global_buffer = False, dtype = dtype)
         return fast_dequantize(W, quant_state, use_global_buffer = use_global_buffer, dtype = dtype)
 
-    return _lookup(W, quant_state.absmax, decode, quant_state.dtype)
+    return _lookup(W, quant_state.absmax, decode, quant_state.dtype, rows)
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -388,7 +522,9 @@ def _parts(quant_state):
     return absmax, code2, absmax2, offset, code, int(blocksize), int(blocksize2), list(shape), dtype
 
 
-def _dense_from_parts(W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype):
+def _dense_from_parts(
+    W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, rows
+):
     def decode(fresh):
         from .nf4 import dequantize_nf4
         out = dequantize_nf4(
@@ -403,7 +539,7 @@ def _dense_from_parts(W, absmax, code2, absmax2, offset, code, blocksize, blocks
         or torch.cuda.is_current_stream_capturing()
     ):
         return decode(False)
-    return _lookup(W, absmax, decode, dtype)
+    return _lookup(W, absmax, decode, dtype, rows)
 
 
 def traced_route(W, quant_state):
@@ -438,7 +574,7 @@ def _matmul_impl(
     X, W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, XA, Bt, alpha
 ):
     Wd = _dense_from_parts(
-        W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype
+        W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, X.shape[0]
     )
     if XA is None:
         return torch.matmul(X, Wd.t())
@@ -451,7 +587,7 @@ def _addmm_impl(
     out, X, W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype
 ):
     Wd = _dense_from_parts(
-        W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype
+        W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, X.shape[0]
     )
     out.addmm_(X, Wd.t())
 
@@ -537,3 +673,83 @@ def nf4_addmm_(out, X, W, quant_state):
 
 def nf4_lora_first(X, W, quant_state, XA, Bt, alpha):
     return nf4_matmul(X, W, quant_state, XA, Bt, alpha)
+
+
+# ----------------------------------------------------------------------------------------------------------
+# Trainer scope: the budget is only set between on_train_begin and the end of Trainer.train(); evaluation and
+# prediction run without the cache (their batches were never measured), and the end of training returns the
+# cache's memory to the driver. A default callback carries the scope (wrappers other code puts around
+# Trainer.train cannot bypass it); the train() wrapper also ends it when training raises.
+
+
+def _end_train():
+    global _ACTIVE
+    _ACTIVE = 0
+    clear_dequant_cache(release = True)
+
+
+def _make_callback():
+    from transformers.trainer_callback import TrainerCallback
+    class UnslothDequantCacheScope(TrainerCallback):
+        def on_train_begin(self, args, state, control, **kwargs):
+            global _ACTIVE
+            _ACTIVE = 1
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if control.should_evaluate:
+                clear_dequant_cache()  # evaluation follows this step: no budget until the next safe point
+
+        def on_train_end(self, args, state, control, **kwargs):
+            _end_train()
+
+    return UnslothDequantCacheScope
+
+
+def install_trainer_scope():
+    try:
+        import transformers.trainer as T
+    except Exception:
+        return False
+    import functools
+
+    Trainer = T.Trainer
+    callbacks = getattr(T, "DEFAULT_CALLBACKS", None)
+    if isinstance(callbacks, list) and not any(
+        getattr(c, "__name__", "") == "UnslothDequantCacheScope" for c in callbacks
+    ):
+        callbacks.append(_make_callback())
+
+    train = Trainer.train
+    if not getattr(train, "_unsloth_dq_scope", False):
+
+        @functools.wraps(train)
+        def scoped_train(self, *args, **kwargs):
+            try:
+                return train(self, *args, **kwargs)
+            finally:
+                _end_train()
+
+        scoped_train._unsloth_dq_scope = True
+        Trainer.train = scoped_train
+
+    def uncached(method):
+        @functools.wraps(method)
+        def run(self, *args, **kwargs):
+            clear_dequant_cache()
+            return method(self, *args, **kwargs)
+
+        run._unsloth_dq_scope = True
+        return run
+
+    for name in ("evaluate", "predict"):
+        method = getattr(Trainer, name, None)
+        if method is not None and not getattr(method, "_unsloth_dq_scope", False):
+            setattr(Trainer, name, uncached(method))
+    return True
+
+
+if _MODE is not None:
+    try:
+        install_trainer_scope()
+    except Exception:
+        pass
