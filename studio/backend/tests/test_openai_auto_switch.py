@@ -297,6 +297,412 @@ def test_already_loaded_does_not_reload(monkeypatch):
     assert rec.calls == []
 
 
+_FAST_ALIAS = {"max_seq_length": 4096, "kv_cache_dtype": "q4_0", "speculative_type": "auto"}
+
+
+class _AliasLoadRecorder(_LoadRecorder):
+    async def __call__(self, request, *args, **kwargs):
+        await super().__call__(request, *args, **kwargs)
+        self.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+            request.model_path,
+            n_ctx = request.max_seq_length,
+            cache_type_kv = request.cache_type_kv,
+            speculative_type = request.speculative_type,
+        )
+        self.backend.requested_spec_mode = request.speculative_type or "auto"
+        self.backend.requested_extra_args = request.llama_extra_args
+        self.backend._requested_cache_types = (request.cache_type_kv or "f16",) * 2
+
+
+def _loaded_with_other_settings(monkeypatch, *, enabled):
+    backend = _FakeBackend("unsloth/a-gguf")
+    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        "unsloth/a-gguf", n_ctx = 8192, cache_type_kv = "q5_1", speculative_type = "ngram"
+    )
+    rec = _AliasLoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = enabled,
+        resolves_to = ("unsloth/a-gguf", None, "unsloth/a-gguf"),
+        backend = backend,
+        recorder = rec,
+    )
+    return rec
+
+
+_FAST = {"name": "fast", "model": "unsloth/a-gguf", "load_settings": _FAST_ALIAS}
+
+
+def _run_alias_hook(
+    monkeypatch,
+    stored = None,
+    alias = _FAST,
+):
+    from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
+
+    stored = (alias,) if stored is None else stored
+    monkeypatch.setattr("utils.model_aliases.get_model_aliases", lambda: list(stored))
+    request = SimpleNamespace(
+        scope = {"_unsloth_model_alias": alias},
+        state = SimpleNamespace(**{KEYLESS_ADMISSION_STATE_KEY: False}),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+    )
+    asyncio.run(inference_route._maybe_auto_switch_model("unsloth/a-gguf", request, "tester"))
+
+
+def test_an_alias_reloads_the_loaded_model_with_its_own_load_settings_once(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch)
+    assert [(c.max_seq_length, c.cache_type_kv, c.speculative_type) for c in rec.calls] == [
+        (4096, "q4_0", "auto")
+    ]
+
+
+def test_a_blank_alias_field_reloads_with_the_saved_setting_not_another_alias(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    monkeypatch.setattr(settings, "get_model_override", lambda _id: {"max_seq_length": 8192})
+    kv_only = {**_FAST, "load_settings": {"kv_cache_dtype": "q4_0"}}
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    assert [(c.max_seq_length, c.cache_type_kv) for c in rec.calls] == [
+        (4096, "q4_0"),
+        (8192, "q4_0"),
+    ]
+
+
+def test_a_blank_context_reloads_back_to_the_saved_automatic_context(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    monkeypatch.setattr(settings, "get_model_override", lambda _id: {"gpu_memory_mode": "manual"})
+    kv_only = {**_FAST, "load_settings": {"kv_cache_dtype": "q4_0"}}
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    assert [(c.max_seq_length, c.cache_type_kv) for c in rec.calls] == [
+        (4096, "q4_0"),
+        (0, "q4_0"),
+    ]
+
+
+def test_an_auto_alias_reloads_a_model_whose_extra_arguments_chose_the_speculative_mode(
+    monkeypatch,
+):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        "unsloth/a-gguf", n_ctx = 4096, cache_type_kv = "q4_0"
+    )
+    rec.backend.requested_spec_mode = None
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch)
+    assert [c.speculative_type for c in rec.calls] == ["auto"]
+
+
+class _InheritingRecorder(_AliasLoadRecorder):
+    async def __call__(self, request, *args, **kwargs):
+        kept = self.backend.requested_extra_args
+        await super().__call__(request, *args, **kwargs)
+        if request.llama_extra_args is None and kept:
+            self.backend.requested_extra_args = kept
+            if not request.speculative_type:
+                self.backend.requested_spec_mode = None
+
+
+def test_a_context_only_alias_serves_a_model_whose_inherited_arguments_choose_drafting(monkeypatch):
+    backend = _FakeBackend("unsloth/a-gguf")
+    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent("unsloth/a-gguf", n_ctx = 8192)
+    backend.requested_extra_args = ["--spec-type", "ngram-simple"]
+    backend.requested_spec_mode = None
+    rec = _InheritingRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/a-gguf", None, "unsloth/a-gguf"),
+        backend = backend,
+        recorder = rec,
+    )
+    alias = {**_FAST, "load_settings": {"max_seq_length": 2048}}
+    _run_alias_hook(monkeypatch, alias = alias)
+    _run_alias_hook(monkeypatch, alias = alias)
+    assert [c.max_seq_length for c in rec.calls] == [2048]
+
+
+def test_an_auto_alias_is_served_after_a_crash_recovery_relaunched_without_drafting(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        "unsloth/a-gguf", n_ctx = 4096, cache_type_kv = "q4_0", speculative_type = "off"
+    )
+    rec.backend.requested_spec_mode = "auto"
+    _run_alias_hook(monkeypatch)
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize(
+    "enabled, account",
+    [
+        (False, OWNER),
+        (True, replace(OWNER, load_policy = "never")),
+    ],
+)
+def test_an_alias_is_refused_when_its_load_settings_cannot_be_loaded(monkeypatch, enabled, account):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = enabled)
+    with pytest.raises(HTTPException) as excinfo:
+        run_as(account, _run_alias_hook, monkeypatch)
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["error"]["code"] == "model_settings_mismatch"
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize("stored", [(), ({**_FAST, "load_settings": {"max_seq_length": 2048}},)])
+def test_an_alias_edited_while_its_request_waited_is_refused_before_any_reload(monkeypatch, stored):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    with pytest.raises(HTTPException) as excinfo:
+        _run_alias_hook(monkeypatch, stored)
+    assert excinfo.value.detail["error"]["code"] == "alias_changed"
+    assert rec.calls == []
+
+
+def test_a_blank_alias_field_without_a_saved_setting_reloads_with_the_loader_default(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    ctx_only = {**_FAST, "load_settings": {"max_seq_length": 4096}}
+    _run_alias_hook(
+        monkeypatch, alias = {**_FAST, "load_settings": {**_FAST_ALIAS, "speculative_type": "off"}}
+    )
+    _run_alias_hook(monkeypatch, alias = ctx_only)
+    _run_alias_hook(monkeypatch, alias = ctx_only)
+    assert [(c.max_seq_length, c.cache_type_kv, c.speculative_type) for c in rec.calls] == [
+        (4096, "q4_0", "off"),
+        (4096, None, None),
+    ]
+
+
+def test_a_blank_alias_context_without_a_saved_setting_reloads_with_the_automatic_context(
+    monkeypatch,
+):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    kv_only = {**_FAST, "load_settings": {"kv_cache_dtype": "q4_0"}}
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    assert [(c.max_seq_length, c.cache_type_kv) for c in rec.calls] == [(4096, "q4_0"), (0, "q4_0")]
+
+
+def test_an_idle_unloaded_model_restored_for_an_alias_does_not_replay_the_last_alias_settings(
+    monkeypatch,
+):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.is_loaded = False
+    rec.backend.last_load_intent = None
+    launch = {"max_seq_length": 4096, "cache_type_kv": "q4_0", "speculative_type": "off"}
+    kw.stash_for_reload(("unsloth/a-gguf", None, "unsloth/a-gguf"), {"kwargs": launch})
+    try:
+        _run_alias_hook(monkeypatch, alias = {**_FAST, "load_settings": {"max_seq_length": 4096}})
+    finally:
+        kw.note_model_unloaded()
+    assert [(c.max_seq_length, c.cache_type_kv, c.speculative_type) for c in rec.calls] == [
+        (4096, None, None)
+    ]
+
+
+def _loaded_like_the_fast_alias(
+    monkeypatch,
+    *,
+    flags,
+    cache_types = ("q4_0", "q4_0"),
+):
+    """A resident whose recorded fields equal the fast alias, launched with extra flags."""
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        "unsloth/a-gguf", n_ctx = 4096, cache_type_kv = "q4_0"
+    )
+    rec.backend.requested_spec_mode = "auto"
+    rec.backend.requested_extra_args = flags
+    rec.backend._requested_cache_types = cache_types
+    return rec
+
+
+@pytest.mark.parametrize(
+    "flags, cache_types",
+    [
+        (["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"], ("q8_0", "q8_0")),
+        # Two types are no alias type at all.
+        (["--cache-type-v", "q8_0"], ("q4_0", "q8_0")),
+        (["-c", "32768"], ("q4_0", "q4_0")),
+    ],
+)
+def test_an_alias_reloads_a_model_whose_launch_flags_run_other_settings(
+    monkeypatch, flags, cache_types
+):
+    rec = _loaded_like_the_fast_alias(monkeypatch, flags = flags, cache_types = cache_types)
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch)
+    assert [(c.max_seq_length, c.cache_type_kv) for c in rec.calls] == [(4096, "q4_0")]
+
+
+@pytest.mark.parametrize("flags", [["-c", "4096"], ["--threads", "8"]])
+def test_launch_flags_that_agree_with_the_alias_do_not_reload(monkeypatch, flags):
+    rec = _loaded_like_the_fast_alias(monkeypatch, flags = flags)
+    _run_alias_hook(monkeypatch)
+    assert rec.calls == []
+
+
+def test_a_blank_alias_field_keeps_the_flags_a_reload_would_inherit(monkeypatch):
+    # A setting neither the alias nor the saved row names loads with the resident's own flags.
+    rec = _loaded_like_the_fast_alias(
+        monkeypatch,
+        flags = ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"],
+        cache_types = ("q8_0", "q8_0"),
+    )
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent("unsloth/a-gguf", n_ctx = 4096)
+    _run_alias_hook(monkeypatch, alias = {**_FAST, "load_settings": {"max_seq_length": 4096}})
+    assert rec.calls == []
+
+
+def _alias_request(
+    path,
+    alias = _FAST,
+    body = None,
+):
+    async def json():
+        return body or {"model": alias["model"]}
+
+    return SimpleNamespace(
+        scope = {"_unsloth_model_alias": alias}, url = SimpleNamespace(path = path), json = json
+    )
+
+
+@pytest.mark.parametrize(
+    "path, alias, body",
+    [
+        ("/v1/embeddings", _FAST, None),
+        ("/v1/chat/completions", {**_FAST, "model": "external::provider::gpt"}, None),
+        ("/v1/chat/completions", _FAST, {"model": "unsloth/a-gguf", "provider_id": "provider"}),
+        ("/v1/chat/completions", _FAST, {"model": "unsloth/a-gguf", "provider_type": "openai"}),
+    ],
+)
+def test_an_alias_with_load_settings_is_refused_where_they_would_be_ignored(path, alias, body):
+    request = _alias_request(path, alias, body)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._refuse_ignored_alias_load_settings(request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["error"]["code"] == "alias_load_settings_unsupported"
+
+
+def test_an_alias_with_load_settings_is_refused_for_a_non_gguf_model(monkeypatch):
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda path, _id = None: path != "org/mlx")
+    request = _alias_request("/v1/chat/completions", {**_FAST, "model": "org/mlx"})
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._refuse_ignored_alias_load_settings(request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["error"]["code"] == "alias_load_settings_unsupported"
+
+
+@pytest.mark.parametrize(
+    "path, alias",
+    [
+        ("/v1/chat/completions", _FAST),
+        ("/v1/embeddings", {"name": "plain", "model": "unsloth/a-gguf"}),
+        ("/v1/chat/completions", {"name": "plain", "model": "external::provider::gpt"}),
+    ],
+)
+def test_an_alias_is_served_where_its_load_settings_apply_or_it_has_none(path, alias):
+    request = _alias_request(path, alias)
+    assert asyncio.run(inference_route._refuse_ignored_alias_load_settings(request, "t")) is None
+
+
+def _alias_refusal_code(excinfo):
+    return excinfo.value.status_code, excinfo.value.detail["error"]["code"]
+
+
+@pytest.mark.parametrize(
+    "llama_loaded, is_diffusion, other_resident, refused",
+    [
+        # The diffusion runner records no launch, so any settings would pass for the alias's.
+        (True, True, None, True),
+        # A Transformers, MLX or NPU model the name check read as a GGUF.
+        (False, False, "org/transformers-model", True),
+        (True, False, None, False),
+        (False, False, None, False),
+    ],
+)
+def test_an_alias_with_load_settings_is_refused_when_another_kind_of_model_answers(
+    monkeypatch, llama_loaded, is_diffusion, other_resident, refused
+):
+    backend = SimpleNamespace(is_loaded = llama_loaded, is_diffusion = is_diffusion)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_loaded_slot_ident", lambda: other_resident)
+    request = _alias_request("/v1/chat/completions")
+    if not refused:
+        assert inference_route._refuse_alias_on_other_resident(request) is None
+        return
+    with pytest.raises(HTTPException) as excinfo:
+        inference_route._refuse_alias_on_other_resident(request)
+    assert _alias_refusal_code(excinfo) == (400, "alias_load_settings_unsupported")
+    assert ("DiffusionGemma" in excinfo.value.detail["error"]["message"]) is is_diffusion
+
+
+def test_a_diffusion_model_loaded_with_other_settings_refuses_the_alias(monkeypatch):
+    # Without a recorded launch the settings check passes, so the alias would be served as is.
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = None
+    rec.backend.is_diffusion = True
+    with pytest.raises(HTTPException) as excinfo:
+        _run_alias_hook(monkeypatch)
+    assert _alias_refusal_code(excinfo) == (400, "alias_load_settings_unsupported")
+    assert rec.calls == []
+
+
+def test_a_plain_alias_is_served_by_a_model_that_is_not_a_gguf(monkeypatch):
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    monkeypatch.setattr(inference_route, "_loaded_slot_ident", lambda: "org/transformers-model")
+    plain = {"name": "plain", "model": "org/transformers-model"}
+    request = _alias_request("/v1/chat/completions", plain)
+    assert inference_route._refuse_alias_on_other_resident(request) is None
+
+
+def test_a_load_that_leaves_other_settings_running_refuses_the_alias(monkeypatch):
+    # A load that joins a runtime another account shares returns without relaunching it.
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    monkeypatch.setattr(_AliasLoadRecorder, "__call__", _LoadRecorder.__call__)
+    with pytest.raises(HTTPException) as excinfo:
+        _run_alias_hook(monkeypatch)
+    assert _alias_refusal_code(excinfo) == (409, "model_settings_mismatch")
+    assert len(rec.calls) == 1
+
+
+def test_every_route_that_resolves_aliases_refuses_ignored_load_settings():
+    from utils.model_aliases import _ALIAS_ROUTES
+    guarded = {
+        route.path
+        for route in inference_route.router.routes
+        if any(
+            dep.dependency is inference_route._refuse_ignored_alias_load_settings
+            for dep in getattr(route, "dependencies", ())
+        )
+    }
+    assert guarded == set(_ALIAS_ROUTES)
+
+
+def test_models_listing_marks_only_the_alias_whose_load_settings_are_running(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent("unsloth/a-gguf", n_ctx = 8192)
+    loaded = {"id": "unsloth/a-gguf", "object": "model", "loaded": True, "context_length": 8192}
+    long = {**_FAST, "name": "long", "load_settings": {"max_seq_length": 8192}}
+
+    async def catalog(**_kw):
+        return [loaded]
+
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", catalog)
+    monkeypatch.setattr(inference_route, "_llama_public_model_id", lambda b: b.model_identifier)
+    monkeypatch.setattr("utils.model_aliases.get_model_aliases", lambda: [_FAST, long])
+    rows = {r["id"]: r for r in asyncio.run(inference_route._openai_catalog_with_aliases())}
+    assert rows["long"]["loaded"] is True and rows["long"]["context_length"] == 8192
+    assert rows["fast"]["loaded"] is False and "context_length" not in rows["fast"]
+    assert rows["fast"]["load_settings"] == _FAST_ALIAS
+
+
 def _as_chat_tools_key(account, fn, *args, **kwargs):
     if account is None:
         return fn(*args, **kwargs)

@@ -983,6 +983,7 @@ export const pl = {
   chatMenu: {
     more: "Opcje czatu",
     copy: "Kopiuj",
+    addScheduledTask: "Dodaj zaplanowane zadanie…",
     compact: "Kompaktuj rozmowę",
     compactQueued: "Zażądano kompaktowania przy następnej wiadomości",
     compactEmpty: "Nie ma jeszcze czego kompaktować",
@@ -2321,7 +2322,7 @@ export const pl = {
       modelAliases: {
         sectionTitle: "Aliasy modeli (OpenAI API)",
         description:
-          "Stałe nazwy dla klientów API, np. fast-chat lub code. Żądanie wskazujące alias jest obsługiwane przez model, na który alias wskazuje, więc podłączone aplikacje nadal działają po zmianie modelu. Włącz opcję Przełączaj model według żądania, aby alias mógł wczytać swój model.",
+          "Krótkie nazwy, których klienci API mogą używać zamiast pełnej nazwy modelu.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Nazwa aliasu",
         modelAriaLabel: "Model, na który wskazuje alias",
@@ -2330,6 +2331,13 @@ export const pl = {
         add: "Dodaj alias",
         loadError: "Nie udało się wczytać aliasów modeli.",
         saveError: "Nie udało się zapisać aliasów modeli.",
+        contextLength: "Długość kontekstu",
+        kvCacheType: "Typ pamięci podręcznej KV",
+        speculativeDecoding: "Dekodowanie spekulatywne",
+        savedSetting: "Zapisane ustawienie",
+        loadSettings: "Ustawienia wczytywania",
+        loadSettingsHint:
+          "Tylko dla modeli GGUF. Puste pola korzystają z zapisanych ustawień modelu.",
       },
       previewSharing: {
         sectionTitle: "Udostępnianie podglądu",
@@ -5225,6 +5233,7 @@ export const pl = {
   translate: {
     title: "Tłumacz",
     detectLanguage: "Wykryj język",
+    detectedLanguage: "{language} (wykryto)",
     sourceLanguage: "Przetłumacz z",
     targetLanguage: "Przetłumacz na",
     recentTargets: "Ostatnie",
@@ -5372,6 +5381,7 @@ export const pl = {
       intervalHours: "Odstęp (godziny)",
       hourlyNote: "Pierwsze uruchomienie nastąpi jeden odstęp po zapisaniu. Zmiana odstępu lub wznowienie rozpoczyna oczekiwanie od nowa.",
       createTitle: "Zaplanuj zadanie",
+      repliesInChat: "Każde uruchomienie odpowiada w „{title}”.",
       editTitle: "Edytuj zaplanowane zadanie",
       name: "Nazwa",
       namePlaceholder: "Nazwa (opcjonalnie)",

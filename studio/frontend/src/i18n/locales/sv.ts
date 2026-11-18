@@ -932,6 +932,7 @@ export const sv = {
   chatMenu: {
     more: "Chattalternativ",
     copy: "Kopiera",
+    addScheduledTask: "Lägg till schemalagd uppgift…",
     compact: "Komprimera konversationen",
     compactQueued: "Komprimering begärd för nästa meddelande",
     compactEmpty: "Inget att komprimera än",
@@ -2227,7 +2228,7 @@ export const sv = {
       modelAliases: {
         sectionTitle: "Modellalias (OpenAI API)",
         description:
-          "Fasta namn för API-klienter, till exempel fast-chat eller code. En begäran som anger ett alias besvaras av modellen det pekar på, så anslutna appar fortsätter fungera när du byter modell. Slå på Byt modell enligt begäran så att ett alias kan läsa in sin modell.",
+          "Korta namn som API-klienter kan använda i stället för modellens fullständiga namn.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Aliasnamn",
         modelAriaLabel: "Modell som aliaset pekar på",
@@ -2236,6 +2237,13 @@ export const sv = {
         add: "Lägg till alias",
         loadError: "Det gick inte att läsa in modellalias.",
         saveError: "Det gick inte att spara modellalias.",
+        contextLength: "Kontextlängd",
+        kvCacheType: "Typ av KV-cache",
+        speculativeDecoding: "Spekulativ avkodning",
+        savedSetting: "Sparad inställning",
+        loadSettings: "Inläsningsinställningar",
+        loadSettingsHint:
+          "Endast GGUF-modeller. Tomma fält använder modellens sparade inställningar.",
       },
       previewSharing: {
         sectionTitle: "Delning av förhandsvisning",
@@ -5049,6 +5057,7 @@ export const sv = {
   translate: {
     title: "Översätt",
     detectLanguage: "Identifiera språk",
+    detectedLanguage: "{language} (identifierat)",
     sourceLanguage: "Översätt från",
     targetLanguage: "Översätt till",
     recentTargets: "Senaste",
@@ -5194,6 +5203,7 @@ export const sv = {
       intervalHours: "Intervall (timmar)",
       hourlyNote: "Den första körningen sker ett intervall efter att du sparat. Om du ändrar intervallet eller återupptar uppgiften börjar väntetiden om.",
       createTitle: "Schemalägg en uppgift",
+      repliesInChat: "Varje körning svarar i ”{title}”.",
       editTitle: "Redigera schemalagd uppgift",
       name: "Namn",
       namePlaceholder: "Namn (valfritt)",

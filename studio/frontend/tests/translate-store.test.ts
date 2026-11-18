@@ -98,6 +98,22 @@ test("swap keeps an edited draft instead of the old translation", async () => {
   assert.equal(state().prefs.from, "fr");
 });
 
+test("with an automatic source, swap uses the detected language", async () => {
+  state().setPrefs({ from: AUTO_SOURCE });
+  state().setSource("Hello");
+  await state().translate();
+  state().swap(null);
+  assert.equal(state().prefs.from, AUTO_SOURCE);
+  assert.equal(state().source, "Hello");
+  // Already in the target language: nothing to swap to.
+  state().swap("fr");
+  assert.equal(state().prefs.from, AUTO_SOURCE);
+  state().swap("en");
+  assert.equal(state().source, "FR:Hello");
+  assert.equal(state().prefs.from, "fr");
+  assert.equal(state().prefs.target, "en");
+});
+
 test("translating the translation onward sets its language as the source", async () => {
   state().setPrefs({ from: AUTO_SOURCE });
   assert.equal(AUTO_SOURCE, "auto");

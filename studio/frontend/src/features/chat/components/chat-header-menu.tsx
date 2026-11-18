@@ -32,6 +32,7 @@ import {
   ArchiveIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
+  Clock01Icon,
   CollapseIcon,
   Download01Icon,
   Edit03Icon,
@@ -49,7 +50,13 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { ForkIcon } from "@/lib/fork-icon";
-import { type ReactNode, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  Suspense,
+  lazy,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ActiveChatMenu,
@@ -89,6 +96,13 @@ export const CHAT_MENU_TRIGGER =
 export const CHAT_MENU = MENU;
 const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
+
+// Lazy: the scheduled tasks module loads with /tasks.
+const TaskDialog = lazy(() =>
+  import("@/features/scheduled-tasks/task-dialog").then((m) => ({
+    default: m.TaskDialog,
+  })),
+);
 
 function Shortcut({ id }: { id: ShortcutId }) {
   const label = useShortcutLabel(id);
@@ -168,7 +182,13 @@ function TemporaryChatButton({
   );
 }
 
-function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
+function ChatMenuItems({
+  menu,
+  onAddScheduledTask,
+}: {
+  menu: ActiveChatMenu;
+  onAddScheduledTask: () => void;
+}) {
   const t = useT();
   const preStreamRunActive = useSyncExternalStore(
     subscribePreStreamRunReservations,
@@ -406,6 +426,10 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
           />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
+      <DropdownMenuSeparator className="mx-3" />
+      <Item icon={Clock01Icon} onSelect={onAddScheduledTask}>
+        {t("chatMenu.addScheduledTask")}
+      </Item>
       {/* Only with the folder items, or it doubles the next separator. */}
       {chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null}
       <OpenChatFolderItem item={menu.item} />
@@ -447,33 +471,49 @@ export function ChatTitleMenu({
 }) {
   const t = useT();
   const menu = useActiveChatMenuStore((state) => state.menu);
+  const [taskProject, setTaskProject] = useState<string | null | undefined>();
   if (!menu || !threadId || menu.item.id !== threadId) {
     return fallback ?? null;
   }
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild={true}>
-        <button
-          type="button"
-          aria-label={`${t("chatMenu.more")}: ${menu.item.title}`}
-          className="chat-title-trigger mr-[calc(6px*var(--ui-space-scale,1))] ml-[calc(6px*var(--ui-space-scale,1))] flex h-[var(--studio-chat-control-height,34px)] min-w-0 max-w-[min(28rem,45vw)] shrink cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 text-ui-13p5 font-medium text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover"
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            aria-label={`${t("chatMenu.more")}: ${menu.item.title}`}
+            className="chat-title-trigger mr-[calc(6px*var(--ui-space-scale,1))] ml-[calc(6px*var(--ui-space-scale,1))] flex h-[var(--studio-chat-control-height,34px)] min-w-0 max-w-[min(28rem,45vw)] shrink cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 text-ui-13p5 font-medium text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover"
+          >
+            <span className="min-w-0 truncate">{menu.item.title}</span>
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={1.75}
+              className="size-3.5 shrink-0 text-muted-foreground"
+            />
+          </button>
+        </DropdownMenuTrigger>
+        {/* ml-0: align with the title's hover box. */}
+        <DropdownMenuContent
+          align="start"
+          sideOffset={6}
+          className={cn(MENU, "w-64 data-[align=start]:ml-0")}
         >
-          <span className="min-w-0 truncate">{menu.item.title}</span>
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            strokeWidth={1.75}
-            className="size-3.5 shrink-0 text-muted-foreground"
+          <ChatMenuItems
+            menu={menu}
+            onAddScheduledTask={() => setTaskProject(menu.project?.id ?? null)}
           />
-        </button>
-      </DropdownMenuTrigger>
-      {/* ml-0: align with the title's hover box. */}
-      <DropdownMenuContent
-        align="start"
-        sideOffset={6}
-        className={cn(MENU, "w-64 data-[align=start]:ml-0")}
-      >
-        <ChatMenuItems menu={menu} />
-      </DropdownMenuContent>
-    </DropdownMenu>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {taskProject !== undefined && (
+        <Suspense fallback={null}>
+          <TaskDialog
+            task={null}
+            initialProjectId={taskProject}
+            chat={{ id: menu.item.id, title: menu.item.title }}
+            onClose={() => setTaskProject(undefined)}
+          />
+        </Suspense>
+      )}
+    </>
   );
 }

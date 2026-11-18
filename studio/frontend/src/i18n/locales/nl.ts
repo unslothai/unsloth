@@ -986,6 +986,7 @@ export const nl = {
   chatMenu: {
     more: "Chatopties",
     copy: "Kopiëren",
+    addScheduledTask: "Geplande taak toevoegen…",
     compact: "Gesprek comprimeren",
     compactQueued: "Comprimeren aangevraagd voor het volgende bericht",
     compactEmpty: "Nog niets om te comprimeren",
@@ -2327,7 +2328,7 @@ export const nl = {
       modelAliases: {
         sectionTitle: "Modelaliassen (OpenAI API)",
         description:
-          "Vaste namen voor API-clients, zoals fast-chat of code. Een verzoek dat een alias noemt, wordt verwerkt door het model waarnaar die verwijst, zodat verbonden apps blijven werken wanneer je van model wisselt. Schakel Model wisselen per verzoek in zodat een alias zijn model kan laden.",
+          "Korte namen die API-clients kunnen gebruiken in plaats van de volledige modelnaam.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Aliasnaam",
         modelAriaLabel: "Model waarnaar de alias verwijst",
@@ -2336,6 +2337,13 @@ export const nl = {
         add: "Alias toevoegen",
         loadError: "Kan de modelaliassen niet laden.",
         saveError: "Kan de modelaliassen niet opslaan.",
+        contextLength: "Contextlengte",
+        kvCacheType: "Type KV-cache",
+        speculativeDecoding: "Speculatieve decodering",
+        savedSetting: "Opgeslagen instelling",
+        loadSettings: "Laadinstellingen",
+        loadSettingsHint:
+          "Alleen voor GGUF-modellen. Lege velden gebruiken de opgeslagen instellingen van het model.",
       },
       previewSharing: {
         sectionTitle: "Voorbeelden delen",
@@ -5224,6 +5232,7 @@ export const nl = {
   translate: {
     title: "Vertalen",
     detectLanguage: "Taal herkennen",
+    detectedLanguage: "{language} (gedetecteerd)",
     sourceLanguage: "Vertalen uit",
     targetLanguage: "Vertalen naar",
     recentTargets: "Recent",
@@ -5371,6 +5380,7 @@ export const nl = {
       intervalHours: "Interval (uren)",
       hourlyNote: "De eerste uitvoering vindt één interval na het opslaan plaats. Het interval wijzigen of hervatten start de wachttijd opnieuw.",
       createTitle: "Een taak plannen",
+      repliesInChat: "Elke uitvoering antwoordt in ‘{title}’.",
       editTitle: "Geplande taak bewerken",
       name: "Naam",
       namePlaceholder: "Naam (optioneel)",

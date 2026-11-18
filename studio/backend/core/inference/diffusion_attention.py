@@ -3671,6 +3671,7 @@ def apply_attention_backend(
     requested: Optional[str] = None,
     speed_active: bool = True,
     speed_unset_only: bool = False,
+    int8_policy: Any = None,
 ) -> Optional[str]:
     """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
 
@@ -3679,8 +3680,19 @@ def apply_attention_backend(
     the strided processors of a family in ``AUTO_DITS`` race for it (``install_auto``). The DiTs whose processors call
     diffusers' attention dispatch route there too (``diffusion_int8_attention_dispatch``): by name or the env switch
     wherever the kernel is accurate, and with the switch unset for the families that race it on this card, unless
-    ``speed_active`` is False (``int8_attention_speed_active``: speed off by request stays bit-identical)."""
+    ``speed_active`` is False (``int8_attention_speed_active``: speed off by request stays bit-identical).
+
+    ``int8_policy`` is the load's ``diffusion_int8_attention.Int8Policy`` (or its ``int8_attention`` request): ``on``
+    forces the kernel like the name, ``off`` keeps it off every route, ``auto`` / None leave the env switch in charge.
+    An explicit attention pick (native, sage, cuDNN, flash) is never raced over automatically: only a forced kernel
+    (``on``, the name, the env switch ``1``) layers INT8 on top of it."""
     engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
+    try:
+        from .diffusion_int8_attention import mode as int8_mode
+        from .diffusion_int8_attention import requested as int8_requested
+        int8_forced = int8_mode(int8_policy) == "force" or int8_requested(requested)
+    except Exception:  # noqa: BLE001
+        int8_forced = False
     if target is not None:
         try:
             from .diffusion_int8_attention import forget_plans
@@ -3690,7 +3702,7 @@ def apply_attention_backend(
     if target is not None and (engaged is None or str(engaged).startswith("_native")):
         try:
             from .diffusion_int8_attention import BACKEND, install_auto, install_requested
-            if install_requested(pipe, requested, target, logger = logger):
+            if install_requested(pipe, requested, target, logger = logger, policy = int8_policy):
                 return BACKEND
             # switch unset: the strided processors of a raced family (FLUX.3) race their incumbent
             if _auto_request(requested) and install_auto(
@@ -3699,11 +3711,13 @@ def apply_attention_backend(
                 logger = logger,
                 speed_active = speed_active,
                 speed_unset_only = speed_unset_only,
+                policy = int8_policy,
             ):
                 return BACKEND
         except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
             _warn(logger, "unsloth_int8", exc)
-    if target is not None:
+    # an explicit attention pick keeps its backend unless the kernel is forced on top of it
+    if target is not None and (int8_forced or _auto_request(requested)):
         try:
             from .diffusion_int8_attention import BACKEND
             from .diffusion_int8_attention_dispatch import install as install_int8_dispatch
@@ -3714,8 +3728,16 @@ def apply_attention_backend(
                 logger = logger,
                 speed_active = speed_active,
                 speed_unset_only = speed_unset_only,
+                policy = int8_policy,
             ):
                 return BACKEND
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8 dispatch", exc)
+    elif target is not None:
+        try:
+            # an earlier route on these DiTs gives the explicit pick back its own backend
+            from .diffusion_int8_attention_dispatch import remove as remove_int8_dispatch
+            remove_int8_dispatch(pipe)
         except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
             _warn(logger, "unsloth_int8 dispatch", exc)
     return engaged

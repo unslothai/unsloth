@@ -4616,12 +4616,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
-            # bitsandbytes probes hipinfo.exe from PATH; the venv Scripts dir is only on PATH when activated.
-            _scripts_dir = os.path.dirname(sys.executable)
-            if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
-                import shutil as _shutil
-                if not _shutil.which("hipinfo.exe"):
-                    os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
+            # bnb never reads its hipinfo.exe arch; the venv copy is unsigned (Smart App Control blocks it).
+            import logging as _logging
+
+            _logging.getLogger("bitsandbytes.cuda_specs").addFilter(
+                lambda _r: _r.funcName != "get_rocm_gpu_arch"
+            )
 
             # AMD's Windows BNB DLL suffix may not match torch.version.hip; detect the real one. Caller-set BNB_ROCM_VERSION stays authoritative.
             if (

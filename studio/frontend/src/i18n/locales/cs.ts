@@ -977,6 +977,7 @@ export const cs = {
   chatMenu: {
     more: "Možnosti chatu",
     copy: "Kopírovat",
+    addScheduledTask: "Přidat naplánovanou úlohu…",
     compact: "Zkomprimovat konverzaci",
     compactQueued: "Komprimace byla vyžádána pro další zprávu",
     compactEmpty: "Zatím není co komprimovat",
@@ -2308,7 +2309,7 @@ export const cs = {
       modelAliases: {
         sectionTitle: "Aliasy modelů (OpenAI API)",
         description:
-          "Stálé názvy pro klienty API, například fast-chat nebo code. Požadavek s aliasem obslouží model, na který alias odkazuje, takže připojené aplikace fungují i po výměně modelů. Zapněte možnost Přepínat model podle požadavku, aby alias mohl načíst svůj model.",
+          "Krátké názvy, které mohou klienti API používat místo celého názvu modelu.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Název aliasu",
         modelAriaLabel: "Model, na který alias odkazuje",
@@ -2317,6 +2318,13 @@ export const cs = {
         add: "Přidat alias",
         loadError: "Aliasy modelů se nepodařilo načíst.",
         saveError: "Aliasy modelů se nepodařilo uložit.",
+        contextLength: "Délka kontextu",
+        kvCacheType: "Typ mezipaměti KV",
+        speculativeDecoding: "Spekulativní dekódování",
+        savedSetting: "Uložené nastavení",
+        loadSettings: "Nastavení načtení",
+        loadSettingsHint:
+          "Jen pro modely GGUF. Prázdná pole použijí uložená nastavení modelu.",
       },
       previewSharing: {
         sectionTitle: "Sdílení náhledů",
@@ -5193,6 +5201,7 @@ export const cs = {
   translate: {
     title: "Překlad",
     detectLanguage: "Rozpoznat jazyk",
+    detectedLanguage: "{language} (rozpoznáno)",
     sourceLanguage: "Přeložit z",
     targetLanguage: "Přeložit do",
     recentTargets: "Nedávné",
@@ -5346,6 +5355,7 @@ export const cs = {
       intervalHours: "Interval (hodiny)",
       hourlyNote: "První spuštění proběhne jeden interval po uložení. Změna intervalu nebo obnovení spustí čekání znovu.",
       createTitle: "Naplánovat úlohu",
+      repliesInChat: "Každé spuštění odpoví v chatu „{title}“.",
       editTitle: "Upravit naplánovanou úlohu",
       name: "Název",
       namePlaceholder: "Název (volitelné)",

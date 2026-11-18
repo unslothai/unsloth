@@ -879,6 +879,7 @@ export const ar = {
   chatMenu: {
     more: "خيارات المحادثة",
     copy: "نسخ",
+    addScheduledTask: "إضافة مهمة مجدولة…",
     compact: "ضغط المحادثة",
     compactQueued: "تم طلب ضغط المحادثة للرسالة التالية",
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
@@ -2115,7 +2116,7 @@ export const ar = {
       modelAliases: {
         sectionTitle: "أسماء النماذج المستعارة (OpenAI API)",
         description:
-          "أسماء ثابتة لعملاء الواجهة البرمجية مثل fast-chat أو code. يُخدَم الطلب الذي يذكر اسمًا مستعارًا بالنموذج الذي يشير إليه، فتستمر التطبيقات المتصلة في العمل عند تبديل النماذج. فعّل تبديل النموذج حسب الطلب ليتمكن الاسم المستعار من تحميل نموذجه.",
+          "أسماء قصيرة يمكن لعملاء الواجهة البرمجية استخدامها بدلًا من الاسم الكامل للنموذج.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "الاسم المستعار",
         modelAriaLabel: "النموذج الذي يشير إليه الاسم المستعار",
@@ -2124,6 +2125,13 @@ export const ar = {
         add: "إضافة اسم مستعار",
         loadError: "تعذر تحميل أسماء النماذج المستعارة.",
         saveError: "تعذر حفظ أسماء النماذج المستعارة.",
+        contextLength: "طول السياق",
+        kvCacheType: "نوع ذاكرة KV المؤقتة",
+        speculativeDecoding: "الفك التخميني",
+        savedSetting: "الإعداد المحفوظ",
+        loadSettings: "إعدادات التحميل",
+        loadSettingsHint:
+          "لنماذج GGUF فقط. الحقول الفارغة تستخدم إعدادات النموذج المحفوظة.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -4834,6 +4842,7 @@ export const ar = {
   translate: {
     title: "الترجمة",
     detectLanguage: "اكتشاف اللغة",
+    detectedLanguage: "{language} (مكتشفة)",
     sourceLanguage: "الترجمة من",
     targetLanguage: "الترجمة إلى",
     recentTargets: "الأخيرة",
@@ -4979,6 +4988,7 @@ export const ar = {
       intervalHours: "الفاصل الزمني (بالساعات)",
       hourlyNote: "يبدأ التشغيل الأول بعد مرور فاصل زمني واحد من الحفظ. يؤدي تغيير الفاصل الزمني أو استئناف المهمة إلى بدء الانتظار من جديد.",
       createTitle: "جدولة مهمة",
+      repliesInChat: "كل تشغيل يرد في «{title}».",
       editTitle: "تعديل المهمة المجدولة",
       name: "الاسم",
       namePlaceholder: "الاسم (اختياري)",

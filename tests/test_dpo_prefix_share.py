@@ -485,3 +485,60 @@ def test_length_dependent_rope_declines():
     assert not rope(NS(rope_scaling = {"rope_type": "llama3", "factor": 8.0}))
     assert not rope(NS(rope_parameters = {"rope_type": "default", "rope_theta": 1e6}))
     assert not rope(NS(rope_scaling = None))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_verify_with_hidden_states_on_another_device(monkeypatch):
+    # A model split over GPUs (device_map) returns hidden states on its last block's device while the
+    # attention mask stays on the input device; the first-call verify must still compare them.
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_TOKR", "1.0")
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "0")
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_VERIFY", "1")
+    rng = random.Random(7)
+    ids, am, _ = _batch(
+        [_rand_tokens(rng, 30), _rand_tokens(rng, 12)],
+        [_rand_tokens(rng, 5)] * 2,
+        [_rand_tokens(rng, 6)] * 2,
+    )
+    out_device = torch.device("cuda", 1) if torch.cuda.device_count() > 1 else torch.device("cpu")
+
+    class Backbone(torch.nn.Module):
+        # Per-token embedding only, so the shared stream equals the padded rows exactly.
+        def __init__(self):
+            super().__init__()
+            self.embed_tokens = torch.nn.Embedding(V, D, device = out_device)
+
+        def forward(
+            self,
+            *,
+            input_ids,
+            attention_mask = None,
+            position_ids = None,
+            prefix_seg_info = None,
+        ):
+            return (self.embed_tokens(input_ids.to(out_device)),)
+
+    class CausalLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Backbone()
+
+        def get_input_embeddings(self):
+            return self.model.embed_tokens
+
+    lm = CausalLM().eval()
+    backbone = lm.model
+    setattr(backbone, dps._STATE, dps._HookState(lm))
+    backbone.register_forward_pre_hook(dps._pre_hook, with_kwargs = True)
+    backbone.register_forward_hook(dps._post_hook, with_kwargs = True)
+    ids, am = ids.cuda(), am.cuda()
+    engaged = dps.ENGAGED_COUNT
+    with torch.no_grad():
+        got = backbone(input_ids = ids, attention_mask = am)[0]
+        setattr(backbone, dps._STATE, None)
+        want = backbone(input_ids = ids, attention_mask = am)[0]
+    assert dps.ENGAGED_COUNT == engaged + 1
+    assert not getattr(backbone, dps._UNSAFE, False)
+    assert dps.LAST_VERIFY["max_rel"] == 0.0
+    keep = am.to(device = got.device, dtype = torch.bool)
+    torch.testing.assert_close(got[keep], want[keep], rtol = 0, atol = 0)

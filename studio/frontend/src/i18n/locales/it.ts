@@ -2013,7 +2013,7 @@ export const it = {
       modelAliases: {
         sectionTitle: "Alias dei modelli (OpenAI API)",
         description:
-          "Nomi stabili per i client API, come fast-chat o code. Una richiesta che nomina un alias viene servita dal modello a cui punta, così le app collegate continuano a funzionare quando cambi modello. Attiva Cambia modello in base alla richiesta perché un alias possa caricare il modello a cui punta.",
+          "Nomi brevi che i client API possono usare al posto del nome completo del modello.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Nome dell'alias",
         modelAriaLabel: "Modello a cui punta l'alias",
@@ -2022,6 +2022,13 @@ export const it = {
         add: "Aggiungi alias",
         loadError: "Impossibile caricare gli alias dei modelli.",
         saveError: "Impossibile salvare gli alias dei modelli.",
+        contextLength: "Lunghezza del contesto",
+        kvCacheType: "Tipo di cache KV",
+        speculativeDecoding: "Decodifica speculativa",
+        savedSetting: "Impostazione salvata",
+        loadSettings: "Impostazioni di caricamento",
+        loadSettingsHint:
+          "Solo per modelli GGUF. I campi vuoti usano le impostazioni salvate del modello.",
       },
       previewSharing: {
         sectionTitle: "Condivisione delle anteprime",
@@ -3933,6 +3940,7 @@ export const it = {
   chatMenu: {
     more: "Opzioni chat",
     copy: "Copia",
+    addScheduledTask: "Aggiungi attività pianificata…",
     compact: "Compatta conversazione",
     compactQueued: "Compattazione richiesta per il prossimo messaggio",
     compactEmpty: "Ancora niente da compattare",
@@ -4903,6 +4911,7 @@ export const it = {
   translate: {
     title: "Traduci",
     detectLanguage: "Rileva lingua",
+    detectedLanguage: "{language} (rilevata)",
     sourceLanguage: "Traduci da",
     targetLanguage: "Traduci in",
     recentTargets: "Recenti",
@@ -5048,6 +5057,7 @@ export const it = {
       intervalHours: "Intervallo (ore)",
       hourlyNote: "La prima esecuzione avviene un intervallo dopo il salvataggio. Modificare l’intervallo o riprendere l’attività riavvia l’attesa.",
       createTitle: "Pianifica un’attività",
+      repliesInChat: "Ogni esecuzione risponde in “{title}”.",
       editTitle: "Modifica attività pianificata",
       name: "Nome",
       namePlaceholder: "Nome (facoltativo)",

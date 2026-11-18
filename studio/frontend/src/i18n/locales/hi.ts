@@ -879,6 +879,7 @@ export const hi = {
   chatMenu: {
     more: "चैट विकल्प",
     copy: "कॉपी करें",
+    addScheduledTask: "शेड्यूल किया गया कार्य जोड़ें…",
     compact: "बातचीत कॉम्पैक्ट करें",
     compactQueued: "अगले संदेश के लिए कॉम्पैक्शन का अनुरोध किया गया",
     compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
@@ -2119,7 +2120,7 @@ export const hi = {
       modelAliases: {
         sectionTitle: "मॉडल उपनाम (OpenAI API)",
         description:
-          "API क्लाइंट के लिए स्थिर नाम, जैसे fast-chat या code. किसी उपनाम वाले अनुरोध को वही मॉडल जवाब देता है जिसकी ओर वह इशारा करता है, इसलिए मॉडल बदलने पर भी जुड़े ऐप चलते रहते हैं. उपनाम अपना मॉडल लोड कर सके, इसके लिए अनुरोध के अनुसार मॉडल बदलें चालू करें.",
+          "छोटे नाम, जिन्हें API क्लाइंट मॉडल के पूरे नाम की जगह इस्तेमाल कर सकते हैं।",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "उपनाम का नाम",
         modelAriaLabel: "वह मॉडल जिसकी ओर उपनाम इशारा करता है",
@@ -2128,6 +2129,13 @@ export const hi = {
         add: "उपनाम जोड़ें",
         loadError: "मॉडल उपनाम लोड नहीं हो सके.",
         saveError: "मॉडल उपनाम सहेजे नहीं जा सके.",
+        contextLength: "कॉन्टेक्स्ट लंबाई",
+        kvCacheType: "KV कैश प्रकार",
+        speculativeDecoding: "स्पेक्युलेटिव डिकोडिंग",
+        savedSetting: "सहेजी गई सेटिंग",
+        loadSettings: "लोड सेटिंग्स",
+        loadSettingsHint:
+          "केवल GGUF मॉडल के लिए। खाली फ़ील्ड मॉडल की सहेजी गई सेटिंग्स का उपयोग करते हैं।",
       },
       previewSharing: {
         sectionTitle: "पूर्वावलोकन साझाकरण",
@@ -4845,6 +4853,7 @@ export const hi = {
   translate: {
     title: "अनुवाद",
     detectLanguage: "भाषा पहचानें",
+    detectedLanguage: "{language} (पहचानी गई)",
     sourceLanguage: "इससे अनुवाद करें",
     targetLanguage: "इसमें अनुवाद करें",
     recentTargets: "हाल के",
@@ -4990,6 +4999,7 @@ export const hi = {
       intervalHours: "अंतराल (घंटे)",
       hourlyNote: "सहेजने के एक अंतराल बाद पहली बार चलेगा। अंतराल बदलने या फिर से शुरू करने पर प्रतीक्षा दोबारा शुरू होगी।",
       createTitle: "टास्क शेड्यूल करें",
+      repliesInChat: "हर रन “{title}” में जवाब देता है।",
       editTitle: "शेड्यूल किया गया टास्क संपादित करें",
       name: "नाम",
       namePlaceholder: "नाम (वैकल्पिक)",
