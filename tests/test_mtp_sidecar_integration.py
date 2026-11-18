@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -12,9 +11,7 @@ import pytest
 
 
 def test_cached_mtp_sidecar_restores_tiny_model(tmp_path):
-    for name in ("torch", "transformers", "unsloth_zoo"):
-        if importlib.util.find_spec(name) is None:
-            pytest.skip(f"{name} is not installed")
+    pytest.importorskip("unsloth_zoo.speculative.stitch")
     pytest.importorskip("transformers.models.glm4_moe")
     root = Path(__file__).resolve().parents[1]
     script = textwrap.dedent("""

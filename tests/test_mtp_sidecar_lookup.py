@@ -13,10 +13,13 @@ import huggingface_hub
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 import pytest
 
+Glm4MoeConfig = pytest.importorskip("transformers").Glm4MoeConfig
+pytest.importorskip("unsloth_zoo.speculative")
+MTP_MODEL = types.SimpleNamespace(config = Glm4MoeConfig(num_nextn_predict_layers = 1))
+
 
 @pytest.fixture
 def reattach():
-    # Importing the full loader requires the accelerator stack; execute its actual helper here.
     path = Path(__file__).resolve().parents[1] / "unsloth/models/loader.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     node = next(
@@ -39,7 +42,7 @@ def test_uncertain_remote_lookup_warns_without_exposing_error_details(
         raise failure
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fail)
-    reattach(object(), "org/adapter", token = "secret-value", local_files_only = True)
+    reattach(MTP_MODEL, "org/adapter", token = "secret-value", local_files_only = True)
     output = capsys.readouterr().out
     assert "could not check" in output.lower()
     assert "MTP" in output and "stock" in output
@@ -51,16 +54,34 @@ def test_remote_file_absence_is_still_silent(reattach, monkeypatch, capsys):
         raise EntryNotFoundError("missing")
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
-    reattach(object(), "org/adapter")
+    reattach(MTP_MODEL, "org/adapter")
     assert capsys.readouterr().out == ""
 
 
 def test_actual_offline_cache_miss_warns(reattach, tmp_path, capsys):
-    # This exercises the installed Hub version's real exception hierarchy without network access.
-    reattach(object(), "offline/not-cached", cache_dir = str(tmp_path), local_files_only = True)
+    reattach(MTP_MODEL, "offline/not-cached", cache_dir = str(tmp_path), local_files_only = True)
     output = capsys.readouterr().out
     assert "could not check" in output.lower()
     assert "stock" in output
+
+
+def test_offline_miss_is_silent_for_models_without_mtp(reattach, tmp_path, capsys):
+    llama = types.SimpleNamespace(config = pytest.importorskip("transformers").LlamaConfig())
+    reattach(llama, "org/llama-lora", cache_dir = str(tmp_path), local_files_only = True)
+    reattach(object(), "org/llama-lora", cache_dir = str(tmp_path), local_files_only = True)
+    assert capsys.readouterr().out == ""
+
+
+def test_offline_cached_404_is_silent(reattach, tmp_path, capsys):
+    repo = tmp_path / "models--org--adapter"
+    revision = "a" * 40
+    (repo / "snapshots" / revision).mkdir(parents = True)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(revision, encoding = "utf-8")
+    (repo / ".no_exist" / revision).mkdir(parents = True)
+    (repo / ".no_exist" / revision / "mtp_head.safetensors").write_text("", encoding = "utf-8")
+    reattach(MTP_MODEL, "org/adapter", cache_dir = str(tmp_path), local_files_only = True)
+    assert capsys.readouterr().out == ""
 
 
 def test_actual_offline_cached_sidecar_is_reattached(reattach, tmp_path, monkeypatch, capsys):
