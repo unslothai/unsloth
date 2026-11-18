@@ -582,6 +582,69 @@ def test_an_alias_is_served_where_its_load_settings_apply_or_it_has_none(path, a
     assert asyncio.run(inference_route._refuse_ignored_alias_load_settings(request, "t")) is None
 
 
+def _alias_refusal_code(excinfo):
+    return excinfo.value.status_code, excinfo.value.detail["error"]["code"]
+
+
+@pytest.mark.parametrize(
+    "llama_loaded, is_diffusion, other_resident, refused",
+    [
+        # The diffusion runner records no launch, so any settings would pass for the alias's.
+        (True, True, None, True),
+        # A Transformers, MLX or NPU model the name check read as a GGUF.
+        (False, False, "org/transformers-model", True),
+        (True, False, None, False),
+        # Nothing loaded: the route reports that itself.
+        (False, False, None, False),
+    ],
+)
+def test_an_alias_with_load_settings_is_refused_when_another_kind_of_model_answers(
+    monkeypatch, llama_loaded, is_diffusion, other_resident, refused
+):
+    backend = SimpleNamespace(is_loaded = llama_loaded, is_diffusion = is_diffusion)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_loaded_slot_ident", lambda: other_resident)
+    request = _alias_request("/v1/chat/completions")
+    if not refused:
+        assert inference_route._refuse_alias_on_other_resident(request) is None
+        return
+    with pytest.raises(HTTPException) as excinfo:
+        inference_route._refuse_alias_on_other_resident(request)
+    assert _alias_refusal_code(excinfo) == (400, "alias_load_settings_unsupported")
+    assert ("DiffusionGemma" in excinfo.value.detail["error"]["message"]) is is_diffusion
+
+
+def test_a_diffusion_model_loaded_with_other_settings_refuses_the_alias(monkeypatch):
+    # Without a recorded launch the settings check passes, so the alias would be served as is.
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = None
+    rec.backend.is_diffusion = True
+    with pytest.raises(HTTPException) as excinfo:
+        _run_alias_hook(monkeypatch)
+    assert _alias_refusal_code(excinfo) == (400, "alias_load_settings_unsupported")
+    assert rec.calls == []
+
+
+def test_a_plain_alias_is_served_by_a_model_that_is_not_a_gguf(monkeypatch):
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    monkeypatch.setattr(inference_route, "_loaded_slot_ident", lambda: "org/transformers-model")
+    plain = {"name": "plain", "model": "org/transformers-model"}
+    request = _alias_request("/v1/chat/completions", plain)
+    assert inference_route._refuse_alias_on_other_resident(request) is None
+
+
+def test_a_load_that_leaves_other_settings_running_refuses_the_alias(monkeypatch):
+    # A load that joins a runtime another account shares returns without relaunching it.
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    monkeypatch.setattr(_AliasLoadRecorder, "__call__", _LoadRecorder.__call__)
+    with pytest.raises(HTTPException) as excinfo:
+        _run_alias_hook(monkeypatch)
+    assert _alias_refusal_code(excinfo) == (409, "model_settings_mismatch")
+    assert len(rec.calls) == 1
+
+
 def test_every_route_that_resolves_aliases_refuses_ignored_load_settings():
     from utils.model_aliases import _ALIAS_ROUTES
     guarded = {

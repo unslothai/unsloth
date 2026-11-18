@@ -10433,12 +10433,27 @@ def _alias_refusal(
     )
 
 
+def _ignored_alias_load_settings(
+    fastapi_request,
+    alias: dict[str, Any],
+    limit: str = "only apply when a local GGUF model generates text",
+) -> HTTPException:
+    """The refusal for an alias whose load settings the model answering it would ignore."""
+    return _alias_refusal(
+        fastapi_request,
+        "alias_load_settings_unsupported",
+        f"The alias '{alias['name']}' has its own load settings, and those {limit}. Remove the "
+        "load settings from the alias, or send the model's own name.",
+        status = 400,
+    )
+
+
 async def _refuse_ignored_alias_load_settings(
     request: Request, _subject: str = Depends(get_current_subject)
 ) -> None:
     """Load settings only apply when a local GGUF model generates text. Refuse the alias where
     they would be ignored: embeddings, a Connection target, a non-GGUF model, a request sent to a
-    provider."""
+    provider. _refuse_alias_on_other_resident checks the model that ends up answering."""
     alias = _request_alias(request)
     if alias is None:
         return
@@ -10455,14 +10470,24 @@ async def _refuse_ignored_alias_load_settings(
             body.get("provider_id") or body.get("provider_type")
         )
     if ignored:
-        raise _alias_refusal(
-            request,
-            "alias_load_settings_unsupported",
-            f"The alias '{alias['name']}' has its own load settings, and those only apply when a "
-            "local GGUF model generates text. Remove the load settings from the alias, or send "
-            "the model's own name.",
-            status = 400,
-        )
+        raise _ignored_alias_load_settings(request, alias)
+
+
+def _refuse_alias_on_other_resident(fastapi_request) -> None:
+    """After the switch: the model that will answer is one load settings cannot reach."""
+    alias = _request_alias(fastapi_request)
+    if alias is None:
+        return
+    backend = get_llama_cpp_backend()
+    if getattr(backend, "is_loaded", False):
+        # The diffusion runner records no launch, so any settings would pass for the alias's.
+        if getattr(backend, "is_diffusion", False):
+            raise _ignored_alias_load_settings(
+                fastapi_request, alias, "do not apply to DiffusionGemma models"
+            )
+    elif _loaded_slot_ident() is not None:
+        # A Transformers, MLX or NPU model the name check read as a GGUF (an unindexed id).
+        raise _ignored_alias_load_settings(fastapi_request, alias)
 
 
 def _refuse_changed_alias(fastapi_request) -> None:
@@ -10481,6 +10506,7 @@ def _serves_alias_load_settings(switch):
     async def wrapper(requested_model, fastapi_request, *args, **kwargs):
         await switch(requested_model, fastapi_request, *args, **kwargs)
         _refuse_changed_alias(fastapi_request)
+        _refuse_alias_on_other_resident(fastapi_request)
         if _alias_load_settings_met(fastapi_request):
             return
         alias = _request_alias(fastapi_request)
