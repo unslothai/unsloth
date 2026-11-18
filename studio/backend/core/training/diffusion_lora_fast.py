@@ -42,6 +42,8 @@ GIB = 1 << 30
 _MARGIN_MIN_BYTES = 2 * GIB
 _MARGIN_FRAC = 0.10
 _BUDGET_FRAC = 0.85
+# Room the per-step rebalance must see before it grows a shrunk budget again (no evict / refill churn).
+_GROW_HYSTERESIS = 1 * GIB
 
 
 def _env_off(name: str) -> bool:
@@ -292,25 +294,45 @@ def plan_dequant_cache(
 ) -> None:
     """Size ``cache`` right after step 1's optimizer step. ``step_peak`` / ``pre_opt_alloc`` are the allocated
     peak and the allocated bytes just before that step; its activations (peak minus what stays allocated)
-    are scaled to the largest bucket and the optimizer state it just created is added."""
+    are scaled to the largest bucket and the optimizer state it just created is added. The activation
+    figure is kept on the cache so every later step can rebalance against what is free then."""
+    pinned = None
     override = os.environ.get("UNSLOTH_DIFFUSION_DEQUANT_CACHE_GB", "").strip()
     if override:
         try:
-            cache.plan(int(float(override) * GIB))
-            return
+            pinned = int(float(override) * GIB)
         except ValueError:
             pass
     try:
         free, total = torch.cuda.mem_get_info()
         allocated = torch.cuda.memory_allocated()
         reserved = torch.cuda.memory_reserved()
-    except Exception:  # noqa: BLE001 -- no probe, no cache
-        cache.plan(0)
+    except Exception:  # noqa: BLE001 -- no probe: only a pinned budget caches
+        cache.plan(pinned or 0)
         return
     opt_state = max(0, allocated - pre_opt_alloc)
-    transient = max(0, step_peak - pre_opt_alloc)
-    need = pre_opt_alloc + int(transient * max(1.0, act_scale)) + opt_state
+    transient = int(max(0, step_peak - pre_opt_alloc) * max(1.0, act_scale))
+    cache.transient = transient
+    cache.margin = max(_MARGIN_MIN_BYTES, int(total * _MARGIN_FRAC))
+    if pinned is not None:
+        cache.plan(pinned)
+        return
+    need = pre_opt_alloc + transient + opt_state
     cache.plan(dequant_budget_bytes(free = free, reserved = reserved, peak_alloc = need, total = total))
+
+
+def rebalance_dequant_cache(cache) -> int:
+    """Per-step check against what is free NOW: another process (a dictation model, a second app) that
+    took memory since the plan makes the cache evict until the next step's activations plus the margin
+    fit again; room coming back lets it grow toward its plan. Returns the bytes evicted (the caller
+    then hands them back to the driver)."""
+    try:
+        free, _total = torch.cuda.mem_get_info()
+        allocated = torch.cuda.memory_allocated()
+        reserved = torch.cuda.memory_reserved()
+    except Exception:  # noqa: BLE001 -- no probe: leave the cache as it is
+        return 0
+    return cache.rebalance(free = free, reserved = reserved, allocated = allocated)
 
 
 def attach_training_hooks(
@@ -318,9 +340,11 @@ def attach_training_hooks(
     cache: Optional["Nf4DequantCache"],
     act_scale: float = 1.0,
     on_planned = None,
+    on_event = None,
 ):
     """Optimizer hooks: every step bumps the LoRA update generation (the fused AdamW does not bump version
-    counters); the first step this process runs also sizes ``cache``. Returns the hook handles."""
+    counters); the first step this process runs sizes ``cache``, every later one rebalances it against
+    the memory free then. Returns the hook handles."""
     state = {"pending": cache is not None}
 
     def pre(_opt, _args, _kwargs):
@@ -330,13 +354,56 @@ def attach_training_hooks(
 
     def post(_opt, _args, _kwargs):
         mark_lora_updated()
+        if cache is None:
+            return
         if state["pending"]:
             state["pending"] = False
             plan_dequant_cache(cache, state["peak"], state["pre"], act_scale)
             if on_planned is not None:
                 on_planned(cache.stats())
+            return
+        evicted = rebalance_dequant_cache(cache)
+        if evicted:
+            # Freed entries go back to torch's pool; empty it so another process can have them.
+            torch.cuda.empty_cache()
+            if on_event is not None:
+                on_event(
+                    "dequant_cache_shrunk",
+                    {"evicted_gib": round(evicted / GIB, 3), **cache.stats()},
+                )
 
     return (optimizer.register_step_pre_hook(pre), optimizer.register_step_post_hook(post))
+
+
+# A parent request (``DiffusionTrainingService.lend_vram``) reaches the trainer through its stop queue;
+# the trainer that owns a cache registers the handler, everything else just acknowledges.
+_VRAM_HANDLER: list = []
+
+
+def set_vram_request_handler(handler) -> None:
+    _VRAM_HANDLER[:] = [handler] if handler is not None else []
+
+
+def handle_vram_request(kind: str) -> dict:
+    """``kind`` is "lend" (drop the cache now, cache nothing until "return") or "return". Runs between
+    steps (from the trainer's stop check), where no graph holds a cache entry. Returns the ack payload."""
+    if _VRAM_HANDLER:
+        return _VRAM_HANDLER[0](kind)
+    return {"kind": kind, "cached_gib": 0.0, "freed_gib": 0.0}
+
+
+def cache_vram_handler(cache: "Nf4DequantCache"):
+    def handle(kind: str) -> dict:
+        freed = 0
+        if kind == "lend":
+            freed = cache.lend()
+            if freed and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        elif kind == "return":
+            cache.unlend()
+        return {"kind": kind, "freed_gib": round(freed / GIB, 3), **cache.stats()}
+
+    return handle
 
 
 class Nf4DequantCache:
@@ -347,22 +414,84 @@ class Nf4DequantCache:
         self.budget = int(budget)
         self.used = 0
         self.entries: dict[int, torch.Tensor] = {}
+        self.sizes: dict[int, int] = {}
         self.hits = 0
         self.misses = 0
         self.full = False
         self.layers = 0  # nf4 linears routed through the cache
-        self.paused = False
+        self.paused = False  # preview render
+        self.lent = False  # another Studio GPU load asked for the room
+        self.cap = int(budget)  # the step-1 plan: rebalancing never grows past it
+        self.transient = 0  # the next step's activations, from step 1
+        self.margin = _MARGIN_MIN_BYTES
+        self.extra_reserved = 0  # bytes another planner keeps for itself (see ``reserve``)
+        self.shrinks = 0
 
     def plan(self, budget: int) -> None:
         self.budget = max(0, int(budget))
+        self.cap = self.budget
         self.full = self.used >= self.budget
+
+    def reserve(self, nbytes: int) -> None:
+        """Bytes some other part of the step will hold on top of step 1's activations (a budgeted
+        checkpointing plan that keeps activations from step 2 on). Rebalancing makes room for them."""
+        self.extra_reserved = max(0, int(nbytes))
+
+    def _evict(self, nbytes: int) -> int:
+        """Drop the newest entries until ``nbytes`` are freed (or nothing is left)."""
+        freed = 0
+        for key in reversed(list(self.entries)):
+            if freed >= nbytes:
+                break
+            w = self.entries.pop(key)
+            freed += self.sizes.pop(key, w.numel() * w.element_size())
+        self.used = max(0, self.used - freed)
+        return freed
+
+    def rebalance(self, *, free: int, reserved: int, allocated: int) -> int:
+        """``room`` = what the card has beyond this process's live tensors, the next step's activations
+        and the margin. Negative: evict that much and stop growing. Comfortably positive: let the
+        budget grow back toward the plan. Returns the bytes evicted."""
+        if self.cap <= 0:
+            return 0
+        room = free + (reserved - allocated) - self.transient - self.extra_reserved - self.margin
+        pending = 0 if self.full else max(0, self.budget - self.used)
+        if room < pending:
+            # First stop growing (entries still to come under the budget would take from this room),
+            # then evict whatever is still short.
+            self.budget = self.used
+            self.full = True
+            evicted = self._evict(-room) if room < 0 else 0
+            self.budget = self.used
+            if evicted:
+                self.shrinks += 1
+            return evicted
+        room -= pending
+        if room > _GROW_HYSTERESIS and self.budget < self.cap:
+            self.budget = min(self.cap, self.budget + int(room * _BUDGET_FRAC))
+            self.full = self.used >= self.budget
+        return 0
+
+    def lend(self) -> int:
+        """Free every entry for another Studio GPU load; cache nothing until ``unlend``."""
+        freed = self.used
+        self.clear()
+        self.lent = True
+        self.budget = 0
+        return freed
+
+    def unlend(self) -> None:
+        """The load is done: the next step's rebalance sizes the budget from what is free now, which
+        counts the new resident."""
+        self.lent = False
+        self.full = False
 
     def get(self, base, dtype: torch.dtype) -> Optional[torch.Tensor]:
         w = self.entries.get(id(base))
         if w is not None and w.dtype == dtype:
             self.hits += 1
             return w
-        if self.full or self.budget <= 0 or self.paused:
+        if self.full or self.budget <= 0 or self.paused or self.lent:
             self.misses += 1
             return None
         weight = base.weight
@@ -381,12 +510,14 @@ class Nf4DequantCache:
             self.misses += 1
             return None
         self.entries[id(base)] = w
+        self.sizes[id(base)] = nbytes
         self.used += nbytes
         self.misses += 1
         return w
 
     def clear(self) -> None:
         self.entries.clear()
+        self.sizes.clear()
         self.used = 0
         self.full = False
 
@@ -399,9 +530,10 @@ class Nf4DequantCache:
         self.paused = False
 
     def release(self) -> None:
-        """Drop every entry and stop caching (previews and the end of the run need the room)."""
+        """Drop every entry and stop caching (the end of the run)."""
         self.clear()
         self.budget = 0
+        self.cap = 0
 
     def stats(self) -> dict:
         return {
@@ -411,4 +543,6 @@ class Nf4DequantCache:
             "nf4_layers": self.layers,
             "hits": self.hits,
             "misses": self.misses,
+            "shrinks": self.shrinks,
+            "lent": self.lent,
         }

@@ -3265,6 +3265,8 @@ def _train_dit(
         Nf4DequantCache,
         attach_training_hooks,
         bucket_activation_scale,
+        cache_vram_handler,
+        set_vram_request_handler,
         dequant_cache_enabled,
         fast_lora_enabled,
         fast_lora_stats,
@@ -3288,7 +3290,11 @@ def _train_dit(
                 dequant_cache,
                 bucket_activation_scale(canvases),
                 lambda stats: _emit(on_event, "dequant_cache_planned", **stats),
+                lambda kind, stats: _emit(on_event, kind, **stats),
             )
+            if dequant_cache is not None:
+                # Studio asks for this room back before another model loads on the card (lend_vram).
+                set_vram_request_handler(cache_vram_handler(dequant_cache))
         else:
             dequant_cache = None
 
@@ -3609,6 +3615,7 @@ def _train_dit(
         stats = fast_lora_stats()
         if dequant_cache is not None:
             stats["dequant"] = dequant_cache.stats()
+            set_vram_request_handler(None)
             dequant_cache.release()
         _emit(on_event, "fast_lora_stats", **stats)
         for handle in fast_lora_hooks:
