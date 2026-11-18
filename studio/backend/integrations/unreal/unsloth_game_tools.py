@@ -114,6 +114,16 @@ def _enable_plugins(uproject: str, names: list) -> list:
     return added
 
 
+def _plugins_not_running(names: list, game_mode_loads: bool) -> list:
+    """The required plugins this editor session did not start with (enabling one in the .uproject only takes effect at
+    the next start). Asks the plugin manager; without it, an unloadable game mode stands in for all of them."""
+    try:
+        running = set(unreal.PluginBlueprintLibrary.get_enabled_plugin_names())
+    except Exception:
+        return [] if game_mode_loads else list(names)
+    return [name for name in names if name not in running]
+
+
 def _keep_always_loaded(actor) -> bool:
     """World Partition streams actors in by distance; keep the player start out of that."""
     try:
@@ -158,8 +168,9 @@ class GameTemplateTools(unreal.ToolsetDefinition):
             template: A name from list_game_templates, e.g. 'vehicleadv' (car) or 'thirdperson'.
 
         Returns:
-            JSON: game_mode (pass it to set_level_game_mode), example_level, files_copied, plugins_enabled and
-            restart_required (true when a plugin the template needs was not loaded: restart the editor first).
+            JSON: game_mode (pass it to set_level_game_mode), example_level, files_copied, plugins_enabled (added to
+            the .uproject by this call), plugins_not_running and restart_required (true while a plugin the template
+            needs is not running in this editor and its game mode does not load: restart the editor first).
         """
         templates = _template_dirs()
         key = template.strip().lower().replace("_", "").replace(" ", "").replace("-", "")
@@ -187,6 +198,7 @@ class GameTemplateTools(unreal.ToolsetDefinition):
         engine_ini = os.path.join(src, "Config", "DefaultEngine.ini")
         game_mode = _read_ini_value(engine_ini, "GlobalDefaultGameMode")
         loads = bool(game_mode) and unreal.load_class(None, game_mode) is not None
+        not_running = _plugins_not_running(plugins, loads)
         return json.dumps(
             {
                 "game_mode": game_mode,
@@ -194,7 +206,8 @@ class GameTemplateTools(unreal.ToolsetDefinition):
                 "files_copied": copied,
                 "content_folders": mounts,
                 "plugins_enabled": enabled,
-                "restart_required": bool(enabled) and not loads,
+                "plugins_not_running": not_running,
+                "restart_required": bool(not_running) and not loads,
             }
         )
 

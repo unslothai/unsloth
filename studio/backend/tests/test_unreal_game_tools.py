@@ -67,7 +67,14 @@ def _engine(root: Path) -> Path:
     return root
 
 
-def _load(monkeypatch, engine_root: Path, project: Path, loadable: bool):
+def _load(
+    monkeypatch,
+    engine_root: Path,
+    project: Path,
+    loadable: bool,
+    running = None,
+):
+    """running: plugin names the editor session started with (None = an engine without PluginBlueprintLibrary)."""
     scans = []
     fake = types.SimpleNamespace(
         uclass = lambda: (lambda cls: cls),
@@ -86,6 +93,10 @@ def _load(monkeypatch, engine_root: Path, project: Path, loadable: bool):
         load_class = lambda outer, path: object() if loadable else None,
         log = lambda _msg: None,
     )
+    if running is not None:
+        fake.PluginBlueprintLibrary = types.SimpleNamespace(
+            get_enabled_plugin_names = lambda: list(running)
+        )
     registry = types.ModuleType("toolset_registry")
     registry.tool_call = lambda fn: fn
     registration = types.ModuleType("toolset_registry.registration")
@@ -158,12 +169,37 @@ def test_adding_a_template_copies_content_and_packs_and_keeps_project_files(
     assert again["files_copied"] == 0 and again["plugins_enabled"] == []
 
 
-def test_a_plugin_that_was_not_loaded_asks_for_a_restart(monkeypatch, tmp_path, project):
-    tools_, _ = _load(monkeypatch, _engine(tmp_path / "UE"), project, loadable = False)
+@pytest.mark.parametrize("running", [None, ["ModelContextProtocol"]])
+def test_a_plugin_that_was_not_loaded_asks_for_a_restart_until_restarted(
+    monkeypatch, tmp_path, project, running
+):
+    tools_, _ = _load(
+        monkeypatch, _engine(tmp_path / "UE"), project, loadable = False, running = running
+    )
     result = json.loads(tools_.add_game_template("vehicleadv"))
     assert (
         result["plugins_enabled"] == ["ChaosVehiclesPlugin"] and result["restart_required"] is True
     )
+    # A second call (or another template sharing the plugin) changes nothing in the .uproject; the plugin is still
+    # not running, so the restart is still owed.
+    again = json.loads(tools_.add_game_template("vehicleadv"))
+    assert again["plugins_enabled"] == [] and again["restart_required"] is True
+    assert again["plugins_not_running"] == ["ChaosVehiclesPlugin"]
+
+
+def test_a_running_plugin_needs_no_restart_even_if_the_uproject_lacked_it(
+    monkeypatch, tmp_path, project
+):
+    running = [
+        "ModelContextProtocol",
+        "ChaosVehiclesPlugin",
+    ]  # enabled by the engine or another plugin
+    tools_, _ = _load(
+        monkeypatch, _engine(tmp_path / "UE"), project, loadable = True, running = running
+    )
+    result = json.loads(tools_.add_game_template("vehicleadv"))
+    assert result["plugins_enabled"] == ["ChaosVehiclesPlugin"]
+    assert result["plugins_not_running"] == [] and result["restart_required"] is False
 
 
 def test_unknown_template_names_the_real_ones(monkeypatch, tmp_path, project):
