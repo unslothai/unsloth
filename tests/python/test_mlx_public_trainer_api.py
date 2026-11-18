@@ -989,8 +989,8 @@ def test_mlx_trainer_accepts_trl_style_positional_args():
         tokenizer = None,
     )
 
-    assert trainer.args is args
     assert trainer.args.output_dir == "trl-outputs"
+    assert trainer.args.max_steps == 2
     assert trainer.train_dataset == []
 
 
