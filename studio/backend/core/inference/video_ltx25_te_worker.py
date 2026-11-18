@@ -102,6 +102,31 @@ def _link_weights(src: str, dst: str) -> None:
         os.link(src, dst)
 
 
+def _cached_tokenizer_dir(repo: str, common: dict) -> Optional[str]:
+    """The cached snapshot's ``tokenizer/`` folder for an offline load of a Hub id, else None. transformers 5.13
+    AutoTokenizer looks up ``tokenizer/config.json``, which the pack does not ship; online that is a 404 it moves
+    past, offline (local_files_only or HF_HUB_OFFLINE) it raises, so a warm cache would never load. A local folder
+    has no lookup to fail and reads the same files."""
+    if os.path.isdir(os.path.expanduser(repo)):
+        return None
+    try:
+        from huggingface_hub import constants, snapshot_download
+        if not (common.get("local_files_only") or constants.HF_HUB_OFFLINE):
+            return None
+        snapshot = snapshot_download(
+            repo,
+            allow_patterns = ["tokenizer/*"],
+            cache_dir = common.get("cache_dir"),
+            token = common.get("token"),
+            local_files_only = True,
+            **({"revision": common["revision"]} if common.get("revision") else {}),
+        )
+    except Exception:  # noqa: BLE001 -- not cached: the Hub id call below names what is missing
+        return None
+    folder = os.path.join(snapshot, "tokenizer")
+    return folder if os.path.isfile(os.path.join(folder, "tokenizer_config.json")) else None
+
+
 def _load(config: dict) -> tuple[Any, Any]:
     import torch
     import transformers
@@ -137,9 +162,13 @@ def _load(config: dict) -> tuple[Any, Any]:
             shutil.rmtree(folder, ignore_errors = True)
     else:
         repo = config["repo"]
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            repo, subfolder = "tokenizer", **common
-        )
+        cached_tokenizer = _cached_tokenizer_dir(repo, common)
+        if cached_tokenizer is not None:
+            tokenizer = transformers.AutoTokenizer.from_pretrained(cached_tokenizer)
+        else:
+            tokenizer = transformers.AutoTokenizer.from_pretrained(
+                repo, subfolder = "tokenizer", **common
+            )
         model = None
         if config.get("te_quant") == TE_QUANT_INT8_CONVROT and config.get("te_prequant"):
             try:
