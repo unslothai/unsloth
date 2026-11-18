@@ -1032,6 +1032,27 @@ def test_an_mlx_tag_materializes_as_a_standard_mlx_checkpoint(mlx_store):
 
 
 @_APFS
+@pytest.mark.parametrize("name", ["ollama_tag.txt", "Config.json"])
+def test_an_mlx_layer_named_as_a_generated_file_cannot_write_into_a_blob(mlx_store, name):
+    import contextlib
+
+    from hub.services.models import ollama
+
+    root, tag_file, _ = mlx_store
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+    shared = next(layer for layer in manifest["layers"] if layer["name"] == "tokenizer_config.json")
+    manifest["layers"].append({**shared, "name": name})
+    tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
+    blob = root / "blobs" / shared["digest"].replace(":", "-")
+    before = blob.read_bytes()
+    row_id = ollama.scan_ollama_dir(root)[0].id
+    # On a case-sensitive volume the alias is just another file, so the build may succeed.
+    with contextlib.suppress(OSError):
+        ollama.materialize_ollama_mlx_ref(ollama.ollama_mlx_ref_for_path(row_id))
+    assert blob.read_bytes() == before
+
+
+@_APFS
 def test_an_mlx_load_builds_the_checkpoint_it_names_and_advertises_the_tag(mlx_store):
     from hub.services.models import ollama
     from models.inference import LoadRequest

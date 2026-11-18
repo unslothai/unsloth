@@ -295,6 +295,12 @@ def _contained(root: Path, name: str) -> Optional[Path]:
     return root / name
 
 
+def _write_new(path: Path, text: str) -> None:
+    # Exclusive create: a manifest layer linked under this name (in any case) must not redirect it into a blob.
+    with open(path, "x", encoding = "utf-8") as f:
+        f.write(text)
+
+
 def _write_tensors(
     directory: Path,
     blobs_dir: Path,
@@ -334,8 +340,9 @@ def _write_tensors(
         weight_map.update(dict.fromkeys(renamed, shard))
     for *_, item_quant in tensors:
         quant.update(item_quant)
-    (directory / "model.safetensors.index.json").write_text(
-        json.dumps({"metadata": {}, "weight_map": weight_map}), encoding = "utf-8"
+    _write_new(
+        directory / "model.safetensors.index.json",
+        json.dumps({"metadata": {}, "weight_map": weight_map}),
     )
     return quant
 
@@ -352,7 +359,7 @@ def _write_config(directory: Path, blobs_dir: Path, blob_path, layer: dict, quan
     quantization = _quantization(quant)
     if quantization is not None:
         config["quantization"] = quantization
-    (directory / "config.json").write_text(json.dumps(config, indent = 2), encoding = "utf-8")
+    _write_new(directory / "config.json", json.dumps(config, indent = 2))
     return config
 
 
@@ -403,7 +410,7 @@ def _build(
     if not has_template:
         template = _bundled_chat_template(ollama_config, config)
         if template is not None:
-            (directory / "chat_template.jinja").write_text(template, encoding = "utf-8")
+            _write_new(directory / "chat_template.jinja", template)
 
 
 def _checkpoint_name(model_id: str) -> str:
@@ -448,7 +455,7 @@ def materialize(
         (staging / name).mkdir(parents = True)
         try:
             _build(staging / name, blobs_dir, blob_path, manifest, ollama_config)
-            (staging / name / _TAG_FILE).write_text(model_id, encoding = "utf-8")
+            _write_new(staging / name / _TAG_FILE, model_id)
             if build.exists():
                 shutil.rmtree(build)
             os.replace(staging, build)
