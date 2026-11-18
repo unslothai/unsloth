@@ -421,7 +421,6 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   );
 }
 
-/** The temporary toggle on a new chat; a saved chat's options live on its title. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,
@@ -438,7 +437,7 @@ export function ChatHeaderMenu({
   );
 }
 
-/** The open chat's title, which opens its options. `threadId` guards a menu left from the last chat. */
+/** `threadId` guards against a menu left from the previous chat. */
 export function ChatTitleMenu({
   threadId,
   fallback,
@@ -467,7 +466,7 @@ export function ChatTitleMenu({
           />
         </button>
       </DropdownMenuTrigger>
-      {/* ml-0 drops the menus' 3px start nudge, so the panel lines up with the title's hover box. */}
+      {/* ml-0: align with the title's hover box. */}
       <DropdownMenuContent
         align="start"
         sideOffset={6}
