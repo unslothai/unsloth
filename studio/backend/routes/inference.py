@@ -9217,6 +9217,12 @@ def _as_local_scan_folder_request(request, owner_session: bool):
     return request.model_copy(update = {"model_path": load_path, "gguf_variant": variant})
 
 
+def _names_ollama_tag(path: str) -> bool:
+    return is_ollama_manifest_ref(path) or any(
+        part in (".studio_links", "ollama_links") for part in Path(path).parts
+    )
+
+
 def _acquire_ollama_lease(model_path: str, native_path_lease):
     """The GGUF tag's lease, or an MLX tag's whose checkpoint path *model_path* is, else None."""
     from hub.services.models.ollama import acquire_ollama_mlx_ref, ollama_mlx_ref_for_path
@@ -9232,10 +9238,7 @@ async def _lease_ollama_model_ref(
 ) -> Optional[str]:
     path = request.model_path
     # Only Ollama tags take the lease pool: an unrelated load must not queue behind a held lease.
-    if not isinstance(path, str) or not (
-        is_ollama_manifest_ref(path)
-        or any(part in (".studio_links", "ollama_links") for part in Path(path).parts)
-    ):
+    if not isinstance(path, str) or not _names_ollama_tag(path):
         return None
     loop = asyncio.get_running_loop()
     lease_future = loop.run_in_executor(
@@ -9650,27 +9653,23 @@ def _target_accepts_request_input(
             need_image,
             gguf_companion_roots,
         )
-    _build_unbuilt_ollama_mlx_tag(load_path)
-    if needs_video and not _target_accepts_video_input(load_path):
-        return False
-    if needs_audio and not _target_accepts_audio_input(load_path):
-        return False
-    # need_image, not needs_vision: audio sets needs_vision but needs no vision tower.
-    return _target_is_vision(load_path) if (needs_vision and need_image) else True
-
-
-def _build_unbuilt_ollama_mlx_tag(load_path: str) -> None:
-    """An unbuilt MLX tag's probes would read a checkpoint that does not exist yet."""
-    from hub.services.models.ollama import materialize_ollama_mlx_ref, ollama_mlx_ref_for_path
-
-    if os.path.exists(load_path):
-        return
+    # An MLX tag's lease builds it for its current manifest, so the probes read what a load would.
+    lease = None
+    if _names_ollama_tag(load_path):
+        try:
+            lease = _acquire_ollama_lease(load_path, None)
+        except (OSError, ValueError) as exc:
+            logger.warning("inference.ollama_mlx_materialize_failed: %s", exc)
     try:
-        ref = ollama_mlx_ref_for_path(load_path)
-        if ref:
-            materialize_ollama_mlx_ref(ref)
-    except (OSError, ValueError) as exc:
-        logger.warning("inference.ollama_mlx_materialize_failed: %s", exc)
+        if needs_video and not _target_accepts_video_input(load_path):
+            return False
+        if needs_audio and not _target_accepts_audio_input(load_path):
+            return False
+        # need_image, not needs_vision: audio sets needs_vision but needs no vision tower.
+        return _target_is_vision(load_path) if (needs_vision and need_image) else True
+    finally:
+        if lease is not None:
+            lease.release()
 
 
 def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
@@ -12215,7 +12214,11 @@ async def _maybe_auto_switch_model(
         if (
             (target_requires_vision or require_audio_input)
             and resolved is not None
-            and not await asyncio.to_thread(
+            and not await asyncio.get_running_loop().run_in_executor(
+                # Its lease wait belongs on the lease pool, never the default executor.
+                _OLLAMA_LEASE_EXECUTOR if _names_ollama_tag(target_id) else None,
+                run_as,
+                current_account(),
                 _target_accepts_request_input,
                 target_id,
                 target_is_gguf,

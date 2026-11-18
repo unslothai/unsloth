@@ -1258,3 +1258,12 @@ def test_an_image_request_probes_an_unbuilt_mlx_tag_from_its_checkpoint(mlx_stor
     assert not Path(row_id).exists()
     assert inference._target_accepts_request_input(row_id, False, True, False)
     assert seen == [row_id]
+    # It probes the current manifest's build after a re-pull, and holds the tag only while probing.
+    first = os.path.realpath(row_id)
+    tag_file = mlx_store[1]
+    tag_file.write_text(json.dumps(json.loads(tag_file.read_text()), indent = 1))
+    assert inference._target_accepts_request_input(row_id, False, True, False)
+    assert os.path.realpath(row_id) != first
+    lock = ollama._materialization_lock(tag_file, mlx_store[0])
+    assert lock.acquire(blocking = False)
+    lock.release()
