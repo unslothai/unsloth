@@ -57,6 +57,9 @@ def _run_to_extras(
         "_ensure_cpu_torch": None,
         "_ensure_xpu_triton": None,
         "run": None,
+        # No-torch updates resolve the unsloth / unsloth-zoo pair against the package index;
+        # keep these install-ordering cases offline (the resolver has its own tests).
+        "_no_torch_pair": ("2026.11.1", "2026.11.1", 0),
         # Off macOS the floor would skip every case; it has its own tests.
         "_mlx_pins_are_installable": mlx_installable,
     }.items():
