@@ -5501,7 +5501,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 /* A classic page scrollbar must not narrow the Translate panes. */
-main:has(.translate-page) {
+main[data-translate-page] {
 	scrollbar-gutter: stable;
 }
 
