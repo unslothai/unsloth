@@ -1733,7 +1733,7 @@ export const es = {
       modeInterval: "Cada 3 segundos",
       modeManual: "Manual",
       refreshNow: "Actualizar ahora",
-      privacyNote: "Las credenciales se enmascaran en esta vista. El archivo en disco no está enmascarado.",
+      privacyNote: "Esta vista oculta los formatos conocidos de credenciales. Antes de compartir el registro, comprueba si contiene secretos, rutas de archivos o texto privado. El archivo en disco contiene el registro original.",
       copyVisible: "Copiar el registro visible",
       empty: "Todavía no se ha registrado nada.",
       disabled: "El registro en archivo está desactivado (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5523,6 +5523,12 @@ export const es = {
       readVideoFailed: "No se pudo leer el vídeo ({status}).",
       openFileFailed: "No se pudo abrir el archivo",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Tipo de exportación",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Convertir a Q4NX",
   },
   exportDecision: {
     title: "Modelo de decisión",

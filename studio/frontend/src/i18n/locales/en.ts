@@ -1738,7 +1738,7 @@ export const en = {
       modeInterval: "Every 3 seconds",
       modeManual: "Manual",
       refreshNow: "Refresh now",
-      privacyNote: "Credentials are masked in this view. The file on disk is not masked.",
+      privacyNote: "Known credential patterns are masked in this view. Review for secrets, file paths, and private text before sharing. The file on disk contains the original log.",
       copyVisible: "Copy visible log",
       empty: "Nothing has been logged yet.",
       disabled: "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5496,6 +5496,12 @@ export const en = {
       readVideoFailed: "Could not read the video ({status}).",
       openFileFailed: "Could not open the file",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Export type",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Convert to Q4NX",
   },
   exportDecision: {
     title: "Decision model",

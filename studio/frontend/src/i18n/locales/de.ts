@@ -1734,7 +1734,7 @@ export const de = {
       modeInterval: "Alle 3 Sekunden",
       modeManual: "Manuell",
       refreshNow: "Jetzt aktualisieren",
-      privacyNote: "Zugangsdaten werden in dieser Ansicht maskiert. In der Datei auf dem Datenträger sind sie nicht maskiert.",
+      privacyNote: "Bekannte Zugangsdatenformate werden in dieser Ansicht maskiert. Prüfe das Protokoll vor dem Teilen auf Geheimnisse, Dateipfade und private Texte. Die Datei auf dem Datenträger enthält das ursprüngliche Protokoll.",
       copyVisible: "Sichtbares Protokoll kopieren",
       empty: "Es wurde noch nichts protokolliert.",
       disabled: "Die Protokollierung in eine Datei ist deaktiviert (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5524,6 +5524,12 @@ export const de = {
       readVideoFailed: "Das Video konnte nicht gelesen werden ({status}).",
       openFileFailed: "Die Datei konnte nicht geöffnet werden",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Exporttyp",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "In Q4NX konvertieren",
   },
   exportDecision: {
     title: "Entscheidungsmodell",

@@ -1734,7 +1734,7 @@ export const hi = {
       modeInterval: "हर 3 सेकंड",
       modeManual: "मैन्युअल",
       refreshNow: "अभी रिफ़्रेश करें",
-      privacyNote: "इस दृश्य में क्रेडेंशियल छिपा दिए जाते हैं। डिस्क पर मौजूद फ़ाइल में वे नहीं छिपाए जाते।",
+      privacyNote: "इस दृश्य में क्रेडेंशियल के पहचाने गए पैटर्न छिपाए जाते हैं। साझा करने से पहले जाँच लें कि लॉग में कोई गोपनीय जानकारी, फ़ाइल पथ या निजी टेक्स्ट तो नहीं है। डिस्क पर मौजूद फ़ाइल में मूल लॉग है।",
       copyVisible: "दिख रहा लॉग कॉपी करें",
       empty: "अभी तक कुछ भी लॉग नहीं हुआ है।",
       disabled: "फ़ाइल में लॉगिंग बंद है (UNSLOTH_STUDIO_NO_FILE_LOG=1)।",
@@ -5461,6 +5461,12 @@ export const hi = {
       readVideoFailed: "वीडियो पढ़ा नहीं जा सका ({status})।",
       openFileFailed: "फ़ाइल खोली नहीं जा सकी",
     },
+  },
+  exportTabs: {
+    ariaLabel: "एक्सपोर्ट प्रकार",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Q4NX में बदलें",
   },
   exportDecision: {
     title: "निर्णय मॉडल",

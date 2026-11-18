@@ -1730,7 +1730,7 @@ export const ar = {
       modeInterval: "كل 3 ثوانٍ",
       modeManual: "يدوي",
       refreshNow: "تحديث الآن",
-      privacyNote: "تُخفى بيانات الاعتماد في هذا العرض. أما في الملف الموجود على القرص فلا تُخفى.",
+      privacyNote: "تُخفى أنماط بيانات الاعتماد المعروفة في هذا العرض. قبل المشاركة، راجع السجل بحثًا عن الأسرار ومسارات الملفات والنصوص الخاصة. يحتوي الملف على القرص على السجل الأصلي.",
       copyVisible: "نسخ السجل الظاهر",
       empty: "لم يُسجَّل أي شيء بعد.",
       disabled: "التسجيل في ملف مُعطَّل (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5450,6 +5450,12 @@ export const ar = {
       readVideoFailed: "تعذّرت قراءة الفيديو ({status}).",
       openFileFailed: "تعذّر فتح الملف",
     },
+  },
+  exportTabs: {
+    ariaLabel: "نوع التصدير",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "التحويل إلى Q4NX",
   },
   exportDecision: {
     title: "نموذج القرار",

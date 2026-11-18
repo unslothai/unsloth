@@ -881,8 +881,21 @@ _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accu
 _DSV41_PP = (
     "tests/test_parallel_deepseek_v41_gloo.py::test_deepseek_v41_parallel_matches_one_process"
 )
+# gpt-oss with router aux loss off: nothing crosses a stage, so pp2 matches one-process gradient accumulation.
+_GPT_OSS_PP = (
+    "tests/test_pp_moe_aux_off_gloo.py::"
+    "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation"
+)
+_GPT_OSS_PP_CASES = {
+    "lora": "gpt_oss_lora_logits_off_1f1b|gpt_oss_lora_logits_off_gpipe_gc",
+    "lora+experts": "gpt_oss_lora_experts_logits_off_gpipe|gpt_oss_lora_experts_logits_off_1f1b_gc_reentrant",
+}
 # Its checkpoint is zoo's non-reentrant layer replay whichever function runs it (Unsloth's offloading one included).
-_MOE_PP_MEMORY = {"deepseek_v41": ("none", "gc", "unsloth_offload")}
+# gpt-oss: HF checkpointing measured in gloo, Unsloth's offloading one on 2x T4 (gpt-oss-20b bnb-4bit).
+_MOE_PP_MEMORY = {
+    "deepseek_v41": ("none", "gc", "unsloth_offload"),
+    "gpt_oss": ("none", "gc", "unsloth_offload"),
+}
 _MOE_PP_MM = (
     "tests/test_pp_mm_moe_aux_gloo.py::test_pp2_wrapper_moe_aux_matches_gradient_accumulation"
 )
@@ -1056,6 +1069,17 @@ _MOE_EVIDENCE = {
         ("gpt_oss", precision, False, "cp"): (f"{_GPT_OSS}[{ids}]",) * 2 + (_GPT_OSS_EAGER,)
         for precision, ids in _GPT_OSS_CASES.items()
     },
+    **{
+        ("gpt_oss", precision, False, "pp"): (f"{_GPT_OSS_PP}[{ids}]",) * 2
+        + ("eager: no compiled region",)
+        for precision, ids in _GPT_OSS_PP_CASES.items()
+    },
+    # QLoRA: 4-bit experts stay inside the layers; measured on 2x T4, router_aux_loss_coef = 0.0.
+    ("gpt_oss", "qlora", False, "pp"): (
+        f"{_GPT_OSS_PP}[{_GPT_OSS_PP_CASES['lora']}] + 2x T4 gpt-oss-20b bnb-4bit pp2 vs one-process split",
+    )
+    * 2
+    + ("eager: no compiled region",),
 }
 
 
@@ -1079,7 +1103,24 @@ def _moe_note(family, precision, aux, mode):
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
     if mode == "pp":
-        if family not in ("qwen3_moe", "gemma4", "qwen3_5_moe", "qwen4_exp", "deepseek_v41"):
+        if family == "gpt_oss" and aux:
+            return (
+                "pipeline parallel trains gpt-oss with its router auxiliary loss off only (router_aux_loss_coef = "
+                "0.0 in SFTConfig; TRL >= 1.x otherwise turns it on): the loss is not carried between stages"
+            )
+        if family not in (
+            "qwen3_moe",
+            "gemma4",
+            "qwen3_5_moe",
+            "qwen4_exp",
+            "deepseek_v41",
+            "gpt_oss",
+        ):
+            if not aux:
+                return (
+                    "with the router auxiliary loss off the split has nothing to carry, but no gloo parity run "
+                    "covers this family under pipeline parallel yet"
+                )
             return (
                 "pipeline parallel carries the router auxiliary loss for Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp "
                 "only (refused at the split)"
@@ -1175,6 +1216,8 @@ def _moe_cells():
                     else:
                         if match["memory"] == _MOE_COMMON["memory"]:
                             match = {**match, "memory": _MOE_UNVERIFIED_MEMORY}
+                        elif mode == "pp" and family in _MOE_PP_MEMORY:
+                            match = {**match, "memory": _MOE_PP_MEMORY[family]}
                         cells.append(
                             Cell(
                                 name,
@@ -1622,19 +1665,20 @@ def _aux_loss_on(model, args, trainer_kind) -> bool:
     moe, configured = _moe(model)
     if not moe:
         return False
-    if configured:
-        return True
-    if (
+    config = getattr(model, "config", None)
+    text = getattr(config, "text_config", None) or config
+    trl_args = (
         trainer_kind in ("sft", "dpo", "grpo", "other_rl")
         and args is not None
         and hasattr(args, "router_aux_loss_coef")
-    ):
-        config = getattr(model, "config", None)
-        text = getattr(config, "text_config", None) or config
-        coef = args.router_aux_loss_coef
-        if coef is None:
-            coef = getattr(text, "router_aux_loss_coef", 0.0) or 0.0
-        return bool(coef) and hasattr(text, "output_router_logits")
+    )
+    coef = args.router_aux_loss_coef if trl_args else None
+    if coef is None:
+        coef = getattr(text, "router_aux_loss_coef", None)
+    if configured:
+        return coef is None or bool(coef)
+    if trl_args:
+        return bool(coef or 0.0) and hasattr(text, "output_router_logits")
     return False
 
 

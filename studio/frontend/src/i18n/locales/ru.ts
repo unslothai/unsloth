@@ -1733,7 +1733,7 @@ export const ru = {
       modeInterval: "Каждые 3 секунды",
       modeManual: "Вручную",
       refreshNow: "Обновить сейчас",
-      privacyNote: "В этом окне учётные данные скрыты. В файле на диске они не скрыты.",
+      privacyNote: "В этом окне маскируются известные форматы учётных данных. Перед отправкой проверьте, есть ли в журнале секреты, пути к файлам или личный текст. Файл на диске содержит исходный журнал.",
       copyVisible: "Копировать видимую часть журнала",
       empty: "Пока ничего не записано.",
       disabled: "Запись журнала в файл отключена (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5478,6 +5478,12 @@ export const ru = {
       readVideoFailed: "Не удалось прочитать видео ({status}).",
       openFileFailed: "Не удалось открыть файл",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Тип экспорта",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Преобразовать в Q4NX",
   },
   exportDecision: {
     title: "Модель принятия решений",

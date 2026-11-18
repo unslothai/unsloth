@@ -1797,7 +1797,7 @@ export const he = {
       modeManual: "ידני",
       refreshNow: "רענן כעת",
       privacyNote:
-        "פרטי הזדהות מוסתרים בתצוגה זו. הקובץ המאוחסן בדיסק אינו מוסתר.",
+        "בתצוגה זו מוסתרים פרטי הזדהות בתבניות מוכרות. לפני השיתוף יש לבדוק אם היומן מכיל סודות, נתיבי קבצים או טקסט פרטי. הקובץ בדיסק מכיל את היומן המקורי.",
       copyVisible: "העתק יומן גלוי",
       empty: "שום דבר לא נרשם ביומן עדיין.",
       disabled: "רישום לקובץ יומן מושבת (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5548,6 +5548,12 @@ export const he = {
       readVideoFailed: "לא ניתן לקרוא את הסרטון ({status}).",
       openFileFailed: "לא ניתן לפתוח את הקובץ",
     },
+  },
+  exportTabs: {
+    ariaLabel: "סוג ייצוא",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "המרה ל-Q4NX",
   },
   exportDecision: {
     title: "מודל החלטות",

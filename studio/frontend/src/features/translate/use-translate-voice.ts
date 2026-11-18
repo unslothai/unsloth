@@ -111,7 +111,9 @@ export function useReadAloud() {
   const speak = useCallback(
     (text: string, lang?: string) => {
       stop();
-      const utterance = new StudioSpeechSynthesisAdapter().speak(text, lang);
+      const utterance = new StudioSpeechSynthesisAdapter().speak(text, lang, {
+        systemFallback: true,
+      });
       utteranceRef.current = utterance;
       setSpeaking(true);
       utterance.subscribe(() => {

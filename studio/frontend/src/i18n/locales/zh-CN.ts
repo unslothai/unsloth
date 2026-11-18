@@ -1728,7 +1728,7 @@ export const zhCN = {
       modeInterval: "每 3 秒",
       modeManual: "手动",
       refreshNow: "立即刷新",
-      privacyNote: "此视图中的凭据已被遮蔽。磁盘上的文件不会被遮蔽。",
+      privacyNote: "此视图会遮蔽已知格式的凭据。分享前，请检查日志是否包含机密信息、文件路径或私人文本。磁盘上的文件包含原始日志。",
       copyVisible: "复制可见日志",
       empty: "目前还没有任何日志。",
       disabled: "文件日志已关闭 (UNSLOTH_STUDIO_NO_FILE_LOG=1)。",
@@ -5352,6 +5352,12 @@ export const zhCN = {
       readVideoFailed: "无法读取视频（{status}）。",
       openFileFailed: "无法打开文件",
     },
+  },
+  exportTabs: {
+    ariaLabel: "导出类型",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "转换为 Q4NX",
   },
   exportDecision: {
     title: "决策模型",

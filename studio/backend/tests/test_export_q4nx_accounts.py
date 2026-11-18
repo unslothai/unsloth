@@ -124,6 +124,64 @@ def test_managed_account_and_owner_reach_the_converter_for_allowed_paths(convert
     assert len(converted) == 2
 
 
+@pytest.mark.parametrize("depth, registered", [(("q4nx",), False), (("a", "b", "c", "d"), True)])
+def test_a_conversion_deeper_than_the_npu_scan_is_registered(
+    monkeypatch, authorized, depth, registered
+):
+    from utils.paths.storage_roots import exports_root
+
+    out = exports_root().joinpath(*depth, "m.Q4_1-q4nx")
+    calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def to_thread(fn, *args, **kwargs):
+        if fn is export_routes.account_access.authorize_download:
+            return None
+        if fn is export_routes._try_register_external_export:
+            calls.append(args[0])
+            return True, str(args[0])
+        if fn is export_routes._export_details:
+            return {"output_path": str(args[0])}
+        return str(out)
+
+    monkeypatch.setattr(export_routes.asyncio, "to_thread", to_thread)
+    _convert(OWNER, repo_id = "org/r-GGUF", filename = "m.Q4_1.gguf")
+    assert calls == ([out] if registered else [])
+
+
+@pytest.mark.parametrize("depth, registered", [(("gguf",), False), (("a", "b", "c", "d"), True)])
+def test_a_gguf_export_with_q4nx_deeper_than_the_npu_scan_registers_its_save_folder(
+    monkeypatch, depth, registered
+):
+    from models import ExportGGUFRequest
+    from utils.paths.storage_roots import exports_root
+
+    save = exports_root().joinpath(*depth)
+    calls = []
+
+    async def supported():
+        return None
+
+    async def to_thread(fn, *args, **kwargs):
+        if fn is export_routes._try_register_external_export:
+            calls.append(args[0])
+            return True, str(args[0])
+        if fn is export_routes._export_details:
+            return {"output_path": str(args[0])}
+        return True, "ok", str(save)
+
+    monkeypatch.setattr(export_routes, "_ensure_export_supported", supported)
+    backend = type("Backend", (), {"export_gguf": None, "decision": None})()
+    monkeypatch.setattr(export_routes, "get_export_backend", lambda: backend)
+    monkeypatch.setattr(export_routes, "_with_drafter", lambda details, path: details)
+    monkeypatch.setattr(export_routes.asyncio, "to_thread", to_thread)
+    request = ExportGGUFRequest(
+        save_directory = "/".join(depth), quantization_method = "q4_1", npu_q4nx = True
+    )
+    asyncio.run(export_routes.export_gguf(request, "subject", allow_ambient = False))
+    assert calls == ([save] if registered else [])
+
+
 def test_a_machine_without_an_npu_and_fastflowlm_is_refused_before_anything(
     monkeypatch, authorized
 ):

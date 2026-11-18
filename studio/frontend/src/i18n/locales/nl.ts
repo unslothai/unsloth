@@ -5893,6 +5893,12 @@ export const nl = {
       openFileFailed: "Kan het bestand niet openen",
     },
   },
+  exportTabs: {
+    ariaLabel: "Exporttype",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Converteren naar Q4NX",
+  },
   exportDecision: {
     title: "Beslissingsmodel",
     description:

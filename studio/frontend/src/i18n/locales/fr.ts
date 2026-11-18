@@ -1734,7 +1734,7 @@ export const fr = {
       modeInterval: "Toutes les 3 secondes",
       modeManual: "Manuel",
       refreshNow: "Actualiser maintenant",
-      privacyNote: "Les identifiants sont masqués dans cette vue. Dans le fichier sur le disque, ils ne le sont pas.",
+      privacyNote: "Cette vue masque les formats d’identifiants connus. Avant de partager le journal, vérifiez s’il contient des secrets, des chemins de fichiers ou du texte privé. Le fichier sur le disque contient le journal d’origine.",
       copyVisible: "Copier le journal visible",
       empty: "Rien n'a encore été consigné.",
       disabled: "La journalisation dans un fichier est désactivée (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5534,6 +5534,12 @@ export const fr = {
       readVideoFailed: "Impossible de lire la vidéo ({status}).",
       openFileFailed: "Impossible d'ouvrir le fichier",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Type d'export",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Convertir en Q4NX",
   },
   exportDecision: {
     title: "Modèle de décision",

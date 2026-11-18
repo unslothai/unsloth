@@ -36,7 +36,6 @@ import {
   Download01Icon,
   Edit03Icon,
   LayerIcon,
-  MoreHorizontalIcon,
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
@@ -46,6 +45,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { ForkIcon } from "@/lib/fork-icon";
@@ -421,7 +421,6 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   );
 }
 
-/** A saved chat's menu, or the temporary toggle on a new chat. Saved chats cannot turn temporary. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,
@@ -429,44 +428,49 @@ export function ChatHeaderMenu({
   temporary: boolean;
   onToggleTemporary: () => void;
 }) {
+  const menu = useActiveChatMenuStore((state) => state.menu);
+  if (!temporary && menu) {
+    return null;
+  }
+  return (
+    <TemporaryChatButton temporary={temporary} onToggle={onToggleTemporary} />
+  );
+}
+
+/** `threadId` guards against a menu left from the previous chat. */
+export function ChatTitleMenu({
+  threadId,
+  fallback,
+}: {
+  threadId: string | null | undefined;
+  fallback?: ReactNode;
+}) {
   const t = useT();
   const menu = useActiveChatMenuStore((state) => state.menu);
-  const label = t("chatMenu.more");
-  if (temporary || !menu) {
-    return (
-      <TemporaryChatButton temporary={temporary} onToggle={onToggleTemporary} />
-    );
+  if (!menu || !threadId || menu.item.id !== threadId) {
+    return fallback ?? null;
   }
   return (
     <DropdownMenu>
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <DropdownMenuTrigger asChild={true}>
-            <button
-              type="button"
-              aria-label={label}
-              className={CHAT_MENU_TRIGGER}
-            >
-              <HugeiconsIcon
-                icon={MoreHorizontalIcon}
-                strokeWidth={1.75}
-                className="size-icon"
-              />
-            </button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent
-          side="bottom"
-          sideOffset={6}
-          className="tooltip-compact"
+      <DropdownMenuTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={`${t("chatMenu.more")}: ${menu.item.title}`}
+          className="chat-title-trigger mr-[calc(6px*var(--ui-space-scale,1))] ml-[calc(6px*var(--ui-space-scale,1))] flex h-[var(--studio-chat-control-height,34px)] min-w-0 max-w-[min(28rem,45vw)] shrink cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 text-ui-13p5 font-medium text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover"
         >
-          {label}
-        </TooltipContent>
-      </Tooltip>
+          <span className="min-w-0 truncate">{menu.item.title}</span>
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
+            strokeWidth={1.75}
+            className="size-3.5 shrink-0 text-muted-foreground"
+          />
+        </button>
+      </DropdownMenuTrigger>
+      {/* ml-0: align with the title's hover box. */}
       <DropdownMenuContent
-        align="end"
+        align="start"
         sideOffset={6}
-        className={cn(MENU, "w-64")}
+        className={cn(MENU, "w-64 data-[align=start]:ml-0")}
       >
         <ChatMenuItems menu={menu} />
       </DropdownMenuContent>

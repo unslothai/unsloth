@@ -1732,7 +1732,7 @@ export const ptBR = {
       modeInterval: "A cada 3 segundos",
       modeManual: "Manual",
       refreshNow: "Atualizar agora",
-      privacyNote: "As credenciais são mascaradas nesta visualização. No arquivo em disco elas não são mascaradas.",
+      privacyNote: "Esta visualização oculta formatos conhecidos de credenciais. Antes de compartilhar o log, verifique se ele contém segredos, caminhos de arquivos ou texto privado. O arquivo em disco contém o log original.",
       copyVisible: "Copiar log visível",
       empty: "Nada foi registrado ainda.",
       disabled: "O log em arquivo está desativado (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -5479,6 +5479,12 @@ export const ptBR = {
       readVideoFailed: "Não foi possível ler o vídeo ({status}).",
       openFileFailed: "Não foi possível abrir o arquivo",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Tipo de exportação",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Converter para Q4NX",
   },
   exportDecision: {
     title: "Modelo de decisão",

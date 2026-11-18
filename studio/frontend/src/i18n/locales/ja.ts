@@ -1732,7 +1732,7 @@ export const ja = {
       modeInterval: "3 秒ごと",
       modeManual: "手動",
       refreshNow: "今すぐ更新",
-      privacyNote: "この表示では認証情報をマスクしています。ディスク上のファイルはマスクされません。",
+      privacyNote: "この表示では既知の形式の認証情報をマスクします。共有する前に、ログに機密情報、ファイルパス、個人的な文章が含まれていないか確認してください。ディスク上のファイルには元のログが保存されています。",
       copyVisible: "表示中のログをコピー",
       empty: "まだ何も記録されていません。",
       disabled: "ファイルへのログ出力は無効です (UNSLOTH_STUDIO_NO_FILE_LOG=1)。",
@@ -5401,6 +5401,12 @@ export const ja = {
       readVideoFailed: "動画を読み込めませんでした ({status})。",
       openFileFailed: "ファイルを開けませんでした",
     },
+  },
+  exportTabs: {
+    ariaLabel: "エクスポートの種類",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Q4NX に変換",
   },
   exportDecision: {
     title: "意思決定モデル",
