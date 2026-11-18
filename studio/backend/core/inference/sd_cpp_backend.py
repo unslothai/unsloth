@@ -3120,7 +3120,12 @@ def _unmeasured_card_free_mib(
     try:
         if klass == "cuda":
             from core.inference.diffusion_device import smi_free_total_mib
-            return smi_free_total_mib(0 if ordinal is None else int(ordinal))
+
+            free, total = smi_free_total_mib(0 if ordinal is None else int(ordinal))
+            # A CPU torch lists no CUDA devices, so that reads nothing; a sole unmasked card is unambiguous.
+            if free is None and not ordinal and os.environ.get("CUDA_VISIBLE_DEVICES") is None:
+                free, total = _sole_nvidia_card_mib()
+            return free, total
         from core.inference.video_minimax_h3 import amdgpu_vram_reading, vulkan_device_is_amd
         if klass == "vulkan" and vulkan_device_is_amd(description):
             free, total = amdgpu_vram_reading()
@@ -3129,6 +3134,30 @@ def _unmeasured_card_free_mib(
     except Exception:  # noqa: BLE001 -- an unreadable card keeps the offload
         pass
     return None, None
+
+
+def _sole_nvidia_card_mib() -> "tuple[Optional[int], Optional[int]]":
+    """(free, total) MiB of the machine's only NVIDIA GPU from nvidia-smi, without torch; (None, None) otherwise."""
+    import subprocess
+
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None, None
+    out = subprocess.run(
+        [
+            smi,
+            "--query-gpu=memory.total,memory.used,mig.mode.current",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 10,
+    )
+    rows = [r.split(",") for r in out.stdout.strip().splitlines() if r.strip()]
+    if out.returncode != 0 or len(rows) != 1 or rows[0][2].strip().lower() == "enabled":
+        return None, None
+    total, used = int(float(rows[0][0])), int(float(rows[0][1]))
+    return max(total - used, 0), total
 
 
 def _offload_would_exhaust_host_ram(
@@ -3151,10 +3180,10 @@ def _offload_would_exhaust_host_ram(
     from core.inference.diffusion_memory import _user_budget_reserve_mib
 
     free, card_total = _unmeasured_card_free_mib(klass, description, ordinal)
-    if free is None:
+    # sd.cpp's auto-fit takes no VRAM cap, so a lowered VRAM Budget keeps the offload it can enforce.
+    if free is None or _user_budget_reserve_mib(card_total or free) > 0:
         return False
-    # The same reserve card_limit_mib keeps: a lowered VRAM Budget is not handed to an uncapped sd.cpp.
-    if dit + max(CARD_RESERVE_MIB, _user_budget_reserve_mib(card_total or free)) > free:
+    if dit + CARD_RESERVE_MIB > free:
         return False
     logger.info(
         "sd_cpp.placement: offloading %s MiB of weights exceeds host RAM (%s MiB available); the card's %s MiB "

@@ -1613,11 +1613,11 @@ def test_cpu_torch_vulkan_offload_respects_host_ram(
     assert b.status()["cpu_offload"] is offloads
 
 
-@pytest.mark.parametrize("fraction,offloads", [(1.0, False), (0.7, True)])
+@pytest.mark.parametrize("fraction,offloads", [(1.0, False), (0.95, True), (0.7, True)])
 def test_cpu_torch_offload_drop_keeps_the_vram_budget_reserve(
     monkeypatch, tmp_path, fraction, offloads
 ):
-    # A VRAM Budget lowered to 70% keeps 4.8 GiB of the 16 GB card free, so the 11.8 GiB DiT no longer fits.
+    # sd.cpp's auto-fit takes no VRAM cap, so any lowered VRAM Budget keeps the offload.
     import core.inference.diffusion_memory as dm
 
     paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = 15_800)
@@ -3910,3 +3910,40 @@ def test_an_unresolved_pin_judges_every_visible_card(monkeypatch, resolved, expe
     _run_server_load(monkeypatch, b, servers, device = "cuda", gpu_ordinal = 1)
     assert servers[-1].env == expected
     assert dict(b._state.child_env) == (expected or {})
+
+
+@pytest.mark.parametrize(
+    "smi_rows,mask,offloads",
+    [
+        (["16376, 576, [N/A]"], None, False),
+        (["16376, 576, Disabled"], None, False),
+        (["16376, 576, [N/A]", "16376, 576, [N/A]"], None, True),
+        (["16376, 576, Enabled"], None, True),
+        (["16376, 576, [N/A]"], "0", True),
+    ],
+)
+def test_cpu_torch_cuda_offload_reads_a_sole_card_from_nvidia_smi(
+    monkeypatch, tmp_path, smi_rows, mask, offloads
+):
+    # A CPU torch lists no CUDA devices, so the torch-ordered probe reads nothing; nvidia-smi answers for a sole card.
+    import core.inference.diffusion_device as dd
+
+    paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = None)
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cuda")
+    monkeypatch.setattr(
+        bk, "sd_cpp_listed_device", lambda *_a, **_k: ("cuda", "NVIDIA GeForce RTX 4080")
+    )
+    monkeypatch.setattr(dd, "smi_free_total_mib", lambda ordinal: (None, None))
+    bindir = tmp_path / "smi-bin"
+    bindir.mkdir()
+    smi = bindir / "nvidia-smi"
+    smi.write_text("#!/bin/sh\nprintf '%s\\n' " + " ".join(repr(r) for r in smi_rows) + "\n")
+    smi.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ.get("PATH", ""))
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths)
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
