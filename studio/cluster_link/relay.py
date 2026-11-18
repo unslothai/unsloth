@@ -43,6 +43,8 @@ OPEN_RPC_REPLY_TIMEOUT_S = 75.0
 BUSY_GRACE_S = 0.25
 REVALIDATE_S = 2.0
 NATIVE_CLOSE_RETRY_MAX_S = 30.0
+# stop() has 10 s for everything; a worker that cannot answer a native_close by then is down anyway.
+STOP_NATIVE_CLOSE_TIMEOUT_S = 3.0
 
 
 class RelayError(RuntimeError):
@@ -318,6 +320,15 @@ class RelayManager:
             _drop(sock)
 
     async def _stop_all(self) -> None:
+        # A native session bypasses the relays and its revocation watch is cancelled below: close it
+        # now, or a worker removed just before the master identity was reset keeps serving it.
+        native = [self._relays[n] for n in list(self._native_watches) if n in self._relays]
+        for node_id in list(self._native_watches):
+            self._stop_native_watch(node_id)
+        if native:
+            await asyncio.gather(
+                *(self._close_native_quietly(relay) for relay in native), return_exceptions = True
+            )
         servers = [r.server for r in self._relays.values() if r.server is not None]
         for node_id in list(self._relays):
             await self._remove(node_id)
@@ -331,6 +342,17 @@ class RelayManager:
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions = True)
+
+    async def _close_native_quietly(self, relay: _Relay) -> None:
+        try:
+            reply = await self._control(
+                relay, {"type": "native_close"}, STOP_NATIVE_CLOSE_TIMEOUT_S, paired = False
+            )
+        except Exception as exc:
+            logger.warning("cluster relay: could not close %s natively: %s", relay.node_id, exc)
+            return
+        if not isinstance(reply, dict) or reply.get("type") != "ok":
+            logger.warning("cluster relay: %s answered native_close with %s", relay.node_id, reply)
 
     async def _connect(
         self,
