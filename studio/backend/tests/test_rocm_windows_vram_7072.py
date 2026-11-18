@@ -2341,3 +2341,33 @@ def test_hip_luids_without_dedicated_counters_never_sum_a_missing_snapshot(win_r
     assert [d["luid"] for d in devices] == [0xC001, 0xD1E2]
     assert [d["used_gb"] for d in devices] == [None, None]
     assert aggregate is None
+
+
+def test_one_bit_per_physical_device_still_names_each_whole_adapter(win_rocm, monkeypatch):
+    """ROCm 7.14 on Windows reports luidDeviceNodeMask as 1 << physical index (measured on 2x R9700 +
+    iGPU: 1, 2, 4), not a node mask. Each adapter is still one phys_0 node, so each keeps its LUID."""
+    _igpu_beside_dgpu(monkeypatch)
+    monkeypatch.setattr(
+        hw, "_rocm_windows_hip_adapter_ids", _hip_ids((DGPU_LUID, 0b01), (IGPU_LUID, 0b10))
+    )
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["luid"] for d in devices] == [DGPU_LUID, IGPU_LUID]
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *a, **k: None)
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["luid"] for d in devices] == [DGPU_LUID, IGPU_LUID]
+
+
+def test_each_visible_gpu_reads_its_own_engines(win_rocm, monkeypatch):
+    _igpu_beside_dgpu(monkeypatch)
+    busy = {DGPU_LUID: 90.0, IGPU_LUID: 0.0}
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_adapter_engine_samples",
+        lambda luid: [
+            (f"pid_1_luid_0x00000000_0x{luid:08x}_phys_0_eng_2_engtype_compute 0", busy[luid])
+        ],
+    )
+    monkeypatch.setattr(hw, "_rocm_windows_d3dkmt_temperature_c", lambda luid: 50.0)
+    devices = hw.get_gpu_utilization()["devices"]
+    assert [d["gpu_utilization_pct"] for d in devices] == [90.0, 0.0]

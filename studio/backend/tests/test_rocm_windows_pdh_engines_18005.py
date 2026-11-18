@@ -136,3 +136,19 @@ def test_no_pdh_is_unknown_not_a_crash(monkeypatch):
 
     monkeypatch.setattr(hw, "_rocm_windows_pdh", missing)
     assert hw._rocm_windows_perf_counter_gpu_util_pct(_LUID) is None
+
+
+def test_a_query_for_a_luid_no_device_has_is_closed(monkeypatch):
+    """A driver restart moves the LUID; the old query is never collected again, so it must be closed."""
+    fake = _FakePdh()
+    monkeypatch.setattr(hw, "_rocm_windows_pdh", lambda: fake)
+    monkeypatch.setattr(
+        hw,
+        "_rocm_win_pdh_queries",
+        {
+            _LUID: [wintypes.HANDLE(11), wintypes.HANDLE(22), 0.0, []],
+            0x777: [wintypes.HANDLE(33), wintypes.HANDLE(44), 0.0, []],
+        },
+    )
+    hw._rocm_windows_pdh_prune({0x777})
+    assert list(hw._rocm_win_pdh_queries) == [0x777] and fake.closed == [11]
