@@ -194,19 +194,6 @@ def assert_local_pipeline_family(path: Optional[str], family: Optional[str]) -> 
         )
 
 
-def ltx25_training_message(subject: str) -> str:
-    return (
-        f"{subject} is LTX-2.5, which Unsloth can run on the Video page but cannot train yet. "
-        "Train on LTX-2 (Lightricks/LTX-2) instead."
-    )
-
-
-def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
-    """Training guard: refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
-    if local_ltx_pipeline_family(path) == LTX25_FAMILY:
-        raise ValueError(ltx25_training_message(f"'{path}' (by its model_index.json)"))
-
-
 @dataclass(frozen = True)
 class VideoFamily:
     name: str
@@ -644,6 +631,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # reference 1280x720 resolves to the 1280x704 latent canvas it actually renders.
     VideoFamily(
         name = "ltx-2.5",
+        # Trains on the pack's dev DiT (the model card's trainable one), runs on its distilled DiT.
+        trainable = True,
+        label = "LTX-2.5",
         profile = FamilyProfile(
             # the 2.3 DiT less the video FFN bias
             int8_exclude_tokens = _LTX2_INT8_EXCLUDES,

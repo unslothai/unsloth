@@ -315,12 +315,17 @@ def _bnb_4bit_config():
 _repo_is_prequantized = repo_is_prequantized
 
 
-def _load_quantized_transformer(transformer_cls, cfg, device):
+def _load_quantized_transformer(
+    transformer_cls,
+    cfg,
+    device,
+    subfolder = "transformer",
+):
     """Load ``cfg.base_model``'s transformer subfolder as a trainable nf4 QLoRA module."""
     import torch
     return transformer_cls.from_pretrained(
         cfg.base_model,
-        subfolder = "transformer",
+        subfolder = subfolder,
         quantization_config = _bnb_4bit_config(),
         device_map = {"": device},
         torch_dtype = torch.bfloat16,
@@ -345,7 +350,13 @@ def _load_pipe_without_transformer(pipe_cls, cfg, device):
     return pipe, pipe.vae
 
 
-def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
+def _load_dit_transformer(
+    transformer_cls,
+    cfg,
+    device,
+    base_precision,
+    subfolder = "transformer",
+):
     """Load the transformer alone in the resolved ``base_precision``. nf4: a prequant (bnb-4bit)
     repo carries its quantization config and loads 4-bit as-is, while a dense base is quantized
     to nf4 on the fly; the memory floor. bf16 / fp8 / mxfp8: the dense transformer, converted AFTER the LoRA
@@ -356,10 +367,10 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
 
     if base_precision == "nf4":
         if not repo_is_prequantized(cfg.base_model):
-            return _load_quantized_transformer(transformer_cls, cfg, device)
+            return _load_quantized_transformer(transformer_cls, cfg, device, subfolder)
         transformer = transformer_cls.from_pretrained(
             cfg.base_model,
-            subfolder = "transformer",
+            subfolder = subfolder,
             torch_dtype = torch.bfloat16,
             token = cfg.hf_token,
         )
@@ -377,7 +388,7 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
     # constructor rejects the torchao-0.16 config API (peft 0.19+ accepts it; the order works for both).
     transformer = transformer_cls.from_pretrained(
         cfg.base_model,
-        subfolder = "transformer",
+        subfolder = subfolder,
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
@@ -1993,6 +2004,157 @@ def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# LTX-2.5 (Lightricks/LTX-2.5-Diffusers): the LTX-2.3 DiT layout, so the LTX-2 targets, latents, collate, forward and
+# save carry over. Two things differ. The Gemma 4 encoder needs transformers >= 5.10, which Studio keeps in the
+# .venv_t5_510 sidecar, so captions go through the Video page's encoder worker once, before the DiT loads, and the
+# worker (its weights, CUDA context and host copy) exits with them. And the model card names the dev DiT
+# (transformer_full/) as the trainable one; the Video page runs the distilled DiT (transformer/), which dev LoRAs carry
+# over to, so dev is the default and UNSLOTH_LTX25_TRAIN_DIT=distilled trains the distilled one instead.
+LTX25_TRAIN_DIT_ENV = "UNSLOTH_LTX25_TRAIN_DIT"
+_LTX25_DEV_SUBFOLDER = "transformer_full"
+_LTX25_DISTILLED_SUBFOLDER = "transformer"
+# The pack components conditioning reads: the encoder runs in the worker and the DiTs load on their own.
+_LTX25_CONDITIONING_COMPONENTS = ("scheduler", "vae", "audio_vae", "vocoder", "connectors")
+
+
+def _ltx25_trains_dev() -> bool:
+    return (os.environ.get(LTX25_TRAIN_DIT_ENV) or "").strip().lower() not in ("distilled", "0")
+
+
+def _ltx25_dit_subfolder(cfg) -> str:
+    """The pack subfolder the LoRA trains against: the dev DiT unless distilled is asked for, or a local pack ships no
+    dev DiT (then the distilled one it does ship)."""
+    if not _ltx25_trains_dev():
+        return _LTX25_DISTILLED_SUBFOLDER
+    local = Path(str(cfg.base_model)).expanduser()
+    if local.is_dir() and not (local / _LTX25_DEV_SUBFOLDER / "config.json").is_file():
+        return _LTX25_DISTILLED_SUBFOLDER
+    return _LTX25_DEV_SUBFOLDER
+
+
+def ltx25_conditioning_files(names) -> list[str]:
+    """The files of an LTX-2.5 pack listing that conditioning reads: model_index.json plus one copy of each component
+    in ``_LTX25_CONDITIONING_COMPONENTS`` (the pack ships connectors/ both sharded and whole; ``ltx25_pack_files``
+    keeps the indexed set). Never the encoder, the prompt enhancer, either DiT or the root-level LoRA."""
+    from core.inference.video_ltx25 import ltx25_pack_files
+
+    files = [(n, 0) for n in names]
+    keep = [
+        n
+        for n, _ in ltx25_pack_files(files)
+        if n.split("/", 1)[0] in _LTX25_CONDITIONING_COMPONENTS
+    ]
+    return ["model_index.json", *keep] if "model_index.json" in set(names) else keep
+
+
+def _ltx25_conditioning_source(cfg) -> str:
+    """A local pack as given; a Hub pack staged down to the conditioning files (skips ~90 GB the full listing holds:
+    two DiTs, the prompt enhancer, the dense encoder the worker may not read)."""
+    base = str(cfg.base_model)
+    if Path(base).expanduser().is_dir():
+        return base
+    from huggingface_hub import HfApi, snapshot_download
+
+    try:
+        info = HfApi().model_info(base, token = cfg.hf_token)
+        patterns = ltx25_conditioning_files(s.rfilename for s in (info.siblings or []))
+        revision = getattr(info, "sha", None)
+    except Exception:  # noqa: BLE001 -- offline / listing refused: every file of the components, from the cache
+        patterns = ["model_index.json", *(f"{c}/*" for c in _LTX25_CONDITIONING_COMPONENTS)]
+        revision = None
+    return snapshot_download(
+        base,
+        allow_patterns = patterns,
+        token = cfg.hf_token,
+        **({"revision": revision} if revision else {}),
+    )
+
+
+def _ltx25_start_encoder(cfg, device):
+    """The Video page's Gemma 4 worker, at the precision the Video page encodes with by default (the hosted int8
+    ConvRot encoder when it serves this pack, else bf16), resident on the card it trains on."""
+    from core.inference.diffusion import hub_cache_dir
+    from core.inference.video_ltx25 import (
+        ltx25_resolve_te_request,
+        ltx25_te_quant_scheme,
+        start_text_encoder,
+    )
+
+    base = str(cfg.base_model)
+    te_quant = ltx25_te_quant_scheme(ltx25_resolve_te_request(None, base))
+    worker_device = "cpu" if device not in ("cuda", "xpu") else f"{device}:{_current_index(device)}"
+    return start_text_encoder(
+        repo = base,
+        hf_token = cfg.hf_token,
+        cache_dir = hub_cache_dir(),
+        local_files_only = False,
+        device = worker_device,
+        dtype = "bfloat16",
+        resident = worker_device != "cpu",
+        te_quant = te_quant,
+        base_repo = base,
+    )
+
+
+def _current_index(device) -> int:
+    import torch
+    module = getattr(torch, device, None)
+    try:
+        return int(module.current_device())
+    except Exception:  # noqa: BLE001 -- no accelerator module: the first card
+        return 0
+
+
+def _ltx25_load_conditioners(cfg, device, weight_dtype):
+    import torch
+
+    from core.inference.video_ltx25 import LTX25_NONE_COMPONENTS, install_remote_encode_prompt
+
+    LTX2Pipeline = _ltx2_pipeline_cls()
+    pipe = LTX2Pipeline.from_pretrained(
+        _ltx25_conditioning_source(cfg),
+        transformer = None,
+        **{name: None for name in LTX25_NONE_COMPONENTS},
+        torch_dtype = torch.bfloat16,
+        token = cfg.hf_token,
+    )
+    # Stays on host until the encoder worker exits (never resident beside it).
+    pipe.vae.to(dtype = torch.float32)
+    pipe.connectors.to(device)
+    # pipe.encode_prompt becomes the worker round trip; _free_text_encoders stops the worker.
+    install_remote_encode_prompt(pipe, _ltx25_start_encoder(cfg, device))
+    return pipe, pipe.vae
+
+
+def _ltx25_load_transformer(cfg, device, weight_dtype, base_precision):
+    import logging
+
+    from diffusers import LTX2VideoTransformer3DModel
+
+    subfolder = _ltx25_dit_subfolder(cfg)
+    logging.getLogger(__name__).info("ltx-2.5: training against the %s DiT", subfolder)
+    return _load_dit_transformer(
+        LTX2VideoTransformer3DModel, cfg, device, base_precision, subfolder = subfolder
+    )
+
+
+def _ltx25_training_scheduler(cfg):
+    """The pack's scheduler, which is the distilled DiT's (static, unshifted); the dev DiT samples with the README's
+    dynamic shift and terminal stretch, which makes it LTX-2's scheduler, so the auto sigma table matches LTX-2's."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    from core.inference.video_ltx25 import LTX25_DEV_SCHEDULER_OVERRIDES
+
+    shipped = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+    )
+    if _ltx25_dit_subfolder(cfg) != _LTX25_DEV_SUBFOLDER:
+        return shipped
+    return FlowMatchEulerDiscreteScheduler.from_config(
+        shipped.config, **LTX25_DEV_SCHEDULER_OVERRIDES
+    )
+
+
 # Wan2.2-TI2V-5B, trained from stills (a 1-frame clip is a valid T2V sample). Targets match DiffSynth-Studio /
 # musubi-tuner; bare "to_q" is safe (single stream), add_k/v_proj exist only on I2V-14B.
 _WAN_TARGETS = (
@@ -2370,6 +2532,22 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _ltx2_collate,
         forward = _ltx2_forward,
         save = _ltx2_save,
+    ),
+    "ltx-2.5": _FamilySpec(
+        family = "ltx-2.5",
+        lora_targets = _LTX2_TARGETS,
+        force_bf16 = True,
+        # 22B DiT, 42.0 GB bf16 (both DiTs); the Gemma 4 worker has exited before it loads.
+        dense_bf16_gb = 42.0,
+        load_conditioners = _ltx25_load_conditioners,
+        load_transformer = _ltx25_load_transformer,
+        encode_prompts = _ltx2_encode_prompts,
+        encode_latents = _ltx2_encode_latents,
+        encode_latent_stats = _ltx2_encode_latent_stats,
+        collate = _ltx2_collate,
+        forward = _ltx2_forward,
+        save = _ltx2_save,
+        training_scheduler = _ltx25_training_scheduler,
     ),
     "wan2.2-ti2v-5b": _FamilySpec(
         family = "wan2.2-ti2v-5b",
@@ -3628,6 +3806,11 @@ def _free_text_encoders(pipe) -> None:
     from core.training.diffusion_te_stream import release_text_encoders
 
     release_text_encoders(pipe)
+    # LTX-2.5 encodes in a worker process: stopping it returns its card and host memory.
+    if getattr(pipe, "_unsloth_ltx25_encoder", None) is not None:
+        from core.inference.video_ltx25 import close_encoder
+        close_encoder(pipe)
+        pipe._unsloth_ltx25_encoder = None
     # A modular facade (FLUX.3) keeps the encoder alive in its block graph's pipeline; drop it (rebuilds on use).
     if getattr(pipe, "_modular", None) is not None:
         pipe._modular = None
