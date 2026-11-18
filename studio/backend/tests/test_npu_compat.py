@@ -240,3 +240,31 @@ def test_without_a_supported_npu_nothing_is_installed_or_fetched(monkeypatch):
     compat = nc.current()
     assert compat["fastflowlm_known"] is False and compat["converter_known"] is False
     assert compat["shapes"] == [] and nc.runnable_shapes() is None
+
+
+def test_a_manifest_kept_under_share_flm_is_read(tmp_path):
+    binary = tmp_path / "bin" / "flm"
+    share = tmp_path / "share" / "flm"
+    binary.parent.mkdir()
+    share.mkdir(parents = True)
+    shutil.copy(_FIXTURES / "flm" / "model_list.json", share / "model_list.json")
+    calls: list[str] = []
+    assert _shapes(binary, tmp_path, calls)
+
+
+_NANBEIGE = {
+    "architecture": "llama",
+    "layers": 32,
+    "hidden": 2560,
+    "experts": 0,
+    "checkpoints": ["nanbeige4.1:3b"],
+    "names": ["Nanbeige4.1-3B"],
+    "sizes": ["3b"],
+}
+
+
+def test_a_nanbeige_gguf_keeps_its_llama_shape(monkeypatch):
+    compat = nc.build_compat([_NANBEIGE], None)
+    assert {r["architecture"] for r in compat["shapes"]} == {"llama", "nanbeige"}
+    monkeypatch.setattr(nc, "current", lambda install_converter = True: compat)
+    assert nc.runnable_shapes()["nanbeige"] == {(32, 2560, 0): "Nanbeige4.1-3B"}

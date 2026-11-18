@@ -94,3 +94,10 @@ test("the composer picker and the Hub tag each FastFlowLM catalog row with the s
     assert.match(readSrc(path), /NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/, path);
   }
 });
+
+test("a basename-routed model is judged by its file name too, not only its repo", () => {
+  assert.equal(
+    tag("qwen2vl", "acme/vision-GGUF Qwen2.5-VL-3B-Instruct-Q4_0.gguf"),
+    "convertRuns",
+  );
+});

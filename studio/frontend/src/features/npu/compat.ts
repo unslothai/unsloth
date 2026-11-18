@@ -60,9 +60,12 @@ function namesSize(name: string, size: string): boolean {
 
 const NAMED_SIZE = /(?:^|[^a-z0-9.])e?\d+(?:\.\d+)?b(?![a-z0-9])/;
 
-function repoName(name: string): string {
-  const first = name.trim().split(/\s+/)[0] ?? "";
-  return first.slice(Math.max(first.lastIndexOf("/"), first.lastIndexOf("\\")) + 1);
+/** Each name passed (repo id, file path) without its folders. */
+function baseNames(name: string): string[] {
+  return name
+    .trim()
+    .split(/\s+/)
+    .map((part) => part.slice(Math.max(part.lastIndexOf("/"), part.lastIndexOf("\\")) + 1));
 }
 
 function list(names: string[]): string {
@@ -92,7 +95,7 @@ export function npuFit(
       ? lower.includes("omni") || (matched.length > 0 ? matched.some((s) => s.converts) : !sized)
       : !!converter &&
         (converter.architectures.includes(arch) ||
-          converter.basenames.some((prefix) => repoName(lower).startsWith(prefix)));
+          converter.basenames.some((prefix) => baseNames(lower).some((n) => n.startsWith(prefix))));
 
   if (matched.length > 0) {
     return converts

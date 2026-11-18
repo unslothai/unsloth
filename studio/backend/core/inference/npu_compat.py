@@ -108,9 +108,11 @@ def flm_shapes(
     when FastFlowLM is not installed or a catalog model's config.json could not be read (offline),
     since a partial table would refuse sizes it runs. A model's geometry comes from its downloaded
     config.json, else its Hugging Face repo, cached on disk per model_list.json."""
-    if flm_binary is None:
+    from core.inference.npu_local_models import find_flm_list
+
+    listing_path = find_flm_list(flm_binary) if flm_binary else None
+    if listing_path is None:
         return None
-    listing_path = flm_binary.parent / "model_list.json"
     try:
         raw = listing_path.read_bytes()
         listing = json.loads(raw)
@@ -296,9 +298,15 @@ def build_compat(shapes: Optional[list[dict]], converter: Optional[dict]) -> dic
         names = shape["names"] if shape else ()
         return arch in convertible or any(n.lower().startswith(basenames) for n in names)
 
+    # A Nanbeige GGUF says "nanbeige"; FastFlowLM's config.json for it says llama.
+    aliased = [
+        {**s, "architecture": "nanbeige"}
+        for s in shapes or []
+        if s["architecture"] == "llama" and any("nanbeige" in n.lower() for n in s["names"])
+    ]
     rows = [
         {**shape, "runs": True, "converts": converts(shape["architecture"], shape)}
-        for shape in shapes or []
+        for shape in [*(shapes or []), *aliased]
     ]
     runnable = {row["architecture"] for row in rows}
     # Converter aliases that are basename prefixes ("medgemma", "qwen3.5-9b") are not rows.
@@ -340,9 +348,11 @@ def current(install_converter: bool = True) -> dict:
     flm_binary = backend._flm_binary()
     root = studio_root() / "q4nx_converter"
     installer = _installer()
+    from core.inference.npu_local_models import find_flm_list
+
     key = (
         str(flm_binary),
-        _stamp(flm_binary.parent / "model_list.json" if flm_binary else None),
+        _stamp(find_flm_list(flm_binary) if flm_binary else None),
         tuple(installer.load_pins(name = n)["commit"] for n in ("q4nx", "q4k")),
     )
     with _lock:
@@ -365,7 +375,6 @@ def runnable_shapes() -> Optional[dict[str, dict[tuple[int, int, int], str]]]:
         return None
     table: dict[str, dict[tuple[int, int, int], str]] = {}
     for row in compat["shapes"]:
-        table.setdefault(row["architecture"], {})[
-            (row["layers"], row["hidden"], row["experts"])
-        ] = row["names"][0]
+        shape = (row["layers"], row["hidden"], row["experts"])
+        table.setdefault(row["architecture"], {})[shape] = row["names"][0]
     return table

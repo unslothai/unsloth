@@ -875,3 +875,28 @@ def test_the_converter_refuses_blocks_it_would_pack_in_the_wrong_layout(
     else:
         assert result.returncode == 0, result.stderr
         assert (out / "model.q4nx").exists()
+
+
+def test_a_nanbeige_gguf_of_a_shape_fastflowlm_runs_converts(monkeypatch, tmp_path):
+    from core.inference import npu_compat
+
+    shape = {
+        "architecture": "llama",
+        "layers": 32,
+        "hidden": 2560,
+        "experts": 0,
+        "checkpoints": ["nanbeige4.1:3b"],
+        "names": ["Nanbeige4.1-3B"],
+        "sizes": ["3b"],
+    }
+    compat = npu_compat.build_compat([shape], None)
+    monkeypatch.setattr(npu_compat, "current", lambda install_converter = True: compat)
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    read_architecture = export_mod.q4nx._gguf_architecture
+    installed = _stub_installer(export_mod, monkeypatch, tmp_path)
+    monkeypatch.setattr(export_mod.q4nx, "_gguf_architecture", read_architecture)
+    _fake_popen(export_mod, monkeypatch)
+    source = _gguf_with(tmp_path / "m.gguf", "nanbeige", 32, 2560)
+
+    export_mod.q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
+    assert installed == ["q4nx"]
