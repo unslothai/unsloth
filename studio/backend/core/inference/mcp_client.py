@@ -2137,6 +2137,50 @@ def _seeded_image_block(block: Any, mime: str) -> dict:
     return {**out, "type": "image", "mimeType": mime}
 
 
+# Below this an inline "image" is too small to be one, and the text too short to be worth parsing.
+_INLINE_IMAGE_MIN_CHARS = 1024
+_INLINE_IMAGE_PLACEHOLDER = "<image data moved out of the text>"
+
+
+def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Base64 images a tool returns inside JSON text ({"mimeType": "image/png", "data": ...}, as
+    Unreal's CaptureViewport does) instead of as image blocks. Left in place they reach the model as
+    megabytes of base64 that are truncated and never seen as a picture; lifted out, they take the
+    image-block path and the text keeps a placeholder."""
+    if (
+        len(text) < _INLINE_IMAGE_MIN_CHARS
+        or '"mimeType"' not in text
+        or text.lstrip()[:1] not in ("{", "[")
+    ):
+        return text, []
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        return text, []
+    found: list[tuple[str, str]] = []
+
+    def lift(node: Any) -> Any:
+        if isinstance(node, dict):
+            mime, data = node.get("mimeType"), node.get("data")
+            if (
+                isinstance(mime, str)
+                and mime.lower().startswith("image/")
+                and isinstance(data, str)
+                and len(data) >= _INLINE_IMAGE_MIN_CHARS
+            ):
+                found.append((data, mime))
+                return {**node, "data": _INLINE_IMAGE_PLACEHOLDER}
+            return {key: lift(item) for key, item in node.items()}
+        if isinstance(node, list):
+            return [lift(item) for item in node]
+        return node
+
+    lifted = lift(value)
+    if not found:
+        return text, []
+    return json.dumps(lifted, ensure_ascii = False), found
+
+
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
@@ -2149,6 +2193,14 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     for block in getattr(result, "content", None) or []:
         text = _block_text(block)
         if text:
+            text, inline_images = _lift_inline_images(text)
+            for data, mime in inline_images:
+                payloads.add(data)
+                if len(data) > budget:
+                    omitted += 1
+                    continue
+                budget -= len(data)
+                images.append({"data": data, "mimeType": mime})
             parts.append(text)
             has_text = True
             seed.append((block, None))

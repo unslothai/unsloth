@@ -583,3 +583,46 @@ def test_registry_case_does_not_decide_whether_an_image_survives(monkeypatch):
     flat = _flatten_result(_result(_blob_resource(mime = "application/jxl")))
     payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/jxl"}]
+
+
+# Unreal's CaptureViewport answers with the PNG inside JSON text rather than an image block.
+BIG_PNG_B64 = PNG_B64 + "A" * 4096
+
+
+def _unreal_capture(data: str = BIG_PNG_B64, mime: str = "image/png") -> str:
+    return json.dumps(
+        {"returnValue": {"image": {"mimeType": mime, "data": data}, "labels": ["Cube"]}}
+    )
+
+
+def test_image_inside_json_text_is_lifted_out_of_the_text():
+    flat = _flatten_result(_result(_text(_unreal_capture())))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert BIG_PNG_B64 not in body
+    text, note = body.rsplit("\n", 1)
+    assert note == "[1 image returned]"
+    lifted = json.loads(text)["returnValue"]
+    assert lifted["image"]["mimeType"] == "image/png"
+    assert lifted["image"]["data"] == mcp_client._INLINE_IMAGE_PLACEHOLDER
+    assert lifted["labels"] == ["Cube"]
+    assert json.loads(payload) == [{"data": BIG_PNG_B64, "mimeType": "image/png"}]
+    assert BIG_PNG_B64 not in strip_result_for_model(flat)
+
+
+def test_inline_image_over_the_budget_still_leaves_the_text(monkeypatch):
+    monkeypatch.setattr(mcp_client, "MAX_IMAGE_PAYLOAD_CHARS", 100)
+    flat = _flatten_result(_result(_text(_unreal_capture())))
+    assert MCP_IMAGES_SENTINEL not in flat
+    assert BIG_PNG_B64 not in flat
+    assert flat.endswith("[1 image omitted (too large)]")
+
+
+def test_json_text_without_an_inline_image_is_untouched():
+    other = [
+        json.dumps({"mimeType": "application/pdf", "data": "J" * 4096}),
+        json.dumps({"mimeType": "image/png", "data": "short"}) + " " * 2048,
+        '{"mimeType": "image/png", "data": "' + "A" * 4096,  # not JSON: left as written
+        "plain text " * 200 + '"mimeType"',
+    ]
+    for text in other:
+        assert _flatten_result(_result(_text(text))) == text
