@@ -1787,7 +1787,6 @@ test("only small screens change: every phone class and branch is gated on the mo
   );
   assert.doesNotMatch(picker, /pointer-coarse:/);
   assert.match(picker, /const smallScreen = useIsMobile\(\);/);
-  // The icon-only chip folds its detail into its own tooltip instead of stacking a second one.
   assert.match(picker, /data-pill-detail=\{chipDetail\}/);
   assert.match(picker, /setChipTipOpen\(next && !chipIconOnly\(\)\)/);
   assert.match(picker, /isMobileViewport\(\) &&\s+label instanceof HTMLElement/);
@@ -1809,6 +1808,5 @@ test("hiding the star on small screens never strands Favorite", () => {
   for (const menu of menus) {
     assert.match(menu, /pin=\{\s+canStar\s+\?/);
   }
-  // A row with no menu keeps its star.
   assert.match(picker, /\[actionClass, npuOffer \? TOUCH_DOTS : TOUCH_IN_MENU\]/);
 });

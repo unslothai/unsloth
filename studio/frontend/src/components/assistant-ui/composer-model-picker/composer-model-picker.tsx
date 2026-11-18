@@ -1531,7 +1531,6 @@ export function ComposerModelPicker({
     (id: string, meta: ModelSelectorChangeMeta) => boolean
   >(() => false);
   // A small screen has no room to keep the panel up over the chat while the pick loads.
-  // Every phone-only change below keys off this, so wider windows keep the desktop picker.
   const smallScreen = useIsMobile();
   const closeOnPick = useRef(false);
   closeOnPick.current = smallScreen;
@@ -1614,8 +1613,7 @@ export function ComposerModelPicker({
   };
   const [expanded, setExpandedState] = useState(readExpanded);
   // Phones skip the collapsed view: its toggle jumped under the thumb, and the footer has its controls.
-  // From the trigger's pointerdown, as WebKit reports a tap's click as "mouse". A tap must not
-  // focus search, which raises the keyboard over the list.
+  // From pointerdown: WebKit reports a tap's click as "mouse". A tap must not raise the keyboard.
   const touchPress = useRef(false);
   // undefined: not checked yet since mount.
   const residentKeyRef = useRef<string | null | undefined>(undefined);
@@ -5866,7 +5864,6 @@ export function ComposerModelPicker({
                   </button>
                 </PopoverTrigger>
                 <PopoverContent
-                  // A phone has no room beside the full-width panel.
                   side={smallScreen ? "top" : "right"}
                   align={smallScreen ? "end" : "start"}
                   sideOffset={smallScreen ? 4 : 12}

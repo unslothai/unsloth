@@ -326,7 +326,7 @@ function ModelSelectorContent({
   moreModels,
 }: {
   open: boolean;
-  /** Set when a tap opened the panel: focusing search would raise the on-screen keyboard over the list. */
+  /** A tap opened it: focusing search would raise the keyboard over the list. */
   openedByTouch?: RefObject<boolean>;
   models: ModelOption[];
   additionalOnDeviceModels?: ModelOption[];
@@ -508,7 +508,6 @@ function ModelSelectorContent({
       align="start"
       alignOffset={10}
       dropdownGlow="picker"
-      // A phone-width panel shifted flush against the screen edge without it.
       collisionPadding={smallScreen ? 8 : undefined}
       ref={surfaceRef}
       // Read by the model list, which sets its right inset against the panel's own.
