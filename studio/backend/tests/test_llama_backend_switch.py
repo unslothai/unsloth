@@ -1292,7 +1292,15 @@ _MIXED_HOST_PAYLOAD = {
 }
 
 
-def _host(monkeypatch, tmp_path, *, vendors, rocm_tools = True, nodes_block = False, hint = None):
+def _host(
+    monkeypatch,
+    tmp_path,
+    *,
+    vendors,
+    rocm_tools = True,
+    nodes_block = False,
+    hint = None,
+):
     """Pins every host probe the status reads, so the answer is the same on any runner."""
     _install(monkeypatch, tmp_path)
     monkeypatch.setattr(upd, "_resolve_backends_for_host", lambda *a, **k: _MIXED_HOST_PAYLOAD)
@@ -1325,7 +1333,9 @@ def test_rocm_on_an_amd_card_without_rocm_installed_says_install_rocm(monkeypatc
 
 
 def test_rocm_behind_a_closed_kfd_or_render_node_gives_the_group_repair(monkeypatch, tmp_path):
-    repair = "Add the account to the render,video groups ...: sudo usermod -a -G render,video someone"
+    repair = (
+        "Add the account to the render,video groups ...: sudo usermod -a -G render,video someone"
+    )
     options = _host(monkeypatch, tmp_path, vendors = {"amd"}, nodes_block = True, hint = repair)
 
     assert options["rocm"]["unavailable_reason"] == "rocm_no_access"
