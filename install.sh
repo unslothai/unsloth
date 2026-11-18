@@ -4542,6 +4542,14 @@ _amd_gfx_is_shadowing_integrated() {
     return 1
 }
 
+# Mirrors _STRIX_APU_GFX in install_python_stack.py.
+_amd_gfx_is_strix_apu() {
+    case "$1" in
+        gfx1150|gfx1151|gfx1152) return 0 ;;
+    esac
+    return 1
+}
+
 # The card to install for when enumeration put an integrated GPU first (#7776): one arch picks
 # the wheel family, so letting the APU decide strands the discrete card. gfx906 is never a
 # candidate, since naming it on a mixed host strands BOTH cards. A third argument of "torch"
@@ -4552,9 +4560,9 @@ _amd_prefer_discrete_gfx() {
     _apdg_devs="$1"
     _apdg_sel="$2"
     _apdg_strix=""
-    case "${3:-}:$_apdg_sel" in
-        torch:gfx1150|torch:gfx1151|torch:gfx1152) _apdg_strix=1 ;;
-    esac
+    if [ "${3:-}" = torch ] && _amd_gfx_is_strix_apu "$_apdg_sel"; then
+        _apdg_strix=1
+    fi
     # Strix defers only to a generic rocm7.13+ index (AMD's Strix fixes); otherwise it keeps its wheels.
     if [ -n "$_apdg_strix" ]; then
         case "${_torch_index_leaf:-}" in
@@ -4580,8 +4588,7 @@ _amd_prefer_discrete_gfx() {
         _amd_gfx_is_shadowing_integrated "$_apdg_g" && continue
         [ "$_apdg_g" = gfx906 ] && continue
         # No `case` here: bash 3.2 (macOS /bin/sh) misparses its `)` inside `$(...)`.
-        if [ -n "$_apdg_strix" ] && { [ "$_apdg_g" = gfx1150 ] || [ "$_apdg_g" = gfx1151 ] || \
-           [ "$_apdg_g" = gfx1152 ]; }; then
+        if [ -n "$_apdg_strix" ] && _amd_gfx_is_strix_apu "$_apdg_g"; then
             continue
         fi
         printf '%s\n' "$_apdg_g"
@@ -5883,17 +5890,27 @@ _notice_if_cuda_skipped_amd() {
     _nca_gfx=$(_amd_request_has_a_wheel_route >/dev/null 2>&1 && \
         printf '%s' "$_AMD_REQUEST_TARGET_GFX") || return 0
     [ -n "$_nca_gfx" ] || return 0
-    # A Ryzen iGPU next to an RTX card is not a training target worth the switch.
-    _amd_gfx_is_shadowing_integrated "$_nca_gfx" && return 0
+    # The flag would train on an iGPU here (a Ryzen iGPU, or Strix next to an RTX eGPU): not worth advertising.
+    if _amd_gfx_is_shadowing_integrated "$_nca_gfx" || _amd_gfx_is_strix_apu "$_nca_gfx"; then
+        return 0
+    fi
+    _ensure_rocm_probe_env
     {
         echo ""
         echo "[INFO] An AMD GPU ($_nca_gfx) was also found. CUDA PyTorch was installed for the NVIDIA GPU,"
         echo "[INFO] so training will not use the AMD GPU (one torch install serves one vendor)."
         echo "[INFO] To train on the AMD GPU instead, re-run this installer with UNSLOTH_FORCE_ROCM_TORCH=1;"
         echo "[INFO] the NVIDIA GPU then drops out of training until it is unset and the installer re-run."
-        if ! _has_amd_rocm_gpu ignore-nvidia >/dev/null 2>&1; then
-            echo "[INFO] ROCm cannot see the AMD GPU yet (no rocminfo, amd-smi or /dev/kfd entry for it); install it first:"
+        if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ]; then
+            echo "[INFO] HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES only choose among AMD GPUs; they do not"
+            echo "[INFO] select ROCm PyTorch, so UNSLOTH_FORCE_ROCM_TORCH=1 is needed as well."
+        fi
+        if ! command -v rocminfo >/dev/null 2>&1 && ! command -v amd-smi >/dev/null 2>&1; then
+            echo "[INFO] ROCm is not installed for the AMD GPU (no rocminfo or amd-smi); install it first:"
             echo "[INFO]   https://unsloth.ai/docs/get-started/install/amd"
+        else
+            _closed_amd_nodes="$(_amd_nodes_closed_to_this_user || true)"
+            [ -z "$_closed_amd_nodes" ] || _print_closed_amd_node_repairs rocm
         fi
         echo "[INFO] GGUF chat can already run on the AMD GPU: Settings > System > GGUF inference engine > Compute backend."
         echo ""
@@ -6653,7 +6670,6 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
 fi
 if [ "$SKIP_TORCH" = false ]; then
     _warn_if_cuda_mask_hides_amd "$TORCH_INDEX_URL"
-    [ "$_torch_index_pinned" = true ] || _notice_if_cuda_skipped_amd "$TORCH_INDEX_URL"
 fi
 # Export the resolved torch backend ("cuda", "rocm", "xpu" or "cpu") so setup.sh and install_python_stack.py know what was chosen here and can skip ROCm-specific repair steps. Classify on the FINAL path segment only: a custom UNSLOTH_PYTORCH_MIRROR whose base path happens to contain "rocm" or "gfx" must not mislabel a cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix overrides in gfxNNNN/, so the trailing slash is stripped first). Lowercase the leaf so every gfx*/rocm*/cu* arm matches regardless of case (the canonical AMD RDNA4 leaf is gfx120X-all). CUDA is branded only on a real cu[0-9]* leaf, so a mirror leaf (/current) does NOT commit a CUDA backend; an unknown leaf leaves the var unset so the stack probes the GPU. Query and fragment are dropped first, then ALL trailing slashes, in lockstep with the shared _torch_index_url_leaf extractor.
 _torch_index_leaf="${TORCH_INDEX_URL%%\?*}"
@@ -7437,8 +7453,8 @@ if ! _run_may_open_kfd; then
     _closed_amd_nodes=$(printf '%s\n' "$_closed_amd_nodes" | grep -vx /dev/kfd || true)
 fi
 # Only group membership repairs this (#10466). /dev/kfd stops ROCm; a render node also stops Vulkan.
-if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
-   [ -n "$_closed_amd_nodes" ]; then
+# Reads $_closed_amd_nodes; "rocm" means the caller is about ROCm torch, which opens /dev/kfd.
+_print_closed_amd_node_repairs() {
     substep "An AMD GPU is present but this account cannot open its device nodes:" "$C_WARN"
     printf '%s\n' "$_closed_amd_nodes" | while IFS= read -r _n; do
         substep "  $_n"
@@ -7558,7 +7574,7 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         substep "  changing group membership."
     fi
     if ! _amd_render_node_present; then
-        if _run_may_open_kfd; then
+        if [ "${1:-}" = rocm ] || _run_may_open_kfd; then
             _amd_map_devices="--device /dev/kfd --device /dev/dri"
         else
             _amd_map_devices="--device /dev/dri"
@@ -7567,6 +7583,10 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         substep "  Vulkan both open one, so the device mapping needs fixing too; under"
         substep "  Docker that is $_amd_map_devices."
     fi
+}
+if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
+   [ -n "$_closed_amd_nodes" ]; then
+    _print_closed_amd_node_repairs
 elif [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
      [ "$OS" != "macos" ] && \
      ! _amd_render_node_present && _kfd_topology_has_an_amd_gpu; then
@@ -7578,6 +7598,10 @@ elif [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
     substep "An AMD GPU is in the KFD topology but no AMD render node" "$C_WARN"
     substep "  (/dev/dri/renderD*) is present, and ROCm and Vulkan both open one, so the"
     substep "  device mapping needs fixing; under Docker that is $_amd_map_devices."
+fi
+# After the AMD diagnostics: the notice reuses their node-repair text, and the index is final here.
+if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_pinned" = false ]; then
+    _notice_if_cuda_skipped_amd "$TORCH_INDEX_URL"
 fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──

@@ -12,7 +12,8 @@ trap 'rm -rf "$WORK"' EXIT
     sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_amd_smi_hip_order()/,/^}/p'  "$INSTALL_SH"
-    for _fn in _amd_prefer_discrete_gfx _amd_gfx_is_shadowing_integrated _amd_gfx_has_wheel_route \
+    for _fn in _amd_prefer_discrete_gfx _amd_gfx_is_shadowing_integrated _amd_gfx_is_strix_apu \
+               _amd_gfx_has_wheel_route \
                _amd_arch_index_family_for_gfx _amd_generic_tag_carries_gfx; do
         sed -n "/^${_fn}()/,/^}/p" "$INSTALL_SH"
     done

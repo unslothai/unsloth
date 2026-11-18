@@ -53,6 +53,7 @@ def _host(
     nvidia: bool,
     amd: "list[str]",
     rocm_sees_amd: bool = True,
+    closed_nodes: "list[str] | None" = None,
 ) -> str:
     """Hardware probes pinned; everything that decides lives in the lifted install.sh text."""
     rocm = rocm_sees_amd and bool(amd)
@@ -68,7 +69,15 @@ def _host(
             f"_infer_linux_amd_gfx_arch() {{ {'echo ' + amd[0] if amd else 'return 1'}; }}",
             "_detect_rocm_version_tag() { echo rocm7.0; }",
             "_ensure_rocm_probe_env() { :; }",
-            _fake_rocminfo(amd) if rocm else "rocminfo() { return 1; }",
+            # No rocminfo at all when ROCm is not installed: the notice asks `command -v`.
+            _fake_rocminfo(amd) if rocm else "",
+            f"_amd_nodes_closed_to_this_user() {{ printf '%s\\n' {' '.join(closed_nodes or [])}; }}"
+            if closed_nodes
+            else "_amd_nodes_closed_to_this_user() { :; }",
+            "_amd_node_repairs() { printf 'join:render\\njoin:video\\n'; }",
+            "_amd_render_node_present() { return 0; }",
+            "_an_amd_render_node_is_open() { return 1; }",
+            "_run_may_open_kfd() { return 1; }",
         ]
     )
 
@@ -84,10 +93,14 @@ _LIFTED = [
     "_amd_mask_survivors",
     "_amd_runtime_gfx_target",
     "_amd_gfx_is_shadowing_integrated",
+    "_amd_gfx_is_strix_apu",
     "_amd_prefer_discrete_gfx",
     "_rocminfo_gpu_records",
     "_amd_ordered_gfx_devices",
     "_amd_request_has_a_wheel_route",
+    "substep",
+    "_shell_quote",
+    "_print_closed_amd_node_repairs",
     "_notice_if_cuda_skipped_amd",
 ]
 
@@ -103,6 +116,7 @@ def _notice(
         [
             "set -e",
             f"TAURI_MODE={'true' if tauri else 'false'}",
+            "C_DIM='' C_RST='' C_WARN=''",
             *(_shell_function(name) for name in _LIFTED),
             host,
             f"{env} _notice_if_cuda_skipped_amd '{url}'",
@@ -114,6 +128,8 @@ def _notice(
         if not k.endswith("VISIBLE_DEVICES")
         and k not in ("UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_FORCE_ROCM_TORCH")
     }
+    # Keep a real rocminfo / amd-smi on a ROCm host out of the "not installed" cases.
+    clean["PATH"] = "/usr/bin:/bin"
     out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = clean)
     assert out.returncode == 0, out.stderr
     return out
@@ -129,7 +145,7 @@ def test_a_mixed_host_on_cuda_is_told_about_the_amd_card():
     assert _FLAG in out.stderr
     assert "drops out of training" in out.stderr
     assert "Settings > System > GGUF inference engine > Compute backend" in out.stderr
-    assert "ROCm cannot see the AMD GPU yet" not in out.stderr
+    assert "ROCm is not installed for the AMD GPU" not in out.stderr
     assert out.stdout == ""
 
 
@@ -137,7 +153,7 @@ def test_a_mixed_host_without_rocm_is_told_to_install_it():
     """The second report's box before ROCm went on: the card is on the bus, rocminfo is absent."""
     out = _notice(_host(nvidia = True, amd = _R9700, rocm_sees_amd = False), _CUDA)
     assert _FLAG in out.stderr
-    assert "ROCm cannot see the AMD GPU yet" in out.stderr
+    assert "ROCm is not installed for the AMD GPU" in out.stderr
 
 
 def test_unsloth_desktop_gets_it_on_stdout():
@@ -186,18 +202,66 @@ def test_an_amd_arch_with_no_wheels_is_not_offered_the_flag():
     assert out.stdout == "" and out.stderr == ""
 
 
+def test_a_strix_apu_next_to_an_nvidia_card_is_not_advertised():
+    """Strix Point / Halo are iGPUs too; _amd_gfx_is_strix_apu is the table _amd_prefer_discrete_gfx uses."""
+    for gfx in ("gfx1150", "gfx1151"):
+        out = _notice(_host(nvidia = True, amd = [gfx]), _CUDA)
+        assert out.stdout == "" and out.stderr == "", gfx
+
+
+def test_closed_device_nodes_get_the_group_repair():
+    """rocminfo is there but /dev/kfd is not openable: the installer's own repair text, reused."""
+    out = _notice(_host(nvidia = True, amd = _R9700, closed_nodes = ["/dev/kfd"]), _CUDA)
+    assert _FLAG in out.stderr
+    assert "cannot open its device nodes" in out.stderr
+    assert "/dev/kfd" in out.stderr
+    assert "sudo usermod -a -G render,video " in out.stderr
+    assert "ROCm is not installed for the AMD GPU" not in out.stderr
+
+
+def test_open_device_nodes_get_no_repair():
+    out = _notice(_host(nvidia = True, amd = _R9700), _CUDA)
+    assert "usermod" not in out.stderr
+
+
+@pytest.mark.parametrize("mask", ["HIP_VISIBLE_DEVICES=0", "ROCR_VISIBLE_DEVICES=0"])
+def test_an_amd_mask_without_the_flag_is_told_the_flag_is_needed(mask):
+    out = _notice(_host(nvidia = True, amd = _R9700), _CUDA, env = mask)
+    assert "only choose among AMD GPUs" in out.stderr
+    assert _FLAG in out.stderr
+
+
+def test_no_amd_mask_no_mask_line():
+    out = _notice(_host(nvidia = True, amd = _R9700), _CUDA)
+    assert "only choose among AMD GPUs" not in out.stderr
+
+
+def test_it_is_one_notice():
+    out = _notice(
+        _host(nvidia = True, amd = _R9700, closed_nodes = ["/dev/kfd"]),
+        _CUDA,
+        env = "HIP_VISIBLE_DEVICES=0",
+    )
+    assert out.stderr.count("was also found") == 1
+    assert out.stderr.count("Compute backend") == 1
+
+
 def test_the_installer_calls_it_once_after_the_index_is_final():
-    """After the FORCE fallback guard, never for a pinned index or --no-torch."""
+    """After the AMD diagnostics it reuses, never for a pinned index or --no-torch."""
     body = _INSTALL_SH.read_text(encoding = "utf-8")
     calls = [
         line.strip()
         for line in body.splitlines()
         if "_notice_if_cuda_skipped_amd " in line and not line.lstrip().startswith("#")
     ]
-    assert calls == [
-        '[ "$_torch_index_pinned" = true ] || _notice_if_cuda_skipped_amd "$TORCH_INDEX_URL"'
-    ]
+    assert calls == ['_notice_if_cuda_skipped_amd "$TORCH_INDEX_URL"']
     call = body.index(calls[0])
-    assert body.rindex('if [ "$SKIP_TORCH" = false ]; then', 0, call) > body.index(
-        "UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected"
+    guard = body.rindex("\nif ", 0, call)
+    assert (
+        body[guard:call]
+        .strip()
+        .startswith('if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_pinned" = false ]; then')
     )
+    # The repair function is defined (top-level, so in order) before the call runs.
+    assert body.index("\n_print_closed_amd_node_repairs() {") < call
+    assert body.index("_print_closed_amd_node_repairs\nelif") < call
