@@ -12,7 +12,7 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 ProviderApiType = Literal["chat_completions", "responses", "systemone"]
-ProviderCompactionMode = Literal["summary", "evict"]
+ProviderCompactionMode = Literal["summary", "rolling", "checkpoint"]
 
 
 class ProviderReasoningConfig(BaseModel):
@@ -217,9 +217,10 @@ class ProviderCreate(ExtraHeadersMixin):
         None,
         description = (
             "What chats on this connection do once they pass the auto-compact trigger: "
-            "'summary' (the default) asks the same model to summarise the older turns, "
-            "'evict' drops whole oldest turns into the thread's archive, where "
-            "search_conversation finds them, with no summary call"
+            "'summary' (the default) asks the same model to summarise the older turns; "
+            "'rolling' drops just enough whole oldest turns on each request; 'checkpoint' "
+            "resets to the latest turn. Neither makes a summary call, and dropped turns go "
+            "to the thread's archive, where search_conversation finds them"
         ),
     )
 
@@ -268,9 +269,10 @@ class ProviderUpdate(ExtraHeadersMixin):
         None,
         description = (
             "What chats on this connection do once they pass the auto-compact trigger: "
-            "'summary' (the default) asks the same model to summarise the older turns, "
-            "'evict' drops whole oldest turns into the thread's archive, where "
-            "search_conversation finds them, with no summary call"
+            "'summary' (the default) asks the same model to summarise the older turns; "
+            "'rolling' drops just enough whole oldest turns on each request; 'checkpoint' "
+            "resets to the latest turn. Neither makes a summary call, and dropped turns go "
+            "to the thread's archive, where search_conversation finds them"
         ),
     )
 

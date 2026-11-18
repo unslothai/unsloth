@@ -64,13 +64,15 @@ export function normalizeAutoCompactTokens(value: unknown): number | undefined {
   return value;
 }
 
-/** Unset is "summary"; "evict" archives whole oldest turns with no summary call. */
-export type ProviderCompactionMode = "summary" | "evict";
+/** Unset is "summary"; "rolling" and "checkpoint" drop whole turns into the archive, no summary call. */
+export type ProviderCompactionMode = "summary" | "rolling" | "checkpoint";
 
 export function normalizeCompactionMode(
   value: unknown,
 ): ProviderCompactionMode | undefined {
-  return value === "summary" || value === "evict" ? value : undefined;
+  return value === "summary" || value === "rolling" || value === "checkpoint"
+    ? value
+    : undefined;
 }
 
 /** Blank clears the setting; anything else must be a whole number of tokens in range. */
@@ -150,12 +152,13 @@ export function apiCompactionRequestFields(options: {
   compaction_uncapped?: true;
   context_window?: number;
   compact_context?: true;
-  compaction_mode?: "evict";
+  compaction_mode?: "rolling" | "checkpoint";
 } {
   const { autoCompactEnabled, contextLength, compactNow } = options;
+  const mode = options.compactionMode;
   const evict =
-    options.compactionMode === "evict" ? { compaction_mode: "evict" as const } : {};
-  // Still sent with auto-compact off: the backend replays a /compact epoch only for "evict".
+    mode === "rolling" || mode === "checkpoint" ? { compaction_mode: mode } : {};
+  // Still sent with auto-compact off: the backend replays a /compact epoch only for "checkpoint".
   if (!autoCompactEnabled && !compactNow) return evict;
   const requested = requestedCompactionThreshold(
     contextLength,

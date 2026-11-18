@@ -11,33 +11,35 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-test("a Drop oldest turns connection asks for eviction on auto-compaction and on /compact", () => {
+test("both evicting modes are sent on auto-compaction and on /compact", () => {
+  for (const compactionMode of ["rolling", "checkpoint"] as const) {
   assert.deepEqual(
     apiCompactionRequestFields({
       autoCompactEnabled: true,
       contextLength: 128_000,
-      compactionMode: "evict",
+      compactionMode,
     }),
     {
       context_overflow: "truncate_oldest",
       compaction_threshold: 96_000,
       context_window: 128_000,
-      compaction_mode: "evict",
+      compaction_mode: compactionMode,
     },
   );
   assert.deepEqual(
     apiCompactionRequestFields({
       autoCompactEnabled: false,
       contextLength: null,
-      compactionMode: "evict",
+      compactionMode,
       compactNow: true,
     }),
     {
       context_overflow: "truncate_oldest",
       compact_context: true,
-      compaction_mode: "evict",
+      compaction_mode: compactionMode,
     },
   );
+  }
 });
 
 test("the default summary mode sends no compaction_mode; auto-compact off sends only the mode", () => {
@@ -56,10 +58,10 @@ test("the default summary mode sends no compaction_mode; auto-compact off sends 
     apiCompactionRequestFields({
       autoCompactEnabled: false,
       contextLength: 128_000,
-      compactionMode: "evict",
+      compactionMode: "checkpoint",
     }),
     // A /compact epoch must stay in force on later turns with auto-compact off.
-    { compaction_mode: "evict" },
+    { compaction_mode: "checkpoint" },
   );
   assert.deepEqual(
     apiCompactionRequestFields({ autoCompactEnabled: false, contextLength: 128_000 }),
@@ -67,10 +69,11 @@ test("the default summary mode sends no compaction_mode; auto-compact off sends 
   );
 });
 
-test("only the two known modes survive a saved or synced connection", () => {
-  assert.equal(normalizeCompactionMode("evict"), "evict");
-  assert.equal(normalizeCompactionMode("summary"), "summary");
-  for (const value of [undefined, null, "", "drop", 1, true]) {
+test("only the three known modes survive a saved or synced connection", () => {
+  for (const mode of ["summary", "rolling", "checkpoint"] as const) {
+    assert.equal(normalizeCompactionMode(mode), mode);
+  }
+  for (const value of [undefined, null, "", "evict", "drop", 1, true]) {
     assert.equal(normalizeCompactionMode(value), undefined);
   }
 });
@@ -86,10 +89,11 @@ test("the connection's mode reaches the request and the saved connection", () =>
   const api = readSrc("features/chat/api/providers-api.ts");
   assert.equal(api.match(/compaction_mode: payload\.compactionMode/g)?.length, 2);
   const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
-  assert.match(dialog, /<SelectItem value="evict">Drop oldest turns<\/SelectItem>/);
-  // Editing back to the default clears the column instead of leaving "evict" behind.
+  assert.match(dialog, /<SelectItem value="rolling">Drop oldest turns<\/SelectItem>/);
+  assert.match(dialog, /<SelectItem value="checkpoint">Reset to latest turn<\/SelectItem>/);
+  // Editing back to the default clears the column instead of leaving a mode behind.
   assert.match(
     dialog,
-    /compactionMode: supportsAutoCompactTokens\s*\?\s*\(compactionModeDraft === "evict" \? "evict" : null\)/,
+    /compactionMode: supportsAutoCompactTokens\s*\?\s*\(compactionModeDraft === "summary" \? null : compactionModeDraft\)/,
   );
 });

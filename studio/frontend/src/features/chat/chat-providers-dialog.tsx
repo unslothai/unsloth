@@ -1349,8 +1349,8 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
         autoCompactTokens: autoCompactTokens ?? undefined,
-        ...(supportsAutoCompactTokens && compactionModeDraft === "evict"
-          ? { compactionMode: "evict" as const }
+        ...(supportsAutoCompactTokens && compactionModeDraft !== "summary"
+          ? { compactionMode: compactionModeDraft }
           : {}),
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
@@ -1542,7 +1542,7 @@ export function ChatProvidersSettings({
         autoCompactTokens,
         // null clears the column back to the default summary.
         compactionMode: supportsAutoCompactTokens
-          ? (compactionModeDraft === "evict" ? "evict" : null)
+          ? (compactionModeDraft === "summary" ? null : compactionModeDraft)
           : undefined,
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
@@ -2368,7 +2368,7 @@ export function ChatProvidersSettings({
                   id="provider-auto-compact-tokens-help"
                   className="text-xs leading-snug text-muted-foreground"
                 >
-                  {compactionModeDraft === "evict"
+                  {compactionModeDraft !== "summary"
                     ? "Tokens before the oldest messages are dropped."
                     : "Tokens before older messages are summarized."}{" "}
                   Blank uses 75% of
@@ -2419,9 +2419,11 @@ export function ChatProvidersSettings({
                   id="provider-compaction-mode-help"
                   className="text-xs leading-snug text-muted-foreground"
                 >
-                  {compactionModeDraft === "evict"
-                    ? "Whole oldest turns leave the model's context with no summary call. Search conversation brings them back word for word."
-                    : "The same model writes a summary of the older turns; the recent ones stay as they are."}
+                  {compactionModeDraft === "rolling"
+                    ? "Just enough of the oldest turns leave the model's context on each message, with no summary call. Search conversation brings them back word for word."
+                    : compactionModeDraft === "checkpoint"
+                      ? "Everything before the latest turn leaves the model's context at once, as on a local model, with no summary call. Search conversation brings it back word for word."
+                      : "The same model writes a summary of the older turns; the recent ones stay as they are."}
                   {providerType === "anthropic" || providerType === "openai"
                     ? " Models that compact on the provider's side keep doing so."
                     : ""}
@@ -2431,7 +2433,7 @@ export function ChatProvidersSettings({
                 value={compactionModeDraft}
                 onValueChange={(value) =>
                   setCompactionModeDraft(
-                    value === "evict" ? "evict" : "summary",
+                    normalizeCompactionMode(value) ?? "summary",
                   )
                 }
               >
@@ -2444,7 +2446,8 @@ export function ChatProvidersSettings({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="summary">Summarize older turns</SelectItem>
-                  <SelectItem value="evict">Drop oldest turns</SelectItem>
+                  <SelectItem value="rolling">Drop oldest turns</SelectItem>
+                  <SelectItem value="checkpoint">Reset to latest turn</SelectItem>
                 </SelectContent>
               </Select>
             </div>

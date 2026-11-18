@@ -8983,10 +8983,13 @@ export function createOpenAIStreamAdapter(
           )
         ) {
           toast.info("This chat was not compacted", {
-            description: isCloudForCompaction &&
-              externalProvider?.compactionMode !== "evict"
-              ? "There was nothing before your latest message to summarize."
-              : "Compaction needs the conversation archive and the default checkpoint policy.",
+            description: !isCloudForCompaction
+              ? "Compaction needs the conversation archive and the default checkpoint policy."
+              : externalProvider?.compactionMode === "rolling"
+                ? "Drop oldest turns only drops turns once the chat is full. Pick Reset to latest turn or Summarize older turns for this connection to compact on demand."
+                : externalProvider?.compactionMode === "checkpoint"
+                  ? "Compaction needs the conversation archive and a model that can use Studio's tools."
+                  : "There was nothing before your latest message to summarize.",
           });
         }
         const finalTiming = withPriorTiming(

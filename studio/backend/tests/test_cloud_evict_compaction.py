@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A cloud connection set to "Drop oldest turns" (compaction_mode "evict") never asks for a
-summary: whole oldest turns go to the thread's archive, /compact starts a checkpoint epoch and an
-overflow refusal evicts and resends, as on a local model."""
+"""Cloud connections set to compaction_mode "rolling" or "checkpoint" never ask for a summary:
+whole oldest turns go to the thread's archive. "checkpoint" resets to the latest turn and /compact
+starts an epoch, as on a local model; "rolling" is the pre-summary cloud fit."""
 
 from __future__ import annotations
 
@@ -32,7 +32,8 @@ from test_cloud_summary_compaction import (  # noqa: E402
 )
 from test_external_auto_compaction import _long_chat, _truncations  # noqa: E402
 
-_EVICT = dict(compaction_mode = "evict")
+_EVICT = dict(compaction_mode = "checkpoint")
+_ROLLING = dict(compaction_mode = "rolling")
 
 
 @pytest.fixture(autouse = True)
@@ -376,6 +377,42 @@ def test_an_overflow_on_a_model_without_studio_tools_evicts_without_a_checkpoint
     assert truncation["dropped_messages"] > 0 and not truncation.get("checkpoint_started")
 
 
+def test_rolling_drops_just_enough_where_checkpoint_resets(rag_home, rag_conn, stub_embeddings):
+    sent = {}
+    for mode in ("rolling", "checkpoint"):
+        thread = f"thread-{mode}"
+        chat = _recall_chat(thread)
+        chunks, summaries, [sent[mode]] = _bodies(
+            _SummarisingHandler,
+            messages = chat,
+            thread_id = thread,
+            **_SMALL_TRIGGER,
+            compaction_mode = mode,
+        )
+        assert summaries == []
+        [truncation] = _truncations(chunks)
+        assert truncation["recalled_chunks"] > 0
+        assert "055 794 3321" in str(sent[mode]["messages"][-1]["content"])
+        assert bool(truncation.get("checkpoint")) is (mode == "checkpoint")
+    assert len(sent["rolling"]["messages"]) > len(sent["checkpoint"]["messages"])
+
+
+def test_rolling_compact_starts_no_checkpoint(rag_home, rag_conn, stub_embeddings):
+    thread = "thread-rolling-manual"
+    chat = _recall_chat(thread)
+    chunks, summaries, [sent] = _bodies(
+        _SummarisingHandler,
+        messages = chat,
+        thread_id = thread,
+        compact_context = True,
+        context_overflow = "truncate_oldest",
+        **_ROLLING,
+    )
+    assert summaries == []
+    assert len(sent["messages"]) == len(chat)
+    assert _truncations(chunks) == []
+
+
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError
@@ -388,15 +425,16 @@ def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
         provider_type = "openrouter",
         display_name = "Gateway",
         base_url = "https://openrouter.ai/api/v1",
-        compaction_mode = "evict",
+        compaction_mode = "checkpoint",
     )
-    assert providers_db.get_provider("gateway")["compaction_mode"] == "evict"
+    assert providers_db.get_provider("gateway")["compaction_mode"] == "checkpoint"
     assert providers_db.update_provider(id = "gateway", display_name = "Renamed")
-    assert providers_db.get_provider("gateway")["compaction_mode"] == "evict"
+    assert providers_db.get_provider("gateway")["compaction_mode"] == "checkpoint"
     assert providers_db.update_provider(id = "gateway", compaction_mode = None)
     assert providers_db.get_provider("gateway")["compaction_mode"] is None
 
-    assert ProviderUpdate(compaction_mode = "evict").compaction_mode == "evict"
+    for mode in ("summary", "rolling", "checkpoint"):
+        assert ProviderUpdate(compaction_mode = mode).compaction_mode == mode
     assert "compaction_mode" in ProviderUpdate(compaction_mode = None).model_fields_set
     with pytest.raises(ValidationError):
-        ProviderCreate(provider_type = "openrouter", display_name = "x", compaction_mode = "drop")
+        ProviderCreate(provider_type = "openrouter", display_name = "x", compaction_mode = "evict")

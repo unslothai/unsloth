@@ -30721,8 +30721,13 @@ async def _proxy_to_external_provider(
                 "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
             }
         )
-    # "Drop oldest turns": no summary call; turns go to the archive, /compact starts an epoch.
-    _evict_only = managed is None and payload.compaction_mode == "evict" and not _provider_compacts
+    # No summary call; dropped turns go to the archive. "rolling" is the pre-summary cloud fit.
+    _evict_only = (
+        managed is None
+        and payload.compaction_mode in ("rolling", "checkpoint")
+        and not _provider_compacts
+    )
+    _rolling_only = _evict_only and payload.compaction_mode == "rolling"
     # Eviction's replacement: providers that compact server-side keep doing so themselves.
     _auto_summary = (
         bool(payload.compaction_threshold)
@@ -30772,9 +30777,9 @@ async def _proxy_to_external_provider(
     if _evict_only:
         # An earlier summary is not replayed: the turns it covered are evicted like any others.
         _fit_active = (bool(payload.compaction_threshold) and _rolling) or (
-            payload.compact_context is True and bool(payload.thread_id)
+            not _rolling_only and payload.compact_context is True and bool(payload.thread_id)
         )
-        if not _fit_active and payload.thread_id:
+        if not _fit_active and not _rolling_only and payload.thread_id:
             # A /compact epoch stays in force with auto-compact off, as a saved summary does.
             from storage import studio_db as _studio_db
             _fit_active = bool(
@@ -30817,9 +30822,11 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
                 # The NPU has no compaction of its own, so /compact resets here as on GGUF.
-                can_reset = not _tool_calls_are_disabled(payload) and _model_can_reset,
+                can_reset = (
+                    not _rolling_only and not _tool_calls_are_disabled(payload) and _model_can_reset
+                ),
                 first_pass = first_pass,
-                replays_manual = True,
+                replays_manual = not _rolling_only,
             )
 
         refit = not later
@@ -30966,8 +30973,9 @@ async def _proxy_to_external_provider(
             tools = _external_fit_tools,
             # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
             can_reset = (bool(managed.supports_tools) if managed is not None else _model_can_reset)
-            and not _tool_calls_are_disabled(payload),
-            replays_manual = True,
+            and not _tool_calls_are_disabled(payload)
+            and not _rolling_only,
+            replays_manual = not _rolling_only,
         )
         try:
             _refuse_what_ollama_would_cut(

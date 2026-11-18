@@ -221,7 +221,7 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         auto_compact_tokens = row.get("auto_compact_tokens"),
         compaction_mode = (
             row.get("compaction_mode")
-            if row.get("compaction_mode") in ("summary", "evict")
+            if row.get("compaction_mode") in ("summary", "rolling", "checkpoint")
             else None
         ),
         shared = bool(row.get("shared")),
