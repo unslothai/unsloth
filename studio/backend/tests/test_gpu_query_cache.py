@@ -81,8 +81,6 @@ class FakeSmi:
             )
         )
         exe.chmod(0o755)
-        # Windows resolves nvidia-smi through PATHEXT and cannot run the shebang script itself.
-        (root / "nvidia-smi.cmd").write_text(f'@"{sys.executable}" "{exe}" %*\r\n')
 
     def save(self):
         self.state_path.write_text(json.dumps(self.state))
@@ -114,6 +112,10 @@ class FakeSmi:
 
 @pytest.fixture
 def smi(tmp_path, monkeypatch):
+    if os.name == "nt":
+        pytest.skip(
+            "the fake nvidia-smi is a shebang script; CreateProcess cannot run it by bare name"
+        )
     fake = FakeSmi(tmp_path)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.delenv("UNSLOTH_GPU_QUERY_CACHE", raising = False)
