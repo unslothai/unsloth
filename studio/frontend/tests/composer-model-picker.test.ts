@@ -1762,7 +1762,7 @@ test("on a small screen the picker keeps the keyboard down and every action with
     picker,
     /className=\{cn\(ACTION_ROUND, actionClass, TOUCH_IN_MENU\)\}/,
   );
-  assert.match(picker, /: \[actionClass, TOUCH_IN_MENU\]/);
+  assert.match(picker, /\[actionClass, npuOffer \? TOUCH_DOTS : TOUCH_IN_MENU\]/);
   const header = picker.slice(picker.indexOf("function SectionHeader("));
   assert.match(
     header.slice(0, header.indexOf("\n}\n")),
@@ -1794,4 +1794,21 @@ test("only small screens change: every phone class and branch is gated on the mo
   const css = readSrc("index.css");
   const small = css.slice(css.indexOf("@media (width < 48rem) {"));
   assert.match(small, /\.composer-model-chip \[data-eject-hit\] \{\s+pointer-events: none;/);
+});
+
+test("hiding the star on small screens never strands Favorite", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // Both row menus carry Favorite, since the standalone star drops out below 768px.
+  const menus =
+    picker.match(
+      /<ModelRowMenu\s+ariaLabel=\{`More options for \$\{row\.label\}`\}[\s\S]*?items=\{\[/g,
+    ) ?? [];
+  assert.equal(menus.length, 2);
+  for (const menu of menus) {
+    assert.match(menu, /pin=\{\s+canStar\s+\?/);
+  }
+  // A row with no menu keeps its star.
+  assert.match(picker, /\[actionClass, npuOffer \? TOUCH_DOTS : TOUCH_IN_MENU\]/);
 });

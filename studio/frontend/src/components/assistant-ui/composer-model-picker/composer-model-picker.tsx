@@ -4450,6 +4450,16 @@ export function ComposerModelPicker({
                 <>
                   <ModelRowMenu
                     ariaLabel={`More options for ${row.label}`}
+                    pin={
+                      canStar
+                        ? {
+                            pinned: favorite,
+                            pinLabel: "Favorite",
+                            unpinLabel: "Remove favorite",
+                            onToggle: () => toggleFavorite(row),
+                          }
+                        : undefined
+                    }
                     items={[
                       {
                         key: "model-settings",
@@ -4516,7 +4526,8 @@ export function ComposerModelPicker({
                       ACTION_ROUND,
                       favorite
                         ? [FAVORITE_STAR, TOUCH_ACTION]
-                        : [actionClass, TOUCH_IN_MENU],
+                        : // An NPU offer row has no menu to carry Favorite.
+                          [actionClass, npuOffer ? TOUCH_DOTS : TOUCH_IN_MENU],
                     )}
                   >
                     <HugeiconsIcon
