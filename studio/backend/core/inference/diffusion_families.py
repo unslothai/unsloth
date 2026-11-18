@@ -2301,7 +2301,6 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("moss-image", 25, 2.5),
     ("moss_image", 25, 2.5),
     ("mossimage", 25, 2.5),
-    # Kromoss: a MOSS-Image-Base fine-tune, same recipe as the family.
     ("kromoss", 25, 2.5),
     # SDXL-Turbo: 1 step, CFG 1. "sdxl-turbo" must precede "sdxl".
     ("sdxl-turbo", 1, 0.0),
