@@ -186,6 +186,9 @@ def _drop_device(index, reason):
     with _lock:
         if _CACHE:
             _evict(index, 0, kind = "size")
+        _mark_growth(
+            index
+        )  # also when nothing of index was cached: the larger step's transient is unknown
         _BUDGET[index] = 0
         STATS[reason] += 1
 
@@ -247,6 +250,16 @@ def _note_shrink(index, kind):
     _SHRINK_PEAK[index] = peak
     if kind in ("size", "pressure", "foreign"):
         _SHRINK_UNSAFE.add(index)
+
+
+def _mark_growth(index):
+    """A larger step (more tokens, a longer sequence, more matmul rows) than the last measurement, or another
+    training run. While the allocator's peak is stale (a shrink since the last new peak) the last measured
+    transient no longer covers it, so the conservative bound applies until a new peak is measured. Without a
+    pending shrink the next safe point measures the step itself."""
+    if index in _SHRINK_PEAK and index not in _SHRINK_UNSAFE:
+        _SHRINK_UNSAFE.add(index)
+        STATS["growth_marks"] += 1
 
 
 def _usable(index):
@@ -455,6 +468,10 @@ def _lookup(
         _ROWS_NEW[index] = rows
     if not _CACHE and _BUDGET.get(index, 0) <= 0:
         _SEEN.add(index)
+        if rows > _ROWS_SEEN.get(index, 0) and index in _SHRINK_PEAK:
+            _mark_growth(
+                index
+            )  # a larger step while the cache is empty (after evaluation, a clear)
         return decode(False)  # nothing cached and no budget (before the first optimizer step)
     if rows > _ROWS_SEEN.get(index, 0):
         # More tokens than any step the budget was measured on: its activations may need what the cache holds.
@@ -756,6 +773,10 @@ def _end_train():
         except Exception:
             pass
     clear_dequant_cache(release = True)
+    # The next train() may run another model or other data on these devices: what this run measured does not
+    # size it, so a stale peak keeps the conservative bound until that run measures a new one.
+    for index in list(_SHRINK_PEAK):
+        _mark_growth(index)
 
 
 def _input_shape(args, kwargs):
@@ -793,11 +814,15 @@ def _model_pre_hook(module, args, kwargs):
             _SHAPE_NEW[0] = tokens
         if length > _SHAPE_NEW[1]:
             _SHAPE_NEW[1] = length
-    if (tokens > _SHAPE_SEEN[0] or length > _SHAPE_SEEN[1]) and (
-        _CACHE or any(b > 0 for b in _BUDGET.values())
-    ):
-        for index in list(_BUDGET):
-            _drop_device(index, "shape_drops")
+    if tokens > _SHAPE_SEEN[0] or length > _SHAPE_SEEN[1]:
+        if _CACHE or any(b > 0 for b in _BUDGET.values()):
+            for index in list(_BUDGET):
+                _drop_device(index, "shape_drops")
+        if module is None or getattr(module, "training", True):
+            # Also while the cache is empty (evaluation or a clear just emptied it): until a new peak is measured
+            # the stale peak, not the smaller transient measured before, sizes the next budget.
+            for index in list(_SHRINK_PEAK):
+                _mark_growth(index)
 
 
 _KNOWN_CALLBACK_PACKAGES = frozenset(

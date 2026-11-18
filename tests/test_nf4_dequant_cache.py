@@ -427,3 +427,66 @@ def test_host_bookkeeping_is_skipped_while_tracing(monkeypatch):
     assert dc.rows_of(torch.zeros(4, 8)) == 0
     dc._model_pre_hook(None, (), {"input_ids": torch.zeros(2, 64, dtype = torch.long)})
     assert dc._SHAPE_NEW == [0, 0] and dc.STATS["shape_drops"] == 0
+
+
+def test_save_forwards_only_its_parameters_with_an_mtp_head(monkeypatch):
+    # unsloth_save_model forwards dict(locals()) to _push_with_mtp_head, which calls
+    # unsloth_save_model(**save_kwargs) again: a local the cache release adds would be a TypeError there.
+    import inspect
+    import unsloth.save as save
+
+    captured = {}
+    monkeypatch.setattr(save, "_refuse_mtp_variant", lambda model, variant: None)
+    monkeypatch.setattr(save, "_attached_mtp_head", lambda model: object())
+    monkeypatch.setattr(
+        save, "_push_with_mtp_head", lambda kwargs: captured.update(kwargs) or ("done", None)
+    )
+    released = []
+    monkeypatch.setattr(dc, "clear_dequant_cache", lambda *a, **k: released.append(1))
+    model = torch.nn.Linear(2, 2)
+    assert save.unsloth_save_model(model, None, "repo", push_to_hub = True) == ("done", None)
+    assert released, "the save path no longer releases the dequant cache"
+    parameters = set(inspect.signature(inspect.unwrap(save.unsloth_save_model)).parameters)
+    assert set(captured) == parameters, set(captured) ^ parameters
+
+
+class _Training:
+    training = True
+
+
+def test_larger_step_while_the_cache_is_empty_stays_conservative(monkeypatch):
+    # Evaluation empties the cache, then a larger training step runs uncached below the old peak: keeping the
+    # small measured transient would refill the cache with too little room for that step's activations.
+    fake = _fake_allocator(monkeypatch)
+    dc._SHAPE_SEEN[:] = [128, 64]
+    fake["allocated"] = 3 * GiB
+    dc.clear_dequant_cache()  # evaluation
+    dc._model_pre_hook(_Training(), (), {"input_ids": torch.zeros(2, 128, dtype = torch.long)})
+    fake["peak"] = 6 * GiB  # the larger step peaked at 5 GiB, under the stale 6 GiB
+    dc._on_optimizer_step(None, (), {})
+    # stale bound: 6 - 3 = 3 GiB transient -> budget 10 - 6 - 1, not the 7 GiB the 1 GiB transient gives
+    assert dc._BUDGET[None] == 3 * GiB and dc.STATS["stale_peak_bound"] == 1
+    fake["peak"] = 9 * GiB  # a new peak is measured as usual
+    dc._on_optimizer_step(None, (), {})
+    assert dc._TRANSIENT[None] == 6 * GiB and None not in dc._SHRINK_UNSAFE
+
+
+def test_more_rows_while_the_cache_is_empty_stays_conservative(monkeypatch):
+    fake = _fake_allocator(monkeypatch)
+    dc._ROWS_SEEN[None] = 64
+    fake["allocated"] = 3 * GiB
+    dc.clear_dequant_cache()
+    W, absmax = _weight()
+    dc._lookup(W, absmax, _decoder([]), torch.bfloat16, rows = 256)  # uncached, larger than measured
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 3 * GiB and dc.STATS["stale_peak_bound"] == 1
+
+
+def test_next_training_run_does_not_reuse_the_last_transient(monkeypatch):
+    # Another train() (another model, other data) after this one ends is not sized by what this run measured.
+    fake = _fake_allocator(monkeypatch)
+    fake["allocated"] = 3 * GiB
+    dc._end_train()
+    monkeypatch.setattr(dc, "_ACTIVE", 1)
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 3 * GiB and dc.STATS["stale_peak_bound"] == 1
