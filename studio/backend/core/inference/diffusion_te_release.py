@@ -196,6 +196,8 @@ class TextEncoderReleaser:
         self._from_source: dict[str, tuple[int, str]] = {}
         # key -> (owner module, leaf name, is_parameter)
         self._slots: dict[str, tuple[Any, str, bool]] = {}
+        # key -> every (module, leaf) holding that tensor, tied aliases included
+        self._aliases: dict[str, list[tuple[Any, str]]] = {}
         self._released_bytes = 0
         self._bytes: dict[str, int] = {}
         self._hooks: list[Any] = []
@@ -221,16 +223,29 @@ class TextEncoderReleaser:
                     seen.add(id(buf))
                     if buf.numel() * buf.element_size() >= _MIN_RELEASE_BYTES:
                         self._slots[f"{attr}.{module_name}.{leaf}"] = (module, leaf, False)
+        holders: dict[int, list[tuple[Any, str]]] = {}
+        for _, encoder in self._encoders:
+            for module in encoder.modules():
+                for table in (module._parameters, module._buffers):
+                    for leaf, tensor in table.items():
+                        if tensor is not None:
+                            holders.setdefault(id(tensor), []).append((module, leaf))
+        self._aliases = {key: holders[id(self._tensor(key))] for key in self._slots}
+
+    def _swap(self, key: str, value: Any) -> None:
+        owner, leaf, is_param = self._slots[key]
+        if is_param:
+            owner._parameters[leaf].data = value
+            return
+        # Replace, never `.data =`: a view-backed buffer would keep its `_base` allocation alive.
+        for module, name in self._aliases[key]:
+            module._buffers[name] = value
 
     def _install_hooks(self) -> None:
-        tensor_ids = {id(self._tensor(key)) for key in self._slots}
-        owners = {}
-        for _, encoder in self._encoders:
-            owners.setdefault(id(encoder), encoder)
-            for module in encoder.modules():
-                tensors = (*module._parameters.values(), *module._buffers.values())
-                if any(id(tensor) in tensor_ids for tensor in tensors):
-                    owners[id(module)] = module
+        owners = {id(encoder): encoder for _, encoder in self._encoders}
+        for holders in self._aliases.values():
+            for module, _ in holders:
+                owners.setdefault(id(module), module)
 
         def _pre_hook(module: Any, args: Any) -> None:
             if self._released:
@@ -398,15 +413,11 @@ class TextEncoderReleaser:
                 return 0
             released = 0
             with torch.no_grad():
-                for key, (owner, leaf, is_param) in self._slots.items():
+                for key in self._slots:
                     tensor = self._tensor(key)
                     self._bytes[key] = tensor.numel() * tensor.element_size()
                     released += self._bytes[key]
-                    empty = torch.empty(0, dtype = tensor.dtype, device = tensor.device)
-                    if is_param:
-                        owner._parameters[leaf].data = empty
-                    else:
-                        owner._buffers[leaf].data = empty
+                    self._swap(key, torch.empty(0, dtype = tensor.dtype, device = tensor.device))
             self._released = True
             self._released_bytes = released
             self.releases += 1
@@ -436,23 +447,12 @@ class TextEncoderReleaser:
             started = time.monotonic()
             with torch.no_grad():
                 for key, (index, name) in self._from_source.items():
-                    owner, leaf, is_param = self._slots[key]
-                    current = (owner._parameters if is_param else owner._buffers)[leaf]
-                    restored = self._source_handles[index].get_tensor(name).to(current.device)
-                    if is_param:
-                        owner._parameters[leaf].data = restored
-                    else:
-                        owner._buffers[leaf].data = restored
+                    device = self._tensor(key).device
+                    self._swap(key, self._source_handles[index].get_tensor(name).to(device))
                 for shard in self._shards:
                     with safe_open(str(shard), framework = "pt", device = "cpu") as handle:
                         for key in handle.keys():
-                            owner, leaf, is_param = self._slots[key]
-                            current = (owner._parameters if is_param else owner._buffers)[leaf]
-                            restored = handle.get_tensor(key).to(current.device)
-                            if is_param:
-                                owner._parameters[leaf].data = restored
-                            else:
-                                owner._buffers[leaf].data = restored
+                            self._swap(key, handle.get_tensor(key).to(self._tensor(key).device))
             self._released = False
             self.reloads += 1
             self._note(

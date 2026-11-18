@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import gc
+import weakref
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -60,20 +63,35 @@ def test_shared_tensor_is_released_and_restored_without_breaking_aliases(
     parameter, releaser_factory
 ):
     encoder = Encoder(parameter)
-    original = encoder.first.weight
-    size = original.numel() * original.element_size()
+    original = weakref.ref(encoder.first.weight.untyped_storage())
+    size = encoder.first.weight.numel() * encoder.first.weight.element_size()
     value = torch.ones(1, 512, dtype = torch.float32, device = "cpu")
     expected = encoder(value).detach().clone()
     releaser = releaser_factory(encoder)
 
     assert releaser.release() == size
     assert bool(releaser._from_source) == release.source_reuse_enabled()
-    assert encoder.first.weight is original
-    assert encoder.second.weight is original
-    assert original.numel() == 0
+    assert encoder.first.weight is encoder.second.weight
+    assert encoder.second.weight.numel() == 0
+    gc.collect()
+    assert original() is None
     assert torch.equal(encoder(value), expected)
-    assert encoder.first.weight is original
-    assert encoder.second.weight is original
+    assert encoder.first.weight is encoder.second.weight
+
+
+def test_view_backed_buffer_frees_its_base(releaser_factory):
+    encoder = Encoder(False)
+    view = torch.eye(1024, dtype = torch.float32).reshape(-1).reshape(1024, 1024)
+    assert view._base is not None
+    encoder.first.register_buffer("weight", view)
+    encoder.second.register_buffer("weight", view)
+    base = weakref.ref(view._base)
+    del view
+    releaser = releaser_factory(encoder)
+
+    assert releaser.release() > 0
+    gc.collect()
+    assert base() is None
 
 
 @pytest.mark.parametrize("parameter", [False, True], ids = ["buffer", "parameter"])
