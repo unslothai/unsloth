@@ -658,7 +658,8 @@ def _workspace_file_request(path: str, session_id: Optional[str]) -> dict:
             f"({workdir}, where python and terminal run). Write or copy the file there first, "
             "then open it by its name, or give a full http(s) address."
         )
-    shown = os.path.relpath(full, workdir)
+    # Forward slashes on every OS: the panel keys the tab on it.
+    shown = os.path.relpath(full, workdir).replace(os.sep, "/")
     if not os.path.isfile(full):
         raise ValueError(
             f"there is no file {shown} in the workspace ({workdir}). Write it there with python "

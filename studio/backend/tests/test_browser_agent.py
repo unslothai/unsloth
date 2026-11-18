@@ -694,8 +694,9 @@ def test_navigate_opens_a_workspace_file_in_the_panel(workspace, target, path):
 
 
 def test_absolute_and_file_url_paths_inside_the_workspace_open(workspace):
-    full = str(workspace / "draw.html")
-    for target in (full, f"file://{full}", f"file://localhost{full}"):
+    full = workspace / "draw.html"
+    uri = full.as_uri()
+    for target in (str(full), uri, uri.replace("file://", "file://localhost", 1)):
         assert _request("browser_navigate", {"url": target})["path"] == "draw.html"
 
 
