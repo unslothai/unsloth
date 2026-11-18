@@ -2810,3 +2810,35 @@ def test_a_parallel_batch_past_the_cap_replays_what_the_loop_admitted():
 
     assert mcp_images.replay_image_total(history) == mcp_images.MAX_TOTAL_MODEL_IMAGES
     assert _urls(promote_history(history, vision = True)) == _urls(conversation)
+
+
+def test_a_full_history_replay_keeps_the_tail_of_a_partly_trimmed_result():
+    """Results of 1, 4 and 8 pictures keep the middle result's last picture live; the replay must
+    keep that one, not its first."""
+    history = [{"role": "user", "content": "go"}]
+    conversation = [{"role": "user", "content": "go"}]
+    owned: list = []
+    seen = 0
+    for r, n in enumerate((1, 4, 8)):
+        images = [_distinct_image(seen + i) for i in range(n)]
+        seen += n
+        call = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"c{r}",
+                    "type": "function",
+                    "function": {"name": "mcp__s__x", "arguments": "{}"},
+                }
+            ],
+        }
+        history += [
+            call,
+            {"role": "tool", "tool_call_id": f"c{r}", "content": _envelope("r", *images)},
+        ]
+        conversation += [call, {"role": "tool", "tool_call_id": f"c{r}", "content": "r"}]
+        mcp_images.append_image_turn(conversation, [images], per_result = True, owned = owned)
+    history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+
+    assert _urls(promote_history(history, vision = True)) == _urls(conversation)

@@ -246,7 +246,9 @@ def eligible_replay_images(
         # Newest first within the batch, the order the local decoder tries them.
         batch = [position for position in range(index, start - 1, -1)]
         index = start - 1
-        room = min(budget, per_result)
+        # Data-URL replay trims oldest first afterwards, so admit a result's whole window: a head cut
+        # here would leave the wrong pictures once that trim drops the oldest.
+        room = per_result if not local and budget > 0 else min(budget, per_result)
         allowance = room + spare
         taken = 0
         for position in batch:
@@ -261,7 +263,7 @@ def eligible_replay_images(
             allowance -= take
             taken += take
         charged = min(taken, room)
-        budget -= charged
+        budget = max(0, budget - charged)
         spare -= taken - charged
     return eligible
 
@@ -934,14 +936,14 @@ def _promote(
         else (len(_all_image_url_parts(messages)) if vision and reserve_for_caller else 0)
     )
     parsed: dict = {}
-    # Stepped from the whole history's count, so a follow-up keeps what the tool loop last sent.
+    # The final trim steps from the whole history's count, so a follow-up keeps what the tool loop
+    # last sent. Admission keeps the full budget: the loop trims oldest first, keeping result tails.
     _total = replay_image_total(messages, parsed) if vision and not local else 0
-    _budget = max(0, MAX_TOTAL_MODEL_IMAGES - _reserved)
     eligible = (
         eligible_replay_images(
             messages,
             local = local,
-            budget = _budget if local else stepped_keep(_total, _budget),
+            budget = max(0, MAX_TOTAL_MODEL_IMAGES - _reserved),
             parsed = None if local else parsed,
         )
         if vision
