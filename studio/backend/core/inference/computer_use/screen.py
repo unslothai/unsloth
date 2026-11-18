@@ -46,7 +46,6 @@ class Frame:
     width: int
     height: int
     gray: Any = field(repr = False, default = None)
-    # Shown windows, topmost first, as (identity, desktop bounds); None when they can't be listed.
     windows: Optional[list] = field(repr = False, default = None)
     # Sent because the screen changed under a target: not re-checked, or a video is never clickable.
     lenient: bool = False
