@@ -362,6 +362,18 @@ def get_connection(*, check_same_thread: bool = True) -> sqlite3.Connection:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
     if "secret_gen" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN secret_gen TEXT")
+    # Separate table, so an older build that never reads it cannot revive a consumed token.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS refresh_token_reuse (
+            token_hash TEXT NOT NULL,
+            username TEXT NOT NULL,
+            is_desktop INTEGER NOT NULL DEFAULT 0,
+            secret_gen TEXT,
+            consumed_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
     _auth_schema_ready.add(
         (
@@ -758,7 +770,7 @@ def _managed_account(conn: sqlite3.Connection, account_id: str):
 
 def _revoke_account_credentials(conn: sqlite3.Connection, row) -> None:
     # Legacy tables key on username; resolve it under the same write lock.
-    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (row["username"],))
+    _delete_refresh_rows(conn, row["username"])
     conn.execute("DELETE FROM api_keys WHERE username = ?", (row["username"],))
     conn.execute("DELETE FROM account_api_keys WHERE account_id = ?", (row["account_id"],))
     conn.execute(
@@ -959,7 +971,7 @@ def update_account_password(
             )
             if cursor.rowcount != 1:
                 return None
-            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+            _delete_refresh_rows(conn, username)
         return secret
     finally:
         conn.close()
@@ -1024,7 +1036,7 @@ def rename_account(account_id: str, username: str) -> dict:
                         "UPDATE auth_user SET username = ?, account_jwt_secret = ? WHERE account_id = ?",
                         (username, secrets.token_urlsafe(64), account_id),
                     )
-                    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (old,))
+                    _delete_refresh_rows(conn, old)
                     conn.execute(
                         "UPDATE api_keys SET username = ? WHERE username = ? AND account_id = ?",
                         (username, old, account_id),
@@ -1533,7 +1545,7 @@ def update_password(
                 (salt, pwd_hash, jwt_secret, username, expect_password_hash),
             )
         if revoke_refresh_tokens and cursor.rowcount > 0:
-            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+            _delete_refresh_rows(conn, username)
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
@@ -1571,22 +1583,64 @@ def save_refresh_token(
         conn.close()
 
 
-def _take_refresh_token(conn: sqlite3.Connection, token: str, now: str):
+# A rotation answer lost in transit (tab closed mid-refresh, proxy timeout, phone suspend) or a
+# second tab racing on one token may present the just-rotated token again; within this window it
+# rotates once more instead of signing every tab out. Logout and password changes still end it.
+REFRESH_REUSE_GRACE_SECONDS = 60
+
+
+def _delete_refresh_rows(conn: sqlite3.Connection, username: str) -> None:
+    """Revoke every refresh token of ``username``, including ones inside the reuse window."""
+    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+    conn.execute("DELETE FROM refresh_token_reuse WHERE username = ?", (username,))
+
+
+def _take_refresh_token(
+    conn: sqlite3.Connection,
+    token: str,
+    now: str,
+    *,
+    allow_reuse: bool = False,
+):
     """Inside the caller's BEGIN IMMEDIATE: purge expired rows, then delete-and-return the token's
     row. Returns ``(row, user)`` (the auth_user row) when the token is live and its credential
-    generation still matches, else None; the delete stands either way."""
+    generation still matches, else None; the delete stands either way. ``allow_reuse`` also
+    accepts a token this path consumed within ``REFRESH_REUSE_GRACE_SECONDS``."""
     conn.execute(
         "DELETE FROM refresh_tokens WHERE expires_at < ?",
         (now,),
     )
+    hashes = _hash_candidates(_hash_token(token))
     row = conn.execute(
         f"""
         DELETE FROM refresh_tokens
         WHERE token_hash {_FENCED_HASH_SQL} AND expires_at >= ?
-        RETURNING username, is_desktop, secret_gen
+        RETURNING token_hash, username, is_desktop, secret_gen
         """,
-        (*_hash_candidates(_hash_token(token)), now),
+        (*hashes, now),
     ).fetchone()
+    if allow_reuse:
+        cutoff = (
+            datetime.fromisoformat(now) - timedelta(seconds = REFRESH_REUSE_GRACE_SECONDS)
+        ).isoformat()
+        conn.execute("DELETE FROM refresh_token_reuse WHERE consumed_at < ?", (cutoff,))
+        if row is not None:
+            conn.execute(
+                """
+                INSERT INTO refresh_token_reuse
+                    (token_hash, username, is_desktop, secret_gen, consumed_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (row["token_hash"], row["username"], row["is_desktop"], row["secret_gen"], now),
+            )
+        else:
+            row = conn.execute(
+                f"""
+                SELECT username, is_desktop, secret_gen FROM refresh_token_reuse
+                WHERE token_hash {_FENCED_HASH_SQL}
+                """,
+                hashes,
+            ).fetchone()
     if row is None:
         return None
     user = conn.execute(
@@ -1636,14 +1690,15 @@ class RotatedRefresh(NamedTuple):
 def rotate_refresh_token(
     token: str, new_token: str, new_expires_at: str
 ) -> Optional[RotatedRefresh]:
-    """Swap tokens in one transaction: on failure, including a busy auth.db, the old token stays valid."""
+    """Swap tokens in one transaction: on failure, including a busy auth.db, the old token stays
+    valid. A token rotated here stays exchangeable for ``REFRESH_REUSE_GRACE_SECONDS``."""
     from utils.account_context import ROLE_OWNER
 
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        taken = _take_refresh_token(conn, token, now)
+        taken = _take_refresh_token(conn, token, now, allow_reuse = True)
         if taken is None:
             conn.commit()
             return None
@@ -1732,7 +1787,7 @@ def revoke_user_refresh_tokens(username: str, *, account_id: Optional[str] = Non
                 ).fetchone()
                 if row is None or row["username"] != username:
                     return
-            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+            _delete_refresh_rows(conn, username)
     finally:
         conn.close()
 
