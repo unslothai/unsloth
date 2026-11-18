@@ -161,3 +161,12 @@ def test_unauthenticated_multipart_upload_is_refused_before_spooling(main_module
     status, seen = _drive(main_module, "/api/datasets/upload", {}, _BIG)
     assert status == 401
     assert seen["inner_bytes"] is None
+
+
+@pytest.mark.parametrize("path", ["/api/chat/threads", "/api/datasets/upload"])
+def test_chunked_body_with_small_content_length_is_still_checked(main_module, path):
+    # h11 frames by Transfer-Encoding but keeps the Content-Length header in the scope.
+    headers = {"Content-Length": "1", "Transfer-Encoding": "chunked"}
+    status, seen = _drive(main_module, path, headers, _BIG, declared = False)
+    assert status in (401, 411)
+    assert seen["inner_bytes"] is None

@@ -1988,6 +1988,10 @@ class MaxBodyMiddleware:
                 except (ValueError, UnicodeDecodeError):
                     declared = None
                 break
+        # RFC 9112 6.3: Transfer-Encoding overrides Content-Length, and h11 keeps both headers, so a
+        # small declared length would otherwise skip the streamed size and credential checks.
+        if any(name == b"transfer-encoding" for name, _ in scope.get("headers", [])):
+            declared = None
 
         if method != "DELETE" and self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
