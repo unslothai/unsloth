@@ -913,3 +913,37 @@ def test_linked_requests_ignore_environment_proxies(monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
     monkeypatch.setattr(linked_instances, "_http_client", None)
     assert linked_instances._client().trust_env is False
+
+
+def test_a_streamed_linked_image_request_is_relayed_not_rewritten(monkeypatch):
+    from fastapi.responses import StreamingResponse
+
+    import routes.inference as inference
+    from models.inference import ImageGenerationRequest
+
+    async def resolve(request, model):
+        return ({"id": "i", "name": "wsl"}, "unsloth/flux")
+
+    async def forward(request, path, target, **kwargs):
+        assert not kwargs.get("body_overrides")
+
+        async def chunks():
+            yield b"data: [DONE]\n\n"
+
+        return StreamingResponse(chunks(), media_type = "text/event-stream")
+
+    monkeypatch.setattr(inference.linked_instances, "resolve", resolve)
+    monkeypatch.setattr(inference.linked_instances, "forward", forward)
+    request = Request({"type": "http", "path": "/v1/x", "headers": []})
+    endpoint = getattr(
+        inference.openai_image_generations, "__wrapped__", inference.openai_image_generations
+    )
+    response = asyncio.run(
+        endpoint(
+            ImageGenerationRequest(prompt = "a cat", model = "@wsl/unsloth/flux", stream = True),
+            request,
+            current_subject = "unsloth",
+            hf_token = None,
+        )
+    )
+    assert isinstance(response, StreamingResponse)

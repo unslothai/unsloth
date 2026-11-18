@@ -48491,7 +48491,8 @@ async def openai_image_generations(
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
     if linked := await linked_instances.resolve(request, body.model):
-        if body.response_format == "b64_json":
+        # A streamed reply has no single body to rewrite; the remote answers it as it would here.
+        if body.response_format == "b64_json" or body.stream:
             return await _forward_linked(request, "images/generations", linked, current_subject)
         # The remote's URLs name its own host, which a caller of this machine may not reach:
         # take the pixels and serve them from this gallery instead.
