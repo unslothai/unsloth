@@ -1233,6 +1233,8 @@ _llama_build_rpc_server() {
         run_quiet_no_exit "build llama-server (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
         if [ "$BUILD_OK" = true ]; then
             run_quiet_no_exit "build llama-quantize (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # The rebuild wiped the Metal memory probe built before it; macOS is the only host here.
+            run_quiet_no_exit "build llama-fit-params (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-fit-params -j"$NCPU" || true
             run_quiet_no_exit "build diffusion visual server (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
         fi
     else
