@@ -36,27 +36,6 @@ export function useIsMobileShell(): boolean {
   return useIsMobile() && !isTauri;
 }
 
-const COARSE_QUERY = "(pointer: coarse)";
-
-function getCoarseSnapshot(): boolean {
-  return typeof window !== "undefined" && window.matchMedia(COARSE_QUERY).matches;
-}
-
-function subscribeCoarse(callback: () => void): () => void {
-  if (typeof window === "undefined") {
-    return () => undefined;
-  }
-  const mql = window.matchMedia(COARSE_QUERY);
-  mql.addEventListener("change", callback);
-  return () => mql.removeEventListener("change", callback);
-}
-
-/** A phone: narrow and touch-first. A narrowed desktop window with a mouse is not one. */
-export function useIsTouchPhone(): boolean {
-  const coarse = useSyncExternalStore(subscribeCoarse, getCoarseSnapshot, () => false);
-  return useIsMobile() && coarse;
-}
-
 const COMPACT_QUERY = "(max-width: 1023px)";
 
 function getCompactSnapshot(): boolean {

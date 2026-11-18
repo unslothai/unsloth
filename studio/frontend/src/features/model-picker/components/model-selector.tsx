@@ -22,6 +22,7 @@ import {
   useNpuDisplayName,
   useNpuStatus,
 } from "@/features/npu";
+import { isMobileViewport, useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { snapInlinePadding } from "@/lib/snap-padding";
@@ -351,6 +352,7 @@ function ModelSelectorContent({
   };
 }) {
   const t = useT();
+  const smallScreen = useIsMobile();
   const hasSelection = Boolean(value);
   const hasExternal = externalModels.length > 0;
   const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
@@ -507,7 +509,7 @@ function ModelSelectorContent({
       alignOffset={10}
       dropdownGlow="picker"
       // A phone-width panel shifted flush against the screen edge without it.
-      collisionPadding={8}
+      collisionPadding={smallScreen ? 8 : undefined}
       ref={surfaceRef}
       // Read by the model list, which sets its right inset against the panel's own.
       data-external={hasExternal || undefined}
@@ -796,7 +798,8 @@ export function ModelSelector({
         onEject={onEject ? () => handleEject() : undefined}
         placeholder={placeholder}
         onPointerDown={(event) => {
-          openedByTouch.current = !open && event.pointerType === "touch";
+          openedByTouch.current =
+            !open && event.pointerType === "touch" && isMobileViewport();
         }}
       />
       <ModelSelectorContent

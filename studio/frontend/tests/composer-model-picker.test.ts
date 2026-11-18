@@ -243,12 +243,12 @@ test("a model with no thinking skips the collapsed view and closes once loaded",
   );
   assert.match(
     picker,
-    /const isExpanded =\s+expanded \|\| !chosenName \|\| noThinking \|\| touchPhone;/,
+    /const isExpanded =\s+expanded \|\| !chosenName \|\| noThinking \|\| smallScreen;/,
   );
   assert.match(picker, /if \(fresh\) \{\s+closeIfNoThinking\.current\(\);/);
   assert.match(
     picker,
-    /\{chosenName && !noThinking && !touchPhone \? \(\s+<Hint label="Collapse">/,
+    /\{chosenName && !noThinking && !smallScreen \? \(\s+<Hint label="Collapse">/,
   );
 });
 
@@ -1744,7 +1744,7 @@ test("a connected model in use offers eject, which clears the pick", () => {
   );
 });
 
-test("on touch the picker keeps the keyboard down and every action within reach", () => {
+test("on a small screen the picker keeps the keyboard down and every action within reach", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
@@ -1753,15 +1753,7 @@ test("on touch the picker keeps the keyboard down and every action within reach"
     picker,
     /touchPress\.current = !open && event\.pointerType === "touch";/,
   );
-  assert.match(
-    picker,
-    /onPointerDownCapture=\{\(event\) => \{\s+touchPress\.current = event\.pointerType === "touch";/,
-  );
-  assert.match(picker, /if \(isExpanded && !byTouch\) \{/);
-  assert.match(
-    picker,
-    /setExpanded\(true\);\s+if \(!touchPress\.current\) \{\s+requestAnimationFrame\(\(\) => searchRef\.current\?\.focus\(\)\);/,
-  );
+  assert.match(picker, /if \(isExpanded && !\(byTouch && smallScreen\)\) \{/);
   assert.match(
     picker,
     /buttonClassName=\{cn\(ACTION_DOTS, actionClass, TOUCH_DOTS\)\}/,
@@ -1774,7 +1766,7 @@ test("on touch the picker keeps the keyboard down and every action within reach"
   const header = picker.slice(picker.indexOf("function SectionHeader("));
   assert.match(
     header.slice(0, header.indexOf("\n}\n")),
-    /pointer-coarse:flex-1 pointer-coarse:self-stretch/,
+    /max-md:flex-1 max-md:self-stretch/,
   );
 });
 
@@ -1782,9 +1774,24 @@ test("on a small screen a pick closes the picker at once", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /closeOnPick\.current = useIsMobile\(\);/);
+  assert.match(picker, /closeOnPick\.current = smallScreen;/);
   assert.match(
     picker,
     /rawSource\.onPick\(id, meta\);\s+\}\s+if \(closeOnPick\.current\) \{\s+rawSource\.onOpenChange\(false\);/,
   );
+});
+
+test("only small screens change: every phone class and branch is gated on the mobile width", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.doesNotMatch(picker, /pointer-coarse:/);
+  assert.match(picker, /const smallScreen = useIsMobile\(\);/);
+  // The icon-only chip folds its detail into its own tooltip instead of stacking a second one.
+  assert.match(picker, /data-pill-detail=\{chipDetail\}/);
+  assert.match(picker, /setChipTipOpen\(next && !chipIconOnly\(\)\)/);
+  assert.match(picker, /isMobileViewport\(\) &&\s+label instanceof HTMLElement/);
+  const css = readSrc("index.css");
+  const small = css.slice(css.indexOf("@media (width < 48rem) {"));
+  assert.match(small, /\.composer-model-chip \[data-eject-hit\] \{\s+pointer-events: none;/);
 });

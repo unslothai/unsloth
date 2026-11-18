@@ -91,7 +91,7 @@ test("an On Device GGUF row with several quants shows a right/down chevron its g
     /\{soleQuantPending \? null : \(\s*<button[\s\S]*?onClick=\{\(\) =>\s*actions\.get\(\)\.toggleGgufExpanded\(c\.repo_id, expanderOpen\)\s*\}/,
   );
   assert.match(row, /expanderOpen\s*\?\s*ChevronDownStandardIcon\s*:\s*ChevronRightStandardIcon/);
-  assert.match(row, /<span\s+className=\{cn\(\s*ROW_ACTIONS_PINNED_CLASS,\s*"h-6 pointer-coarse:h-auto pointer-coarse:self-stretch",?\s*\)\}\s*>/);
+  assert.match(row, /<span\s+className=\{cn\(\s*ROW_ACTIONS_PINNED_CLASS,\s*"h-6 max-md:h-auto max-md:self-stretch",?\s*\)\}\s*>/);
 });
 
 test("a loaded hub GGUF row opens its quant list, so quants downloaded after the load stay reachable", () => {

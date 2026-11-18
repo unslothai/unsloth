@@ -601,7 +601,7 @@ export function ListLabel({
           tabIndex={-1}
           onClick={onToggle}
           aria-expanded={!collapsed}
-          className="flex cursor-pointer select-none items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground pointer-coarse:flex-1 pointer-coarse:self-stretch"
+          className="flex cursor-pointer select-none items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground max-md:flex-1 max-md:self-stretch"
         >
           {icon}
           {children}
@@ -620,7 +620,7 @@ export function ListLabel({
               type="button"
               onClick={onToggle}
               aria-label={collapsed ? "Expand section" : "Collapse section"}
-              className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground pointer-coarse:-my-1.5 pointer-coarse:p-2.5"
+              className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground max-md:-my-1.5 max-md:p-2.5"
             >
               {collapsed ? (
                 <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
@@ -1152,7 +1152,7 @@ const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 
 // Same box as ModelLoadSettingsAction, so heading and row buttons align.
 const HEADING_ACTION_CLASS =
-  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] pointer-coarse:-my-1.5 pointer-coarse:size-8";
+  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] max-md:-my-1.5 max-md:size-8";
 
 function ConnectedGroupHeading({
   icon,
@@ -2281,7 +2281,7 @@ const DownloadedGgufDeviceRow = memo(function DownloadedGgufDeviceRow({
         ) : (
           // No chevron until the probe rules out a sole quant. The gutter is a mouse target (the row
           // has the keyboard); pr-2.5 is the heading chevron's column.
-          <span className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6 pointer-coarse:h-auto pointer-coarse:self-stretch")}>
+          <span className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6 max-md:h-auto max-md:self-stretch")}>
             {soleQuantPending ? null : (
               <button
                 type="button"
@@ -8248,7 +8248,7 @@ export function HubModelPicker({
                           }
                           title={fineTunedCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setFineTunedCollapsed((v) => !v)}
-                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground pointer-coarse:-my-1.5 pointer-coarse:p-2.5"
+                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground max-md:-my-1.5 max-md:p-2.5"
                         >
                           {fineTunedCollapsed ? (
                             <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
@@ -8345,7 +8345,7 @@ export function HubModelPicker({
                           }
                           title={customFoldersCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setCustomFoldersCollapsed((v) => !v)}
-                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground pointer-coarse:-my-1.5 pointer-coarse:p-2.5"
+                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground max-md:-my-1.5 max-md:p-2.5"
                         >
                           {customFoldersCollapsed ? (
                             <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />

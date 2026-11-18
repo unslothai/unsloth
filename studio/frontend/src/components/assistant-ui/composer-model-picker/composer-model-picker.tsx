@@ -151,7 +151,7 @@ import {
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
-import { useIsMobile, useIsTouchPhone } from "@/hooks/use-mobile";
+import { isMobileViewport, useIsMobile } from "@/hooks/use-mobile";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import {
   ChevronDownStandardIcon,
@@ -956,9 +956,9 @@ const FAVORITE_STAR =
 // Lifts the ⋮ ink 0.3px so the hover circle centres on it.
 const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))] [&>svg]:-translate-y-[0.3px]`;
 // No hover on touch, and an invisible button still takes the tap: show the ⋮, drop what its menu holds.
-const TOUCH_DOTS = "pointer-coarse:size-8 pointer-coarse:opacity-100";
-const TOUCH_IN_MENU = "pointer-coarse:hidden";
-const TOUCH_ACTION = "pointer-coarse:size-8";
+const TOUCH_DOTS = "max-md:size-8 max-md:opacity-100";
+const TOUCH_IN_MENU = "max-md:hidden";
+const TOUCH_ACTION = "max-md:size-8";
 const FAVORITE_DROP_CUE_BASE =
   "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
 const FAVORITE_DROP_CUE = {
@@ -1166,7 +1166,7 @@ function SwitchRow({
 }) {
   const id = useId();
   return (
-    <div className="flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2 rounded-full px-3 pointer-coarse:h-10 text-ui-14 transition-colors hover:bg-sidebar-accent">
+    <div className="flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2 rounded-full px-3 max-md:h-10 text-ui-14 transition-colors hover:bg-sidebar-accent">
       <label
         htmlFor={id}
         className="flex flex-1 cursor-pointer items-center gap-2 self-stretch"
@@ -1397,13 +1397,13 @@ function SectionHeader({
         divider && "mt-[calc(11px*var(--ui-space-scale,1))]",
       )}
     >
-      <div className="flex h-[calc(26px*var(--ui-space-scale,1))] items-center gap-1 pr-[calc(6px*var(--ui-space-scale,1))] pl-3 pointer-coarse:h-9">
+      <div className="flex h-[calc(26px*var(--ui-space-scale,1))] items-center gap-1 pr-[calc(6px*var(--ui-space-scale,1))] pl-3 max-md:h-9">
         <button
           type="button"
           tabIndex={-1}
           onClick={onToggle}
           aria-expanded={!collapsed}
-          className="flex min-w-0 items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground pointer-coarse:flex-1 pointer-coarse:self-stretch"
+          className="flex min-w-0 items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground max-md:flex-1 max-md:self-stretch"
         >
           {icon}
           <span className="truncate">{label}</span>
@@ -1421,7 +1421,7 @@ function SectionHeader({
             aria-label={`${collapsed ? "Expand" : "Collapse"} ${label}`}
             className={cn(
               trailing ? null : "ml-auto",
-              "grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-8",
+              "grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-8",
             )}
           >
             <HugeiconsIcon
@@ -1531,8 +1531,10 @@ export function ComposerModelPicker({
     (id: string, meta: ModelSelectorChangeMeta) => boolean
   >(() => false);
   // A small screen has no room to keep the panel up over the chat while the pick loads.
+  // Every phone-only change below keys off this, so wider windows keep the desktop picker.
+  const smallScreen = useIsMobile();
   const closeOnPick = useRef(false);
-  closeOnPick.current = useIsMobile();
+  closeOnPick.current = smallScreen;
   const source = useMemo(
     () =>
       rawSource
@@ -1612,8 +1614,8 @@ export function ComposerModelPicker({
   };
   const [expanded, setExpandedState] = useState(readExpanded);
   // Phones skip the collapsed view: its toggle jumped under the thumb, and the footer has its controls.
-  const touchPhone = useIsTouchPhone();
-  // From pointerdown, as WebKit reports a tap's click as "mouse". A tap must not raise the keyboard.
+  // From the trigger's pointerdown, as WebKit reports a tap's click as "mouse". A tap must not
+  // focus search, which raises the keyboard over the list.
   const touchPress = useRef(false);
   // undefined: not checked yet since mount.
   const residentKeyRef = useRef<string | null | undefined>(undefined);
@@ -2795,7 +2797,7 @@ export function ComposerModelPicker({
       reasoning.supportsPreserve ||
       reasoning.supportsFast
     );
-  const isExpanded = expanded || !chosenName || noThinking || touchPhone;
+  const isExpanded = expanded || !chosenName || noThinking || smallScreen;
   // Stored, so the next pick does not load into the collapsed view.
   useEffect(() => {
     if (noThinking && !expanded) {
@@ -3623,9 +3625,7 @@ export function ComposerModelPicker({
 
   const expand = () => {
     setExpanded(true);
-    if (!touchPress.current) {
-      requestAnimationFrame(() => searchRef.current?.focus());
-    }
+    requestAnimationFrame(() => searchRef.current?.focus());
   };
 
   const quantChoices =
@@ -3754,7 +3754,17 @@ export function ComposerModelPicker({
       ? `${loadedModels.length} models loaded`
       : null;
   const chipDetail =
-    [formatDetail, loadedDetail].filter(Boolean).join(" · ") || null;
+    [formatDetail, loadedDetail].filter(Boolean).join(" · ") || undefined;
+  const [chipTipOpen, setChipTipOpen] = useState(false);
+  // An icon-only chip on a small screen shows its own tooltip with the detail folded in (index.css).
+  const chipIconOnly = () => {
+    const label = triggerRef.current?.querySelector(".composer-model-chip-name");
+    return (
+      isMobileViewport() &&
+      label instanceof HTMLElement &&
+      getComputedStyle(label).display === "none"
+    );
+  };
   const ejectsAll = loadedModels.length > 1;
 
   const settingsMeta = async (
@@ -4230,7 +4240,7 @@ export function ComposerModelPicker({
               }
             }}
             className={cn(
-              "group/row flex h-[calc(32px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-2 rounded-full pr-[calc(6px*var(--ui-space-scale,1))] pl-3 text-ui-14 transition-colors pointer-coarse:h-10",
+              "group/row flex h-[calc(32px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-2 rounded-full pr-[calc(6px*var(--ui-space-scale,1))] pl-3 text-ui-14 transition-colors max-md:h-10",
               rowCurrent ? CURRENT_ROW_BG : rowActive && "bg-sidebar-accent",
             )}
           >
@@ -4606,7 +4616,7 @@ export function ComposerModelPicker({
     const starred = pinned.includes(key);
     const button = ACTION_ROUND;
     const reveal =
-      "opacity-0 transition-opacity group-hover/row:opacity-100 group-data-[current=true]/row:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100";
+      "opacity-0 transition-opacity group-hover/row:opacity-100 group-data-[current=true]/row:opacity-100 focus-visible:opacity-100 max-md:opacity-100";
     const quantConfigTarget = modelConfigTarget(
       row.id,
       ggufMeta(row, variant, onDisk, isGguf, hasVision),
@@ -4663,7 +4673,7 @@ export function ComposerModelPicker({
         ) : (
           <span
             aria-hidden={true}
-            className="w-[calc(20px*var(--ui-space-scale,1))] shrink-0 pointer-coarse:w-8"
+            className="w-[calc(20px*var(--ui-space-scale,1))] shrink-0 max-md:w-8"
           />
         )}
       </span>
@@ -4692,7 +4702,7 @@ export function ComposerModelPicker({
         key={variant.filename || variant.quant}
         data-current={loaded ? "true" : undefined}
         className={cn(
-          "group/row flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center rounded-full pr-[calc(6px*var(--ui-space-scale,1))] transition-colors hover:bg-sidebar-accent has-[[data-quant-option]:focus-visible]:bg-sidebar-accent pointer-coarse:h-9",
+          "group/row flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center rounded-full pr-[calc(6px*var(--ui-space-scale,1))] transition-colors hover:bg-sidebar-accent has-[[data-quant-option]:focus-visible]:bg-sidebar-accent max-md:h-9",
           loaded && CURRENT_ROW_BG,
         )}
       >
@@ -4994,7 +5004,7 @@ export function ComposerModelPicker({
           tabIndex={-1}
           onClick={() => jumpTo(target)}
           aria-label={JUMP_LABEL[target]}
-          className="grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-8"
+          className="grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-8"
         >
           {SECTION_ICON[target]}
         </button>
@@ -5031,7 +5041,7 @@ export function ComposerModelPicker({
                       .getState()
                       .openConnectionSettings(providerId);
                   }}
-                  className="grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-8"
+                  className="grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-8"
                 >
                   <HugeiconsIcon
                     icon={Settings01Icon}
@@ -5149,7 +5159,11 @@ export function ComposerModelPicker({
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       {chipDetail ? (
-        <Tooltip delayDuration={400}>
+        <Tooltip
+          delayDuration={400}
+          open={chipTipOpen}
+          onOpenChange={(next) => setChipTipOpen(next && !chipIconOnly())}
+        >
           <TooltipTrigger asChild={true}>
             <PopoverTrigger asChild={true}>
               <button
@@ -5164,6 +5178,7 @@ export function ComposerModelPicker({
                     "composer-model-chip-empty",
                 )}
                 data-pill-label={chipLabel}
+                data-pill-detail={chipDetail}
                 data-tour={pane ? undefined : "chat-model-selector"}
                 aria-label={`Model: ${chipLabel}${reasoningChip ? `, ${reasoningChip}` : ""}`}
               >
@@ -5343,17 +5358,11 @@ export function ComposerModelPicker({
         onOpenAutoFocus={(event) => {
           const byTouch = touchPress.current;
           touchPress.current = false;
-          if (isExpanded && !byTouch) {
+          if (isExpanded && !(byTouch && smallScreen)) {
             requestAnimationFrame(() => searchRef.current?.focus());
           } else {
             event.preventDefault();
           }
-        }}
-        onPointerDownCapture={(event) => {
-          touchPress.current = event.pointerType === "touch";
-        }}
-        onKeyDownCapture={() => {
-          touchPress.current = false;
         }}
         onEscapeKeyDown={(event) => {
           if (quantsOpen) {
@@ -5472,7 +5481,7 @@ export function ComposerModelPicker({
                       source?.eject();
                     }
                   }}
-                  className="ml-auto h-[calc(26px*var(--ui-space-scale,1))] pointer-coarse:h-8"
+                  className="ml-auto h-[calc(26px*var(--ui-space-scale,1))] max-md:h-8"
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -5482,14 +5491,14 @@ export function ComposerModelPicker({
                   {ejectsAll ? "Eject all" : "Eject"}
                 </Button>
               ) : null}
-              {chosenName && !noThinking && !touchPhone ? (
+              {chosenName && !noThinking && !smallScreen ? (
                 <Hint label="Collapse">
                   <button
                     type="button"
                     aria-label="Collapse the model list"
                     aria-expanded={true}
                     onClick={() => setExpanded(false)}
-                    className="grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-9"
+                    className="grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-9"
                   >
                     <HugeiconsIcon
                       icon={ChevronDownStandardIcon}
@@ -5541,7 +5550,7 @@ export function ComposerModelPicker({
                       ref={ref}
                       type="button"
                       aria-label={`Sort and filter: ${DEVICE_SORT_LABEL[deviceSort]} ${deviceSortDesc ? "descending" : "ascending"}, ${FORMAT_FILTER_LABEL[formatFilter]}`}
-                      className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent pointer-coarse:size-8"
+                      className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent max-md:size-8"
                     >
                       <HugeiconsIcon
                         icon={FilterMailIcon}
@@ -5624,7 +5633,7 @@ export function ComposerModelPicker({
                         .getState()
                         .openDialog("connections");
                     }}
-                    className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-8"
+                    className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-8"
                   >
                     <HugeiconsIcon
                       icon={CloudIcon}
@@ -5643,7 +5652,7 @@ export function ComposerModelPicker({
                       ref={ref}
                       type="button"
                       aria-label={`Filter: ${FORMAT_FILTER_LABEL[formatFilter]}${fitOnDeviceOnly ? ", only models that fit" : ""}`}
-                      className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent pointer-coarse:size-8"
+                      className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent max-md:size-8"
                     >
                       <HugeiconsIcon
                         icon={FilterMailIcon}
@@ -5705,7 +5714,7 @@ export function ComposerModelPicker({
                         .getState()
                         .openConnectionSettings(connectionId);
                     }}
-                    className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-8"
+                    className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-8"
                   >
                     <HugeiconsIcon
                       icon={CloudIcon}
@@ -5729,7 +5738,7 @@ export function ComposerModelPicker({
                         search: { tab: "downloaded" },
                       });
                     }}
-                    className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-8"
+                    className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-8"
                   >
                     <HugeiconsIcon
                       icon={DashboardCircleIcon}
@@ -5766,7 +5775,7 @@ export function ComposerModelPicker({
             <ListScrollbar target={listRef} />
           </>
         ) : (
-          <div className="group/collapsed flex h-[calc(32px*var(--ui-space-scale,1))] w-full shrink-0 items-center pointer-coarse:h-10">
+          <div className="group/collapsed flex h-[calc(32px*var(--ui-space-scale,1))] w-full shrink-0 items-center max-md:h-10">
             <button
               type="button"
               aria-expanded={false}
@@ -5793,7 +5802,7 @@ export function ComposerModelPicker({
                 size="xs"
                 aria-label={`Eject ${chosenName}`}
                 onClick={() => (chosen ? eject(chosen) : source?.eject())}
-                className="h-[calc(26px*var(--ui-space-scale,1))] pointer-coarse:h-8"
+                className="h-[calc(26px*var(--ui-space-scale,1))] max-md:h-8"
               >
                 <HugeiconsIcon
                   icon={RemoveCircleIcon}
@@ -5808,7 +5817,7 @@ export function ComposerModelPicker({
               tabIndex={-1}
               aria-hidden={true}
               onClick={expand}
-              className="ml-1 grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors group-hover/collapsed:text-foreground hover:bg-sidebar-accent pointer-coarse:size-9"
+              className="ml-1 grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors group-hover/collapsed:text-foreground hover:bg-sidebar-accent max-md:size-9"
             >
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
@@ -5832,7 +5841,7 @@ export function ComposerModelPicker({
                 <PopoverTrigger asChild={true}>
                   <button
                     type="button"
-                    className="flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2 rounded-full px-3 pointer-coarse:h-10 text-left text-ui-14 transition-colors hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent"
+                    className="flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2 rounded-full px-3 max-md:h-10 text-left text-ui-14 transition-colors hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent"
                   >
                     <span className="flex-1">Quantization</span>
                     <span className="max-w-[calc(120px*var(--ui-space-scale,1))] truncate text-muted-foreground">
@@ -5847,9 +5856,9 @@ export function ComposerModelPicker({
                 </PopoverTrigger>
                 <PopoverContent
                   // A phone has no room beside the full-width panel.
-                  side={touchPhone ? "top" : "right"}
-                  align={touchPhone ? "end" : "start"}
-                  sideOffset={touchPhone ? 4 : 12}
+                  side={smallScreen ? "top" : "right"}
+                  align={smallScreen ? "end" : "start"}
+                  sideOffset={smallScreen ? 4 : 12}
                   className="unsloth-plus-menu w-[calc(240px*var(--ui-space-scale,1))] gap-0.5 p-2"
                 >
                   {quantChoices.map((variant) => (
@@ -5857,7 +5866,7 @@ export function ComposerModelPicker({
                       key={variant.quant}
                       type="button"
                       onClick={() => pickQuant(variant)}
-                      className="flex h-[calc(28px*var(--ui-space-scale,1))] items-center pointer-coarse:h-10 gap-2 rounded-full px-3 text-left transition-colors hover:bg-sidebar-accent"
+                      className="flex h-[calc(28px*var(--ui-space-scale,1))] items-center max-md:h-10 gap-2 rounded-full px-3 text-left transition-colors hover:bg-sidebar-accent"
                     >
                       <span className="flex min-w-0 flex-1 items-center gap-1.5">
                         <span className="truncate font-mono text-xs">
