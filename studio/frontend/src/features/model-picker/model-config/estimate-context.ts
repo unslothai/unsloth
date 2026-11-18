@@ -15,6 +15,33 @@ export function resolveEstimateContext(
   return customContextLength ?? activeLoadedContext ?? 0;
 }
 
+/** The resident context a same-model reload keeps under Manual memory with fixed layers, or null:
+ *  performLoad pins it there because `--fit off` would otherwise launch at the native context.
+ *  An unset per-model mode is the standing preference, not Auto, as it is for the load. */
+export function fixedLayerContextPin({
+  isGguf,
+  gpuMemoryMode,
+  standingGpuMemoryMode,
+  gpuLayers,
+  customContextLength,
+  activeLoadedContext,
+}: {
+  isGguf: boolean;
+  gpuMemoryMode: "auto" | "manual" | null | undefined;
+  standingGpuMemoryMode: "auto" | "manual";
+  gpuLayers: number | null | undefined;
+  customContextLength: number | null | undefined;
+  activeLoadedContext: number | null;
+}): number | null {
+  const fixedLayers =
+    (gpuMemoryMode ?? standingGpuMemoryMode) === "manual" &&
+    gpuLayers != null &&
+    gpuLayers >= 0;
+  return isGguf && fixedLayers && customContextLength == null
+    ? activeLoadedContext
+    : null;
+}
+
 export function resolveMlxEstimateContext(contextPin: number | null): number {
   return contextPin && contextPin > 0 ? contextPin : 0;
 }

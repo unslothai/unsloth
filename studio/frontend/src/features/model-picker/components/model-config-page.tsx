@@ -131,6 +131,7 @@ import {
 import { type MemoryEstimate, type MlxOffloadablePart } from "../api/memory-estimate";
 import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
+  fixedLayerContextPin,
   resolveEstimateContext,
   resolveMlxEstimateContext,
   resolveMlxServedWindow,
@@ -3441,18 +3442,18 @@ export function ModelConfigPage({
       setExtraArgsLoadable(true);
     }
   }, [resolvedIsDiffusion]);
-  const pinFixedLayerContext =
-    target.isGguf &&
-    loadableConfig.gpuMemoryMode === "manual" &&
-    loadableConfig.gpuLayers != null &&
-    loadableConfig.gpuLayers >= 0 &&
-    loadableConfig.customContextLength == null &&
-    activeLoadedContext != null;
-  const runtimeConfig = target.isGguf
-    ? pinFixedLayerContext
-      ? { ...loadableConfig, customContextLength: activeLoadedContext }
-      : loadableConfig
-    : loadableConfig;
+  const fixedLayerPin = fixedLayerContextPin({
+    isGguf: target.isGguf === true,
+    gpuMemoryMode: loadableConfig.gpuMemoryMode,
+    standingGpuMemoryMode: gpuMemoryModeFallback,
+    gpuLayers: loadableConfig.gpuLayers,
+    customContextLength: loadableConfig.customContextLength,
+    activeLoadedContext,
+  });
+  const runtimeConfig =
+    fixedLayerPin != null
+      ? { ...loadableConfig, customContextLength: fixedLayerPin }
+      : loadableConfig;
   const runtimeGpuMemoryMode =
     runtimeConfig.gpuMemoryMode ?? gpuMemoryModeFallback;
   // Read the classification as a tri-state: an unclassified GGUF may be DiffusionGemma.
@@ -3875,16 +3876,17 @@ export function ModelConfigPage({
             reasoningBudgetMessage: "",
           };
     // Recompute from effectiveConfig: the same-click GPU Layers draft was not yet committed.
-    const effectivePinFixedLayerContext =
-      target.isGguf &&
-      effectiveConfig.gpuMemoryMode === "manual" &&
-      effectiveConfig.gpuLayers != null &&
-      effectiveConfig.gpuLayers >= 0 &&
-      effectiveConfig.customContextLength == null &&
-      activeLoadedContext != null;
+    const effectiveFixedLayerPin = fixedLayerContextPin({
+      isGguf: target.isGguf === true,
+      gpuMemoryMode: effectiveConfig.gpuMemoryMode,
+      standingGpuMemoryMode: gpuMemoryModeFallback,
+      gpuLayers: effectiveConfig.gpuLayers,
+      customContextLength: effectiveConfig.customContextLength,
+      activeLoadedContext,
+    });
     const effectiveRuntimeConfig = (hasPending || peerChanged)
-      ? effectivePinFixedLayerContext
-        ? { ...effectiveConfig, customContextLength: activeLoadedContext }
+      ? effectiveFixedLayerPin != null
+        ? { ...effectiveConfig, customContextLength: effectiveFixedLayerPin }
         : effectiveConfig
       : runtimeConfig;
     const effectiveMaxSeqLengthValue =
@@ -4049,7 +4051,7 @@ export function ModelConfigPage({
       return false;
     }
     keepSelection(target);
-    // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
+    // The page stays mounted, so show a context fixedLayerContextPin stored (else it reads "Auto").
     // Not on a forget: that stored nothing, and pinning here would change the next load.
     // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
     if (

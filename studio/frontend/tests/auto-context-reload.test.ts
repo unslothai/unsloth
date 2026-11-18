@@ -88,6 +88,50 @@ test("Manual with fixed layers still keeps the resident context on a same-model 
   assert.match(RUNTIME, /loadCustomContextLength = loadContextLength;/);
 });
 
+test("an inherited Manual mode with fixed layers prices the context Reload keeps", async () => {
+  const { fixedLayerContextPin, resolveEstimateContext } = await import(
+    "../src/features/model-picker/model-config/estimate-context.ts"
+  );
+  // The config page's estimate: the fixed-layer pin first, then the Auto GGUF rule.
+  const estimate = (
+    config: { gpuMemoryMode?: "auto" | "manual"; gpuLayers: number; customContextLength: number | null },
+    standingGpuMemoryMode: "auto" | "manual",
+    activeLoadedContext: number | null,
+  ) =>
+    resolveEstimateContext(
+      fixedLayerContextPin({
+        isGguf: true,
+        gpuMemoryMode: config.gpuMemoryMode,
+        standingGpuMemoryMode,
+        gpuLayers: config.gpuLayers,
+        customContextLength: config.customContextLength,
+        activeLoadedContext,
+      }) ?? config.customContextLength,
+      activeLoadedContext,
+      true,
+    );
+  const RESIDENT = 32768;
+  // 20 fixed layers, no per-model mode, Auto context: the standing Manual preference applies,
+  // performLoad keeps the resident 32,768, and the estimate must price the same number.
+  assert.equal(estimate({ gpuLayers: 20, customContextLength: null }, "manual", RESIDENT), RESIDENT);
+  assert.equal(estimate({ gpuMemoryMode: "manual", gpuLayers: 20, customContextLength: null }, "auto", RESIDENT), RESIDENT);
+  // A per-model Auto overrides a standing Manual, and Auto layers are fit by llama.cpp: both send 0.
+  assert.equal(estimate({ gpuMemoryMode: "auto", gpuLayers: 20, customContextLength: null }, "manual", RESIDENT), 0);
+  assert.equal(estimate({ gpuLayers: -1, customContextLength: null }, "manual", RESIDENT), 0);
+  // A typed context wins, and a model that is not resident has nothing to keep.
+  assert.equal(estimate({ gpuLayers: 20, customContextLength: 16384 }, "manual", RESIDENT), 16384);
+  assert.equal(estimate({ gpuLayers: 20, customContextLength: null }, "manual", null), 0);
+  // Both fixed-layer checks on the page take the standing preference, as the load does.
+  assert.equal(
+    CONFIG_PAGE.match(/standingGpuMemoryMode: gpuMemoryModeFallback,/g)?.length,
+    2,
+  );
+  assert.match(
+    RUNTIME,
+    /const loadGpuMemoryMode =\s*pendingLoadConfig\?\.gpuMemoryMode \?\? stateBeforeUnload\.gpuMemoryMode;/,
+  );
+});
+
 test("the memory estimate prices the fit for every Auto GGUF load", () => {
   assert.doesNotMatch(CONFIG_PAGE, /activePresetSource/);
   assert.match(
