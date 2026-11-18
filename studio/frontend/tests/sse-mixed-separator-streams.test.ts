@@ -7,9 +7,7 @@ import test from "node:test";
 import { skillLoadCardEvent } from "../src/features/chat/api/skill-load-event.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-// SSE frame separators can mix line endings: a blank line after \r\n field
-// lines is a three-byte boundary ("\r\n\n", or "\n\r\n" for \n fields before a
-// \r\n blank), not the two or four bytes the old drain loops assumed.
+// Mixed line endings make a three-byte frame boundary ("\r\n\n" / "\n\r\n"), not two or four.
 
 const openStreamResponse = loadWithStubs<
   typeof import("../src/lib/open-stream-response.ts")
