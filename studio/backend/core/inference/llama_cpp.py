@@ -16165,8 +16165,10 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]],
         user_args: Optional[Iterable[str]],
         gpu_count: int = 1,
+        unbacked_mib: float = 0.0,
     ) -> list[str]:
-        """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` over the launch's margin.
+        """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` (plus ``unbacked_mib``,
+        free the device reports with no memory behind it) over the launch's margin.
         Empty off Windows, with the fitter off, a user margin, a per-device list, or a second
         device, which the broadcast margin would starve."""
         args = [str(a) for a in argv or ()]
@@ -16201,27 +16203,81 @@ class LlamaCppBackend:
             return []
         have = _single_device_fit_margin(args, None)
         base = _LLAMA_FIT_TARGET_DEFAULT_MIB if have is None else have
-        return ["--fit-target", str(math.ceil(base + _IGPU_PAGED_FIT_HEADROOM_MIB))]
+        return [
+            "--fit-target",
+            str(math.ceil(base + _IGPU_PAGED_FIT_HEADROOM_MIB + max(0.0, unbacked_mib))),
+        ]
+
+    @staticmethod
+    def _rocm_apu_unbacked_free_mib(gpu_ids: Iterable[int]) -> int:
+        """MiB of a lone Windows ROCm APU's HIP free reading that RAM plus the BIOS carve-out
+        cannot back; 0 elsewhere or when unreadable.
+
+        The PAL total adds most of the WDDM shared heap on top of RAM (110 GiB on a 64 GB Strix
+        Halo, #18316), and llama.cpp's --fit takes its margin from that free reading, so the
+        margin has to cover the part no memory stands behind or the fitter fills it from RAM."""
+        ids = list(gpu_ids or ())
+        if sys.platform != "win32" or len(ids) != 1:
+            return 0
+        idx = ids[0]
+        if idx not in LlamaCppBackend._rocm_unified_memory_gpu_ids():
+            return 0
+        try:
+            import torch
+
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            if physical_ids is None:
+                ordinal = idx
+            elif idx in physical_ids:
+                ordinal = physical_ids.index(idx)
+            else:
+                return 0
+            # The child's own hipMemGetInfo, not trusted_mem_get_info: that caps by this
+            # process's allocator, which the child does not share.
+            free_bytes, _total = torch.cuda.mem_get_info(ordinal)
+        except Exception as e:  # noqa: BLE001 -- unreadable: leave the margin as it was
+            logger.debug("Could not read the APU's HIP free memory: %s", e)
+            return 0
+        avail = LlamaCppBackend._available_system_memory_mib()
+        if avail is None:
+            return 0
+        carve_out = LlamaCppBackend._igpu_dedicated_memory_bytes([idx], rocm_fallback = False) or 0
+        backed_mib = avail + int(carve_out) // (1024 * 1024)
+        unbacked = max(0, int(free_bytes) // (1024 * 1024) - backed_mib)
+        if unbacked:
+            logger.info(
+                f"ROCm device {idx} reports {int(free_bytes) // (1024 * 1024)}MiB free, but only "
+                f"{backed_mib}MiB of RAM and carve-out stand behind it; raising --fit-target by "
+                f"{unbacked}MiB so llama.cpp's fitter stays inside it"
+            )
+        return unbacked
 
     @staticmethod
     def _margins_with_paged_headroom(
         margins: Optional[Mapping[int, float]],
         headroom: Iterable[str],
         sign: int = 1,
+        unbacked_mib: float = 0.0,
     ) -> Optional[Mapping[int, float]]:
         """The spawn respells ``--fit-target`` per device from ``margins``, so they carry the headroom too."""
         if not margins or not list(headroom):
             return margins
-        return {i: m + sign * _IGPU_PAGED_FIT_HEADROOM_MIB for i, m in margins.items()}
+        lift = _IGPU_PAGED_FIT_HEADROOM_MIB + max(0.0, unbacked_mib)
+        return {i: m + sign * lift for i, m in margins.items()}
 
     @staticmethod
     def _withdraw_paged_headroom(
-        cmd: list[str], margins: Optional[Mapping[int, float]], headroom: list[str]
+        cmd: list[str],
+        margins: Optional[Mapping[int, float]],
+        headroom: list[str],
+        unbacked_mib: float = 0.0,
     ) -> tuple[list[str], Optional[Mapping[int, float]]]:
         """``cmd`` and ``margins`` without the iGPU paging headroom, for a respawn off the iGPU."""
         return (
             LlamaCppBackend._without_flag_pairs(cmd, headroom),
-            LlamaCppBackend._margins_with_paged_headroom(margins, headroom, sign = -1),
+            LlamaCppBackend._margins_with_paged_headroom(
+                margins, headroom, sign = -1, unbacked_mib = unbacked_mib
+            ),
         )
 
     def _page_an_oversized_unmapped_load(
@@ -24388,6 +24444,8 @@ class LlamaCppBackend:
             _fit_target_margins_by_idx: Optional[dict[int, float]] = None
             # --fit-target pair a paged iGPU launch appended, withdrawn if a retry leaves the iGPU.
             _paged_headroom: list = []
+            # Unbacked APU free that headroom also covers, withdrawn with it.
+            _paged_unbacked_mib = 0
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
             _fit_target_priced = False
@@ -31592,6 +31650,26 @@ class LlamaCppBackend:
                     integrated_gpu_ids = _vulkan_igpu_ids,
                 )
                 _paged_headroom = []
+                # Read only when the load pages: the probe asks torch for the HIP free reading.
+                _paged_unbacked_mib = 0
+
+                def _launch_fit_headroom(argv: list) -> list:
+                    nonlocal _paged_unbacked_mib
+                    if not is_vulkan_backend:
+                        _paged_unbacked_mib = self._rocm_apu_unbacked_free_mib(
+                            [row[0] for row in _reachable_gpus]
+                        )
+                    _paged_headroom.extend(
+                        self._paged_fit_headroom_flags(
+                            argv,
+                            env,
+                            extra_args,
+                            gpu_count = len(_reachable_gpus),
+                            unbacked_mib = _paged_unbacked_mib,
+                        )
+                    )
+                    return _paged_headroom
+
                 cmd, _pageable_note = self._page_an_oversized_unmapped_load(
                     cmd,
                     env,
@@ -31600,15 +31678,12 @@ class LlamaCppBackend:
                     lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
                         model_path, server_caps, argv, env
                     ),
-                    fit_headroom_flags = lambda argv: _paged_headroom.extend(
-                        self._paged_fit_headroom_flags(
-                            argv, env, extra_args, gpu_count = len(_reachable_gpus)
-                        )
-                    )
-                    or _paged_headroom,
+                    fit_headroom_flags = _launch_fit_headroom,
                 )
                 _fit_target_margins_by_idx = self._margins_with_paged_headroom(
-                    _fit_target_margins_by_idx, _paged_headroom
+                    _fit_target_margins_by_idx,
+                    _paged_headroom,
+                    unbacked_mib = _paged_unbacked_mib,
                 )
                 if _pageable_note:
                     # Record the argv that actually launches, and snapshot it too, since arch-crash retry restores it.
@@ -33221,10 +33296,21 @@ class LlamaCppBackend:
                         )
                         if _paged_headroom and not _retry_auto_unmapped:
                             cmd, _fit_target_margins_by_idx = self._withdraw_paged_headroom(
-                                cmd, _fit_target_margins_by_idx, _paged_headroom
+                                cmd,
+                                _fit_target_margins_by_idx,
+                                _paged_headroom,
+                                unbacked_mib = _paged_unbacked_mib,
                             )
                             _paged_headroom = []
+                            _paged_unbacked_mib = 0
                         _retry_headroom: list = []
+                        _retry_unbacked_mib = (
+                            0
+                            if is_vulkan_backend
+                            else self._rocm_apu_unbacked_free_mib(
+                                [row[0] for row in _retry_rows]
+                            )
+                        )
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
                             cmd,
                             env,
@@ -33235,13 +33321,19 @@ class LlamaCppBackend:
                             ),
                             fit_headroom_flags = lambda argv: _retry_headroom.extend(
                                 self._paged_fit_headroom_flags(
-                                    argv, env, extra_args, gpu_count = len(_retry_rows)
+                                    argv,
+                                    env,
+                                    extra_args,
+                                    gpu_count = len(_retry_rows),
+                                    unbacked_mib = _retry_unbacked_mib,
                                 )
                             )
                             or _retry_headroom,
                         )
                         _fit_target_margins_by_idx = self._margins_with_paged_headroom(
-                            _fit_target_margins_by_idx, _retry_headroom
+                            _fit_target_margins_by_idx,
+                            _retry_headroom,
+                            unbacked_mib = _retry_unbacked_mib,
                         )
                         if _retry_pageable_note:
                             # Onto whichever notice first-notice-wins kept above; a

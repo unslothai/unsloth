@@ -3039,6 +3039,104 @@ def test_a_retry_off_the_igpu_withdraws_the_paging_headroom():
     assert "auto_unmapped = _retry_auto_unmapped" in retry
 
 
+def _hip_apu(monkeypatch, *, free_mib, carve_mib = 512, unified = frozenset({0})):
+    """A Windows ROCm APU whose HIP free reading is ``free_mib`` (PAL adds the shared heap)."""
+    import types
+
+    torch = types.SimpleNamespace(
+        cuda = types.SimpleNamespace(
+            mem_get_info = lambda _ordinal = 0: (free_mib * 1024**2, (free_mib + 151) * 1024**2)
+        )
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set(unified))
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: None)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_igpu_dedicated_memory_bytes",
+        staticmethod(lambda *_a, **_kw: carve_mib * 1024**2),
+    )
+
+
+def test_the_unbacked_part_of_a_strix_halo_hip_reading(monkeypatch):
+    """#18316: 110079 MiB HIP free on a 64 GB machine with 54335 MiB available."""
+    _hip_apu(monkeypatch, free_mib = 110_079)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 54_335)
+    )
+    assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 110_079 - 54_335 - 512
+    # A reading RAM can back, a second device, a discrete card, or another OS: no lift.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 120_000)
+    )
+    assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 0
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 54_335)
+    )
+    assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0, 1]) == 0
+    assert LlamaCppBackend._rocm_apu_unbacked_free_mib([1]) == 0
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: None)
+    )
+    assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 0
+    monkeypatch.setattr(llama_cpp_module.sys, "platform", "linux")
+    assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 0
+
+
+def test_the_unbacked_lift_rides_on_the_paging_headroom(monkeypatch):
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    argv = ["--fit", "on"]
+    assert LlamaCppBackend._paged_fit_headroom_flags(argv, {}, [], unbacked_mib = 55_232) == [
+        "--fit-target",
+        str(16_384 + 55_232),
+    ]
+    # A user margin still wins outright.
+    assert (
+        LlamaCppBackend._paged_fit_headroom_flags(
+            [*argv, "--fit-target", "4096"], {}, ["--fit-target", "4096"], unbacked_mib = 55_232
+        )
+        == []
+    )
+    headroom = ["--fit-target", str(16_384 + 55_232)]
+    added = LlamaCppBackend._margins_with_paged_headroom({0: 1024.0}, headroom, unbacked_mib = 55_232)
+    assert added == {0: 1024.0 + 15_360 + 55_232}
+    cmd = ["-m", "x.gguf", *headroom]
+    out, margins = LlamaCppBackend._withdraw_paged_headroom(
+        cmd, added, headroom, unbacked_mib = 55_232
+    )
+    assert out == ["-m", "x.gguf"] and margins == {0: 1024.0}
+
+
+def test_a_paged_windows_rocm_apu_load_keeps_llama_cpps_fitter_inside_ram(tmp_path, monkeypatch):
+    """#18316: the child's fitter must be left only what RAM can back, not 110 GiB less 16 GiB."""
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
+    _hip_apu(monkeypatch, free_mib = 110_079)
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+    margin = int(_modes(cmd, "--fit-target")[-1])
+    assert margin == 16_384 + (110_079 - 17 * 1024 - 512), cmd
+    # What llama.cpp may fill: the RAM left after the paging headroom.
+    assert 110_079 - margin == 17 * 1024 + 512 - 16_384
+
+
+def test_a_paged_apu_load_ram_can_back_keeps_the_plain_headroom(tmp_path, monkeypatch):
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
+    _hip_apu(monkeypatch, free_mib = 16 * 1024)
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert _modes(cmd, "--fit-target")[-1:] == ["16384"], cmd
+
+
 def test_an_igpu_model_without_a_table_is_only_mapped(tmp_path, monkeypatch):
     backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024, table = 0)
 
