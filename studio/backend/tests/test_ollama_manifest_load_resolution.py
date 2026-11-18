@@ -1221,3 +1221,23 @@ def test_an_mlx_tag_builds_only_after_the_access_check():
         source = inspect.getsource(route)
         assert source.index("require_model_access") < source.index("_as_ollama_mlx_request")
     assert "_as_ollama_mlx_request" not in inspect.getsource(inference.load_model_gated)
+
+
+def test_an_unrelated_load_does_not_take_the_ollama_lease_pool(monkeypatch):
+    import asyncio
+    from contextlib import ExitStack
+
+    from models.inference import LoadRequest
+    from routes import inference
+
+    class Refusing:
+        def submit(self, *args, **kwargs):
+            raise AssertionError("an unrelated load queued on the Ollama lease pool")
+
+    monkeypatch.setattr(inference, "_OLLAMA_LEASE_EXECUTOR", Refusing())
+    for path in ("unsloth/Qwen3-0.6B", "/models/qwen/config-dir"):
+        with ExitStack() as stack:
+            lease = inference._lease_ollama_model_ref(
+                LoadRequest(model_path = path), operation = "load-model", stack = stack
+            )
+            assert asyncio.run(lease) is None

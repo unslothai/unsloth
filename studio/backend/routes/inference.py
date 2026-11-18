@@ -9230,7 +9230,12 @@ def _acquire_ollama_lease(model_path: str, native_path_lease):
 async def _lease_ollama_model_ref(
     request: LoadRequest | ValidateModelRequest, *, operation: str, stack: ExitStack
 ) -> Optional[str]:
-    if not isinstance(request.model_path, str):
+    path = request.model_path
+    # Only Ollama tags take the lease pool: an unrelated load must not queue behind a held lease.
+    if not isinstance(path, str) or not (
+        is_ollama_manifest_ref(path)
+        or any(part in (".studio_links", "ollama_links") for part in Path(path).parts)
+    ):
         return None
     loop = asyncio.get_running_loop()
     lease_future = loop.run_in_executor(
