@@ -1299,13 +1299,12 @@ __DTYPE_MAP = {
 }
 
 
-def _is_left_padded(attention_mask):
-    # Dropping the mask is exact only for right padding; in label-less forwards (custom losses,
-    # rerankers) left pads, whose embeddings are zeroed, send NaN gradients (issue 3705); the check
-    # syncs, so it reads column 0 only, where a left-padded row always starts with a pad.
+def _has_padding_before_tokens(attention_mask):
+    # Drop the mask only if no pad precedes a real token: else causal attention attends pads (#3705).
     if attention_mask.dim() != 2 or attention_mask.shape[-1] < 2:
         return False
-    return not bool(attention_mask[:, 0].all())
+    real = attention_mask != 0
+    return bool((real[:, 1:] & ~real[:, :-1]).any())
 
 
 class Gemma2AttentionMaskConverter(AttentionMaskConverter):
@@ -1478,7 +1477,7 @@ def LlamaModel_fast_forward(
     elif (
         self.training
         and not getattr(self, "_unsloth_keep_padding_mask", False)
-        and not (getattr(self, "_has_no_labels", False) and _is_left_padded(attention_mask))
+        and not _has_padding_before_tokens(attention_mask)
     ):
         attention_mask = None
         padding_mask = None
@@ -4843,6 +4842,11 @@ class FastLlamaModel:
         tokenizer,
         correct_dtype = None,
     ):
+        try:
+            from .tp_native import cast_host_read_tables
+            cast_host_read_tables(model, False, correct_dtype)
+        except Exception:
+            pass
         model, tokenizer = patch_model_and_tokenizer(
             model, tokenizer, downcast_rope = True, correct_dtype = correct_dtype
         )

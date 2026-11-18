@@ -156,6 +156,14 @@ def test_route_survives_copies():
         assert clone.incumbent is AttentionBackendName.NATIVE
 
 
+@pytest.mark.parametrize("mode", [1, 2])
+def test_route_copies_keep_the_sink_mode(mode):
+    route = _route(min_tokens = 2560, dtype = torch.float16, head_dim = 128)
+    route.sinks = mode
+    for clone in (copy.deepcopy(route), copy.copy(route), pickle.loads(pickle.dumps(route))):
+        assert clone.sinks == mode
+
+
 # ----------------------------------------------------------------------------------------------- which calls route
 
 
@@ -733,12 +741,72 @@ def test_triton_stand_in_races_even_by_name(monkeypatch):
     } == {3072}
 
 
-def test_rocm_auto_stays_off(monkeypatch):
+def _rocm_arch(monkeypatch, arch):
     from core.inference import rocm_bf16
-
-    seen = _fake_cuda(monkeypatch)
     monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: True)
-    assert D.install(_Pipe(_wan_dit()), _TARGET) == 0 and not seen
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a, **k: types.SimpleNamespace(gcnArchName = arch)
+    )
+
+
+def _rocm_table(
+    monkeypatch,
+    *dits,
+    platform = None,
+):
+    import sys
+    monkeypatch.setattr(
+        D, "ROCM_AUTO_DITS", {("gfx1151", platform or sys.platform): frozenset(dits)}
+    )
+
+
+def test_rocm_auto_races_a_listed_dit_on_its_arch_and_os(monkeypatch):
+    """Switch unset: a listed DiT races the Triton kernel (timed, never forced) and keeps the race's floor."""
+    pipe = _Pipe(
+        _wan_dit()
+    )  # built before the card is faked (diffusers' lazy imports probe Triton)
+    seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0}, impl = "triton")
+    monkeypatch.setattr(D, "MIN_TOKENS", 1024)
+    _rocm_arch(monkeypatch, "gfx1151:sramecc-:xnack-")
+    _rocm_table(monkeypatch, "WanTransformer3DModel")
+    assert D.install(pipe, _TARGET) == 4
+    assert seen and all(s["timed"] for s in seen)
+    assert {
+        m.processor._attention_backend.min_tokens for m in D.routable_modules(pipe.transformer)
+    } == {1024}
+
+
+def test_rocm_auto_stays_off_elsewhere(monkeypatch):
+    """Other arch / unreadable arch / other OS / unlisted DiT / lost race keep the incumbent; switch 1 still routes."""
+    pipes = [_Pipe(_wan_dit()) for _ in range(7)]
+    seen = _fake_cuda(monkeypatch, impl = "triton")
+    _rocm_table(monkeypatch, "WanTransformer3DModel")
+    for arch, pipe in zip(("gfx1100", "gfx942:sramecc+:xnack-", ""), pipes):
+        _rocm_arch(monkeypatch, arch)
+        assert D.install(pipe, _TARGET) == 0 and not seen, arch
+    _rocm_arch(monkeypatch, "gfx1151")
+    _rocm_table(monkeypatch, "QwenImage21Transformer2DModel")
+    assert D.install(pipes[3], _TARGET) == 0 and not seen
+    _rocm_table(monkeypatch, "WanTransformer3DModel", platform = "another-os")
+    assert D.install(pipes[4], _TARGET) == 0 and not seen
+    _rocm_table(monkeypatch, "WanTransformer3DModel")
+    _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": None}, impl = "triton")
+    _rocm_arch(monkeypatch, "gfx1151")
+    monkeypatch.setattr(D, "long_verdict", lambda *a, **k: None)
+    assert D.install(pipes[5], _TARGET) == 0
+    _rocm_arch(monkeypatch, "gfx1100")
+    monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
+    assert D.install(pipes[6], _TARGET) == 4
+
+
+def test_rocm_auto_table_is_the_measured_one():
+    """gfx1151 Linux (against flash attention): Qwen-Image-2.1 and Wan won end to end; FLUX.3 Klein lost and Z-Image
+    gained under 2%. gfx1151 Windows (against torch SDPA): Qwen-Image-2.1 won; FLUX.3 Klein, Z-Image and Wan gained
+    under 2%. The unset switch leaves the rest native."""
+    assert D.ROCM_AUTO_DITS == {
+        ("gfx1151", "linux"): {"QwenImage21Transformer2DModel", "WanTransformer3DModel"},
+        ("gfx1151", "win32"): {"QwenImage21Transformer2DModel"},
+    }
 
 
 def test_install_never_raises(monkeypatch):
@@ -1014,12 +1082,13 @@ def test_cuda_compiled_and_graphed_dispatch_call(monkeypatch):
 
 
 def test_auto_list_matches_the_measured_families():
-    """Qwen-Image-2.1, Wan 2.2, Z-Image-Turbo, FLUX.1, FLUX.2, HunyuanVideo-1.5 and FLUX.3 (strided processors) race
-    by default; LTX-2 (audio output) and Qwen-Image have a per-step error with the kernel above their shipped INT8
-    weight error, so they route only on request."""
+    """Qwen-Image-2.1, Wan 2.2, Z-Image-Turbo, MOSS-Image, FLUX.1, FLUX.2, HunyuanVideo-1.5 and FLUX.3 (strided
+    processors) race by default; LTX-2 (audio output) and Qwen-Image have a per-step error with the kernel above their
+    shipped INT8 weight error, so they route only on request."""
     assert D.AUTO_DITS == {
         "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
+        "MOSSImageTransformer",
         "FluxTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "QwenImage21Transformer2DModel",

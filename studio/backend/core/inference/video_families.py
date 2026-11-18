@@ -795,6 +795,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_multiple = 32,
         # 720P-only (upstream SUPPORTED_SIZES is exactly these two); first entry is the loader default.
         resolution_presets = ((1280, 704), (704, 1280)),
+        # The model card's --size 1280*704 and Diffusers example (height 704, width 1280).
+        ui_default_resolution = (1280, 704),
         # bf16-RESIDENT; transformer + VAE ship fp32 on disk, VAE stays fp32.
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
@@ -867,6 +869,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_multiple = 16,
         # 480p + 720p presets. A14B's VAE is 8x so multiple 16 renders 720 exactly (TI2V-5B's 16x VAE floors it to 704).
         resolution_presets = ((1280, 720), (832, 480), (480, 832), (720, 1280)),
+        # The model card's --size 1280*720 and Diffusers example (height 720, width 1280).
+        ui_default_resolution = (1280, 720),
         # bf16-RESIDENT: each expert ~28.6 GB bf16 (ships fp32), ~57.2 for both.
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
@@ -897,6 +901,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         frame_step = 4,
         resolution_multiple = 16,
         resolution_presets = ((832, 480), (480, 832)),
+        # The model card's --size 832*480 and Diffusers example (height 480, width 832).
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (2.8, 11.4, 0.5),
         vae_force_fp32 = True,
         # Finite in float16 like TI2V-5B (ComfyUI WAN21_T2V runs fp16): T4 keeps the DiT fp16, not the fp32 promotion.
@@ -926,6 +932,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         frame_step = 4,
         resolution_multiple = 16,
         resolution_presets = ((832, 480), (1280, 720), (480, 832), (720, 1280)),
+        # The Diffusers model card's example (height 480, width 832).
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (28.6, 11.4, 0.5),
         vae_force_fp32 = True,
         # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
@@ -973,7 +981,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         frame_step = 4,
         resolution_multiple = 16,
         # Every entry is a real bucket of the 480p tier (generate_crop_size_list(base_size=640)).
-        resolution_presets = ((832, 480), (480, 832), (640, 640)),
+        resolution_presets = ((832, 480), (480, 832), (640, 640), (848, 480)),
+        # The pipeline's own size when none is given: the 16:9 bucket of target_size 640.
+        ui_default_resolution = (848, 480),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
         # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
@@ -985,6 +995,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
+        # Near-tied inductor norm-reduction configs, benchmarked per process, rendered different clips for one seed.
+        filter_reduction_configs = True,
         # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
         offload_cuda_graph = True,
     ),
@@ -1017,6 +1029,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_multiple = 16,
         # 720p-class presets: landscape, vertical, square (all /16).
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
+        # The pipeline's own size when none is given: the 16:9 bucket of target_size 960.
+        ui_default_resolution = (1280, 720),
         bf16_components_gb = (16.6, 14.8, 2.4),
         # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
         # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
@@ -1027,6 +1041,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
+        # Same DiT as the 480p repack: one reduction config per kernel, not a per-process benchmark.
+        filter_reduction_configs = True,
     ),
     VideoFamily(
         name = "cosmos3-nano",
@@ -1060,6 +1076,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             *_COSMOS3_256P,
         ),
         duration_presets = (2.0, 5.0, 7.875),
+        # NVIDIA's default tier is 480p; without it a fresh Video page keeps its 768x512 fallback, an untrained size.
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (30.4, 0.0, 1.4),
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
@@ -1096,6 +1114,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             *_COSMOS3_256P,
         ),
         duration_presets = (3.0, 5.0, 6.0),
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (6.7, 0.0, 1.4),
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",

@@ -49,6 +49,14 @@
 	min-height: round(up, 1lh + 16px * var(--ui-space-scale, 1), 1px);
 }
 
+/* Padding keeps descenders unclipped. */
+@utility cap-centered {
+	@supports (text-box: trim-both cap alphabetic) {
+		text-box: trim-both cap alphabetic;
+		padding-block: 0.3em;
+	}
+}
+
 @utility size-control {
 	width: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
 	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
@@ -3414,7 +3422,7 @@ html[data-chat-font] .aui-root {
 		width: 100%;
 		height: var(
 			--composer-editor-height,
-			calc(40px * var(--ui-space-scale, 1))
+			calc(64px * var(--ui-space-scale, 1))
 		);
 		transition: height 280ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
@@ -3464,7 +3472,7 @@ html[data-chat-font] .aui-root {
 	/* --composer-fill-height: useExpandedComposerFill; the clamp is the first-frame fallback. */
 	[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
-			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
+			var(--composer-editor-height, calc(64px * var(--ui-space-scale, 1))),
 			var(--composer-fill-height, clamp(8rem, calc(80svh - 12rem), 42rem))
 		);
 		/* Instant: easing in read as the bottom edge creeping. */
@@ -3675,6 +3683,13 @@ html[data-chat-font] .aui-root {
 		padding-right: var(--composer-dock-inset-right, 1.25rem);
 	}
 
+	@media (max-height: 34rem) {
+		.aui-thread-welcome-center > .aui-thread-welcome-spacer:last-child {
+			flex-grow: 0 !important;
+			flex-basis: calc(1rem * var(--ui-space-scale, 1));
+		}
+	}
+
 	/* Pull back into the viewport's gutter, or the empty state is 40px narrower than the thread. */
 	:where(.aui-thread-root[data-thread-narrow]) .aui-thread-welcome-message {
 		padding-left: 0;
@@ -3874,6 +3889,14 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
+
+	/* On the panel, not :root, which would resolve --picker-zoom-out before the panel sets it. */
+	.composer-model-picker {
+		--composer-picker-w: clamp(calc(360px * var(--ui-space-scale, 1)), 30vw, calc(520px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
+		/* A --picker-floor default here (after Tailwind, same layer) would beat the upward utility. */
+		--composer-picker-min-h: min(calc(var(--picker-min-base, 420px) * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-floor, calc(100dvh - 16px)));
+		--composer-picker-max-h: max(var(--composer-picker-min-h), min(calc(540px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-room, var(--picker-floor, calc(100dvh - 16px)))));
+	}
 
 	.unsloth-plus-menu.composer-model-picker[data-slot] {
 		padding-top: calc(6px * var(--ui-space-scale, 1));
@@ -6871,6 +6894,13 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-size: 100% 100%, min(var(--thread-scrollbar-gutter, 10px), var(--classic-scrollbar-width, 0px)) 100%;
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
+}
+/* Glass: wash the unmasked thread root so the header strip matches the thread. */
+html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
+  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
+}
+html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) > .aui-thread-viewport {
+  background: transparent;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting {
   position: relative;

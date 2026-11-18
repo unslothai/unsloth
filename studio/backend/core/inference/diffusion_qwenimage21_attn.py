@@ -34,11 +34,17 @@ def enabled() -> bool:
 
 class StridedCudnn(str):
     """A processor's cuDNN pin whose plain calls run on the strided views. Equal to ``"_native_cudnn"`` for every
-    reader (and diffusers' dispatch, which the other calls still reach); ``cards`` holds the probed CUDA indices."""
+    reader (and diffusers' dispatch, which the other calls still reach); ``cards`` holds the probed CUDA indices,
+    ``dtype`` the probed dtype (other dtypes keep diffusers' call)."""
 
-    def __new__(cls, cards: Any = ()) -> "StridedCudnn":
+    def __new__(
+        cls,
+        cards: Any = (),
+        dtype: Any = None,
+    ) -> "StridedCudnn":
         obj = str.__new__(cls, _CUDNN)
         obj.cards = frozenset(int(c) for c in cards)
+        obj.dtype = dtype
         return obj
 
     @property
@@ -50,7 +56,7 @@ class StridedCudnn(str):
         return "_NATIVE_CUDNN"
 
     def __reduce__(self) -> tuple:
-        return (StridedCudnn, (tuple(sorted(self.cards)),))
+        return (StridedCudnn, (tuple(sorted(self.cards)), self.dtype))
 
 
 def _arg(
@@ -108,6 +114,8 @@ def plain_qkv(backend: StridedCudnn, args: tuple, kwargs: dict) -> Optional[tupl
     if q.shape[0] != k.shape[0] or q.shape[2] != k.shape[2] or q.shape[3] != k.shape[3]:
         return None
     if not (q.dtype == k.dtype == v.dtype) or q.dtype not in (torch.bfloat16, torch.float16):
+        return None
+    if backend.dtype is not None and q.dtype != backend.dtype:
         return None
     if q.device != k.device or q.device != v.device or not _on_card(q, backend):
         return None
@@ -270,7 +278,10 @@ def _install(pipe: Any, backend: Any, target: Any, logger: Any) -> int:
         cards = _cards(target, dit)
         for attn in _attention_modules(dit):
             proc = attn.processor
-            if isinstance(proc._attention_backend, StridedCudnn):
+            if (
+                isinstance(proc._attention_backend, StridedCudnn)
+                and proc._attention_backend.dtype == dtype
+            ):
                 swapped += 1
                 continue
             if _backend_value(getattr(proc, "_attention_backend", None)) != _CUDNN:
@@ -291,7 +302,7 @@ def _install(pipe: Any, backend: Any, target: Any, logger: Any) -> int:
                 return 0
             mark = marks.get(ok)
             if mark is None:
-                mark = marks[ok] = StridedCudnn(ok)
+                mark = marks[ok] = StridedCudnn(ok, dtype)
             proc._attention_backend = mark
             swapped += 1
     if swapped and logger is not None:

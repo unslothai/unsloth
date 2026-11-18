@@ -81,17 +81,57 @@ def test_resolve_tasks_missing_files(tmp_path):
             evalmod.resolve_tasks(str(tmp_path / missing), "q", "a", tmp_path)
 
 
+def _read_dataset_task(path):
+    # Read the generated YAML without importing its !function target.
+    return yaml.load(path.read_text(), Loader = yaml.BaseLoader)
+
+
 def test_dataset_task_yaml(tmp_path):
     data = tmp_path / "qa.jsonl"
     data.write_text('{"question": "1+1?", "answer": "2"}\n')
     names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tmp")
     assert names == ["qa"]
-    spec = yaml.safe_load(Path(includes[0], "qa.yaml").read_text())
+    spec = _read_dataset_task(Path(includes[0], "qa.yaml"))
     assert spec["dataset_path"] == "json"
     assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
     assert spec["doc_to_text"] == "{{question}}"
     assert spec["fewshot_split"] == "train"
     assert spec["metric_list"][0]["metric"] == "exact_match"
+
+
+@pytest.mark.parametrize(
+    "answer, predictions, scores",
+    [
+        ('["red", "blue"]', ('["red", "blue"]', "red"), (1.0, 0.0)),
+        ("red", ("red", "blue"), (1.0, 0.0)),
+        (2, ("2", "3"), (1.0, 0.0)),
+        (["red", "blue"], ("red", "green"), (1.0, 0.0)),
+    ],
+)
+def test_local_dataset_scores_literal_answers_and_formats_fewshot(
+    tmp_path, answer, predictions, scores
+):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "qa.jsonl"
+    other = ["green"] if isinstance(answer, list) else answer
+    rows = [{"question": "First?", "answer": answer}, {"question": "Second?", "answer": other}]
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    manager = tasks.TaskManager(include_defaults = False, include_path = includes)
+    task = manager.load_task_or_group(names)["qa"]
+    first, second = task.test_docs()
+
+    assert (
+        tuple(
+            task.process_results(first, [prediction])["exact_match"] for prediction in predictions
+        )
+        == scores
+    )
+
+    task.set_fewshot_seed(0)
+    display_answer = answer[0] if isinstance(answer, list) else str(answer)
+    assert task.fewshot_context(second, num_fewshot = 1) == f"First? {display_answer}\n\nSecond?"
 
 
 def test_dataset_task_stays_clear_of_names_requested_alongside(tmp_path):
@@ -120,7 +160,7 @@ def test_dataset_task_avoids_explicit_yaml_name(tmp_path, suffix, dataset_first)
     generated = (tmp_path / "tmp" / "generated").resolve()
     custom = (tmp_path / "tmp" / "custom").resolve()
     assert includes == list(map(str, [generated, custom] if dataset_first else [custom, generated]))
-    spec = yaml.safe_load((generated / "qa_2.yaml").read_text())
+    spec = _read_dataset_task(generated / "qa_2.yaml")
     assert spec["task"] == "qa_2"
     assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
     assert yaml.safe_load((custom / "qa.yaml").read_text())["task"] == "qa"
@@ -142,7 +182,7 @@ def test_dataset_task_avoids_explicit_group_name(tmp_path, dataset_first):
             [generated, tmp_path.resolve()] if dataset_first else [tmp_path.resolve(), generated],
         )
     )
-    spec = yaml.safe_load((generated / "suite_2.yaml").read_text())
+    spec = _read_dataset_task(generated / "suite_2.yaml")
     assert spec["task"] == "suite_2"
     assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
 
@@ -161,7 +201,7 @@ def test_dataset_tasks_avoid_explicit_yaml_numeric_suffixes(tmp_path, dataset_fi
         ["qa_3", "qa_4", "qa", "qa_2"] if dataset_first else ["qa", "qa_2", "qa_3", "qa_4"]
     )
     for name, path in zip(["qa_3", "qa_4"], data):
-        spec = yaml.safe_load((tmp_path / "tmp" / "generated" / f"{name}.yaml").read_text())
+        spec = _read_dataset_task(tmp_path / "tmp" / "generated" / f"{name}.yaml")
         assert spec["task"] == name
         assert spec["dataset_kwargs"] == {"data_files": str(path.resolve())}
 

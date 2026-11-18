@@ -254,6 +254,85 @@ def test_race_margin_keeps_todays_path_on_a_tie(monkeypatch):
     assert r["tile"] == 0
 
 
+def _burst_vs_sustained(monkeypatch, today_sustained = 100.0):
+    """Short interleaved timings say tile 0 wins by 20%; run back to back it is 25% slower (L4 at its power cap).
+    ``today_sustained``: today's path back to back (100 = the clock it ran at in the short timings)."""
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = None: (8, 9))
+    monkeypatch.setattr(cut, "probed_tiles", lambda i: (0, 1))
+    monkeypatch.setattr(cut, "has_kernel", lambda *a: True)
+    monkeypatch.setattr(cut, "eligible", lambda *a: True)
+    monkeypatch.setattr(torch.cuda, "device", lambda d: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(
+        cut, "time_us", lambda fns, **k: {n: {0: 80.0, 1: 95.0, "today": 100.0}[n] for n in fns}
+    )
+    sustained = []
+
+    def fake_sustained(fns, **k):
+        sustained.append(sorted(map(str, fns)))
+        return {n: {0: 125.0, 1: 110.0, "today": today_sustained}[n] for n in fns}
+
+    monkeypatch.setattr(cut, "time_sustained_us", fake_sustained)
+    w = torch.zeros(64, 64, dtype = torch.int8)
+    ws = torch.ones(64, dtype = torch.bfloat16)
+    return w, ws, sustained
+
+
+def test_the_huge_race_is_decided_on_sustained_timings(monkeypatch):
+    w, ws, sustained = _burst_vs_sustained(monkeypatch)
+    # small operands stand in for the race's: the decision logic is what is under test
+    monkeypatch.setattr(cut, "_HUGE_M", 64)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, 64)
+    assert r["tile"] is None and sustained == [["0", "1", "today"]]
+
+
+def test_smaller_races_and_the_kill_switch_keep_short_timings(monkeypatch):
+    w, ws, sustained = _burst_vs_sustained(monkeypatch)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, 64)
+    assert r["tile"] == 0 and not sustained  # below _HUGE_M
+    monkeypatch.setattr(cut, "_HUGE_M", 64)
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "0")
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, 64)
+    assert r["tile"] == 0 and not sustained
+
+
+def test_the_4096_row_race_is_decided_on_sustained_timings_when_the_clock_moves(monkeypatch):
+    """1024x1024 images run at about 4096 rows: on a card whose clock follows the load (today's own path 12% off its
+    short timing back to back), the race must not pick a tile whose short-burst win turns into a loss."""
+    w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 88.0)
+    monkeypatch.delenv(cut.SUSTAINED_ENV, raising = False)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, max(cut._RACE_M))
+    assert r["tile"] is None and sustained == [["0", "1", "today"]]
+    assert r["sustained"] is True and r["clock_drift"] == pytest.approx(-0.12)
+    assert r["short_us"]["0"] == 80.0
+
+
+def test_the_4096_row_race_keeps_short_timings_on_a_steady_clock(monkeypatch):
+    """A100: today's path runs back to back as fast as in the short timings, so the short ranking decides (the
+    sustained one dropped a tile that is faster in the denoiser)."""
+    w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 102.0)
+    monkeypatch.delenv(cut.SUSTAINED_ENV, raising = False)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, max(cut._RACE_M))
+    assert r["tile"] == 0 and r["sustained"] is False and sustained
+
+
+def test_the_huge_race_stays_sustained_on_a_steady_clock(monkeypatch):
+    w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 101.0)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, cut._RACE_M_HUGE)
+    assert r["tile"] is None and r["sustained"] is True
+
+
+def test_sustained_huge_restores_short_timings_below_the_huge_race(monkeypatch):
+    w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 88.0)
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "huge")
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, max(cut._RACE_M))
+    assert r["tile"] == 0 and not sustained
+    assert cut.sustained_for(cut._RACE_M_HUGE) and not cut.sustained_for(max(cut._RACE_M))
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "0")
+    assert not cut.sustained_for(cut._RACE_M_HUGE)
+    monkeypatch.delenv(cut.SUSTAINED_ENV)
+    assert cut.sustained_for(cut._LARGE_M) and not cut.sustained_for(min(cut._RACE_M))
+
+
 def _load_build():
     spec = importlib.util.spec_from_file_location("i8gemm_build", _BUILD)
     mod = importlib.util.module_from_spec(spec)
@@ -410,7 +489,12 @@ def test_a_later_load_plans_only_its_new_shapes(monkeypatch):
     a, b = _rec(64, 32), _rec(128, 64)
     key_a = g8._cut_key(64, 32, torch.float32, torch.bfloat16, False)
     key_b = g8._cut_key(128, 64, torch.float32, torch.bfloat16, False)
-    table = {"ck": {repr(key_a): {"512": 1, "4096": 1}, repr(key_b): {"512": 2, "4096": 2}}}
+    table = {
+        "ck": {
+            repr(key_a): {"512": 1, "4096": 1, "16384": 1},
+            repr(key_b): {"512": 2, "4096": 2, "16384": None},
+        }
+    }
     monkeypatch.setattr(g8, "cutlass_wanted", lambda cap: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (8, 0))
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
@@ -424,10 +508,131 @@ def test_a_later_load_plans_only_its_new_shapes(monkeypatch):
 
     assert set(g8._cutlass_plan(0, [a], True)) == {key_a}
     assert set(g8._cutlass_plan(0, [a, b], True)) == {key_a, key_b}
-    assert g8._CUT_PLAN[0][key_b] == {512: 2, 4096: 2} and not races
+    assert g8._CUT_PLAN[0][key_b] == {512: 2, 4096: 2, 16384: None} and not races
+
+
+def _huge_plan(monkeypatch, entry, rows):
+    a, w, xs, ws, b = _operands(rows, 64, 64, torch.bfloat16, torch.bfloat16, False)
+    key = g8._cut_key(64, 64, xs.dtype, ws.dtype, False)
+    g8._CUT_PLAN[None] = {key: dict(entry)}
+    g8._CUT_FAMILY[None] = 80
+    monkeypatch.setattr(cut, "eligible", lambda *a_: True)
+    calls = []
+
+    def fake_launch(a_, w_, xs_, ws_, b_, fam, tile, out):
+        calls.append((tile, a_.shape[0]))
+        return torch.zeros(a_.shape[0], w_.shape[0], dtype = out)
+
+    monkeypatch.setattr(cut, "launch", fake_launch)
+    return (a, w, xs, ws, b), calls
+
+
+def test_video_token_counts_take_the_huge_race_winner(monkeypatch):
+    # A100, H3 960x544x124 (19318 rows): the 4096-row winner (unswizzled) is 20-55% slower than today's path there
+    (a, w, xs, ws, b), calls = _huge_plan(monkeypatch, {512: None, 4096: 3, 16384: 5}, 9000)
+    g8._run(a, w, xs, ws, b)
+    g8._run(a[:1100], w, xs[:1100], ws, b)
+    assert calls == [(5, 9000), (3, 1100)]
+
+
+def test_a_lost_huge_race_keeps_todays_path_at_video_token_counts(monkeypatch):
+    (a, w, xs, ws, b), calls = _huge_plan(monkeypatch, {512: None, 4096: 3, 16384: None}, 9000)
+    y = g8._run(a, w, xs, ws, b)
+    assert not calls
+    assert torch.equal(y.view(torch.int16), g8.reference(a, w, xs, ws, b).view(torch.int16))
+    g8._run(a[:1100], w, xs[:1100], ws, b)
+    assert calls == [(3, 1100)]
+
+
+def test_huge_race_kill_switch_restores_the_4096_winner(monkeypatch):
+    monkeypatch.setenv(cut.HUGE_RACE_ENV, "0")
+    assert cut.race_points() == cut._RACE_M
+    (a, w, xs, ws, b), calls = _huge_plan(monkeypatch, {512: None, 4096: 3}, 9000)
+    g8._run(a, w, xs, ws, b)
+    assert calls == [(3, 9000)]
+
+
+def test_a_huge_only_win_still_routes_through_the_op():
+    key = g8._cut_key(64, 128, torch.bfloat16, torch.float32, True)
+    g8._CUT_PLAN[0] = {key: {512: None, 4096: None, 16384: 2}}
+    assert g8._cutlass_fused(0, 64, 128, torch.bfloat16, torch.float32, True)
+    g8._CUT_PLAN[0] = {key: {512: 1, 4096: None, 16384: None}}
+    assert not g8._cutlass_fused(0, 64, 128, torch.bfloat16, torch.float32, True)
+
+
+def _plan_env(monkeypatch, fits):
+    class _W:
+        def __init__(self, n, k):
+            self.qdata = torch.zeros(n, k, dtype = torch.int8)
+            self.scale = torch.ones(n, 1, dtype = torch.bfloat16)
+
+    rec = (torch.nn.Linear(32, 64, bias = False), ("v2", None, None, _W(64, 32)))
+    monkeypatch.setattr(g8, "cutlass_wanted", lambda cap: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (8, 0))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a_: None)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(cut, "probed_tiles", lambda index: (1, 2))
+    monkeypatch.setattr(g8, "_cut_cache_key", lambda index: "ck")
+    # a cache from before the huge race point re-races
+    key = g8._cut_key(64, 32, torch.float32, torch.bfloat16, False)
+    monkeypatch.setattr(g8, "_cut_cache_read", lambda: {"ck": {repr(key): {"512": 1, "4096": 1}}})
+    monkeypatch.setattr(g8, "_cut_cache_write", lambda t: None)
+    monkeypatch.setattr(g8, "_xs_dtype", lambda *a_: torch.float32)
+    monkeypatch.setattr(g8, "_huge_race_fits", lambda *a_: fits)
+    # the race operands stay on the CPU here (fake race below)
+    to = torch.Tensor.to
+    monkeypatch.setattr(
+        torch.Tensor,
+        "to",
+        lambda self, *a_, **k_: self
+        if a_ and isinstance(a_[0], torch.device)
+        else to(self, *a_, **k_),
+    )
+    raced = []
+
+    def fake_race(index, w, ws, bias, xs_dt, today, m, *a_, **k_):
+        raced.append(m)
+        return {"tile": {512: None, 4096: 1, 16384: 2}[m], "us": {}}
+
+    monkeypatch.setattr(cut, "race", fake_race)
+    return rec, key, raced
+
+
+def test_the_plan_races_video_token_counts(monkeypatch):
+    rec, key, raced = _plan_env(monkeypatch, True)
+    g8._cutlass_plan(0, [rec], True)
+    assert raced == [512, 4096, 16384]
+    assert g8._CUT_PLAN[0][key] == {512: None, 4096: 1, 16384: 2}
+
+
+def test_no_room_for_the_huge_race_keeps_todays_path_there(monkeypatch):
+    rec, key, raced = _plan_env(monkeypatch, False)
+    g8._cutlass_plan(0, [rec], True)
+    assert raced == [512, 4096]
+    assert g8._CUT_PLAN[0][key] == {512: None, 4096: 1, 16384: None}
 
 
 def test_the_kernel_sources_do_not_shadow_the_kernels_package():
     # CI and Studio put studio/ on sys.path, where a studio/kernels folder imports as the HF ``kernels`` package.
     studio = Path(__file__).resolve().parents[2]
     assert _BUILD.is_file() and not (studio / "kernels").exists()
+
+
+def test_race_cache_key_tracks_the_sustained_timing_mode(monkeypatch):
+    """A plan raced with sustained timing is not reused after it is switched off, and the other way round."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (8, 9))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda index: "NVIDIA L4")
+    monkeypatch.setattr(cut, "library_path", lambda: None)
+    monkeypatch.delenv(cut.SUSTAINED_ENV, raising = False)
+    default = g8._cut_cache_key(0)
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "0")
+    off = g8._cut_cache_key(0)
+    assert default and off and default != off
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "1")
+    assert g8._cut_cache_key(0) == default
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "huge")
+    huge = g8._cut_cache_key(0)
+    assert huge and huge not in (default, off)

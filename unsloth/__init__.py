@@ -2333,6 +2333,15 @@ from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
 _uninstall_metadata_cache(_metadata_cache_token)
 del _uninstall_metadata_cache, _metadata_cache_token
 
+# GPU backend only: the CPU backend (and MLX) never loads unsloth.kernels, and sets no compile cache tag.
+if not globals().get("_IS_CPU_BACKEND", True):
+    try:
+        from .kernels.triton_launch import sync_compile_cache_tag_to_workers as _sync_tag
+        _sync_tag()
+        del _sync_tag
+    except Exception:
+        pass
+
 from ._import_gc import restore_gc_threshold as _restore_gc_threshold
 
 _restore_gc_threshold()

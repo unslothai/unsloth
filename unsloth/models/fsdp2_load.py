@@ -125,7 +125,7 @@ def _materialize(model, name, kwargs, mesh, plan, device):
         else:
             rows = old.shape[0]
             start, stop = _chunk_rows(rows, world, rank)
-            local = reader.rows(key, start, stop).to(device = device, dtype = old.dtype)
+            local = reader.rows_to(key, start, stop, old.dtype, device)
             new = nn.Parameter(local.contiguous(), requires_grad = old.requires_grad)
             shape, packed = tuple(old.shape), False
         setattr(
