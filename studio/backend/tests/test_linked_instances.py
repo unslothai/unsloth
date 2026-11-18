@@ -848,3 +848,148 @@ def test_a_forwarded_non_json_reply_is_never_relayed_as_a_document(monkeypatch):
     assert response.media_type == "application/octet-stream"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["content-disposition"] == "attachment"
+
+
+@pytest.mark.parametrize(
+    "upstream_type, relayed, attachment",
+    [
+        ("image/png", "image/png", False),
+        ("image/svg+xml", "image/svg+xml", False),
+        ("text/html; charset=utf-8", "application/octet-stream", True),
+        ("application/xhtml+xml", "application/octet-stream", True),
+        ("text/javascript", "application/octet-stream", True),
+        ("", "application/octet-stream", True),
+    ],
+)
+def test_proxy_never_repeats_a_document_type_from_a_remote(
+    monkeypatch, upstream_type, relayed, attachment
+):
+    """A relayed body is served from this origin, so only media types survive the trip."""
+    instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
+    headers = {"content-disposition": "inline; filename=x.html"}
+    if upstream_type:
+        headers["content-type"] = upstream_type
+    _remote(
+        lambda r: httpx.Response(200, content = b"<script>x</script>", headers = headers), monkeypatch
+    )
+    response = asyncio.run(
+        linked_instances.proxy(
+            _proxy_request("GET"), instance, "api/inference/images/gallery/1/file"
+        )
+    )
+    assert response.media_type == relayed
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in response.headers["content-security-policy"]
+    assert response.headers.get("content-disposition") == (
+        "attachment" if attachment else "inline; filename=x.html"
+    )
+
+
+@pytest.mark.parametrize(
+    "method, path, ok",
+    [
+        ("GET", "api/hub/cached-gguf", True),
+        ("GET", "api/hub/gguf-variants", True),
+        ("GET", "api/models/diffusion-embeddings", True),
+        ("POST", "api/inference/images/generate", True),
+        ("POST", "api/hub/download", False),
+        ("POST", "api/inference/load", False),
+        ("GET", "api/system", False),
+        ("GET", "api/inference/images/gallery/abc/file", True),
+        ("DELETE", "api/hub/download", False),
+        ("GET", "api/auth/api-keys", False),
+        ("POST", "api/settings/anything", False),
+        ("GET", "api/inference/images/../../auth/api-keys", False),
+        ("POST", "api/train/start", False),
+    ],
+)
+def test_proxy_only_reaches_the_images_picker_and_image_routes(method, path, ok):
+    assert linked_instances.proxy_allowed(method, path) is ok
+
+
+def _proxy_request(
+    method: str,
+    query: bytes = b"",
+    body: bytes = b"",
+    headers: dict | None = None,
+) -> Request:
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    header_list = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    return Request(
+        {
+            "type": "http",
+            "method": method,
+            "path": "/p",
+            "query_string": query,
+            "headers": header_list,
+        },
+        receive,
+    )
+
+
+def test_proxy_sends_the_key_and_rewrites_gallery_urls(monkeypatch):
+    instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen.update(
+            url = str(request.url),
+            auth = request.headers.get("authorization"),
+            hop = request.headers.get(linked_instances.HOP_HEADER),
+            hf = request.headers.get("x-unsloth-hf-token"),
+            body = request.content,
+        )
+        return httpx.Response(
+            200,
+            json = {
+                "images": [
+                    {"id": "i1", "url": "/api/inference/images/gallery/i1/file", "prompt": "/api/x"}
+                ]
+            },
+        )
+
+    _remote(handler, monkeypatch)
+    request = _proxy_request(
+        "POST",
+        body = b'{"prompt": "a sloth"}',
+        headers = {"content-type": "application/json", "x-unsloth-hf-token": "hf_x", "cookie": "s=1"},
+    )
+    response = asyncio.run(
+        linked_instances.proxy(request, instance, "api/inference/images/generate")
+    )
+    assert seen["url"] == "https://remote.example/api/inference/images/generate"
+    assert seen["auth"] == f"Bearer {REMOTE_KEY}" and seen["hop"] == "1" and seen["hf"] == "hf_x"
+    assert seen["body"] == b'{"prompt": "a sloth"}'
+    image = json.loads(response.body)["images"][0]
+    assert (
+        image["url"]
+        == f"/api/linked-instances/{instance['id']}/proxy/api/inference/images/gallery/i1/file"
+    )
+    assert image["prompt"] == "/api/x"
+
+
+def test_proxy_keeps_the_query_and_streams_binary(monkeypatch):
+    instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, content = b"\x89PNG", headers = {"content-type": "image/png"})
+
+    _remote(handler, monkeypatch)
+    request = _proxy_request("GET", query = b"repo_id=unsloth%2Fa")
+    response = asyncio.run(linked_instances.proxy(request, instance, "api/hub/gguf-variants"))
+
+    async def body():
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    assert seen["url"] == "https://remote.example/api/hub/gguf-variants?repo_id=unsloth%2Fa"
+    assert response.media_type == "image/png" and asyncio.run(body()) == b"\x89PNG"

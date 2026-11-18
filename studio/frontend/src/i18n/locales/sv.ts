@@ -959,6 +959,14 @@ export const sv = {
       "Den här chatten visas inte i din historik och sparas inte. Den försvinner när du lämnar den.",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "Snäv passform",
     unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
     residentToRun: "för att köra",

@@ -686,7 +686,7 @@ const CAPABILITY_BADGES: {
 
 /** Capability glyphs worth drawing in this picker; null draws all. A media picker's own kind
  *  is not information. */
-const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
+export const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
   null,
 );
 
@@ -880,7 +880,7 @@ function checkpointFit(
 }
 
 /** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
-function VramBadge({
+export function VramBadge({
   status,
   /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
   revealOnHover = false,
@@ -971,7 +971,7 @@ function ResidentText({
   );
 }
 
-function SizeText({ value }: { value: string }) {
+export function SizeText({ value }: { value: string }) {
   const parts = SIZE_PARTS_RE.exec(value);
   if (!parts) {
     return <>{value}</>;

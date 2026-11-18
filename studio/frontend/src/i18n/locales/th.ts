@@ -957,6 +957,14 @@ export const th = {
       "แชทนี้จะไม่แสดงในประวัติและไม่ถูกบันทึก แชทจะหายไปเมื่อคุณออก",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "พอดีแบบเฉียดฉิว",
     unifiedTightFitHint: "อาจโหลดด้วยบริบทที่สั้นลงหรือทำงานช้าลงบน Mac เครื่องนี้",
     residentToRun: "สำหรับการรัน",

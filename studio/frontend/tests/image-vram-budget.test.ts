@@ -50,6 +50,8 @@ function setup() {
         ) => run(),
       },
       "@/lib/format-fastapi-error": {},
+      "@/lib/api-base": { isStudioUrl: () => true },
+      "@/features/model-picker/linked/linked-id": { linkedProxyPath: (_id: string, path: string) => path },
       "@/lib/multi-model-refusal": {
         parseLoadJson: (response: Response) => response.json(),
       },

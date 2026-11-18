@@ -906,6 +906,14 @@ export const ru = {
       "Этот чат не появится в истории и не сохраняется. Он исчезнет, когда вы уйдёте.",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "Впритык",
     unifiedTightFitHint: "На этом Mac может загрузиться с более коротким контекстом или работать медленнее.",
     residentToRun: "для запуска",

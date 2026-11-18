@@ -1010,6 +1010,14 @@ export const uk = {
       "Цей чат не з’явиться в історії й не зберігається. Він зникне, коли ви вийдете.",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "Впритул",
     unifiedTightFitHint:
       "Може завантажитися з коротшим контекстом або працювати повільніше на цьому Mac.",

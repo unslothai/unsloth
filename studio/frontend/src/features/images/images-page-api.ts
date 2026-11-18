@@ -3,14 +3,14 @@
 
 // Kept out of api.ts, which the eager chat chunk carries: only the Images page calls these.
 import { authFetch } from "@/features/auth";
-import { type DiffusionControlNetInfo, type GalleryImage, parseJson } from "./api";
+import { type DiffusionControlNetInfo, type GalleryImage, ip, parseJson } from "./api";
 
 export async function listDiffusionControlNets(
   family?: string,
 ): Promise<DiffusionControlNetInfo[]> {
   const qs = family ? `?family=${encodeURIComponent(family)}` : "";
   const data = await parseJson<{ controlnets: DiffusionControlNetInfo[] }>(
-    await authFetch(`/api/models/diffusion-controlnets${qs}`),
+    await authFetch(ip(`/api/models/diffusion-controlnets${qs}`)),
   );
   return data.controlnets ?? [];
 }
@@ -18,7 +18,7 @@ export async function listDiffusionControlNets(
 /** Move one image to just after `afterId` (null = front). The server also decides the pin. */
 export async function moveGalleryImage(id: string, afterId: string | null): Promise<GalleryImage> {
   return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/move`, {
+    await authFetch(ip(`/api/inference/images/gallery/${encodeURIComponent(id)}/move`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ after_id: afterId }),
@@ -31,7 +31,7 @@ export async function addGalleryImageToProject(
   projectId: string,
 ): Promise<{ path: string; already: boolean }> {
   return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/project`, {
+    await authFetch(ip(`/api/inference/images/gallery/${encodeURIComponent(id)}/project`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project_id: projectId }),

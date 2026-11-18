@@ -905,6 +905,14 @@ export const ko = {
     temporaryChatDescription: "이 채팅은 기록에 표시되지 않으며 저장되지 않습니다. 나가면 사라집니다.",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "빠듯함",
     unifiedTightFitHint: "이 Mac에서는 더 짧은 컨텍스트로 로드되거나 느리게 실행될 수 있습니다.",
     residentToRun: "실행에 필요",

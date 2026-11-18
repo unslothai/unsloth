@@ -4037,6 +4037,14 @@ export const it = {
       "Questa chat non comparirà nella cronologia e non viene salvata. Scompare quando esci.",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "Al limite",
     unifiedTightFitHint: "Su questo Mac potrebbe caricarsi con un contesto più breve o essere più lento.",
     residentToRun: "per l'esecuzione",

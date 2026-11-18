@@ -3,7 +3,7 @@
 
 // Kept out of api.ts, which the eager chat chunk carries: only the Images page lists embeddings.
 import { authFetch } from "@/features/auth";
-import { parseJson } from "./api";
+import { ip, parseJson } from "./api";
 
 // A textual-inversion embedding file (from GET /api/models/diffusion-embeddings); `trigger` is the file stem.
 export interface DiffusionEmbeddingInfo {
@@ -18,7 +18,7 @@ export async function listDiffusionEmbeddings(
   family: string,
 ): Promise<{ embeddings: DiffusionEmbeddingInfo[]; embeddings_dir?: string }> {
   const data = await parseJson<{ embeddings: DiffusionEmbeddingInfo[]; embeddings_dir?: string }>(
-    await authFetch(`/api/models/diffusion-embeddings?family=${encodeURIComponent(family)}`),
+    await authFetch(ip(`/api/models/diffusion-embeddings?family=${encodeURIComponent(family)}`)),
   );
   return { embeddings: data.embeddings ?? [], embeddings_dir: data.embeddings_dir };
 }

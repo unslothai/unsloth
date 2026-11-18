@@ -472,5 +472,9 @@ SKIPPED = {
     "routes.openai_codex_auth:POST:/{provider_id}/oauth/flows/{flow_id}/complete": (
         "completing a flow exchanges the pasted authorization code with auth.openai.com"
     ),
+    "routes.linked_instances:GET:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE_NETWORK,
+    "routes.linked_instances:POST:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE_NETWORK,
+    "routes.linked_instances:PATCH:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE_NETWORK,
+    "routes.linked_instances:DELETE:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE_NETWORK,
     "routes.linked_instances:POST:/{instance_id}/test": _LINKED_INSTANCE_NETWORK,
 }

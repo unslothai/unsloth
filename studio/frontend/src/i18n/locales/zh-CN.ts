@@ -905,6 +905,14 @@ export const zhCN = {
     temporaryChatDescription: "此聊天不会出现在你的历史记录中，也不会被保存。离开后即消失。",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "勉强可用",
     unifiedTightFitHint: "在这台 Mac 上可能以更短的上下文加载，或运行更慢。",
     residentToRun: "运行所需",

@@ -911,6 +911,14 @@ export const en = {
       "This chat won't appear in your history and isn't saved. It disappears when you leave.",
   },
   picker: {
+    linkedConsentTitle: "Run on {name}?",
+    linkedConsentBody:
+      "{name} is another machine. What this page sends is processed there, and the results come back here.",
+    linkedConsentTunnel:
+      "It is reached through a Cloudflare tunnel, so Cloudflare relays the traffic too.",
+    linkedConsentSends:
+      "Sent there: your prompts, attached files and images, and the model you pick.",
+    linkedConsentConfirm: "Use this machine",
     unifiedTightFit: "Tight fit",
     unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
     residentToRun: "to run",

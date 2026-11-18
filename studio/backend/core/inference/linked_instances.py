@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import re
 import socket
 import time
 from typing import Optional
@@ -20,7 +21,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.inference.api_monitor import api_monitor
 from loggers import get_logger
@@ -484,6 +485,105 @@ def relayed_media_type(upstream_type: str) -> str:
     """The content type we are willing to repeat from a remote, for a non-JSON body."""
     base = (upstream_type or "").split(";")[0].strip().lower()
     return base if base.startswith(_RELAYABLE_TYPES) else _OPAQUE_TYPE
+
+
+# What the Images picker and page may reach on a linked instance: its model lists and the image
+# routes. Anything else (settings, keys, training, chat loads) stays local.
+_PROXY_ROUTES = (
+    (re.compile(r"api/models/diffusion-(loras|controlnets|embeddings)"), {"GET"}),
+    (re.compile(r"api/hub/(cached-gguf|cached-models|gguf-variants)"), {"GET"}),
+    (re.compile(r"api/inference/images/[A-Za-z0-9_./-]+"), {"GET", "POST", "PATCH", "DELETE"}),
+)
+_PROXY_REQUEST_HEADERS = ("content-type", "accept", "x-unsloth-hf-token")
+
+
+_GALLERY_PREFIX = "/api/inference/images/"
+
+
+def proxy_allowed(method: str, path: str) -> bool:
+    return ".." not in path and any(
+        pattern.fullmatch(path) and method in methods for pattern, methods in _PROXY_ROUTES
+    )
+
+
+def _rewrite_urls(value: object, prefix: str) -> object:
+    """Point the remote's own image URLs back through this proxy."""
+    if isinstance(value, dict):
+        return {k: _rewrite_urls(v, prefix) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_rewrite_urls(v, prefix) for v in value]
+    if isinstance(value, str) and value.startswith(_GALLERY_PREFIX):
+        return prefix + value
+    return value
+
+
+async def proxy(request: Request, instance: dict, path: str) -> Response:
+    """Relay one allowlisted Unsloth Studio API call to ``instance`` with its key."""
+    try:
+        headers = await asyncio.to_thread(_auth_headers, instance)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code = 502, detail = str(exc)) from exc
+    for name in _PROXY_REQUEST_HEADERS:
+        if value := request.headers.get(name):
+            headers[name] = value
+    client = _client()
+    upstream_request = client.build_request(
+        request.method,
+        f"{instance['base_url']}/{path}",
+        params = request.query_params,
+        content = await request.body(),
+        headers = headers,
+        # Loads download first and generations run for minutes.
+        timeout = httpx.Timeout(3600.0, connect = 10.0),
+    )
+    try:
+        upstream = await client.send(upstream_request, stream = True)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code = 502,
+            detail = f"Linked instance '{instance['name']}' is unreachable ({type(exc).__name__}).",
+        ) from exc
+
+    media_type = upstream.headers.get("content-type", "application/json")
+    if media_type.startswith("application/json"):
+        try:
+            content = await upstream.aread()
+        finally:
+            await upstream.aclose()
+        try:
+            payload = json.loads(content)
+        except ValueError:
+            # It claimed JSON and wasn't: hand it back as an opaque download, never as a document.
+            return Response(
+                content,
+                status_code = upstream.status_code,
+                media_type = _OPAQUE_TYPE,
+                headers = {**_RELAY_SAFETY_HEADERS, "Content-Disposition": "attachment"},
+            )
+        prefix = f"/api/linked-instances/{instance['id']}/proxy"
+        return JSONResponse(_rewrite_urls(payload, prefix), status_code = upstream.status_code)
+
+    async def relay():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    relayed = relayed_media_type(media_type)
+    passthrough = {k: v for k, v in upstream.headers.items() if k.lower() == "cache-control"}
+    # The remote names the file, so the name is never trusted to pick a handler: an opaque body
+    # downloads rather than opening, and a relayed image keeps its own disposition.
+    if relayed == _OPAQUE_TYPE:
+        passthrough["Content-Disposition"] = "attachment"
+    elif value := upstream.headers.get("content-disposition"):
+        passthrough["Content-Disposition"] = value
+    return StreamingResponse(
+        relay(),
+        status_code = upstream.status_code,
+        media_type = relayed,
+        headers = {**passthrough, **_RELAY_SAFETY_HEADERS},
+    )
 
 
 # Read-only endpoints an Unsloth Studio serves to an API key; a release without one just omits it.
