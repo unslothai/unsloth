@@ -91,7 +91,6 @@ class SSEDecoder:
     def flush(self) -> list[str]:
         values = [data for line in self._lines.flush() if (data := self._line(line)) is not None]
         if self._data:
-            # A truncated stream still yields its last event; the caller's parse decides.
             if tail := "\n".join(self._data):
                 values.append(tail)
             self._data = []

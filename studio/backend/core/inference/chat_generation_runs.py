@@ -775,7 +775,6 @@ class ChatGenerationSupervisor:
                     next_raw_task = None
                     raw = None
                 if raw is None:
-                    # A stream truncated mid-event still gets its last event before the run is judged.
                     events = decoder.flush()
                 else:
                     next_raw_task = asyncio.create_task(iterator.__anext__())

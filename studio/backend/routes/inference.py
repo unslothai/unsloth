@@ -42559,7 +42559,7 @@ async def _responses_in_process_stream(
 
 
 async def _sse_data_lines(chunks):
-    # Forwards every reframed line (data, comments, blanks); this wrapper owns closing chunks.
+    # This wrapper owns closing chunks; iter_sse_lines does not.
     lines = iter_sse_lines(chunks)
     try:
         async for line in lines:
