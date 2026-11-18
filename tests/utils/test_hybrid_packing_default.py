@@ -560,6 +560,7 @@ def test_default_on_is_cuda_only(monkeypatch, caplog):
 def test_opt_in_records_the_device_outside_the_default_on_set(monkeypatch):
     monkeypatch.undo()  # the real device check
     monkeypatch.setenv(ENV, "1")
+    monkeypatch.setattr(torch.version, "hip", None)
     cpu_model = FakeHybrid(FakeGatedDeltaNet())
     assert patch_hybrid_linear_attention_varlen(cpu_model) is True
     assert packing_module.hybrid_packing_opt_in_device(cpu_model) == "cpu"
