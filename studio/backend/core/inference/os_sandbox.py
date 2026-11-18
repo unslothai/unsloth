@@ -814,7 +814,8 @@ def _holds_a_nested_credential(folder: str) -> bool:
         return cached[1]
     verdict = any(
         name.casefold() in names
-        or _references_sensitive_path(path)
+        # Separator-unified: the gate's patterns spell `.config/gh` with `/` inside.
+        or _references_sensitive_path(path.replace("\\", "/"))
         # What the gate still asks for under a silent root, spelled as the gate folds it (`Auth/` on Windows).
         or _credential_under_silent_root(_normalized_fs_text(path))
         # A link or junction out of the folder reads its target unchecked.

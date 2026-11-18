@@ -583,3 +583,19 @@ def test_a_mixed_case_auth_folder_is_not_granted(folder):
     path.parent.mkdir()
     path.write_text("x")
     assert os_sandbox.trusted_tool_folder_roots() == ()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "backslash entry paths")
+def test_a_github_token_under_windows_separators_is_not_granted(folder):
+    path = folder / ".config" / "gh" / "hosts.yml"
+    path.parent.mkdir(parents = True)
+    path.write_text("oauth_token: x")
+    assert os_sandbox.trusted_tool_folder_roots() == ()
+
+
+def test_the_scan_reads_windows_separators_as_the_gate_does(folder, monkeypatch):
+    # Entry paths as Windows spells them; the gate's `.config/gh` pattern needs `/` inside.
+    rows = ((str(folder) + "\\.config\\gh\\hosts.yml", "hosts.yml", None, 1),)
+    monkeypatch.setattr(os_sandbox, "_tree_fingerprint", lambda _folder: rows)
+    os_sandbox._nested_credential_verdicts.clear()
+    assert os_sandbox._holds_a_nested_credential(str(folder)) is True
