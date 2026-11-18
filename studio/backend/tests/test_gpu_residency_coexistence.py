@@ -773,8 +773,7 @@ if __name__ == "__main__":
 
 
 def test_single_file_image_need_reads_fp8_from_the_header(tmp_path, monkeypatch):
-    """The residency estimate prices a single file like the load planner: a plain fp8 file named without 'fp8'
-    widens ~2x, a bf16 file named 'fp8' does not."""
+    """Residency reads fp8 from the header, not the name: bf16 named 'fp8' does not widen."""
     import types
 
     import torch

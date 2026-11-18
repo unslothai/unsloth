@@ -21,6 +21,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -38,12 +41,19 @@ import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutati
 import {
   type McpServerConfig,
   createMcpServer,
+  listMcpBuiltins,
   listMcpServers,
   updateMcpServer,
 } from "./api/mcp-servers-api";
 import { BlenderMcpSetup } from "./blender-mcp-setup";
+import { EDITOR_MCP } from "./editor-mcp-catalog";
+import { EditorMcpSetup } from "./editor-mcp-setup";
+import type { EditorMcpId } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
-import { normalizeMcpUrl } from "./mcp-server-url";
+import {
+  UNSLOTH_STUDIO_TOOLS_MCP_URL,
+  normalizeMcpUrl,
+} from "./mcp-server-url";
 import { useChatActive } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
@@ -57,8 +67,14 @@ type McpPreset = {
   disablesWebSearch?: boolean;
 };
 
-// Keyless remote MCP presets (rate-limited free tiers).
+// Unsloth's own tools, then keyless remote presets (rate-limited free tiers). Hugging Face
+// runs anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
+  {
+    id: "unsloth-studio",
+    displayName: "Unsloth",
+    url: UNSLOTH_STUDIO_TOOLS_MCP_URL,
+  },
   {
     id: "unsloth-docs",
     displayName: "Unsloth Docs",
@@ -98,6 +114,11 @@ export function McpComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [blenderOpen, setBlenderOpen] = useState(false);
   const [blenderBusy, setBlenderBusy] = useState(false);
+  const [editorOpen, setEditorOpen] = useState<EditorMcpId | null>(null);
+  // Labels keep the last editor while the dialog fades out after editorOpen is cleared.
+  const [editorShown, setEditorShown] = useState<EditorMcpId>("unity");
+  const [notInstalled, setNotInstalled] = useState<ReadonlySet<string>>(() => new Set());
+  const [editorBusy, setEditorBusy] = useState(false);
   const [serversLoaded, setServersLoaded] = useState(false);
   const [pendingUrls, setPendingUrls] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -129,6 +150,13 @@ export function McpComposerButton({
             return;
           setDecisionsUrl(null);
         },
+      );
+      listMcpBuiltins(false).then(
+        (items) => {
+          if (listRefreshGenerationRef.current !== generation) return;
+          setNotInstalled(new Set(items.filter((item) => item.installed === false).map((item) => item.builtin_id)));
+        },
+        () => undefined,
       );
       try {
         const rows = await listMcpServers({
@@ -213,6 +241,7 @@ export function McpComposerButton({
     (s) =>
       !s.builtin_id &&
       normalizeMcpUrl(s.url) !== "studio:decisions" &&
+      normalizeMcpUrl(s.url) !== "studio:tools" &&
       !presets.some((p) => normalizeMcpUrl(p.url) === normalizeMcpUrl(s.url)),
   );
   const blenderEnabled = servers.some(
@@ -224,6 +253,28 @@ export function McpComposerButton({
       (decisionsUrl !== null || normalizeMcpUrl(s.url) !== "studio:decisions"),
   ).length;
   const active = usable && mcpEnabledForChat && enabledCount > 0;
+
+  function renderEditorRow(id: EditorMcpId) {
+    const enabled = servers.some((server) => server.builtin_id === id && server.is_enabled);
+    return (
+      <DropdownMenuItem
+        key={id}
+        onSelect={() => {
+          setMenuOpen(false);
+          setEditorShown(id);
+          setEditorOpen(id);
+        }}
+        className={enabled ? "relative text-primary font-medium" : "relative"}
+      >
+        <span className="truncate">{EDITOR_MCP[id].name}</span>
+        {enabled ? (
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+        ) : notInstalled.has(id) ? (
+          <span className="ml-auto text-xs text-muted-foreground">Not installed</span>
+        ) : null}
+      </DropdownMenuItem>
+    );
+  }
 
   async function toggleServer(args: {
     url: string;
@@ -406,8 +457,21 @@ export function McpComposerButton({
             <span className="truncate">Blender</span>
             {blenderEnabled ? (
               <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+            ) : notInstalled.has("blender") ? (
+              <span className="ml-auto text-xs text-muted-foreground">Not installed</span>
             ) : null}
           </DropdownMenuItem>
+          {(Object.keys(EDITOR_MCP) as EditorMcpId[])
+            .filter((id) => !EDITOR_MCP[id].more)
+            .map(renderEditorRow)}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>More</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="unsloth-plus-menu mcp-menu">
+              {(Object.keys(EDITOR_MCP) as EditorMcpId[])
+                .filter((id) => EDITOR_MCP[id].more)
+                .map(renderEditorRow)}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
           {customServers.length > 0 ? <DropdownMenuSeparator /> : null}
           {customServers.map((server) =>
             renderRow({
@@ -452,6 +516,33 @@ export function McpComposerButton({
               servers={servers}
               disabled={false}
               onBusyChange={setBlenderBusy}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={editorOpen !== null}
+        onOpenChange={(open) => {
+          if (!open && editorBusy) return;
+          if (!open) setEditorOpen(null);
+        }}
+      >
+        <DialogContent
+          className="max-w-lg max-h-[85dvh] overflow-y-auto"
+          showCloseButton={!editorBusy}
+        >
+          <DialogHeader>
+            <DialogTitle>{EDITOR_MCP[editorShown].name} MCP</DialogTitle>
+            <DialogDescription>
+              Let the model control {EDITOR_MCP[editorShown].name} through MCP.
+            </DialogDescription>
+          </DialogHeader>
+          {editorOpen && (
+            <EditorMcpSetup
+              key={editorOpen}
+              editorId={editorOpen}
+              servers={servers}
+              onBusyChange={setEditorBusy}
             />
           )}
         </DialogContent>

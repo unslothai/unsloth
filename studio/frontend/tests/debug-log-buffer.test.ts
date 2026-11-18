@@ -9,10 +9,12 @@ import {
   EMPTY_BUFFER,
   MAX_CLIENT_LINES,
   applyLogChunk,
+  clearSelectionInside,
   isPageStale,
   nextDroppedState,
   parseRefreshMode,
   pollDelayMs,
+  selectionInside,
   trimBuffer,
   isRequestTimeout,
   withRequestTimeout,
@@ -115,7 +117,6 @@ test("appending past the cap still keeps the tail", () => {
   assert.ok(!state.lines.includes("first"));
 });
 
-// authFetch adds no timeout, so every awaited request needs the backstop.
 function neverAnswers(signal: AbortSignal): Promise<never> {
   return new Promise((_resolve, reject) => {
     const fail = () => {
@@ -164,7 +165,6 @@ test("the source rescan cannot freeze the poll loop behind it", async () => {
     try {
       await withRequestTimeout(neverAnswers, 20);
     } catch {
-      // What refreshSources does: a failed list just leaves the picker be.
     }
   };
   const poll = async () => {
@@ -275,7 +275,6 @@ test("the skipped-lines warning outlives the poll that raised it", () => {
 });
 
 test("the deadline fires even when the work ignores the abort", async () => {
-  // authFetch awaits refreshSession() without a signal, so only racing the deadline unblocks it.
   const deaf = () => new Promise<never>(() => {});
   const started = Date.now();
   await assert.rejects(
@@ -293,4 +292,46 @@ test("a caller abort still reads as one when the work ignores it too", async () 
     () => withRequestTimeout(deaf, 20, controller.signal),
     (error: Error) => isAbort(error) && !isRequestTimeout(error),
   );
+});
+
+test("a selection holds the pane only when it is non-empty and touches the pane", () => {
+  const inside = { name: "pane text" };
+  const outside = { name: "sidebar" };
+  const pane = { contains: (node: unknown) => node === inside };
+  const select = (anchorNode: unknown, focusNode: unknown, isCollapsed = false) => ({
+    isCollapsed,
+    anchorNode,
+    focusNode,
+  });
+
+  assert.equal(selectionInside(select(inside, inside), pane), true);
+  assert.equal(selectionInside(select(outside, inside), pane), true);
+  assert.equal(selectionInside(select(inside, outside), pane), true);
+  assert.equal(selectionInside(select(inside, inside, true), pane), false);
+  assert.equal(selectionInside(select(outside, outside), pane), false);
+  assert.equal(selectionInside(null, pane), false);
+  assert.equal(selectionInside(select(inside, inside), null), false);
+});
+
+test("only a selection in the pane is cleared", () => {
+  const pane = { contains: (node: unknown) => node === "pane" };
+  const clearedFor = (anchorNode: string, focusNode: string) => {
+    let cleared = false;
+    clearSelectionInside(
+      {
+        isCollapsed: false,
+        anchorNode,
+        focusNode,
+        removeAllRanges: () => {
+          cleared = true;
+        },
+      },
+      pane,
+    );
+    return cleared;
+  };
+
+  assert.equal(clearedFor("pane", "pane"), true);
+  assert.equal(clearedFor("sidebar", "pane"), true);
+  assert.equal(clearedFor("sidebar", "sidebar"), false);
 });

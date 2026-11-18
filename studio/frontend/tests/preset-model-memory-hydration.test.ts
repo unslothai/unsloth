@@ -52,6 +52,7 @@ test("a model resident before hydration restores a custom preset as a preset loa
       response: { inference: { temperature: 1, top_p: 0.9, top_k: 64 }, is_gguf: true, context_length: 8192 },
       modelId: QWEN,
       presetSource: store.activePresetSource,
+      presetEditedKeys: store.presetEditedKeys,
       loadedContextLength: 8192,
     }),
     { fromModelDefaults: true, maxTokensCap: 8192 },

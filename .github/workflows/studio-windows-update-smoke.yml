@@ -65,9 +65,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # cancel-in-progress is PR-only: on main a running run is never killed and a newer push replaces
+  # only the pending one, so a merge burst runs the executing commit plus the tip.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -91,12 +90,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # This workflow triggers on uninstall.ps1; neither test really uninstalls.
-      #
-      # These three unit-test steps run in the background: they read only the
-      # checkout, and together take about 20 s that now overlaps the node/python
-      # setup and the ~90 s uv cache restore. The wait step right before Install
-      # Unsloth collects them, so a failure still stops the job before the install.
+      # The workflow triggers on uninstall.ps1 but neither test uninstalls; the three unit-test
+      # steps run in the background since they only read the checkout, and the wait step before
+      # Install Unsloth collects them, so a failure still stops the job before install.
       - name: uninstall.ps1 unit tests (argument guard, dual-install icon preserve)
         id: ps-uninstall-units
         background: true

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 import type { DrafterCapability } from "../src/features/training/types/api.ts";
 import type { TrainingConfigState } from "../src/features/training/types/config.ts";
@@ -130,6 +130,59 @@ test("settings the request cannot carry leave the payload exactly as without the
     null,
   );
   assert.equal(Object.hasOwn(text, "drafter"), true);
+});
+
+// The drafter section is hidden on the CPU backend, so a drafter ticked in a saved config or an
+// imported YAML must not reach a start the backend refuses with nothing left to untick it.
+test("a saved or imported drafter is not sent on the CPU backend", () => {
+  const cpu = { device_backend: "cpu" } as never;
+  const saved = migrateTrainingConfig(
+    partializeTrainingConfig(
+      config({ ...ON, drafterCapability: capability() }) as never,
+    ),
+    TRAINING_CONFIG_PERSISTENCE_VERSION,
+  ) as unknown as TrainingConfigState;
+  const imported = drafterStateFrom(
+    parseYamlConfig(serializeConfigToYaml(config({ ...ON }), false)).training
+      ?.drafter,
+  );
+  for (const restored of [config(saved), config({ ...imported })]) {
+    assert.equal(restored.drafterEnabled, true);
+    const payload = buildTrainingStartPayload(restored, null, cpu);
+    assert.equal(Object.hasOwn(payload, "drafter"), false);
+    // The same state still carries it where the backend trains drafters.
+    const cuda = buildTrainingStartPayload(restored, null, {
+      device_backend: "cuda",
+    } as never);
+    assert.equal(Object.hasOwn(cuda, "drafter"), true);
+  }
+});
+
+// /api/system can still be pending or have failed at Start; the health verdict that hides the
+// drafter section has settled by then, so it alone must keep the drafter out of the request.
+test("the CPU verdict drops a saved drafter without system info, and only there", () => {
+  const saved = config({ ...ON, drafterCapability: capability() });
+  const cpu = buildTrainingStartPayload(saved, null, null, true);
+  assert.equal(Object.hasOwn(cpu, "drafter"), false);
+  const gpu = buildTrainingStartPayload(saved, null, null, false);
+  assert.equal(Object.hasOwn(gpu, "drafter"), true);
+  assert.equal(gpu.drafter?.enabled, true);
+});
+
+test("Start and the API example pass the CPU verdict the drafter section reads", () => {
+  const start = readSrc("features/training/lib/start-fresh-training-run.ts");
+  assert.match(
+    start,
+    /buildTrainingStartPayload\(\s*attempt\.config,\s*hfToken,\s*getCachedSystemInfo\(\),\s*usePlatformStore\.getState\(\)\.isCpuTrainingHost\(\),\s*\)/,
+  );
+  assert.match(
+    readSrc("features/studio/training-api-button.tsx"),
+    /usePlatformStore\.getState\(\)\.isCpuTrainingHost\(\)/,
+  );
+  assert.match(
+    readSrc("features/studio/sections/drafter-section.tsx"),
+    /usePlatformStore\(\(state\) => state\.isCpuTrainingHost\(\)\)/,
+  );
 });
 
 test("an enabled drafter on a supported model adds only the drafter block", () => {

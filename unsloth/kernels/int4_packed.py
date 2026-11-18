@@ -88,11 +88,11 @@ def _unpack_tile3(
     stride_pn,
     stride_sn,
     stride_zn,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # values packed per int32 word
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    HAS_G: tl.constexpr,  # act-order g_idx present
 ):
     # fp32 decode of W[rn, words rkp] as [BLOCK_N, BLOCK_KP, PF] (column = word * PF + j).
     MASK: tl.constexpr = (1 << BITS) - 1
@@ -150,13 +150,13 @@ def _unpack_tile(
     stride_pn,
     stride_sn,
     stride_zn,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_KP: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # values packed per int32 word
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    HAS_G: tl.constexpr,  # act-order g_idx present
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_KP: tl.constexpr,  # packed words per program along K
 ):
     w = _unpack_tile3(
         P, S, Z, G, rn, rkp, N, K, KP, stride_pn, stride_sn, stride_zn,
@@ -179,13 +179,13 @@ def _dequant_kernel(
     stride_sn,
     stride_zn,
     stride_on,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_KP: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # values packed per int32 word
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    HAS_G: tl.constexpr,  # act-order g_idx present
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_KP: tl.constexpr,  # packed words per program along K
 ):
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
@@ -221,14 +221,14 @@ def _gemv_kernel(
     stride_sn,
     stride_zn,
     stride_ym,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_KP: tl.constexpr,
-    SPLIT_K: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # values packed per int32 word
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    HAS_G: tl.constexpr,  # act-order g_idx present
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_KP: tl.constexpr,  # packed words per program along K
+    SPLIT_K: tl.constexpr,  # split-K factor
 ):
     # Decode: one activation row per program axis 2 (M tiny), CUDA-core reduction.
     pid_n = tl.program_id(0)
@@ -565,13 +565,13 @@ def _dequant_repacked_kernel(
     stride_sn,
     stride_zn,
     stride_on,
-    MARLIN: tl.constexpr,
-    TN: tl.constexpr,
-    TK: tl.constexpr,
-    R: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    RAW: tl.constexpr,
+    MARLIN: tl.constexpr,  # marlin tile layout (else tinygemm)
+    TN: tl.constexpr,  # tile rows (N)
+    TK: tl.constexpr,  # tile cols (K)
+    R: tl.constexpr,  # tiles along K per program
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    RAW: tl.constexpr,  # store raw int codes
 ):
     # One program: tile row tn, R tiles along K, written as [TN, R * TK] contiguous rows.
     pid = tl.program_id(0)

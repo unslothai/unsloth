@@ -54,8 +54,12 @@ class Transcript:
     messages: list[dict]
     # Which physical file the messages came from; a change (Codex revert) re-bases the ledger
     # at ``inherited``, the count of leading messages carried over from the previous revision.
+    # A ``:<tag>`` suffix names the reader; ``reread`` holds the ids an untagged reader skipped.
     revision: str = ""
     inherited: int = 0
+    reread: frozenset[str] = frozenset()
+    # {older revision: index after its n-th turn}; resuming at turns would re-send edited ones.
+    earlier: dict[str, list[int]] = field(default_factory = dict)
 
 
 @dataclass(frozen = True)
@@ -216,20 +220,60 @@ def _thread_row(transcript: Transcript, existing: dict, project_id: str) -> dict
     }
 
 
-def _pending_messages(source: Source, transcript: Transcript, existing: bool) -> list[dict]:
+def _reread_messages(
+    transcript: Transcript, turns: int, revision: str, stored: list[dict]
+) -> list[dict]:
+    """Backfill what an older reader skipped; rows it imported only move under their new parent."""
+    old = [m for m in transcript.messages if m["id"] not in transcript.reread]
+    if revision.partition(":")[0] == transcript.revision.partition(":")[0]:
+        start = turns
+    else:
+        start = sum(
+            m["id"] not in transcript.reread for m in transcript.messages[: transcript.inherited]
+        )
+    fresh = transcript.reread | {m["id"] for m in old[start:]}
+    rows = {m["id"]: m for m in stored}
+    late = {m["id"]: m for m in _late_tool_results(transcript, stored)}
+    pending = []
+    for message in transcript.messages:
+        row = rows.get(message["id"])
+        if row is None:
+            if message["id"] in fresh:
+                pending.append(message)
+        elif row.get("parentId") != message.get("parentId"):
+            pending.append({**late.get(row["id"], row), "parentId": message.get("parentId")})
+    return pending
+
+
+def _reader(revision: str) -> str:
+    # ":images" only says the file has image-only turns; it reads completed items like ":items".
+    tag = revision.partition(":")[2]
+    return "items" if tag == "images" else tag
+
+
+def _pending_messages(
+    source: Source, transcript: Transcript, existing: bool, stored: list[dict]
+) -> list[dict]:
     # Only turns appended since the last import. The ledger count, not the message rows,
     # says which those are: a message deleted in Studio leaves no row behind.
     if not existing:
         return list(transcript.messages)
-    stored = studio_db.list_chat_messages(transcript.thread_id)
     mark = studio_db.get_external_import_mark(source.key, transcript.session_id)
     if mark is None:
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
     turns, revision = mark
-    pending = transcript.messages[
-        turns if revision == transcript.revision else transcript.inherited :
-    ]
+    if revision == transcript.revision:
+        pending = transcript.messages[turns:]
+    elif revision in transcript.earlier:
+        ends = transcript.earlier[revision]
+        pending = transcript.messages[ends[min(turns, len(ends) - 1)] :]
+    elif _reader(revision) != _reader(transcript.revision):
+        pending = _reread_messages(transcript, turns, revision, stored)
+    elif revision.partition(":")[0] == transcript.revision.partition(":")[0]:
+        pending = transcript.messages[turns:]
+    else:
+        pending = transcript.messages[transcript.inherited :]
     # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
     # does not orphan it (the frontend refuses a thread with a missing parent).
     present = {message["id"] for message in stored}
@@ -244,9 +288,9 @@ def _pending_messages(source: Source, transcript: Transcript, existing: bool) ->
     return reseated
 
 
-def _late_tool_results(transcript: Transcript) -> list[dict]:
+def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[dict]:
     """Stored messages whose tool calls were imported while open and have a result now."""
-    stored = {m["id"]: m for m in studio_db.list_chat_messages(transcript.thread_id)}
+    stored = {m["id"]: m for m in stored_rows}
     patched = []
     for message in transcript.messages:
         current = stored.get(message["id"])
@@ -287,18 +331,30 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
 
     existing = studio_db.get_chat_thread(thread_id) or {}
     try:
-        studio_db.upsert_chat_thread(_thread_row(transcript, existing, project_id))
+        studio_db.upsert_chat_thread(
+            _thread_row(transcript, existing, project_id),
+            external_import_session = (source.key, session_id) if not existing else None,
+        )
     except studio_db.ChatThreadDeletedError:
         summary.skipped += 1
         return False
-    pending = _pending_messages(source, transcript, bool(existing))
+    # One read of the thread's rows serves both passes; nothing writes between them.
+    stored = studio_db.list_chat_messages(thread_id) if existing else []
+    pending = _pending_messages(source, transcript, bool(existing), stored)
     if existing:
-        pending = _late_tool_results(transcript) + pending
-    if pending:
-        studio_db.sync_chat_messages(thread_id, pending, prune_missing = False)
-    studio_db.record_external_import_mark(
-        source.key, session_id, len(transcript.messages), transcript.revision
+        pending = _late_tool_results(transcript, stored) + pending
+    mark = studio_db.ExternalImportMark(
+        source = source.key,
+        session_id = session_id,
+        turns = len(transcript.messages),
+        revision = transcript.revision,
     )
+    if pending:
+        studio_db.sync_chat_messages(
+            thread_id, pending, prune_missing = False, external_import_mark = mark
+        )
+    else:
+        studio_db.record_external_import_mark(*mark)
     summary.new_chats += 0 if existing else 1
     summary.messages += len(pending)
     return True

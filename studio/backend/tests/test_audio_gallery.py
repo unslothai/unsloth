@@ -983,8 +983,7 @@ def test_a_group_delete_takes_only_that_runs_clips():
 
 
 def test_a_group_delete_spares_the_runs_archived_clips():
-    # A stem restored from the archive leaves its siblings archived; deleting the run on the
-    # Separate page, which lists only active clips, must not take them.
+    # Deleting a run spares archived siblings of a restored stem, which Separate does not list.
     stems = [
         gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = r))
         for r in ("vocals", "drums", "bass")

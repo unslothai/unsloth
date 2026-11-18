@@ -32,8 +32,7 @@ class _Progress:
 
 
 def _emitter():
-    """The publish rule from worker._create_trainer_progress_callback, returning the
-    steps it would have published as metric events."""
+    """Publish rule of worker._create_trainer_progress_callback; returns the steps published."""
     last_metrics: list = [None]
     published: list = []
 
@@ -60,8 +59,7 @@ def _emitter():
 
 
 def test_evaluation_status_lines_do_not_replot_the_last_step():
-    # A 4-minute evaluation after step 200 publishes a status roughly every 15s; each
-    # one arrives with step 200's loss still on the shared progress object.
+    # Eval status lines carry step 200's loss on the shared progress object; never replot.
     on_progress, published = _emitter()
     step_200 = _Progress(step = 200, total_steps = 1000, loss = 0.42, learning_rate = 1e-4)
     on_progress(step_200)
@@ -82,8 +80,7 @@ def test_a_new_step_is_still_published():
 
 
 def test_the_same_step_with_a_new_measurement_is_still_published():
-    # Evaluation ends and reports eval_loss while global_step has not moved yet; that
-    # is a real new number, not a replay.
+    # eval_loss may arrive with global_step unchanged: a new measurement, not a replay.
     on_progress, published = _emitter()
     on_progress(_Progress(step = 200, total_steps = 1000, loss = 0.42))
     on_progress(_Progress(step = 200, total_steps = 1000, loss = 0.42, eval_loss = 0.55))

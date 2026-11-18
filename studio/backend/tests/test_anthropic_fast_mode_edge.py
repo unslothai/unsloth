@@ -341,8 +341,7 @@ def test_refusal_tool_event_chunk_shape(monkeypatch):
 
 
 def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
-    """Tuple must exactly match the two families in the upstream docs:
-    https://platform.claude.com/docs/en/build-with-claude/fast-mode."""
+    """Prefix tuple must match the two families in the upstream fast-mode docs."""
     from core.inference.external_provider import _ANTHROPIC_FAST_MODE_PREFIXES
     assert set(_ANTHROPIC_FAST_MODE_PREFIXES) == {
         "claude-opus-5",

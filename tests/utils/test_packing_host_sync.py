@@ -10,6 +10,7 @@ import pytest
 import torch
 
 import unsloth.utils.packing as packing
+from real_accelerator import has_real_cuda
 
 
 def _old_packed_info(seq_lengths, device):
@@ -160,7 +161,7 @@ def test_fused_ce_int_divisor_is_bitwise_torch_tensor():
         assert a.shape == b.shape and torch.equal(a.view(torch.int32), b.view(torch.int32))
 
 
-_needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+_needs_cuda = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 
 
 def _count_syncs(fn):
@@ -343,6 +344,252 @@ def test_inference_mode_metadata_is_not_served_to_a_training_step(dtype):
         packing.build_sdpa_packed_attention_mask(train, dtype = torch.float32, device = cpu)
         is train_mask
     )
+
+
+@pytest.mark.parametrize("grad_mode", ["inference_mode", "no_grad"])
+def test_compiled_inference_mode_metadata_is_not_served_to_a_training_step(grad_mode):
+    from unsloth.utils import attention_dispatch
+    from unsloth.utils.attention_dispatch import _windowed_causal_mask
+
+    packing._PACKED_INFO_CACHE.clear()
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+    cpu = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = torch.int32)
+
+    def build(seq):
+        info = packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, cpu)
+        return info, _windowed_causal_mask(8, 8, 2, cpu)
+
+    torch._dynamo.reset()
+    compiled = torch.compile(build, backend = "eager", fullgraph = True, dynamic = True)
+    context = torch.inference_mode() if grad_mode == "inference_mode" else torch.no_grad()
+    with torch._dynamo.config.patch(capture_scalar_outputs = True), context:
+        built, built_mask = compiled(seq)
+    assert torch.is_inference(built[1]) == (grad_mode == "inference_mode")
+    train, train_mask = build(seq)
+    assert not torch.is_inference(train[1]) and not torch.is_inference(train_mask)
+    assert train[1].tolist() == [0, 3, 8] and train[2] == 5
+    _survives_backward(train[1])
+    _survives_backward(train_mask.float())
+    assert (train is built) == (grad_mode == "no_grad")
+    assert (train_mask is built_mask) == (grad_mode == "no_grad")
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+@pytest.mark.parametrize("grad_mode", ["inference_mode", "no_grad"])
+@pytest.mark.parametrize("kind", ["metadata", "window_mask"])
+def test_compiled_training_rejects_inference_mode_cache(backend, grad_mode, kind):
+    from unsloth.utils import attention_dispatch
+
+    cpu = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = torch.int32)
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+    def build(seq):
+        if kind == "metadata":
+            return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, cpu)[1]
+        return attention_dispatch._windowed_causal_mask(8, 8, 2, cpu)
+
+    def train(x, seq):
+        saved = build(seq)
+        # Multiply by the original int/bool tensor: casting would hide the inference-tensor bug.
+        return (x * saved).sum(), saved
+
+    torch._dynamo.reset()
+    try:
+        compiled_build = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)
+        compiled_train = torch.compile(train, backend = backend, fullgraph = True, dynamic = True)
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            with getattr(torch, grad_mode)():
+                built = compiled_build(seq)
+            assert torch.is_inference(built) == (grad_mode == "inference_mode")
+            expected = built.clone()
+            if kind == "metadata":
+                assert expected.tolist() == [0, 3, 8]
+            for _ in range(3):
+                x = torch.ones(built.shape, requires_grad = True)
+                loss, saved = compiled_train(x, seq)
+                loss.backward()
+                assert not torch.is_inference(saved)
+                torch.testing.assert_close(saved, expected)
+                torch.testing.assert_close(x.grad, expected.float())
+            assert build(seq) is saved
+    finally:
+        attention_dispatch._WINDOW_MASK_CACHE.clear()
+        torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+@pytest.mark.parametrize("mode", [torch.no_grad, torch.inference_mode])
+@pytest.mark.parametrize("warm_inside", [False, True])
+@pytest.mark.parametrize("total", [8, 10])
+def test_compiled_mode_transition_preserves_padded_metadata(backend, mode, warm_inside, total):
+    packing.clear_packed_caches()
+    torch._dynamo.reset()
+    device = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = torch.int32)
+
+    def build(seq):
+        return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)
+
+    def train(x, seq):
+        padded, _ = packing.cover_padded_cu_seqlens(build(seq), total)
+        return (x * padded).sum()
+
+    try:
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            with mode():
+                info = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)(seq)
+                if warm_inside:
+                    padded, _ = packing.cover_padded_cu_seqlens(info, total)
+            if not warm_inside:
+                padded, _ = packing.cover_padded_cu_seqlens(info, total)
+            expected = torch.tensor([0.0, 3.0, 8.0] + ([10.0] if total == 10 else []))
+            x = torch.ones(expected.shape, requires_grad = True)
+            torch.compile(train, backend = backend, fullgraph = True, dynamic = True)(x, seq).backward()
+            torch.testing.assert_close(x.grad, expected)
+    finally:
+        packing.clear_packed_caches()
+        torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+def test_compiled_cache_checks_replaced_tensor_provenance(backend):
+    device = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = torch.int32)
+
+    def build(seq):
+        return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)[1]
+
+    def train(x, seq):
+        return (x * build(seq)).sum()
+
+    torch._dynamo.reset()
+    try:
+        producer = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)
+        consumer = torch.compile(train, backend = backend, fullgraph = True, dynamic = True)
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            for mode in (torch.no_grad, torch.inference_mode, torch.no_grad, torch.inference_mode):
+                packing.clear_packed_caches()
+                with mode():
+                    producer(seq)
+                x = torch.ones(3, requires_grad = True)
+                consumer(x, seq).backward()
+                torch.testing.assert_close(x.grad, torch.tensor([0.0, 3.0, 8.0]))
+    finally:
+        torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+@pytest.mark.parametrize("mode", [torch.no_grad, torch.inference_mode])
+def test_compiled_cache_created_and_consumed_in_one_graph(backend, mode):
+    device = torch.device("cpu")
+
+    def train(x, seq):
+        with mode():
+            packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)
+        saved = packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)[1]
+        return (x * saved).sum()
+
+    torch._dynamo.reset()
+    try:
+        x = torch.ones(3, requires_grad = True)
+        seq = torch.tensor([3, 5], dtype = torch.int32)
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            torch.compile(train, backend = backend, fullgraph = True, dynamic = True)(x, seq).backward()
+        torch.testing.assert_close(x.grad, torch.tensor([0.0, 3.0, 8.0]))
+    finally:
+        torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("mode", [torch.no_grad, torch.inference_mode])
+@pytest.mark.parametrize("warm_inside", [False, True])
+@pytest.mark.parametrize("kind", ["mask", "segments"])
+def test_compiled_mode_transition_preserves_derived_cache(backend, dtype, mode, warm_inside, kind):
+    device = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = dtype)
+
+    def build(seq):
+        return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)
+
+    def consume(info):
+        if kind == "mask":
+            mask = packing.build_sdpa_packed_attention_mask(
+                info, dtype = torch.float32, device = device, total_tokens = 10
+            )
+            return mask.isfinite().float(), mask
+        coeff = torch.tensor(packing.packed_segment_lengths(info, 10), dtype = torch.float32)
+        return coeff, coeff
+
+    def train(x, seq):
+        coeff, saved = consume(build(seq))
+        return (x * coeff).sum(), saved
+
+    torch._dynamo.reset()
+    try:
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            with mode():
+                info = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)(seq)
+                if warm_inside:
+                    expected = consume(info)[0]
+            if not warm_inside:
+                expected = consume(info)[0]
+            expected = expected.clone()
+            x = torch.ones(expected.shape, requires_grad = True)
+            loss, saved = torch.compile(train, backend = backend, fullgraph = True, dynamic = True)(
+                x, seq
+            )
+            loss.backward()
+            assert not torch.is_inference(saved)
+            torch.testing.assert_close(x.grad, expected)
+    finally:
+        torch._dynamo.reset()
+
+
+@_needs_cuda
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+def test_compiled_inference_metadata_preserves_cuda_device_alias(backend):
+    device = torch.device("cuda")
+    seq = torch.tensor([3, 5], dtype = torch.int32, device = "cpu")
+
+    def build(seq):
+        return packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, device)
+
+    def train(x, seq):
+        padded, _ = packing.cover_padded_cu_seqlens(build(seq), 10)
+        return (x * padded).sum()
+
+    torch._dynamo.reset()
+    try:
+        with torch._dynamo.config.patch(capture_scalar_outputs = True):
+            with torch.inference_mode():
+                info = torch.compile(build, backend = backend, fullgraph = True, dynamic = True)(seq)
+            packing.cover_padded_cu_seqlens(info, 10)
+            x = torch.ones(4, device = info[1].device, requires_grad = True)
+            torch.compile(train, backend = backend, fullgraph = True, dynamic = True)(x, seq).backward()
+            torch.testing.assert_close(x.grad, x.new_tensor([0.0, 3.0, 8.0, 10.0]))
+    finally:
+        torch._dynamo.reset()
+
+
+def test_new_lengths_do_not_inherit_derived_caches():
+    device = torch.device("cpu")
+    with torch.inference_mode():
+        old = packing.get_packed_info_from_kwargs(
+            {"packed_seq_lengths": torch.tensor([3, 5], dtype = torch.int64)}, device
+        )
+        packing.cover_padded_cu_seqlens(old, 10)
+        packing.build_sdpa_packed_attention_mask(old, dtype = torch.float32, device = device)
+        packing.packed_segment_lengths(old, 10)
+    new = packing.get_packed_info_from_kwargs(
+        {"packed_seq_lengths": torch.tensor([2, 6], dtype = torch.int64)}, device
+    )
+    assert packing.cover_padded_cu_seqlens(new, 10)[0].tolist() == [0, 2, 8, 10]
+    assert packing.packed_segment_lengths(new, 10) == (2, 6, 2)
+    mask = packing.build_sdpa_packed_attention_mask(new, dtype = torch.float32, device = device)
+    assert mask.isfinite().sum().item() == 24
 
 
 def test_xformers_mask_lru_keeps_inference_masks_out_of_training(monkeypatch):

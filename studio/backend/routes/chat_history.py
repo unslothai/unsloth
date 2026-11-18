@@ -4,6 +4,7 @@
 """Chat history API; sync SQLite handlers, except mixed ones that use Starlette's threadpool."""
 
 import asyncio
+import json
 import os
 import re
 import sqlite3
@@ -60,10 +61,12 @@ from storage.studio_db import (
     delete_chat_project,
     delete_chat_threads_with_active_runs,
     ensure_chat_project_workspace,
+    find_chat_project_by_working_folder,
     fork_chat_thread,
     fork_counts_for_thread,
     get_chat_attachment,
     get_chat_project,
+    get_chat_history_revisions,
     get_chat_thread,
     get_chat_pins,
     get_chat_message,
@@ -82,8 +85,10 @@ from storage.studio_db import (
     list_chat_threads,
     remap_chat_thread_document_ids,
     set_chat_project_working_folder,
+    project_working_folder_status,
     ProjectWorkingFolderConflictError,
     migrate_chat_pins,
+    PRESET_EDITED_KEYS,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -149,8 +154,9 @@ class ChatThreadSettings(BaseModel):
     deepResearchEnabled: Optional[bool] = None
     artifactsEnabled: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
-    # "full" (Full access) is session-only and never persisted, per thread or globally.
+    # Never "full": Full access granted to this chat is the separate flag below.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    fullAccess: Optional[bool] = None
     ragEnabled: Optional[bool] = None
     ragSource: Optional[
         Annotated[
@@ -320,6 +326,9 @@ class ChatProject(BaseModel):
     sandboxPath: Optional[str] = None
     # Read only: a saved record cannot set the folder.
     workingFolder: Optional[str] = None
+    workingFolderStatus: Optional[str] = None
+    workingFolderDisplay: Optional[str] = None
+    workingFolderBranch: Optional[str] = None
     archived: bool = False
     createdAt: SqliteInt
     updatedAt: SqliteInt
@@ -328,11 +337,62 @@ class ChatProject(BaseModel):
 
 class ChatProjectWorkingFolder(BaseModel):
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
-    native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+    native_path_lease: Optional[str] = Field(default = None, alias = "nativePathLease", min_length = 1)
+    server_path: Optional[str] = Field(
+        default = None, alias = "serverPath", min_length = 1, max_length = 4096
+    )
+
+    @model_validator(mode = "after")
+    def _exactly_one(self):
+        if (self.native_path_lease is None) == (self.server_path is None):
+            raise ValueError("Send exactly one of nativePathLease or serverPath.")
+        return self
+
+
+class ChatProjectFolderAccess(BaseModel):
+    serverPath: bool = False
 
 
 class ChatProjectCreate(ChatProject):
     nativePathLease: Optional[str] = Field(default = None, min_length = 1)
+    reuseExisting: bool = False
+
+
+class ProjectFileEntry(BaseModel):
+    name: str
+    kind: Literal["dir", "file"]
+    size: Optional[int] = None
+    hidden: bool = False
+
+
+class ProjectFileListing(BaseModel):
+    root: str
+    path: str
+    entries: list[ProjectFileEntry]
+    truncated: bool
+    chosen: bool
+
+
+class ProjectFileMatch(BaseModel):
+    path: str
+    name: str
+
+
+class ProjectFileSearch(BaseModel):
+    results: list[ProjectFileMatch]
+    truncated: bool
+
+
+class ProjectChange(BaseModel):
+    path: str
+    status: Literal["modified", "added", "deleted", "renamed", "untracked", "conflicted"]
+
+
+class ProjectChanges(BaseModel):
+    repo: bool
+    branch: Optional[str] = None
+    changes: list[ProjectChange]
+    truncated: bool
 
 
 class ChatAgentsMd(BaseModel):
@@ -546,8 +606,12 @@ class ChatSettingsPayload(BaseModel):
     ] = Field(default = None, max_length = 1_000)
     rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
+    editCustomPresets: Optional[dict[str, Optional[ChatPreset]]] = Field(
+        default = None, max_length = 1_000
+    )
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
+    presetEditedKeys: Optional[dict[Literal[PRESET_EDITED_KEYS], bool]] = None
     autoTitle: Optional[bool] = None
     reasoningEffort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
@@ -723,6 +787,7 @@ class ChatPinsMigrationRequest(BaseModel):
 
 class ChatMessagesBatchRequest(BaseModel):
     threadIds: list[str]
+    view: Literal["full", "search"] = "full"
 
 
 class ChatMessagesBatchResponse(BaseModel):
@@ -845,6 +910,29 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
         if not payload.projectId:
             raise
         raise _missing_project_error(payload.projectId) from exc
+
+
+_REVISION_THREADS_MAX = 50
+
+
+class ChatHistoryRevisionResponse(BaseModel):
+    revision: int
+    threads: dict[str, int]
+
+
+@router.get("/revision", response_model = ChatHistoryRevisionResponse)
+def chat_history_revision(
+    thread_id: list[str] = Query(default_factory = list, alias = "threadId"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Change counters other devices poll, so a chat open elsewhere picks up writes made here."""
+    if len(thread_id) > _REVISION_THREADS_MAX:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"At most {_REVISION_THREADS_MAX} thread ids per request",
+        )
+    revision, threads = get_chat_history_revisions(thread_id)
+    return ChatHistoryRevisionResponse(revision = revision, threads = threads)
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
@@ -1046,11 +1134,8 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
 def _fork_document_cutoff(
     source_thread_id: str, branch_message_id: Optional[str], client_now_ms: int
 ) -> Optional[str]:
-    """Uploads made once the source moved past the fork point stay behind; None at the tip.
-
-    Message times come from the browser's clock and upload times from this server's, so the
-    cutoff is shifted by the skew the fork request itself shows (its browser ``createdAt``
-    against server now)."""
+    """Uploads made after the fork point stay behind (None at the tip); the cutoff is shifted by the
+    browser-to-server clock skew the fork request shows."""
     import time
     from datetime import datetime, timezone
 
@@ -1069,8 +1154,7 @@ def _copy_thread_rag_documents(
     *,
     created_before: Optional[str] = None,
 ) -> bool:
-    """Copy the source's uploads into the fork. False when the fork should warn that some were
-    left behind."""
+    """Copy the source's uploads into the fork; False if some were left behind, so warn."""
     try:
         from core.rag import conversation_archive
         from storage import rag_db
@@ -1098,9 +1182,7 @@ def _copy_thread_rag_documents(
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
-    """Drop each thread's sandbox off the event loop. Never raises. Returns how many went and which ids
-    still have files. The chat is the only way to those files, so a caller that never offered the
-    choice can offer it once it knows there was something to keep."""
+    """Remove sandboxes off the event loop, never raising; returns count and ids still holding files."""
     from starlette.concurrency import run_in_threadpool
 
     def _remove() -> "tuple[int, list[str]]":
@@ -1118,8 +1200,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             if get_chat_thread(thread_id) is not None:
                 continue
             _drop_file_history(thread_id)
-            # A fork clones the message content, cards and all, so the source
-            # chat's files are still on screen in a chat the user kept.
+            # A fork clones message cards, so the source's files still show in a kept chat.
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):
                 if session_sandbox_has_files(thread_id):
                     kept.append(thread_id)
@@ -1160,9 +1241,8 @@ def list_attachments(
 
 
 def _decode_attachment_base64(payload: str) -> bytes:
-    """Strict base64 decode of a stored payload. Normalizes first: strips whitespace, fixes padding,
-    accepts the URL-safe alphabet. validate=False would silently drop bad characters and serve
-    corrupted bytes, so raise 422."""
+    """Strict base64 decode; validate=False would silently drop bad characters and serve corrupt
+    bytes, so raise 422 instead."""
     import base64
 
     # An imported file part can keep its data URL; base64 has no ':', so this never cuts a payload.
@@ -1328,6 +1408,21 @@ def delete_attachment(
     return {"ok": True}
 
 
+def _project_out(project: dict) -> ChatProject:
+    from utils.paths.folder_info import git_head_branch, tilde_path
+
+    folder = project.get("workingFolder")
+    status = project_working_folder_status(project) if folder else None
+    return ChatProject(
+        **{
+            **project,
+            "workingFolderStatus": status,
+            "workingFolderDisplay": tilde_path(folder) if folder else None,
+            "workingFolderBranch": git_head_branch(folder) if status == "ok" else None,
+        }
+    )
+
+
 @router.get("/projects", response_model = ChatProjectListResponse)
 def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
@@ -1335,8 +1430,8 @@ def list_projects(
     # Backfill only projects without a recorded root; the rest are ensured where their files are used.
     return ChatProjectListResponse(
         projects = [
-            ChatProject(
-                **{
+            _project_out(
+                {
                     **(
                         project
                         if project.get("rootPath")
@@ -1356,11 +1451,21 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
     if lease is not None and not is_owner_context():
         raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
     try:
-        project = payload.model_dump(exclude = {"nativePathLease"})
+        project = payload.model_dump(exclude = {"nativePathLease", "reuseExisting"})
         if lease is None:
-            return ChatProject(**upsert_chat_project(project))
+            return _project_out(upsert_chat_project(project))
         working_folder = _resolve_project_working_folder(lease)
-        return ChatProject(**upsert_chat_project(project, working_folder = working_folder))
+        if payload.reuseExisting:
+            existing = find_chat_project_by_working_folder(working_folder[0])
+            if existing is not None:
+                path, (device, inode) = working_folder
+                if existing.get("workingFolderIdentity") != f"{device}:{inode}":
+                    existing = (
+                        set_chat_project_working_folder(existing["id"], path, (device, inode))
+                        or existing
+                    )
+                return _project_out(existing)
+        return _project_out(upsert_chat_project(project, working_folder = working_folder))
     except HTTPException:
         raise
     except ProjectWorkingFolderConflictError as exc:
@@ -1397,7 +1502,7 @@ def get_project(project_id: str, current_subject: str = Depends(get_current_subj
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 @router.get("/agents-md", response_model = ChatAgentsMd)
@@ -1427,20 +1532,12 @@ def patch_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
-    """Studio's own roots are reserved: they hold every account's data."""
-    from core.inference.tools import shared_sandbox_root
     from core.rag import folder_sync
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
-    from utils.paths.path_utils import is_path_within
-    from utils.paths.storage_roots import (
-        shared_project_workspaces_root,
-        shared_tmp_root,
-        studio_root,
-    )
 
     try:
         grant = verify_native_path_lease(
@@ -1452,6 +1549,38 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         path = folder_sync.validate_folder_path(str(grant.canonical_path))
     except (NativePathLeaseError, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _checked_project_folder(path)
+
+
+def _resolve_server_working_folder(server_path: str) -> tuple[str, tuple[int, int]]:
+    from core.rag import folder_sync
+    from routes.models import _build_browse_allowlist, _resolve_browse_target
+
+    if not policy.server_folder_pick_permitted():
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Choosing a folder from the browser only works on this computer with remote "
+                "access off. Use Unsloth Desktop, or turn off remote access."
+            ),
+        )
+    target = _resolve_browse_target(server_path, _build_browse_allowlist())
+    try:
+        path = folder_sync.validate_folder_path(str(target))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _checked_project_folder(path)
+
+
+def _checked_project_folder(path: str) -> tuple[str, tuple[int, int]]:
+    from core.inference.tools import shared_sandbox_root
+    from utils.paths.path_utils import is_path_within
+    from utils.paths.storage_roots import (
+        shared_project_workspaces_root,
+        shared_tmp_root,
+        studio_root,
+    )
+
     for reserved in (
         studio_root(),
         shared_project_workspaces_root(),
@@ -1459,17 +1588,28 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         shared_tmp_root(),
     ):
         reserved = os.path.realpath(str(reserved))
-        if is_path_within(path, reserved, allow_root = True) or is_path_within(
-            reserved, path, allow_root = True
-        ):
+        if is_path_within(path, reserved, allow_root = True):
             raise HTTPException(
                 status_code = 400,
                 detail = "Unsloth's own folders cannot be used as a project folder.",
+            )
+        if is_path_within(reserved, path):
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "This folder contains Unsloth's own data, so it cannot be a project folder. "
+                    "Choose a folder inside it instead."
+                ),
             )
     if not os.access(path, os.W_OK):
         raise HTTPException(status_code = 400, detail = "The folder is not writable.")
     st = os.stat(path)
     return path, (st.st_dev, st.st_ino)
+
+
+@router.get("/project-folder-access", response_model = ChatProjectFolderAccess)
+def get_project_folder_access(current_subject: str = Depends(get_current_subject)):
+    return ChatProjectFolderAccess(serverPath = policy.server_folder_pick_permitted())
 
 
 @router.put("/projects/{project_id}/working-folder", response_model = ChatProject)
@@ -1483,7 +1623,11 @@ def set_project_working_folder(
     if get_chat_project(project_id) is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
     try:
-        path, identity = _resolve_project_working_folder(payload.native_path_lease)
+        path, identity = (
+            _resolve_project_working_folder(payload.native_path_lease)
+            if payload.native_path_lease is not None
+            else _resolve_server_working_folder(payload.server_path or "")
+        )
         project = set_chat_project_working_folder(project_id, path, identity)
     except HTTPException:
         raise
@@ -1498,7 +1642,7 @@ def set_project_working_folder(
         ) from exc
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 @router.delete("/projects/{project_id}/working-folder", response_model = ChatProject)
@@ -1509,7 +1653,71 @@ def clear_project_working_folder(
     project = set_chat_project_working_folder(project_id, None)
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
-    return ChatProject(**project)
+    return _project_out(project)
+
+
+def _project_files_root(project_id: str) -> tuple[str, bool]:
+    """The folder this caller's tools run in for the project, and whether it is the owner's chosen one."""
+    from core.inference.tools import project_session_id, resolve_sandbox_workdir
+    from storage.studio_db import available_project_working_folder
+
+    project = get_chat_project(project_id)
+    if project is None:
+        raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+    root = os.path.realpath(resolve_sandbox_workdir(project_session_id(project_id)))
+    chosen = available_project_working_folder(project)
+    return root, bool(chosen) and os.path.normcase(os.path.realpath(chosen)) == os.path.normcase(
+        root
+    )
+
+
+@router.get("/projects/{project_id}/files", response_model = ProjectFileListing)
+def list_project_files(
+    project_id: str,
+    path: str = Query("", max_length = 4096),
+    show_hidden: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
+):
+    """One directory level of the folder the project's tools run in. Paths outside it are 404."""
+    from core import project_files
+    from core.inference.tools import _INTERNAL_SANDBOX_FILES
+    from utils.paths.folder_info import tilde_path
+
+    root, chosen = _project_files_root(project_id)
+    try:
+        listing = project_files.list_directory(
+            root,
+            path,
+            show_hidden = show_hidden,
+            skip_names = frozenset() if chosen else _INTERNAL_SANDBOX_FILES,
+        )
+    except project_files.ProjectPathError as exc:
+        # 404, not 403: the answer must not confirm what exists outside the folder.
+        raise HTTPException(status_code = 404, detail = "Folder not found") from exc
+    return ProjectFileListing(root = tilde_path(root), chosen = chosen, **listing)
+
+
+@router.get("/projects/{project_id}/files/search", response_model = ProjectFileSearch)
+def search_project_files(
+    project_id: str,
+    q: str = Query("", max_length = 512),
+    limit: int = Query(50),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Files in the project's folder whose relative path matches q, best match first."""
+    from core import project_files
+
+    root, _ = _project_files_root(project_id)
+    return ProjectFileSearch(**project_files.search_files(root, q, limit))
+
+
+@router.get("/projects/{project_id}/changes", response_model = ProjectChanges)
+def get_project_changes(project_id: str, current_subject: str = Depends(get_current_subject)):
+    """Changed files when the project's folder is the root of a git repository."""
+    from core import project_files
+
+    root, _ = _project_files_root(project_id)
+    return ProjectChanges(**project_files.git_changes(root))
 
 
 def _delete_project_rag_sources(project_id: str) -> None:
@@ -1688,16 +1896,171 @@ def get_thread_messages(thread_id: str, current_subject: str = Depends(get_curre
     )
 
 
+# Part types extractText (frontend use-chat-search-index.ts) reads; a frontend test guards drift.
+_SEARCH_PART_TYPES = frozenset(("text", "reasoning", "thinking", "tool-call", "source"))
+_PASTED_TEXT_PREFIX = "<pasted_text name="
+
+
+def _search_view_attachment_part(part: Any) -> bool:
+    """Keep what attachmentsPastedText reads; malformed parts stay so the index fails as before."""
+    if not isinstance(part, dict):
+        return True
+    if part.get("type") != "text" or "text" not in part:
+        return False
+    text = part["text"]
+    return not isinstance(text, str) or text.startswith(_PASTED_TEXT_PREFIX)
+
+
+# Mirrors searchableText: tool output keeps only text it would index, so images and widget seeds stay home.
+# ASCII: JavaScript's /i never folds a non-ASCII letter such as "ı" onto an ASCII one.
+_SEARCH_SKIPPED_KEY = re.compile(r"b64|base64|^(?:images?|audio|video)\Z", re.IGNORECASE | re.ASCII)
+_MCP_IMAGES_MARKER = "\n__MCP_IMAGES__:"
+_IMAGES_MARKER = "\n__IMAGES__:"
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise ValueError(name)
+
+
+def _split_mcp_images(text: str) -> str:
+    """splitMcpImages: only a valid image envelope after the last marker is cut."""
+    at = text.rfind(_MCP_IMAGES_MARKER)
+    if at == -1:
+        return text
+    try:
+        # parse_int: JSON.parse takes integers past Python's digit limit.
+        images = json.loads(
+            text[at + len(_MCP_IMAGES_MARKER) :],
+            parse_constant = _reject_json_constant,
+            parse_int = float,
+        )
+    except ValueError:
+        return text
+    valid = (
+        isinstance(images, list)
+        and len(images) > 0
+        and all(
+            isinstance(image, dict)
+            and isinstance(image.get("data"), str)
+            and isinstance(image.get("mimeType"), str)
+            for image in images
+        )
+    )
+    return text[:at] if valid else text
+
+
+# JavaScript's \s, which differs from Python's (no \x1c-\x1f or \x85, adds \ufeff).
+_JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_DATA_URL = re.compile(f"data:[^;,{_JS_SPACE}]+;base64,[A-Za-z0-9+/=]+")
+
+
+def _searchable_string(text: str) -> str:
+    """searchableText on a string, minus stripBase64Runs, which is far slower in Python."""
+    text = _split_mcp_images(text)
+    at = text.find(_IMAGES_MARKER)
+    if at != -1:
+        text = text[:at]
+    return _DATA_URL.sub(" ", text)
+
+
+def _search_view_string(text: str) -> str:
+    try:
+        cut = _searchable_string(text)
+        # Sent only when the browser would read it back unchanged, else the original.
+        stable = _searchable_string(cut) == cut
+    except RecursionError:
+        # JSON.parse may still read nesting this deep, so leave the string to the browser.
+        return text
+    return cut if stable else text
+
+
+def _search_view_value(
+    value: Any,
+    depth: int = 0,
+    tool_name: Any = None,
+) -> Any:
+    if isinstance(value, str):
+        return _search_view_string(value)
+    if value is None or depth > 4:
+        return None
+    if isinstance(value, list):
+        return [_search_view_value(v, depth + 1) for v in value]
+    if isinstance(value, dict):
+        ui = value.get("ui")
+        if (
+            depth == 0
+            and isinstance(tool_name, str)
+            and tool_name.startswith("mcp__")
+            and isinstance(value.get("text"), str)
+            and isinstance(ui, dict)
+            and isinstance(ui.get("resourceUri"), str)
+        ):
+            return {"text": _search_view_string(value["text"])}
+        return {
+            k: _search_view_value(v, depth + 1)
+            for k, v in value.items()
+            if not _SEARCH_SKIPPED_KEY.search(k)
+        }
+    return value
+
+
+def _search_view_tool_call(part: dict) -> dict:
+    out = {key: part[key] for key in ("type", "toolName", "provenance") if key in part}
+    if isinstance(part.get("argsText"), str):
+        out["argsText"] = _search_view_string(part["argsText"])
+    elif "args" in part:
+        out["args"] = _search_view_value(part["args"])
+    if "result" in part:
+        out["result"] = _search_view_value(part["result"], 0, part.get("toolName"))
+    return out
+
+
+def _search_view_message(message: dict) -> dict:
+    """What the search index reads of a message: no metadata, media or document bodies."""
+    out = {
+        key: message[key]
+        for key in ("id", "threadId", "parentId", "role", "createdAt")
+        if key in message
+    }
+    # Absent stays absent, so ChatMessage fills [] exactly as it does for the full view.
+    if "content" in message:
+        content = message["content"]
+        if isinstance(content, list):
+            content = [
+                _search_view_tool_call(part) if part["type"] == "tool-call" else part
+                for part in content
+                if isinstance(part, dict)
+                and isinstance(part.get("type"), str)
+                and part["type"] in _SEARCH_PART_TYPES
+            ]
+        out["content"] = content
+    attachments = message.get("attachments")
+    if isinstance(attachments, list):
+        kept = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict) or not isinstance(attachment.get("content"), list):
+                kept.append(attachment)
+                continue
+            parts = [part for part in attachment["content"] if _search_view_attachment_part(part)]
+            if parts:
+                kept.append({"content": parts})
+        attachments = kept
+    if attachments is not None:
+        out["attachments"] = attachments
+    return out
+
+
 @router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
 def batch_thread_messages(
     payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
     by_thread: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.threadIds}
-    for m in list_chat_messages_for_threads(payload.threadIds):
+    search_view = payload.view == "search"
+    for m in list_chat_messages_for_threads(payload.threadIds, include_metadata = not search_view):
         tid = m["threadId"]
         if tid in by_thread:
-            by_thread[tid].append(ChatMessage(**m))
+            by_thread[tid].append(ChatMessage(**(_search_view_message(m) if search_view else m)))
     return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
 
 
@@ -2166,3 +2529,13 @@ def export_history(current_subject: str = Depends(get_current_subject)):
         threads = [thread_from_row(thread) for thread in threads],
         messages = [ChatMessage(**message) for message in messages],
     )
+
+
+@router.get("/memory-context")
+def get_memory_context(
+    thread_id: str,
+    context_length: int = Query(4096, ge = 1, le = 10000000),
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.chat_memory import context
+    return context(thread_id, context_length)

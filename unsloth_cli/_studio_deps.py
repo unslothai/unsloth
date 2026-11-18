@@ -450,6 +450,8 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
 # setup.ps1/setup.sh run `npm install` inside the installed tree, shrinking the lockfile.
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
+_MANAGED_LAUNCHER_NAME = "unsloth.exe"
+
 
 def _shared_non_runtime(rel: str) -> bool:
     """A row under a top-level dir several wheels write into.
@@ -475,8 +477,22 @@ def _installer_rewritten(rel: str) -> bool:
 
     Only the size is unreliable. The file disappearing is still damage, so the
     row is kept and only its size dropped.
+
+    So does the managed Scripts/unsloth.exe: when setup publishes none, the update
+    restores a staged copy an older uv may have written with a smaller trampoline
+    than RECORD records (#16897). validate_launcher() already runs it.
     """
-    return rel.replace("\\", "/").rsplit("/", 1)[-1] in _INSTALLER_REWRITTEN_NAMES
+    parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
+    if not parts:
+        return False
+    if parts[-1] in _INSTALLER_REWRITTEN_NAMES:
+        return True
+    return (
+        len(parts) >= 2
+        and ".." in parts
+        and parts[-2].lower() == "scripts"
+        and parts[-1].lower() == _MANAGED_LAUNCHER_NAME
+    )
 
 
 def _installed_distribution_groups():

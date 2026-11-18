@@ -8,12 +8,10 @@ import { sessionAccount, useLoginMode } from "../account-session";
 import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
-import { useSpookyGreetings } from "@/features/halloween/halloween-store";
-import { pickSpookySloth } from "@/features/halloween/spooky-greetings";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
 import { Label } from "@/components/ui/label";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
@@ -57,6 +55,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const signalReady = useAppShellReadySignal();
   const t = useT();
   const navigate = useNavigate();
+  const { q } = useSearch({ strict: false });
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
@@ -80,9 +79,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     password: string;
     token: TokenResponse;
   } | null>(null);
-  const spooky = useSpookyGreetings();
-  const [halloweenSloth] = useState(pickSpookySloth);
-  const spookySloth = isLoginMode && spooky ? halloweenSloth : null;
 
   useEffect(() => {
     if (deadlineAt === null) {
@@ -117,11 +113,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           }
 
           if (mode === "login" && requiresChange) {
-            navigate({ to: "/change-password" });
+            navigate({ to: "/change-password", search: { q } });
             return;
           }
           if (mode === "change-password" && !requiresChange) {
-            navigate({ to: "/login" });
+            navigate({ to: "/login", search: { q } });
             return;
           }
 
@@ -130,13 +126,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               const refreshed = await refreshSession();
               if (refreshed) {
                 if (!canceled) setStatusLoading(false);
-                navigate({ to: getPostAuthRoute() });
+                navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
                 return;
               }
             }
             if (hasAuthToken()) {
               if (!canceled) setStatusLoading(false);
-              navigate({ to: getPostAuthRoute() });
+              navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
               return;
             }
           }
@@ -155,7 +151,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     return () => {
       canceled = true;
     };
-  }, [navigate]);
+  }, [navigate, q]);
 
   useEffect(() => {
     if (statusLoading || reloadReadySent.current) return;
@@ -284,7 +280,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           const bootstrapToken = await loginWithPassword(username, currentPassword);
           const replaced = await transitionBrowserAccount(
             { username, accountId: bootstrapToken.account_id },
-            "/change-password",
+            q ? `/change-password?q=${encodeURIComponent(q)}` : "/change-password",
             () => {
               storeAuthTokens(bootstrapToken.access_token, bootstrapToken.refresh_token);
               setMustChangePassword(bootstrapToken.must_change_password);
@@ -331,12 +327,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       const route = isLoginMode && token.must_change_password ? "/change-password" : "/chat";
       const replaced = await transitionBrowserAccount(
         { username: signedInUsername, accountId: token.account_id },
-        route,
+        q ? `${route}?q=${encodeURIComponent(q)}` : route,
         finishSession,
       );
       pendingLogin.current = null;
       if (replaced) return;
-      navigate({ to: getPostAuthRoute() });
+      navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
     } catch (err: unknown) {
       // Show the backend's PATH-based command as-is; a relative Windows path only resolves in the
       // Unsloth home dir.
@@ -352,7 +348,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     setLoading(true);
     try {
       if (await continueAsDesktopOwner()) {
-        navigate({ to: getPostAuthRoute() });
+        navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
       } else {
         setError(t("auth.signInWithUsername"));
       }
@@ -367,13 +363,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     <div className="w-full max-w-sm space-y-6">
       <div className="space-y-1.5 text-center">
         <MascotImg
-          src={
-            spookySloth
-              ? `Sloth emojis/${spookySloth.sloth}`
-              : "Sloth emojis/large sloth wave.png"
-          }
+          src="Sloth emojis/large sloth wave.png"
           className="mx-auto mb-2 h-20 w-20 object-contain"
-          style={spookySloth?.enlarge ? { scale: "1.15" } : undefined}
         />
         <h2 className="text-[calc(1.5rem*var(--ui-font-scale,1))] font-semibold text-foreground">{title}</h2>
         <p className="text-muted-foreground">{subtitle}</p>
@@ -430,7 +421,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 id="password"
                 aria-describedby={loginMode === "multi" ? "setup-code-hint" : undefined}
                 type={showPassword ? "text" : "password"}
-                className="pr-10"
+                className="pr-10 tracking-[0.02em]"
                 autoComplete="current-password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -466,7 +457,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                       changingFromSetupCode ? "current-setup-code-hint" : undefined
                     }
                     type={showPassword ? "text" : "password"}
-                    className="pr-10"
+                    className="pr-10 tracking-[0.02em]"
                     autoComplete="current-password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
@@ -503,7 +494,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 <Input
                   id="new-password"
                   type={showNewPassword ? "text" : "password"}
-                  className="pr-10"
+                  className="pr-10 tracking-[0.02em]"
                   autoComplete="new-password"
                   value={newPassword}
                   onChange={(event) => setNewPassword(event.target.value)}
@@ -530,6 +521,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               <Input
                 id="confirm-password"
                 type="password"
+                className="tracking-[0.02em]"
                 autoComplete="new-password"
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
@@ -558,7 +550,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           <p className="text-center text-sm text-amber-600">{helperText}</p>
         )}
         {error && (
-          <p className="text-center text-sm text-destructive [overflow-wrap:anywhere]">
+          <p className="text-center text-xs text-destructive [overflow-wrap:anywhere]">
             {error}
           </p>
         )}
@@ -567,7 +559,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           variant="primary"
           type="submit"
           size="hero"
-          className="mx-auto flex h-[2.967em] w-fit bg-control-accent px-[1.56em] pt-0 pb-[0.07em] [font-family:var(--font-heading)] text-[0.9375rem] font-semibold tracking-[0.02em] text-control-accent-foreground hover:bg-control-accent/85"
+          className="mx-auto flex h-[2.967em] w-fit bg-control-accent px-[1.56em] pt-0 pb-[0.07em] [font-family:var(--font-heading)] text-[0.875rem] font-semibold tracking-[0.02em] text-control-accent-foreground hover:bg-control-accent/85"
           disabled={
             loading ||
             statusLoading ||
@@ -595,7 +587,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       {showSwitchLink && (
         <p className="text-center text-sm text-muted-foreground">
           {switchText}
-          <Link to={switchLinkTo} className="text-primary hover:underline">
+          <Link to={switchLinkTo} search={{ q }} className="text-primary hover:underline">
             {switchLinkText}
           </Link>
         </p>

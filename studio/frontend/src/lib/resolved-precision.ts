@@ -12,6 +12,10 @@ export interface ResolvedControl {
   // "applied" | "fell_back" | "unsupported". Absent on older backends, which only ever applied.
   status?: string;
   reason: string;
+  // int8_attention only: whether Studio's INT8 attention kernel engaged, which build, how many modules.
+  engaged?: boolean;
+  impl?: string | null;
+  modules?: number;
 }
 
 export type ResolvedBadgeTone = "auto" | "warn";
@@ -136,6 +140,7 @@ export function resolvedSeedKey(
     part(resolved.text_encoder_quant, true),
     part(resolved.memory_mode, true),
     part(resolved.attention_backend, false),
+    part(resolved.int8_attention, true),
     part(resolved.family_override, true),
   ].join("|");
 }
@@ -175,6 +180,30 @@ function denseDtypeLabel(dtype: string | null | undefined): string {
 /** sd.cpp has no runtime TE quant, so a null there means "as stored", not BF16. */
 export function denseTextEncoderBuildLabel(status: { dtype?: string | null }): string {
   return status.dtype === "gguf" ? "As in checkpoint" : denseDtypeLabel(status.dtype);
+}
+
+const DENOISER_PLACEMENTS: Record<string, { label: string; detail: string }> = {
+  resident: {
+    label: "Transformer on GPU",
+    detail:
+      "The transformer stays on the GPU, so every denoise step runs at resident speed. Only components used once per prompt, such as the text encoders, stream from CPU.",
+  },
+  partial: {
+    label: "Transformer partly streamed",
+    detail:
+      "Part of the transformer stays on the GPU and the rest streams from CPU on every denoise step (slower than resident).",
+  },
+  streamed: {
+    label: "Transformer streamed",
+    detail:
+      "Every transformer block streams from CPU on every denoise step (slower than resident).",
+  },
+};
+
+export function denoiserPlacement(
+  denoiserOffload: string | null | undefined,
+): { label: string; detail: string } | null {
+  return (denoiserOffload && DENOISER_PLACEMENTS[denoiserOffload]) || null;
 }
 
 /** sd.cpp never runs the memory planner, so an absent `memory_mode` reports the offload alone. */

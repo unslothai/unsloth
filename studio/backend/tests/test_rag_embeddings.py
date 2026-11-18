@@ -213,8 +213,7 @@ def test_auto_asks_the_hardware_once_for_the_backend_it_built(monkeypatch):
 
 
 def test_a_saved_backend_still_replaces_a_resident_auto_backend(monkeypatch):
-    """``auto`` is resolved per model so that saving a backend rebuilds (#9739); keeping the
-    hardware answer must not keep the backend it chose."""
+    """Saving a backend rebuilds even a resident auto pick (issue 9739) instead of keeping it."""
     stored = {"backend": None}
     _resolve_auto_for(monkeypatch, stored = stored)
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
@@ -225,9 +224,7 @@ def test_a_saved_backend_still_replaces_a_resident_auto_backend(monkeypatch):
 
 
 def test_a_replaced_backend_asks_the_hardware_again(monkeypatch):
-    """The kept answer is tied to the object it was kept for, and that tie is what makes a
-    rebuild re-ask. Without it the tuple answers for a backend that is no longer published,
-    so a host whose hardware moved keeps being told what it had before the rebuild."""
+    """The kept answer is tied to the object it was kept for, so a rebuild re-asks the hardware."""
     asked = _resolve_auto_for(monkeypatch)
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
 
@@ -469,16 +466,14 @@ def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
 
 
 def test_device_defaults_to_cpu_on_an_accelerator_host(monkeypatch):
-    """Default embedding to CPU: a CUDA allocation in the backend pins a primary context nothing
-    releases."""
+    """Auto device stays on CPU: a CUDA allocation pins a primary context nothing releases."""
     monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", "auto")
     _shared_setup_3(monkeypatch)
     assert embeddings._device() == "cpu"
 
 
 def test_device_opts_in_to_the_accelerator(monkeypatch):
-    """Every spelling that opts into the accelerator must match, including device names like xpu and
-    rocm."""
+    """Every accelerator spelling, including xpu and rocm, must opt in and resolve to cuda."""
     _shared_setup_3(monkeypatch)
     for requested in ("gpu", "GPU", " cuda ", "rocm", "hip", "xpu", "mps", "metal"):
         monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", requested)
@@ -1060,9 +1055,7 @@ def test_encode_surfaces_the_unload_when_no_replacement_is_published(monkeypatch
 
 
 def test_the_token_counter_follows_an_unloaded_sentence_transformer(monkeypatch):
-    """The tokenizer used to be captured when the counter was built and held for the
-    whole document, so it kept counting through an unload that reported the model
-    gone. Reading it per call under the compute lock mirrors `_st_encode`."""
+    """Read the tokenizer per call under the compute lock, so an unloaded model stops counting."""
     looked_up = []
 
     class _Tok:
@@ -1113,8 +1106,7 @@ def test_a_local_gguf_selects_llama_even_on_a_gpu_box(monkeypatch, tmp_path):
 
 
 def test_a_local_gguf_beats_a_stored_sentence_transformers_record(monkeypatch, tmp_path):
-    """A stored ST record for a .gguf can only come from a force-save that then
-    failed; honouring it would reinstate the same broken load."""
+    """A stored ST record for a .gguf only comes from a failed force-save, so it must not win."""
     gguf = tmp_path / "embed.gguf"
     gguf.write_bytes(b"GGUF")
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
@@ -1138,9 +1130,7 @@ def test_an_explicit_backend_is_not_overridden_by_a_local_gguf(monkeypatch, tmp_
 
 
 def test_the_st_probe_warms_the_pinned_model_not_the_live_setting(monkeypatch):
-    """_get_backend resolves for the pinned model, but the probe warmed
-    model_name=None, reading the live setting: a job pinned to A probed B once
-    Settings moved, failing the valid A job before its first encode."""
+    """The probe must warm the pinned model, not the live setting, or a job pinned to A probes B."""
     warmed = []
 
     class _Probe:
@@ -1160,9 +1150,7 @@ def test_the_st_probe_warms_the_pinned_model_not_the_live_setting(monkeypatch):
 
 
 def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatch, tmp_path):
-    """On the repo id the gate scanned the Hub's current commit while the load
-    opened an older cached one, so a pickle present only there passed.
-    evaluate_file_security recovers repo and commit from a snapshot path."""
+    """The security gate must scan the snapshot that is actually loaded, not the Hub's current commit."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "model.safetensors").write_bytes(b"ST")
@@ -1245,8 +1233,7 @@ def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch, resident
 
 
 def test_a_dead_llama_process_is_not_reported_as_loaded(monkeypatch):
-    """The object keeps _model_repo after the subprocess exits, so the repo match
-    alone called a dead server resident and offered Unload for it."""
+    """Dead llama processes keep _model_repo, so liveness must gate the loaded state."""
     alive = {"value": True}
     backend = SimpleNamespace(
         _model_repo = "org/resident-GGUF", _process_alive = lambda: alive["value"]
@@ -1287,9 +1274,7 @@ def test_two_models_can_each_hold_their_own_llama_fallback_pin(monkeypatch):
 
 
 def test_the_forced_backend_probe_does_not_wait_on_a_model_load(monkeypatch):
-    """_get_backend holds _backend_lock across a whole model load, so a resolver
-    probe taking it made GET/PUT on this setting hang for the download rather than
-    for the 20s Hub budget that is supposed to bound them."""
+    """_get_backend holds _backend_lock across a model load, so the forced probe must not wait on it."""
     import threading
 
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")

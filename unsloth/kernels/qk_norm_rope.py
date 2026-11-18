@@ -18,7 +18,12 @@ from .rms_layernorm import (
     _traced_kernel,
     fast_rms_layernorm,
 )
-from .rope_embedding import fast_rope_embedding, _sync_if_split, DECODE_FUSED_ROPE
+from .rope_embedding import (
+    fast_rope_embedding,
+    _batch_position_ids,
+    _sync_if_split,
+    DECODE_FUSED_ROPE,
+)
 
 __all__ = [
     "fast_qk_norm_rope",
@@ -56,8 +61,8 @@ def _norm_rope_fwd_block(
     sin1,
     cols,
     eps,
-    HEAD_DIM: tl.constexpr,
-    HAS_ROPE_INDICES: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    HAS_ROPE_INDICES: tl.constexpr,  # explicit rope position ids
 ):
     HALF = HEAD_DIM // 2
     hmask = heads < n_heads
@@ -84,7 +89,7 @@ def _norm_rope_fwd_block(
     tl.store(y_ptr + HALF, y1 * cos1[None, :] + y0 * sin1[None, :], mask = mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("seqlen",))
 def _qk_norm_rope_forward(
     Qo,
     Q,
@@ -108,9 +113,9 @@ def _qk_norm_rope_forward(
     sin_row_stride,
     rope_indices,
     seqlen,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_H: tl.constexpr,
-    HAS_ROPE_INDICES: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_H: tl.constexpr,  # heads per program
+    HAS_ROPE_INDICES: tl.constexpr,  # explicit rope position ids
 ):
     row = tl.program_id(0).to(tl.int64)
     hblock = tl.program_id(1)
@@ -156,7 +161,7 @@ def _norm_rope_bwd_block(
     cos1,
     sin1,
     cols,
-    HEAD_DIM: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
 ):
     HALF = HEAD_DIM // 2
     hmask = heads < n_heads
@@ -194,7 +199,7 @@ def _norm_rope_bwd_block(
     tl.store(dx_ptr + HALF, scale * tl.fma(-n1, rowsum[:, None], HEAD_DIM * g1), mask = mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("seqlen",))
 def _qk_norm_rope_backward(
     dQ,
     dQo,
@@ -224,9 +229,9 @@ def _qk_norm_rope_backward(
     sin_row_stride,
     rope_indices,
     seqlen,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_H: tl.constexpr,
-    HAS_ROPE_INDICES: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_H: tl.constexpr,  # heads per program
+    HAS_ROPE_INDICES: tl.constexpr,  # explicit rope position ids
 ):
     row = tl.program_id(0).to(tl.int64)
     hblock = tl.program_id(1)
@@ -431,6 +436,7 @@ def fast_qk_norm_rope(
     Wq, Wk = q_norm.weight, k_norm.weight
     batch, seq_len, _, head_dim = Q.shape
     cos2, sin2 = cos.squeeze(), sin.squeeze()
+    position_ids = _batch_position_ids(position_ids, batch, seq_len)
     if (
         Wq.requires_grad
         or Wk.requires_grad
@@ -452,8 +458,6 @@ def fast_qk_norm_rope(
         return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)
     has_indices = position_ids is not None
     if has_indices:
-        if position_ids.numel() == seq_len and batch != 1:
-            position_ids = position_ids.reshape(1, seq_len).expand(batch, seq_len)
         if position_ids.numel() != batch * seq_len:
             return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)
         rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()

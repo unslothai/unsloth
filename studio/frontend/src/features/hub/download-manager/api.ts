@@ -73,6 +73,8 @@ export interface ActiveModelDownload {
   generation?: number;
   // Scoped jobs only: lets an adopting client tell its transfer from a sibling's in the same slot.
   files?: string[] | null;
+  // The standalone Engram table the job fetches instead of the quant's own; null for its own.
+  engram_precision?: string | null;
 }
 
 export interface ActiveDatasetDownload {
@@ -140,6 +142,8 @@ export type DownloadProgressOptions = {
 
 export type GgufDownloadProgressOptions = DownloadProgressOptions & {
   variant: string;
+  /** Measures the swapped plan: this standalone table instead of the quant's own table shard. */
+  engramPrecision?: string | null;
 };
 
 export type {
@@ -220,6 +224,7 @@ export async function startModelDownload(payload: {
   files?: string[];
   transport_mode?: "auto" | "xet" | "http";
   download_dir?: string;
+  engram_precision?: string;
 }): Promise<DownloadStartResult & { job_key: string }> {
   const { hf_token, ...body } = payload;
   const headers = {
@@ -414,12 +419,13 @@ export async function getGgufDownloadProgress(
   repoId: string,
   options: GgufDownloadProgressOptions,
 ): Promise<DownloadProgressResponse> {
-  const { expectedBytes = 0, hfToken, signal, variant } = options;
+  const { expectedBytes = 0, hfToken, signal, variant, engramPrecision } = options;
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
+  if (engramPrecision) params.set("engram_precision", engramPrecision);
   const response = await authFetch(`/api/hub/gguf-download-progress?${params}`, {
     headers: hubTokenHeader(hfToken),
     signal,

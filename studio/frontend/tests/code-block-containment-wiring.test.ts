@@ -76,7 +76,7 @@ test("the wrapper keeps the visible override and the body keeps the DOM contract
     "the flicker rule on the wrapper stays",
   );
   const body = DEFER.slice(DEFER.indexOf("export const FenceBody = memo("));
-  assert.ok(/data-unsloth-fence-windowed=\{lineWindow === null \|\| !measured \? undefined : "true"\}\s*ref=\{wrapper\}\s*>\s*<div\s*className=\{joinClasses\([\s\S]*?\)\}\s*data-language=\{language \?\? undefined\}\s*data-streamdown="code-block-body"\s*ref=\{surface\}/.test(body), "the window hook sits on a box that does not scroll, around a body that keeps streamdown's markup and the measuring ref");
+  assert.ok(/data-unsloth-fence-windowed=\{offscreenPlain \|\| lineWindow === null \|\| !measured \? undefined : "true"\}\s*ref=\{wrapper\}\s*>\s*<div\s*className=\{joinClasses\([\s\S]*?\)\}\s*data-language=\{language \?\? undefined\}\s*data-streamdown="code-block-body"\s*ref=\{surface\}/.test(body), "the window hook sits on a box that does not scroll, around a body that keeps streamdown's markup and the measuring ref");
   assert.ok(!/contentVisibility:\s*"hidden"|display:\s*"none"/.test(body), "no line may be hidden from the engine");
 });
 
@@ -142,8 +142,8 @@ test("startup arms the attribute and watches the console override, after the mat
 test("the widening anchor stops at a skipped subtree instead of forcing it to render", () => {
   const pick = GLUE.slice(GLUE.indexOf("function pickAnchorRow("), GLUE.indexOf("function sampleAnchor("));
   assert.match(pick, /anchor\.checkVisibility\(\{ contentVisibilityAuto: true \}\)/);
-  assert.ok(pick.indexOf("checkVisibility") < pick.indexOf("for (const child of anchor.children)"), "checked before any child rect is read");
-  const loop = pick.slice(pick.indexOf("for (const child of anchor.children)"));
+  assert.ok(pick.indexOf("checkVisibility") < pick.indexOf("for (const child of layoutChildren(anchor))"), "checked before any child rect is read");
+  const loop = pick.slice(pick.indexOf("for (const child of layoutChildren(anchor))"));
   assert.ok(loop.indexOf("child.checkVisibility({ contentVisibilityAuto: true })") < loop.indexOf("child.getBoundingClientRect()"), "the child is asked before its rect is read, because the skipping element itself passes the check");
   assert.match(loop, /if \(child\.checkVisibility\(\)\) return anchor;\s*continue;/, "a skipped child makes its parent the anchor; a boxless child is skipped");
 });

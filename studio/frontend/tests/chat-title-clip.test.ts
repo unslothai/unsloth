@@ -414,7 +414,7 @@ test("a title on a saved connection is routed to it, and streamed", async () => 
   );
   assert.match(
     String(local?.messages?.[0]?.content),
-    /2-6 words, no quotes, no punctuation, ASCII only, do not echo input/,
+    /2-6 words, no quotes, no punctuation, do not echo input\. Write the title in the same language as the conversation\./,
   );
 });
 
@@ -617,7 +617,20 @@ test("the title is assembled from the deltas, unless it was cut short or reasone
   }
 });
 
-test("the answer is reduced to a short, plain, ASCII line", () => {
+test("emoji-only output still falls back instead of saving an invisible title", async () => {
+  for (const raw of [
+    "\u2764\uFE0F",
+    "\u2615\uFE0F",
+  ]) {
+    assert.equal(normalizeTitle(raw), null);
+    async function* chunks(): AsyncIterable<Chunk> {
+      yield { choices: [{ delta: { content: raw }, finish_reason: "stop" }] } as Chunk;
+    }
+    assert.equal(await titleFromStream(chunks()), null);
+  }
+});
+
+test("the answer is reduced to a short, plain line in its own language", () => {
   for (const [raw, expected] of [
     ['  "Matrix Inversion" — Steps  ', "Matrix Inversion Steps"],
     [
@@ -632,7 +645,15 @@ test("the answer is reduced to a short, plain, ASCII line", () => {
     ["   User: what is this", null],
     [`${"a".repeat(59)} b`, "a".repeat(59)],
     ["Base: what is this", null],
-    ["Café — Résumé Matrix", "Caf R sum Matrix"],
+    ["Café — Résumé Matrix", "Café Résumé Matrix"],
+    ["Recette des crêpes à l’orange", "Recette des crêpes à l orange"],
+    ["行列の逆行列の求め方", "行列の逆行列の求め方"],
+    ["Привет мир", "Привет мир"],
+    ["هندسه\u200Cی ماشین", "هندسه\u200Cی ماشین"],
+    ["🚀 Rocket Launch ✨ Plan", "Rocket Launch Plan"],
+    ["Ünïcödé — ✓ Done", "Ünïcödé Done"],
+    [`${"é".repeat(59)}😀x`, "é".repeat(59)],
+    ["語".repeat(80), "語".repeat(60)],
     ["x".repeat(80), "x".repeat(60)],
     ["Inverting Title: A Matrix", "Inverting Title A Matrix"],
     ["Title : Matrix Steps", "Matrix Steps"],
@@ -729,5 +750,19 @@ test("the title budget is floored at the provider's minimum output", async () =>
     stageConnection({ providerType, baseUrl: "", hasApiKey: true, models: [model] });
     const request = await buildTitleRequest(`external::conn-1::${model}`, "x");
     assert.equal(request?.max_tokens, expected, model);
+  }
+});
+
+test("a Custom connection that cannot turn thinking off leaves room for it (#17332)", async () => {
+  const budget = async (overrides: Record<string, unknown>) => {
+    stageConnection({ providerType: "custom", models: ["qwen3"], ...overrides });
+    return (await buildTitleRequest("external::conn-1::qwen3", "x"))?.max_tokens;
+  };
+  assert.equal(await budget({}), 1024);
+  assert.equal(await budget({ reasoningConfig: { enabled: false, style: "reasoning_effort" } }), 1024);
+  // An enabled dialect sends thinking off, so the plain cap stands.
+  assert.equal(await budget({ reasoningConfig: { enabled: true, style: "chat_template_kwargs.enable_thinking" } }), 64);
+  for (const providerType of ["llama_cpp", "vllm", "ollama"]) {
+    assert.equal(await budget({ providerType }), 64, providerType);
   }
 });

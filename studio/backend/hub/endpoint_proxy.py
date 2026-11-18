@@ -129,9 +129,8 @@ def _saved_only(endpoint: str) -> bool:
 
 
 def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: bool) -> APIRouter:
-    """``anonymous_pages`` redirects credential-less loads outside ``/api`` (README images,
-    repository links) to the endpoint; a settings-saved endpoint seen from off the host is
-    relayed without credentials instead, so its URL stays private."""
+    """anonymous_pages redirects credential-less loads outside /api; off-host saved endpoints are
+    relayed without credentials so their URL stays private."""
     router = APIRouter()
 
     @router.api_route("/{path:path}", methods = ["GET", "HEAD"])

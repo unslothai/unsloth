@@ -32,7 +32,6 @@ PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
-# tools.py re-adds this only to an UNISOLATED launch, and only if it already exists.
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 
@@ -70,14 +69,22 @@ def session_script_dirs(packages: str) -> list[str]:
     )
 
 
+def studio_pip_prefix(packages: str) -> dict:
+    return {
+        "_UNSLOTH_PIP_PREFIX": packages,
+        "_UNSLOTH_PIP_PREFIX_FOR": sys.prefix,
+        "_UNSLOTH_PIP_PREFIX_PY": "%d.%d" % sys.version_info[:2],
+    }
+
+
 def with_session_packages(env: dict, workdir: str) -> dict:
-    """Reuse existing session packages without letting their binaries shadow PATH."""
+    """Session packages for an unisolated launch, their binaries never shadowing PATH."""
     packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
-    if not os.path.isdir(packages):
-        return env
-    updated = dict(env)
-    # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
-    updated["PYTHONNOUSERSITE"] = "1"
+    # sitecustomize sets PIP_PREFIX only in Studio's own interpreter: a project venv's pip keeps installing there.
+    updated = {**env, **studio_pip_prefix(packages)}
+    if os.path.isdir(packages):
+        # Block a planted usercustomize.py; a fresh chat keeps pip --user usable.
+        updated["PYTHONNOUSERSITE"] = "1"
     for key, value in (
         ("PYTHONPATH", os.pathsep.join(session_package_paths(packages))),
         ("PATH", os.pathsep.join(session_script_dirs(packages))),
@@ -199,6 +206,8 @@ class ToolLaunchPlan:
     # Set by the trusted tool owner, never inferred from model args.
     execution_kind: Literal["python", "terminal"] | None = None
     cancel_event: Any = None
+    # Network only through a per-call proxy that refuses metadata and local addresses; unhonoured if unsupported.
+    egress_proxy: bool = False
 
 
 @dataclass
@@ -219,6 +228,8 @@ class PreparedSandboxLaunch:
     cleanup_diagnostics: list[str] = field(default_factory = list)
     spawn_callback: Callable | None = None
     launch_limitations: tuple[str, ...] = ()
+    # The proxy URL when the launch honoured ToolLaunchPlan.egress_proxy.
+    egress_proxy: str | None = None
 
     def cleanup(self) -> None:
         while self.cleanup_callbacks:
@@ -331,12 +342,25 @@ def _walk_for_host_channels(
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
     links: dict[tuple[int, int], list] = {}
     unreadable: list[str] = []
+    # POSIX: each directory's stat as its parent saw it (the root via stat, as scandir follows it). While still current
+    # when walked, it stands in for the path/.. stat ismount reads; a missing or swapped one takes the ismount calls.
+    listed: dict[str, os.stat_result] = {}
+    if not _NT_PATHS:
+        try:
+            listed[root] = os.stat(root)
+        except OSError:
+            pass
 
     for base, dirs, names in os.walk(
         root, followlinks = False, onerror = lambda exc: unreadable.append(exc.filename or root)
     ):
+        parent = listed.pop(base, None)
+        signature = directory_signature(base) if witness is not None or parent is not None else None
+        if parent is not None and signature[1:3] != (parent.st_dev, parent.st_ino):
+            # Swapped since its parent listed it.
+            parent = None
         if witness is not None:
-            witness.append(directory_signature(base))
+            witness.append(signature)
         if unreadable:
             return f"{unreadable[0]} cannot be fully inspected"
         for name in (*dirs, *names):
@@ -359,8 +383,16 @@ def _walk_for_host_channels(
             if stat.S_ISDIR(info.st_mode):
                 # Misses a same-filesystem bind mount; Linux also asks the mount table. A Windows mounted folder is a
                 # reparse point, refused above, and ntpath.ismount calls a directory named nul the \\.\nul device root.
-                if not _NT_PATHS and os.path.ismount(path):
-                    return f"contains a nested host mount: {path}"
+                if not _NT_PATHS:
+                    # path/.. is this parent: same device and another inode is exactly where ismount says no.
+                    if (
+                        parent is None
+                        or info.st_dev != parent.st_dev
+                        or info.st_ino == parent.st_ino
+                    ):
+                        if os.path.ismount(path):
+                            return f"contains a nested host mount: {path}"
+                    listed[path] = info
                 continue
             if not stat.S_ISREG(info.st_mode):
                 return f"contains a device or IPC node: {path}"

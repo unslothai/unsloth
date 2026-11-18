@@ -35,10 +35,14 @@ import {
 } from "@/components/assistant-ui/message-derived";
 import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
+import {
+  type SettledEscapedMath,
+  normalizeEscapedInlineMath,
+} from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
+import { backendPathUrl, desktopSignedMediaPath, protectedBackendPath } from "@/lib/api-base";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -48,7 +52,12 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowExpand01Icon,
+  ArrowShrink01Icon,
+  Download01Icon,
+} from "@hugeicons/core-free-icons";
+import { LineWrapDisableIcon, LineWrapIcon } from "@/lib/hugeicons-derived";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
@@ -108,6 +117,7 @@ import { AudioPlayer } from "./audio-player";
 import {
   type ContextFile,
   FileContextMenu,
+  loadBackendFile,
   loadSandboxFile,
   WebLinkContextMenu,
 } from "./link-context-menu";
@@ -121,6 +131,7 @@ import {
 import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
+import { rehypeAutoDirection } from "./rehype-auto-direction";
 import { rehypeSandboxImages } from "./rehype-sandbox-images";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
@@ -226,10 +237,12 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
   const file = src
-    ? markdownSandboxImageSrc(src, {
+    ? (markdownSandboxImageSrc(src, {
         threadId: remoteId ?? activeThreadId ?? undefined,
         projectId,
-      })
+      }) ??
+      desktopSignedMediaPath(src) ??
+      protectedBackendPath(src))
     : null;
   const sandbox = useSandboxImage(file);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
@@ -353,13 +366,22 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
       </SandboxFileLink>
     );
   }
+  const backend = href ? protectedBackendPath(href) : null;
+  if (backend !== null) {
+    return (
+      <BackendFileLink href={backend} dom={dom}>
+        {children}
+      </BackendFileLink>
+    );
+  }
+  const target = href ? backendPathUrl(href) : href;
   const link = (
     <a
-      href={href}
+      href={target}
       rel="noopener noreferrer"
       className={LINK_CLASS}
       onClick={(e) => {
-        if (href && openLink(href)) {
+        if (target && openLink(target)) {
           e.preventDefault();
         }
       }}
@@ -368,7 +390,57 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
       {children}
     </a>
   );
-  return href ? <WebLinkContextMenu href={href}>{link}</WebLinkContextMenu> : link;
+  return target ? <WebLinkContextMenu href={target}>{link}</WebLinkContextMenu> : link;
+}
+
+/** A backend file the chat's tools linked (a saved voice sample): fetched with the session's credentials. */
+function BackendFileLink({
+  href,
+  dom,
+  children,
+}: {
+  href: string;
+  dom: Omit<ComponentProps<"a">, "href" | "children">;
+  children: ReactNode;
+}) {
+  const t = useT();
+  const parts = href.split(/[?#]/)[0].split("/").filter(Boolean);
+  const tail = decodeSegment(parts.at(-1) ?? "");
+  const base = tail === "file" ? decodeSegment(parts.at(-2) ?? "file") : tail;
+  const named = (blob: Blob) => {
+    const ext = blob.type.split("/")[1]?.split(/[;+]/)[0];
+    return base.includes(".") || !ext ? base : `${base}.${ext === "mpeg" ? "mp3" : ext}`;
+  };
+  const target: ContextFile = { name: base, load: () => loadBackendFile(href) };
+  const openFile = () => {
+    void target
+      .load()
+      .then(async (blob) => {
+        if (filesOpenInBrowser()) {
+          openFileInBrowser({ blob, name: named(blob), contentType: blob.type, key: `backend:${href}` });
+          return;
+        }
+        await downloadFile(blob, named(blob), blob.type || undefined);
+      })
+      .catch((error) => {
+        if (!isDownloadCancelled(error)) toast.error(t("linkMenu.openFailed", { name: base }));
+      });
+  };
+  return (
+    <FileContextMenu file={{ ...target, open: openFile }}>
+      <a
+        href={backendPathUrl(href)}
+        className={LINK_CLASS}
+        onClick={(event) => {
+          event.preventDefault();
+          openFile();
+        }}
+        {...dom}
+      >
+        {children}
+      </a>
+    </FileContextMenu>
+  );
 }
 
 function SandboxFileLink({
@@ -628,20 +700,124 @@ function MermaidCopyButton({ source }: { source: string }) {
   );
 }
 
+/** A block's own wrap and expand choices, by language and code: the thread window remounts rows
+ *  it scrolls back to, and the choices would otherwise reset with the component. */
+const blockViews = new Map<string, { wrapped?: boolean; expanded?: boolean }>();
+const BLOCK_VIEWS_MAX = 500;
+
+function rememberBlockView(key: string | null, view: { wrapped?: boolean; expanded?: boolean }) {
+  if (key === null) return;
+  const next = { ...blockViews.get(key), ...view };
+  blockViews.delete(key);
+  blockViews.set(key, next);
+  if (blockViews.size > BLOCK_VIEWS_MAX) blockViews.delete(blockViews.keys().next().value as string);
+}
+
 export function CodeBlockActions({
   disabled,
   language,
   source,
+  wrappable = true,
 }: {
   disabled: boolean;
   language: string | null;
   source: string | (() => string);
+  /** False where the code is not one streamdown block (reasoning fragments): wrap and expand would reach nothing. */
+  wrappable?: boolean;
 }) {
   const { copied, showCopied } = useCopiedState();
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const viewKey = wrappable && typeof source === "string" ? `${language ?? ""}\n${source}` : null;
+  const remembered = viewKey === null ? undefined : blockViews.get(viewKey);
+  // Starts from Appearance > Code > Word wrap; the toggle overrides it for this block only.
+  const [wrapped, setWrapped] = useState(
+    () =>
+      remembered?.wrapped ??
+      (typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap")),
+  );
+  const wrapLabel = wrapped ? "Disable word wrap" : "Enable word wrap";
+  const [expanded, setExpanded] = useState(() => remembered?.expanded ?? false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: restores a remembered view once, on mount
+  useLayoutEffect(() => {
+    const wrapper = actionsRef.current?.parentElement;
+    if (!wrapper || !remembered) return;
+    if (remembered.wrapped !== undefined) wrapper.setAttribute("data-wrap", remembered.wrapped ? "on" : "off");
+    if (remembered.expanded) wrapper.toggleAttribute("data-code-expanded", true);
+  }, []);
+  const [overflowing, setOverflowing] = useState(false);
+  useEffect(() => {
+    const wrapper = actionsRef.current?.parentElement;
+    if (!wrappable || !wrapper || typeof ResizeObserver === "undefined") return;
+    const check = () => {
+      const body = wrapper.querySelector<HTMLElement>('[data-streamdown="code-block-body"]');
+      wrapper.toggleAttribute("data-scrolls-x", body !== null && body.scrollWidth > body.clientWidth + 1);
+      if (wrapper.hasAttribute("data-code-expanded")) return;
+      setOverflowing(body !== null && body.scrollHeight > body.clientHeight + 1);
+    };
+    // A capped body's code can change without the wrapper resizing (a remount, a wrap toggle): recheck on hover.
+    const observer = new ResizeObserver(check);
+    observer.observe(wrapper);
+    wrapper.addEventListener("pointerenter", check);
+    check();
+    return () => {
+      observer.disconnect();
+      wrapper.removeEventListener("pointerenter", check);
+    };
+  }, [wrappable]);
+  const expandLabel = expanded ? "Collapse code" : "Expand code";
 
   return (
-    <div className="pointer-events-none absolute top-3 right-3 z-20 flex items-center justify-end">
+    <div
+      className="pointer-events-none absolute top-3 right-3 z-20 flex items-center justify-end"
+      data-code-block-actions=""
+      ref={actionsRef}
+    >
       <div className={ACTION_PANEL_CLASS}>
+        {wrappable && <button
+          type="button"
+          className={ACTION_BUTTON_CLASS}
+          title={wrapLabel}
+          aria-label={wrapLabel}
+          aria-pressed={wrapped}
+          onClick={() => {
+            const next = !wrapped;
+            // The block is this bar's sibling; index.css keys the per-block wrap on the shared wrapper.
+            actionsRef.current?.parentElement?.setAttribute("data-wrap", next ? "on" : "off");
+            rememberBlockView(viewKey, { wrapped: next });
+            setWrapped(next);
+          }}
+        >
+          <HugeiconsIcon icon={wrapped ? LineWrapDisableIcon : LineWrapIcon} strokeWidth={1.75} className="size-icon" />
+        </button>}
+        {wrappable && (overflowing || expanded) && <button
+          type="button"
+          className={ACTION_BUTTON_CLASS}
+          title={expandLabel}
+          aria-label={expandLabel}
+          aria-expanded={expanded}
+          onClick={() => {
+            const next = !expanded;
+            actionsRef.current?.parentElement?.toggleAttribute("data-code-expanded", next);
+            rememberBlockView(viewKey, { expanded: next });
+            setExpanded(next);
+          }}
+        >
+          <HugeiconsIcon icon={expanded ? ArrowShrink01Icon : ArrowExpand01Icon} strokeWidth={1.75} className="size-icon" />
+        </button>}
+        <button
+          type="button"
+          className={ACTION_BUTTON_CLASS}
+          title="Download file"
+          disabled={disabled}
+          onClick={() => {
+            downloadTextFile(
+              getCodeFilename(language),
+              typeof source === "function" ? source() : source,
+            );
+          }}
+        >
+          <HugeiconsIcon icon={Download01Icon} className="size-icon" />
+        </button>
         <button
           type="button"
           className={ACTION_BUTTON_CLASS}
@@ -660,20 +836,6 @@ export function CodeBlockActions({
             strokeWidth={1.75}
             className="size-icon"
           />
-        </button>
-        <button
-          type="button"
-          className={ACTION_BUTTON_CLASS}
-          title="Download file"
-          disabled={disabled}
-          onClick={() => {
-            downloadTextFile(
-              getCodeFilename(language),
-              typeof source === "function" ? source() : source,
-            );
-          }}
-        >
-          <HugeiconsIcon icon={Download01Icon} className="size-icon" />
         </button>
       </div>
     </div>
@@ -879,7 +1041,8 @@ const tokenizesOffThread = (body: string, streaming: boolean): boolean =>
 const slowMainThreadRegex =
   typeof window !== "undefined"
   && typeof window.requestIdleCallback !== "function";
-const MAIN_THREAD_TAIL_CHARS = 512;
+// JavaScriptCore interprets lookbehind patterns, so there even a short fence goes to the worker.
+const MAIN_THREAD_TAIL_CHARS = slowMainThreadRegex ? 0 : 512;
 
 const settlesOffThread = (
   body: string,
@@ -887,7 +1050,7 @@ const settlesOffThread = (
   options: ReturnType<typeof fenceHighlightOptions>,
 ): boolean => {
   if (!tokenizesOffThread(body, streaming)) {
-    if (streaming || !slowMainThreadRegex) return false;
+    if (streaming) return false;
     const state = highlightWorkerState();
     if (state === "unavailable" || state === "stalled") return false;
   }
@@ -1029,7 +1192,7 @@ function useFenceTokens(
       }
       show(settled);
     };
-    if (defer()) {
+    if (defer() && !settlesOffThread(body, streaming, options)) {
       if (displayed.current !== null
         && (displayed.current.body !== body || displayed.current.language !== languageToken)) {
         show(null);
@@ -1166,12 +1329,13 @@ function FenceBlock({
 
   /* warm(true) tokenizes now (a sync cache hit for render); warm(false) only loads the grammar. */
   const warm = useCallback(
-    (tokens: boolean) => {
+    (tokens: boolean, inView = false) => {
       const body = trimTrailingNewlines(source);
       const options = fenceHighlightOptions(body, languageToken);
       const inline =
         tokens
-        && (!settlesOffThread(body, Boolean(isIncomplete), options)
+        && ((inView && !slowMainThreadRegex && !tokenizesOffThread(body, Boolean(isIncomplete)))
+          || !settlesOffThread(body, Boolean(isIncomplete), options)
           || code.cached(options) !== null);
       if (inline && !isIncomplete) code.highlightExact(options, () => {});
       else code.highlight(inline ? options : fenceHighlightOptions("", languageToken), () => {});
@@ -1405,6 +1569,7 @@ function MarkdownTextRenderer({
       // Streamdown caches processors by plugin name and serialized options.
       withDataImageSupport(STREAMDOWN_ALLOWED_TAGS, [
         [rehypeSandboxImages, { threadId, projectId }],
+        rehypeAutoDirection,
       ]),
     [threadId, projectId],
   );
@@ -1417,6 +1582,10 @@ function MarkdownTextRenderer({
     [messageTextKey],
   );
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
+  const [settledEscapedMath] = useState<SettledEscapedMath>(() => ({
+    prefix: "",
+    ranges: [],
+  }));
   const processedText = useMemo(
     () =>
       stabilizeStreamingMarkdown(
@@ -1435,12 +1604,20 @@ function MarkdownTextRenderer({
               ),
               searchImages,
             ),
+            isStreaming ? settledEscapedMath : undefined,
           ),
           isStreaming,
         ),
         isStreaming,
       ),
-    [displayText, isStreaming, messageTexts, precedingText, searchImages],
+    [
+      displayText,
+      isStreaming,
+      messageTexts,
+      precedingText,
+      searchImages,
+      settledEscapedMath,
+    ],
   );
   const incrementalCacheRef = useRef({
     messageId,

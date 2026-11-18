@@ -13,8 +13,10 @@ import hashlib
 import json
 import os
 import re
+import sys
 import threading
 import time
+from _thread import get_ident as _thread_ident
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -97,6 +99,119 @@ def warm_compile_pool(logger: Any = None) -> bool:
     return True
 
 
+PREWARM_ENV = "UNSLOTH_DIFFUSION_DEFERRED_PREWARM"
+_PREWARM_LOCK = threading.Lock()
+_PREWARM_THREAD: Optional[threading.Thread] = None
+
+
+def prewarm_enabled() -> bool:
+    raw = (os.environ.get(PREWARM_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _triton_key_fn() -> Optional[Callable[[], Any]]:
+    try:
+        from triton.runtime.cache import triton_key
+    except Exception:  # noqa: BLE001 - another Triton layout
+        try:
+            from triton.compiler.compiler import triton_key
+        except Exception:  # noqa: BLE001 - no Triton
+            return None
+    return triton_key if callable(triton_key) else None
+
+
+def warm_triton_key(logger: Any = None) -> bool:
+    """Fill Triton's per-process ``triton_key()`` cache (1-1.5 s, paid by the first JIT even on a warm disk cache)."""
+    fn = _triton_key_fn()
+    if fn is None:
+        return False
+    t0 = time.perf_counter()
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001 - the first JIT call computes it as before
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: triton key warm-up skipped: %s", exc)
+        return False
+    if logger is not None:
+        logger.info("diffusion.bg_compile: triton key ready in %.2f s", time.perf_counter() - t0)
+    return True
+
+
+def warm_inductor_key(logger: Any = None) -> bool:
+    """Fill inductor's per-process ``torch_key()`` (a hash of torch's sources), paid by the first compile otherwise."""
+    try:
+        from torch._inductor.codecache import torch_key
+    except Exception:  # noqa: BLE001 - another torch layout: the first compile computes it as before
+        return False
+    try:
+        torch_key()
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: inductor key warm-up skipped: %s", exc)
+        return False
+    return True
+
+
+def warm_engage_imports(logger: Any = None) -> int:
+    """Model-free first-use work of the engagement; returns how many steps ran."""
+
+    def _zoo_patch_utils() -> None:
+        # Import only: diffusion_patch_backend._helpers() keeps its own retry (import unsloth) for the 3rd image.
+        import unsloth_zoo.temporary_patches.utils  # noqa: F401
+
+    def _vae_kernels() -> None:
+        from . import diffusion_vae_fused
+        diffusion_vae_fused._kernels()
+
+    done = 0
+    steps: list[Callable[[], Any]] = [_zoo_patch_utils, _vae_kernels]
+    for step in steps:
+        try:
+            step()
+            done += 1
+        except Exception as exc:  # noqa: BLE001 - the 3rd image does this inline as before
+            if logger is not None:
+                logger.debug("diffusion.bg_compile: engage warm-up step skipped: %s", exc)
+    return done
+
+
+def start_deferred_prewarm(logger: Any = None) -> bool:
+    """Run the warm-ups on a side thread so none of it lands inside a render; ``PREWARM_ENV=0`` warms the pool inline."""
+    global _PREWARM_THREAD
+    if not prewarm_enabled():
+        return warm_compile_pool(logger)
+    with _PREWARM_LOCK:
+        if _PREWARM_THREAD is not None:
+            return False
+
+        def run() -> None:
+            t0 = time.perf_counter()
+            warm_compile_pool(logger)
+            warm_triton_key(logger)
+            warm_inductor_key(logger)
+            n = warm_engage_imports(logger)
+            if logger is not None:
+                logger.info(
+                    "diffusion.bg_compile: deferred profile warm-up done in %.2f s (%d import steps)",
+                    time.perf_counter() - t0,
+                    n,
+                )
+
+        _PREWARM_THREAD = threading.Thread(target = run, name = "unsloth-deferred-prewarm", daemon = True)
+        _PREWARM_THREAD.start()
+    return True
+
+
+def wait_prewarm(timeout: Optional[float] = 60.0) -> bool:
+    """Join the side warm-up before the profile engages (no second pool start, no second key hash)."""
+    with _PREWARM_LOCK:
+        thread = _PREWARM_THREAD
+    if thread is None or thread is threading.current_thread():
+        return True
+    thread.join(timeout)
+    return not thread.is_alive()
+
+
 def slice_seconds(eager_render_s: Optional[float]) -> float:
     """Compile seconds a render lets run before it pauses the compile: ``SLICE_ENV`` when set, else the load's
     fastest eager render (0 when none was timed), clamped to [0, 30]."""
@@ -112,6 +227,362 @@ def slice_seconds(eager_render_s: Optional[float]) -> float:
     if value != value:  # NaN
         value = 0.0
     return max(0.0, min(_SLICE_MAX_S, float(value)))
+
+
+IDLE_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_IDLE_ONLY"
+IDLE_GRACE_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_IDLE_S"
+# Resume delay after a render: covers sending the response and a back-to-back client's next request.
+_IDLE_GRACE_S = 1.0
+_IDLE_GRACE_MAX_S = 60.0
+# The compile thread's innermost frame unchanged this long = blocked without the GIL: the render stops waiting.
+_FREEZE_QUIET_S = 0.02
+_FREEZE_POLL_S = 0.002
+
+
+def _innermost(ident: Optional[int]) -> Optional[tuple]:
+    frame = sys._current_frames().get(ident) if ident is not None else None
+    if frame is None:
+        return None
+    return (id(frame.f_code), frame.f_lasti, id(frame))
+
+
+def idle_only_enabled() -> bool:
+    """Per-block compiles run only while no render runs (default). ``=0`` restores the slice a render let run."""
+    raw = (os.environ.get(IDLE_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def idle_grace_seconds() -> float:
+    raw = (os.environ.get(IDLE_GRACE_ENV) or "").strip()
+    try:
+        value = float(raw) if raw else _IDLE_GRACE_S
+    except ValueError:
+        value = _IDLE_GRACE_S
+    if value != value:  # NaN
+        value = _IDLE_GRACE_S
+    return max(0.0, min(_IDLE_GRACE_MAX_S, value))
+
+
+# Mid-trace freeze via sys.monitoring PY_START (3.12+): park only the compile thread, only inside torch's compile,
+# never with a lock-taking module frame (or a Studio frame inside a lock block) on its stack.
+_FREEZE_TOOL_IDS = (4, 3)
+_FREEZE_TOOL: list = [None]  # None = not tried, False = unavailable, else the tool id
+_FREEZE_TARGET: list = [None]
+# Job frozen mid-trace now (_FREEZE_TARGET is cleared by then): what _CompileLockProxy thaws.
+_FROZEN_JOB: list = [None]
+_FREEZE_LOCK = threading.Lock()
+_FREEZE_MAX_DEPTH = 5000
+# Frames here may hold a lock a render (or the compile pool) takes: never park there.
+_FREEZE_DENY_ROOTS = frozenset(
+    {
+        "logging",
+        "importlib",
+        "_frozen_importlib",
+        "_frozen_importlib_external",
+        "zipimport",
+        "threading",
+        "_threading_local",
+        "concurrent",
+        "multiprocessing",
+        "queue",
+        "subprocess",
+        "selectors",
+        "asyncio",
+        "socket",
+        "ssl",
+        "warnings",
+        "tqdm",
+        "structlog",
+        "rich",
+        "filelock",
+        "weakref",
+        "_weakrefset",
+        "gc",
+    }
+)
+# (torch._inductor.async_compile takes no lock: it only hands kernels to the pool, whose locks compile_worker holds.)
+_FREEZE_DENY_MODULES = (
+    "torch._logging",
+    "torch._inductor.compile_worker",
+    "torch._inductor.autotune_process",
+    "torch.utils._filelock",
+    "core.inference.diffusion_compile_config",
+    __name__,
+)
+# Studio frames are refused only inside their own lock-holding code, decided once per code object from its source.
+_STUDIO_ROOTS = ("core.", "studio.")
+_LOCKISH = re.compile(r"lock|LOCK|_IDLE\b|_cv\b|hold_off_capture|held_work|capture_hold")
+# code -> True (bare acquire: whole function) or (first, last) line spans of lock-holding ``with`` blocks
+_LOCK_CODE: dict = {}
+
+
+def _lock_spans(code: Any) -> Any:
+    hit = _LOCK_CODE.get(code)
+    if hit is not None:
+        return hit
+    try:
+        import ast
+        import inspect
+        import textwrap
+
+        lines, first = inspect.getsourcelines(code)
+        tree = ast.parse(textwrap.dedent("".join(lines)))
+        spans = []
+        bare = False
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.With, ast.AsyncWith)):
+                if any(_LOCKISH.search(ast.unparse(item.context_expr)) for item in node.items):
+                    spans.append(
+                        (node.lineno + first - 1, (node.end_lineno or node.lineno) + first - 1)
+                    )
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("acquire", "capture_hold")
+            ):
+                bare = True
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "capture_hold"
+            ):
+                bare = True
+        hit = True if bare else tuple(spans)
+    except Exception:  # noqa: BLE001 - no source: assume it may hold one
+        hit = True
+    _LOCK_CODE[code] = hit
+    return hit
+
+
+def _holds_lock(frame: Any) -> bool:
+    spans = _lock_spans(frame.f_code)
+    if spans is True:
+        return True
+    if not spans:
+        return False
+    line = frame.f_lineno or 0
+    return any(a <= line <= b for a, b in spans)
+
+
+# Park only inside the compile: outside it runs eager Studio / diffusers code whose locks no list can name.
+_FREEZE_INSIDE = ("torch._dynamo.", "torch._inductor.", "torch._functorch.")
+
+
+FREEZE_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_FREEZE"
+
+
+def freeze_enabled() -> bool:
+    """Idle-only and ``FREEZE_ENV`` not off and the interpreter can (``=0``: stop only at block boundaries)."""
+    raw = (os.environ.get(FREEZE_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return idle_only_enabled() and _freeze_tool() is not None
+
+
+def _freeze_tool() -> Optional[int]:
+    tool = _FREEZE_TOOL[0]
+    if tool is not None:
+        return tool or None
+    with _FREEZE_LOCK:
+        if _FREEZE_TOOL[0] is not None:
+            return _FREEZE_TOOL[0] or None
+        _FREEZE_TOOL[0] = False
+        mon = getattr(sys, "monitoring", None)
+        if mon is None:
+            return None
+        try:
+            # dynamo would try to trace the callback when it fires between two compiled frames on the compile thread
+            from torch._dynamo.eval_frame import skip_code
+            for fn in (
+                _on_py_start,
+                _freeze_safe,
+                _freeze_refusal,
+                _frame_refusal,
+                _holds_lock,
+                _lock_spans,
+                _compile_lock_owned,
+                BackgroundCompile._maybe_freeze,
+                BackgroundCompile._park,
+            ):
+                skip_code(fn.__code__)
+        except Exception:  # noqa: BLE001 - no skip hook: park at block boundaries only
+            return None
+        for tool_id in _FREEZE_TOOL_IDS:
+            try:
+                mon.use_tool_id(tool_id, "unsloth-diffusion-bg-compile")
+            except Exception:  # noqa: BLE001 - id held by a profiler / debugger
+                continue
+            try:
+                mon.register_callback(tool_id, mon.events.PY_START, _on_py_start)
+            except Exception:  # noqa: BLE001
+                with contextlib.suppress(Exception):
+                    mon.free_tool_id(tool_id)
+                continue
+            _FREEZE_TOOL[0] = tool_id
+            return tool_id
+        return None
+
+
+def _set_freeze_events(on: bool) -> None:
+    tool = _FREEZE_TOOL[0]
+    if not tool:
+        return
+    mon = sys.monitoring
+    with contextlib.suppress(Exception):
+        mon.set_events(tool, mon.events.PY_START if on else 0)
+
+
+def _on_py_start(code: Any, offset: int) -> Any:
+    bg = _FREEZE_TARGET[0]
+    if bg is None or _thread_ident() != bg._tid:
+        return None
+    bg._maybe_freeze()
+    return None
+
+
+def _frame_refusal(frame: Any) -> Optional[str]:
+    """Why ``frame`` alone forbids a park (a module or function that may hold a lock a render takes), else None."""
+    name = frame.f_globals.get("__name__") or ""
+    if name.partition(".")[0] in _FREEZE_DENY_ROOTS:
+        return name
+    for deny in _FREEZE_DENY_MODULES:
+        if name == deny or name.startswith(deny + "."):
+            return name
+    if name.startswith(_STUDIO_ROOTS) and _holds_lock(frame):
+        return f"{name}:{frame.f_code.co_name}"
+    return None
+
+
+def _freeze_refusal(frame: Any, memo: Optional[dict] = None) -> Optional[str]:
+    """None when the compile thread may park at ``frame``, else why not. ``memo`` caches per-frame verdicts."""
+    chain = []
+    depth = 0
+    run_code = BackgroundCompile._run.__code__
+    refusal: Optional[str] = None
+    inside = False
+    f = frame
+    while True:
+        if f is None:
+            refusal = "not the compile thread"
+            break
+        if depth >= _FREEZE_MAX_DEPTH:
+            refusal = "stack depth"
+            break
+        if memo is not None:
+            hit = memo.get(id(f))
+            if hit is not None and hit[0] is f:
+                refusal, inside = hit[1], hit[2]
+                break
+        if f.f_code is run_code:
+            break
+        chain.append(f)
+        f = f.f_back
+        depth += 1
+    for g in reversed(chain):
+        if refusal is None:
+            refusal = _frame_refusal(g)
+        if not inside:
+            inside = (g.f_globals.get("__name__") or "").startswith(_FREEZE_INSIDE)
+        if memo is not None:
+            memo[id(g)] = (g, refusal, inside)
+    if refusal is None and not inside:
+        return "outside the compile"
+    return refusal
+
+
+def _stack_summary(frame: Any, limit: int) -> str:
+    where = []
+    while frame is not None and len(where) < limit:
+        where.append(f"{frame.f_globals.get('__name__', '?')}:{frame.f_code.co_name}")
+        frame = frame.f_back
+    return " < ".join(where)
+
+
+def _freeze_safe(frame: Any) -> bool:
+    return _freeze_refusal(frame) is None
+
+
+class _CompileLockProxy:
+    """dynamo's ``compile_lock``, unchanged, except that a thread blocked on it while the background compile is frozen
+    mid-trace (holding it) thaws that compile, so the wait ends when its block graph does instead of never."""
+
+    _unsloth_bg_proxy = True
+
+    def __init__(self, lock: Any) -> None:
+        self._lock = lock
+
+    def acquire(
+        self,
+        blocking: bool = True,
+        timeout: float = -1,
+    ) -> bool:
+        if self._lock.acquire(False):
+            return True
+        if not blocking:
+            return False
+        deadline = None if timeout is None or timeout < 0 else time.perf_counter() + timeout
+        with _WAITERS_LOCK:
+            _LOCK_WAITERS[0] += 1
+        try:
+            while True:
+                for bg in {
+                    id(j): j for j in (_FROZEN_JOB[0], _FREEZE_TARGET[0]) if j is not None
+                }.values():
+                    bg._thaw_for_lock()
+                if self._lock.acquire(True, 0.05):
+                    return True
+                if deadline is not None and time.perf_counter() >= deadline:
+                    return False
+        finally:
+            with _WAITERS_LOCK:
+                _LOCK_WAITERS[0] -= 1
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc: Any) -> None:
+        self._lock.release()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._lock, name)
+
+
+# Threads blocked on dynamo's compile_lock: the compile thread never freezes holding it while one waits.
+_LOCK_WAITERS: list = [0]
+_WAITERS_LOCK = threading.Lock()
+_COMPILE_LOCK: list = [None]
+
+
+def _compile_lock_owned() -> bool:
+    lock = _COMPILE_LOCK[0]
+    if lock is None:
+        return False
+    try:
+        return bool(lock._is_owned())
+    except Exception:  # noqa: BLE001 - assume held: never freeze on it while a thread waits
+        return True
+
+
+def _install_compile_lock_proxy() -> bool:
+    try:
+        from torch._dynamo import convert_frame
+    except Exception:  # noqa: BLE001
+        return False
+    lock = getattr(convert_frame, "compile_lock", None)
+    if lock is None:
+        return False
+    if getattr(lock, "_unsloth_bg_proxy", False):
+        _COMPILE_LOCK[0] = lock._lock
+        return True
+    try:
+        _COMPILE_LOCK[0] = lock
+        convert_frame.compile_lock = _CompileLockProxy(lock)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
 
 
 def yield_point() -> None:
@@ -219,8 +690,152 @@ def _write_float_seeds(path: Path, signature: str, names: set) -> bool:
         return False
 
 
+FLOAT_SEED_DEFAULTS_ENV = "UNSLOTH_DIFFUSION_FLOAT_SEED_DEFAULTS"
+# Only repeat blocks: never change one block's trace.
+_LAYER_COUNT_KEYS = frozenset({"num_layers", "num_single_layers", "n_layers", "n_refiner_layers"})
+# Names a first compile learns, recorded on CUDA (torch 2.13, diffusers 0.42.1) from one random-weight layer through
+# the load patches and _compile_repeated_blocks. SymFloat ids hash the source name (ShapeEnv._generate_unique_id), not
+# sizes. Any key not listed compiles as before.
+_FLOAT_SEED_DEFAULTS: dict[str, str] = {
+    # FLUX.2-klein-4B, FLUX.2-klein-base-4B
+    "5dd2ab806177446849627b4464e399c23085a03960a47640163a005ead876c76": (
+        "zf0 zf12 zf21 zf40 zf58 zf70 zf71 zf88 zf89 zf90 zf91"
+    ),
+    # FLUX.2-klein-9B, FLUX.2-klein-base-9B
+    "ed77982ae6d06d727fa45f55b8a9b54d1cfefd714faf4c49661d0c40d45c25cf": (
+        "zf0 zf12 zf21 zf40 zf58 zf70 zf71 zf88 zf89 zf90 zf91"
+    ),
+    # FLUX.2-dev
+    "08155a26395df986bc2ebe6a03764b3853aea472ce7071d970a2b6d26e78128d": (
+        "zf0 zf12 zf21 zf40 zf58 zf70 zf71 zf88 zf89 zf90 zf91"
+    ),
+    # FLUX.1-dev, FLUX.1-Krea-dev, FLUX.1-Kontext-dev
+    "f9da488bd5a25610cba88496c39c38734d14c11e72e3f0688d40379c0995cdc7": (
+        "zf7 zf9 zf12 zf21 zf22 zf40 zf65 zf70 zf71 zf79 zf88 zf90 zf92"
+    ),
+    # FLUX.1-schnell
+    "b96ece9558717c01650c7eb9c9c4107bbc0d362cb67ac73edef2d20b96abfa80": (
+        "zf7 zf9 zf12 zf21 zf22 zf40 zf65 zf70 zf71 zf79 zf88 zf90 zf92"
+    ),
+    # Qwen-Image, Qwen-Image-2512
+    "117a3c53808c528a69646ef6779e6c14e0006d00b744ad2933141adb4dc3e100": (
+        "zf14 zf17 zf21 zf28 zf35 zf51 zf63 zf71 zf72 zf88 zf90"
+    ),
+    # Z-Image-Turbo, Z-Image
+    "dca7906be5a3ff641e546d2701df36ac68e154b101afcf9ed7b9c7834002611c": "zf5 zf28 zf34 zf60 zf61 zf88 zf93",
+    # Wan2.1-T2V-1.3B-Diffusers
+    "e167abbacdd33d070a5afb4db4fab562d48e6947d66516c81e5d82b6e4a33deb": (
+        "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75 zf88"
+    ),
+    # Wan2.2-T2V-A14B-Diffusers
+    "1964c3258a9e85943eff4f23607798c2b87f1507cba02c4c2ec9426a56c41393": (
+        "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75 zf88"
+    ),
+    # Wan2.2-TI2V-5B-Diffusers
+    "1bd1ee540edd9dcab8d689c2b48cfb729b19901aaee45bbf67a5b885e176d191": (
+        "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75 zf87"
+    ),
+}
+
+
+def float_seed_defaults_enabled() -> bool:
+    raw = (os.environ.get(FLOAT_SEED_DEFAULTS_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _source_digest(fn: Any) -> str:
+    """Source digest (stable across Python builds), else bytecode."""
+    import inspect
+
+    fn = getattr(fn, "__func__", fn)
+    try:
+        return hashlib.sha256(inspect.getsource(fn).encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001 - no source (C ext / generated): bytecode, or nothing
+        code = getattr(fn, "__code__", None)
+        return _code_digest(code) if code is not None else f"<{type(fn).__qualname__}>"
+
+
+def _callable_id(fn: Any) -> str:
+    fn = getattr(fn, "__func__", fn)
+    return f"{getattr(fn, '__module__', '')}.{getattr(fn, '__qualname__', type(fn).__qualname__)}"
+
+
+def _traced_code(fn: Any) -> list:
+    """``fn`` plus the module-level functions it calls by name, so swapping either moves the key."""
+    fn = getattr(fn, "__func__", fn)
+    out = [f"{_callable_id(fn)}:{_source_digest(fn)}"]
+    code = getattr(fn, "__code__", None)
+    scope = getattr(fn, "__globals__", None) or {}
+    for name in sorted(set(getattr(code, "co_names", ()) or ())):
+        ref = scope.get(name)
+        if callable(ref) and not isinstance(ref, type) and hasattr(ref, "__code__"):
+            out.append(f"{name}={_callable_id(ref)}")
+    return out
+
+
+def _block_layout(block: Any) -> list:
+    out = []
+    for name, sub in block.named_modules():
+        proc = getattr(sub, "processor", None)
+        out.append(
+            [
+                name,
+                _callable_id(type(sub)),
+                _traced_code(type(sub).forward),
+                []
+                if proc is None
+                else [_callable_id(type(proc))] + _traced_code(type(proc).__call__),
+                "forward" in vars(sub),
+            ]
+        )
+    return out
+
+
+def _default_float_seed_key(module: Any) -> Optional[str]:
+    """Portable key of the block trace: torch minor, diffusers version, config, and the code each block runs."""
+    try:
+        import diffusers
+        import torch
+
+        from .diffusion_block_graph import repeated_blocks
+
+        config = getattr(module, "config", None)
+        if not isinstance(config, dict) or getattr(module, "peft_config", None):
+            return None
+        config = {
+            k: v
+            for k, v in config.items()
+            if not str(k).startswith("_") and k not in _LAYER_COUNT_KEYS
+        }
+        first: dict = {}
+        for block in repeated_blocks(module):
+            first.setdefault(type(block), block)
+        if not first:
+            return None
+        parts = [
+            ".".join(str(torch.__version__).split("+", 1)[0].split(".")[:2]),
+            str(diffusers.__version__),
+            _callable_id(type(module)),
+            json.dumps(config, sort_keys = True, default = str),
+        ]
+        for cls in sorted(first, key = _callable_id):
+            parts.append(json.dumps(_block_layout(first[cls])))
+        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001 - no key, no defaults
+        return None
+
+
+def _default_float_seeds(modules: Any) -> set:
+    if not float_seed_defaults_enabled() or not _FLOAT_SEED_DEFAULTS:
+        return set()
+    names: set = set()
+    for module in list(modules) if isinstance(modules, (list, tuple)) else [modules]:
+        names.update(_FLOAT_SEED_DEFAULTS.get(_default_float_seed_key(module) or "", "").split())
+    return {n for n in names if _SYMFLOAT_NAME.match(n)}
+
+
 def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple], int]:
-    """Pre-seed the SymFloat names the last compile of this key learned; returns (keep state, names added)."""
+    """Pre-seed the names this key learned, else the built-in ones; returns (keep state, names added)."""
     if seed_dir is None or not float_seeds_enabled():
         return None, 0
     try:
@@ -231,24 +846,28 @@ def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple
         path = Path(seed_dir) / FLOAT_SEEDS_FILE
         before = set(state.force_specializations)
         seeds = _read_float_seeds(path, signature)
+        builtin = False
+        if not seeds:
+            seeds = _default_float_seeds(modules)
+            builtin = bool(seeds)
         for name in sorted(seeds - before):
             state.specialize(name)
-        return (state, path, signature, before, seeds), len(seeds - before)
+        return (state, path, signature, before, seeds, builtin), len(seeds - before)
     except Exception:  # noqa: BLE001 - no seeds: the compile restarts as before
         return None, 0
 
 
 def _keep_floats(seeded: Optional[tuple]) -> int:
-    """Save this compile's specialised names if changed; returns how many are new."""
+    """Save the specialised names if changed or built-in; returns how many are new."""
     if seeded is None:
         return 0
-    state, path, signature, before, seeds = seeded
+    state, path, signature, before, seeds, builtin = seeded
     try:
         names = {
             n for n in set(state.force_specializations) - before if _SYMFLOAT_NAME.match(str(n))
         }
         names |= seeds & set(state.force_specializations)
-        if names and names != seeds:
+        if names and (names != seeds or builtin):
             _write_float_seeds(path, signature, names)
         return len(names - seeds)
     except Exception:  # noqa: BLE001 - bookkeeping only
@@ -271,6 +890,7 @@ class InlineFloatSeeds:
         self.logger = logger
         self.float_seeds = 0
         self.float_seeds_learned = 0
+        self.float_seeds_builtin = False
         self.seeded = False
         self.kept = False
         self._seeds: Optional[tuple] = None
@@ -280,11 +900,13 @@ class InlineFloatSeeds:
             return 0
         self.seeded = True
         self._seeds, self.float_seeds = _seed_floats(self.modules, self.seed_dir)
+        self.float_seeds_builtin = bool(self._seeds and self._seeds[5])
         if self.float_seeds and self.logger is not None:
             with contextlib.suppress(Exception):
                 self.logger.info(
-                    "diffusion.float_seeds: %d float specialisation(s) pre-seeded for the %s compile",
+                    "diffusion.float_seeds: %d %sfloat specialisation(s) pre-seeded for the %s compile",
                     self.float_seeds,
+                    "built-in " if self.float_seeds_builtin else "",
                     "/".join(type(m).__name__ for m in self.modules),
                 )
         return self.float_seeds
@@ -302,6 +924,40 @@ class InlineFloatSeeds:
 
     def describe(self) -> dict:
         return {"float_seeds": self.float_seeds, "float_seeds_learned": self.float_seeds_learned}
+
+
+def float_seed_dits(pipe: Any) -> list:
+    """DiTs compiled with ``dynamic=True`` (SymFloat restarts); static and torchao compiles never restart."""
+    try:
+        from .diffusion_speed import _guarded_dits
+
+        dits = []
+        for dit in _guarded_dits(pipe):
+            kwargs = getattr(dit, "_unsloth_regional_compile_kwargs", None)
+            if isinstance(kwargs, dict) and kwargs.get("dynamic") is True:
+                dits.append(dit)
+        return dits
+    except Exception:  # noqa: BLE001 - no seeds, main's compile
+        return []
+
+
+@contextlib.contextmanager
+def seed_before_first_forward(float_seeds: Any):
+    """Also seed at the first DiT forward, for a loop that opens no progress bar (H3 modular's is its loop wrapper's)."""
+    handles = []
+
+    def _pre(*_args: Any) -> None:
+        float_seeds.seed()
+
+    try:
+        for module in list(getattr(float_seeds, "modules", None) or ()):
+            with contextlib.suppress(Exception):
+                handles.append(module.register_forward_pre_hook(_pre))
+        yield
+    finally:
+        for handle in handles:
+            with contextlib.suppress(Exception):
+                handle.remove()
 
 
 def load_time_enabled() -> bool:
@@ -562,6 +1218,27 @@ class BackgroundCompile:
         self.graph_s: Optional[float] = None
         self._last_yield: Optional[float] = None
         self._owe_graph = False
+        # Idle-only: a pause stops the compile at once; it resumes idle_grace_seconds() after the last render.
+        self.idle = idle_only_enabled()
+        self._idle_grace_s = idle_grace_seconds()
+        self._release_at = 0.0
+        self._tid: Optional[int] = None
+        self._freeze_ok = False
+        self._frozen = False
+        self._thaw = False
+        self.freezes = 0
+        self.pause_wait_s = 0.0
+        self.thaws = 0
+        self._thaw_where: Optional[str] = None
+        self._refusals: dict = {}
+        # frame verdicts for _freeze_refusal; holds frames, so cleared on every resume
+        self._frame_memo: dict = {}
+        self._freezes_at_pause = 0
+        self._pause_t0 = 0.0
+        self._stopped_after: Optional[float] = None
+        self._stopped_how = ""
+        # A frozen compile holds dynamo's compile_lock: freeze only once the proxy that thaws it is in place.
+        self._lock_proxy = False
 
     def yields(self) -> bool:
         return bool(getattr(self.module, "_unsloth_bg_yield", False)) and yield_enabled()
@@ -571,14 +1248,18 @@ class BackgroundCompile:
         cancel: Any = None,
         budget_s: float = 0.0,
         poll_s: float = 0.05,
+        freeze: bool = False,
     ) -> tuple[float, bool]:
         """Let the compile run ``budget_s`` more seconds, then park it at its next yield point. Returns
         ``(seconds waited, paused)``; ``paused`` means a pause is held and the caller MUST ``resume()``. A compile
-        that ends inside the budget returns ``paused=False`` (the render then runs compiled)."""
+        that ends inside the budget returns ``paused=False`` (the render then runs compiled). Idle-only ignores the
+        budget; ``freeze`` (resident denoiser) stops it at its next Python call inside the trace."""
         t0 = time.perf_counter()
         thread = self._thread
         if thread is None or thread is threading.current_thread() or not thread.is_alive():
             return 0.0, False
+        if self.idle:
+            return self._pause_now(thread, cancel, freeze, t0), True
         # Ask one graph_s early: the pause lands after the block graph in flight.
         budget = max(0.0, float(budget_s or 0.0))
         lead = self.graph_s if self.graph_s is not None else budget
@@ -600,14 +1281,184 @@ class BackgroundCompile:
                 self._cv.wait(poll_s)
         return time.perf_counter() - t0, True
 
+    def _pause_now(self, thread: Any, cancel: Any, freeze: bool, t0: float) -> float:
+        with self._cv:
+            self._pause_depth += 1
+            self.pauses += 1
+            nested = self._pause_depth > 1
+            if not nested:
+                self._freeze_ok = (
+                    bool(freeze) and self._lock_proxy and self._tid is not None and freeze_enabled()
+                )
+                self._freezes_at_pause = self.freezes
+                self._refusals = {}
+                self._pause_t0 = t0
+                self._stopped_after = None
+                if self._freeze_ok and not self._parked:
+                    _FREEZE_TARGET[0] = self
+                    _set_freeze_events(True)
+            self._cv.notify_all()
+            if not nested:
+                # Frozen and blocked without the GIL: costs the render nothing, the armed freeze stops it on wake.
+                # Unfrozen (offloaded): it would move the render's weights, so wait for the block-boundary park.
+                last = _innermost(thread.ident)
+                quiet_since = time.perf_counter()
+                while thread.is_alive() and not self._parked:
+                    if cancel is not None and cancel.is_set():
+                        break
+                    self._cv.wait(_FREEZE_POLL_S)
+                    now = time.perf_counter()
+                    here = _innermost(thread.ident)
+                    if here != last:
+                        last, quiet_since = here, now
+                    elif self._freeze_ok and now - quiet_since >= _FREEZE_QUIET_S:
+                        break
+        waited = time.perf_counter() - t0
+        self.pause_wait_s += waited
+        return waited
+
     def resume(self) -> None:
         with self._cv:
             self._pause_depth = max(0, self._pause_depth - 1)
             if not self._pause_depth:
                 self._release_epoch += 1
-                # the next pause() waits for a fresh park, after the block graph this release owes
-                self._parked = False
+                if self.idle:
+                    self._frame_memo = {}
+                    self._release_at = time.perf_counter() + self._idle_grace_s
+                    if (
+                        self._freeze_ok
+                        and self.freezes == self._freezes_at_pause
+                        and not self._parked
+                    ):
+                        self._log_unfrozen()
+                    elif self.logger is not None and (self._stopped_after or 0.0) > 0.1:
+                        self.logger.info(
+                            "diffusion.bg_compile: the compile stopped %.2f s into the render (%s); refusals %s",
+                            self._stopped_after,
+                            self._stopped_how,
+                            sorted(self._refusals.items(), key = lambda kv: -kv[1])[:6],
+                        )
+                    if self._thaw_where is not None and self.logger is not None:
+                        self.logger.info(
+                            "diffusion.bg_compile: a render needed dynamo's compile lock while the compile held it "
+                            "(%d thaw(s)); first from %s",
+                            self.thaws,
+                            self._thaw_where,
+                        )
+                        self._thaw_where = None
+                    self._thaw = False
+                    if not self._frozen:
+                        # never stopped: leave no event on for later renders
+                        self._disarm_freeze()
+                else:
+                    # the next pause() waits for a fresh park, after the block graph this release owes
+                    self._parked = False
             self._cv.notify_all()
+
+    def _log_unfrozen(self) -> None:
+        if self.logger is None:
+            return
+        try:
+            frame = sys._current_frames().get(self._tid)
+            where = []
+            while frame is not None and len(where) < 12:
+                where.append(f"{frame.f_globals.get('__name__', '?')}:{frame.f_code.co_name}")
+                frame = frame.f_back
+            top = sorted(self._refusals.items(), key = lambda kv: -kv[1])[:6]
+            others = []
+            names = {t.ident: t.name for t in threading.enumerate()}
+            for ident, f in sys._current_frames().items():
+                if ident in (self._tid, _thread_ident()):
+                    continue
+                chain = []
+                while f is not None and len(chain) < 40:
+                    chain.append(f"{f.f_globals.get('__name__', '?')}:{f.f_code.co_name}")
+                    f = f.f_back
+                if any(c.startswith(_FREEZE_INSIDE) for c in chain):
+                    others.append(f"[{names.get(ident, ident)}] " + " < ".join(chain[:8]))
+            self.logger.info(
+                "diffusion.bg_compile: the compile did not stop during this render (thawed %d, refusals %s); at %s; "
+                "other compile threads: %s",
+                self.thaws,
+                top,
+                " < ".join(where),
+                " || ".join(others) or "none",
+            )
+        except Exception:  # noqa: BLE001 - diagnostic only
+            pass
+
+    def _disarm_freeze(self) -> None:
+        if _FREEZE_TARGET[0] is self:
+            _set_freeze_events(False)
+            _FREEZE_TARGET[0] = None
+
+    def _thaw_for_lock(self) -> None:
+        """Another thread waits on dynamo's compile_lock: a compile frozen holding it runs on to the end of its frame
+        (it releases the lock there) and freezes again at its next safe call."""
+        if _thread_ident() == self._tid:
+            return
+        with self._cv:
+            if self._frozen and not self._thaw:
+                self.thaws += 1
+                if self._thaw_where is None:
+                    self._thaw_where = _stack_summary(sys._getframe(2), 14)
+                self._thaw = True
+                if self._pause_depth and self._freeze_ok:
+                    _FREEZE_TARGET[0] = self
+                    _set_freeze_events(True)
+                self._cv.notify_all()
+
+    def _maybe_freeze(self) -> None:
+        if not self._pause_depth or self._parked or self._closed.is_set() or not self._freeze_ok:
+            return
+        if _LOCK_WAITERS[0] and _compile_lock_owned():
+            return  # a thread waits on compile_lock: finish the frame that holds it first
+        self._thaw = False
+        frame = sys._getframe(2)  # _maybe_freeze <- _on_py_start <- the function that just started
+        memo = self._frame_memo
+        if len(memo) > 200_000:
+            memo.clear()
+        why = _freeze_refusal(frame, memo)
+        if why is not None:
+            self._refusals[why] = self._refusals.get(why, 0) + 1
+            return
+        self._park(frozen = True)
+
+    def _park(self, frozen: bool) -> None:
+        """Idle-only park until unpaused and the grace elapsed, close, or (frozen) a thaw."""
+        now = time.perf_counter()
+        with self._cv:
+            if not self._pause_depth and now >= self._release_at:
+                return
+            if frozen:
+                self._frozen = True
+                self.freezes += 1
+                _FROZEN_JOB[0] = self
+                self._disarm_freeze()
+            self._parked = True
+            if self._pause_depth and self._stopped_after is None:
+                self._stopped_after = now - self._pause_t0
+                self._stopped_how = "frozen" if frozen else "block boundary"
+            self._cv.notify_all()
+            try:
+                while not self._closed.is_set() and not (frozen and self._thaw):
+                    if self._pause_depth:
+                        self._cv.wait(0.5)
+                        continue
+                    left = self._release_at - time.perf_counter()
+                    if left <= 0:
+                        break
+                    self._cv.wait(left)
+            finally:
+                self._parked = False
+                self._frozen = False
+                if _FROZEN_JOB[0] is self:
+                    _FROZEN_JOB[0] = None
+                if not frozen:
+                    self._thaw = False
+                end = time.perf_counter()
+                self.paused_s += end - now
+                self._last_yield = end
 
     def _yield_point(self) -> None:
         self.yield_points += 1
@@ -619,6 +1470,12 @@ class BackgroundCompile:
             self.graph_s = seg if self.graph_s is None else 0.5 * (self.graph_s + seg)
             self._owe_graph = False
         self._last_yield = now
+        if self.idle:
+            if self._pause_depth or time.perf_counter() < self._release_at:
+                self._park(frozen = False)
+                if self._closed.is_set():
+                    raise _Closed()
+            return
         if not self._pause_depth or self._owe_graph:
             return
         with self._cv:
@@ -784,6 +1641,12 @@ class BackgroundCompile:
             # Before the thread starts: the compiled trace must not contain the hook.
             self._remove_hook()
             self.state = "compiling"
+            if self.idle:
+                # kicked from the render's finally: start once its response is out (the first block boundary waits)
+                self._release_at = time.perf_counter() + self._idle_grace_s
+                self._lock_proxy = (
+                    self.yields() and freeze_enabled() and _install_compile_lock_proxy()
+                )
             self._thread = threading.Thread(
                 target = self._run, name = "unsloth-diffusion-bg-compile", daemon = True
             )
@@ -812,6 +1675,7 @@ class BackgroundCompile:
         t0 = time.perf_counter()
         token = _NO_CAPTURE.set(True)
         _ACTIVE.set(self if self.yields() else None)
+        self._tid = threading.get_ident()
         try:
             import torch
 
@@ -872,6 +1736,7 @@ class BackgroundCompile:
             _NO_CAPTURE.reset(token)
             _ACTIVE.set(None)
             with self._cv:
+                self._disarm_freeze()
                 self._cv.notify_all()
 
     def _seed_floats(self) -> Optional[tuple]:
@@ -910,6 +1775,10 @@ class BackgroundCompile:
             "pauses": self.pauses,
             "paused_s": round(self.paused_s, 2),
             "float_seeds": self.float_seeds,
+            "idle_only": self.idle,
+            "freezes": self.freezes,
+            "thaws": self.thaws,
+            "pause_wait_s": round(self.pause_wait_s, 3),
             "error": self.error,
         }
 

@@ -3,14 +3,15 @@ import { WindowTitlebar } from "./src/components/tauri/window-titlebar";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ChatBackground } from "./src/features/chat-background/background";
-import { BACKGROUND_ON_ALL_PAGES } from "./src/features/chat-background/model";
 import { ChatBackgroundControls } from "./src/features/chat-background/controls";
 import {
   resetChatBackground,
   patchBackground,
   useBackgroundStore,
+  useChatBackground,
 } from "./src/features/chat-background/storage";
 import { TooltipProvider } from "./src/components/ui/tooltip";
+import { useMarkChatWelcome } from "./src/features/chat-background/welcome";
 import "./src/index.css";
 declare global {
   interface Window {
@@ -24,12 +25,18 @@ window.__wallpaperSmoke = {
   patch: patchBackground,
   state: useBackgroundStore.getState,
 };
+// Same root flag and nesting as ThreadWelcome, which the wallpaper CSS reads.
+function WelcomeFlag() {
+  useMarkChatWelcome();
+  return null;
+}
 function App() {
   const [conversation, setConversation] = useState(false),
     [active, setActive] = useState(true),
     [sidebar, setSidebar] = useState(false),
     [otherPage, setOtherPage] = useState(false),
     [dark, setDark] = useState(false);
+  const scope = useChatBackground().value?.scope ?? "chats";
   return (
     <TooltipProvider>
       <div className="p-4 text-foreground">
@@ -60,7 +67,14 @@ function App() {
             data-wallpaper-route={otherPage ? "page" : "chat"}
             className="relative h-[700px] overflow-hidden rounded-xl border bg-background"
           >
-            <ChatBackground active={active && (!otherPage || BACKGROUND_ON_ALL_PAGES)} />
+            <ChatBackground
+              active={
+                active &&
+                (otherPage
+                  ? scope === "all"
+                  : !(conversation && scope === "newChat"))
+              }
+            />
             <WindowTitlebar showSidebarSurface />
             {sidebar && <aside data-slot="sidebar" className="absolute inset-y-0 left-0 z-50 w-40 bg-sidebar p-4">Unsloth<br />New chat<br />Model hub</aside>}
             <main data-slot="sidebar-inset" className="relative h-full" style={{marginLeft: sidebar ? 160 : 0}}>
@@ -73,6 +87,8 @@ function App() {
             <div data-side-panel-inset="" className="chat-header-fade pointer-events-none absolute inset-x-0 top-[calc(var(--studio-content-top-inset,0px)+48px)] z-20 h-6 bg-gradient-to-b from-background to-transparent" />
             <div className="aui-thread-root relative h-full">
               <div className="aui-thread-viewport h-full p-8">
+                {!conversation && <WelcomeFlag />}
+                <div className={conversation ? undefined : "aui-thread-welcome-root"}>
                 <div
                   className={
                     conversation
@@ -105,6 +121,7 @@ function App() {
                       className="w-full bg-transparent outline-none"
                     />
                   </div>
+                </div>
                 </div>
               </div>
             </div>

@@ -20,11 +20,12 @@ from hub.workers import hf_download
 
 
 FILES = ["model_index.json", "transformer/diffusion_pytorch_model.safetensors"]
+REPO = "black-forest-labs/FLUX.1-dev"
+COMMIT = "c" * 40
 
 
-@pytest.fixture()
-def offline(monkeypatch, tmp_path):
-    """A worker whose metadata lookups all fail, pointed at a snapshot dir we control."""
+def _offline_worker(monkeypatch, tmp_path):
+    """Metadata lookups all fail and the Hub cache is a tmp dir."""
     monkeypatch.setattr(
         hf_download,
         "_model_info_with_retry",
@@ -37,8 +38,22 @@ def offline(monkeypatch, tmp_path):
 
     monkeypatch.setattr(registry_mod, "prepare_cache_for_transport", lambda *a, **k: 0)
 
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path / "hub"))
+    from hub.utils.snapshot_reuse import repo_cache_dir
+
+    return repo_cache_dir("model", REPO)
+
+
+@pytest.fixture()
+def offline(monkeypatch, tmp_path):
+    """An earlier download left refs/main and its snapshot: offline, the worker pins that commit (#16422)."""
+    repo_dir = _offline_worker(monkeypatch, tmp_path)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text(COMMIT, encoding = "utf-8")
+    snapshot = repo_dir / "snapshots" / COMMIT
+    snapshot.mkdir(parents = True)
 
     import huggingface_hub
 
@@ -47,9 +62,20 @@ def offline(monkeypatch, tmp_path):
 
 
 def _run(scope = "diffusion"):
-    hf_download._download_scoped_snapshot(
-        "black-forest-labs/FLUX.1-dev", scope, list(FILES), None, "http"
-    )
+    hf_download._download_scoped_snapshot(REPO, scope, list(FILES), None, "http")
+
+
+def test_offline_with_no_cached_revision_refuses_before_downloading(monkeypatch, tmp_path):
+    """No metadata and no refs/main: there is no immutable revision to pin, so nothing is fetched."""
+    _offline_worker(monkeypatch, tmp_path)
+    calls = []
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda **k: calls.append(k))
+    with pytest.raises(OSError, match = "immutable revision"):
+        _run()
+    assert calls == []
 
 
 def test_offline_scoped_download_fails_when_the_files_are_not_on_disk(offline, capsys):

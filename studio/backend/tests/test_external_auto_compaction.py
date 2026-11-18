@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 import routes.inference as ri
@@ -127,10 +128,43 @@ class _OpenAICompactionRejectingHandler(BaseHTTPRequestHandler):
         self.wfile.write(sse)
 
 
+def _is_summary_call(body: dict) -> bool:
+    first = (body.get("messages") or [{}])[0]
+    return first.get("role") == "system" and str(first.get("content") or "").startswith(
+        "You write the handover summary"
+    )
+
+
+class _SummaryRefusingHandler(_Handler):
+    """Answers chat turns and refuses the summary call, as a provider out of credit would."""
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        if not _is_summary_call(body):
+            self.server.recorded.append(body)  # type: ignore[attr-defined]
+            sse = (
+                'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n'
+                'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+        else:
+            self.server.summary_calls = getattr(self.server, "summary_calls", 0) + 1  # type: ignore[attr-defined]
+            sse = json.dumps({"error": {"message": "insufficient credit"}}).encode()
+            self.send_response(402)
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(sse)))
+        self.end_headers()
+        self.wfile.write(sse)
+
+
 def _proxy(
     provider_type: str,
     messages: list[dict],
     handler = _Handler,
+    reaches_provider = True,
     **fields,
 ):
     async def receive() -> dict:
@@ -168,8 +202,17 @@ def _proxy(
                         chunks.append(json.loads(body))
 
         _run(go)
+        if not reaches_provider:
+            assert not [b for b in server.bodies if "messages" in b]
+            return chunks, None
         assert server.bodies, "the route never reached the provider"
         return chunks, server.bodies[-1]
+
+
+def _sent_turns(sent: dict) -> int:
+    """Messages sent, not counting the summary turn and its reply."""
+    from core.inference import cloud_compaction
+    return len(sent["messages"]) - len(cloud_compaction.summary_turn_ids(sent["messages"]))
 
 
 def _truncations(chunks: list[dict]) -> list[dict]:
@@ -189,7 +232,7 @@ def test_auto_compact_drops_the_oldest_turns_before_a_provider_without_compactio
     assert sent["messages"][-1]["content"] == "latest question"
     [truncation] = _truncations(chunks)
     assert truncation["fits"] is True
-    assert truncation["dropped_messages"] == len(_long_chat()) - len(sent["messages"])
+    assert truncation["dropped_messages"] == len(_long_chat()) - _sent_turns(sent)
 
 
 def test_auto_compact_off_forwards_the_whole_chat():
@@ -276,7 +319,7 @@ def test_the_trimmed_prompt_leaves_the_whole_reply_room_in_the_window():
     assert estimate_messages_tokens_conservative(sent["messages"]) + 8_192 < 16_384
     assert sent["messages"][-1]["content"] == "latest question"
     [truncation] = _truncations(chunks)
-    assert truncation["dropped_messages"] == len(chat) - len(sent["messages"])
+    assert truncation["dropped_messages"] == len(chat) - _sent_turns(sent)
 
 
 def test_a_reply_cap_near_the_window_is_lowered_rather_than_emptying_the_chat():
@@ -289,7 +332,8 @@ def test_a_reply_cap_near_the_window_is_lowered_rather_than_emptying_the_chat():
         compaction_threshold = 12_288,
         context_window = 16_384,
     )
-    assert sum(m["content"].startswith("question") for m in sent["messages"]) >= 3
+    # The summary stands in for the rest; the newest turns stay verbatim.
+    assert sum(m["content"].startswith("question") for m in sent["messages"]) >= 2
     assert sent["max_tokens"] <= 16_384 // 2
     assert estimate_messages_tokens_conservative(sent["messages"]) + sent["max_tokens"] < 16_384
 
@@ -332,9 +376,11 @@ def test_a_tool_enabled_chat_starts_from_the_saved_boundary(monkeypatch):
 
     # The tool loop polls for a disconnect and would stop before reaching the provider.
     monkeypatch.setattr(Request, "is_disconnected", connected)
+    # The saved boundary belongs to the evicting fit, which now runs when no summary can be had.
     _, sent = _proxy(
         "openrouter",
         _long_chat(),
+        handler = _SummaryRefusingHandler,
         thread_id = "saved-thread",
         enable_tools = True,
         enabled_tools = ["python"],
@@ -407,6 +453,7 @@ def test_external_fit_reserves_tool_schemas():
 class _ServedWindowHandler(_Handler):
     models: list[dict] = []
     props: dict | None = None
+    ps: list[dict] | None = None
     key: str | None = None
     gets: list[str] = []
 
@@ -418,6 +465,8 @@ class _ServedWindowHandler(_Handler):
             status, body = 200, {"object": "list", "data": self.models}
         elif self.path.startswith("/props") and self.props is not None:
             status, body = 200, self.props
+        elif self.path == "/api/ps" and self.ps is not None:
+            status, body = 200, {"models": self.ps}
         else:
             status, body = 404, {"error": "not found"}
         raw = json.dumps(body).encode()
@@ -431,6 +480,7 @@ class _ServedWindowHandler(_Handler):
 def _served(**attrs):
     ep_mod._served_windows.clear()
     ep_mod._served_templates.clear()
+    ep_mod._ollama_last_windows.clear()
     return type("Served", (_ServedWindowHandler,), {"gets": [], **attrs})
 
 
@@ -564,6 +614,251 @@ def test_a_hosted_provider_is_not_probed_for_a_window():
         model = "qwen3-next",
         context_overflow = "truncate_oldest",
     )
+    assert len(sent["messages"]) == len(_long_chat())
+    assert server.gets == []
+
+
+def _ollama(context_length: int = 4_096):
+    loaded = {"name": "qwen3:1.7b", "model": "qwen3:1.7b", "context_length": context_length}
+    return _served(ps = [loaded])
+
+
+def test_an_ollama_connection_compacts_to_the_window_ollama_loaded():
+    chunks, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = _ollama(),
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert len(sent["messages"]) < len(_long_chat())
+    assert sent["messages"][-1]["content"] == "latest question"
+    assert _fits(sent, 4_096)
+    [truncation] = _truncations(chunks)
+    assert truncation["fits"] is True
+
+
+def test_a_message_larger_than_the_window_ollama_loaded_is_refused():
+    with pytest.raises(HTTPException) as refused:
+        _proxy(
+            "ollama",
+            [{"role": "user", "content": "word " * 8_000 + "What is the code?"}],
+            handler = _ollama(),
+            model = "qwen3:1.7b",
+            context_overflow = "truncate_oldest",
+            compaction_threshold = 30_720,
+            context_window = 40_960,
+        )
+    assert refused.value.status_code == 400
+    error = refused.value.detail["error"]
+    assert error["code"] == "context_length_exceeded"
+    assert error["message"].startswith("Message too long:")
+    assert "4096-token context window" in error["message"]
+
+
+def test_a_tool_enabled_chat_refuses_a_message_larger_than_the_window_ollama_loaded(monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    # the tool loop polls for disconnects and would stop before reaching the provider.
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    chunks, _ = _proxy(
+        "ollama",
+        [{"role": "user", "content": "word " * 8_000 + "What is the code?"}],
+        handler = _ollama(),
+        reaches_provider = False,
+        model = "qwen3:1.7b",
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    [error] = [c["error"] for c in chunks if "error" in c]
+    assert error["code"] == "context_length_exceeded"
+    assert error["message"].startswith("Message too long:")
+    assert "4096-token context window" in error["message"]
+
+
+def test_a_withdrawn_tool_catalogue_does_not_count_toward_the_ollama_refusal(monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    message = "word " * 3_000 + "What is the code?"
+    _, sent = _proxy(
+        "ollama",
+        [{"role": "user", "content": message}],
+        handler = _ollama(),
+        model = "qwen3:1.7b",
+        enable_tools = True,
+        enabled_tools = ["python", "edit_file"],
+        tool_choice = "none",
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert not sent.get("tools")
+    assert sent["messages"][-1]["content"] == message
+
+
+def test_a_message_within_the_window_ollama_loaded_is_still_sent():
+    message = "word " * 3_000 + "What is the code?"
+    _, sent = _proxy(
+        "ollama",
+        [{"role": "user", "content": message}],
+        handler = _ollama(),
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert sent["messages"][-1]["content"] == message
+
+
+def test_an_ollama_window_above_the_catalogued_one_does_not_raise_it():
+    _, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = _ollama(262_144),
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_144,
+        context_window = 8_192,
+    )
+    assert len(sent["messages"]) < len(_long_chat())
+    assert _fits(sent, 8_192)
+
+
+def test_an_ollama_model_not_loaded_yet_keeps_the_catalogued_window():
+    idle = _served(ps = [])
+    chunks, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = idle,
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert len(sent["messages"]) == len(_long_chat())
+    assert _truncations(chunks) == []
+    assert idle.gets == ["/api/ps"]
+
+
+def test_an_ollama_model_is_read_again_once_it_has_loaded():
+    server = _served(ps = [])
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "ollama", base_url = upstream.base_url, api_key = None
+            )
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            server.ps = [{"name": "qwen3:1.7b", "context_length": 4_096}]
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [None, 4_096, 4_096]
+    assert server.gets == ["/api/ps", "/api/ps"]
+
+
+def test_an_idle_ollama_model_keeps_the_window_it_last_loaded(monkeypatch):
+    monkeypatch.setattr(ep_mod, "_SERVED_WINDOW_TTL_S", 0.0)
+    server = _ollama()
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "ollama", base_url = upstream.base_url, api_key = None
+            )
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            server.ps = []
+            # another connection's refresh purges expired entries from the TTL cache.
+            ep_mod._served_windows.clear()
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [4_096, 4_096]
+    assert server.gets == ["/api/ps", "/api/ps"]
+
+
+def test_a_failed_ollama_read_keeps_the_window_it_last_loaded(monkeypatch):
+    monkeypatch.setattr(ep_mod, "_SERVED_WINDOW_TTL_S", 0.0)
+    server = _ollama()
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "ollama", base_url = upstream.base_url, api_key = None
+            )
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            server.ps = None
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [4_096, 4_096]
+
+
+def test_a_custom_miss_on_the_same_server_does_not_hide_ollamas_window():
+    server = _ollama()
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            for provider_type in ("custom", "ollama"):
+                client = ep_mod.ExternalProviderClient(
+                    provider_type = provider_type, base_url = upstream.base_url, api_key = None
+                )
+                windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [None, 4_096]
+
+
+@pytest.mark.parametrize(
+    ("base", "probe"),
+    [
+        ("http://h:11434/v1", "http://h:11434/api/ps"),
+        ("http://h:11434", "http://h:11434/api/ps"),
+        ("https://gw.example/ollama/v1?tenant=a", "https://gw.example/ollama/api/ps?tenant=a"),
+    ],
+)
+def test_the_ollama_probe_keeps_the_base_path_and_query(base, probe):
+    assert ep_mod._native_server_path(base, "/api/ps") == probe
+
+
+def test_a_bare_ollama_model_name_matches_its_latest_tag():
+    server = _served(
+        ps = [{"name": "qwen3:latest", "model": "qwen3:latest", "context_length": 4_096}]
+    )
+    _, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = server,
+        model = "qwen3",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert _fits(sent, 4_096)
+
+
+def test_auto_compact_off_never_asks_ollama_for_its_window():
+    server = _ollama()
+    _, sent = _proxy("ollama", _long_chat(), handler = server, model = "qwen3:1.7b")
     assert len(sent["messages"]) == len(_long_chat())
     assert server.gets == []
 

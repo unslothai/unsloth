@@ -110,3 +110,16 @@ def test_a_managed_account_scans_the_shared_catalog_object(monkeypatch):
     monkeypatch.setattr(inf, "_servable_catalog_rows", lambda rows, at: seen.append(rows) or [])
     asyncio.run(inf._openai_catalog_objects())
     assert seen[0] is catalog
+
+
+def test_scan_detects_hardware_before_judging_servability(_stub, monkeypatch):
+    from utils.hardware import hardware as hw
+
+    order = []
+    monkeypatch.setattr(hw, "ensure_hardware_detected", lambda: order.append("detect"))
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.local_servable_model",
+        lambda info: order.append("scan") or (True, ()),
+    )
+    inf._servable_catalog_rows(_catalog(1), 111.0)
+    assert order == ["detect", "scan"]

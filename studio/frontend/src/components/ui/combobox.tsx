@@ -169,7 +169,7 @@ function ComboboxContent({
         anchor={anchor}
         // Base UI's default padding is 5.
         collisionPadding={useWindowChromeCollisionPadding(5)}
-        className="isolate z-[120] pointer-events-auto"
+        className="isolate z-[120] modal-pe-live pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
           ref={snappedRef}

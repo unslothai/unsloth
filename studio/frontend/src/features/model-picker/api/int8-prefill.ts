@@ -3,7 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 
-export type PrefillOption = "int8" | "ane";
+export type PrefillOption = "int8" | "ane" | "fast-verify";
 
 /** Failure only hides the setting: a stored choice is kept and the load-time check guards it. */
 export async function fetchPrefillOptionAvailable(
@@ -12,7 +12,8 @@ export async function fetchPrefillOptionAvailable(
   hfToken: string | null,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  const response = await authFetch(`/api/inference/${option}-prefill-availability`, {
+  const route = option === "fast-verify" ? option : `${option}-prefill`;
+  const response = await authFetch(`/api/inference/${route}-availability`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     signal,

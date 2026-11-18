@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { useMemo, useState, type ReactNode } from "react";
 import { useLocale, useT, type TranslationKey } from "@/i18n";
 import { useLibraryProjectLabels } from "./use-library-project-labels";
@@ -70,6 +71,7 @@ export function LibraryToolbar({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const compare = useMemo(() => new Intl.Collator(locale).compare, [locale]);
   const [projectOpen, setProjectOpen] = useState(false);
   const projectLabel =
@@ -106,7 +108,7 @@ export function LibraryToolbar({
             className="h-10 gap-2 rounded-full"
             aria-label={t("settings.data.library.filterSort")}
           >
-            <HugeiconsIcon icon={FilterMailIcon} className="size-4 shrink-0" />
+            <HugeiconsIcon icon={FilterMailIcon} className="size-4 shrink-0 -translate-y-[0.5px]" />
             {projects
               ? t(TYPE_LABELS[filters.type])
               : filters.sort === "default"
@@ -228,6 +230,7 @@ export function LibraryRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   return (
     <div className="flex min-w-0 items-center gap-3 py-3.5 text-sm">
       {leading}

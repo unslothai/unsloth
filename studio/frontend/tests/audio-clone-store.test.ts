@@ -200,7 +200,7 @@ test("voice previews are bounded, stale ones dropped, and the menu follows disab
 
 test("a voice list fetched across a save, rename or delete is fetched again", () => {
   const src = readSrc("features/audio/stores/audio-voices-store.ts");
-  assert.match(src, /const started = mutations;[\s\S]*?if \(started !== mutations\) \{\s*set\(\{ loading: false \}\);\s*return get\(\)\.refresh\(\);/);
+  assert.match(src, /for \(;;\) \{\s*const started = mutations;\s*const voices = await listVoices\(\);\s*if \(started === mutations\) \{/);
   for (const call of ["createVoice\\(request\\)", "updateVoice\\(id, patch\\)", "deleteVoice\\(id\\)"]) {
     assert.match(src, new RegExp(`await ${call};\\s*mutations \\+= 1;`), call);
   }

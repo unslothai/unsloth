@@ -28,10 +28,11 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  UnmeasuredCollapsible as Collapsible,
+  UnmeasuredCollapsibleContent as CollapsibleContent,
+  UnmeasuredCollapsibleTrigger as CollapsibleTrigger,
+  CLOSE_FALLBACK_MARGIN_MS,
+} from "@/components/ui/unmeasured-collapsible";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
@@ -94,7 +95,7 @@ function ToolGroupRoot({
   if (syncedUncontrolledState !== uncontrolledState) {
     setUncontrolledState(syncedUncontrolledState);
   }
-  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled
@@ -167,8 +168,7 @@ function ToolGroupTrigger({
     <CollapsibleTrigger
       data-slot="tool-group-trigger"
       className={cn(
-        // Muted like the tool rows it summarises, so only the answer is at full foreground,
-        // and it brightens on hover like the Thinking trigger above it.
+        // Muted like the tool rows it summarises, so only the answer is at full foreground.
         "aui-tool-group-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-trace-foreground text-sm transition-colors hover:text-foreground",
         "group-data-[variant=outline]/tool-group-root:px-4",
         "group-data-[variant=muted]/tool-group-root:px-4",
@@ -226,15 +226,12 @@ function ToolGroupContent({
   return (
     <CollapsibleContent
       data-slot="tool-group-content"
+      closeDurationMs={ANIMATION_DURATION}
       className={cn(
         "aui-tool-group-content relative overflow-hidden text-sm outline-none",
         "group/collapsible-content ease-out",
-        "data-[state=closed]:animate-collapsible-up",
-        "data-[state=open]:animate-collapsible-down",
-        "data-[state=closed]:fill-mode-forwards",
         "data-[state=closed]:pointer-events-none",
-        "data-[state=open]:duration-(--animation-duration)",
-        "data-[state=closed]:duration-(--animation-duration)",
+        "duration-(--animation-duration)",
         className,
       )}
       {...props}
@@ -310,8 +307,7 @@ const ToolGroupImpl: FC<
         .some(
           (part) =>
             part.type === "tool-call" &&
-            // Either scope: a first turn writes under the unresolved one for its whole
-            // life, even after the autosave assigns the id (see useToolOutputFor).
+            // Either scope: a first turn writes under the unresolved scope for its whole life.
             (Object.prototype.hasOwnProperty.call(
               toolLiveOutput,
               toolOutputKey(paneScope, part.toolCallId),

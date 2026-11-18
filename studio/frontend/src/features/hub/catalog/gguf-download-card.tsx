@@ -41,9 +41,9 @@ import {
 } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Refresh01Icon,
-  Delete02Icon,
   Download01Icon,
   HelpCircleIcon,
   InformationCircleIcon,
@@ -165,12 +165,12 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
   },
 };
 
-const CHIP_BASE =
+export const CHIP_BASE =
   "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
-const CHIP_DEFAULT =
+export const CHIP_DEFAULT =
   "border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] bg-muted text-foreground/85 dark:border-border/60 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:text-foreground/85";
 
-function QuantBadge({
+export function QuantBadge({
   quant,
   fit,
   lookupTableBytes = 0,
@@ -212,7 +212,7 @@ function QuantBadge({
             className={cn("size-3.5 shrink-0", meta.iconClassName)}
           />
         )}
-        <span className="min-w-0 truncate">{quant}</span>
+        <span className="cap-centered min-w-0 truncate">{quant}</span>
       </span>
     ) : (
       // Keep the quant label from collapsing; trailing status tags are clipped instead.
@@ -224,7 +224,7 @@ function QuantBadge({
             className={cn("size-3.5 shrink-0", meta.iconClassName)}
           />
         )}
-        <span>{quant}</span>
+        <span className="cap-centered">{quant}</span>
       </span>
     );
   if (!showFit || tooltipMode === "none") return inner;
@@ -290,7 +290,7 @@ function GgufVariantSizeLabel({
   footprint: GgufVariantFootprint | null;
   downloaded?: boolean;
 }) {
-  if (!footprint) return <>{label}</>;
+  if (!footprint) return <span className="cap-centered">{label}</span>;
   const companion = formatFootprintBytes(footprint.companionBytes);
   return (
     <Tooltip delayDuration={0}>
@@ -300,11 +300,13 @@ function GgufVariantSizeLabel({
           data-model-needs-required-assets={downloaded || undefined}
           className="inline-flex items-center gap-1"
         >
-          {downloaded
-            ? `${companion} more to run`
-            : formatFootprintBytes(
-                footprint.checkpointBytes + footprint.companionBytes,
-              )}
+          <span className="cap-centered">
+            {downloaded
+              ? `${companion} more to run`
+              : formatFootprintBytes(
+                  footprint.checkpointBytes + footprint.companionBytes,
+                )}
+          </span>
           {/* Align the icon with the digits. */}
           <HugeiconsIcon
             icon={HelpCircleIcon}
@@ -361,6 +363,7 @@ function createGgufVariantMenuItems(
   resources: {
     gpuGb?: number;
     gpuCount?: number;
+    audioCppCardGb?: number;
     systemRamGb?: number;
     budgetFraction?: number;
     unifiedLoadBudgetGb?: number | null;
@@ -535,7 +538,7 @@ export function QuantOptionsMenu({
               }}
             >
               <HugeiconsIcon
-                icon={Delete02Icon}
+                icon={TrashIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />
@@ -676,6 +679,7 @@ export function GgufDownloadCard({
   isLoadingThisModel,
   gpuGb,
   gpuCount,
+  audioCppCardGb,
   systemRamGb,
   unifiedLoadBudgetGb,
   cachePath,
@@ -696,6 +700,7 @@ export function GgufDownloadCard({
   isLoadingThisModel: boolean;
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
   unifiedLoadBudgetGb?: number | null;
   cachePath?: string | null;
@@ -760,6 +765,7 @@ export function GgufDownloadCard({
     return sortDownloadableGgufVariants(variants, {
       gpuGb,
       gpuCount,
+      audioCppCardGb,
       systemRamGb,
       budgetFraction,
       unifiedLoadBudgetGb,
@@ -768,6 +774,7 @@ export function GgufDownloadCard({
     variants,
     gpuGb,
     gpuCount,
+    audioCppCardGb,
     systemRamGb,
     budgetFraction,
     unifiedLoadBudgetGb,
@@ -822,6 +829,7 @@ export function GgufDownloadCard({
         {
           gpuGb,
           gpuCount,
+          audioCppCardGb,
           systemRamGb,
           budgetFraction,
           unifiedLoadBudgetGb,
@@ -831,6 +839,7 @@ export function GgufDownloadCard({
     [
       gpuGb,
       gpuCount,
+      audioCppCardGb,
       sortedVariants,
       systemRamGb,
       budgetFraction,
@@ -926,6 +935,7 @@ export function GgufDownloadCard({
     ? classifyGgufVariantFit(selected, {
         gpuGb,
         gpuCount,
+        audioCppCardGb,
         systemRamGb,
         budgetFraction,
         unifiedLoadBudgetGb,

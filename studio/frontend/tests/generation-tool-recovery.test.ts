@@ -33,6 +33,9 @@ const { orderBySelectedBranch } = await import(
 const { contextUsageMarkers } = await import(
   "../src/features/chat/utils/saved-context-usage.ts"
 );
+const { readGenerationProgress } = await import(
+  "../src/features/chat/lib/generation-progress.ts"
+);
 
 const start = (id = "call_0") => ({
   type: "tool_start",
@@ -397,6 +400,7 @@ test("the live adapter saves identities for ordinary, approval and provider card
         serverCancel: () => {},
         liveThreadKey: () => "thread-live",
         cancelId: "cancel-1",
+        computerUseAsk: () => undefined,
         generationRunId,
         generationSeq: 7,
         cumulativeText: "",
@@ -495,6 +499,8 @@ async function recoverRun(
     viewContent?: unknown[];
     metadata?: Record<string, unknown>;
     stallBefore?: number;
+    /** The real follower drops repeated seqs; a repeat would reach the publish a lone event skips. */
+    yieldOnce?: boolean;
   } = {},
 ) {
   class ChatGenerationStalledError extends Error {}
@@ -518,6 +524,10 @@ async function recoverRun(
     // The real store has these; a stand-in missing them would make approval recovery look broken.
     setToolConfirmation() {},
     clearToolConfirmation() {},
+    setLivePrefill() {},
+    setLiveDecode() {},
+    setLiveCompacting() {},
+    clearLiveGenerationForThread() {},
   };
   const run = {
     id: "run",
@@ -543,6 +553,7 @@ async function recoverRun(
     ...parser,
     createGenerationToolRecovery,
     contextUsageMarkers,
+    readGenerationProgress,
     orderBySelectedBranch,
     providerCompactionConnectionKey,
     RUN_CHECKPOINT_INTERVAL_MS,
@@ -569,7 +580,7 @@ async function recoverRun(
           },
         };
         yield update;
-        yield update;
+        if (!options.yieldOnce) yield update;
       }
       if (options.stallBefore) throw new ChatGenerationStalledError();
     },
@@ -680,6 +691,22 @@ test("the recovery scheduler persists provider compaction metadata", async () =>
       "chat_completions",
     ),
   );
+});
+
+test("a progress frame that ends the replay shows the tool result it rebuilt", async () => {
+  for (const progress of [
+    { phase: "compacting" },
+    { phase: "prefill", processed: 10, total: 100 },
+  ]) {
+    const { snapshots } = await recoverRun(
+      [],
+      [{ _toolEvent: start() }, { _toolEvent: end() }, { _generationProgress: progress }],
+      { stallBefore: 3, yieldOnce: true },
+    );
+    assert.equal(snapshots.length, 2, `${progress.phase}: published before the stall`);
+    assert.equal(snapshots[0].metadata.generationSettled, false);
+    assert.equal(snapshots[0].content.at(-1)?.result, "ok");
+  }
 });
 
 test("reopening a run that finished without the tab saves and renders only its end", async () => {
@@ -1592,4 +1619,57 @@ test("recovery keeps a model note on the finished card it targets", () => {
   assert.equal(carried.length, 1);
   assert.equal(part.result, "ok");
   assert.deepEqual(part.provenance, { model_suffix: "\n\nbudget" });
+});
+
+test("recovery keeps literal think tags as the live stream marked them", async () => {
+  const answer = 'Use re.sub(r"<think>.*?</think>", "", s).';
+  const { content, snapshots } = await recoverRun(
+    [],
+    [
+      { choices: [{ delta: { reasoning_content: "Match up to </think>." } }] },
+      { choices: [{ delta: { content: answer } }] },
+    ],
+  );
+  assert.equal(snapshots.at(-1)?.metadata.splitReasoningSeen, true);
+  assert.deepEqual(content, [
+    { type: "reasoning", text: "Match up to </think>." },
+    { type: "text", text: answer },
+  ]);
+});
+
+test("recovery parses inline tags unless the run had split-out reasoning", async () => {
+  const later = [{ choices: [{ delta: { content: "<think>plan</think>done" } }] }];
+  const inline = await recoverRun([{ type: "reasoning", text: "first" }], later);
+  assert.deepEqual(
+    inline.content.map((part) => part.type),
+    ["reasoning", "text"],
+  );
+  const split = await recoverRun([{ type: "reasoning", text: "first" }], later, {
+    metadata: { splitReasoningSeen: true },
+  });
+  assert.deepEqual(split.content.at(-1), {
+    type: "text",
+    text: "<think>plan</think>done",
+  });
+});
+
+test("recovery completes an inline opener a checkpoint saved mid-tag", async () => {
+  const later = [{ choices: [{ delta: { content: "nk>Plan.</think>Answer" } }] }];
+  const inline = await recoverRun([{ type: "text", text: "<thi" }], later);
+  assert.deepEqual(inline.content, [
+    { type: "reasoning", text: "Plan." },
+    { type: "text", text: "Answer" },
+  ]);
+  const split = await recoverRun([{ type: "text", text: "a <thi" }], [
+    { choices: [{ delta: { content: "nk> b" } }] },
+  ], { metadata: { splitReasoningSeen: true } });
+  assert.deepEqual(split.content, [{ type: "text", text: "a <think> b" }]);
+  const settled = [
+    { type: "text", text: "a <thi" },
+    { type: "tool-call", toolCallId: "c1" },
+    { type: "text", text: "nk> b" },
+  ];
+  const { raw, carried } = recovery.generationRawContent(settled);
+  assert.deepEqual(parser.parseAssistantContent(raw).map((part) => part.type), ["text"]);
+  assert.equal(carried.length, 1);
 });

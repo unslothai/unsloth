@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from fastmcp.exceptions import ToolError
 
+from core.inference import model_identity
 from studio_mcp.caller import Caller
 from studio_mcp.errors import raise_for_route, tool_error
 from studio_mcp.forward import forward
@@ -38,8 +39,6 @@ MEDIA_PROGRESS = {
     "video": "/api/inference/video/load-progress",
 }
 STT_STATUS = "/api/inference/audio/stt/status"
-# audio.cpp folder ids name a GGUF repo but run on audio.cpp, which honours audio_device itself.
-AUDIO_CPP_PREFIX = "audio-cpp/audio.cpp-gguf/"
 IN_FLIGHT = ("running", "cancelling")
 READ_S = 15.0
 PARTIAL_MESSAGE = "this variant is still downloading or incomplete; wait for it or redownload it"
@@ -57,7 +56,7 @@ def media_knobs(kind: str, **knobs: Optional[str]) -> dict[str, str]:
 
 def is_local(model: str) -> bool:
     # A host path, or the ref:<digest> handle of a local model (API-key callers, checkpoint and export loads): whole, never repo:variant.
-    return model.startswith(("/", "\\", ".", "~", "ref:")) or ":" in model[:3]
+    return model_identity.is_local(model)
 
 
 def is_gguf(model: str, variant: Optional[str]) -> bool:
@@ -99,7 +98,7 @@ CPU_NEEDS_GGUF = (
 async def listed_gguf(caller: Caller, model: str, variant: Optional[str]) -> Optional[bool]:
     """Whether the load runs on llama-server: Unsloth Studio lists GGUF files for the model (a name with "gguf" in it proves nothing). audio.cpp models never do. None when the listing could not be read."""
     repo, variant = _split(model, variant)
-    if repo.lower().startswith(AUDIO_CPP_PREFIX):
+    if model_identity.is_audio_cpp(repo):
         return False
     if repo.startswith("ref:") and variant:
         # A trained GGUF export's handle carries its quantization; any other ref: the listing decides.
@@ -267,7 +266,7 @@ async def refuse_partial_variant(
     caller: Caller, model: str, kind: str, variant: Optional[str]
 ) -> None:
     """Refuse a GGUF variant with only part of its files on disk that Unsloth Studio is not downloading itself; loading it fails with a misleading memory error."""
-    if kind == "stt" or is_local(model) or model.lower().startswith(AUDIO_CPP_PREFIX):
+    if kind == "stt" or is_local(model) or model_identity.is_audio_cpp(model):
         return
     repo, variant = _split(model, variant)
     # A chat model is a GGUF when the listing has rows, whatever it is called; an image or video
@@ -323,15 +322,6 @@ def _cpu_primary(status: Any) -> bool:
     return manual or status.get("audio_device_fallback") == "cpu"
 
 
-def _ident(name: str) -> str:
-    # Local paths keep their case, as the loaders do; Hub ids do not.
-    return name if is_local(name) else name.lower()
-
-
-def _repo(name: str) -> str:
-    return name if is_local(name) else name.split(":", 1)[0].lower()
-
-
 def predict(
     *,
     kind: str,
@@ -347,9 +337,18 @@ def predict(
     slot_kind = "llm" if kind in CHAT_KINDS else kind
     if kind == "stt":
         # A speech-to-text load releases the other engines' models, unless one is transcribing.
-        others = [s for s in slots if s.kind == "stt" and _ident(s.model) != _ident(model)]
+        others = [
+            s
+            for s in slots
+            if s.kind == "stt" and not model_identity.same_model(s.model, model, probe = True)
+        ]
         return others, not others, False
-    same_repo = [s for s in slots if s.kind == slot_kind and _repo(s.model) == _repo(model)]
+    # Local paths keep their case, as the loaders do (an existing relative one too); Hub ids do not.
+    same_repo = [
+        s
+        for s in slots
+        if s.kind == slot_kind and model_identity.same_repo(s.model, model, probe = True)
+    ]
     # A load of a resident repo may load it again (another variant, context, device or build), so it
     # is predicted as a new load and reported as an upper bound.
     exact = not same_repo

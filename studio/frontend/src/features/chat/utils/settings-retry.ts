@@ -16,6 +16,24 @@ export class ChatSettingsRequestError extends Error {
   }
 }
 
+export function isAbortOrTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
+  );
+}
+
+/** A body that broke off mid-read (TypeError) is a transport failure; invalid JSON (SyntaxError) is not. */
+export function asBodyTransportFailure(error: unknown): unknown {
+  if (!(error instanceof TypeError)) return error;
+  return Object.assign(
+    new Error("The connection closed before the server's reply finished.", {
+      cause: error,
+    }),
+    { unslothTransportFailure: true },
+  );
+}
+
 /** 4xx is terminal except 408 and 429; network errors, 5xx and timeouts are transient. */
 export function isTerminalSettingsRejection(error: unknown): boolean {
   if (!(error instanceof ChatSettingsRequestError)) return false;

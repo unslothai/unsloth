@@ -12,7 +12,7 @@ import {
   isImeComposing,
   useShortcut,
   useShortcutAvailable,
-} from "@/features/settings";
+} from "@/features/settings/hooks/use-shortcut";
 import { useDocumentFlag } from "@/lib/document-flag";
 import { Z_LAYER } from "@/lib/z-layers";
 import { Search01Icon } from "@hugeicons/core-free-icons";

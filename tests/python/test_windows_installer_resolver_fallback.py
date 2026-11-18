@@ -157,13 +157,8 @@ def _lines(result: subprocess.CompletedProcess, prefix: str) -> list[str]:
 
 @requires_pwsh
 def test_install_lock_is_acquired_when_the_native_helper_is_unavailable(tmp_path: Path):
-    """The bug from #9140, at the rung it lives on now.
-
-    It was a throwing Add-Type then, then a host that could not define a type at all,
-    and it is a host with no interpreter to ask now. All three are the same thing to
-    every caller: no exact answer. The lock must still be acquired, and the reason
-    said once.
-    """
+    """Regression for issue 9140: with the native helper unavailable (throwing Add-Type, no type
+    support, or no interpreter), the install lock is still taken and the reason printed once."""
     studio_home = tmp_path / "studio"
     studio_home.mkdir()
     result = _run_powershell(
@@ -197,9 +192,8 @@ def _fresh_install_statement() -> str:
 
 
 def test_the_first_install_verdict_is_taken_before_anything_is_created() -> None:
-    """Read where $VenvDir is first computed, before the install lock and before any path is
-    resolved: read any later and this run's own venv would make every install look like an
-    update, and the warning would come back on exactly the run it was silenced for."""
+    """Read the fresh-install verdict where $VenvDir is first computed, before the install lock and
+    path resolution; read later, this run's own venv makes every install look like an update."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     verdict = source.index(_fresh_install_statement())
     assert source.index('    $VenvDir = Join-Path $StudioHome "unsloth_studio"') < verdict
@@ -221,11 +215,8 @@ def test_the_first_install_verdict_is_taken_before_anything_is_created() -> None
 def test_a_python_less_first_install_prints_no_degraded_warning(
     tmp_path: Path, existing: str | None, warns: bool
 ):
-    """main resolved paths in process, so a normal first install on a host with no Python
-    printed nothing. The interpreter rung has nothing to run there, and the five-line yellow
-    block it printed instead was the first thing a new user (Desktop's first run included)
-    saw. It stays for an existing install, where two spellings of it escaping one another's
-    lock is the thing the operator is being told about. The lock is the same in every row."""
+    """A first install with no Python prints no degraded warning, as the interpreter rung has
+    nothing to run; existing installs keep it, since two spellings can escape one another's lock."""
     studio_home = tmp_path / "studio"
     studio_home.mkdir()
     profile = tmp_path / "profile"
@@ -278,13 +269,9 @@ Exit-StudioInstallMutex -Mutex $mutex
 
 @requires_pwsh
 def test_a_dead_compiler_is_not_something_the_installer_can_notice(tmp_path: Path):
-    """The other half, and the reason the file is named for a fallback it no longer needs.
-
-    install.ps1 reaches no compiler, so replacing Add-Type with one that always throws
-    has to change nothing at all: the lock is taken, the path resolves exactly through
-    the child interpreter, and no degraded warning is printed. A failure here means a
-    compile came back.
-    """
+    """install.ps1 reaches no compiler, so an Add-Type that always throws must change nothing: the
+    lock is taken, the path resolves exactly, no warning prints; a failure means a compile came
+    back."""
     studio_home = tmp_path / "studio"
     studio_home.mkdir()
     result = _run_powershell(
@@ -307,9 +294,8 @@ Write-Output "EXACT:$((Resolve-StudioFinalPathInfo -Path '{studio_home}').Exact)
 
 @requires_pwsh
 def test_the_compiler_is_never_called_however_many_paths_are_resolved(tmp_path: Path):
-    """Zero, not "few". The count used to be two, one attempt and one retry under a
-    private %TEMP%, and both of those launched csc.exe, which is the chain behavioural
-    antivirus blocked."""
+    """The compiler must never be called (zero, not few): the old attempt and private-%TEMP% retry
+    both launched csc.exe, which behavioural antivirus blocked."""
     result = _run_powershell(
         _script(
             f"""
@@ -330,18 +316,8 @@ Write-Output "CALLS:$global:AddTypeCalls"
 
 @requires_pwsh
 def test_the_interpreter_is_looked_for_once_however_many_paths_are_resolved(tmp_path: Path):
-    """The caching the retry count used to stand in for, at the rung that has it now.
-
-    Finding an interpreter means running a probe against every candidate on PATH until
-    one answers, and that search is latched. Resolving a path still costs one child, so
-    five resolutions cost five children plus the ONE search: six calls, not ten. Without
-    the latch every resolution pays the search again, and on a host whose first few
-    candidates are slow or broken that is the expensive half.
-
-    Five DIFFERENT paths. The same path five times is served by the per-path answer cache
-    after the first child, which would make this count two and hide whether the search is
-    latched at all.
-    """
+    """The interpreter search is latched: five different paths cost five child probes plus one
+    search, six calls not ten; repeating one path would hit the per-path answer cache."""
     paths = []
     for i in range(5):
         (tmp_path / f"p{i}").mkdir()
@@ -372,15 +348,9 @@ Write-Output "PROBES:$global:Probes"
 
 @requires_pwsh
 def test_a_path_still_resolves_with_no_usable_temp_at_all(tmp_path: Path):
-    """What replaced the private-%TEMP% retry: a ladder that cannot be ended by %TEMP%.
-
-    The retry existed because compiling wrote a source file there, and a %TEMP% that
-    could not hold one failed the install outright (#9140). The rungs left do use %TEMP%
-    -- the child interpreter is handed its script through a file -- so an unusable one
-    can still cost the EXACT answer. What it may no longer cost is the install: the
-    ladder drops to the lexical rung, says so, and hands the caller's broken variables
-    back exactly as they arrived rather than repairing them behind its back.
-    """
+    """An unusable %TEMP% may still cost the exact answer, since the child gets its script via a
+    file, but never the install: the ladder falls to the lexical rung, says so, and returns the
+    caller's broken variables unrepaired (issue 9140)."""
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory", encoding = "utf-8")
     dead = str(blocker / "temp")
@@ -463,11 +433,8 @@ Write-Output "PATH:$(Get-StudioFinalPath -Path '{left}')"
 
 @requires_pwsh
 def test_unequal_paths_are_unknown_rather_than_different_when_inexact(tmp_path: Path):
-    """NO_NATIVE, not the Add-Type sabotage: the installer no longer calls Add-Type, so on a real
-    Windows host the emit succeeds, the answer is exact, and two different directories compare
-    $false. The case this test is about is the one with no exact answer, and the only way to that
-    case now is the capability gate.
-    """
+    """Uses NO_NATIVE rather than sabotaging Add-Type, which the installer no longer calls; the
+    capability gate is now the only route to an inexact answer, where unequal paths are unknown."""
     left = tmp_path / "left"
     right = tmp_path / "right"
     left.mkdir()
@@ -488,12 +455,8 @@ Write-Output "NULL:$($null -eq $answer)"
 
 @requires_pwsh
 def test_a_directory_that_will_not_give_a_file_back_is_not_usable(tmp_path: Path):
-    """Create and read are not enough. csc.exe also has to clean up after itself.
-
-    A directory that accepts a file and then refuses to delete it (a denied
-    Delete ACE, a scanner sitting on the handle) is the shape that produced the
-    reported failure, and it passes a create-and-read probe unchanged.
-    """
+    """A temp directory must also allow deleting a file, not just create and read one: a denied
+    Delete ACE passes a create-and-read probe yet broke csc.exe cleanup."""
     good = tmp_path / "good"
     good.mkdir()
     result = _run_powershell(
@@ -746,12 +709,9 @@ def test_a_drive_less_rooted_target_lands_on_the_link_own_root(tmp_path: Path):
 def test_a_whitespace_only_tmp_is_set_as_far_as_windows_is_concerned(
     tmp_path: Path, tmp: str | None, expect_override: bool
 ):
-    """GetTempPath takes the first of TMP/TEMP that is merely NON-empty.
-
-    So a whitespace-only TMP is the one Windows and every child process will use.
-    Reading it as "unset" probes a healthy TEMP, changes nothing, and leaves the
-    compile and every later download pointed at a path that cannot exist.
-    """
+    """GetTempPath uses the first non-empty of TMP/TEMP, so a whitespace-only TMP is what Windows
+    and child processes use; treating it as unset probes a healthy TEMP and leaves every later
+    step pointed at a path that cannot exist."""
     good = tmp_path / "good"
     good.mkdir()
     local_app_data = tmp_path / "localappdata"
@@ -878,15 +838,9 @@ def test_the_installer_and_the_runtime_gate_normalize_alike(resolved: str, expec
     ids = ["drive-root", "bare-drive", "lowercase-letter", "unmapped-drive"],
 )
 def test_a_subst_drive_folds_onto_its_target(path: str, expected: str):
-    """The Python runtime gate resolves a SUBST drive; Path.resolve does that.
-
-    Left unresolved here, one directory reached under two spellings produces two
-    different install mutexes, and an Unsloth running from the physical spelling is
-    invisible to the in-use scan. Measured on windows-latest: subst.exe is the
-    only source available without a compiler -- Get-PSDrive.DisplayRoot,
-    Win32_LogicalDisk.ProviderName, GetFullPath and Resolve-Path all reveal
-    nothing about the mapping.
-    """
+    """The runtime gate resolves SUBST drives (Path.resolve does this), so one directory under two
+    spellings gets one mutex; subst.exe is the only compiler-free source; Get-PSDrive,
+    Win32_LogicalDisk, GetFullPath and Resolve-Path reveal nothing."""
     result = _run_powershell(
         "\n".join(
             [
@@ -907,12 +861,8 @@ def test_a_subst_drive_folds_onto_its_target(path: str, expected: str):
 
 @requires_pwsh
 def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
-    """The PID in the name is the INSTALLER's, and it exits.
-
-    The process that keeps using the directory is the Unsloth the installer
-    autostarted, which is what owner.pid records. Reading only the name would
-    clear a live Unsloth's %TEMP% on the next run.
-    """
+    """The PID in the name is the installer's and exits; the live user is the Unsloth it
+    autostarted, which owner.pid records, so the name alone must not clear its %TEMP%."""
     root = tmp_path / "root"
     root.mkdir()
     keep = root / f"ust-{_DEAD_PID}-000000aa"
@@ -933,12 +883,9 @@ def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
 
 @requires_pwsh
 def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path):
-    """An Unsloth autostarted by an earlier install owns one of these as its %TEMP%.
-
-    It can outlive the one-day cutoff without ever writing to the directory, and
-    the sweep runs before the runtime mutex is taken, so age alone must not be
-    read as proof that nothing is using it.
-    """
+    """An Unsloth autostarted by an earlier install owns one of these as its %TEMP% and can outlive
+    the one-day cutoff unwritten; the sweep runs before the runtime mutex is taken, so age alone
+    must not prove it unused."""
     root = tmp_path / "root"
     root.mkdir()
     live = root / f"ust-{os.getpid()}-01d01d01"
@@ -959,12 +906,8 @@ def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path
 
 @requires_pwsh
 def test_a_healthy_temp_still_sweeps_what_an_earlier_degraded_run_left(tmp_path: Path):
-    """The allocator is the only thing that sweeps, and a healthy host skips it.
-
-    Once the host's own temp is fixed (an ACL correction, a cleaned environment)
-    no further run allocates a private directory, so whatever the degraded runs
-    left would age in place until an uninstall.
-    """
+    """Only the allocator sweeps and a healthy host skips it, so leftovers of degraded runs would
+    age in place; a healthy temp must still sweep them."""
     good = tmp_path / "good"
     good.mkdir()
     local_app_data = tmp_path / "localappdata"
@@ -1000,12 +943,8 @@ Write-Output "OVERRIDE:$($null -ne $script:StudioTempOverride)"
 
 @requires_pwsh
 def test_probing_the_host_temp_never_creates_it(tmp_path: Path):
-    """An inherited TMP that names nothing is unusable, not an instruction.
-
-    New-Item -Force builds the whole parent chain, so treating the host's own
-    TMP as creatable would have the installer materialize a tree at a path
-    nobody chose, on a stale or mistyped value, and then trust it as temp.
-    """
+    """An inherited TMP naming nothing is unusable: New-Item -Force builds the whole parent chain,
+    so probing the host temp must never create it, even on a stale or mistyped value."""
     ghost = tmp_path / "ghost" / "deeper"
     result = _run_powershell(
         _script(
@@ -1036,12 +975,8 @@ Write-Output "EXISTS:$(Test-Path -LiteralPath '{ghost}')"
 
 @requires_pwsh
 def test_an_undeletable_probe_file_is_reclaimed_next_time(tmp_path: Path):
-    """The probe cannot clean up after itself when deletion is what failed.
-
-    Without a sweep every such run leaves one more file in the host's own
-    temp, forever, since nothing else knows the name. Aged, so a probe running
-    concurrently in another process is never touched.
-    """
+    """A probe whose deletion failed is reclaimed by a later sweep, else each run leaves one more
+    file in the host temp; only aged probes go, sparing concurrent ones."""
     good = tmp_path / "good"
     good.mkdir()
     stale = good / "unsloth-probe-deadbeef.tmp"
@@ -1164,16 +1099,8 @@ def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path
 
 @requires_pwsh
 def test_a_resolver_that_runs_and_fails_says_so_once(tmp_path: Path):
-    """An interpreter that answers nothing is not the same as no interpreter.
-
-    The install proceeds on the lexical answer either way, and Exact = $false already
-    makes the runtime lock fail closed, but for a long time nothing said so: the
-    degraded warning fired only where the exact rung was known to be unavailable. That
-    left an operator with a silently inexact identity on a host that looks perfectly
-    healthy. A child that starts, runs and returns nothing -- a sandboxed interpreter, a
-    symlink loop under the requested path, an AV hook that kills it -- has to reach the
-    same warning.
-    """
+    """A resolver child that runs but returns nothing (sandbox, symlink loop, AV kill) must print
+    the degraded warning; Exact = $false already fails the lock closed but was silent."""
     studio = tmp_path / "studio"
     studio.mkdir()
     result = _run_powershell(
@@ -1342,14 +1269,9 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
 
 @requires_pwsh
 def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_path: Path):
-    """An uninstall stops the Unsloth instances under the roots it knows about, not others.
-
-    An Unsloth from another install root, or another user, can be alive on one of
-    these directories as its %TEMP%; install.ps1's own sweep preserves it and so
-    must this one. And a temp directory that is itself a link must not be walked:
-    the target's children carry no ReparsePoint attribute, so a recursive delete
-    would take an unrelated tree.
-    """
+    """The uninstall sweep preserves live owners from other roots or users, as install.ps1 does, and
+    never walks a temp link: the target's children lack ReparsePoint, so recursion would hit an
+    unrelated tree."""
     block, preamble, uninstall = _shared_setup_2()
 
     temp = tmp_path / "Unsloth Studio" / "temp"
@@ -1406,13 +1328,8 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
 
 @requires_pwsh
 def test_a_live_owner_survives_the_data_directory_removal(tmp_path: Path):
-    """Preserving a directory is worth nothing if the next line deletes its parent.
-
-    The primary private temp directory sits inside the data directory, and the
-    data directory is removed wholesale. An Unsloth from another install root can
-    be alive on that temp directory as its %TEMP%, so the sweep has to run first
-    and the removal has to be told what the sweep kept.
-    """
+    """The sweep must run before the data directory is removed wholesale, and the removal must skip
+    what the sweep kept, since a live Unsloth from another root may use that temp."""
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
 
     body = uninstall[uninstall.index("function Uninstall-UnslothStudio") :]
@@ -1592,14 +1509,9 @@ Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
 
 @requires_pwsh
 def test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile(tmp_path: Path):
-    """The alternate LocalAppData spelling can be another user's profile.
-
-    install.ps1 reads a missing owner.pid as unknown rather than abandoned,
-    because an installer killed before writing it leaves a live Unsloth holding
-    the directory. Deleting that out of somebody else's profile is not this
-    uninstall's business. Under our own profile the shape is enough, since that
-    is what is being removed.
-    """
+    """The alternate LocalAppData may be another user's profile, so its sweep needs a recorded
+    owner.pid (a missing one reads as unknown, not abandoned); our own profile needs only the
+    shape."""
     block, preamble, uninstall = _shared_setup_2()
 
     mine = tmp_path / "mine" / "Unsloth Studio" / "temp"
@@ -1628,14 +1540,8 @@ def test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile(tmp_
 
 @requires_pwsh
 def test_the_uninstaller_reclaims_the_temp_tree_at_both_spellings(tmp_path: Path):
-    """A set-but-unusable LOCALAPPDATA is the case that produced two roots.
-
-    install.ps1 skips such a path and places its private temp under the known
-    folder instead, so an uninstaller that stops at the first non-blank
-    candidate leaves the real tree behind. What the second root must NOT get is
-    the recursive, sentinel-free data-dir delete: the two spellings differ
-    mainly when one of them names a DIFFERENT USER's profile.
-    """
+    """A set but unusable LOCALAPPDATA produces two roots, so the uninstaller must reach both; the
+    second gets no recursive sentinel-free delete, since it may name another user's profile."""
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
     block = _extract(r"    # The SECOND LocalAppData spelling.*?\n    \}\n", uninstall)
 
@@ -1662,11 +1568,8 @@ def test_the_uninstaller_reclaims_the_temp_tree_at_both_spellings(tmp_path: Path
 
 @requires_pwsh
 def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
-    """Narrow on purpose: this runs against a root that may be another user's.
-
-    Only ust-<pid>-<hex> directories go, matched by shape rather than prefix,
-    and the temp directory and its parent only when they are left empty.
-    """
+    """Deliberately narrow, as the root may belong to another user: only ust-<pid>-<hex> directories
+    are removed, matched by shape, and parents only when left empty."""
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
     block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
 
@@ -1749,14 +1652,9 @@ def test_the_lock_chain_defines_everything_it_reaches() -> None:
 
 @requires_pwsh
 def test_an_elevated_run_declines_a_user_writable_interpreter(tmp_path: Path):
-    """The other side of the stub above, so neither half is an assumption.
-
-    Whatever this ladder settles on is launched WITH THE ADMINISTRATOR TOKEN when the install is
-    elevated, so an interpreter in a directory the same user's medium-integrity token can write
-    is a way to have arbitrary code run elevated. This host's own interpreter is exactly that, so
-    the rung has to decline, the answer stops being exact, and the reason is printed rather than
-    the degradation being silent.
-    """
+    """An elevated run launches the resolved interpreter with the administrator token, so a
+    user-writable interpreter must be declined: the answer goes inexact and the reason is
+    printed."""
     studio_home = tmp_path / "studio"
     studio_home.mkdir()
     result = _run_powershell(

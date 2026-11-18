@@ -8,7 +8,7 @@ import ts from "@typescript/typescript6";
 
 import { readSrc } from "./helpers/kit.ts";
 
-function renderer() {
+function renderer(stubs: Record<string, unknown> = {}) {
   const source = readSrc("components/assistant-ui/markdown-text.tsx");
   const parsed = ts.createSourceFile(
     "markdown-text.tsx",
@@ -63,6 +63,10 @@ function renderer() {
     useSandboxImage: () => ({ state: { status: "idle" } }),
     HugeiconsIcon: "icon",
     Download01Icon: "download",
+    backendPathUrl: (url: string) => url,
+    desktopSignedMediaPath: () => null,
+    protectedBackendPath: () => null,
+    ...stubs,
   };
   runInNewContext(code, context);
   return (props: Record<string, unknown>) => {
@@ -103,4 +107,18 @@ test("successful image load clears decode failure and forwards image events", ()
   assert.doesNotMatch(render(props).className, /hidden/);
   assert.equal(errors, 1);
   assert.equal(loads, 1);
+});
+
+test("a backend image never takes the loopback src Desktop blocks; a fetched one is a blob", () => {
+  const signed = "/api/inference/images/gallery/img-1/file-signed?token=t";
+  const loopback = (url: string) => `http://127.0.0.1:8888${url}`;
+  const render = renderer({ backendPathUrl: loopback });
+  assert.equal(render({ src: signed }).src, signed);
+  const state = { status: "loaded", url: "blob:media", blob: {} };
+  const useSandboxImage = () => ({ state });
+  // Signed media on Desktop, and an unsigned backend file that needs the session.
+  for (const fetch of ["desktopSignedMediaPath", "protectedBackendPath"]) {
+    const fetched = renderer({ useSandboxImage, [fetch]: (u: string) => u });
+    assert.equal(fetched({ src: signed }).src, "blob:media", fetch);
+  }
 });

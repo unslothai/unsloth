@@ -60,8 +60,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mp, "current_device_name", lambda: "NVIDIA L4", raising = False
     )  # the planner's card
-    # Video keys read the card per device; without this a host with a real GPU records under None (stubbed torch)
-    # and reads under its own card name.
+    # Video keys read the card per device; without this, stubbed torch records under None.
     monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
     return path
 
@@ -1868,7 +1867,7 @@ def test_render_with_lora_adapters_is_not_probed(monkeypatch):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert '"unknown"  # adapters baked in at load' in src
+    assert 'peak_model = "unknown"' in src and "price_attached_loras(" in src
 
 
 def test_learned_reserve_falls_back_to_the_flat_estimate_with_loras_or_a_failed_saver(klein_pipe):
@@ -2291,7 +2290,7 @@ def test_torchao_variants_of_one_weight_class_do_not_share_a_label(monkeypatch):
     monkeypatch.setattr(dm, "_torchao_weight_classes", lambda module: {"Int8Tensor"})
     pipe = types.SimpleNamespace(transformer = torch.nn.Linear(4, 4))
     variant = {"weights": {"Linear/Int8Tensor": 1}}
-    monkeypatch.setattr(cc, "graph_variant", lambda dit: variant)
+    monkeypatch.setattr(cc, "graph_variant", lambda dit, **kw: variant)
     plain = dm.denoiser_quant_label(pipe)
     assert plain.startswith("torchao:Int8Tensor#")
     variant = {"weights": {"Linear/Int8Tensor/convrot256": 1}}

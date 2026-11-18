@@ -3,7 +3,7 @@
 
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
-import { useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { accountDatabaseName } from "@/lib/account-transition";
 import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import { hostOf } from "./address";
@@ -103,6 +103,7 @@ interface BrowserHistoryState {
   downloads: DownloadItem[];
   icons: Record<string, string>;
   recordVisit: (url: string, title: string, temporary?: boolean) => void;
+  importVisits: (items: { url: string; title: string; visitedAt: number }[]) => { added: number; leftOut: number };
   recordIcon: (host: string, icon: string, temporary?: boolean) => void;
   /** The new row's id; undefined when download history is off or a temporary chat is shown. */
   recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">, temporary?: boolean) => string | undefined;
@@ -117,23 +118,24 @@ interface BrowserHistoryState {
 
 export const useBrowserHistoryStore = create<BrowserHistoryState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       history: [],
       downloads: [],
       icons: {},
-      recordIcon: (host, icon, temporary = false) =>
+      // No-op calls skip set(): persist rewrites storage on every set().
+      recordIcon: (host, icon, temporary = false) => {
+        const { icons } = get();
+        if (!host || icon.length > MAX_URL_CHARS || icons[host] === icon) return;
+        // Icons name the hosts visited, so they follow the history setting.
+        if (!savesHistory(temporary)) return;
+        const { [host]: _replaced, ...rest } = icons;
+        const hosts = Object.keys(rest);
+        for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
+        set({ icons: { ...rest, [host]: icon } });
+      },
+      recordVisit: (url, fullTitle, temporary = false) => {
+        if (url.length > MAX_URL_CHARS || !savesHistory(temporary)) return;
         set((state) => {
-          if (!host || icon.length > MAX_URL_CHARS || state.icons[host] === icon) return state;
-          // Icons name the hosts visited, so they follow the history setting.
-          if (!savesHistory(temporary)) return state;
-          const { [host]: _replaced, ...rest } = state.icons;
-          const hosts = Object.keys(rest);
-          for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
-          return { icons: { ...rest, [host]: icon } };
-        }),
-      recordVisit: (url, fullTitle, temporary = false) =>
-        set((state) => {
-          if (url.length > MAX_URL_CHARS || !savesHistory(temporary)) return state;
           const title = fullTitle.slice(0, MAX_TITLE_CHARS);
           const cutoff = retentionCutoff();
           const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
@@ -146,7 +148,31 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           // Pruned against the new visit too: its icon was recorded just before it.
           const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
           return { history, icons };
-        }),
+        });
+      },
+      // Not gated on the history setting: an import is asked for.
+      importVisits: (items) => {
+        const state = get();
+        const cutoff = retentionCutoff();
+        const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
+        const visitKey = (visit: { url: string; visitedAt: number }) => `${visit.visitedAt} ${visit.url}`;
+        const seen = new Set(kept.map(visitKey));
+        const fresh: HistoryItem[] = [];
+        let leftOut = 0;
+        for (const item of items) {
+          if (item.url.length > MAX_URL_CHARS || seen.has(visitKey(item))) continue;
+          seen.add(visitKey(item));
+          if (item.visitedAt < cutoff) leftOut++;
+          else fresh.push({ id: newId(), url: item.url, title: item.title.slice(0, MAX_TITLE_CHARS), visitedAt: item.visitedAt });
+        }
+        const history = [...kept, ...fresh].sort((a, b) => b.visitedAt - a.visitedAt).slice(0, MAX_HISTORY);
+        const ids = new Set(history.map((visit) => visit.id));
+        const added = fresh.filter((visit) => ids.has(visit.id)).length;
+        if (added > 0) {
+          set({ history, icons: history.length < state.history.length + added ? iconsFor(history, state.icons) : state.icons });
+        }
+        return { added, leftOut: leftOut + fresh.length - added };
+      },
       recordDownload: (item, temporary) => {
         // Callers that took the state when the download began pass it; the rest go by the chat shown now.
         if (!useBrowserPrefsStore.getState().saveDownloadHistory || (temporary ?? useChatRuntimeStore.getState().incognito)) {
@@ -200,13 +226,13 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
         });
         historyStorage.flush();
       },
-      pruneHistory: () =>
-        set((state) => {
-          const cutoff = retentionCutoff();
-          if (!cutoff || state.history.every((visit) => visit.visitedAt >= cutoff)) return state;
-          const history = state.history.filter((visit) => visit.visitedAt >= cutoff);
-          return { history, icons: iconsFor(history, state.icons) };
-        }),
+      pruneHistory: () => {
+        const state = get();
+        const cutoff = retentionCutoff();
+        if (!cutoff || state.history.every((visit) => visit.visitedAt >= cutoff)) return;
+        const history = state.history.filter((visit) => visit.visitedAt >= cutoff);
+        set({ history, icons: iconsFor(history, state.icons) });
+      },
     }),
     {
       // Per account: a write still deferred at a switch lands under the account that made it.

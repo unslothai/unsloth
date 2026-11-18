@@ -30,9 +30,8 @@ def hub(monkeypatch):
 
 
 def test_an_unattached_timer_reports_none_not_zero(monkeypatch):
-    """The finding this whole file exists for. With nothing patched, `seconds`
-    must be None: a report showing 0.0 is indistinguishable from a warm cache,
-    and one of those is a measurement while the other is a broken instrument."""
+    """An unattached timer must report seconds as None, not 0.0, since 0.0 looks identical to a warm
+    cache and would hide a broken instrument."""
     monkeypatch.setitem(sys.modules, "huggingface_hub", types.ModuleType("huggingface_hub"))
     monkeypatch.delitem(sys.modules, "transformers.utils.hub", raising = False)
     timer = FetchTimer().install()

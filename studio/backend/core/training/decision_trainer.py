@@ -8,6 +8,8 @@ import json
 import math
 import os
 import random
+import re
+import sys
 import threading
 import time
 from contextvars import copy_context
@@ -32,6 +34,35 @@ STRUCT_COLUMNS_WARNING = (
 
 class _Stopped(Exception):
     pass
+
+
+_abandoned_downloads: list[threading.Thread] = []
+
+
+def end_abandoned_download(event_queue: Any) -> None:
+    # Shutdown joins the hub executor threads, so the worker would keep downloading and refuse the next run.
+    # Only a worker process owns its exit; the in-process MLX adapter passes a plain queue from a thread.
+    owns_process = (
+        hasattr(event_queue, "join_thread")
+        and threading.current_thread() is threading.main_thread()
+    )
+    if not owns_process or not any(thread.is_alive() for thread in _abandoned_downloads):
+        return
+    with contextlib.suppress(Exception):
+        event_queue.close()
+        event_queue.join_thread()
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            stream.flush()
+    with contextlib.suppress(Exception):
+        from utils.worker_stderr import stop_worker_stderr_mirror
+        stop_worker_stderr_mirror()
+    os._exit(0)
+
+
+def _no_decisions_message(reason: str | None) -> str:
+    detail = f" ({reason})" if reason else ""
+    return f"No usable decisions in the dataset{detail}. Each row needs state, questions and gold."
 
 
 def _decision_count(items: list) -> int:
@@ -91,20 +122,30 @@ def _from_arrow(rows, warn: Callable[[str], None]) -> list[dict]:
     ]
 
 
-def _local_files(paths: list[str]) -> list[Path]:
+def _local_files(paths: list[str], splits: tuple[str, ...] = ("train",)) -> list[Path]:
     from utils.paths import dataset_files_in_dir, datasets_root
 
     files: list[Path] = []
     for entry in paths:
         path = Path(entry if os.path.isabs(entry) else os.path.join(str(datasets_root()), entry))
-        files.extend(dataset_files_in_dir(path) if path.is_dir() else [path])
+        files.extend(dataset_files_in_dir(path, splits) if path.is_dir() else [path])
     return files
 
 
-def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]) -> list[dict]:
+def _bad_json(path: Path, line: int, exc: json.JSONDecodeError) -> ValueError:
+    name = re.sub(r"^[0-9a-f]{32}_", "", path.name)
+    return ValueError(f"Invalid JSON at {name}:{line}: {exc.msg}")
+
+
+def _read_local_rows(
+    paths: list[str],
+    load_dataset,
+    warn: Callable[[str], None],
+    splits: tuple[str, ...] = ("train",),
+) -> list[dict]:
     from utils.datasets.cells import csv_as_text_kwargs
 
-    files = _local_files(paths)
+    files = _local_files(paths, splits)
     if not files:
         raise ValueError("No local dataset files found")
     rows: list[dict] = []
@@ -113,11 +154,23 @@ def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]
         if suffix in (".json", ".jsonl"):
             # Read directly: Arrow would merge every question's criteria keys into one struct.
             text = path.read_text(encoding = "utf-8-sig")
+            if not text.strip():
+                continue
             try:
                 data = json.loads(text)
                 rows.extend(data if isinstance(data, list) else [data])
-            except ValueError:
-                rows.extend(json.loads(line) for line in text.splitlines() if line.strip())
+            except json.JSONDecodeError as exc:
+                # "Extra data" means the first line parsed, so this is JSONL.
+                if exc.msg != "Extra data":
+                    raise _bad_json(path, exc.lineno, exc) from None
+                # LF only: U+2028, U+2029 and U+0085 inside a string are data, not a row end.
+                for number, line in enumerate(text.split("\n"), 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError as bad_line:
+                        raise _bad_json(path, number, bad_line) from None
         elif suffix in (".csv", ".parquet"):
             dataset = load_dataset(
                 suffix[1:],
@@ -169,6 +222,7 @@ def _load_rows(
     from core.training.s3_dataset import S3DownloadCancelled, prepare_s3_dataset_download
     from core.training.worker import _load_embedding_hf_dataset
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
+    from utils.paths import EVAL_SPLITS
 
     def check_stop():
         if should_stop():
@@ -219,7 +273,7 @@ def _load_rows(
         evaluate
         and config.get("local_eval_datasets")
         and config.get("local_datasets")
-        and {p.resolve() for p in _local_files(config["local_eval_datasets"])}
+        and {p.resolve() for p in _local_files(config["local_eval_datasets"], EVAL_SPLITS)}
         & {p.resolve() for p in _local_files(config["local_datasets"])}
     ):
         # Scoring or calibrating on training rows would report the fit, not held-out accuracy.
@@ -229,7 +283,7 @@ def _load_rows(
         )
     elif evaluate and config.get("local_eval_datasets"):
         eval_rows = _eval_sample(
-            _read_local_rows(config["local_eval_datasets"], load_dataset, warn), seed
+            _read_local_rows(config["local_eval_datasets"], load_dataset, warn, EVAL_SPLITS), seed
         )
 
     check_stop()
@@ -239,11 +293,19 @@ def _load_rows(
 class _DecisionRows:
     """Reads raw rows on a thread, in this job's context, while the model loads."""
 
-    def __init__(self, config, should_stop, status, warn):
+    def __init__(
+        self,
+        config,
+        should_stop,
+        status,
+        warn,
+        check = None,
+    ):
         self._config = config
         self._should_stop = should_stop
         self._status = status
         self._warn = warn
+        self._check = check
         self._cancelled = threading.Event()
         self._done = threading.Event()
         self._lock = threading.Lock()
@@ -272,9 +334,12 @@ class _DecisionRows:
         try:
             if self._stopped():
                 raise _Stopped("Training cancelled")
-            self._result = _load_rows(
+            result = _load_rows(
                 self._config, self._stopped, self._report_status, self._report_warning
             )
+            if self._check is not None:
+                self._check(result[0])
+            self._result = result
         except BaseException as exc:
             self._error = exc
         finally:
@@ -299,6 +364,32 @@ class _DecisionRows:
         if self._error is not None:
             raise self._error
         return self._result
+
+    def alongside(self, work, check_stop):
+        from utils.account_context import account_thread
+
+        failure = []
+
+        def run():
+            try:
+                work()
+            except BaseException as exc:
+                failure.append(exc)
+
+        context = copy_context()
+        thread = account_thread(target = context.run, args = (run,), daemon = True)
+        thread.start()
+        try:
+            while thread.is_alive():
+                thread.join(0.1)
+                check_stop()
+                if self._done.is_set() and self._error is not None:
+                    raise self._error
+        except BaseException:
+            _abandoned_downloads.append(thread)
+            raise
+        if failure:
+            raise failure[0]
 
     def __exit__(self, *_exc):
         with self._lock:
@@ -347,6 +438,31 @@ def _sliced(rows: list, config: dict) -> list:
 def _is_mlx() -> bool:
     from utils.hardware import hardware
     return hardware.DEVICE == hardware.DeviceType.MLX
+
+
+def _zoo_trains_d1() -> bool:
+    try:
+        from unsloth_zoo.mlx import decision
+    except Exception:
+        return False
+    return hasattr(decision, "load_language_model_as_d1")
+
+
+def _lm_decision_head(model_name: str, token: str | None) -> str:
+    # An unsloth-zoo without the d1 trainer keeps the Clef head these models trained into before.
+    if not _is_mlx() or not _zoo_trains_d1():
+        return "clef"
+    try:
+        folder = Path(model_name).expanduser()
+        if folder.is_dir():
+            config = folder / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download
+            config = hf_hub_download(model_name, "config.json", token = token)
+        model_type = json.loads(Path(config).read_text(encoding = "utf-8")).get("model_type")
+    except (OSError, ValueError, AttributeError):
+        return "clef"
+    return "d1" if model_type in ("lfm3_vl", "lfm3_omni") else "clef"
 
 
 def _peak_memory_gb() -> float | None:
@@ -503,7 +619,6 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
 
     model_name = config["model_name"]
     subfolder = config.get("model_subfolder") or None
-    # "llm": a plain text or vision LLM that gets a fresh Clef joint schema head.
     llm = config.get("decision_layout") == "llm"
     clef = llm or config.get("decision_layout") == "clef"
     hf_token = _worker_hf_token(config)
@@ -513,17 +628,27 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     use_lora = config["training_type"] == "LoRA/QLoRA"
     gradient_checkpointing = normalize_gradient_checkpointing(config["gradient_checkpointing"])
 
-    with _DecisionRows(config, lambda: stop["requested"], status, warn) as pending_rows:
+    def check_rows(rows: list) -> None:
+        problem = FastDecisionModel.rows_problem(rows, clef, validate)
+        if problem is not None:
+            raise ValueError(_no_decisions_message(problem))
+
+    with _DecisionRows(config, lambda: stop["requested"], status, warn, check_rows) as pending_rows:
         check_stop()
-        _download_decision_checkpoint(event_queue, config)
+        if config.get("local_datasets"):
+            pending_rows.result(check_stop)
+        pending_rows.alongside(
+            lambda: _download_decision_checkpoint(event_queue, config), check_stop
+        )
         check_stop()
         status("Loading decision model...")
         if llm:
+            head = config.get("decision_head") or _lm_decision_head(model_name, hf_token)
             model, tokenizer = FastDecisionModel.from_pretrained(
                 model_name,
-                decision_head = "clef",
+                decision_head = head,
                 max_seq_length = config.get("max_seq_length") or None,
-                load_in_4bit = use_lora and bool(config.get("load_in_4bit")),
+                load_in_4bit = use_lora and bool(config.get("load_in_4bit")) and head != "d1",
                 full_finetuning = not use_lora,
                 token = hf_token or None,
                 use_gradient_checkpointing = gradient_checkpointing,
@@ -593,12 +718,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
             "reason": report["reason"] or eval_report["reason"],
         }
     if not items:
-        reason = f" ({report['reason']})" if report["reason"] else ""
-        send(
-            "error",
-            error = f"No usable decisions in the dataset{reason}. Each row needs state, questions and gold.",
-            stack = "",
-        )
+        send("error", error = _no_decisions_message(report["reason"]), stack = "")
         return
     if report["skipped"]:
         warn(f"Skipped {report['skipped']:,} of {report['total']:,} decisions: {report['reason']}.")
@@ -721,7 +841,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     model.decision_config["training"] = {
         "base": model_name,
         "subfolder": subfolder,
-        "decision_head": "clef (new)" if llm else None,
+        "decision_head": f"{head} (new)" if llm else None,
         "method": ("qlora" if clef and config.get("load_in_4bit") else "lora")
         if use_lora
         else "full",

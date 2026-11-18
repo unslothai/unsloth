@@ -2,11 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   CubeIcon,
-  Delete02Icon,
   Key01Icon,
   MoreHorizontalIcon,
+  PencilEdit02Icon,
   PlusSignIcon,
   Search01Icon,
   UserBlock01Icon,
@@ -24,7 +25,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useIsAccountOwner } from "@/features/auth";
+import { fetchAuthStatus, useIsAccountOwner } from "@/features/auth";
 import { UserAvatar, useUserProfileStore } from "@/features/profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,6 +56,7 @@ import {
   deleteAccount,
   fetchAccounts,
   regenerateSetupCode,
+  renameAccount,
   setAccountActive,
   setAccountModelAllowlist,
   setOwnerLoginAlias,
@@ -87,12 +89,15 @@ function OwnerAccountsTab() {
   const [resetting, setResetting] = useState<StudioAccount | null>(null);
   const [retiring, setRetiring] = useState<StudioAccount | null>(null);
   const [modelAccess, setModelAccess] = useState<StudioAccount | null>(null);
+  const [renaming, setRenaming] = useState<StudioAccount | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const [allowlistText, setAllowlistText] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
   const [ownerPasswordOpen, setOwnerPasswordOpen] = useState(false);
+  const [passwordForCreate, setPasswordForCreate] = useState(false);
   const [ownerPasswordPending, ownerPasswordSet] = useOwnPasswordPending();
   // The owner's row matches the sidebar footer, which reads this store before the server copy syncs.
   const ownDisplayName = useUserProfileStore((s) => s.displayName).trim();
@@ -148,6 +153,26 @@ function OwnerAccountsTab() {
   function showSetup(result: AccountSetupCode) {
     setSetup(result);
     setCopied(false);
+  }
+
+  async function beginCreate() {
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    actionTrigger.current = null;
+    try {
+      const status = await fetchAuthStatus();
+      if (status.requires_password_change) {
+        setPasswordForCreate(true);
+        setOwnerPasswordOpen(true);
+      } else {
+        setCreating(true);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("settings.accounts.failed"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function create(event: SyntheticEvent<HTMLFormElement>) {
@@ -233,11 +258,7 @@ function OwnerAccountsTab() {
           size="sm"
           disabled={busy}
           data-settings-label={t("settings.accounts.create")}
-          onClick={() => {
-            setError(null);
-            actionTrigger.current = null;
-            setCreating(true);
-          }}
+          onClick={() => void beginCreate()}
         >
           <HugeiconsIcon
             icon={PlusSignIcon}
@@ -248,7 +269,7 @@ function OwnerAccountsTab() {
         </Button>
       </div>
 
-      {error && !confirming && !editorOpen && !modelAccess && (
+      {error && !confirming && !editorOpen && !modelAccess && !renaming && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3">
           <p
             role="alert"
@@ -451,6 +472,21 @@ function OwnerAccountsTab() {
                             disabled={busy}
                             onSelect={() => {
                               setError(null);
+                              setRenameDraft(account.username);
+                              setRenaming(account);
+                            }}
+                          >
+                            <HugeiconsIcon
+                              icon={PencilEdit02Icon}
+                              className="size-4"
+                              aria-hidden="true"
+                            />
+                            {t("settings.accounts.rename")}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={busy}
+                            onSelect={() => {
+                              setError(null);
                               setAllowlistText(
                                 (account.model_allowlist ?? []).join("\n"),
                               );
@@ -510,7 +546,7 @@ function OwnerAccountsTab() {
                             }}
                           >
                             <HugeiconsIcon
-                              icon={Delete02Icon}
+                              icon={TrashIcon}
                               className="size-4"
                               aria-hidden="true"
                             />
@@ -574,10 +610,17 @@ function OwnerAccountsTab() {
       <ManagedProviderUrlsSection />
 
       <ChangePasswordDialog
-        initial={ownerPasswordPending}
+        initial={passwordForCreate || ownerPasswordPending}
+        forAccountCreation={passwordForCreate}
         open={ownerPasswordOpen}
-        onOpenChange={setOwnerPasswordOpen}
-        onDone={ownerPasswordSet}
+        onOpenChange={(open) => {
+          setOwnerPasswordOpen(open);
+          if (!open) setPasswordForCreate(false);
+        }}
+        onDone={() => {
+          ownerPasswordSet();
+          if (passwordForCreate) setCreating(true);
+        }}
       />
 
       <Dialog
@@ -789,6 +832,91 @@ function OwnerAccountsTab() {
                 {t("settings.accounts.cancel")}
               </Button>
               <Button type="submit" variant="dark" disabled={busy}>
+                {busy && <Spinner label={t("common.loading")} />}
+                {t("settings.accounts.modelAccessSave")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={renaming !== null}
+        onOpenChange={(open) => {
+          if (open || busy) return;
+          setRenaming(null);
+          setError(null);
+        }}
+      >
+        <DialogContent
+          className="sm:max-w-md max-sm:max-w-[calc(100%-2rem)]"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const trigger = actionTrigger.current;
+            (trigger?.isConnected && !trigger.disabled
+              ? trigger
+              : createTrigger.current
+            )?.focus({ preventScroll: true });
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="break-words">
+              {t("settings.accounts.renameTitle", {
+                username: renaming?.username ?? "",
+              })}
+            </DialogTitle>
+            <DialogDescription>
+              {t("settings.accounts.renameDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-6"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const target = renaming;
+              if (busy || !target || !renameDraft.trim()) return;
+              void perform(async () => {
+                await renameAccount(target.account_id, renameDraft);
+                setRenaming(null);
+              });
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="rename-account-username" className="text-xs">
+                {t("settings.accounts.username")}
+              </Label>
+              <Input
+                id="rename-account-username"
+                value={renameDraft}
+                onChange={(event) => setRenameDraft(event.target.value)}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                readOnly={busy}
+                required
+              />
+            </div>
+            {error && (
+              <p role="alert" className="break-words text-xs text-destructive">
+                {error}
+              </p>
+            )}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => {
+                  setRenaming(null);
+                  setError(null);
+                }}
+              >
+                {t("settings.accounts.cancel")}
+              </Button>
+              <Button
+                type="submit"
+                variant="dark"
+                disabled={busy || !renameDraft.trim()}
+              >
                 {busy && <Spinner label={t("common.loading")} />}
                 {t("settings.accounts.modelAccessSave")}
               </Button>

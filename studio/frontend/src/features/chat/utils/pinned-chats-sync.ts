@@ -27,10 +27,14 @@ export interface PinnedChatsSyncOptions {
   writePending?: (operations: PinOperation[]) => void;
   isRetryable?: (error: unknown) => boolean;
   publish: (ids: string[]) => void;
-  onError?: (error: unknown) => void;
+  /** `editLost`: the failure discarded a pin change; anything else stays queued and retries. */
+  onError?: (error: unknown, editLost: boolean) => void;
 }
 
 export class PinnedChatsValidationError extends Error {}
+
+/** A queued intent behind one that has not saved yet; `cause` is that one's failure, when known. */
+export class PinnedChatsBlockedError extends Error {}
 
 export function isValidPinId(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 512) {
@@ -119,6 +123,15 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
   const scheduled = new Map<string, Promise<void>>();
   // A response arrived, but removing its journal entry may still need retrying.
   const acknowledged = new Set<string>();
+  let lastFailure: { operationId: string; error: unknown } | undefined;
+  const lostEdits = new WeakSet<object>();
+
+  function report(error: unknown, editLost = false): void {
+    options.onError?.(
+      error,
+      editLost || (typeof error === "object" && error !== null && lostEdits.has(error)),
+    );
+  }
 
   function publish() {
     options.publish(pending.reduce(applyPinOperation, confirmed ?? []));
@@ -150,8 +163,8 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
     }
   }
 
-  function rejected(error: unknown): Promise<void> {
-    options.onError?.(error);
+  function rejected(error: unknown, editLost: boolean): Promise<void> {
+    report(error, editLost);
     return Promise.reject(error);
   }
 
@@ -167,7 +180,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
         if (epoch !== generation) {
           return;
         }
-        options.onError?.(error);
+        report(error);
         throw error;
       }
     });
@@ -285,6 +298,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       // A rejected intent cannot succeed on retry; later valid intents may proceed.
       acknowledged.add(operation.operationId);
       finish(operation);
+      if (typeof error === "object" && error !== null) lostEdits.add(error);
     }
     loaded = false;
     try {
@@ -315,8 +329,12 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
     if (!pending.some((entry) => entry.operationId === operation.operationId)) {
       return;
     }
-    if (pending[0]?.operationId !== operation.operationId) {
-      throw new Error("An earlier pin change is still waiting to save.");
+    const head = pending[0]?.operationId;
+    if (head !== operation.operationId) {
+      throw new PinnedChatsBlockedError(
+        "An earlier pin change is still waiting to save.",
+        { cause: lastFailure?.operationId === head ? lastFailure.error : undefined },
+      );
     }
     try {
       if (acknowledged.has(operation.operationId)) {
@@ -329,6 +347,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       if (epoch !== generation) {
         return;
       }
+      lastFailure = { operationId: operation.operationId, error };
       await recover(operation, error, epoch);
       throw error;
     }
@@ -393,7 +412,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       }
       return result;
     } catch (error) {
-      return rejected(error);
+      return rejected(error, true);
     }
   }
 
@@ -405,7 +424,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       try {
         restore();
       } catch (error) {
-        return rejected(error);
+        return rejected(error, false);
       }
       const hydration = enqueue((epoch) => hydrate(epoch, true));
       const operations = schedulePending();
@@ -438,6 +457,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       refreshing = undefined;
       scheduled.clear();
       acknowledged.clear();
+      lastFailure = undefined;
       publish();
       if (clearPending) {
         persist([]);

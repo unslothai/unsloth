@@ -436,6 +436,9 @@ class TestInstallPythonStackSubprocessMock:
             mock.patch.object(ips, "_has_rocm_gpu", return_value = False),
             mock.patch("subprocess.run", side_effect = mock_run),
             mock.patch.object(ips, "_bootstrap_uv", return_value = True),
+            # The mocked subprocess writes no wheel metadata, so the no-torch pair probe (#16157)
+            # would find nothing; model a feed that serves a compatible Unsloth / Zoo pair.
+            mock.patch.object(ips, "_no_torch_pair", return_value = ("2026.11.1", "2026.11.1", 0)),
             mock.patch.object(ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")),
             mock.patch("pathlib.Path.is_dir", return_value = True),
             mock.patch("pathlib.Path.is_file", return_value = True),

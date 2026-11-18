@@ -330,9 +330,7 @@ def mark_opened(item_id: str, fingerprint: Optional[str] = None) -> None:
 
 
 def reconcile_entries(adopt: list[tuple[str, str]], stale: list[tuple[str, str]]) -> None:
-    """Fingerprint legacy rows with the file found at their path (``adopt``), and drop rows kept
-    for a file since replaced (``stale``). Each only while the row still reads as the listing saw
-    it, so a write that landed in between is kept."""
+    """Each update applies only if the row is unchanged since the listing; a newer write is kept."""
     if not adopt and not stale:
         return
     conn = get_connection()

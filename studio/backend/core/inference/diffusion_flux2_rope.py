@@ -55,7 +55,7 @@ def _kernel() -> Optional[Callable]:
     except Exception:  # noqa: BLE001
         return None
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["S"])
     def _rope_fwd(
         X,
         COS,
@@ -71,8 +71,8 @@ def _kernel() -> Optional[Callable]:
         sob,
         sos,
         soh,
-        HALF: tl.constexpr,
-        BLOCK: tl.constexpr,
+        HALF: tl.constexpr,  # hd // 2
+        BLOCK: tl.constexpr,  # block size over heads x pairs
     ):
         row = tl.program_id(0)
         b = row // S

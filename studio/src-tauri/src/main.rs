@@ -19,12 +19,14 @@ mod commands;
 mod debian_update;
 mod desktop_auth;
 mod desktop_backend_owner;
+mod desktop_port;
 mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
 mod gpu_rendering;
 mod install;
 mod install_watchdog;
+mod keep_awake;
 #[cfg(target_os = "linux")]
 mod linux_gpu_supervisor;
 #[cfg(target_os = "linux")]
@@ -40,6 +42,7 @@ mod native_clipboard;
 mod native_file_dialogs;
 mod native_intents;
 mod native_path_policy;
+mod native_vibrancy;
 mod preflight;
 mod process;
 mod process_identity;
@@ -1067,10 +1070,13 @@ fn keep_resizable_across_first_configure(
 
 // WebKitGTK disables media streams and denies unhandled permission requests by default, which
 // breaks dictation. Allow only user-media requests; every other kind keeps the default deny.
+// It also ships with spell checking off and no dictionary loaded (wry turns neither on), so the
+// DOM spellcheck attribute behind Settings > Spell check did nothing on Linux.
 #[cfg(target_os = "linux")]
 fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use webkit2gtk::{
-        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebContextExt,
+        WebViewExt,
     };
 
     let window = app.get_webview_window("main").ok_or_else(|| {
@@ -1080,6 +1086,21 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
+            let policy_never = matches!(
+                settings.hardware_acceleration_policy(),
+                webkit2gtk::HardwareAccelerationPolicy::Never
+            );
+            if !linux_webkit::smooth_scrolling_enabled(policy_never) {
+                settings.set_enable_smooth_scrolling(false);
+            }
+        }
+        // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
+        // installed; deferred because loading it blocks ~40 ms. Not on a bundled AppImage: its
+        // libenchant would load the host's ABI-incompatible provider plugins.
+        let bundled = crate::appimage_webkit::bundled_runtime(|name| std::env::var_os(name));
+        if let Some(context) = webview.context().filter(|_| !bundled) {
+            context.set_spell_checking_enabled(true);
+            glib::idle_add_local_once(move || context.set_spell_checking_languages(&[]));
         }
         webview.connect_permission_request(|_webview, request| {
             match request.downcast_ref::<UserMediaPermissionRequest>() {
@@ -2370,9 +2391,10 @@ fn main() {
             webkit_rendering.nvidia_driver_branch,
             webkit_rendering.wayland_session,
         ),
+        webkit_rendering.cpu_painting,
     );
     #[cfg(not(target_os = "linux"))]
-    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None);
+    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false);
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -2411,7 +2433,7 @@ fn main() {
         }
         let (major, minor, micro) = webkit_rendering.webkit_version;
         info!(
-            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={}",
+            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} cpu_painting={}",
             gpu_setting.as_str(),
             if webkit_rendering.gpu_path.is_some() { "gpu" } else { "default-or-cpu" },
             webkit_rendering
@@ -2421,6 +2443,7 @@ fn main() {
             webkit_rendering.env_override.unwrap_or("none"),
             gpu_fallback_active,
             gpu_child.supervised,
+            webkit_rendering.cpu_painting,
         );
     }
     #[cfg(windows)]
@@ -2479,6 +2502,7 @@ fn main() {
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .manage(native_file_dialogs::NativeSaveRegistry::default())
         .manage(browser_webview::new_browser_views())
+        .manage(browser_webview::new_browser_capture_rules())
         .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(|invoke| {
             if invoke.message.webview().label() != "main" || invoke.message.webview().window().label() != "main" {
@@ -2500,6 +2524,7 @@ fn main() {
             browser_webview::browser_view_eval,
             browser_webview::browser_view_close,
             browser_webview::browser_view_clear_data,
+            browser_webview::browser_capture_rules_set,
             browser_webview::browser_view_mute,
             browser_webview::browser_view_layered,
             browser_webview::browser_view_input,
@@ -2568,6 +2593,9 @@ fn main() {
             native_file_dialogs::finish_native_file_save,
             native_file_dialogs::cancel_native_file_save,
             native_file_dialogs::save_native_file_from_url,
+            native_file_dialogs::pick_native_download_directory,
+            native_file_dialogs::save_native_file_in_directory,
+            native_file_dialogs::release_native_download_directory,
             native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
             native_file_dialogs::read_native_chat_import_chunk,
@@ -2591,12 +2619,15 @@ fn main() {
             mark_in_app_relaunch,
             gpu_rendering::get_gpu_rendering,
             gpu_rendering::set_gpu_rendering,
+            native_vibrancy::set_native_vibrancy,
             relaunch_to_apply_gpu_rendering,
             renderer_ready,
             clear_in_app_relaunch,
             reveal_main_window,
             get_close_to_tray,
             set_close_to_tray,
+            keep_awake::get_keep_awake,
+            keep_awake::set_keep_awake,
             get_launch_at_login,
             set_launch_at_login,
             get_tray_icon_visible,
@@ -2617,6 +2648,7 @@ fn main() {
             }
 
             initialize_close_to_tray(app.handle());
+            keep_awake::initialize(app.handle());
             #[cfg(target_os = "linux")]
             {
                 let handle = app.handle().clone();

@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import type { ChatPresetSource } from "../presets/preset-policy";
+import type {
+  ChatPresetSource,
+  RecommendedSamplingKey,
+} from "../presets/preset-policy";
 import type {
   PermissionMode,
   SandboxLevel,
@@ -18,6 +21,8 @@ import type {
 import type { PersistedInferenceParams } from "../types/runtime";
 import {
   ChatSettingsRequestError,
+  asBodyTransportFailure,
+  isAbortOrTimeout,
   isUnderKeepaliveBudget,
 } from "../utils/settings-retry";
 
@@ -38,8 +43,12 @@ export interface PersistedChatSettings {
   forgetInferenceParamsByModel?: Record<string, string[]>;
   rememberParamsPerModel?: boolean;
   customPresets?: PersistedChatPreset[];
+  /** Outgoing only: per preset name, the preset to save in its place, or null to delete it. */
+  editCustomPresets?: Record<string, PersistedChatPreset | null>;
   activePreset?: string;
   activePresetSource?: ChatPresetSource;
+  /** Per key, so edits from two tabs merge; `false` clears a key. */
+  presetEditedKeys?: Partial<Record<RecommendedSamplingKey, boolean>>;
   autoTitle?: boolean;
   reasoningEffort?: ReasoningEffort;
   preserveThinking?: boolean;
@@ -123,7 +132,13 @@ function parseErrorText(status: number, body: unknown): string {
 }
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
-  const body = await response.json().catch(() => null);
+  const body = await response.json().catch((error: unknown) => {
+    // A 200 cut off or aborted mid-body has no answer; invalid JSON (SyntaxError) still returns null.
+    if (response.ok && (error instanceof TypeError || isAbortOrTimeout(error))) {
+      throw asBodyTransportFailure(error);
+    }
+    return null;
+  });
   if (!response.ok) {
     // Typed so the settings queue can tell server-down (keep patch) from rejection (drop fields).
     throw new ChatSettingsRequestError(

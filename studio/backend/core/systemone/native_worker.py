@@ -16,7 +16,9 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable
 
@@ -57,6 +59,10 @@ class NativeIncapable(NativeError):
     """This llama-server build cannot serve decision models."""
 
 
+class NativeLoadError(NativeError):
+    """llama-server exited before it finished loading the model."""
+
+
 class NativeInputError(NativeError):
     """The server refused this request; the server itself is fine."""
 
@@ -74,10 +80,31 @@ class NativeContextOverflow(NativeInputError):
         )
 
 
+# A found binary, kept for one settings answer, which would otherwise search for it once per catalog entry.
+_FOUND_BINARY: ContextVar = ContextVar("systemone_found_binary", default = None)
+
+
+@contextmanager
+def reuse_found_binary() -> Iterator[None]:
+    token = _FOUND_BINARY.set([])
+    try:
+        yield
+    finally:
+        _FOUND_BINARY.reset(token)
+
+
 def resolve_binary() -> str | None:
+    found = _FOUND_BINARY.get()
+    if found:
+        return found[0]
     from core.inference.llama_cpp import LlamaCppBackend
+
     binary = LlamaCppBackend._find_llama_server_binary()
-    return (LlamaCppBackend._exec_path_for_launch(binary) or binary) if binary else None
+    binary = (LlamaCppBackend._exec_path_for_launch(binary) or binary) if binary else None
+    # Only a hit: a miss may log why, and each lookup still logs it.
+    if found is not None and binary is not None:
+        found.append(binary)
+    return binary
 
 
 def request_gap(questions: Mapping[str, Any]) -> str | None:
@@ -457,7 +484,7 @@ class NativeClefAgent:
                 raise NativeError("The llama.cpp decision server was stopped while it loaded.")
             if not self.is_alive():
                 tail = self._log_tail()
-                raise NativeError(
+                raise NativeLoadError(
                     f"llama.cpp exited while loading {self.alias} (code {self._process.returncode})"
                     + (f":\n{tail}" if tail else ".")
                 )

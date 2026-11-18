@@ -6,7 +6,10 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import type { NativeDocumentFolderSelection } from "@/features/native-intents";
-import { WorkingFolderPicker } from "./working-folder-picker";
+import {
+  type ServerFolderSelection,
+  WorkingFolderPicker,
+} from "./working-folder-picker";
 import {
   Dialog,
   DialogContent,
@@ -16,14 +19,15 @@ import {
 } from "@/components/ui/dialog";
 import {
   linkStagedFolders,
-  ProjectFolderPicker,
   type StagedFolder,
-} from "@/features/rag";
+} from "@/features/rag/components/link-staged-folders";
+import { ProjectFolderPicker } from "@/features/rag/components/project-folder-picker";
 import {
   ProjectSourceDropzone,
   type StagedSource,
   uploadStagedSources,
 } from "@/features/rag/components/project-source-dropzone";
+import { EXPIRY_GRACE_MS } from "@/features/rag/components/staged-source";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
@@ -32,6 +36,7 @@ import {
   getChatProject,
   notifyChatProjectsUpdated,
   setChatProjectWorkingFolder,
+  setChatProjectWorkingFolderPath,
 } from "../api/chat-api";
 import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -70,6 +75,9 @@ export function NewProjectDialog({
   const [busy, setBusy] = useState(false);
   const [workingFolder, setWorkingFolder] =
     useState<NativeDocumentFolderSelection | null>(null);
+  const [serverFolder, setServerFolder] = useState<ServerFolderSelection | null>(
+    null,
+  );
   const [pickingWorkingFolder, setPickingWorkingFolder] = useState(false);
   const [needsReselect, setNeedsReselect] = useState(false);
   const [createdProject, setCreatedProject] = useState<ProjectRecord | null>(
@@ -104,6 +112,24 @@ export function NewProjectDialog({
     };
   }, []);
 
+  // The grant lasts minutes: drop one that lapsed unsent, before a submit could send it dead.
+  useEffect(() => {
+    const expiresAt = workingFolder?.expiresAtMs;
+    if (!workingFolder || !expiresAt) return;
+    const { token } = workingFolder;
+    const timer = setTimeout(
+      () => {
+        if (sentLeases.current.has(token)) return;
+        setWorkingFolder((current) => (current?.token === token ? null : current));
+        toast.info("The chosen working folder expired", {
+          description: "Choose it again to use it.",
+        });
+      },
+      Math.max(0, expiresAt - EXPIRY_GRACE_MS - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [workingFolder]);
+
   function reset() {
     setName("");
     setStaged([]);
@@ -111,6 +137,7 @@ export function NewProjectDialog({
     setStagingDrop(false);
     setPickingFolder(false);
     setWorkingFolder(null);
+    setServerFolder(null);
     setPickingWorkingFolder(false);
     setNeedsReselect(false);
     setCreatedProject(null);
@@ -157,6 +184,19 @@ export function NewProjectDialog({
       } else if (!token && project.workingFolder) {
         project = await setChatProjectWorkingFolder(project.id, null);
         appliedLease.current = null;
+        setCreatedProject(project);
+      }
+      if (serverFolder) {
+        try {
+          project = await setChatProjectWorkingFolderPath(
+            project.id,
+            serverFolder.serverPath,
+          );
+        } catch (pathError) {
+          // The project exists now, so unlock the picker: a retry would send the rejected path again.
+          setNeedsReselect(true);
+          throw pathError;
+        }
         setCreatedProject(project);
       }
       // Upload before closing so the Sources panel lists them on first fetch.
@@ -247,9 +287,12 @@ export function NewProjectDialog({
           />
         </div>
         <WorkingFolderPicker
-          value={workingFolder?.displayName ?? null}
+          value={serverFolder?.serverPath ?? workingFolder?.displayName ?? null}
+          detail={serverFolder ? { path: serverFolder.serverPath } : undefined}
           onChange={(value) => {
-            setWorkingFolder(value);
+            const byPath = value && "serverPath" in value ? value : null;
+            setServerFolder(byPath);
+            setWorkingFolder(byPath ? null : (value as typeof workingFolder));
             setNeedsReselect(false);
           }}
           disabled={busy || (!!createdProject && !needsReselect)}

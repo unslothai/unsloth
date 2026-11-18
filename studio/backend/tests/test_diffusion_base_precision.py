@@ -1050,9 +1050,8 @@ def test_dit_accelerator_missing_reason_and_info_hide_train_without_a_gpu(monkey
 
 
 def test_dit_accelerator_gate_survives_a_torch_without_every_probe(monkeypatch):
-    """torch.mps.is_available() only exists from torch 2.5 and the supported floor is 2.4.
-    Probing the accelerators under one shared try/except turned that AttributeError into
-    "no block", so the very hosts the gate exists for (CPU-only) sailed through it."""
+    """torch.mps.is_available() is absent before torch 2.5 but the floor is 2.4; a shared try/except
+    would turn that AttributeError into no block, letting CPU-only hosts pass."""
     import torch
 
     from core.training.diffusion_train_common import dit_accelerator_missing_reason
@@ -1111,3 +1110,34 @@ def test_lowp_probe_skips_off_cuda_and_raises_on_a_failing_gemm():
     # The seed is set before conversion: the probe must not move the training draws.
     assert torch.equal(torch.get_rng_state(), cpu_state)
     assert torch.equal(torch.cuda.get_rng_state(), cuda_state)
+
+
+@pytest.mark.parametrize(
+    "vendor",
+    [
+        "black-forest-labs/FLUX.1-dev",
+        "black-forest-labs/FLUX.2-dev",
+        "black-forest-labs/FLUX.2-klein-base-9B",
+    ],
+)
+def test_training_access_facts_follow_no_token_mirror_with_cached_vendor_shard(
+    monkeypatch, tmp_path, vendor
+):
+    from core.inference import diffusion_families as families
+    from utils import hf_cache_settings
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    snapshot = (
+        tmp_path / ("models--" + vendor.replace("/", "--")) / "snapshots" / "rev" / "transformer"
+    )
+    snapshot.mkdir(parents = True)
+    (snapshot / "diffusion_pytorch_model-00001-of-00003.safetensors").write_bytes(b"x")
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(tmp_path))
+    assert families._upstream_is_cached(vendor)
+
+    mirror = families.mirror_repo(vendor)
+    facts = common._training_mirror_access_specs(vendor)[vendor]
+    fetched = _cfg(base_model = vendor, hf_token = "").normalized().fetch_base_model
+    assert fetched == mirror
+    assert facts["gated"] is False
+    assert mirror in facts["note"]

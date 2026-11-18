@@ -9,6 +9,7 @@ import {
   type TranscribeSwitch,
   connectionTranscribeModels,
   connectionTranscribeSwitches,
+  transcribeSourceHint,
   transcribeSwitches,
 } from "../src/features/audio/transcribe-capabilities.ts";
 import {
@@ -25,9 +26,12 @@ const UNSUPPORTED: SttCapabilities = {
   aligner: null,
   cpu_only: false,
 };
-const off = { timestamps: false, speakers: false };
-const on = { timestamps: true, speakers: true };
-const switches = (over: Partial<SttCapabilities> | null, prefs = on) =>
+const off = { timestamps: false, speakers: false, speakerAccent: "" };
+const on = { timestamps: true, speakers: true, speakerAccent: "" };
+const switches = (
+  over: Partial<SttCapabilities> | null,
+  prefs: Parameters<typeof transcribeSwitches>[1] = on,
+) =>
   transcribeSwitches(over && { ...UNSUPPORTED, ...over }, prefs, {
     loading: false,
     hasModel: true,
@@ -54,7 +58,11 @@ test("on_request: opt-in timestamps that say they download the aligner and reloa
   assert.match(optedOut.timestamps.hint, /downloads it \(1\.1 GB\)/);
   assert.deepEqual([optedOut.request, optedOut.notice], [off, null]);
   const optedIn = switches(qwen);
-  assert.deepEqual(optedIn.request, { timestamps: true, speakers: false });
+  assert.deepEqual(optedIn.request, {
+    timestamps: true,
+    speakers: false,
+    speakerAccent: "",
+  });
   assert.match(
     optedIn.notice ?? "",
     /Downloads the timing aligner \(1\.1 GB\) and reloads/,
@@ -74,7 +82,11 @@ test("always: timestamps read as always on, and the request only asks for speake
     [flags(result.timestamps), result.timestamps.always],
     [[true, true], true],
   );
-  assert.deepEqual(result.request, { timestamps: false, speakers: true });
+  assert.deepEqual(result.request, {
+    timestamps: false,
+    speakers: true,
+    speakerAccent: "",
+  });
   assert.deepEqual(switches(moss, off).request, off);
 });
 
@@ -142,7 +154,11 @@ test("a connection lists its speech-to-text models and the one dictation uses", 
 
 test("on a connection, timestamps follow the switch and speakers stay off", () => {
   const result = connectionTranscribeSwitches({ timestamps: true }, "whisper-1");
-  assert.deepEqual(result.request, { timestamps: true, speakers: false });
+  assert.deepEqual(result.request, {
+    timestamps: true,
+    speakers: false,
+    speakerAccent: "",
+  });
   assert.equal(result.timestamps.disabled, false);
   assert.equal(result.speakers.disabled, true);
   assert.equal(result.speakers.suggestSpeakersModel, undefined);
@@ -211,4 +227,82 @@ test("a connection's Voxtral TTS model stays out of Transcribe; its realtime ASR
     "voxtral-mini-latest",
     "voxtral-mini-transcribe-realtime",
   ]);
+});
+
+test("the source hint names how long this model's audio can run", () => {
+  assert.equal(
+    transcribeSourceHint(4 * 3600),
+    "Up to 4 hours with this model. Drop a file, record, or reuse a clip.",
+  );
+  assert.equal(
+    transcribeSourceHint(30 * 60),
+    "Up to 30 minutes with this model. Drop a file, record, or reuse a clip.",
+  );
+  assert.equal(
+    transcribeSourceHint(90 * 60),
+    "Up to 90 minutes with this model. Drop a file, record, or reuse a clip.",
+  );
+  const today = "Up to 30 minutes. Drop a file, record, or reuse a clip.";
+  assert.equal(transcribeSourceHint(null), today);
+  assert.equal(transcribeSourceHint(), today);
+  assert.equal(
+    switches({ max_seconds: 14400 }).sourceHint,
+    transcribeSourceHint(14400),
+  );
+  assert.equal(switches({}).sourceHint, today);
+  assert.equal(switches(null).sourceHint, today);
+  assert.equal(
+    connectionTranscribeSwitches({ timestamps: true }, "whisper-1").sourceHint,
+    today,
+  );
+});
+
+test("speaker accent: sent only to a model that takes the hint, tidied", () => {
+  const prefs = { ...off, speakerAccent: "  Chinese-accented\n  English " };
+  const qwen = switches({ engine: "mtmd", accent_hint: true }, prefs);
+  assert.equal(qwen.accent.disabled, false);
+  assert.match(qwen.accent.hint, /stays in the spoken language/);
+  assert.equal(qwen.request.speakerAccent, "Chinese-accented English");
+  assert.equal(
+    switches({ accent_hint: true }, { ...off, speakerAccent: "x".repeat(300) })
+      .request.speakerAccent.length,
+    200,
+  );
+});
+
+test("speaker accent: a model without the hint says so and sends nothing", () => {
+  const prefs = { ...off, speakerAccent: "Japanese-accented English" };
+  // An older backend omits accent_hint: the hint is never sent on a guess.
+  for (const over of [{}, { accent_hint: false }]) {
+    const { accent, request } = switches(over, prefs);
+    assert.equal(accent.disabled, true);
+    assert.match(accent.hint, /cannot use an accent hint, so none is sent/);
+    assert.equal(request.speakerAccent, "");
+  }
+  for (const loading of [true, false]) {
+    const result = transcribeSwitches(null, prefs, { loading, hasModel: true });
+    assert.deepEqual([result.accent.disabled, result.request.speakerAccent], [true, ""]);
+  }
+});
+
+test("speaker accent: a connection passes it on as the transcription prompt", () => {
+  for (const model of ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"]) {
+    const result = connectionTranscribeSwitches(
+      { timestamps: false, speakerAccent: "Indian English" },
+      model,
+    );
+    assert.equal(result.accent.disabled, false);
+    assert.equal(result.request.speakerAccent, "Indian English");
+  }
+});
+
+test("speaker accent: Whisper and diarizing connection models take no prompt", () => {
+  for (const model of ["gpt-4o-transcribe-diarize", "whisper-1", "Systran/faster-whisper-small"]) {
+    const result = connectionTranscribeSwitches(
+      { timestamps: false, speakerAccent: "Indian English" },
+      model,
+    );
+    assert.equal(result.accent.disabled, true);
+    assert.equal(result.request.speakerAccent, "");
+  }
 });

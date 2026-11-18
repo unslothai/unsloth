@@ -18,6 +18,9 @@ export const BROWSER_AGENT_TOOLS = [
   "browser_select",
   "browser_scroll",
   "browser_press_key",
+  "browser_tabs",
+  "browser_read_file",
+  "browser_edit_file",
 ] as const;
 
 /** Captured from the panel without a prompt only in the desktop app; the server keeps it for vision models. */

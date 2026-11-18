@@ -153,9 +153,8 @@ def test_api_monitor_renders_lifecycle_rows():
 
 
 def test_auto_switch_section_sits_below_the_monitor_link():
-    # #14455 moved the usage examples up, under the key form (api-settings-tab.test.ts pins that), and
-    # #15467 put them behind ApiExamplesPanel's tab row; the auto-switch section still follows the
-    # monitor link, whatever props the link takes.
+    # Issue 14455 moved the usage examples up under the key form (api-settings-tab.test.ts pins
+    # that) and issue 15467 behind ApiExamplesPanel's tab row; auto-switch follows the monitor link.
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
 
     def at(pattern):
@@ -191,7 +190,10 @@ def test_monitor_can_unload_the_loaded_model():
     busy = re.search(r"const busy = ([^;]+);", controls)
     assert busy, "the load controls no longer compute busy"
     assert {"modelLoading", "unloading"} <= {term.strip() for term in busy.group(1).split("||")}
-    assert "onEject={busy ? undefined : handleEject}" in controls
+    # The composer picker's eject goes through the page's guard rather than a prop it can drop.
+    assert re.search(
+        r"eject: \(modelId\) => \{\s*if \(!busy\) \{\s*handleEject\(modelId\);", controls
+    )
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
     assert "resolveInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src

@@ -11,12 +11,14 @@ import torch
 pytest.importorskip("torchao")
 from torchao.quantization.quantize_.workflows.float8 import float8_tensor as f8t  # noqa: E402
 
+from core.inference import diffusion_compile_config as compile_config  # noqa: E402
 from core.inference import diffusion_fp8_unit_scale as us  # noqa: E402
 
 
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     us.uninstall()
+    compile_config._reset_for_tests()
     monkeypatch.delenv(us.UNIT_SCALE_ENV, raising = False)
     monkeypatch.delenv(us.MIN_ROWS_ENV, raising = False)
     for k in us._COUNTS:
@@ -24,6 +26,7 @@ def _clean(monkeypatch):
     original = f8t.addmm_float8_unwrapped_inference
     yield
     us.uninstall()
+    compile_config._reset_for_tests()
     f8t.addmm_float8_unwrapped_inference = original
 
 

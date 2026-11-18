@@ -401,8 +401,12 @@ const escapedMathFromMarkdown: FromMarkdownExtension = {
 type MarkdownNode = {
   readonly type: string;
   readonly position?: {
-    readonly start: { readonly offset?: number };
-    readonly end: { readonly offset?: number };
+    readonly start: {
+      readonly line: number;
+      readonly column: number;
+      readonly offset?: number;
+    };
+    readonly end: { readonly line: number; readonly offset?: number };
   };
   readonly children?: readonly MarkdownNode[];
 };
@@ -411,6 +415,11 @@ type EscapedMathRange = {
   readonly start: number;
   readonly end: number;
   readonly value: string;
+};
+
+export type SettledEscapedMath = {
+  prefix: string;
+  ranges: readonly EscapedMathRange[];
 };
 
 function hasLikelyMathCloser(markdown: string, offset: number): boolean {
@@ -435,7 +444,32 @@ function hasLikelyMathCloser(markdown: string, offset: number): boolean {
   return false;
 }
 
-function escapedMathRanges(markdown: string): EscapedMathRange[] {
+function settledLength(children: readonly MarkdownNode[]): number {
+  for (let index = children.length - 2; index > 0; index -= 1) {
+    const start = children[index].position?.start;
+    const previousEnd = children[index - 1].position?.end;
+    if (
+      start?.offset !== undefined &&
+      previousEnd &&
+      start.line - previousEnd.line > 1
+    ) {
+      return start.offset - start.column + 1;
+    }
+  }
+  return 0;
+}
+
+function escapedMathRanges(
+  fullMarkdown: string,
+  settled?: SettledEscapedMath,
+): readonly EscapedMathRange[] {
+  const resumed = settled && fullMarkdown.startsWith(settled.prefix);
+  const base = resumed ? settled.prefix.length : 0;
+  const settledRanges = resumed ? settled.ranges : [];
+  const markdown = fullMarkdown.slice(base);
+  if (resumed && !mayHoldEscapedInlineMath(markdown)) {
+    return settledRanges;
+  }
   const masked = markdown.replace(CURRENCY_OPENER_RE, (opener, offset) =>
     hasLikelyMathCloser(markdown, offset) ? opener : MASKED_DOLLAR,
   );
@@ -469,8 +503,8 @@ function escapedMathRanges(markdown: string): EscapedMathRange[] {
       !(openCodeTail && start >= openCodeTail.start && start < openCodeTail.end)
     ) {
       ranges.push({
-        start,
-        end,
+        start: base + start,
+        end: base + end,
         value: markdown.slice(start + 2, end - 2).trim(),
       });
     }
@@ -478,7 +512,14 @@ function escapedMathRanges(markdown: string): EscapedMathRange[] {
       pending.push(...node.children);
     }
   }
-  return ranges.sort((left, right) => left.start - right.start);
+  ranges.sort((left, right) => left.start - right.start);
+  const found = [...settledRanges, ...ranges];
+  if (settled) {
+    const length = base + settledLength(tree.children ?? []);
+    settled.prefix = fullMarkdown.slice(0, length);
+    settled.ranges = found.filter((range) => range.end <= length);
+  }
+  return found;
 }
 
 /** False only when no `\$` pair can tokenize as math; past PAIR_BUDGET pairs it defers to the parse. */
@@ -525,12 +566,15 @@ function mayCloseEscapedMath(
   return false;
 }
 
-/** Runs before currency and streaming repair. */
-export function normalizeEscapedInlineMath(markdown: string): string {
+/** Runs before currency and streaming repair. Pass `settled` only mid-stream: link definitions reach across blocks. */
+export function normalizeEscapedInlineMath(
+  markdown: string,
+  settled?: SettledEscapedMath,
+): string {
   if (!mayHoldEscapedInlineMath(markdown)) {
     return markdown;
   }
-  const ranges = escapedMathRanges(markdown);
+  const ranges = escapedMathRanges(markdown, settled);
   if (ranges.length === 0) {
     return markdown;
   }

@@ -78,9 +78,42 @@ const NATIVE_SAVE_HANDLE_LIMIT: usize = 8;
 #[derive(Default)]
 pub struct NativeSaveRegistry {
     files: Mutex<Vec<(String, Arc<Mutex<NativeSave>>)>>,
+    directories: Mutex<Vec<(String, PathBuf)>>,
 }
 
 impl NativeSaveRegistry {
+    fn register_directory(&self, directory: PathBuf) -> String {
+        let token: String = (0..4)
+            .map(|_| format!("{:016x}", rand::random::<u64>()))
+            .collect();
+        let mut directories = self
+            .directories
+            .lock()
+            .expect("native save registry poisoned");
+        directories.push((token.clone(), directory));
+        while directories.len() > NATIVE_SAVE_HANDLE_LIMIT {
+            directories.remove(0);
+        }
+        token
+    }
+
+    fn resolve_directory(&self, token: &str) -> Result<PathBuf, String> {
+        self.directories
+            .lock()
+            .expect("native save registry poisoned")
+            .iter()
+            .find(|(candidate, _)| candidate == token)
+            .map(|(_, directory)| directory.clone())
+            .ok_or_else(|| "That export folder is no longer available.".to_string())
+    }
+
+    fn release_directory(&self, token: &str) {
+        self.directories
+            .lock()
+            .expect("native save registry poisoned")
+            .retain(|(candidate, _)| candidate != token);
+    }
+
     fn register(&self, save: NativeSave) -> String {
         let token: String = (0..4)
             .map(|_| format!("{:016x}", rand::random::<u64>()))
@@ -711,6 +744,73 @@ pub async fn save_native_file_from_url(
     Ok(Some(saved_file_name(&path)))
 }
 
+#[tauri::command]
+pub async fn pick_native_download_directory(
+    webview: tauri::Webview,
+    app: AppHandle,
+    registry: State<'_, NativeSaveRegistry>,
+) -> Result<Option<String>, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    let config_dir = app.path().app_config_dir().ok();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title("Save Unsloth exports");
+    if let Some(dir) = config_dir.as_deref().and_then(last_save_dir) {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+    let selected_path = rx
+        .await
+        .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
+        .map(local_dialog_path)
+        .transpose()?;
+    let Some(directory) = selected_path else {
+        return Ok(None);
+    };
+    Ok(Some(registry.register_directory(directory)))
+}
+
+#[tauri::command]
+pub async fn save_native_file_in_directory(
+    webview: tauri::Webview,
+    app: AppHandle,
+    registry: State<'_, NativeSaveRegistry>,
+    token: String,
+    url: String,
+    file_name: String,
+) -> Result<String, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    require_loopback_url(&url)?;
+    let directory = registry.resolve_directory(&token)?;
+    let name = stream_file_to_directory(&url, &file_name, &directory).await?;
+    if let Ok(config_dir) = app.path().app_config_dir() {
+        remember_save_dir(&config_dir, &directory.join(&name));
+    }
+    Ok(name)
+}
+
+#[tauri::command]
+pub fn release_native_download_directory(
+    webview: tauri::Webview,
+    registry: State<'_, NativeSaveRegistry>,
+    token: String,
+) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    registry.release_directory(&token);
+    Ok(())
+}
+
+async fn stream_file_to_directory(
+    url: &str,
+    file_name: &str,
+    directory: &Path,
+) -> Result<String, String> {
+    let destination = unique_destination(directory, &safe_download_name(file_name))?;
+    stream_url_to_path_inner(url, &destination, DOWNLOAD_READ_TIMEOUT, None, false).await?;
+    Ok(saved_file_name(&destination))
+}
+
 /// Resets per chunk, so a large save is not cut short.
 const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -721,6 +821,16 @@ async fn stream_url_to_path(
     path: &Path,
     read_timeout: Duration,
     bearer: Option<&str>,
+) -> Result<(), String> {
+    stream_url_to_path_inner(url, path, read_timeout, bearer, true).await
+}
+
+async fn stream_url_to_path_inner(
+    url: &str,
+    path: &Path,
+    read_timeout: Duration,
+    bearer: Option<&str>,
+    replace: bool,
 ) -> Result<(), String> {
     let request = crate::loopback_http::streaming_client(Duration::from_secs(10), read_timeout)
         .map_err(|error| format!("Download failed: {error}"))?
@@ -754,9 +864,12 @@ async fn stream_url_to_path(
         .as_file()
         .sync_all()
         .map_err(|error| format!("Failed to save {}: {error}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| format!("Failed to save {}: {}", path.display(), error.error))?;
+    let saved = if replace {
+        temporary.persist(path)
+    } else {
+        temporary.persist_noclobber(path)
+    };
+    saved.map_err(|error| format!("Failed to save {}: {}", path.display(), error.error))?;
     Ok(())
 }
 
@@ -1056,6 +1169,126 @@ pub async fn pick_native_training_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_directory_grants_are_released_without_affecting_other_exports() {
+        let registry = NativeSaveRegistry::default();
+        let first = registry.register_directory(PathBuf::from("first"));
+        let second = registry.register_directory(PathBuf::from("second"));
+        assert_ne!(first, second);
+        assert_eq!(
+            registry.resolve_directory(&first).unwrap(),
+            PathBuf::from("first")
+        );
+        registry.release_directory(&first);
+        registry.release_directory(&first);
+        assert!(registry.resolve_directory(&first).is_err());
+        assert!(registry.resolve_directory("unissued").is_err());
+        assert_eq!(
+            registry.resolve_directory(&second).unwrap(),
+            PathBuf::from("second")
+        );
+    }
+
+    #[test]
+    fn an_automatic_export_does_not_replace_a_file_created_during_download() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("photo.png");
+        fs::write(&destination, b"previous export").unwrap();
+        let (url, server) = serve_once(b"new export".to_vec(), "200 OK");
+        assert!(test_runtime()
+            .block_on(stream_url_to_path_inner(
+                &url,
+                &destination,
+                DOWNLOAD_READ_TIMEOUT,
+                None,
+                false
+            ))
+            .is_err());
+        server.join().unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"previous export");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn native_batch_downloads_keep_matching_names_and_previous_exports() {
+        let directory = tempfile::tempdir().unwrap();
+        for (run, expected) in [
+            ("first", vec!["1-photo.png", "2-photo.png"]),
+            ("second", vec!["1-photo (2).png", "2-photo (2).png"]),
+        ] {
+            let (url_a, server_a) = serve_once(format!("{run}-a").into_bytes(), "200 OK");
+            let (url_b, server_b) = serve_once(format!("{run}-b").into_bytes(), "200 OK");
+            let runtime = test_runtime();
+            let names = vec![
+                runtime
+                    .block_on(stream_file_to_directory(
+                        &url_a,
+                        "1-photo.png",
+                        directory.path(),
+                    ))
+                    .unwrap(),
+                runtime
+                    .block_on(stream_file_to_directory(
+                        &url_b,
+                        "2-photo.png",
+                        directory.path(),
+                    ))
+                    .unwrap(),
+            ];
+            server_a.join().unwrap();
+            server_b.join().unwrap();
+            assert_eq!(names, expected);
+            assert_eq!(
+                fs::read(directory.path().join(&names[0])).unwrap(),
+                format!("{run}-a").as_bytes()
+            );
+            assert_eq!(
+                fs::read(directory.path().join(&names[1])).unwrap(),
+                format!("{run}-b").as_bytes()
+            );
+        }
+        assert_eq!(
+            fs::read(directory.path().join("1-photo.png")).unwrap(),
+            b"first-a"
+        );
+        assert_eq!(
+            fs::read(directory.path().join("2-photo.png")).unwrap(),
+            b"first-b"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 4);
+    }
+
+    #[test]
+    fn native_batch_failure_preserves_completed_files_without_partial_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let (url_a, server_a) = serve_once(b"first".to_vec(), "200 OK");
+        let (url_b, server_b) = serve_once(b"not found".to_vec(), "404 Not Found");
+        let runtime = test_runtime();
+        runtime
+            .block_on(stream_file_to_directory(
+                &url_a,
+                "1-photo.png",
+                directory.path(),
+            ))
+            .unwrap();
+        let error = test_runtime()
+            .block_on(stream_file_to_directory(
+                &url_b,
+                "2-photo.png",
+                directory.path(),
+            ))
+            .unwrap_err();
+        server_a.join().unwrap();
+        server_b.join().unwrap();
+        assert!(error.contains("404"), "{error}");
+        assert_eq!(
+            fs::read(directory.path().join("1-photo.png")).unwrap(),
+            b"first"
+        );
+        assert!(!directory.path().join("2-photo.png").exists());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn download_names_are_safe_on_every_platform() {

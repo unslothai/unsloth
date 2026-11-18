@@ -5,7 +5,7 @@ import {
   loadDownloadTransportSettings,
   subscribeDownloadTransportSettings,
   updateDownloadTransportSettings,
-} from "@/features/settings";
+} from "@/features/settings/api/download-transport";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useState } from "react";
 import {

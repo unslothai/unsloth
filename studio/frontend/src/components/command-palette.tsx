@@ -13,19 +13,21 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { useIsAccountOwner } from "@/features/auth";
-import { useChatSearchStore } from "@/features/chat";
+import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
+import { DIALOG_SETTINGS_SEARCH_INDEX } from "@/features/settings/dialog-search-index";
 import {
-  DIALOG_SETTINGS_SEARCH_INDEX,
   SETTINGS_TABS,
   type SettingsTab,
-  type ShortcutId,
-  settingsTabVisible,
-  triggerShortcut,
   useSettingsDialogStore,
+} from "@/features/settings/stores/settings-dialog-store";
+import type { ShortcutId } from "@/features/settings/lib/keyboard-shortcuts";
+import { settingsTabVisible } from "@/features/settings/settings-tab-visibility";
+import {
+  triggerShortcut,
   useShortcut,
   useShortcutAvailable,
   useShortcutLabel,
-} from "@/features/settings";
+} from "@/features/settings/hooks/use-shortcut";
 import { useT, type TranslationKey } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useCommandPaletteStore } from "@/stores/command-palette";
@@ -34,20 +36,20 @@ import {
   ChefHatIcon,
   DashboardCircleIcon,
   FlimSlateIcon,
-  Image01Icon,
+  ImageIcon,
   LibrariesIcon,
   Message01Icon,
   Moon02Icon,
   PencilEdit02Icon,
   Search01Icon,
-  Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
   ApiIcon,
   Clock01Icon,
   Download01Icon,
+  AiTranslateIcon,
 } from "@hugeicons/core-free-icons";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -116,7 +118,7 @@ const WORKSPACES: {
   },
   {
     id: "switchToImages",
-    icon: Image01Icon,
+    icon: ImageIcon,
     labelKey: "shell.navigation.images",
     aliases: ["generate"],
   },
@@ -157,6 +159,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsTab, TranslationKey> = {
   agents: "settings.tabs.agents",
   "keyboard-shortcuts": "settings.tabs.keyboardShortcuts",
   browser: "browser.settingsTitle",
+  "computer-use": "computerUse.settings.title",
   debugging: "settings.tabs.debugging",
   about: "settings.tabs.about",
 };
@@ -310,6 +313,13 @@ function PaletteContent() {
             <span>{t("shell.navigation.tasks")}</span>
           </PaletteItem>
           <PaletteItem
+            onSelect={runAndClose(() => void navigate({ to: "/translate" }))}
+            keywords={["translate", "translation", "language"]}
+          >
+            <HugeiconsIcon icon={AiTranslateIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.translate")}</span>
+          </PaletteItem>
+          <PaletteItem
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}
             keywords={["api", "monitor", "requests"]}
           >
@@ -317,7 +327,7 @@ function PaletteContent() {
             <span>{t("shell.navigation.api")}</span>
           </PaletteItem>
           <PaletteItem onSelect={openSettings()} keywords={["preferences"]}>
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.settings")}</span>
             {settingsLabel && (
               <PaletteShortcut>{settingsLabel}</PaletteShortcut>
@@ -389,7 +399,7 @@ function PaletteContent() {
                   )}
                   onSelect={openSettings(tab)}
                 >
-                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                  <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
                   <span className="text-muted-foreground">
                     {t("shell.navigation.settings")}
                   </span>

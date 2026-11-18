@@ -5,7 +5,9 @@ import { accountTransitionPending } from "@/lib/account-transition";
 import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
+  ensureAuthSessionMark,
   getAuthToken,
+  getAuthSessionMark,
   getRefreshToken,
   mustChangePassword,
   setMustChangePassword,
@@ -114,6 +116,17 @@ async function isPasswordChangeRequiredResponse(
   }
 }
 
+// A `?q=` chat open when its token went stale reopens after sign-in; an account switch clears
+// session storage, so it never reaches another account. Names match query-draft.ts (account-auth-redirect.test.ts).
+function rememberOpenQueryChat(): void {
+  try {
+    const nonce = new URLSearchParams(window.location.search).get("new");
+    if (nonce?.startsWith("query-")) window.sessionStorage.setItem("chat-query-resume", nonce);
+  } catch {
+    // Only the reopen is lost.
+  }
+}
+
 async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
   if (isRedirecting) return;
   isRedirecting = true;
@@ -144,6 +157,7 @@ async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
     isRedirecting = false;
     return;
   }
+  rememberOpenQueryChat();
   window.location.href = target;
 }
 
@@ -300,9 +314,12 @@ export type RefreshOutcome = "ok" | "rejected" | "unavailable";
 // Never abort an in-flight POST: if the server already rotated the pair, dropping its answer loses the new token.
 const REFRESH_MAX_ATTEMPTS = 3;
 const REFRESH_BUDGET_MS = 8000;
+const REFRESH_LOCK_WAIT_MS = 8000;
 const REFRESH_RETRY_DEFAULT_MS = 1000;
 const REFRESH_RETRY_MIN_MS = 250;
 const REFRESH_RETRY_MAX_MS = 5000;
+const REFRESH_PEER_WAIT_MS = 3000;
+const REFRESH_PEER_POLL_MS = 100;
 
 function refreshRetryDelay(response: Response): number {
   const header = response.headers.get("Retry-After")?.trim();
@@ -316,7 +333,33 @@ function refreshRetryDelay(response: Response): number {
   );
 }
 
-async function runRefresh(refreshToken: string): Promise<RefreshOutcome> {
+/** The winner's 200 committed before this 401 was sent, so its pair lands here within moments. */
+async function peerRotated(
+  refreshToken: string,
+  startGeneration: number,
+  sessionMark: string,
+): Promise<boolean> {
+  const deadline = Date.now() + REFRESH_PEER_WAIT_MS;
+  for (;;) {
+    if (
+      startGeneration !== logoutGeneration ||
+      accountTransitionPending() ||
+      getAuthSessionMark() !== sessionMark
+    )
+      return false;
+    const current = getRefreshToken();
+    if (current !== refreshToken) return current !== null;
+    if (Date.now() >= deadline) return false;
+    await wait(REFRESH_PEER_POLL_MS);
+  }
+}
+
+async function runRefresh(
+  refreshToken: string,
+  preserveSessionMark = false,
+  // No Web Locks: a peer tab may spend this token first. Only a rotation under this mark is theirs.
+  peerSessionMark?: string,
+): Promise<RefreshOutcome> {
   const startGeneration = logoutGeneration;
   const startedAt = Date.now();
   const superseded = (): RefreshOutcome | null => {
@@ -337,6 +380,11 @@ async function runRefresh(refreshToken: string): Promise<RefreshOutcome> {
     }
     // Only a 401 rejects the token; a 5xx, 429 or proxy error says nothing about the session.
     if (response.status === 401) {
+      if (
+        peerSessionMark !== undefined &&
+        (await peerRotated(refreshToken, startGeneration, peerSessionMark))
+      )
+        return "ok";
       clearAuthTokensIfCurrent(refreshToken);
       return "rejected";
     }
@@ -349,7 +397,7 @@ async function runRefresh(refreshToken: string): Promise<RefreshOutcome> {
       }
       const stale = superseded();
       if (stale) return stale;
-      storeAuthTokens(payload.access_token, payload.refresh_token);
+      storeAuthTokens(payload.access_token, payload.refresh_token, preserveSessionMark);
       setMustChangePassword(payload.must_change_password ?? false);
       return "ok";
     }
@@ -376,7 +424,38 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
     return refreshInflight;
   }
 
-  const promise = runRefresh(refreshToken);
+  const generation = logoutGeneration;
+  const locks = typeof window !== "undefined" ? window.navigator?.locks : undefined;
+  // Without a mark at refresh start, a peer's backfill cannot be told from a logout and sign-in.
+  const sessionMark = locks ? ensureAuthSessionMark() : getAuthSessionMark();
+  if (getRefreshToken() !== refreshToken) return "unavailable";
+  const promise = locks
+    ? (async (): Promise<RefreshOutcome> => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), REFRESH_LOCK_WAIT_MS);
+        try {
+          return await locks.request(
+            "unsloth-auth-refresh",
+            { signal: controller.signal },
+            async (): Promise<RefreshOutcome> => {
+              // Only bound the queue; a submitted POST may already have rotated.
+              clearTimeout(timer);
+              if (generation !== logoutGeneration) return "rejected";
+              const current = getRefreshToken();
+              if (!current) return "rejected";
+              if (accountTransitionPending() || getAuthSessionMark() !== sessionMark)
+                return "unavailable";
+              if (current !== refreshToken) return "ok";
+              return runRefresh(current, true);
+            },
+          );
+        } catch {
+          return "unavailable";
+        } finally {
+          clearTimeout(timer);
+        }
+      })()
+    : runRefresh(refreshToken, false, sessionMark ?? undefined);
   refreshInflight = promise;
   refreshInflightToken = refreshToken;
   try {

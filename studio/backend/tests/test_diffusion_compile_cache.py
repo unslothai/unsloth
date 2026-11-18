@@ -223,6 +223,60 @@ def test_auto_mode_saves_by_default(monkeypatch, tmp_path, fake_megacache):
     assert ctx2.bundle.stat().st_mtime_ns == before
 
 
+@pytest.mark.parametrize(
+    "mode,filtered,available,kill_switch,rebuild",
+    [
+        ("max-autotune", True, True, False, True),
+        ("max-autotune-no-cudagraphs", True, True, False, True),
+        ("default", True, True, False, False),
+        ("max-autotune", False, True, False, False),
+        ("max-autotune", True, False, False, False),
+        ("max-autotune", True, True, True, False),
+    ],
+)
+def test_compile_policy_upgrade_preserves_static_bundle_lifecycle(
+    monkeypatch, tmp_path, fake_megacache, request, mode, filtered, available, kill_switch, rebuild
+):
+    from core.inference import diffusion_compile_config as cfg
+
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.setenv(cfg.DYNAMIC_SCALE_RBLOCK_ENV, "1" if kill_switch else "0")
+    monkeypatch.setattr(cfg, "reduction_config_filter_available", lambda: available)
+    kwargs = {
+        **_BEGIN_KW,
+        "compile_kwargs": {"fullgraph": True, "dynamic": False, "mode": mode},
+        "reduction_filter": filtered,
+    }
+    fingerprint = cc.model_fingerprint
+
+    def previous_policy(**kw):
+        fp = fingerprint(**kw)
+        fp.get("inductor", {}).pop("coordinate_descent_tuning", None)
+        return fp
+
+    with monkeypatch.context() as previous:
+        previous.setattr(cc, "model_fingerprint", previous_policy)
+        seeded = cc.begin(transformer = _transformer(), **kwargs)
+        request.addfinalizer(lambda: cc.restore(seeded))
+        cc.register_shape(seeded, (1024, 1024, 1), static = True)
+        assert cc.save(seeded)
+
+    upgraded = cc.begin(transformer = _transformer(), **kwargs)
+    request.addfinalizer(lambda: cc.restore(upgraded))
+    assert (upgraded.key != seeded.key) is rebuild
+    assert upgraded.hit is (not rebuild)
+    cc.register_shape(upgraded, (1024, 1024, 1), static = True)
+    assert cc.save(upgraded) is rebuild
+
+    warmed = cc.begin(transformer = _transformer(), **kwargs)
+    request.addfinalizer(lambda: cc.restore(warmed))
+    assert warmed.hit and warmed.saved
+    cc.register_shape(warmed, (1024, 1024, 1), static = True)
+    assert cc.save(warmed) is False
+
+
 def test_save_env_zero_disables_auto_save(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.setenv(cc._ENV_SAVE, "0")
@@ -349,9 +403,8 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
 
 
 def test_the_import_fallback_matches_the_resolver(monkeypatch):
-    """The fallback runs when a CLI entry point reaches this module without studio/backend on
-    sys.path. Narrowed to whitespace it made the same path refused or accepted depending only on
-    sys.path, which is routing that depends on import order. Swept so the copy cannot drift."""
+    """The fallback runs when a CLI entry point imports this module without studio/backend on
+    sys.path; it must match the resolver, or the same path routes by import order."""
     import builtins
     import string
 
@@ -821,8 +874,7 @@ def test_atomic_write_replaces_in_place(tmp_path):
     assert list(tmp_path.iterdir()) == [target]
 
 
-# The manifest is the single commit point and bundles are content-addressed, so a killed save
-# always leaves a MATCHING pair.
+# Content-addressed bundles, one manifest commit point: a killed save leaves a matching pair.
 @pytest.fixture
 def mutable_megacache(monkeypatch):
     """Like ``fake_megacache`` but the artifact bytes can change between saves."""

@@ -177,6 +177,60 @@ const regenerated = storedMessages([
   ["a1-retry", "u1", "assistant", "Pears."],
 ]);
 
+test("deferred export keeps the branch selected before the exporter loads", async () => {
+  const downloads: string[] = [];
+  const exporters = loadExporters(regenerated, downloads, []);
+  let branch = ["u1", "a1"];
+  const unregister = liveThreadHead.registerLiveThreadView({
+    threads: () => ({ getState: () => ({ mainThreadId: "thread" }) }),
+    threadListItem: () => ({
+      getState: () => ({ id: "thread", remoteId: "thread" }),
+    }),
+    thread: () => ({
+      getState: () => ({ messages: branch.map((id) => ({ id })) }),
+    }),
+  });
+  const menu = ts.createSourceFile(
+    "chat-row-menu.ts",
+    readSrc("features/chat/components/chat-row-menu.ts"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const dispatch = menu.statements.find(
+    (statement) =>
+      ts.isFunctionDeclaration(statement) &&
+      statement.name?.text === "exportConversationByFormat",
+  );
+  assert.ok(dispatch);
+  const context = {
+    exports: {} as {
+      exportConversationByFormat: (id: string, format: string) => Promise<void>;
+    },
+    liveThreadBranch: liveThreadHead.liveThreadBranch,
+    CONVERSATION_MARKDOWN_FORMAT: "markdown",
+    require: () => {
+      branch = ["u1", "a1-retry"];
+      return exporters;
+    },
+  };
+  vm.runInNewContext(
+    ts.transpileModule(dispatch.getText(), {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    }).outputText,
+    context,
+  );
+  try {
+    await context.exports.exportConversationByFormat("thread", "markdown");
+  } finally {
+    unregister();
+  }
+  assert.match(downloads[0] as string, /Apples\./);
+  assert.doesNotMatch(downloads[0] as string, /Pears\./);
+});
+
 const edited = storedMessages([
   ["u1", null, "user", "Name one color."],
   ["a1", "u1", "assistant", "Blue."],
