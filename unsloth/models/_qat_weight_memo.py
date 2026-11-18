@@ -486,7 +486,7 @@ def install_qat_weight_memo(model):
         from torchao.quantization.qat.fake_quantizer import FakeQuantizerBase
     except Exception:
         return 0
-    count = 0
+    count = new = 0
     for name, module in model.named_modules():
         quantizer = module._modules.get("weight_fake_quantizer")
         if not isinstance(quantizer, FakeQuantizerBase) or _is_adapter_name(name):
@@ -494,12 +494,26 @@ def install_qat_weight_memo(model):
         _patch_quantizer_class(type(quantizer))
         if not isinstance(quantizer.__dict__.get("_unsloth_qat_weight_memo"), _WeightMemo):
             quantizer.__dict__["_unsloth_qat_weight_memo"] = _WeightMemo()
+            new += 1
         count += 1
+    if new:
+        _rearm_for_new_model()
     if count:
         _patch_peft_merge()
         _install_hooks(model)
     _STATS["installed"] = count
     return count
+
+
+def _rearm_for_new_model():
+    """A newly prepared model profiles its own first step uncached: the previous model's budget and arming,
+    measured on different activations and optimizer state, must not admit its weights early."""
+    _drop_all()
+    _BUDGET.clear()
+    _DEVICE.clear()
+    _STATE.update(
+        armed = False, steps = 0, tokens = 0, rows = 0, row_probes = 0, max_seq = None, quadratic = False
+    )
 
 
 def _install_hooks(model):

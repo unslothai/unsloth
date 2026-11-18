@@ -431,3 +431,25 @@ def test_lora_ga_rebase_refreshes_cache(monkeypatch, tmp_path):
     with torch.no_grad():
         got = [model(x) for _ in range(3)]
     assert all(torch.equal(want, g) for g in got)
+
+
+def test_a_new_model_profiles_its_first_step_uncached(monkeypatch):
+    # A notebook that trains one QAT model, then prepares another, must not reuse the old arming / budget.
+    model = _model("int8", monkeypatch)
+    x = torch.randn(4, DIM)
+    for _ in range(2):
+        _run(model, x)
+    assert _memo_of(model).out is not None and memo._STATE["armed"]
+    other = _model("int8", monkeypatch, arm = False)
+    assert not memo._STATE["armed"] and not memo._BUDGET
+    stores = memo.qat_weight_memo_stats()["stores"]
+    for _ in range(3):
+        _run(other, x)
+    assert _memo_of(other).out is None
+    assert memo.qat_weight_memo_stats()["stores"] == stores
+    _arm()
+    _run(other, x)
+    assert _memo_of(other).out is not None
+    assert (
+        memo.install_qat_weight_memo(other) > 0 and memo._STATE["armed"]
+    )  # re-installing the same model keeps its arming
