@@ -46,8 +46,8 @@ for i, g in enumerate(gpus):
         "memory.total": str(total), "memory.free": str(free), "memory.used": str(total - free),
         "utilization.gpu": str(g.get("util", 0)), "temperature.gpu": "40",
         "power.draw": "100.0", "power.limit": "1000.0",
-        "pcie.link.width.current": str(g.get("link_width", 16)),
-        "pcie.link.gen.current": str(g.get("link_gen", 4)),
+        "pcie.link.width.max": str(g.get("link_width", 16)),
+        "pcie.link.gen.max": str(g.get("link_gen", 4)),
     }}
     out = []
     for name in fields:
@@ -164,7 +164,7 @@ def test_nvidia_free_and_link_follow_mask_order(smi):
 @pytest.mark.parametrize("rejected_rc", [2, 3, 255])
 def test_nvidia_retains_telemetry_on_drivers_rejecting_link_fields(monkeypatch, rejected_rc):
     def run(argv, **kwargs):
-        if "pcie.link.width.current" in argv[1]:
+        if "pcie.link.width.max" in argv[1]:
             return subprocess.CompletedProcess(argv, rejected_rc, "")
         return subprocess.CompletedProcess(argv, 0, "0, 42, 61, 100, 1024, 60, 200")
 
