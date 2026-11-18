@@ -49,8 +49,7 @@ def test_recompute_mode_matches_policy_scorer(monkeypatch):
     assert (
         _resolve_scorer(_trainer()) is zoo_rl.chunked_hidden_states_selective_log_softmax_recompute
     )
-    # Kept set under recompute: the same dispatcher the zoo loss scores the policy with (its recompute
-    # kept-set scorer), on a zoo that exports it; older zoos keep the plain helper.
+    # Kept set under recompute: the zoo dispatcher when exported, else the plain helper.
     monkeypatch.setattr(
         zoo_rl, "grpo_truncated_support_kwargs", lambda trainer: {"support_top_k": 4}
     )
