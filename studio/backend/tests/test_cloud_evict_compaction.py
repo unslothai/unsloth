@@ -513,6 +513,39 @@ def test_an_overflow_with_a_large_latest_turn_still_evicts_every_older_turn(mode
     assert len(chats) == 2 and [m["role"] for m in chats[1]["messages"]] == ["system", "user"]
 
 
+@pytest.mark.parametrize("mode", ["rolling", "checkpoint"])
+def test_an_overflow_inside_one_tool_turn_drops_its_older_exchange(mode):
+    def call(n):
+        fn = {"name": "python", "arguments": "{}"}
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": f"c{n}", "type": "function", "function": fn}],
+        }
+
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "Run the two checks."},
+        call(1),
+        {"role": "tool", "tool_call_id": "c1", "content": "log " * 6000},
+        call(2),
+        {"role": "tool", "tool_call_id": "c2", "content": "ok"},
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) // 2
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 200_000,
+        compaction_mode = mode,
+    )
+    assert not [c for c in chunks if "error" in c]
+    assert len(chats) == 2 and "log log" not in json.dumps(chats[1]["messages"])
+
+
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError
