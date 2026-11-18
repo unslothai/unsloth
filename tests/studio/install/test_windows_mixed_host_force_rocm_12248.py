@@ -163,6 +163,17 @@ class TestInstallPs1Decision:
         assert kv["ROUTE"] == "rocm" and kv["NVIDIA"] == "False"
         assert "ROCm reads CUDA_VISIBLE_DEVICES too" in kv["SAID"]
 
+    def test_force_with_a_hiding_mask_also_warns(self):
+        kv = _install_decision(
+            "gfx1201", True, UNSLOTH_FORCE_ROCM_TORCH = "1", CUDA_VISIBLE_DEVICES = "-1"
+        )
+        assert "selecting ROCm PyTorch over CUDA" in kv["SAID"]
+        assert "ROCm reads CUDA_VISIBLE_DEVICES too" in kv["SAID"]
+
+    def test_force_alone_does_not_warn_about_a_mask(self):
+        kv = _install_decision("gfx1201", True, UNSLOTH_FORCE_ROCM_TORCH = "1")
+        assert "ROCm reads" not in kv["SAID"]
+
     def test_the_mask_warning_is_skipped_when_hip_chooses_the_card(self):
         kv = _install_decision("gfx1201", True, CUDA_VISIBLE_DEVICES = "-1", HIP_VISIBLE_DEVICES = "0")
         assert kv["ROUTE"] == "rocm" and "ROCm reads" not in kv["SAID"]
@@ -245,6 +256,7 @@ def _setup_decision(arch, wheels, **env):
             COLLECT,
             SETUP_HELPERS,
             _env(**env),
+            "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
             "$HasNvidiaSmi = $true; $script:ProbeAmdBesideNvidia = $true",
             f"$script:ROCmGfxArch = {'$null' if arch is None else repr(arch)}",
             f"$AmdHasGpuWheels = ${str(wheels).lower()}",
@@ -269,6 +281,16 @@ class TestSetupPs1Decision:
         kv = _setup_decision("gfx1100", True, CUDA_VISIBLE_DEVICES = "-1")
         assert kv["NVIDIA"] == "False" and "CUDA_VISIBLE_DEVICES hides" in kv["SAID"]
         assert "ROCm reads CUDA_VISIBLE_DEVICES too" in kv["SAID"]
+
+    def test_force_with_a_hiding_mask_still_warns_on_update(self):
+        kv = _setup_decision(
+            "gfx1100", True, UNSLOTH_FORCE_ROCM_TORCH = "1", CUDA_VISIBLE_DEVICES = "-1"
+        )
+        assert "ROCm reads CUDA_VISIBLE_DEVICES too" in kv["SAID"]
+
+    def test_force_alone_does_not_warn_about_a_mask(self):
+        kv = _setup_decision("gfx1100", True, UNSLOTH_FORCE_ROCM_TORCH = "1")
+        assert "ROCm reads" not in kv["SAID"]
 
     def test_no_second_mask_warning_inside_install_ps1(self):
         kv = _setup_decision("gfx1100", True, CUDA_VISIBLE_DEVICES = "-1", SKIP_STUDIO_BASE = "1")

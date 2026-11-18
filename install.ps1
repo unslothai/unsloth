@@ -9401,9 +9401,9 @@ main()
             if (Test-RocmTorchExplicitlyRequested) {
                 Write-StudioLine "[INFO] UNSLOTH_FORCE_ROCM_TORCH is set and an AMD GPU is present -- selecting ROCm PyTorch over CUDA." -ForegroundColor Cyan
                 Write-StudioLine "[INFO] One torch install serves one vendor: the NVIDIA card will not be available to training until this is unset and the installer re-run." -ForegroundColor Cyan
-            } elseif ($null -eq $env:HIP_VISIBLE_DEVICES) {
-                Write-CudaMaskHidesAmdWarning
             }
+            # Whatever chose ROCm, a hiding mask left set also hides the AMD card from HIP.
+            if ($nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES) { Write-CudaMaskHidesAmdWarning }
         } else {
             if ($MixedHostRoute -eq "cuda-notice") { $MixedHostAmdArch = Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_hipAllArches)) }
             # NVIDIA keeps torch: forget the AMD card so everything below runs as it did before the probe.

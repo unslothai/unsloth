@@ -4604,8 +4604,7 @@ if ($script:ProbeAmdBesideNvidia) {
         $_rocmWhy = if (Test-RocmTorchExplicitlyRequested) { "UNSLOTH_FORCE_ROCM_TORCH is set" } else { "CUDA_VISIBLE_DEVICES hides the NVIDIA GPU" }
         substep "$_rocmWhy -- ROCm PyTorch for the AMD GPU ($script:ROCmGfxArch), not CUDA" "Cyan"
         # install.ps1 (SKIP_STUDIO_BASE=1) already warned.
-        if (-not (Test-RocmTorchExplicitlyRequested) -and $null -eq $env:HIP_VISIBLE_DEVICES -and
-            $env:SKIP_STUDIO_BASE -ne "1") {
+        if ($nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES -and $env:SKIP_STUDIO_BASE -ne "1") {
             Write-CudaMaskHidesAmdWarning
         }
     } else {
