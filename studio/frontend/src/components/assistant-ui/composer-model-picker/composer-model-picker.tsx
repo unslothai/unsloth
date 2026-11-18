@@ -979,9 +979,13 @@ function useStripFades(strip: HTMLDivElement | null) {
     strip.addEventListener("scroll", update, { passive: true });
     const observer = new ResizeObserver(update);
     observer.observe(strip);
+    // Chips landing after mount widen the content, not the strip, so ResizeObserver misses them.
+    const chips = new MutationObserver(update);
+    chips.observe(strip, { childList: true });
     return () => {
       strip.removeEventListener("scroll", update);
       observer.disconnect();
+      chips.disconnect();
     };
   }, [strip]);
 }

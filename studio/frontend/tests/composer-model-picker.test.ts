@@ -158,6 +158,8 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
     /ref=\{setOrgStrip\}[\s\S]{0,200}?className="composer-tab-strip[^"]*"\s*onWheel=\{wheelSideways\}/,
   );
   assert.match(picker, /useStripFades\(tabStrip\);\s*useStripFades\(orgStrip\);/);
+  // Chips that land after mount still refresh the fades.
+  assert.match(picker, /new MutationObserver\(update\);\s*chips\.observe\(strip, \{ childList: true \}\);/);
   // The org comes from the repo itself, never a fine-tune's base model.
   assert.match(picker, /const maker = rowMaker\(\{ kind: row\.kind, id: row\.id \}\);/);
   assert.match(picker, /org: rowOrg\(\{ kind: "hub", id: m\.id \}\)\?\.id,/);
