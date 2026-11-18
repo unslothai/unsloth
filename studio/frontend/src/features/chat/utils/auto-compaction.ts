@@ -158,7 +158,10 @@ export function apiCompactionRequestFields(options: {
   compaction_mode?: "evict";
 } {
   const { autoCompactEnabled, contextLength, compactNow } = options;
-  if (!autoCompactEnabled && !compactNow) return {};
+  const evict =
+    options.compactionMode === "evict" ? { compaction_mode: "evict" as const } : {};
+  // Still sent with auto-compact off: the backend replays a /compact epoch only for "evict".
+  if (!autoCompactEnabled && !compactNow) return evict;
   const requested = requestedCompactionThreshold(
     contextLength,
     options.autoCompactTokens,
@@ -170,8 +173,6 @@ export function apiCompactionRequestFields(options: {
     ...(requested?.uncapped ? { compaction_uncapped: true as const } : {}),
     ...(contextLength && contextLength > 0 ? { context_window: contextLength } : {}),
     ...(compactNow ? { compact_context: true as const } : {}),
-    ...(options.compactionMode === "evict"
-      ? { compaction_mode: "evict" as const }
-      : {}),
+    ...evict,
   };
 }

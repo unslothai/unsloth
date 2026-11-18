@@ -40,7 +40,7 @@ test("a Drop oldest turns connection asks for eviction on auto-compaction and on
   );
 });
 
-test("the default summary mode sends no compaction_mode, and auto-compact off sends nothing", () => {
+test("the default summary mode sends no compaction_mode; auto-compact off sends only the mode", () => {
   for (const compactionMode of [undefined, null, "summary"] as const) {
     assert.equal(
       "compaction_mode" in
@@ -58,6 +58,11 @@ test("the default summary mode sends no compaction_mode, and auto-compact off se
       contextLength: 128_000,
       compactionMode: "evict",
     }),
+    // A /compact epoch must stay in force on later turns with auto-compact off.
+    { compaction_mode: "evict" },
+  );
+  assert.deepEqual(
+    apiCompactionRequestFields({ autoCompactEnabled: false, contextLength: 128_000 }),
     {},
   );
 });
