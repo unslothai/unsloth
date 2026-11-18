@@ -35,6 +35,7 @@ def _fresh(monkeypatch):
             getattr(dc, name)[:] = [0, 0]
     dc.clear_dequant_cache()
     dc.STATS.clear()
+    dc._PRE_RAN[0] = 0
     for name in ("_SHRINK_PEAK", "_SHRINK_UNSAFE"):
         getattr(dc, name, set()).clear()
     yield
@@ -147,6 +148,27 @@ def test_budget_counts_float_quant_storage_bytes(monkeypatch, storage):
     dc._BUDGET[None] = dense * 2
     dc._lookup(W, torch.ones(4), decode, torch.bfloat16)
     assert calls == [False, True] and dc.cached_count() == 1
+
+
+def test_whole_model_compile_gets_no_budget(monkeypatch):
+    # torch.compile(model) traces the pre-forward shape guard away: without it a longer batch could allocate its
+    # attention mask before any LoRA op drops the cache, so the safe point must not give a budget.
+    _memory(monkeypatch, usable = 10 * GiB)
+    model = torch.nn.Linear(1, 1)
+    monkeypatch.setattr(
+        dc, "_HOOKS", [model.register_forward_pre_hook(dc._model_pre_hook, with_kwargs = True)]
+    )
+    dc._SEEN.add(None)
+    ids = torch.zeros(2, 8, dtype = torch.long)
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    dc._model_pre_hook(model, (), {"input_ids": ids})  # traced, never run eagerly
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: False)
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET.get(None, 0) == 0
+    dc._model_pre_hook(model, (), {"input_ids": ids})  # eager forward: the guard runs again
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] > 0
+    dc._HOOKS[0].remove()
 
 
 def test_guard_evicts_under_margin(monkeypatch):

@@ -113,6 +113,7 @@ _CHECKED = set()
 _SHAPE_SEEN = [0, 0]  # most tokens / longest sequence of a model input before the last safe point
 _SHAPE_NEW = [0, 0]  # the same since the last safe point
 _HOOKS = []  # forward pre-hooks on the trained model, removed when training ends
+_PRE_RAN = [0]  # eager runs of the model pre-hook since the last safe point
 _EVALUATING = [
     0
 ]  # Trainer.evaluate / predict calls running: their batches never size a training step
@@ -338,6 +339,16 @@ def _on_optimizer_step(optimizer, args, kwargs):
             _pop(key)
             STATS["stale"] += 1
         _CHECKED.clear()
+        if _HOOKS and not _PRE_RAN[0]:
+            # The model forward ran compiled as a whole, so its pre-forward shape guard never ran: a longer batch
+            # would allocate its masks and embeddings before any LoRA op could drop the cache. Cache nothing.
+            for index in list(_SEEN):
+                if _cached_bytes(index):
+                    _evict(index, 0, kind = "budget")
+                _BUDGET[index] = 0
+            STATS["no_pre_guard"] += 1
+            return
+        _PRE_RAN[0] = 0
         _SHAPE_SEEN[0] = max(_SHAPE_SEEN[0], _SHAPE_NEW[0])
         _SHAPE_SEEN[1] = max(_SHAPE_SEEN[1], _SHAPE_NEW[1])
         _SHAPE_NEW[0] = _SHAPE_NEW[1] = 0
@@ -804,8 +815,10 @@ def _model_pre_hook(module, args, kwargs):
     # square of the sequence): a call larger than every step the budget was measured on drops the cache now.
     if torch.compiler.is_compiling():
         # A whole-model torch.compile would trace this host bookkeeping (graph breaks, guards on module state);
-        # the LoRA ops' own row check still runs eagerly inside the opaque op at run time.
+        # the LoRA ops' own row check still runs eagerly inside the opaque op at run time. The next safe point
+        # sees that this hook never ran eagerly and gives no budget.
         return
+    _PRE_RAN[0] += 1
     shape = _input_shape(args, kwargs)
     if shape is None:
         return
