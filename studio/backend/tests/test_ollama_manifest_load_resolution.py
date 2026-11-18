@@ -1101,7 +1101,9 @@ def test_an_mlx_layer_named_as_a_generated_file_cannot_write_into_a_blob(mlx_sto
 def test_an_mlx_load_builds_the_checkpoint_it_names_and_advertises_the_tag(mlx_store):
     from hub.services.models import ollama
     from models.inference import LoadRequest
-    from routes.inference import _as_ollama_mlx_request
+    import threading
+
+    from routes.inference import _acquire_ollama_lease, _as_ollama_mlx_request
 
     root = mlx_store[0]
     row_id = ollama.scan_ollama_dir(root)[0].id
@@ -1110,7 +1112,16 @@ def test_an_mlx_load_builds_the_checkpoint_it_names_and_advertises_the_tag(mlx_s
     assert _as_ollama_mlx_request(leased) is leased and not Path(row_id).exists()
     resolved = _as_ollama_mlx_request(LoadRequest(model_path = row_id))
     assert resolved.model_path == row_id and resolved._advertised_id == "ollama/gemma4:e4b-mlx"
+    # The load's lease builds it, on the lease executor.
+    assert not Path(row_id).exists()
+    lease = _acquire_ollama_lease(row_id, None)
     assert (Path(row_id) / "config.json").is_file()
+    # A second request does not wait on the lease a running load holds.
+    worker = threading.Thread(target = _as_ollama_mlx_request, args = (LoadRequest(model_path = row_id),))
+    worker.start()
+    worker.join(timeout = 30)
+    lease.release()
+    assert not worker.is_alive()
     # Another spelling of the same place is the same tag.
     (alias := root.parent / "alias").symlink_to(root)
     respelled = alias / Path(row_id).relative_to(os.path.realpath(root))

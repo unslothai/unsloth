@@ -122,7 +122,6 @@ from hub.utils.hf_tokens import (
 from hub.services.models.ollama import (
     acquire_ollama_model_ref,
     is_ollama_manifest_ref,
-    materialize_ollama_mlx_ref,
     materialize_ollama_model_ref,
     ollama_model_ref_public_id,
     ollama_model_ref_system_prompt,
@@ -9134,24 +9133,21 @@ def _canonical_model_identity(model_id: Optional[str]) -> str:
 
 
 def _as_ollama_mlx_request(request):
-    """*request* advertised as the Ollama MLX tag whose checkpoint path it names, with that
-    checkpoint built for the tag's current manifest; the path itself loads like any MLX model."""
+    """*request* advertised as the Ollama MLX tag whose checkpoint path it names. The build happens
+    under the load's lease, on its own executor: a lease held by a running load must not park a
+    default-executor thread here."""
     from hub.services.models.ollama import ollama_mlx_ref_for_path
 
-    # A leased request is authorized only once its lease verifies, after this would have built.
+    # A leased request is authorized only once its lease verifies.
     if getattr(request, "native_path_lease", None):
         return request
     ref = isinstance(request.model_path, str) and ollama_mlx_ref_for_path(request.model_path)
-    if not ref:
+    if not ref or not hasattr(request, "_advertised_id") or request._advertised_id:
         return request
     try:
-        materialize_ollama_mlx_ref(ref)
         public_id = ollama_model_ref_public_id(ref)
     except (OSError, ValueError) as exc:
-        logger.warning("inference.ollama_mlx_materialize_failed: %s", exc)
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
-    if not hasattr(request, "_advertised_id") or request._advertised_id:
-        return request
     resolved = request.model_copy()
     resolved._advertised_id = public_id
     return resolved
