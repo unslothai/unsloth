@@ -559,10 +559,11 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
-    # The Gemma 4 encoder runs in the Video page's worker and exits before the 22B dev DiT loads.
+    # Measured on an A100-80 (nf4, 512px, rank 32): whole-card peak 22.9 GB, during the caption pass (the int8 Gemma 4
+    # worker); it exits before the 22B dev DiT loads, and the loop peaks at 11.7 GB.
     "ltx-2.5": {
         "params": "22B",
-        "qlora_vram_gb": 40,
+        "qlora_vram_gb": 24,
         "gated": False,
         "note": "Video: trains a style LoRA on still images; runs on the Video page's distilled model.",
     },
