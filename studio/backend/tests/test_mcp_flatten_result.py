@@ -626,3 +626,9 @@ def test_json_text_without_an_inline_image_is_untouched():
     ]
     for text in other:
         assert _flatten_result(_result(_text(text))) == text
+
+
+def test_inline_image_mime_is_normalized_like_an_image_block():
+    flat = _flatten_result(_result(_text(_unreal_capture(mime = "Image/PNG; q=1"))))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": BIG_PNG_B64, "mimeType": "image/png"}]

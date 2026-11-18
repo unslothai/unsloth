@@ -2161,13 +2161,8 @@ def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
 
     def lift(node: Any) -> Any:
         if isinstance(node, dict):
-            mime, data = node.get("mimeType"), node.get("data")
-            if (
-                isinstance(mime, str)
-                and mime.lower().startswith("image/")
-                and isinstance(data, str)
-                and len(data) >= _INLINE_IMAGE_MIN_CHARS
-            ):
+            mime, data = _image_mime(node.get("mimeType")), node.get("data")
+            if mime is not None and isinstance(data, str) and len(data) >= _INLINE_IMAGE_MIN_CHARS:
                 found.append((data, mime))
                 return {**node, "data": _INLINE_IMAGE_PLACEHOLDER}
             return {key: lift(item) for key, item in node.items()}
