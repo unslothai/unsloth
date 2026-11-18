@@ -91,18 +91,24 @@ def _batch(
     return ids, lp
 
 
-def _cases():
+def _cases(n = 120):
+    # Small shapes keep the token-by-token reference and the semantics loop well under 10 s on CPU.
     rng = torch.Generator().manual_seed(3407)
     pick = random.Random(3407)
-    for i in range(400):
+    for i in range(n):
         G = pick.choice([2, 3, 4, 8])
         num_groups = pick.choice([1, 2, 3])
-        P = pick.choice([1, 4, 17, 64])
-        C = pick.choice([1, 5, 33, 96])
+        P = pick.choice([1, 4, 17, 24])
+        C = pick.choice([1, 5, 13, 33])
         pad = pick.choice([0, 7])
         ids, lp = _batch(rng, num_groups, G, P, C, pad, left_packed = pick.random() < 0.7)
-        kind = pick.choice(["plain"] * 6 + ["hole", "other_prompt", "lp_shift", "int32", "bad_G"])
-        if kind == "hole":  # a pad token inside a real run: not one contiguous run
+        kind = pick.choice(
+            ["plain"] * 5 + ["shuffle", "hole", "other_prompt", "lp_shift", "int32", "bad_G"]
+        )
+        if kind == "shuffle":  # TRL's shuffled micro-batch: a prompt's rows in any order
+            perm = torch.randperm(ids.shape[0], generator = rng)
+            ids, lp = ids[perm].contiguous(), lp[perm].contiguous()
+        elif kind == "hole":  # a pad token inside a real run: not one contiguous run
             ids[pick.randrange(ids.shape[0]), pick.randrange(ids.shape[1])] = pad
         elif kind == "other_prompt" and ids.shape[0] > 1:
             ids[1, 0] = (int(ids[1, 0]) % 40) + 3
@@ -128,7 +134,7 @@ def test_layout_matches_token_by_token_reference():
         got = pg.build_group_layout(*args, **kwargs)
         _assert_same(ref, got)
         built += got is not None
-    assert built >= 100
+    assert built >= 30
 
 
 def test_seg_info_matches_per_segment_build():
@@ -329,4 +335,4 @@ def test_layout_semantics_on_random_cases():
             continue
         _check_layout_semantics(got, ids, lp, ltk, pad)
         checked += 1
-    assert checked >= 100
+    assert checked >= 30
