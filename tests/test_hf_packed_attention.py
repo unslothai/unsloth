@@ -385,6 +385,8 @@ def test_rocm_keeps_windowed_rows_off_flash_attn(monkeypatch, window):
     dispatched = []
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(torch.version, "hip", "6.4")
+    # A ROCm build whose torch varlen failed its self-check: rows reach the flash-attn backend.
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [None])
     monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: ad.FLASH_VARLEN)
     monkeypatch.setattr(ad, "run_attention", lambda **kwargs: dispatched.append(1) or kwargs["Q"])
     lengths = [3, 5]
