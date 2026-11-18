@@ -2183,17 +2183,12 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     omitted = 0
     has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
+    lifted = []
     for block in getattr(result, "content", None) or []:
         text = _block_text(block)
         if text:
             text, inline_images = _lift_inline_images(text)
-            for data, mime in inline_images:
-                payloads.add(data)
-                if len(data) > budget:
-                    omitted += 1
-                    continue
-                budget -= len(data)
-                images.append({"data": data, "mimeType": mime})
+            lifted.extend(inline_images)
             parts.append(text)
             has_text = True
             seed.append((block, None))
@@ -2221,6 +2216,14 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             unshown.append(note)
             if data:
                 payloads.add(data)
+    # After the block images: the widget hands images out positionally to the image blocks in its seed.
+    for data, mime in lifted:
+        payloads.add(data)
+        if len(data) > budget:
+            omitted += 1
+            continue
+        budget -= len(data)
+        images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
     # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)

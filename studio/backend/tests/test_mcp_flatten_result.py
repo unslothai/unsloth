@@ -632,3 +632,12 @@ def test_inline_image_mime_is_normalized_like_an_image_block():
     flat = _flatten_result(_result(_text(_unreal_capture(mime = "Image/PNG; q=1"))))
     payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
     assert json.loads(payload) == [{"data": BIG_PNG_B64, "mimeType": "image/png"}]
+
+
+def test_lifted_image_follows_block_images_so_a_widget_keeps_its_own():
+    # The widget seed byte-strips image blocks and refills them from the images list in order.
+    flat = _flatten_result(
+        _result(_text(_unreal_capture()), _image()), ui_resource_uri = "ui://scene/view"
+    )
+    payload = json.loads(flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1])
+    assert [p["data"] for p in payload] == [PNG_B64, BIG_PNG_B64]
