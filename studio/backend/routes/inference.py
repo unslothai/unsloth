@@ -33170,7 +33170,6 @@ async def produce_openai_chat_completions(
             _raise_unsupported_n("streaming chat completions")
         model_info = backend.models.get(backend.active_model_name, {})
         if _raw_param := _raw_grammar_param(payload):
-            # llama-server's own fields; no other backend reads them, so refuse rather than ignore.
             _raise_unsupported_openai_parameter(
                 _raw_param,
                 f"{_raw_param} is a llama-server field and is applied only when a GGUF model "
@@ -33796,7 +33795,6 @@ async def produce_openai_chat_completions(
         )
     # Shared with the token counter. Guided decoding routes here too: the other path drops schema.
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
-        # The DiffusionGemma shim reads neither field, so it would answer unconstrained.
         if getattr(llama_backend, "is_diffusion", False) and (
             _raw_param := _raw_grammar_param(payload)
         ):
@@ -48987,7 +48985,6 @@ def _raw_grammar_param(payload) -> Optional[str]:
 
 
 def _reject_unhonorable_raw_grammar(payload) -> None:
-    """Refuse a top-level grammar / json_schema the GGUF passthrough cannot apply as sent."""
     fields = _raw_grammar_fields(payload)
     if not fields:
         return
@@ -49113,7 +49110,6 @@ def _build_openai_passthrough_body(
         stream_options = payload.stream_options,
         markup = getattr(llama_backend, "markup_profile", None),
     )
-    # The route refused the combinations llama-server cannot apply (_reject_unhonorable_raw_grammar).
     body.update(_raw_grammar_fields(payload))
     if _continue_final_message(payload, thought = True):
         # llama-server rejects both flags set true.

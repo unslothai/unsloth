@@ -4615,7 +4615,6 @@ class TestGgufVisionToolRouting:
         "field, value", [("grammar", 'root ::= "a"'), ("json_schema", {"type": "object"})]
     )
     def test_diffusion_gguf_refuses_a_raw_grammar(self, monkeypatch, field, value):
-        # The DiffusionGemma shim reads neither field, so answering would ignore the constraint.
         with pytest.raises(HTTPException) as exc:
             self._run_gguf_case(
                 monkeypatch,

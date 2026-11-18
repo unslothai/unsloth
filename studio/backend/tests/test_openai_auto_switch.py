@@ -4659,7 +4659,6 @@ def test_chat_streaming_n_gt_1_rejected_before_switch(monkeypatch):
 
 
 def test_chat_conflicting_raw_grammar_rejected_before_switch(monkeypatch):
-    # grammar beside json_schema is refused on every backend, so it must 400 before loading another model.
     backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
     payload = _chat_request(
         model = "org/B-GGUF", grammar = 'root ::= "a"', json_schema = {"type": "object"}

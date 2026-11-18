@@ -70,7 +70,6 @@ def test_tool_choice_none_lets_the_grammar_through():
 
 
 def test_a_schema_under_schemaless_json_object_is_forwarded():
-    # llama-server keeps the top-level schema when json_object carries none of its own.
     payload = _payload(json_schema = _SCHEMA, response_format = {"type": "json_object"})
 
     inference_route._reject_unhonorable_raw_grammar(payload)
