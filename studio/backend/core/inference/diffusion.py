@@ -2186,27 +2186,15 @@ def _lora_fuse_dits(pipe: Any) -> list:
 
 
 def _adaln_before_loras(state: Any, pipe: Any, desired: Any, log: Any) -> None:
-    """AdaLN precompute vs adapters: a resident denoiser gets its real modulation modules back (adapters may target
-    them or the embedder). A streamed one cannot (its offload groups were built without them): adapters that miss
-    the modulation path keep the lever, ones that reach it are refused with a reload hint."""
+    """AdaLN precompute vs adapters: the real modulation modules come back first (adapters may target them or the
+    embedder); on a streamed denoiser they are registered with the offload group of their block."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None or "_unsloth_adaln" not in getattr(transformer, "__dict__", {}):
         return
     from . import diffusion_adaln_precompute as adaln_precompute
 
-    if not adaln_precompute.installed(transformer):
-        return
-    streamed = adaln_precompute.offload_reason(transformer)
-    if streamed is None:
-        adaln_precompute.uninstall(transformer, logger = log, reason = "LoRA adapters requested")
+    if adaln_precompute.uninstall(transformer, logger = log, reason = "LoRA adapters requested"):
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
-        return
-    hit = adaln_precompute.lora_touches_modulation([path for _name, path, _weight in desired or ()])
-    if hit is not None:
-        raise LoraSelectionError(
-            f"This LoRA adapts the modulation layers ({hit}), which this streamed load precomputes. Reload the "
-            "model with UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE=0 to use it."
-        )
 
 
 def bind_adaln_pipe(pipe: Any) -> None:

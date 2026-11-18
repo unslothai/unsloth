@@ -394,16 +394,6 @@ def test_cfg_batch_router_merged_call_reads_each_branch_rows(monkeypatch):
         assert torch.equal(a, b)
 
 
-def test_streamed_denoiser_never_gets_modules_restored():
-    model = _flux()
-    assert ap.install(model, _pipe(4), requested = ap.MODE_ON)
-    _mark_streamed(model)
-    assert ap.offload_reason(model) is not None
-    with pytest.raises(RuntimeError, match = "streamed"):
-        ap.uninstall(model)
-    assert ap.installed(model)
-
-
 def _lora_file(tmp_path, keys):
     from safetensors.torch import save_file
 
@@ -412,27 +402,91 @@ def _lora_file(tmp_path, keys):
     return str(path)
 
 
-def test_lora_on_streamed_load_keeps_lever_or_refuses(tmp_path):
+def _group_offloaded(model, fake_stream = True):
+    """Real diffusers block-level group offload on the CPU; ``fake_stream`` then gives every group the stream-mode
+    bookkeeping a CUDA load has (``cpu_param_dict``, unpinned: no CUDA here) and a Studio GroupPrefetcher with its
+    slot ring, so the restore is judged against the structures a streamed render indexes."""
+    from core.inference.diffusion_memory import _offload_groups
+    from core.inference.diffusion_offload_prefetch import PREFETCHER_ATTR, GroupPrefetcher
+
+    model.enable_group_offload(
+        torch.device("cpu"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+    )
+    groups = _offload_groups(model)
+    assert groups
+    if not fake_stream:
+        return groups, None
+    for g in groups:
+        g.stream = object()
+        g.low_cpu_mem_usage = True
+        g.cpu_param_dict = g._init_cpu_param_dict()
+    pf = GroupPrefetcher(model, groups, "cpu", depth = 1)
+    model.__dict__[PREFETCHER_ATTR] = pf
+    assert pf.enable_slots() >= 0
+    return groups, pf
+
+
+def test_streamed_restore_rebuilds_offload_bookkeeping():
+    from core.inference.diffusion_offload_prefetch import (
+        _group_nbytes,
+        _group_tensors,
+        _packed_bytes,
+    )
+
+    model = _flux()
+    assert ap.install(model, _pipe(4), requested = ap.MODE_ON)  # Studio's order: before the offload
+    groups, pf = _group_offloaded(model)
+    before = {id(g): pf.nbytes[id(g)] for g in groups}
+    assert ap.uninstall(model, reason = "LoRA adapters requested")
+    assert isinstance(model.transformer_blocks[0].norm1.linear, torch.nn.Linear)
+    grew = 0
+    for g in groups:
+        # what GroupPrefetcher._issue / offload index: every group tensor has its host copy
+        for t in _group_tensors(g):
+            assert t in g.cpu_param_dict
+        assert pf.nbytes[id(g)] == _group_nbytes(g)
+        grew += pf.nbytes[id(g)] > before[id(g)]
+        if id(g) in pf.slot_of:
+            need = _packed_bytes([g.cpu_param_dict[t] for t in _group_tensors(g)])
+            assert need <= pf.slot_size
+            views = pf._views_for(g, pf.slot_of[id(g)])  # KeyError before the rebuild
+            assert len(views) == len(_group_tensors(g))
+    assert (
+        grew == len(model.transformer_blocks) + len(model.single_transformer_blocks) + 1
+    )  # + norm_out's group
+    assert pf.window >= (pf.depth + 1) * max(pf.nbytes.values())
+
+
+def test_group_offloaded_render_after_restore_matches_stock():
+    calls = _flux_calls(torch.float32)
+    stock = _flux()
+    _group_offloaded(stock, fake_stream = False)
+    ref = _run(stock, calls)
+    model = _flux()
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    _group_offloaded(model, fake_stream = False)
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+    assert ap.uninstall(model)
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+
+
+def test_lora_on_streamed_load_restores_modules(tmp_path):
     from core.inference import diffusion as D
-    from core.inference.diffusion_lora import LoraSelectionError
+    from core.inference.diffusion_offload_prefetch import _group_tensors
 
     model = _flux()
     pipe = _keep(_Pipe(torch.linspace(1000.0, 30.0, 4)))
     pipe.transformer = model
     assert ap.install(model, pipe, requested = ap.MODE_ON)
-    _mark_streamed(model)
-    state = types.SimpleNamespace(cuda_graphs = ())
-    attn_only = _lora_file(tmp_path, ["transformer.transformer_blocks.0.attn.to_q.lora_A.weight"])
-    D._adaln_before_loras(state, pipe, [("a", attn_only, 1.0)], None)
-    assert ap.installed(model)  # adapters off the modulation path: lever kept, nothing restored
-    for key in (
-        "transformer.transformer_blocks.0.norm1.linear.lora_A.weight",
-        "lora_unet_double_blocks_0_img_mod_lin.lora_down.weight",
-        "transformer.time_text_embed.timestep_embedder.linear_1.lora_A.weight",
-    ):
-        with pytest.raises(LoraSelectionError):
-            D._adaln_before_loras(state, pipe, [("m", _lora_file(tmp_path, [key]), 1.0)], None)
-        assert ap.installed(model)
+    groups, _pf = _group_offloaded(model)
+    path = _lora_file(tmp_path, ["transformer.transformer_blocks.0.norm1.linear.lora_A.weight"])
+    D._adaln_before_loras(types.SimpleNamespace(cuda_graphs = ()), pipe, [("m", path, 1.0)], None)
+    assert not ap.installed(model)
+    assert isinstance(model.transformer_blocks[0].norm1.linear, torch.nn.Linear)
+    assert all(t in g.cpu_param_dict for g in groups for t in _group_tensors(g))
 
 
 def test_lora_on_resident_load_restores_modules(tmp_path):

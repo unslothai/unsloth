@@ -542,45 +542,6 @@ def offload_reason(model: Any) -> Optional[str]:
     return None
 
 
-# Adapter key fragments (diffusers, kohya / BFL and ai-toolkit spellings, '_' read as '.') that reach a modulation
-# Linear or the embedder that builds its input.
-_MOD_KEY_TOKENS = (
-    "norm1.linear",
-    "norm1.context.linear",
-    "norm.linear",
-    "norm.out",
-    "img.mod",
-    "txt.mod",
-    "mod.lin",
-    "modulation",
-    "adaln",
-    "time.text.embed",
-    "time.in",
-    "vector.in",
-    "guidance.in",
-    "timestep.embed",
-    "guidance.embed",
-    "text.embedder",
-)
-
-
-def lora_touches_modulation(paths: Any) -> Optional[str]:
-    """The first adapter key that targets a modulation Linear or the embedder, or None (unreadable files count as
-    touching: the caller then takes the safe path)."""
-    for path in paths or ():
-        try:
-            from safetensors import safe_open
-            with safe_open(str(path), framework = "pt") as f:
-                keys = list(f.keys())
-        except Exception:  # noqa: BLE001
-            return f"{path} (keys unreadable)"
-        for key in keys:
-            norm = key.lower().replace("_", ".")
-            if any(tok in norm for tok in _MOD_KEY_TOKENS):
-                return key
-    return None
-
-
 def _serve(model: Any, st: "_State", args: tuple, kwargs: dict) -> None:
     with st.lock:
         inputs = st.inputs(model, args, kwargs)
@@ -740,6 +701,77 @@ def _owner_device(model: Any, site_name: str) -> Any:
         parts.pop()
 
 
+def _rebuild_streamed(model: Any, restored: list) -> set:
+    """Registers restored modules with the offload machinery that streams their block, as if they had been there
+    when it was built: each param / buffer gets its host copy in the owning diffusers group's ``cpu_param_dict``
+    (made by diffusers' own ``ModuleGroup._to_cpu``), lands on the onload device if its group is on it now
+    (resident groups), and every Studio ``GroupPrefetcher`` re-sizes that group (bytes, window, slot views; the
+    slot ring is rebuilt when the group outgrew it). Returns the ids of the modules a group now owns."""
+    from .diffusion_memory import _offload_groups
+
+    groups = _offload_groups(model)
+    if not groups:
+        return set()
+    from diffusers.hooks import group_offloading as go
+
+    from .diffusion_offload_prefetch import (
+        PREFETCHER_ATTR,
+        _group_nbytes,
+        _group_tensors,
+        _packed_bytes,
+        bump_placement_epoch,
+    )
+
+    owner: dict = {}
+    for group in groups:
+        for module in getattr(group, "modules", None) or ():
+            for sub in module.modules():
+                owner.setdefault(id(sub), group)
+    owned: set = set()
+    touched: dict = {}
+    for orig in restored:
+        group = owner.get(id(orig))
+        if group is None:
+            continue
+        if getattr(group, "offload_to_disk_path", None):
+            raise _Unsupported("disk-offloaded groups key their tensors by file")
+        mine = {id(t) for t in list(orig.parameters()) + list(orig.buffers())}
+        others = [t for t in _group_tensors(group) if id(t) not in mine]
+        onloaded = any(t.device.type != "cpu" for t in others)
+        for t in list(orig.parameters()) + list(orig.buffers()):
+            if getattr(group, "stream", None) is not None:
+                group.cpu_param_dict[t] = go.ModuleGroup._to_cpu(
+                    t, bool(getattr(group, "low_cpu_mem_usage", False))
+                )
+            if onloaded:
+                t.data = t.data.to(group.onload_device)
+        owned.add(id(orig))
+        touched[id(group)] = group
+    if not touched:
+        return owned
+    for sub in model.modules():
+        pf = sub.__dict__.get(PREFETCHER_ATTR)
+        if pf is None:
+            continue
+        grew = False
+        for gid, group in touched.items():
+            if gid not in getattr(pf, "by_id", {}):
+                continue
+            pf.nbytes[gid] = _group_nbytes(group)
+            pf.slot_buffers.pop(gid, None)
+            if pf.slot_of and gid in pf.slot_of:
+                cpu = getattr(group, "cpu_param_dict", None) or {}
+                need = _packed_bytes([cpu.get(t, t) for t in _group_tensors(group)])
+                grew = grew or need is None or need > pf.slot_size
+        largest = max(pf.nbytes.values()) if pf.nbytes else 0
+        pf.window = max(int(pf.window), (pf.depth + 1) * largest)
+        if grew:
+            pf.disable_slots()
+            pf.enable_slots()
+    bump_placement_epoch()
+    return owned
+
+
 def uninstall(
     model: Any,
     *,
@@ -747,17 +779,11 @@ def uninstall(
     logger: Any = None,
     reason: str = "",
 ) -> bool:
-    """Puts the real modulation modules back (on ``device``, else beside their block's weights). Refused (RuntimeError)
-    on a streamed denoiser: its offload groups were built without these modules and would index them at the next
-    upload."""
+    """Puts the real modulation modules back: under offload machinery they are registered with the group that
+    streams their block (``_rebuild_streamed``); elsewhere on ``device``, else beside their block's weights."""
     st = getattr(model, "__dict__", {}).get(STATE_ATTR)
     if st is None:
         return False
-    streamed = offload_reason(model)
-    if streamed is not None:
-        raise RuntimeError(
-            f"AdaLN precompute: cannot restore the modulation modules into a streamed denoiser ({streamed})"
-        )
     torch = _torch()
     with st.lock:
         st.active = False
@@ -765,12 +791,22 @@ def uninstall(
             st.hook.remove()
         except Exception:  # noqa: BLE001
             pass
+        # targets first: once a module is back, its own host params would answer the owner lookup
+        targets = [
+            device if device is not None else _owner_device(model, name)
+            for name, *_rest in st.sites
+        ]
+        restored = []
         for (name, parent, attr, _kind), stand in zip(st.sites, st.stand_ins):
             orig = stand._unsloth_orig
-            target = device if device is not None else _owner_device(model, name)
+            parent._modules[attr] = orig
+            restored.append(orig)
+        owned = _rebuild_streamed(model, restored)
+        for orig, target in zip(restored, targets):
+            if id(orig) in owned:
+                continue
             if target is not None and str(target) != "cpu":
                 orig.to(target)
-            parent._modules[attr] = orig
         st.rows.clear()
         st.layouts.clear()
     del model.__dict__[STATE_ATTR]
