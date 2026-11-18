@@ -900,3 +900,27 @@ def test_a_nanbeige_gguf_of_a_shape_fastflowlm_runs_converts(monkeypatch, tmp_pa
 
     export_mod.q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
     assert installed == ["q4nx"]
+
+
+@pytest.mark.parametrize("layers, hidden, refused", [(48, 3072, True), (40, 2048, False)])
+def test_without_fastflowlm_s_table_a_fixed_config_architecture_is_still_checked(
+    monkeypatch, tmp_path, layers, hidden, refused
+):
+    from core.inference import npu_compat
+
+    unknown = npu_compat.build_compat(None, None)
+    monkeypatch.setattr(npu_compat, "current", lambda install_converter = True: unknown)
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    read_architecture = export_mod.q4nx._gguf_architecture
+    installed = _stub_installer(export_mod, monkeypatch, tmp_path)
+    monkeypatch.setattr(export_mod.q4nx, "_gguf_architecture", read_architecture)
+    _fake_popen(export_mod, monkeypatch)
+    source = _gguf_with(tmp_path / "m.gguf", "qwen35moe", layers, hidden, **{_EXPERTS: 256})
+
+    if refused:
+        with pytest.raises(RuntimeError, match = "cannot be exported for the AMD NPU"):
+            export_mod.q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
+        assert installed == []
+    else:
+        export_mod.q4nx.convert_gguf_to_q4nx(source, tmp_path / "out")
+        assert installed == ["q4k"]

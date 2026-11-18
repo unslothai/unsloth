@@ -160,6 +160,8 @@ def staged_output(out_dir: Path):
         shutil.rmtree(staging, ignore_errors = True)
 
 
+# The converter configures these by name alone, so they stay checked when FastFlowLM's table is unknown.
+_FIXED_CONFIG_SHAPES = {"qwen35moe": {(40, 2048, 256): "Qwen3.6-35B-A3B"}}
 _GEOMETRY_KEYS = frozenset(
     {"block_count", "embedding_length", "expert_count", "nextn_predict_layers"}
 )
@@ -173,12 +175,16 @@ def require_npu_geometry(gguf_path: str) -> None:
     arch = (general.get("general.architecture") or "").lower()
     from core.inference.npu_compat import runnable_shapes
 
-    # None until FastFlowLM is installed. Shapes, not architectures: any qwen35moe gets the 35B-A3B config.
+    # None until FastFlowLM's table is read. Shapes, not architectures: any qwen35moe gets the 35B-A3B config.
     runnable = runnable_shapes()
     # Omni is matched by name in the converter and has no published catalog config.
     names = (general.get(k, "").lower() for k in ("general.basename", "general.name"))
-    if not arch or runnable is None or (arch == "qwen35" and any("omni" in n for n in names)):
+    if not arch or (arch == "qwen35" and any("omni" in n for n in names)):
         return
+    if runnable is None:
+        if arch not in _FIXED_CONFIG_SHAPES:
+            return
+        runnable = _FIXED_CONFIG_SHAPES
     shapes = runnable.get(arch)
     if not shapes:
         raise RuntimeError(
