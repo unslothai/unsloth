@@ -56,10 +56,8 @@ _OP = "unsloth_studio::int8_attention_nhd"
 HEAD_DIMS = (64, 128)
 RACE_MARGIN = 0.98
 RACE_TOKENS = (4096, 1024)
-# Per DiT class: the (large, small) token counts an automatic install of a family that races at its own sequence
-# lengths (``install_family_auto``) times, in place of the RACE_TOKENS card race. MiniMax-H3 video denoises 15k-45k
-# joint tokens, and the kernel's gain grows with length (A100 lost at 4096 tokens and won at 27k), so a 4096-token race
-# would reject it where it pays off. Edit here once the per-card H3 measurements land.
+# (large, small) race tokens per DiT class, replacing RACE_TOKENS: H3 video runs 15k-45k tokens and A100 lost at 4096
+# but won at 27k, so a 4096-token race would wrongly reject it.
 FAMILY_RACE_TOKENS: dict = {
     "MiniMaxH3Transformer3DModel": (16384, 8192),
 }
@@ -247,13 +245,11 @@ def _env_mode() -> str:
     return "auto"
 
 
-# The per-load ``int8_attention`` field of the image and video load requests.
 INT8_ATTENTION_CHOICES = ("auto", "on", "off")
 
 
 def normalize_int8_attention(value: Any) -> Optional[str]:
-    """A load's ``int8_attention`` request folded to ``auto`` / ``on`` / ``off``, or None when it sent none. Raises
-    ValueError on anything else."""
+    """Fold a request to ``auto`` / ``on`` / ``off`` (None if unset); ValueError otherwise."""
     if value is None:
         return None
     if not isinstance(value, str):
@@ -268,12 +264,8 @@ def normalize_int8_attention(value: Any) -> Optional[str]:
 
 @dataclass(frozen = True)
 class Int8Policy:
-    """One load's INT8 attention policy, resolved once (``resolve_policy``) and handed to every install, dispatch,
-    deferred-speed and reload path of that load, so a later render never re-reads the environment.
-
-    ``request``: the load's ``int8_attention`` (``auto`` / ``on`` / ``off``) or None. ``env``: the env switch's mode
-    when the load resolved. Precedence: a per-load ``on`` / ``off`` beats the env switch, which beats the per-family
-    default; a per-load ``auto`` (or nothing) leaves the env switch in charge."""
+    """Resolved once per load so later renders never re-read the env. Precedence: per-load on/off > env switch >
+    family default."""
 
     request: Optional[str] = None
     env: str = "auto"
@@ -299,8 +291,7 @@ class Int8Policy:
 
 
 def resolve_policy(override: Any = None) -> Int8Policy:
-    """The load's ``Int8Policy`` from its ``int8_attention`` request (an ``Int8Policy`` passes through). An invalid
-    request reads as none here: the request models and ``begin_load`` refuse it before a load starts."""
+    """Invalid requests read as none here: the request models and ``begin_load`` already refuse them."""
     if isinstance(override, Int8Policy):
         return override
     try:
@@ -311,15 +302,13 @@ def resolve_policy(override: Any = None) -> Int8Policy:
 
 
 def mode(override: Any = None) -> str:
-    """``off`` | ``auto`` | ``force``: the load's policy (``override``: its ``Int8Policy`` or ``int8_attention``
-    request), else ``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``."""
+    """``off`` | ``auto`` | ``force`` from the load's policy, else the env switch."""
     if override is None:
         return _env_mode()
     return resolve_policy(override).mode
 
 
 def env_forced(override: Any = None) -> bool:
-    """Whether the env switch ``1`` (not a per-load ``on``) forces the kernel for this load."""
     return resolve_policy(override).env_force
 
 
@@ -2197,12 +2186,8 @@ def install_family_auto(
     policy: Any = None,
     logger: Any = None,
 ) -> int:
-    """With the load's policy ``auto``: route the strided processors of a DiT in ``FAMILY_RACE_TOKENS`` (MiniMax-H3
-    video) to the kernel where it passes the accuracy check on this card (CUDA kernel only: the accuracy was measured
-    on it) and beats each processor's incumbent by ``RACE_MARGIN`` at the family's own race sizes. The token floor
-    keeps short calls (H3's token refiner: 20-200 tokens) on the incumbent: the dispatch route's ``long_verdict``
-    floor, at least ``MIN_TOKENS``. ``device`` is the load's torch device with its ordinal, so the persisted verdicts
-    and races key on that card. Returns the count; never raises."""
+    """Policy ``auto``: race a ``FAMILY_RACE_TOKENS`` DiT's strided processors at its own sizes (CUDA kernel only:
+    accuracy was measured on it); the token floor keeps short calls on the incumbent. Never raises."""
     if transformer is None or mode(policy) != "auto":
         return 0
     tokens = family_race_tokens(transformer)
@@ -2248,7 +2233,6 @@ def install_family_auto(
 
 
 def _pipe_dits(pipe: Any) -> list:
-    """The distinct DiTs of ``pipe`` (or of each pipe / view in a list of them)."""
     pipes = list(pipe) if isinstance(pipe, (list, tuple)) else [pipe]
     out: list = []
     for p in pipes:
@@ -2262,14 +2246,12 @@ def _pipe_dits(pipe: Any) -> list:
         out.extend(
             d
             for d in dits
-            # a DiT without modules() (a test double, an sd.cpp handle) has no processor to count
             if callable(getattr(d, "modules", None)) and not any(d is x for x in out)
         )
     return out
 
 
 def _routed(dit: Any) -> list:
-    """The dispatch routes (``Int8Route``) of ``dit``'s attention processors."""
     try:
         from .diffusion_int8_attention_dispatch import Int8Route
     except Exception:  # noqa: BLE001
@@ -2287,8 +2269,7 @@ def _routed(dit: Any) -> list:
 
 
 def engaged_count(pipe: Any) -> int:
-    """Attention modules of ``pipe``'s DiTs (``pipe`` may be a list of pipes / views) that run the kernel: strided
-    processors plus dispatch routes. A census only: never raises."""
+    """Census of attention modules running the kernel (strided + dispatch); never raises."""
     try:
         return sum(int8_attention_count(d) + len(_routed(d)) for d in _pipe_dits(pipe))
     except Exception:  # noqa: BLE001
@@ -2302,9 +2283,7 @@ def resolved_entry(
     reason: Optional[str] = None,
     supported: bool = True,
 ) -> tuple:
-    """The ``int8_attention`` control's (explicit, engaged, reason, status) tuple for ``build_resolved_record``: the
-    load's request, ``on`` when the kernel runs on this load (``off`` otherwise), and why. ``supported=False``: the
-    engine has no INT8 attention (sd.cpp, MLX, CPU). ``annotate_resolved`` adds the census fields after the build."""
+    """(explicit, engaged, reason, status) for ``build_resolved_record``; ``supported=False`` for sd.cpp, MLX, CPU."""
     p = resolve_policy(policy)
     count = engaged_count(pipe) if pipe is not None else 0
     engaged = "on" if count else "off"
@@ -2340,7 +2319,6 @@ def _pipe_impls(pipe: Any) -> set:
 
 
 def annotate_resolved(resolved: Any, policy: Any, pipe: Any) -> Any:
-    """Adds ``engaged`` / ``impl`` / ``modules`` / ``mode`` to the record's ``int8_attention`` entry (in place)."""
     entry = resolved.get("int8_attention") if isinstance(resolved, dict) else None
     if not isinstance(entry, dict):
         return resolved

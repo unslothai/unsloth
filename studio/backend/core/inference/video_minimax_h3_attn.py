@@ -164,7 +164,6 @@ def _strided_processor_for(base: Any) -> Any:
         # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
-        # the kernel's mode for this processor (diffusion_int8_attention.sink_mode), set with _unsloth_int8
         _unsloth_int8_sinks = 0
 
         def __call__(

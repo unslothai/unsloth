@@ -1751,7 +1751,6 @@ class _VideoLoadState:
     speed_optims: tuple = ()
     backend_flags: Optional[dict] = None
     attention_backend: Optional[str] = None
-    # The load's INT8 attention policy (diffusion_int8_attention.Int8Policy), resolved once at begin_load.
     int8_policy: Any = None
     # Only fbcache breaks the graph (cache_breaks_graph); static keeps fullgraph and CUDA-graph eligibility.
     transformer_cache: Optional[str] = None
@@ -9640,7 +9639,6 @@ class VideoBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         attention_backend: Optional[str] = None,
-        # the load's Int8Policy (begin_load) or a direct call's "auto" / "on" / "off"
         int8_attention: Any = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
@@ -12151,7 +12149,6 @@ class VideoBackend:
         text_encoder_quant: Optional[str] = None,
         speed_mode: Optional[str] = None,
         attention_backend: Optional[str] = None,
-        # the load's diffusion_int8_attention.Int8Policy (or its "auto" / "on" / "off" request)
         int8_policy: Any = None,
         h3_task: Optional[str] = None,
         target: Any = None,
@@ -13078,12 +13075,10 @@ class VideoBackend:
 
             h3_policy = int8_attention.resolve_policy(int8_policy)
             int8_mode = h3_policy.mode
-            # On (per load, by name or the env switch 1): forced wherever the accuracy check passes
             int8_forced = int8_mode == "force" or (
                 int8_mode != "off" and int8_attention.requested(attention_backend)
             )
-            # Auto: raced at H3's own lengths, only on the evidenced configuration: attention left to Studio, speed on,
-            # Studio's hosted INT8 ConvRot denoiser on the diffusers path, no adapters
+            # Auto only on the evidenced config: Studio attention, speed on, hosted INT8 ConvRot, diffusers, no adapters
             int8_auto = (
                 not int8_forced
                 and int8_mode == "auto"
@@ -13094,10 +13089,8 @@ class VideoBackend:
                 and not baked_loras
                 and not lora_specs
             )
-            # The load's torch device with its ordinal: the card checks and races (and their persisted verdicts) key on it
             h3_torch_device = str(getattr(umem_target, "torch_device", None) or device)
-            # Studio's kernel goes on the strided processors below, after they exist: the stock processors' dispatch
-            # route would otherwise take it first and the strided install would then lose the fused q/k norm + RoPE
+            # Install after the strided processors exist, else the dispatch route takes it and loses fused q/k norm + RoPE
             attention_engaged = apply_attention_backend(
                 speed_view,
                 h3_attn_backend,
@@ -13154,8 +13147,7 @@ class VideoBackend:
                 except Exception as exc:  # noqa: BLE001 -- the strided processors keep their backend
                     logger.warning("video.h3_attn: INT8 attention skipped: %s", exc)
             elif int8_forced and not strided_installed:
-                # no strided processor (UNSLOTH_H3_STRIDED_ATTN=0, an older diffusers): a forced kernel still takes
-                # the stock processors' attention dispatch, as before
+                # no strided processor: a forced kernel falls back to the stock dispatch
                 try:
                     from .diffusion_int8_attention_dispatch import install as install_int8_dispatch
                     h3_int8_modules = install_int8_dispatch(
@@ -13186,7 +13178,6 @@ class VideoBackend:
                 )
             if h3_int8_modules:
                 h3_attn_levers += ("h3_int8_attention",)
-                # status names what runs: the kernel, not the incumbent it replaced on the long calls
                 attention_engaged = int8_attention.BACKEND
             logger.info(
                 "video.h3_attn: INT8 attention %s (policy %s from %s, %s): %d attention modules",

@@ -27,8 +27,7 @@ export interface DiffusionResolvedControl {
   reason: string;
   artifact?: string | null;
   replaced?: string | null;
-  // int8_attention only (absent on older backends, sd.cpp and MLX): value is "on" when Studio's
-  // INT8 attention kernel engaged on this load, else "off".
+  // int8_attention only (absent on older backends, sd.cpp, MLX): "on" when the kernel engaged.
   engaged?: boolean;
   impl?: string | null;
   modules?: number;
@@ -220,7 +219,6 @@ export interface DiffusionLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
-  // Studio's INT8 attention kernel; "auto" = no per-load override.
   int8_attention?: "auto" | "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.

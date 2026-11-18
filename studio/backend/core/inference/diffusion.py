@@ -1805,8 +1805,7 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Caller original attention request, so deferred engagement re-runs the same selection.
     attention_request: Optional[str] = None
-    # The load's INT8 attention policy (diffusion_int8_attention.Int8Policy), resolved once at begin_load: the
-    # deferred speed profile re-installs with it, never with a later read of the env switch.
+    # Resolved once at begin_load: the deferred speed profile must reuse it, not re-read the env.
     int8_policy: Any = None
     # Step cache engaged ("fbcache" | "static") or None; only fbcache breaks the graph.
     transformer_cache: Optional[str] = None
@@ -8672,7 +8671,6 @@ class DiffusionBackend:
         transformer_quant_fast_accum: Optional[bool] = None,
         transformer_prequant_path: Optional[str] = None,
         attention_backend: Optional[str] = None,
-        # the load's Int8Policy (begin_load) or a direct call's "auto" / "on" / "off"
         int8_attention: Any = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,

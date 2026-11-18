@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The per-load "INT8 attention" control shared by the Images and Video pages. */
-
 import { resolvedSelectValue, type ResolvedControl } from "./resolved-precision.ts";
 
 export const INT8_ATTENTION_CHOICES = ["auto", "on", "off"] as const;
@@ -19,12 +17,10 @@ export const INT8_ATTENTION_OPTIONS: [Int8AttentionChoice, string][] = [
 export const INT8_ATTENTION_HINT =
   "Studio's INT8 attention kernel. Auto turns it on where it is measured accurate and faster for this model and GPU (for example MiniMax-H3 video, FLUX, Wan, Qwen-Image-2.1). On engages it wherever it passes the accuracy check. Off keeps the attention selected above. SageAttention (INT8) stays a separate choice in the Attention select.";
 
-/** Shared by both pages' Attention select; points at the INT8 attention control below it. */
 export const ATTENTION_SELECT_HINT =
   "Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is SageAttention 2, one INT8 attention option (without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically. Studio's own INT8 attention kernel is the separate INT8 attention control below.";
 
-/** The select value the loaded build implies, or null to leave the select alone (key absent on an
- *  older backend, sd.cpp or MLX). A declined explicit "on" snaps to "off". */
+/** Null leaves the select alone (older backend, sd.cpp, MLX); a declined "on" snaps to "off". */
 export function int8AttentionSelection(
   resolved: ResolvedControl | undefined | null,
 ): Int8AttentionChoice | null {
