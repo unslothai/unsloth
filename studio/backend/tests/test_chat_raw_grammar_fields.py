@@ -69,11 +69,45 @@ def test_tool_choice_none_lets_the_grammar_through():
     inference_route._reject_unhonorable_raw_grammar(payload)
 
 
+def test_a_schema_under_schemaless_json_object_is_forwarded():
+    # llama-server keeps the top-level schema when json_object carries none of its own.
+    payload = _payload(json_schema = _SCHEMA, response_format = {"type": "json_object"})
+
+    inference_route._reject_unhonorable_raw_grammar(payload)
+    body = inference_route._build_openai_passthrough_body(payload, backend_ctx = 4096)
+
+    assert body["json_schema"] == _SCHEMA
+    assert body["response_format"] == {"type": "json_object"}
+
+
+def test_saved_memory_does_not_claim_a_constrained_request(monkeypatch):
+    import core.chat_memory as chat_memory
+
+    monkeypatch.setattr(chat_memory, "thread_context", lambda thread_id: {"thread": thread_id})
+
+    assert inference_route._memory_tool_requested(_payload(thread_id = "t1")) is True
+    for field, value in (("grammar", _GRAMMAR), ("json_schema", _SCHEMA)):
+        payload = _payload(thread_id = "t1", **{field: value})
+        assert inference_route._memory_tool_requested(payload) is False
+        assert inference_route._explicit_studio_tool_loop_requested(payload) is False
+
+
 @pytest.mark.parametrize(
     "fields, param",
     [
         ({"grammar": _GRAMMAR, "json_schema": _SCHEMA}, "grammar"),
         ({"grammar": _GRAMMAR, "response_format": {"type": "json_object"}}, "grammar"),
+        (
+            {"json_schema": _SCHEMA, "response_format": {"type": "json_object", "schema": {}}},
+            "json_schema",
+        ),
+        (
+            {
+                "json_schema": _SCHEMA,
+                "response_format": {"type": "json_schema", "json_schema": {"schema": _SCHEMA}},
+            },
+            "json_schema",
+        ),
         ({"json_schema": _SCHEMA, "tools": [_TOOL]}, "json_schema"),
         ({"grammar": _GRAMMAR, "tools": [_TOOL], "tool_choice": "auto"}, "grammar"),
         ({"grammar": ["root ::= x"]}, "grammar"),

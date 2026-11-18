@@ -4611,6 +4611,20 @@ class TestGgufVisionToolRouting:
             result.body = json.loads(response.body)
         return result
 
+    @pytest.mark.parametrize(
+        "field, value", [("grammar", 'root ::= "a"'), ("json_schema", {"type": "object"})]
+    )
+    def test_diffusion_gguf_refuses_a_raw_grammar(self, monkeypatch, field, value):
+        # The DiffusionGemma shim reads neither field, so answering would ignore the constraint.
+        with pytest.raises(HTTPException) as exc:
+            self._run_gguf_case(
+                monkeypatch,
+                payload_kwargs = {field: value},
+                backend_kwargs = {"is_diffusion": True},
+            )
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == field
+
     def test_image_request_with_enabled_tools_enters_gguf_tool_loop(self, monkeypatch):
         import routes.inference as inf_mod
 

@@ -4606,6 +4606,7 @@ def _memory_tool_requested(payload) -> bool:
         or getattr(payload, "tool_choice", None) == "none"
         or (getattr(payload, "n", None) or 1) > 1
         or _response_format_constrains_decoding(payload)
+        or _raw_grammar_fields(payload)
         or (
             _has_openai_tool_history(getattr(payload, "messages", None) or [])
             and not _only_studio_tool_history(payload)
@@ -32878,6 +32879,8 @@ async def produce_openai_chat_completions(
                         param = "tools",
                     ),
                 )
+    # Every backend refuses these, so reject before an auto-switch can evict the resident model.
+    _reject_unhonorable_raw_grammar(payload)
 
     # Reject a system-only chat before any auto load, even with features off, to keep preview ownership.
     _pre_parsed = None
@@ -32912,6 +32915,7 @@ async def produce_openai_chat_completions(
             or bool(payload.anthropic_code_exec_container_id)
             # A JSON-schema response_format is grammar-constrained decoding; check it with the router's predicate.
             or _response_format_constrains_decoding(payload)
+            or bool(_raw_grammar_fields(payload))
         )
         # Client-tool passthrough leaves confirm_tool_calls unset; only an explicit True rejects.
         _studio_local_tool_loop = bool(_use_tools_intent) and (
@@ -33786,10 +33790,20 @@ async def produce_openai_chat_completions(
         )
     # Shared with the token counter. Guided decoding routes here too: the other path drops schema.
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
-        try:
-            _reject_unhonorable_raw_grammar(payload)
-        except HTTPException as exc:
-            raise _reject(exc.status_code, exc.detail)
+        # The DiffusionGemma shim reads neither field, so it would answer unconstrained.
+        if getattr(llama_backend, "is_diffusion", False) and (
+            _raw_param := _raw_grammar_param(payload)
+        ):
+            raise _reject(
+                400,
+                openai_error_body(
+                    f"{_raw_param} is not supported by diffusion models; load an autoregressive "
+                    "GGUF to use it.",
+                    status = 400,
+                    code = "unsupported_parameter",
+                    param = _raw_param,
+                ),
+            )
         _refuse_unused_mcp_image(_mcp_image)
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
@@ -48993,7 +49007,15 @@ def _reject_unhonorable_raw_grammar(payload) -> None:
         _raise_unsupported_openai_parameter(
             "grammar", "Send either grammar or json_schema, not both."
         )
-    if _response_format_constrains_decoding(payload):
+    response_format = _extract_response_format(payload)
+    # llama-server keeps the top-level schema under a schema-less json_object (server-common.cpp).
+    schema_under_json_object = (
+        param == "json_schema"
+        and isinstance(response_format, dict)
+        and response_format.get("type") == "json_object"
+        and "schema" not in response_format
+    )
+    if _response_format_constrains_decoding(payload) and not schema_under_json_object:
         _raise_unsupported_openai_parameter(
             param,
             f"{param} cannot be combined with a constraining response_format; send only one of them.",
