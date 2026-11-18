@@ -31,13 +31,6 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -91,6 +84,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import { motion, useReducedMotion } from "motion/react";
 import {
   type ReactNode,
   useCallback,
@@ -166,7 +160,9 @@ const GO_BUTTON =
 const STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
 const PANEL = "rounded-xl bg-wash-6";
-const PANE_HEIGHT = "h-52 sm:h-96 md:h-[max(30rem,calc(100dvh-18rem))]";
+const PANE_HEIGHT = "h-52 sm:h-96 md:h-[max(13rem,calc(100dvh-22rem))]";
+const PANE_HEIGHT_WITH_PROMPT =
+  "h-52 sm:h-72 md:h-[max(10rem,calc(100dvh-35rem))]";
 // The box clips and an inner element scrolls: a scrollbar on the box itself squares off its corners.
 // Its outline is an inset shadow, not a border, so the scrollbar reaches the box's very edge.
 const SOURCE_BOX =
@@ -219,7 +215,7 @@ function LanguagePicker({
       TRANSLATE_LANGUAGES.map((language) => ({
         ...language,
         label: translateLanguageLabel(language, locale),
-      })),
+      })).sort((a, b) => a.label.localeCompare(b.label, locale)),
     [locale],
   );
   const needle = query.trim().toLowerCase();
@@ -821,18 +817,75 @@ function OptionRow({
   );
 }
 
+function ChoiceChips<T extends string>({
+  label,
+  options,
+  labels,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: readonly T[];
+  labels: Record<T, TranslationKey>;
+  value: T;
+  onChange: (next: T) => void;
+}) {
+  const t = useT();
+  const pillId = useId();
+  const reduced = useReducedMotion();
+  return (
+    <div role="group" aria-label={label} className="flex flex-col gap-1.5">
+      <span className="text-ui-12 text-muted-foreground">{label}</span>
+      <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
+        {options.map((option) => {
+          const active = option === value;
+          return (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(option)}
+              className={cn(
+                "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors",
+                active
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {active && (
+                <motion.span
+                  layoutId={pillId}
+                  className="hub-tab-toggle-pill absolute inset-0 rounded-full"
+                  transition={
+                    reduced
+                      ? { duration: 0 }
+                      : {
+                          type: "spring",
+                          stiffness: 500,
+                          damping: 35,
+                          mass: 0.5,
+                        }
+                  }
+                />
+              )}
+              <span className="relative z-10">{t(labels[option])}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function OptionsPopover() {
   const t = useT();
-  const { mode, tone, autoTranslate, saveHistory, showPrompt } =
-    useTranslateStore(
-      useShallow((state) => ({
-        mode: state.prefs.mode,
-        tone: state.prefs.tone,
-        autoTranslate: state.prefs.autoTranslate,
-        saveHistory: state.prefs.saveHistory,
-        showPrompt: state.prefs.showPrompt,
-      })),
-    );
+  const { autoTranslate, saveHistory, showPrompt } = useTranslateStore(
+    useShallow((state) => ({
+      autoTranslate: state.prefs.autoTranslate,
+      saveHistory: state.prefs.saveHistory,
+      showPrompt: state.prefs.showPrompt,
+    })),
+  );
   const setPrefs = useTranslateStore((state) => state.setPrefs);
   return (
     <Popover>
@@ -849,48 +902,6 @@ function OptionsPopover() {
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" sideOffset={4} className="w-80 gap-5">
-        <OptionRow label={t("translate.options.mode")}>
-          {(id) => (
-            <Select
-              value={mode}
-              onValueChange={(next) =>
-                setPrefs({ mode: next as TranslateMode })
-              }
-            >
-              <SelectTrigger id={id} size="sm" className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TRANSLATE_MODES.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {t(MODE_LABEL[option])}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </OptionRow>
-        <OptionRow label={t("translate.options.tone")}>
-          {(id) => (
-            <Select
-              value={tone}
-              onValueChange={(next) =>
-                setPrefs({ tone: next as TranslateTone })
-              }
-            >
-              <SelectTrigger id={id} size="sm" className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TRANSLATE_TONES.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {t(TONE_LABEL[option])}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </OptionRow>
         <OptionRow
           label={t("translate.options.auto")}
           description={t("translate.options.autoDescription")}
@@ -1024,6 +1035,7 @@ export function TranslatePage() {
   const outputRef = useRef<HTMLDivElement>(null);
 
   const busy = phase !== null;
+  const paneHeight = prefs.showPrompt ? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT;
   const canTranslate = source.trim() !== "";
   const stale = translationIsStale({ result, source, prefs });
   const modelKey = translateModelKey(prefs.modelId, prefs.customModel);
@@ -1285,6 +1297,23 @@ export function TranslatePage() {
           )}
         </div>
 
+        <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
+          <ChoiceChips
+            label={t("translate.options.mode")}
+            options={TRANSLATE_MODES}
+            labels={MODE_LABEL}
+            value={prefs.mode}
+            onChange={(mode) => setPrefs({ mode })}
+          />
+          <ChoiceChips
+            label={t("translate.options.tone")}
+            options={TRANSLATE_TONES}
+            labels={TONE_LABEL}
+            value={prefs.tone}
+            onChange={(tone) => setPrefs({ tone })}
+          />
+        </div>
+
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <section
             ref={dropRef}
@@ -1295,7 +1324,7 @@ export function TranslatePage() {
             <div
               className={cn(
                 SOURCE_BOX,
-                PANE_HEIGHT,
+                paneHeight,
                 dragging && "shadow-[inset_0_0_0_1px_var(--ring)]",
               )}
             >
@@ -1385,7 +1414,7 @@ export function TranslatePage() {
             aria-busy={busy}
             className="flex flex-col gap-1.5"
           >
-            <div className={cn(PANEL, PANE_HEIGHT, "overflow-hidden")}>
+            <div className={cn(PANEL, paneHeight, "overflow-hidden")}>
               <div
                 ref={outputRef}
                 className={cn(EDGE_SCROLL, "overflow-y-auto px-3.5 py-3")}
