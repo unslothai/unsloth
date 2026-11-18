@@ -635,12 +635,9 @@ def _remember_server_metadata(auth, store) -> None:
         await clear()
         await store.delete(key = key, collection = _OAUTH_METADATA_COLLECTION)
 
-    try:
-        auth._initialize = _initialize
-        adapter.set_tokens = _set_tokens
-        adapter.clear = _clear
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("MCP OAuth: token endpoint fixup could not be applied: %s", exc)
+    auth._initialize = _initialize
+    adapter.set_tokens = _set_tokens
+    adapter.clear = _clear
 
 
 def _oauth(
