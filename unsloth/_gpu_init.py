@@ -232,7 +232,14 @@ try:
         from .distributed_debug import keep_debug_nccl_env
         _restore_nccl_debug = keep_debug_nccl_env()
         del keep_debug_nccl_env
+    from .parallel_env import ALLOCATOR_ENV as _ALLOCATOR_ENV, apply_late_allocator_env
+
+    _allocator_env_before = {k: os.environ.get(k) for k in _ALLOCATOR_ENV}
     import unsloth_zoo
+
+    # A torchrun rank > 0 started CUDA when it bound its device: give it zoo's allocator settings too.
+    apply_late_allocator_env(_allocator_env_before)
+    del _ALLOCATOR_ENV, _allocator_env_before, apply_late_allocator_env
 
     if _restore_nccl_debug is not None:
         _restore_nccl_debug()
