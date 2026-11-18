@@ -122,7 +122,12 @@ def test_kl_strips_install_by_structure_and_switch(monkeypatch):
     vae = _kl(**CONFIGS[0])
     assert S.kl_strip_candidate(vae)
     assert S.install(vae) is True  # the card policy decides per decode
+    assert not S.engaged(
+        vae
+    )  # CPU weights: no card that takes them, so the planner prices the fused decode
+    monkeypatch.setenv(S.KL_STRIPS_ENV, "1")  # every decode: priced as strips wherever it runs
     assert S.engaged(vae)
+    monkeypatch.delenv(S.KL_STRIPS_ENV)
     F.uninstall(vae)
     assert not S.engaged(vae)
     monkeypatch.setenv(S.KL_STRIPS_ENV, "0")
@@ -208,6 +213,10 @@ def _cuda_triton() -> bool:
 def test_kl_strip_and_upsample_paths_on_cuda(monkeypatch, dtype):
     import copy
 
+    # fp32 means fp32: sm80+ runs fp32 convs / matmuls in TF32 by default, and strips of other shapes pick other algorithms
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+
     monkeypatch.setattr(S, "STRIP_ELEMS", 1 << 10)
     src = _kl(**CONFIGS[1]).to("cuda", dtype).to(memory_format = torch.channels_last)
     stock, fused, strips = copy.deepcopy(src), copy.deepcopy(src), copy.deepcopy(src)
@@ -247,3 +256,24 @@ def test_planner_prices_the_kl_strip_decode_when_it_runs(monkeypatch):
         S, "largest_pass_elems", lambda dec, h, w: 2 * S._REF_PASS_ELEMS_PER_LATENT * h * w
     )
     assert vt.strips_decode_mib(vae, z, 256, 256) == pytest.approx(0.096 * 256 * 256 + 128)
+
+
+def test_kl_strips_decline_off_their_cards_without_the_memory_reading(monkeypatch):
+    """H100 / B200 (outside the measured cards): the KL forward goes straight to the fused decode, never pays the
+    free-memory reading, and the planner keeps pricing the fused decode."""
+    _runtime(monkeypatch)
+    monkeypatch.delenv(S.KL_STRIPS_ENV, raising = False)
+    vae = _kl(**CONFIGS[0])
+    assert S.install(vae)
+    calls = []
+    monkeypatch.setattr(S, "fused_would_not_fit", lambda v, z: calls.append(1) or True)
+    monkeypatch.setattr(S, "kl_always_on", lambda device: False)
+    monkeypatch.setattr(S, "_call_ok", lambda d, z: True)
+    monkeypatch.setattr(S, "worth_strips", lambda d, z: True)
+    ran = []
+    monkeypatch.setattr(S, "_decode_one", lambda d, z: ran.append(1))
+    z = torch.randn(1, 4, 8, 8)
+    with torch.no_grad():
+        out = vae.decoder(z)
+    assert out.shape[1] == 3 and not ran and not calls
+    assert not S.engaged(vae)

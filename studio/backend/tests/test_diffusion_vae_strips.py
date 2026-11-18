@@ -159,6 +159,10 @@ def _cuda_triton() -> bool:
 def test_strip_decode_matches_fused_cuda(monkeypatch, dtype):
     import copy
 
+    # fp32 means fp32: sm80+ runs fp32 convs / matmuls in TF32 by default, and strips of other shapes pick other algorithms
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+
     monkeypatch.setattr(S, "STRIP_ELEMS", 1 << 10)
     src = _vae(CONFIGS[0]).to("cuda", dtype)
     fused, strips = copy.deepcopy(src), copy.deepcopy(src)

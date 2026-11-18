@@ -901,11 +901,13 @@ def install(vae: Any, logger: Any = None) -> bool:
             or strips_disabled()
             or not _call_ok(decoder, sample)
             or not worth_strips(decoder, sample)
+            # the KL family only on its cards: the free-memory reading costs ~2 ms a decode (A100), and a decode the
+            # fused path would not fit reaches the whole-map strips through the tile planner (full_map_decode)
             or not (
-                (kl_always_on(sample.device) if kl else always_on(sample.device))
-                or fused_would_not_fit(vae, sample)
+                kl_always_on(sample.device)
+                if kl
+                else (always_on(sample.device) or fused_would_not_fit(vae, sample))
             )
-            or (kl and _kl_setting() is False)
         ):
             return prev(sample, latent_embeds, *args, **kwargs)
         try:
@@ -946,6 +948,19 @@ def install(vae: Any, logger: Any = None) -> bool:
     return True
 
 
+def _kl_takes_strips(vae: Any, decoder: Any) -> bool:
+    """A KL-family decoder takes the strips only where ``kl_always_on``; FLUX.2's also when the fused would not fit."""
+    if type(vae).__name__ in STRIP_VAES:
+        return True
+    if _kl_setting() is not None:
+        return bool(_kl_setting())
+    try:
+        device = decoder.conv_out.weight.device
+        return device.type == "cuda" and kl_always_on(device)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def engaged(vae: Any) -> bool:
     """Whether the next decode of ``vae`` takes the strip path (what the tile planner prices)."""
     decoder = getattr(vae, "decoder", None)
@@ -955,4 +970,5 @@ def engaged(vae: Any) -> bool:
         and getattr(decoder.__dict__.get("forward"), "_unsloth_vae_strips", False)
         and not decoder.__dict__.get("_unsloth_vae_strips_failed", False)
         and not strips_disabled()
+        and _kl_takes_strips(vae, decoder)
     )
