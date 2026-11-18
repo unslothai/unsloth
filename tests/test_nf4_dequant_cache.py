@@ -36,7 +36,7 @@ def _fresh(monkeypatch):
     dc.clear_dequant_cache()
     dc.STATS.clear()
     dc._PRE_RAN[0] = 0
-    dc._PADDED_SEEN[0] = dc._PADDED_NEW[0] = False
+    dc._PADDED_SEEN[0] = dc._PADDED_NEW[0] = 0
     for name in ("_SHRINK_PEAK", "_SHRINK_UNSAFE"):
         getattr(dc, name, set()).clear()
     yield
@@ -194,6 +194,29 @@ def test_first_padded_batch_of_a_measured_shape_drops_the_cache(monkeypatch):
     dc._lookup(W, absmax, _decoder([]), torch.bfloat16)
     dc._model_pre_hook(None, (), {"input_ids": ids, "attention_mask": padded})
     assert dc.cached_count() == 1
+
+
+def test_padded_mask_bound_is_joint_not_per_dimension(monkeypatch):
+    # Measured padded [16, 1024] and [1, 4096]: a padded [4, 4096] fits both maxima but its dense mask is 4x larger.
+    _memory(monkeypatch, usable = 10 * GiB)
+
+    def step(b, s):
+        mask = torch.ones(b, s, dtype = torch.long)
+        mask[0, 0] = 0
+        dc._model_pre_hook(
+            None, (), {"input_ids": torch.zeros(b, s, dtype = torch.long), "attention_mask": mask}
+        )
+
+    step(16, 1024)
+    step(1, 4096)
+    dc._SEEN.add(None)
+    dc._on_optimizer_step(None, (), {})
+    W, absmax = _weight()
+    dc._lookup(W, absmax, _decoder([]), torch.bfloat16)
+    step(16, 1024)
+    assert dc.cached_count() == 1  # measured
+    step(4, 4096)
+    assert dc.cached_count() == 0 and dc._BUDGET.get(None, 0) == 0
 
 
 def test_guard_evicts_under_margin(monkeypatch):
