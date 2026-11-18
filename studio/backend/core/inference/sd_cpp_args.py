@@ -209,9 +209,7 @@ def native_speed_flags(
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
     ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None.
-    ``binary``: on builds listing ``--conv-direct`` (master-963+) a rejected direct conv is sent explicitly
-    (``rejected_conv_direct_mode``: ``off``, or ``off,vae=auto`` on Vulkan), since an omitted flag means auto there
-    (direct conv on for HIP MMA / Vulkan regardless of this policy)."""
+    ``binary``: builds listing ``--conv-direct`` (master-963+) get rejected direct conv explicitly, since omitted = auto."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
@@ -248,17 +246,13 @@ def speed_flags_without(speed: Sequence[str], offload: Sequence[str]) -> list[st
     return out
 
 
-# VAE devices whose own direct-conv decision Studio keeps when it rejects direct conv for the denoiser. Vulkan: the
-# fork's auto runs direct conv2d in the VAE only after its output check against im2col passes (3D convs and every
-# other module stay im2col), measured faster and smaller in VAE decodes on RADV and AMD's Windows driver; CPU: the
-# row-run direct kernels, bit-identical to im2col. HIP is not listed: its auto picks implicit GEMM, never faster on
-# gfx1151, so it keeps the global off.
+# VAE keeps auto: Vulkan output-checks vs im2col (faster on RADV / AMD Windows), CPU is bit-identical.
+# Not HIP: its auto picks implicit GEMM, never faster on gfx1151.
 _VAE_CONV_DIRECT_AUTO_BACKENDS = ("vulkan", "cpu")
 
 
 def _vae_backend(backend_args: Sequence[str], accelerator: Optional[str]) -> Optional[str]:
-    """The backend the VAE gets: ``--vae-on-cpu``, else a ``vae=`` assignment beats a bare default, else
-    ``accelerator``."""
+    """``--vae-on-cpu``, else ``vae=`` beats a bare ``--backend`` default, else ``accelerator``."""
     args = list(backend_args)
     if "--vae-on-cpu" in args:
         return "cpu"
@@ -276,10 +270,8 @@ def _vae_backend(backend_args: Sequence[str], accelerator: Optional[str]) -> Opt
 def rejected_conv_direct_mode(
     backend_args: Sequence[str] = (), accelerator: Optional[str] = None
 ) -> str:
-    """``--conv-direct`` value when Studio's policy rejects direct conv: ``off,vae=auto`` (denoiser and ControlNet
-    off, the VAE keeps the fork's per-device decision) when the denoiser runs on Vulkan and the VAE on Vulkan or CPU,
-    else ``off``. The module syntax arrived with ``--conv-direct`` itself (sd.cpp #2134), so a build that lists the
-    flag accepts it. ``UNSLOTH_SD_CPP_CONV_DIRECT=0`` (kill switch) and Metal send ``off``."""
+    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, else ``off`` (also kill switch / Metal).
+    Module syntax shipped with ``--conv-direct`` itself (sd.cpp #2134)."""
     import os
 
     forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()

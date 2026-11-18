@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Direct conv rejected by Studio's policy must reach sd.cpp as an explicit ``--conv-direct off`` (``off,vae=auto``
-on Vulkan, where the VAE keeps the fork's own output-checked decision).
-
-sd.cpp master-963+ reads an omitted ``--conv-direct`` as auto, and auto turns direct conv on for implicit-GEMM
-backends (HIP MMA; Vulkan when its timing probe wins), so leaving the legacy flag out no longer means off."""
+"""Rejected direct conv must reach sd.cpp master-963+ as explicit ``--conv-direct off`` (``off,vae=auto`` on
+Vulkan): an omitted flag there means auto, which enables it on HIP MMA / Vulkan."""
 
 from __future__ import annotations
 
@@ -76,15 +73,13 @@ def test_rejected_backend_sends_explicit_off_to_an_auto_build(tmp_path, accelera
 @pytest.mark.parametrize(
     "backend_args,accelerator,mode",
     [
-        # Vulkan denoiser: the VAE keeps the fork's output-checked per-device decision.
         ([], "vulkan", "off,vae=auto"),
         (["--backend", "Vulkan0"], None, "off,vae=auto"),
         (["--backend", "diffusion=Vulkan0,te=Vulkan0,vae=Vulkan0"], "vulkan", "off,vae=auto"),
         (["--backend", "diffusion=Vulkan0,te=cpu,vae=cpu"], "vulkan", "off,vae=auto"),
         (["--vae-on-cpu"], "vulkan", "off,vae=auto"),
-        # HIP VAE: auto would pick implicit GEMM, never faster on gfx1151.
+        # HIP VAE or denoiser: off.
         (["--backend", "diffusion=Vulkan0,vae=ROCm0"], "vulkan", "off"),
-        # HIP denoiser: unchanged global off, whatever runs the VAE.
         ([], "rocm", "off"),
         (["--backend", "diffusion=ROCm0,vae=cpu"], "rocm", "off"),
         (["--backend", "ROCm0"], "vulkan", "off"),
