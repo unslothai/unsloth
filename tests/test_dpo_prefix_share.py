@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 pytest.importorskip("torch.nn.attention.flex_attention")  # PrefixGrouper's kernel (torch >= 2.5)
 
@@ -487,7 +488,7 @@ def test_length_dependent_rope_declines():
     assert not rope(NS(rope_scaling = None))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_verify_with_hidden_states_on_another_device(monkeypatch):
     # A model split over GPUs (device_map) returns hidden states on its last block's device while the
     # attention mask stays on the input device; the first-call verify must still compare them.
