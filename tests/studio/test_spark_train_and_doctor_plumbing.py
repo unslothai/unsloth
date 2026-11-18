@@ -410,6 +410,30 @@ def test_the_kernels_that_derive_causality_are_untouched(impl: str) -> None:
     assert pipeline.legacy_attention_problem(_Cfg(_attn_implementation = impl), 4096) is None
 
 
+def test_a_config_that_never_named_a_backend_is_judged_by_what_the_model_resolves(tmp_path) -> None:
+    """AutoConfig reads back `_attn_implementation = None` for an ordinary checkpoint; the model then
+    takes SDPA, so the legacy backend must accept it rather than reject every default config."""
+    transformers = pytest.importorskip("transformers")
+    pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
+    transformers.LlamaConfig(
+        num_hidden_layers = 2, hidden_size = 64, intermediate_size = 128,
+        num_attention_heads = 4, num_key_value_heads = 4, vocab_size = 100,
+    ).save_pretrained(tmp_path)  # fmt: skip
+    cfg = transformers.AutoConfig.from_pretrained(tmp_path)
+    assert getattr(cfg, "_attn_implementation", None) in (None, "sdpa")
+    assert pipeline.resolved_attn_implementation(cfg) == "sdpa"
+    assert pipeline.legacy_attention_problem(cfg, 512) is None
+    assert transformers.AutoModelForCausalLM.from_config(cfg).config._attn_implementation == "sdpa"
+
+
+def test_an_unresolved_backend_without_sdpa_is_still_refused(monkeypatch) -> None:
+    pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
+    monkeypatch.setattr(pipeline, "resolved_attn_implementation", lambda cfg: "eager")
+    assert "bidirectional" in pipeline.legacy_attention_problem(
+        _Cfg(_attn_implementation = None), 512
+    )
+
+
 def test_a_sequence_past_the_sliding_window_is_refused() -> None:
     pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
     cfg = _Cfg(_attn_implementation = "sdpa", sliding_window = 1024)
