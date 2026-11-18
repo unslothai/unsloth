@@ -243,12 +243,12 @@ test("a model with no thinking skips the collapsed view and closes once loaded",
   );
   assert.match(
     picker,
-    /const isExpanded = expanded \|\| !chosenName \|\| noThinking;/,
+    /const isExpanded =\s+expanded \|\| !chosenName \|\| noThinking \|\| touchPhone;/,
   );
   assert.match(picker, /if \(fresh\) \{\s+closeIfNoThinking\.current\(\);/);
   assert.match(
     picker,
-    /\{chosenName && !noThinking \? \(\s+<Hint label="Collapse">/,
+    /\{chosenName && !noThinking && !touchPhone \? \(\s+<Hint label="Collapse">/,
   );
 });
 
@@ -1741,5 +1741,39 @@ test("a connected model in use offers eject, which clears the pick", () => {
   assert.match(
     runtime,
     /if \(isExternalModelId\(checkpoint\)\) \{\s+clearCheckpoint\(\);/,
+  );
+});
+
+test("on touch the picker keeps the keyboard down and every action within reach", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+
+  assert.match(
+    picker,
+    /touchPress\.current = !open && event\.pointerType === "touch";/,
+  );
+  assert.match(
+    picker,
+    /onPointerDownCapture=\{\(event\) => \{\s+touchPress\.current = event\.pointerType === "touch";/,
+  );
+  assert.match(picker, /if \(isExpanded && !byTouch\) \{/);
+  assert.match(
+    picker,
+    /setExpanded\(true\);\s+if \(!touchPress\.current\) \{\s+requestAnimationFrame\(\(\) => searchRef\.current\?\.focus\(\)\);/,
+  );
+  assert.match(
+    picker,
+    /buttonClassName=\{cn\(ACTION_DOTS, actionClass, TOUCH_DOTS\)\}/,
+  );
+  assert.match(
+    picker,
+    /className=\{cn\(ACTION_ROUND, actionClass, TOUCH_IN_MENU\)\}/,
+  );
+  assert.match(picker, /: \[actionClass, TOUCH_IN_MENU\]/);
+  const header = picker.slice(picker.indexOf("function SectionHeader("));
+  assert.match(
+    header.slice(0, header.indexOf("\n}\n")),
+    /pointer-coarse:flex-1 pointer-coarse:self-stretch/,
   );
 });
