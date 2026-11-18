@@ -5,6 +5,7 @@
 Inference API routes for model loading and text generation.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import math
 import os
 import shutil
@@ -178,6 +179,7 @@ from core.inference.llama_admission import (
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
 from core.inference.http_stream import SSE_LINE_END, aiter_sse_lines
+from core.inference.sse import SSELineDecoder, iter_sse_lines
 from core.inference import model_slots
 from core.inference.llama_cpp import (
     _TERMINAL_RETIREMENT_HOOKS,
@@ -2018,8 +2020,17 @@ def _openai_llama_admission_compact_image_part(part: dict) -> dict:
     return {"type": "image_url", "image_url": compact_image_url}
 
 
+def _mcp_replay_uncapped(payload) -> bool:
+    """A compacting GGUF chat keeps every tool picture: its tool loop does too and lets the fit make
+    room, so the follow-up prompt matches what the loop last sent (#18231)."""
+    return payload is not None and _rolling_context_policy(payload) == "truncate_oldest"
+
+
 def _openai_llama_admission_messages_for_estimate(
-    messages, *, vision: bool = True
+    messages,
+    *,
+    vision: bool = True,
+    uncapped: bool = False,
 ) -> tuple[list[dict], int]:
     """Strip image bytes before estimating text; mtmd token counts follow the model, not base64 size."""
     estimate_messages = []
@@ -2106,7 +2117,9 @@ def _openai_llama_admission_messages_for_estimate(
             estimate_message["content"] = estimate_content
         estimate_messages.append(estimate_message)
     # Cap replay images separately from caller attachments, matching GGUF promotion.
-    return estimate_messages, image_parts + min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
+    if not uncapped:
+        envelope_image_parts = min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
+    return estimate_messages, image_parts + envelope_image_parts
 
 
 def _conversation_video_clips(messages) -> list[str]:
@@ -2220,7 +2233,7 @@ def _openai_llama_admission_tokens(
     elif isinstance(messages, list) and messages:
         try:
             estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-                messages, vision = vision
+                messages, vision = vision, uncapped = _mcp_replay_uncapped(payload)
             )
             prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
@@ -2373,7 +2386,9 @@ def _count_gguf_admission_prompt(
     budget = _openai_llama_admission_budget(llama_backend) or 0
     try:
         text_messages, images = _openai_llama_admission_messages_for_estimate(
-            messages, vision = bool(getattr(llama_backend, "is_vision", False))
+            messages,
+            vision = bool(getattr(llama_backend, "is_vision", False)),
+            uncapped = _mcp_replay_uncapped(payload),
         )
         if prepared_body is None:
             template_kwargs = llama_backend._request_reasoning_kwargs(
@@ -4161,8 +4176,10 @@ _ARTIFACT_PAGE_PRELUDE = """<script>(() => {
 # Inserted after a leading doctype (before it means quirks mode), else first. Never after a later
 # "<head>": that text may sit in a comment or a script string. The parser opens the head for the
 # script and folds a later <html>'s attributes into the root.
+# A comment body never contains "-->", so each comment has one match: a lazy `.*?` could also span
+# later comments, and a run of `<!---->` without a doctype then backtracks exponentially.
 _ARTIFACT_PAGE_PRELUDE_AT = _re.compile(
-    r"\A\ufeff?(?:\s|<!--.*?-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
+    r"\A\ufeff?(?:\s|<!--(?:(?!-->).)*-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
 )
 
 
@@ -8044,24 +8061,20 @@ def _monitor_anthropic_response(
 
     async def _monitored_body():
         terminal = False
+        decoder = SSELineDecoder()
+
+        def _watch(line: str) -> None:
+            nonlocal terminal
+            if _monitor_anthropic_sse_line(monitor_id, line.strip(), context_length) == "error":
+                terminal = True
+
         try:
             async for chunk in body_iterator:
-                text = (
-                    chunk.decode("utf-8", errors = "ignore")
-                    if isinstance(chunk, (bytes, bytearray))
-                    else str(chunk)
-                )
-                for line in SSE_LINE_END.split(text):
-                    if (
-                        _monitor_anthropic_sse_line(
-                            monitor_id,
-                            line.strip(),
-                            context_length,
-                        )
-                        == "error"
-                    ):
-                        terminal = True
+                for line in decoder.feed(chunk):
+                    _watch(line)
                 yield chunk
+            for line in decoder.flush():
+                _watch(line)
             if not terminal:
                 api_monitor.finish(
                     monitor_id,
@@ -9134,6 +9147,27 @@ def _canonical_model_identity(model_id: Optional[str]) -> str:
     return (hf_cache_repo_id(model_id) or str(model_id)).lower()
 
 
+def _as_ollama_mlx_request(request):
+    """*request* advertised as the Ollama MLX tag whose checkpoint path it names. The build happens
+    under the load's lease, on its own executor: a lease held by a running load must not park a
+    default-executor thread here."""
+    from hub.services.models.ollama import ollama_mlx_ref_for_path
+
+    # A leased request is authorized only once its lease verifies.
+    if getattr(request, "native_path_lease", None):
+        return request
+    ref = isinstance(request.model_path, str) and ollama_mlx_ref_for_path(request.model_path)
+    if not ref or not hasattr(request, "_advertised_id") or request._advertised_id:
+        return request
+    try:
+        public_id = ollama_model_ref_public_id(ref)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+    resolved = request.model_copy()
+    resolved._advertised_id = public_id
+    return resolved
+
+
 def _as_ollama_manifest_request(request):
     """*request* with a materialized Ollama ``.gguf`` link rewritten to the tag that produced it."""
     from hub.services.models.ollama import ollama_manifest_ref_for_path, ollama_model_ref_files
@@ -9198,18 +9232,37 @@ def _as_local_scan_folder_request(request, owner_session: bool):
     return request.model_copy(update = {"model_path": load_path, "gguf_variant": variant})
 
 
+def _names_ollama_tag(path: str) -> bool:
+    return is_ollama_manifest_ref(path) or any(
+        part in (".studio_links", "ollama_links") for part in Path(path).parts
+    )
+
+
+def _acquire_ollama_lease(model_path: str, native_path_lease):
+    """The GGUF tag's lease, or an MLX tag's whose checkpoint path *model_path* is, else None."""
+    from hub.services.models.ollama import acquire_ollama_mlx_ref, ollama_mlx_ref_for_path
+
+    if is_ollama_manifest_ref(model_path):
+        return acquire_ollama_model_ref(model_path)
+    ref = not native_path_lease and ollama_mlx_ref_for_path(model_path)
+    return acquire_ollama_mlx_ref(ref) if ref else None
+
+
 async def _lease_ollama_model_ref(
     request: LoadRequest | ValidateModelRequest, *, operation: str, stack: ExitStack
 ) -> Optional[str]:
-    if not is_ollama_manifest_ref(request.model_path):
+    path = request.model_path
+    # Only Ollama tags take the lease pool: an unrelated load must not queue behind a held lease.
+    if not isinstance(path, str) or not _names_ollama_tag(path):
         return None
     loop = asyncio.get_running_loop()
     lease_future = loop.run_in_executor(
         _OLLAMA_LEASE_EXECUTOR,
         run_as,
         current_account(),
-        acquire_ollama_model_ref,
+        _acquire_ollama_lease,
         request.model_path,
+        getattr(request, "native_path_lease", None),
     )
     try:
         lease = await asyncio.shield(lease_future)
@@ -9217,20 +9270,24 @@ async def _lease_ollama_model_ref(
 
         def _release_cancelled_lease(done):
             try:
-                done.result().release()
+                if done.result() is not None:
+                    done.result().release()
             except BaseException:
                 pass
 
         lease_future.add_done_callback(_release_cancelled_lease)
         raise
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         logger.warning("inference.ollama_materialize_failed: %s", exc)
         raise HTTPException(
             status_code = 400,
             detail = redact_native_paths(str(exc)),
         ) from exc
+    if lease is None:
+        return None
     stack.callback(lease.release)
-    return lease.path
+    # An MLX tag loads by its checkpoint path, which the request already names.
+    return lease.path if is_ollama_manifest_ref(request.model_path) else None
 
 
 def _defers_access_to_native_grant(request) -> bool:
@@ -9611,12 +9668,23 @@ def _target_accepts_request_input(
             need_image,
             gguf_companion_roots,
         )
-    if needs_video and not _target_accepts_video_input(load_path):
-        return False
-    if needs_audio and not _target_accepts_audio_input(load_path):
-        return False
-    # need_image, not needs_vision: audio sets needs_vision but needs no vision tower.
-    return _target_is_vision(load_path) if (needs_vision and need_image) else True
+    # An MLX tag's lease builds it for its current manifest, so the probes read what a load would.
+    lease = None
+    if _names_ollama_tag(load_path):
+        try:
+            lease = _acquire_ollama_lease(load_path, None)
+        except (OSError, ValueError) as exc:
+            logger.warning("inference.ollama_mlx_materialize_failed: %s", exc)
+    try:
+        if needs_video and not _target_accepts_video_input(load_path):
+            return False
+        if needs_audio and not _target_accepts_audio_input(load_path):
+            return False
+        # need_image, not needs_vision: audio sets needs_vision but needs no vision tower.
+        return _target_is_vision(load_path) if (needs_vision and need_image) else True
+    finally:
+        if lease is not None:
+            lease.release()
 
 
 def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
@@ -12389,7 +12457,11 @@ async def _maybe_auto_switch_model(
         if (
             (target_requires_vision or require_audio_input)
             and resolved is not None
-            and not await asyncio.to_thread(
+            and not await asyncio.get_running_loop().run_in_executor(
+                # Its lease wait belongs on the lease pool, never the default executor.
+                _OLLAMA_LEASE_EXECUTOR if _names_ollama_tag(target_id) else None,
+                run_as,
+                current_account(),
                 _target_accepts_request_input,
                 target_id,
                 target_is_gguf,
@@ -19679,6 +19751,7 @@ async def _load_model_impl(
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     await _require_drafter_access(request)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    request = await asyncio.to_thread(run_as, current_account(), _as_ollama_mlx_request, request)
     _requested_model_id = request.model_path
     request = await asyncio.to_thread(
         _as_local_scan_folder_request, request, _owner_session(fastapi_request)
@@ -21244,6 +21317,7 @@ async def validate_model(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    request = await asyncio.to_thread(run_as, current_account(), _as_ollama_mlx_request, request)
     # The chat flow validates before /load; offline the remote probe would refuse the id.
     request = await asyncio.to_thread(
         _as_local_scan_folder_request, request, _owner_session(fastapi_request)
@@ -30565,7 +30639,7 @@ async def _proxy_to_external_provider(
                     max_calls = (
                         payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
@@ -31265,7 +31339,7 @@ async def _proxy_to_external_provider(
                     max_calls = (
                         payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
@@ -31898,18 +31972,18 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         body = response.body_iterator
         # Opened after every refusal: a window marks any load it overlaps as shared for good.
         output_mark = npu.output_mark(upstream)
+        lines = iter_sse_lines(body)
         try:
-            async for piece in body:
-                text = piece.decode("utf-8") if isinstance(piece, bytes) else piece
-                for line in text.split("\n"):
-                    if line.startswith("data:") and '"error"' in line:
-                        line = await asyncio.to_thread(
-                            _explain_npu_error_line, npu, output_mark, line
-                        )
-                    if line.strip():
-                        yield line
+            async for line in lines:
+                if line.startswith("data:") and '"error"' in line:
+                    line = await asyncio.to_thread(_explain_npu_error_line, npu, output_mark, line)
+                if line.strip():
+                    yield line
         finally:
-            await body.aclose()
+            try:
+                await lines.aclose()
+            finally:
+                await body.aclose()
 
     if wants_stream:
 
@@ -32577,20 +32651,22 @@ def _restore_connection_tool_extras(subject: Optional[str], messages: Any) -> No
 
 async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
     recorder = _ConnectionExtrasRecorder(subject)
-    pending = ""
+    decoder = SSELineDecoder()
+
+    def _record(line: str) -> None:
+        if line.startswith("data:") and ('"tool_calls"' in line or '"extra_content"' in line):
+            try:
+                recorder.chunk(json.loads(line[5:]))
+            except ValueError:
+                pass
+
     try:
         async for chunk in chunks:
             yield chunk
-            pending += chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
-            *complete, pending = pending.split("\n")
-            for line in complete:
-                if line.startswith("data:") and (
-                    '"tool_calls"' in line or '"extra_content"' in line
-                ):
-                    try:
-                        recorder.chunk(json.loads(line[5:]))
-                    except ValueError:
-                        pass
+            for line in decoder.feed(chunk):
+                _record(line)
+        for line in decoder.flush():
+            _record(line)
     finally:
         await chunks.aclose()
 
@@ -32673,7 +32749,13 @@ async def _collect_chat_completion(lines, model: str):
             break
         if not data:
             continue
-        chunk = json.loads(data)
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            logger.warning("chat connection stream dropped an unparsable data line")
+            continue
+        if not isinstance(chunk, dict):
+            continue
         error = chunk.get("error")
         if error:
             message = error.get("message") if isinstance(error, dict) else str(error)
@@ -34226,7 +34308,7 @@ async def produce_openai_chat_completions(
                     tool_choice = payload.tool_choice,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
-                    else 25,
+                    else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                     tool_call_timeout = payload.tool_call_timeout
                     if payload.tool_call_timeout is not None
                     else 300,
@@ -36089,7 +36171,9 @@ async def produce_openai_chat_completions(
         _sf_is_gptoss = False
 
     _sf_tool_budget = (
-        payload.max_tool_calls_per_message if payload.max_tool_calls_per_message is not None else 25
+        payload.max_tool_calls_per_message
+        if payload.max_tool_calls_per_message is not None
+        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
     )
 
     # _sf_cli_policy, _sf_tools_on and _sf_mcp_allowed resolve first, so both paths share one decision.
@@ -42676,21 +42760,25 @@ class _InProcessChatStream:
     async def chunks(self):
         """Each chat chunk as a dict, or ``_LLAMA_STREAM_KEEPALIVE`` for a stall keepalive."""
         self._started = True
-        async for raw in self._iterator:
-            text = raw.decode() if isinstance(raw, bytes) else raw
-            for line in text.split("\n"):
+        lines = iter_sse_lines(self._iterator)
+        try:
+            async for line in lines:
                 if line.startswith(":"):
                     yield _LLAMA_STREAM_KEEPALIVE
                     continue
-                if not line.startswith("data: "):
+                if not line.startswith("data:"):
                     continue
-                data = line[6:]
+                data = line[5:]
+                if data.startswith(" "):
+                    data = data[1:]
                 if data.strip() == "[DONE]":
                     return
                 try:
                     yield json.loads(data)
                 except json.JSONDecodeError:
                     continue
+        finally:
+            await lines.aclose()
 
     async def next_chunk(self, chunks):
         """The next of ``chunks``, or None at its end, a Stop the source raised included."""
@@ -42799,17 +42887,16 @@ async def _responses_in_process_stream(
 
 
 async def _sse_data_lines(chunks):
-    pending = ""
+    # This wrapper owns closing chunks; iter_sse_lines does not.
+    lines = iter_sse_lines(chunks)
     try:
-        async for chunk in chunks:
-            pending += chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            *complete, pending = pending.split("\n")
-            for line in complete:
-                yield line
-        if pending:
-            yield pending
+        async for line in lines:
+            yield line
     finally:
-        await chunks.aclose()
+        try:
+            await lines.aclose()
+        finally:
+            await chunks.aclose()
 
 
 async def _responses_stream(
@@ -43136,6 +43223,8 @@ async def _responses_stream(
                     chunk_data = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(chunk_data, dict):
+                    continue
                 for event in translator.feed(chunk_data):
                     yield event
                 if translator.terminated:
@@ -43431,7 +43520,12 @@ async def _responses_from_stream(response: StreamingResponse, payload: Responses
     terminal = None
     async for line in _sse_data_lines(response.body_iterator):
         if line.startswith("data:"):
-            event = json.loads(line[5:])
+            try:
+                event = json.loads(line[5:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
             if event.get("type") in (
                 "response.completed",
                 "response.incomplete",
@@ -45005,7 +45099,7 @@ def _anthropic_chat_fields(
             sandbox_level = payload.sandbox_level,
             bypass_permissions = bool(payload.bypass_permissions),
             rag_scope = getattr(payload, "rag_scope", None),
-            max_tool_calls_per_message = 25,
+            max_tool_calls_per_message = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
             tool_call_timeout = 300,
             auto_heal_tool_calls = True,
         )
@@ -45257,7 +45351,12 @@ async def _anthropic_events_from_openai_sse(
                 break
             if not data:
                 continue
-            parsed = json.loads(data)
+            try:
+                parsed = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
             if parsed.get("error"):
                 yield _anthropic_connection_error_event(parsed["error"])
                 return
@@ -46851,7 +46950,7 @@ async def anthropic_messages(
                 stop = stop,
                 seed = payload.seed,
                 cancel_event = cancel_event,
-                max_tool_iterations = 25,
+                max_tool_iterations = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                 on_conversation_grew = _anthropic_recost,
                 auto_heal_tool_calls = True,
                 nudge_tool_calls = payload.nudge_tool_calls,
@@ -48163,14 +48262,16 @@ async def _anthropic_passthrough_stream(
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
-                if not raw_line or not raw_line.startswith("data: "):
+                if not raw_line or not raw_line.startswith("data:"):
                     continue
-                data_str = raw_line[6:]
+                data_str = raw_line[5:]
                 if data_str.strip() == "[DONE]":
                     break
                 try:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(chunk, dict):
                     continue
                 lines, failed = _anthropic_passthrough_chunk_lines(
                     emitter, chunk, request, disable_parallel_tool_use
@@ -48840,7 +48941,12 @@ def _openai_messages_for_gguf_chat(
         _splice_image_into_last_user(messages, image_part)
     has_image = _normalize_anthropic_openai_images(messages, is_vision)
     return (
-        promote_mcp_history_images(messages, vision = is_vision, promoted_out = promoted_out),
+        promote_mcp_history_images(
+            messages,
+            vision = is_vision,
+            promoted_out = promoted_out,
+            limit = None if _mcp_replay_uncapped(payload) else _MCP_MAX_TOTAL_MODEL_IMAGES,
+        ),
         has_image,
     )
 

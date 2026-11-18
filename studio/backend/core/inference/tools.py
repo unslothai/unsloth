@@ -6920,8 +6920,9 @@ _TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal", "edit_file"})
 def has_text_only_provisional_card(name: str) -> bool:
     """True when streaming this tool's arguments before approval shows only text. A large code
     payload takes a minute or more to write, and suppressing the card until the call completes
-    leaves the chat blank the whole time. Nothing runs before the decision either way."""
-    return name in _TEXT_PREVIEW_TOOLS
+    leaves the chat blank the whole time. Nothing runs before the decision either way. MCP calls
+    qualify too: an editor script (Unreal, Blender, Godot) is just as long, and the card is text."""
+    return name in _TEXT_PREVIEW_TOOLS or name.startswith(MCP_TOOL_PREFIX)
 
 
 def _web_search_fetches_url(name: str, arguments: dict) -> bool:

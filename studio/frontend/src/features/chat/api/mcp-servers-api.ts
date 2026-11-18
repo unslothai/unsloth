@@ -117,6 +117,16 @@ export function testEditorMcp(
   return mcpRequest(`/builtins/${id}/test`, { method: "POST", body: payload });
 }
 
+/** Copies Unsloth's level-save toolset into an Unreal project; loads on the next editor start. */
+export function installUnrealTools(
+  projectPath: string,
+): Promise<{ files: string[]; restart_required: boolean }> {
+  return mcpRequest("/builtins/unreal/install-tools", {
+    method: "POST",
+    body: { project_path: projectPath },
+  });
+}
+
 export interface McpServerImportResult {
   created: McpServerConfig[];
   skipped: string[];

@@ -48,8 +48,10 @@ export function chatLocalModelOptions(
       continue;
     }
     seen.add(model.id);
+    // An Ollama tag is one GGUF file unless it is in Ollama's MLX format.
     const isDirectGguf =
-      model.source === "ollama" || model.path.toLowerCase().endsWith(".gguf");
+      (model.source === "ollama" && model.model_format !== "safetensors") ||
+      model.path.toLowerCase().endsWith(".gguf");
     options.push({
       id: model.id,
       name: model.display_name,

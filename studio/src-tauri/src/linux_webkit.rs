@@ -685,6 +685,21 @@ pub fn old_nvidia_driver_warning(branch: Option<u32>, wayland_session: bool) -> 
     })
 }
 
+/// Without compositing WebKit has no threaded scrolling, so its wheel animation runs on the web
+/// process main thread between slow CPU paints: nothing moves, then a large jump (#18259).
+/// `policy_never` is the view's hardware-acceleration-policy; on 2.54+ it stays ALWAYS when only
+/// compositing is off, so the variable is read too.
+pub fn smooth_scrolling_enabled(policy_never: bool) -> bool {
+    smooth_scrolling_with(
+        policy_never,
+        std::env::var_os(DISABLE_COMPOSITING).as_deref(),
+    )
+}
+
+fn smooth_scrolling_with(policy_never: bool, disable_compositing: Option<&OsStr>) -> bool {
+    !policy_never && !disable_compositing.is_some_and(compositing_disabled_by)
+}
+
 /// First line of the NVIDIA kernel module banner, which names its version and flavour.
 pub fn nvidia_driver_version_line() -> Option<String> {
     let text = std::fs::read_to_string(NVIDIA_DRIVER_VERSION_PATH).ok()?;
@@ -2571,5 +2586,20 @@ mod tests {
             ),
             RenderingPlan::PreserveEnvironment
         );
+    }
+
+    #[test]
+    fn smooth_scrolling_is_off_only_without_compositing() {
+        let off = |value: &str| Some(OsString::from(value));
+        assert!(smooth_scrolling_with(false, None));
+        assert!(smooth_scrolling_with(false, off("0").as_deref()));
+        assert!(smooth_scrolling_with(false, off("").as_deref()));
+        assert!(!smooth_scrolling_with(true, None));
+        for value in ["1", "00", "false"] {
+            assert!(
+                !smooth_scrolling_with(false, off(value).as_deref()),
+                "{value}"
+            );
+        }
     }
 }
