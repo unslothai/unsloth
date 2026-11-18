@@ -16,7 +16,9 @@ import { gpuFieldsSignature } from "./config-signature";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
+  normalizeEngramPrecision,
   normalizeMaxSeqLength,
+  sameEngramPrecision,
 } from "./per-model-config";
 
 export { gpuFieldsSignature };
@@ -77,6 +79,7 @@ export function applyPerModelConfigToRuntime(
     mlxKvQuant: config.mlxKvQuant ?? null,
     mlxInt8Prefill: config.mlxInt8Prefill ?? false,
     mlxAnePrefill: config.mlxAnePrefill ?? false,
+    mlxFastVerify: config.mlxFastVerify ?? false,
     mlxPleOffload: config.mlxPleOffload ?? null,
     mlxExpertOffload: config.mlxExpertOffload ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -103,6 +106,9 @@ export function applyPerModelConfigToRuntime(
     disableVision: options.isDiffusion
       ? false
       : (config.disableVision ?? false),
+    engramPrecision: options.isDiffusion
+      ? null
+      : normalizeEngramPrecision(config.engramPrecision),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is a standing
     // preference so an absent mode falls back to the persisted one. The per-GPU split is restored
@@ -153,8 +159,12 @@ export function currentRuntimePerModelConfig(
     mlxKvQuant: s.mlxKvQuant ?? null,
     mlxInt8Prefill: s.mlxInt8Prefill ?? false,
     mlxAnePrefill: s.mlxAnePrefill ?? false,
+    mlxFastVerify: s.mlxFastVerify ?? false,
     mlxPleOffload: s.mlxPleOffload ?? null,
     mlxExpertOffload: s.mlxExpertOffload ?? null,
+    npuPowerMode: s.npuPowerMode ?? null,
+    npuPrefillChunkLen: s.npuPrefillChunkLen ?? null,
+    npuImgPreResize: s.npuImgPreResize ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -175,6 +185,7 @@ export function currentRuntimePerModelConfig(
     cacheRam: s.cacheRam ?? null,
     tensorParallel: s.tensorParallel ?? false,
     disableVision: s.disableVision ?? false,
+    engramPrecision: s.engramPrecision ?? null,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous model's GPU Memory
     // settings back, split included.
@@ -212,8 +223,12 @@ export function perModelConfigsEqual(
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
     Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
     Boolean(a.mlxAnePrefill) === Boolean(b.mlxAnePrefill) &&
+    Boolean(a.mlxFastVerify) === Boolean(b.mlxFastVerify) &&
     (a.mlxPleOffload ?? null) === (b.mlxPleOffload ?? null) &&
     (a.mlxExpertOffload ?? null) === (b.mlxExpertOffload ?? null) &&
+    (a.npuPowerMode ?? null) === (b.npuPowerMode ?? null) &&
+    (a.npuPrefillChunkLen ?? null) === (b.npuPrefillChunkLen ?? null) &&
+    (a.npuImgPreResize ?? null) === (b.npuImgPreResize ?? null) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
@@ -228,6 +243,7 @@ export function perModelConfigsEqual(
     (a.cacheRam ?? null) === (b.cacheRam ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     Boolean(a.disableVision) === Boolean(b.disableVision) &&
+    sameEngramPrecision(a.engramPrecision, b.engramPrecision) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
     extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&

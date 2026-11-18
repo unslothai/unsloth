@@ -32,6 +32,8 @@ export interface AudioModelContext {
   voiceOption?: string | null;
   /** Request inputs a strict model reads; null when it reads any. */
   requestInputs?: readonly string[] | null;
+  /** The clone path reads a voice or style description beside the reference. */
+  cloneDescription?: boolean;
 }
 
 export interface AudioRunPatch {

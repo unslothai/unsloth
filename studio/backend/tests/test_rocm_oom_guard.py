@@ -385,9 +385,7 @@ class TestAllocatorDenominator:
 
 
 class TestMemFractionEnvOverride:
-    """UNSLOTH_ROCM_MEM_FRACTION is the escape hatch for hosts the formula
-    gets wrong. Bad values are ignored, never fatal -- a typo in an env var
-    must not take down a training run."""
+    """UNSLOTH_ROCM_MEM_FRACTION overrides the computed fraction; bad values are ignored, never fatal."""
 
     def test_override_wins_over_computed(self) -> None:
         assert _rocm_memory_fraction(128 * GIB, True, "linux", "0.95") == 0.95

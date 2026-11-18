@@ -15,6 +15,7 @@ export function SettingsRow({
   label,
   description,
   hint,
+  badge,
   icon,
   iconAlign = "center",
   children,
@@ -27,6 +28,7 @@ export function SettingsRow({
   description?: ReactNode;
   /** Shown on hover; plain text because it doubles as the trigger's aria-label. */
   hint?: string;
+  badge?: ReactNode;
   icon?: ReactNode;
   iconAlign?: "center" | "top";
   children?: ReactNode;
@@ -56,6 +58,7 @@ export function SettingsRow({
         <div className="flex min-w-0 w-full max-w-[calc(32rem*var(--ui-space-scale,1))] flex-col gap-0.5">
           <span className="text-sm font-medium text-foreground">
             {label}
+            {badge ? <span className="ml-1.5 inline-flex align-middle">{badge}</span> : null}
             {hint ? (
               <Tooltip>
                 <TooltipTrigger asChild={true}>

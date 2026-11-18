@@ -14,11 +14,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   CheckmarkCircle02Icon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Sparkles } from "lucide-react";
 
 const ROLE_LABELS: Record<string, string> = {
   system: "System",
@@ -120,7 +120,7 @@ export function DatasetMappingCard({
           )}
         >
           <HugeiconsIcon
-            icon={mappingOk ? CheckmarkCircle02Icon : AlertCircleIcon}
+            icon={mappingOk ? CheckmarkCircle02Icon : Alert02Icon}
             className={cn(
               "size-4",
               mappingOk
@@ -189,7 +189,7 @@ export function DatasetMappingCard({
                   </>
                 ) : (
                   <>
-                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                    <HugeiconsIcon icon={SparklesIcon} className="mr-1.5 h-3.5 w-3.5" />
                     AI Assist
                     <Badge
                       variant="outline"
@@ -210,7 +210,7 @@ export function DatasetMappingCard({
           {advisorNotification && (
             <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-xs text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 space-y-2">
               <div className="flex items-start gap-2">
-                <Sparkles className="size-3.5 shrink-0 mt-0.5" />
+                <HugeiconsIcon icon={SparklesIcon} className="size-3.5 shrink-0 mt-0.5" />
                 <span>{advisorNotification}</span>
               </div>
               {advisorSystemPrompt && (

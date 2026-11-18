@@ -80,10 +80,15 @@ test("only verified model-copy rows expose Clear and retain individual locations
       "@/i18n": { useT: () => (key: string) => key },
       "@/lib/toast": {},
       "@hugeicons/core-free-icons": {},
+      "@/lib/hugeicons-derived": {},
       "@/lib/folder-icons": {},
       "@hugeicons/react": {},
       "../api/caches": { loadCacheBreakdown: async () => copies },
       "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+      "./npu-model-clear": {
+        NpuModelClear: "NpuModelClear",
+        refreshNpuCatalogIfListed: () => undefined,
+      },
       "./storage-overview": {},
     },
   );
@@ -173,6 +178,7 @@ test("HF folders are requested only on expansion and stale walks cannot replace 
       "@/i18n": { useT: () => (key: string) => key },
       "@/lib/toast": {},
       "@hugeicons/core-free-icons": {},
+      "@/lib/hugeicons-derived": {},
       "@/lib/folder-icons": {},
       "@hugeicons/react": {},
       "../api/caches": {
@@ -180,6 +186,10 @@ test("HF folders are requested only on expansion and stale walks cannot replace 
           new Promise((resolve) => requests.push(resolve)),
       },
       "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+      "./npu-model-clear": {
+        NpuModelClear: "NpuModelClear",
+        refreshNpuCatalogIfListed: () => undefined,
+      },
       "./storage-overview": {},
     },
   );

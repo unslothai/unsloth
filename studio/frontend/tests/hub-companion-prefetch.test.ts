@@ -169,6 +169,13 @@ test("a companion-only inventory row never gets the green On device dot", () => 
   const rows = readSrc("features/hub/catalog/models-catalog-rows.tsx");
   assert.match(
     rows,
-    /<PartialStatusDot downloading=\{downloading\} \/>\s*\) : row\.companionPrefetch \? null : \(\s*<StatusDot tone="success" label="On device" \/>/,
+    /<PartialStatusDot downloading=\{downloading\} \/>\s*\) : row\.companionPrefetch \? \(\s*<StatusDot tone="asset" label="Shared assets" \/>\s*\) : \(\s*<StatusDot tone="success" label="On device" \/>/,
   );
+});
+
+test("arming a row on keyboard focus puts focus back on the remounted control", () => {
+  const rows = readSrc("features/hub/catalog/models-catalog-rows.tsx");
+  assert.match(rows, /onFocusCapture=\{armFromFocus\}/);
+  assert.match(rows, /refocusIndex\.current = buttons\.indexOf\(/);
+  assert.match(rows, /querySelectorAll\("button"\)\[refocusIndex\.current\]\?\.focus\(\)/);
 });

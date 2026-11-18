@@ -66,6 +66,8 @@ def _install_wrapped_trainer_init():
         "_replan_auto_offload_safely": noop,
         "_block_swap_for_trainer_backend": noop,
         "_enable_ddp_batched_grad_copy": noop,
+        # _utils.py's module logger; the wrapper warns through it when a best-effort step fails.
+        "logger": types.SimpleNamespace(warning_once = noop, warning = noop, info = noop, debug = noop),
     }
     # Any other module-level helper the wrapper calls is stubbed too, so a new one (#14404 added
     # _size_auto_checkpoint_skip_for_trainer) cannot fail every rank with a NameError here.

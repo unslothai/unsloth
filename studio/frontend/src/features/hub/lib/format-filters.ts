@@ -42,18 +42,40 @@ export function matchesFormat(
   return normalized === "safetensors" || normalized === "checkpoint";
 }
 
+// Mirrors the backend's looks_like_mlx_repo.
+const MLX_NAME_RE = /(?:^|[-_.])mlx(?:$|[-_.])/i;
+const MLX_OWNER_PREFIX = "mlx-community/";
+// Callers pass a filesystem path, which may be Windows.
+const PATH_SEP_RE = /[\\/]/;
+
+/** The model card's own marking. The Hub never inspects weights, so many MLX uploads lack it. */
+export function hasMlxCardTag(model: {
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+}): boolean {
+  return (
+    model.libraryName?.toLowerCase() === "mlx" ||
+    Boolean(model.tags?.some((tag) => tag.toLowerCase() === "mlx"))
+  );
+}
+
+/** MLX by name, or by `hintedIsMlx` (pass hasMlxCardTag); either alone misses real MLX repos. */
+export function isMlxId(id: string, hintedIsMlx?: boolean): boolean {
+  if (hintedIsMlx) return true;
+  const trimmed = id.trim();
+  if (trimmed.toLowerCase().startsWith(MLX_OWNER_PREFIX)) return true;
+  const leaf = trimmed.split(PATH_SEP_RE).filter(Boolean).at(-1) ?? trimmed;
+  return MLX_NAME_RE.test(leaf);
+}
+
 export function detectResultFormat(result: {
+  id: string;
   isGguf: boolean;
   tags?: string[];
   libraryName?: string;
 }): FormatFilterModelFormat {
   if (result.isGguf) return "gguf";
-  if (
-    result.libraryName?.toLowerCase() === "mlx" ||
-    result.tags?.some((tag) => tag.toLowerCase() === "mlx")
-  ) {
-    return "mlx";
-  }
+  if (isMlxId(result.id, hasMlxCardTag(result))) return "mlx";
   return "safetensors";
 }
 
@@ -142,4 +164,19 @@ export function isUnslothFinetunable(result: {
   if (NON_FINETUNABLE_NAME.test(result.id)) return false;
   const quant = result.quantMethod?.toLowerCase();
   return !quant || FINETUNABLE_QUANT.has(quant);
+}
+
+/** A shared ?npu= link opens on another filter; true while it still has to switch to NPU. */
+export function npuLinkNeedsFormat({
+  npu,
+  formatFilter,
+  modelsMode,
+  npuSupported,
+}: {
+  npu: string | null;
+  formatFilter: FormatFilterValue;
+  modelsMode: boolean;
+  npuSupported: boolean;
+}): boolean {
+  return npu !== null && formatFilter !== "npu" && modelsMode && npuSupported;
 }

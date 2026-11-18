@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { HUB_CAPABILITY_FILTERS, type HubCapabilityFilter } from "@/features/hub";
+import {
+  HUB_CAPABILITY_FILTERS,
+  type HubCapabilityFilter,
+} from "@/features/hub/lib/model-capabilities";
 import { hubAudioTaskSearch } from "@/lib/hub-audio-task";
 import type { PipelineType } from "@huggingface/hub";
 import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
@@ -18,6 +21,8 @@ export interface ModelsSearch {
   tab?: "discover" | "downloaded";
   model?: string;
   file?: string;
+  /** The NPU catalog's selected model id; separate from model, which names a Hub repo. */
+  npu?: string;
 
   intent?: number;
   section?: "trending" | "latest" | "finetune";
@@ -37,6 +42,8 @@ export const Route = createRoute({
     if (raw === "discover" || raw === "downloaded") next.tab = raw;
     const model = search.model;
     if (typeof model === "string" && model.length > 0) next.model = model;
+    const npu = search.npu;
+    if (typeof npu === "string" && npu.length > 0) next.npu = npu;
     const file = search.file;
     if (next.model && typeof file === "string" && file.length > 0)
       next.file = file;

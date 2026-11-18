@@ -9,7 +9,12 @@ import {
   parseGeminiContinuationReplayTurns,
   parseGeminiThoughtReplayParts,
 } from "../gemini-thought-replay.ts";
+import {
+  markLiteralThinkTags,
+  unmarkLiteralThinkTags,
+} from "./parse-assistant-content.ts";
 import type { ProviderCompactionContentPart } from "../types/api";
+import { type PriorPassTiming, readPriorPassTiming } from "./continued-timing.ts";
 import { providerCompactionPart } from "./provider-compaction.ts";
 
 /** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation is re-sent
@@ -156,9 +161,12 @@ export function stripContinuationOverlap(
   if (partial.length === 0 || continuation.length === 0) {
     return continuation;
   }
+  // The seed may carry literal-tag marks the replayed text lacks; marking keeps lengths, so cut the original.
+  const seed = unmarkLiteralThinkTags(partial);
+  const replay = unmarkLiteralThinkTags(continuation);
   const limit = Math.min(partial.length, continuation.length, MAX_OVERLAP);
   for (let size = limit; size >= MIN_OVERLAP; size -= 1) {
-    if (continuation.startsWith(partial.slice(partial.length - size))) {
+    if (replay.startsWith(seed.slice(seed.length - size))) {
       return continuation.slice(size);
     }
   }
@@ -166,11 +174,11 @@ export function stripContinuationOverlap(
 }
 
 export function isRestart(partial: string, continuation: string): boolean {
-  const head = partial.trimStart().slice(0, RESTART_PROBE);
+  const head = unmarkLiteralThinkTags(partial).trimStart().slice(0, RESTART_PROBE);
   if (head.length < RESTART_PROBE) {
     return false;
   }
-  return continuation.trimStart().startsWith(head);
+  return unmarkLiteralThinkTags(continuation).trimStart().startsWith(head);
 }
 
 export function joinContinuation(
@@ -288,10 +296,20 @@ export function carriedThought(
     : "";
 }
 
-export function continuationSeed(partial: string, thought: string): string {
+/** Both come from saved parts, so their tags are literal; the seed's trailing fragment may still
+ * open an inline tag unless the turn's reasoning arrived split out. */
+export function continuationSeed(
+  partial: string,
+  thought: string,
+  splitReasoningSeen = false,
+): string {
+  partial = markLiteralThinkTags(partial, { pending: splitReasoningSeen });
   if (!thought) {
     return partial;
   }
+  thought = markLiteralThinkTags(thought, {
+    pending: Boolean(partial) || splitReasoningSeen,
+  });
   return partial ? `<think>${thought}</think>${partial}` : `<think>${thought}`;
 }
 
@@ -353,6 +371,8 @@ export type ContinuationRequest = {
   partial: string;
   reasoning?: string;
   reasoningDuration?: number;
+  /** The resumed reply's reasoning arrived split out, so tags in its continuation are literal. */
+  splitReasoningSeen?: boolean;
   /** The sibling run drops the original message, so replaying this keeps history signed. */
   thoughtSignature?: string;
   /** Signed Gemini thought-summary parts from the turn being resumed. */
@@ -366,6 +386,7 @@ export type ContinuationRequest = {
   providerCompactionProviderType?: string;
   providerCompactionModelId?: string;
   providerCompactionConnectionKey?: string;
+  priorTiming?: PriorPassTiming;
 };
 
 type ProviderCompactionContinuationFields = Pick<
@@ -434,6 +455,7 @@ export function readContinuationRequest(
         partial?: unknown;
         reasoning?: unknown;
         reasoningDuration?: unknown;
+        splitReasoningSeen?: unknown;
         thoughtSignature?: unknown;
         thoughtParts?: unknown;
         answerParts?: unknown;
@@ -443,6 +465,7 @@ export function readContinuationRequest(
         providerCompactionProviderType?: unknown;
         providerCompactionModelId?: unknown;
         providerCompactionConnectionKey?: unknown;
+        priorTiming?: unknown;
       }
     | undefined;
   const partial = typeof request?.partial === "string" ? request.partial : "";
@@ -466,6 +489,7 @@ export function readContinuationRequest(
     return null;
   }
   const duration = request?.reasoningDuration;
+  const priorTiming = readPriorPassTiming(request?.priorTiming);
   return {
     partial,
     ...(reasoning ? { reasoning } : {}),
@@ -475,6 +499,7 @@ export function readContinuationRequest(
     duration >= 0
       ? { reasoningDuration: duration }
       : {}),
+    ...(request?.splitReasoningSeen === true ? { splitReasoningSeen: true } : {}),
     ...(typeof signature === "string" && signature
       ? { thoughtSignature: signature }
       : {}),
@@ -482,6 +507,7 @@ export function readContinuationRequest(
     ...(answerParts.length > 0 ? { answerParts } : {}),
     ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
     ...providerCompactionFields(request),
+    ...(priorTiming ? { priorTiming } : {}),
   };
 }
 

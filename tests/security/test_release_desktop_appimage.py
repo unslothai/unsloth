@@ -337,6 +337,7 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
         "libwebkit2gtkinjectedbundle.so",
     ):
         (runtime / name).touch()
+    (runtime / "libayatana-appindicator3.so.1").symlink_to("libappindicator3.so.1")
 
     gio_modules = runtime / "gio/modules"
     gio_modules.mkdir(parents = True)
@@ -441,6 +442,30 @@ def test_complete_appimage_verifier_requires_the_bundled_media_pipeline(tmp_path
     )
     assert result.returncode != 0
     assert "gst-plugin-scanner" in result.stderr
+
+
+def test_complete_appimage_verifier_keeps_the_tray_loader_off_the_host_ayatana(tmp_path):
+    # libappindicator-sys tries the Ayatana name first, so a bundle without it loads the host's.
+    unaliased = _fake_complete_appdir(tmp_path / "unaliased")
+    (unaliased / "usr/lib/libayatana-appindicator3.so.1").unlink()
+    result = _verify(unaliased)
+    assert result.returncode != 0
+    assert "libayatana-appindicator3.so.1" in result.stderr
+
+    dangling = _fake_complete_appdir(tmp_path / "dangling")
+    alias = dangling / "usr/lib/libayatana-appindicator3.so.1"
+    alias.unlink()
+    alias.symlink_to("missing.so.1")
+    result = _verify(dangling)
+    assert result.returncode != 0
+    assert "libayatana-appindicator3.so.1" in result.stderr
+
+    real = _fake_complete_appdir(tmp_path / "real")
+    alias = real / "usr/lib/libayatana-appindicator3.so.1"
+    alias.unlink()
+    alias.touch()
+    result = _verify(real)
+    assert result.returncode == 0, result.stderr
 
 
 def test_complete_appimage_verifier_rejects_global_library_path_and_missing_origin_runpath(
@@ -623,6 +648,62 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     assert "@APPDIR@" not in materialized.read_text(encoding = "utf-8")
 
 
+_BRIDGE_MARKER = "UNSLOTH_APPIMAGE_NO_AT_BRIDGE"
+
+
+def _bridge_env(run):
+    return {key: run["env"][key] for key in ("NO_AT_BRIDGE", _BRIDGE_MARKER) if key in run["env"]}
+
+
+@pytest.mark.parametrize("desktop", ["KDE", "ubuntu:KDE"])
+def test_apprun_turns_the_bundled_atk_bridge_off_on_kde(tmp_path, desktop):
+    """The bundled web process aborts on Plasma with AT-SPI active (#15260)."""
+
+    run = _launch(_apprun_mount(tmp_path), tmp_path, XDG_CURRENT_DESKTOP = desktop)
+    assert _bridge_env(run) == {"NO_AT_BRIDGE": "1", _BRIDGE_MARKER: "1"}
+    assert "set NO_AT_BRIDGE=0 to keep it" in run["stderr"]
+
+
+@pytest.mark.parametrize("desktop", [None, "", "GNOME", "ubuntu:GNOME", "XFCE", "KDEX"])
+def test_apprun_leaves_the_atk_bridge_alone_off_kde(tmp_path, desktop):
+    run = _launch(_apprun_mount(tmp_path), tmp_path, XDG_CURRENT_DESKTOP = desktop)
+    assert _bridge_env(run) == {}
+
+
+@pytest.mark.parametrize("value", ["0", "", "1"])
+def test_apprun_keeps_an_operator_choice_of_atk_bridge(tmp_path, value):
+    """NO_AT_BRIDGE=0 is how a screen reader user keeps the bridge; any set value stands."""
+
+    run = _launch(_apprun_mount(tmp_path), tmp_path, XDG_CURRENT_DESKTOP = "KDE", NO_AT_BRIDGE = value)
+    assert _bridge_env(run) == {"NO_AT_BRIDGE": value}
+    assert "atk-bridge off" not in run["stderr"]
+
+
+def test_apprun_host_webkit_keeps_the_atk_bridge_and_drops_a_bundled_parents_default(tmp_path):
+    """Host WebKitGTK uses the host atk-bridge; a relaunch from a bundled parent re-decides."""
+
+    appdir = _apprun_mount(tmp_path, host_copy = True, hooked = True)
+    run = _launch(appdir, tmp_path, XDG_CURRENT_DESKTOP = "KDE")
+    assert run["exe"] == "host"
+    assert _bridge_env(run) == {}
+    relaunch = _launch(
+        appdir, tmp_path, XDG_CURRENT_DESKTOP = "KDE", NO_AT_BRIDGE = "1", **{_BRIDGE_MARKER: "1"}
+    )
+    assert relaunch["exe"] == "host"
+    assert _bridge_env(relaunch) == {}
+    operator = _launch(appdir, tmp_path, XDG_CURRENT_DESKTOP = "KDE", NO_AT_BRIDGE = "1")
+    assert _bridge_env(operator) == {"NO_AT_BRIDGE": "1"}
+
+
+def test_apprun_bundled_relaunch_redecides_the_atk_bridge_default(tmp_path):
+    appdir = _apprun_mount(tmp_path)
+    inherited = {"NO_AT_BRIDGE": "1", _BRIDGE_MARKER: "1"}
+    assert _bridge_env(_launch(appdir, tmp_path, XDG_CURRENT_DESKTOP = "KDE", **inherited)) == (
+        inherited
+    )
+    assert _bridge_env(_launch(appdir, tmp_path, XDG_CURRENT_DESKTOP = "GNOME", **inherited)) == {}
+
+
 def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
     """A later launch preserves live-mount policies and removes departed ones."""
 
@@ -778,7 +859,7 @@ def test_managed_appimage_children_preserve_host_library_paths():
         source_root / "install.rs": ("scrub_appimage_python_env(&mut cmd)", 1),
         source_root / "preflight/managed.rs": ("scrub_appimage_python_env_tokio(&mut cmd)", 2),
         # One spawn path plus the unit tests that live in the same file.
-        source_root / "process.rs": ("scrub_appimage_python_env(&mut cmd)", 4),
+        source_root / "process.rs": ("scrub_appimage_python_env(&mut cmd)", 5),
         source_root / "update.rs": ("scrub_appimage_python_env(&mut cmd)", 1),
     }
     assert "scrub_appimage_library_path" in process_source
@@ -1292,6 +1373,43 @@ def test_finalizer_adds_an_identical_host_copy_and_stays_idempotent(tmp_path):
     result = subprocess.run([finalizer, appdir], check = False, capture_output = True, text = True)
     assert result.returncode != 0
     assert "usr/bin/lib" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("patchelf") is None, reason = "the finalizer needs patchelf")
+def test_finalizer_aliases_the_ayatana_name_to_the_bundled_tray_library(tmp_path):
+    finalizer = _finalizer_tools(tmp_path)
+
+    def appdir_with(name: str) -> Path:
+        appdir = tmp_path / name
+        binary = appdir / "usr/bin/unsloth-studio"
+        binary.parent.mkdir(parents = True)
+        _compile_fixture_elf(binary, origin_runpath = False)
+        (appdir / "usr/lib").mkdir()
+        return appdir
+
+    bundled = appdir_with("bundled")
+    (bundled / "usr/lib/libappindicator3.so.1").write_bytes(b"legacy appindicator")
+    alias = bundled / "usr/lib/libayatana-appindicator3.so.1"
+    # linuxdeploy runs the finalizer once from each of the gtk and gstreamer plugins.
+    for _ in range(2):
+        subprocess.run([finalizer, bundled], check = True, capture_output = True, text = True)
+        assert alias.is_symlink()
+        assert os.readlink(alias) == "libappindicator3.so.1"
+        assert alias.read_bytes() == b"legacy appindicator"
+    # Host mode's $ORIGIN/../lib reaches no bundled library, so it still loads the host's tray.
+    assert not (bundled / "usr/bin/lib").exists()
+
+    ayatana = appdir_with("ayatana")
+    (ayatana / "usr/lib/libappindicator3.so.1").write_bytes(b"legacy appindicator")
+    (ayatana / "usr/lib/libayatana-appindicator3.so.1").write_bytes(b"real ayatana")
+    subprocess.run([finalizer, ayatana], check = True, capture_output = True, text = True)
+    real = ayatana / "usr/lib/libayatana-appindicator3.so.1"
+    assert not real.is_symlink()
+    assert real.read_bytes() == b"real ayatana"
+
+    no_tray = appdir_with("no-tray")
+    subprocess.run([finalizer, no_tray], check = True, capture_output = True, text = True)
+    assert not os.path.lexists(no_tray / "usr/lib/libayatana-appindicator3.so.1")
 
 
 def test_apprun_never_probes_without_a_timeout(tmp_path):

@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 
 _SOURCE = Path(__file__).parents[2] / "unsloth" / "kernels" / "utils.py"
-_HELPERS = ("_packed_base", "_is_packed_state", "_base_quant_state")
+_HELPERS = ("_packed_base", "_is_packed_state", "_base_quant_state", "_fp8_lora_state")
 
 
 def _load_function(name, fsdp2_qlora_prepared = True):

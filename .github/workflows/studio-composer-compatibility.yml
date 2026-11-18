@@ -24,6 +24,10 @@ on:
       - '.github/workflows/studio-composer-compatibility.yml'
       - 'scripts/lockfile_supply_chain_audit.py'
       - '.github/scripts/retry-with-apt-lock.sh'
+      - 'tests/studio/playwright_long_thread_gate.py'
+      - 'tests/studio/_css_culprit.py'
+      - 'studio/frontend/smoke-thread-weight*'
+      - 'studio/frontend/vite.long-thread.config.ts'
   workflow_dispatch:
 
 permissions:
@@ -74,6 +78,28 @@ jobs:
       - name: Install frontend dependencies without lifecycle scripts
         working-directory: studio/frontend
         run: npm ci --ignore-scripts --no-fund --no-audit
+      # Runs first in every frontend lane, so a long-chat typing regression fails within minutes
+      # instead of after the other suites. Ratio, not timing: Chromium's selector-matching time per
+      # keystroke in a 200-turn chat over a 40-turn chat (production build, real app ancestors), plus
+      # a :has() budget in the large one; a slow runner cannot fail it. A failure prints ms per key,
+      # the selectors responsible and the CSS they probably come from.
+      - name: Chromium for the long-chat typing gate
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        timeout-minutes: 10
+        env:
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          python -m pip install 'playwright>=1.45,<2'
+          python -m playwright install chromium
+          if [ "$RUNNER_OS" = Linux ] && ! python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); p.stop()"; then
+            bash .github/scripts/retry-with-apt-lock.sh python -m playwright install-deps chromium
+          fi
+      - name: Browser gate for long-chat typing cost
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        timeout-minutes: 15
+        run: python tests/studio/playwright_long_thread_gate.py
       - name: Create isolated test environment
         run: |
           # Chrome/Edge abort when their TMPDIR socket path exceeds 107 bytes; RUNNER_TEMP is short.

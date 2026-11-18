@@ -1122,7 +1122,7 @@ mod tests {
                     let state = state.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(Duration::from_millis(200));
-                        std::fs::write(state.join("cleaned"), signal.to_string()).unwrap();
+                        publish(&state.join("cleaned"), &signal.to_string());
                         std::process::exit(128 + signal);
                     });
                 }
@@ -1141,11 +1141,7 @@ mod tests {
             note_window_will_show();
             // SAFETY: getpgrp only reads the calling process's group ID.
             let pgid = unsafe { libc::getpgrp() };
-            std::fs::write(
-                state.join("ready"),
-                format!("{} {pgid}", std::process::id()),
-            )
-            .unwrap();
+            publish(&state.join("ready"), &format!("{} {pgid}", std::process::id()));
             for signal in signals.forever() {
                 on_signal(signal);
             }
@@ -1159,6 +1155,13 @@ mod tests {
         }
         // An uncatchable group signal must not strand the app in its separate group.
         check_signal(libc::SIGKILL, true, true);
+
+        // The parent polls these files, so a plain write can be read while still empty.
+        fn publish(path: &std::path::Path, contents: &str) {
+            let staged = path.with_extension("tmp");
+            std::fs::write(&staged, contents).unwrap();
+            std::fs::rename(staged, path).unwrap();
+        }
 
         fn check_signal(signal: libc::c_int, group: bool, parent_death: bool) {
             let state = tempfile::tempdir().unwrap();

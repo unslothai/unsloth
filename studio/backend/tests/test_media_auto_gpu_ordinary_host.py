@@ -19,6 +19,10 @@ from core.inference import diffusion_device as dd
 from utils.hardware import hardware as hw
 from utils.hardware.hardware import DeviceType
 
+from utils.hardware import nvidia as _nvidia
+
+_REAL_GET_CUDA_DEVICE_INFO = getattr(_nvidia, "get_cuda_device_info", None)
+
 
 def _dev(index, total, used):
     return {"index": index, "vram_total_gb": total, "vram_used_gb": used}
@@ -530,9 +534,16 @@ def test_fastest_first_mask_with_an_integrated_card_keeps_torch(monkeypatch):
 @pytest.mark.parametrize(
     "child_out, expected",
     [
-        ("0000:3b:00.0 0\n0000:1a:00.0 0\n", [1, 0]),
-        ("0000:3b:00.0 0\n0000:1a:00.0 1\n", []),  # integrated card mapped
+        (
+            "0000:3b:00.0 0 85899345920 NVIDIA H100\n0000:1a:00.0 0 85899345920 NVIDIA H100\n",
+            [1, 0],
+        ),
+        (
+            "0000:3b:00.0 0 85899345920 NVIDIA H100\n0000:1a:00.0 1 128000000000 NVIDIA GB10\n",
+            [],
+        ),  # integrated card mapped
         ("0000:3b:00.0\n", None),  # no attribute: unreadable
+        ("- 0 85899345920 NVIDIA H100\n", None),  # the driver gave no bus id: nothing to join on
     ],
 )
 def test_cuda_ordinal_rows_parse_bus_ids_and_integrated(monkeypatch, child_out, expected):
@@ -540,6 +551,8 @@ def test_cuda_ordinal_rows_parse_bus_ids_and_integrated(monkeypatch, child_out, 
 
     from utils.hardware import nvidia
 
+    # The real driver query on a faked child (conftest replaces it with the test torch's devices).
+    monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO)
     child = types.SimpleNamespace(returncode = 0, stdout = child_out)
     smi = types.SimpleNamespace(returncode = 0, stdout = "0, 00000000:1A:00.0\n1, 00000000:3B:00.0\n")
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: child)

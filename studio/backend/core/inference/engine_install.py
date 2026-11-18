@@ -34,6 +34,8 @@ PROFILES = {
         "driver": 580,
         # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
+        # vLLM samples with FlashInfer (nvcc JIT at first launch); Studio's SGLang flags never do.
+        "flashinfer_kernels": True,
         # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
         "releases": (
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
@@ -152,10 +154,19 @@ def gpu_platform() -> str:
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
 
-    # IS_ROCM reads False until background detection settles; never pick CUDA meanwhile.
-    if not hardware.DETECTION_COMPLETE.is_set():
-        hardware.ensure_hardware_detected()
-    if hardware.IS_ROCM:
+    # Status is read by idle Chat. The wheel's build family is enough to choose
+    # an engine profile; discovering it must not initialize the ML runtime.
+    if hardware.DETECTION_COMPLETE.is_set():
+        is_rocm = hardware.IS_ROCM
+    else:
+        from core._torchao_stub import _installed_torch_is_rocm, _module_is_rocm
+        torch = sys.modules.get("torch")
+        is_rocm = (
+            _module_is_rocm(torch)
+            if getattr(torch, "__version__", None) is not None
+            else _installed_torch_is_rocm()
+        )
+    if is_rocm:
         return "rocm"
     if platform.system() != "Linux" or os.path.exists("/proc/driver/nvidia/version"):
         return "cuda"
@@ -342,6 +353,8 @@ def download_bytes(engine: str) -> int | None:
     total = sum(
         size or 0 for name, size in sizes.items() if name not in provided and name not in omit
     )
+    if not wsl and (kernels := flashinfer_kernel_wheel(engine, wait = False)):
+        total += kernels.get("size") or 0
     summary = wsl_host.summary() if wsl else {}
     if wsl and not summary.get("distro"):
         total += wsl_host.ROOTFS["size"] + wsl_host.UV["size"]
@@ -785,6 +798,17 @@ def _rocm_gpu_arches() -> dict[int, str]:
     return _rocm_arches
 
 
+def _known_rocm_gpu_arches(*, wait: bool) -> dict[int, str]:
+    """Status uses existing runtime information or sysfs; a load may initialize torch.
+
+    Do not cache an empty provisional answer: first use must still run the real
+    probe, including GPU masks and HSA_OVERRIDE_GFX_VERSION.
+    """
+    if wait or "torch" in sys.modules:
+        return _rocm_gpu_arches()
+    return _rocm_arches or {}
+
+
 def _unsupported_amd_gpu(found: list[str]) -> str:
     return (
         "Requires an AMD Instinct MI200, MI300 or MI350, Radeon RX 7700 to 7900, Radeon RX 9000, or Ryzen AI Max or AI 300 GPU"
@@ -804,7 +828,7 @@ def _rocm_reason(
     wanted = profile(engine)
     if wsl_host.active():
         # ROCm is checked inside WSL; a target torch or the driver already names (the selected GPU's) refuses first.
-        arches = _rocm_gpu_arches() if gpu_id is not None else {}
+        arches = _known_rocm_gpu_arches(wait = wait) if gpu_id is not None else {}
         if gpu_id in arches:
             known = [arches[gpu_id]]
         else:
@@ -827,7 +851,11 @@ def _rocm_reason(
         return "Requires ROCm {}.{} or a newer {}.x release installed in /opt/rocm".format(
             *wanted["rocm"], wanted["rocm"][0]
         ) + (" (found {}.{}).".format(*found) if found else ".")
-    from utils.hardware.amd import _a_bare_soname_resolves, amd_kfd_gpu_gfx_targets
+    from utils.hardware.amd import (
+        _a_bare_soname_resolves,
+        amd_kfd_gpu_gfx_targets,
+        hsa_override_gfx_target,
+    )
 
     missing = [soname for soname in ROCM_LIBRARIES if not (ROCM_HOME / "lib" / soname).exists()]
     if missing:
@@ -860,7 +888,17 @@ def _rocm_reason(
         )
 
     # Each GPU's target as the engine sees it (HSA_OVERRIDE_GFX_VERSION included), else the kernel's.
-    arches = _rocm_gpu_arches()
+    arches = _known_rocm_gpu_arches(wait = wait)
+    if not arches and _rocm_arches is None:
+        kernel = amd_kfd_gpu_gfx_targets()
+        if os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip():
+            # ROCr presents a readable global override for every GPU KFD lists; the kernel's target ignores it.
+            override = hsa_override_gfx_target()
+            if override is None or not kernel:
+                return "Checking for a supported AMD GPU."
+            arches = dict.fromkeys(range(len(kernel)), override)
+        elif kernel is None:
+            return "Checking for a supported AMD GPU."
     if gpu_id is None:
         selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
     elif gpu_id in arches:
@@ -1298,6 +1336,100 @@ def _index_arguments(engine: str) -> list[str]:
     ]
 
 
+# flashinfer.ai/whl/cu130 jit-cache per locked FlashInfer; UNSLOTH_ENGINE_FLASHINFER_KERNELS=0 skips.
+_FLASHINFER_KERNELS = _REQUIREMENTS / "flashinfer-kernels.json"
+
+
+def _kernels_run_on(arches: list[str], capability: str) -> bool:
+    """SASS only, no PTX: `X.Ya` runs on exactly X.Y, `X.Y` and `X.Yf` on X.Y and later X minors."""
+    major, minor = (int(part) for part in capability.strip().split(".")[:2])
+    for arch in arches:
+        built = tuple(int(part) for part in arch.rstrip("af").split("."))
+        if (major, minor) == built or (
+            not arch.endswith("a") and major == built[0] and minor > built[1]
+        ):
+            return True
+    return False
+
+
+def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
+    """The jit-cache wheel if it has SASS for every GPU here (a missing arch fails, never JITs)."""
+    if os.environ.get("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return None
+    wanted = profile(engine)
+    if (
+        not wanted.get("flashinfer_kernels")
+        or sys.platform != "linux"
+        or wanted["platform"] != "cuda"
+        or not wanted["cuda"]
+    ):
+        return None
+    version = _pins(engine).get("flashinfer-python", (None,))[0]
+    try:
+        entry = json.loads(_FLASHINFER_KERNELS.read_text(encoding = "utf-8")).get(
+            f"{version}+{wanted['cuda']}", {}
+        )
+        wheel = entry.get(platform.machine())
+        if not wheel:
+            return None
+        rows = _driver_rows(None, wait = wait)
+        if (
+            rows is _PENDING
+            or not rows
+            or not all(_kernels_run_on(entry["arches"], row[1]) for row in rows)
+        ):
+            return None
+    except (OSError, ValueError, AttributeError, KeyError, IndexError, TypeError):
+        return None
+    return wheel
+
+
+def _install_flashinfer_kernels(
+    engine: str, uv: str, python: str, destination: Path, cancel: threading.Event
+) -> bool:
+    """Best effort: a failure removes the wheel and keeps JIT; one that cannot be removed fails."""
+    wheel = flashinfer_kernel_wheel(engine)
+    if wheel is None:
+        return False
+    requirement = destination / "flashinfer-kernels.txt"
+    requirement.write_text(
+        f"flashinfer-jit-cache @ {wheel['url']} --hash=sha256:{wheel['sha256']}\n", encoding = "utf-8"
+    )
+    _update(engine, message = "Downloading FlashInfer's prebuilt kernels")
+    try:
+        _run(
+            engine,
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                python,
+                "--link-mode",
+                package_link_mode(destination),
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "-r",
+                str(requirement),
+            ],
+            cancel,
+        )
+        _run(engine, [python, "-I", "-c", "import flashinfer_jit_cache, flashinfer"], cancel)
+        return True
+    except RuntimeError:
+        if cancel.is_set():
+            raise
+        _run(engine, [uv, "pip", "uninstall", "--python", python, "flashinfer-jit-cache"], cancel)
+        return False
+
+
 def _smoke_source(engine: str) -> str:
     """Imports the engine and the precision libraries its lock carries, on the locked torch build."""
     wanted = profile(engine)
@@ -1390,6 +1522,7 @@ def _install(
                 (site / _BASE_PTH).write_text(f"import {_BASE_MODULE}\n", encoding = "utf-8")
             if profile(engine)["platform"] == "cuda":
                 link_cuda_home(destination, plan["shared"])
+            kernels = _install_flashinfer_kernels(engine, uv, python, destination, cancel)
             _update(engine, phase = "checking", message = "Checking the installed engine")
             _run(
                 engine,
@@ -1429,6 +1562,7 @@ def _install(
                     "platform": profile(engine)["platform"],
                     "python": platform.python_version(),
                     "provided": plan["provided"],
+                    **({"flashinfer_kernels": True} if kernels else {}),
                     "studio_prefix": sys.prefix,
                     "previous_directory": prior["directory"] if prior else None,
                     "previous": {

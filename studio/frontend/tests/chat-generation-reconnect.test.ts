@@ -156,6 +156,58 @@ test("reconnect resumes from the applied cursor without duplicate chunks", async
   );
 });
 
+test("a stream that goes silent without closing is dropped and resumed from the cursor", async () => {
+  const eventUrls: string[] = [];
+  const encoder = new TextEncoder();
+  let deadStreamCancelled = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/events")) {
+      eventUrls.push(url);
+      if (eventUrls.length > 1) {
+        return sse([
+          frame(2, "chunk", { choices: [{ delta: { content: "B" } }] }),
+          frame(3, "run.completed", { status: "completed" }, run("completed", 3)),
+        ]);
+      }
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                frame(1, "chunk", { choices: [{ delta: { content: "A" } }] }),
+              ),
+            );
+            init?.signal?.addEventListener("abort", () =>
+              controller.error(init.signal?.reason),
+            );
+          },
+          cancel() {
+            deadStreamCancelled = true;
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    return new Response(JSON.stringify(run("running", 1)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const sequences: number[] = [];
+  for await (const update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+    silenceTimeoutMs: 50,
+    signal: AbortSignal.timeout(2_000),
+  })) {
+    if (update.event) sequences.push(update.event.seq);
+  }
+  assert.deepEqual(sequences, [1, 2, 3]);
+  assert.equal(deadStreamCancelled, true);
+  assert.match(eventUrls[1], /after=1$/);
+});
+
 test("durable replay normalizes reasoning summary control frames", async () => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     if (String(input).includes("/events")) {
@@ -217,6 +269,69 @@ test("a backend without chat runs selects the legacy path", async () => {
   globalThis.fetch = (async () =>
     new Response(null, { status: 404 })) as typeof fetch;
   assert.equal(await supportsChatGenerationRuns("thread-1"), false);
+});
+
+test("durable admission survives the network drop of a locked phone", async () => {
+  let calls = 0;
+  let hidden = true;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls <= 6) throw new TypeError("Load failed");
+    return new Response(JSON.stringify({ runs: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  // Six hidden failures would exceed the visible budget; only the unlock-time ones count.
+  const supported = await supportsChatGenerationRuns("thread-1", undefined, {
+    isHidden: () => {
+      if (calls === 6) hidden = false;
+      return hidden;
+    },
+    delay: () => 0,
+  });
+  assert.equal(supported, true);
+  assert.equal(calls, 7);
+});
+
+test("durable admission gives up on a server that stays unreachable while visible", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    throw new TypeError("Failed to fetch");
+  }) as typeof fetch;
+  await assert.rejects(
+    supportsChatGenerationRuns("thread-1", undefined, {
+      isHidden: () => false,
+      delay: () => 0,
+    }),
+  );
+  assert.equal(calls, 4);
+});
+
+test("durable admission does not retry a refusal or a Stop", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ detail: "nope" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  await assert.rejects(supportsChatGenerationRuns("thread-1"));
+  assert.equal(calls, 1);
+
+  const stop = new AbortController();
+  calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    stop.abort();
+    throw new TypeError("Load failed");
+  }) as typeof fetch;
+  await assert.rejects(
+    supportsChatGenerationRuns("thread-1", stop.signal, { delay: () => 0 }),
+  );
+  assert.equal(calls, 1);
 });
 
 test("tool-enabled durable admission errors select the legacy stream", async () => {

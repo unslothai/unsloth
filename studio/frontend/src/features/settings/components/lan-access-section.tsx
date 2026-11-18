@@ -642,6 +642,11 @@ export function LanAccessSection() {
                           Public internet address
                         </span>
                       ) : null}
+                      {choice.hostOnly ? (
+                        <span className="text-xs text-muted-foreground">
+                          Virtual network on this machine
+                        </span>
+                      ) : null}
                       {choice.detected ? null : (
                         <span className="text-xs text-muted-foreground">
                           Not on this machine right now

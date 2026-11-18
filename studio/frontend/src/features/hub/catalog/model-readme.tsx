@@ -22,6 +22,8 @@ import {
 } from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
+// Its own: the chat renderers that also import this are not loaded before the Hub.
+import "katex/dist/katex.min.css";
 import { mermaid as streamdownMermaid } from "@/components/assistant-ui/mermaid-plugin";
 import {
   createContext,
@@ -41,6 +43,7 @@ import {
   stripFrontmatter,
 } from "../lib/hf-readme";
 import { rehypeReadmeUrls } from "../lib/rehype-readme-urls";
+import { badgeRowsRef } from "../lib/badge-rows";
 
 type ReadmePlugins = NonNullable<ComponentProps<typeof Streamdown>["plugins"]>;
 
@@ -294,11 +297,13 @@ async function loadReadmeFromCache({
   repoId,
   kind,
   hfToken,
+  revision,
 }: {
   cacheKey: string;
   repoId: string;
   kind: "model" | "dataset";
   hfToken: string | undefined;
+  revision: string | null;
 }): Promise<ReadmeCacheEntry> {
   const cached = readmeCache.get(cacheKey);
   if (cached) {
@@ -307,7 +312,7 @@ async function loadReadmeFromCache({
     readmeCache.delete(cacheKey);
   }
 
-  const promise = fetchReadme(repoId, kind, hfToken || null).then((fetched) => {
+  const promise = fetchReadme(repoId, kind, hfToken || null, revision).then((fetched) => {
     if (fetched == null) {
       return {
         body: null,
@@ -353,18 +358,22 @@ export function ModelReadme({
   repoId,
   kind = "model",
   subject = kind,
+  revision = null,
 }: {
   repoId: string;
   kind?: "model" | "dataset";
   subject?: ReadmeSubject;
+  /** A branch or commit to read instead of main, then master. */
+  revision?: string | null;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
   const hfEndpoint = useHfEndpoint();
   const stateKey = useMemo(
-    () => `${hfEndpoint}::${kind}::${repoId}::${tokenFingerprint}`,
-    [hfEndpoint, kind, repoId, tokenFingerprint],
+    () =>
+      `${hfEndpoint}::${kind}::${repoId}${revision ? `@${revision}` : ""}::${tokenFingerprint}`,
+    [hfEndpoint, kind, repoId, revision, tokenFingerprint],
   );
   const [state, setState] = useState<ReadmeState>(() => {
     const cached = readResolvedReadmeCache(stateKey);
@@ -429,6 +438,7 @@ export function ModelReadme({
       repoId,
       kind,
       hfToken,
+      revision,
     })
       .then((entry) => {
         if (canceled) return;
@@ -460,7 +470,7 @@ export function ModelReadme({
     return () => {
       canceled = true;
     };
-  }, [repoId, kind, hfToken, stateKey, online]);
+  }, [repoId, kind, hfToken, revision, stateKey, online]);
 
   useEffect(() => {
     // Runs offline too: a cached README body must still clear the preparing gate.
@@ -542,7 +552,7 @@ export function ModelReadme({
   }
 
   return (
-    <div className={cn("hub-readme-prose", PROSE)}>
+    <div ref={badgeRowsRef} className={cn("hub-readme-prose", PROSE)}>
       <ReadmeOnlineContext.Provider value={online}>
         <Streamdown
           mode="static"

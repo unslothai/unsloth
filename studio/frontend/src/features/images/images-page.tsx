@@ -4,6 +4,7 @@
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
+import { LoraAddMenu } from "./lora-add-menu";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
 // Statically imported: this page is already its own lazy chunk, and a nested import() of the panel split modules
@@ -11,10 +12,13 @@ import type { CompareRun } from "./compare/compare-run";
 import ComparePanel from "./compare/compare-panel";
 import {
   type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  memo,
   type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -22,10 +26,10 @@ import {
 import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Image03Icon,
+  HistoryIcon,
+  ImageIcon,
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
@@ -36,8 +40,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { History as HistoryIcon, Shuffle } from "lucide-react";
-import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { Shuffle } from "lucide-react";
+import { MessageCircleIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
@@ -74,6 +78,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
+import { readAfterUnload } from "@/lib/read-after-unload";
 import { Switch } from "@/components/ui/switch";
 import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
@@ -83,7 +88,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
-import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
+import { VramBudgetControl } from "@/features/settings/components/vram-budget-control";
+import { useDiffusionGpuChoices, useGpuDevices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -121,7 +128,7 @@ import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu
 import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
-import { useStripReorder } from "@/hooks/use-strip-reorder";
+import { type StripDropCue, useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
@@ -134,6 +141,7 @@ import {
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
+  PAGE_MAX_ATTEMPTS,
   applyPin,
   fetchNextPage,
   fetchWhileStable,
@@ -159,7 +167,9 @@ import {
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
+import { useVideoDeployStore } from "@/features/video/video-deploy-store";
 import {
+  CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
   recipeWorkflowLabel,
@@ -172,7 +182,7 @@ import {
   parseExternalModelId,
   useExternalProvidersStore,
 } from "@/features/chat";
-import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { ModelLoadCompactStatus, ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { cancelConnectionImageGeneration } from "./connection-cancel";
 import {
   type ImageGenerationPresetParams,
@@ -211,17 +221,28 @@ import {
   formatResolvedValue,
   isDenseQuantKind,
   isPrecisionRefusal,
+  denoiserPlacement,
   memoryRecipeValue,
   resolvedBadge,
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
+import {
+  ATTENTION_SELECT_HINT,
+  INT8_ATTENTION_HINT,
+  INT8_ATTENTION_LABEL,
+  INT8_ATTENTION_OPTIONS,
+  int8AttentionSelection,
+  type Int8AttentionChoice,
+} from "@/lib/int8-attention";
 import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
-  routedGgufFilename,
+  routedImageFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
+import { createMediaLoadToast } from "@/lib/media-load-toast";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -233,8 +254,10 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
   DEFAULT_GEN,
+  defaultSizeFor,
   defaultsFor,
   defaultsKeyFor,
+  maxStepsFor,
   loadedRecipeFor,
   residentDefaultsKey,
   residentRecipeFor,
@@ -249,6 +272,7 @@ import {
   restorableSize,
   sizeLimitsFrom,
   snapDim,
+  xyGridCellSize,
 } from "./image-size";
 import {
   ANNOTATION_COLORS,
@@ -257,11 +281,18 @@ import {
   TRANSPARENCY_CHECKER,
   additionalImageNumber,
   conditionedRequestFields,
+  familyPresetsCopy,
+  familyPresetsWithin,
+  inputImageWord,
+  matchSizeChoosable,
   maxAdditionalImages,
-  presetsWithin,
+  raiseToEditResolution,
+  type ReferenceRaise,
   resolveEditSize,
   restoreInputsNote,
+  seedMatchResolution,
   seedReferenceResolution,
+  sizeAfterReference,
   withLocalizedHint,
   withTransparencyPrompt,
 } from "./edit-conditioning";
@@ -301,7 +332,10 @@ import {
   type LoraSpecInput,
   GenerateResponseLostError,
   cancelDiffusionGeneration,
+  cancelDiffusionQueueJob,
+  clearDiffusionQueue,
   deleteGalleryImage,
+  enqueueDiffusionImage,
   fetchGalleryBlob,
   fetchGalleryResponse,
   fetchGalleryObjectUrl,
@@ -314,9 +348,17 @@ import {
   listDiffusionLoras,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
+  withSettledVramBudget,
+  VramBudgetSaveError,
   loadDiffusionModel,
+  moveDiffusionQueueJob,
+  type ImageQueueJob,
   unloadDiffusionModel,
 } from "./api";
+import { GenerationQueuePanel } from "./generation-queue-panel";
+import { collectGalleryWindow } from "./lib/gallery-window";
+import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
+import { useImageQueue } from "./use-image-queue";
 import {
   shouldContinueGenerating,
   shouldReportGenerateError,
@@ -367,6 +409,7 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
   AUTOMATIC_SCHEDULE,
   DEFAULT_SAMPLER,
@@ -761,61 +804,64 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-function loadToastDescription(p: DiffusionLoadProgress) {
+function loadStatus(p: DiffusionLoadProgress) {
   if (p.phase === "saving_chat_context") {
-    return (
-      <ModelLoadDescription
-        title="Saving chat context…"
-        message="Saving the chat model's context so it can resume after this load."
-      />
-    );
+    return {
+      title: "Saving chat context…",
+      brief: "Saving chat context",
+      message: "Saving the chat model's context so it can resume after this load.",
+      progressPercent: null,
+      progressLabel: null,
+    };
   }
   // "Downloading" only when bytes actually remain: a cached model must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
-  const title = downloading
-    ? "Downloading model requirements…"
-    : p.phase === "finalizing"
-      ? "Loading to GPU…"
-      : "Starting model…";
   const hasTotal = p.bytes_total > 0;
+  return {
+    title: downloading
+      ? "Downloading model requirements…"
+      : p.phase === "finalizing"
+        ? "Loading to GPU…"
+        : "Starting model…",
+    brief: downloading ? "Downloading" : p.phase === "finalizing" ? "Loading to GPU" : "Starting",
+    message: downloading
+      ? "Downloading the files required to load this model."
+      : "Loading the model.",
+    progressPercent: hasTotal ? p.fraction * 100 : null,
+    progressLabel: hasTotal
+      ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
+      : p.bytes_downloaded > 0
+        ? `${formatBytes(p.bytes_downloaded)} downloaded`
+        : null,
+  };
+}
+
+function LoadInlineStatus({ p }: { p: DiffusionLoadProgress }) {
+  const s = loadStatus(p);
   return (
-    <ModelLoadDescription
-      title={title}
-      message={
-        downloading
-          ? "Downloading the files required to load this model."
-          : "Loading the model."
-      }
-      progressPercent={hasTotal ? p.fraction * 100 : null}
-      progressLabel={
-        hasTotal
-          ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
-          : p.bytes_downloaded > 0
-            ? `${formatBytes(p.bytes_downloaded)} downloaded`
-            : null
-      }
+    <ModelLoadCompactStatus
+      label={s.brief}
+      title={[s.title, s.message, s.progressLabel].filter(Boolean).join(" ")}
+      progressPercent={s.progressPercent}
     />
   );
 }
 
 // `onCancel` is the only control that reaches a first load in flight.
-function loadToastArgs(
-  p: DiffusionLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
-) {
+function loadToastArgs(p: DiffusionLoadProgress, onCancel: () => void) {
   return {
-    ...(id != null ? { id } : {}),
-    description: loadToastDescription(p),
+    description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
+    cancel: { label: "Cancel", onClick: onCancel },
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
 
 const NO_SAMPLERS: DiffusionSamplerOption[] = [];
 const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama"]);
+// Merges LoRA adapters into its weights at load, so a selection change is always a reload.
+const H3_IMAGE_FAMILY = "minimax-h3-image";
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
@@ -1289,16 +1335,19 @@ function RecipeRow({
   value,
   wrap,
   mono,
+  title,
 }: {
   label: string;
   value: string;
   wrap?: boolean;
   mono?: boolean;
+  title?: string;
 }) {
   return (
     <div className={cn("grid grid-cols-[72px_1fr] gap-2", wrap ? "items-start" : "items-center")}>
       <span className="text-muted-foreground">{label}</span>
       <span
+        title={title}
         className={cn(
           "min-w-0 text-foreground",
           wrap ? "whitespace-pre-wrap break-words" : "truncate",
@@ -1322,6 +1371,8 @@ function RecipePopover({
 }) {
   // PopoverContent portals to body, so the inert page wrapper cannot contain it.
   const [open, setOpen] = useState(false);
+  const recipePlacement =
+    image.offload_policy === "group" ? denoiserPlacement(image.denoiser_offload) : null;
   useEffect(() => {
     if (!active) setOpen(false);
   }, [active]);
@@ -1365,6 +1416,13 @@ function RecipePopover({
             <RecipeRow
               label="Memory"
               value={memoryRecipeValue(image.memory_mode, image.offload_policy)}
+            />
+          ) : null}
+          {recipePlacement ? (
+            <RecipeRow
+              label="Placement"
+              value={recipePlacement.label}
+              title={recipePlacement.detail}
             />
           ) : null}
           {image.speed_mode ? (
@@ -1423,6 +1481,13 @@ function RecipePopover({
             />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
+          {image.generation_seconds != null ? (
+            <RecipeRow
+              label="Time"
+              value={`${image.generation_seconds.toFixed(image.generation_seconds < 1 ? 2 : 1)} s${(image.generation_count ?? 1) > 1 ? ` (batch of ${image.generation_count})` : ""}`}
+              title="Elapsed time until images are ready to save; may include waiting and processing"
+            />
+          ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
           {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
@@ -1477,6 +1542,7 @@ function BuildRow({ label, value, badge }: { label: string; value: string; badge
 function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
+  const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1521,6 +1587,13 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
+      {placement ? (
+        <BuildRow
+          label="Placement"
+          value={placement.label}
+          badge={<InfoHint>{placement.detail}</InfoHint>}
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={
@@ -1577,6 +1650,7 @@ type LoadAdvanced = Pick<
   | "transformer_quant"
   | "text_encoder_quant"
   | "attention_backend"
+  | "int8_attention"
   | "memory_mode"
   | "transformer_cache"
   | "family_override"
@@ -1592,6 +1666,131 @@ function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
   const text = shortPrompt(prompt);
   return text ? t("library.viewer.openImageNamed", { prompt: text }) : t("library.viewer.openImage");
 }
+
+/** Page callbacks a tile reads at event time, so new page closures never re-render it. */
+interface StripTileActions {
+  tileProps: ReturnType<typeof useStripReorder>["tileProps"];
+  select: (id: string) => void;
+  setMenuId: (id: string | null) => void;
+  togglePin: (id: string, pinned: boolean) => void;
+  archive: (id: string) => void;
+  remove: (id: string) => void;
+  download: (image: GalleryImage) => void;
+  addToProject: (id: string, projectId: string) => Promise<{ already: boolean }>;
+  toggleFavorite: (key: string) => void;
+  editImage: (image: GalleryImage) => void;
+}
+
+class StripTileActionsBox {
+  private actions: StripTileActions | null = null;
+  set(actions: StripTileActions) {
+    this.actions = actions;
+  }
+  get(): StripTileActions {
+    return this.actions as StripTileActions;
+  }
+}
+
+function EditImageMenuItem({ onClick }: { onClick: () => void }) {
+  return (
+    <DropdownMenuItem onClick={onClick}>
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit image
+    </DropdownMenuItem>
+  );
+}
+
+const GalleryStripTile = memo(function GalleryStripTile({
+  image,
+  src,
+  selected,
+  menuOpen,
+  active,
+  favorite,
+  dragging,
+  cueEdge,
+  actions,
+}: {
+  image: GalleryImage;
+  src: string | undefined;
+  selected: boolean;
+  menuOpen: boolean;
+  active: boolean;
+  favorite: boolean;
+  dragging: boolean;
+  cueEdge: StripDropCue["edge"] | null;
+  actions: StripTileActionsBox;
+}) {
+  const id = image.id;
+  return (
+    <div
+      data-image-id={id}
+      data-reorder-id={id}
+      draggable={true}
+      onDragStart={(event: DragEvent<HTMLElement>) => actions.get().tileProps(id).onDragStart(event)}
+      onDragEnd={() => actions.get().tileProps(id).onDragEnd()}
+      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => actions.get().tileProps(id).onKeyDown(event)}
+      // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
+      // Portalled children (the New project dialog) bubble here too: leave their menu alone.
+      onContextMenu={(event) => {
+        if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
+        event.preventDefault();
+        actions.get().setMenuId(id);
+      }}
+      className={cn("group relative size-16 shrink-0", dragging && "opacity-40")}
+    >
+      {cueEdge && <StripDropLine edge={cueEdge} />}
+      <button
+        type="button"
+        onClick={() => actions.get().select(id)}
+        className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {src ? (
+          <img
+            src={src}
+            alt={image.prompt}
+            draggable={false}
+            className="size-full object-cover"
+          />
+        ) : (
+          <span className="flex size-full items-center justify-center">
+            <Spinner className="size-4 text-muted-foreground" />
+          </span>
+        )}
+        {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
+        {selected && (
+          <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+        )}
+      </button>
+      {image.pinned && (
+        <GalleryPinBadge
+          noun="image"
+          className="bottom-0.5 left-0.5"
+          onUnpin={() => actions.get().togglePin(id, false)}
+        />
+      )}
+      <div className="absolute right-0.5 top-0.5">
+        <GalleryItemMenu
+          variant="overlay"
+          noun="image"
+          active={active}
+          open={menuOpen}
+          onOpenChange={(open) => actions.get().setMenuId(open ? id : null)}
+          pinned={Boolean(image.pinned)}
+          archived={Boolean(image.archived)}
+          favorite={favorite}
+          onToggleFavorite={() => actions.get().toggleFavorite(`image:${id}`)}
+          onTogglePin={() => actions.get().togglePin(id, !image.pinned)}
+          onToggleArchive={() => actions.get().archive(id)}
+          onDelete={() => actions.get().remove(id)}
+          onDownload={() => actions.get().download(image)}
+          onAddToProject={(projectId) => actions.get().addToProject(id, projectId)}
+          leadingItems={<EditImageMenuItem onClick={() => actions.get().editImage(image)} />}
+        />
+      </div>
+    </div>
+  );
+});
 
 export function ImagesPage({
   active = true,
@@ -1753,6 +1952,7 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
+  const [referenceRaise, setReferenceRaise] = useState<ReferenceRaise | null>(null);
   const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
@@ -1762,11 +1962,14 @@ export function ImagesPage({
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
   // The family availableLoras was fetched for; undefined while none is current (loading, failed, no model).
   const [loraCatalogFamily, setLoraCatalogFamily] = useState<string | null | undefined>(undefined);
-  // Fine-tuned (trained in Unsloth) first, for both the suggestions and the Add LoRA prefill.
+  // Fine-tuned (trained in Unsloth) first, for both the row suggestions and the Add LoRA picker.
   const sortedLoras = useMemo(
     () => [...availableLoras].sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned))),
     [availableLoras],
   );
+  // Trimmed like the request payload, whose duplicate-id check this mirrors.
+  const takenLoraIds = useMemo(() => new Set(loras.map((l) => l.id.trim())), [loras]);
+  const [focusLoraRow, setFocusLoraRow] = useState<number | null>(null);
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   // Mounted on first visit, then hidden rather than unmounted, so switching to Create keeps the training form.
@@ -1804,6 +2007,12 @@ export function ImagesPage({
   const oversizedOnce = useRef(false);
   // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
   const compareOnce = useRef<CompareRun | null>(null);
+  // The queued job this page is following, so Stop ends that job and never the one the queue starts next.
+  const followingJob = useRef<string | null>(null);
+  const localRun = useRef(false);
+  const queuedHere = useRef(new Set<string>());
+  // Server time of the run behind sessionSeed, so a late queue poll never replaces a newer direct run's seed.
+  const sessionSeedAt = useRef(0);
   const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
   // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
   const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
@@ -1830,6 +2039,7 @@ export function ImagesPage({
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
   );
+  const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
@@ -1858,6 +2068,7 @@ export function ImagesPage({
   );
   const componentsReconciled = useRef(false);
   const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
+  const [generateProbed, setGenerateProbed] = useState(false);
   const reconcileInitialComponents = useCallback(
     (loaded: DiffusionStatus) => {
       if (componentsReconciled.current || initialLoadProbe === "pending") return;
@@ -1878,6 +2089,7 @@ export function ImagesPage({
     "auto",
   );
   const gpuChoices = useDiffusionGpuChoices();
+  const imageGpuDevices = useGpuDevices(true);
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
@@ -1937,6 +2149,18 @@ export function ImagesPage({
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
+  const [pickedDuringRun, setPickedDuringRun] = useState(false);
+  const pickedDuringRunRef = useRef(false);
+  useEffect(() => {
+    pickedDuringRunRef.current = pickedDuringRun;
+  }, [pickedDuringRun]);
+  const pickImage = useCallback((id: string) => {
+    // Set now, not after the render: an in-flight gallery refresh reads it.
+    galleryCache.selectedId = id;
+    setSelectedId(id);
+    setPickedDuringRun(true);
+  }, []);
   // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
   const [sessionSeed, setSessionSeed] = useState<number | null>(null);
   // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
@@ -1987,8 +2211,16 @@ export function ImagesPage({
   const cancelInFlight = useRef<number | null>(null);
   // A pending cancel can outlive its run via 401 refresh-and-replay and hit a newer run.
   const cancelAbort = useRef<AbortController | null>(null);
+  const resetStopState = useCallback(() => {
+    cancelRequested.current = cancelAcked.current = false;
+    cancelInFlight.current = null;
+    cancelAbort.current?.abort();
+    cancelAbort.current = null;
+    runToken.current += 1;
+    setStopping(false);
+  }, []);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadToastId = useRef<string | number | null>(null);
+  const [closedLoad, setClosedLoad] = useState<DiffusionLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
@@ -2000,7 +2232,9 @@ export function ImagesPage({
   const pickSeq = useRef(0);
   // handleLoad overwrites lastLoad.current at load start.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
-  const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
+  const pendingDeploy = useRef<{ loraId: string; family: string; families: string[] } | null>(
+    null,
+  );
   // Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
@@ -2093,11 +2327,17 @@ export function ImagesPage({
       }
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename));
+      const recipeKey = defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename);
+      const recommended = defaultsFor(recipeKey);
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
+      const nativeSize = defaultSizeFor(recipeKey);
+      if (nativeSize) {
+        setWidth(nativeSize.width);
+        setHeight(nativeSize.height);
+      }
       if (revert) {
         revert.appliedSteps = recommended.steps;
         revert.appliedGuidance = recommended.guidance;
@@ -2106,20 +2346,22 @@ export function ImagesPage({
     [claimImageRecipe, familyOverride, imageFormClaimId, modelSelectionAction],
   );
 
-  const dismissLoadToast = useCallback(() => {
-    if (loadToastId.current != null) toast.dismiss(loadToastId.current);
-    loadToastId.current = null;
-  }, []);
+  const [loadToast] = useState(() =>
+    createMediaLoadToast<DiffusionLoadProgress>({
+      toastOptions: loadToastArgs,
+      onClosedChange: setClosedLoad,
+    }),
+  );
+  const dismissLoadToast = loadToast.dismiss;
   const pickToast = useDiffusionPickToast();
 
-  const cancelLoadRef = useRef<() => void>(() => {});
-  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
   // In-flight requests compare against this and discard their result after a cancel.
   const cancelSeq = useRef(0);
   // The compensating unload carries no identity, so it must not fire once a newer load owns the page.
   const loadSeq = useRef(0);
   // Settles only after handleLoad finishes, since begin_load refuses a second load while one is live.
   const pendingStart = useRef<Promise<unknown> | null>(null);
+  const pendingUnload = useRef<Promise<boolean> | null>(null);
 
   // Set when the compensating unload failed, so the cancelled load is STILL running.
   const loadTrackingRestored = useRef(false);
@@ -2174,7 +2416,8 @@ export function ImagesPage({
     const deploy = pendingDeploy.current;
     if (deploy) {
       pendingDeploy.current = null;
-      if (!deploy.family || deploy.family === fam) {
+      // The adapter runs on every family it was published for (Klein Base trains, Klein deploys).
+      if (!deploy.family || (fam != null && deploy.families.includes(fam))) {
         setLoras([{ id: deploy.loraId, weight: 1 }]);
       } else {
         toast.error(
@@ -2208,7 +2451,8 @@ export function ImagesPage({
     if (!loraCapable || checkedBuildForBake.current === residentBuildKey) return;
     checkedBuildForBake.current = residentBuildKey;
     const engaged = status?.resolved?.transformer_quant?.value;
-    if (engaged !== "int8" && engaged !== "fp8") return;
+    // MiniMax-H3-Image merges adapters into its weights at load at every precision.
+    if (engaged !== "int8" && engaged !== "fp8" && status?.family !== H3_IMAGE_FAMILY) return;
     if (bakedLorasOnLoad.current || loras.length === 0) return;
     setLoras([]);
     toast.info("LoRA selection cleared", {
@@ -2226,6 +2470,10 @@ export function ImagesPage({
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
+  const maxSteps = !external && status?.loaded === true ? maxStepsFor(status.family) : null;
+  useEffect(() => {
+    if (maxSteps !== null && steps > maxSteps) setSteps(maxSteps);
+  }, [maxSteps, steps]);
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
@@ -2371,6 +2619,7 @@ export function ImagesPage({
   const selectedThumb = selected ? thumbById[selected.id] : undefined;
   const livePreviewSrc =
     busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;
+  const stagePreviewSrc = pickedDuringRun ? undefined : livePreviewSrc;
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
@@ -2459,6 +2708,7 @@ export function ImagesPage({
   const stripEpoch = useRef(0);
   const pageEpoch = useRef(0);
   const resyncSeq = useRef(0);
+  const refreshSeq = useRef(0);
   // The epoch is an EDGE, so a page starting after the bump sees it unchanged.
   const pendingShelfMutations = useRef(0);
 
@@ -2605,22 +2855,19 @@ export function ImagesPage({
   const resyncWindow = useCallback(
     async (count: number, stillFresh?: () => boolean) => {
       const ticket = (resyncSeq.current += 1);
+      const fresh = () => resyncSeq.current === ticket && (!stillFresh || stillFresh());
       for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
         const paged = pageEpoch.current;
-        const wanted = Math.max(count, galleryCache.images.length, PAGE_SIZE);
-        const collected: GalleryImage[] = [];
-        let more = false;
-        while (collected.length < wanted) {
-          const page = await getGallery(
-            collected.length,
-            Math.min(PAGE_SIZE, wanted - collected.length),
-          );
-          collected.push(...page.images);
-          more = page.has_more;
-          if (!page.has_more || page.images.length === 0) break;
-        }
-        if (stillFresh && !stillFresh()) return;
-        if (resyncSeq.current !== ticket) return;
+        const result = await collectGalleryWindow(
+          (offset, limit) => getGallery(offset, limit),
+          galleryCache.images,
+          Math.max(count, galleryCache.images.length, PAGE_SIZE),
+          PAGE_SIZE,
+          () => galleryCache.selectedId,
+          fresh,
+        );
+        if (!result) return false;
+        const { images: collected, hasMore: more } = result;
         if (pageEpoch.current !== paged) continue;
         galleryCache.images = collected;
         galleryCache.hasMore = more;
@@ -2629,26 +2876,31 @@ export function ImagesPage({
         if (typeof IntersectionObserver === "undefined") {
           collected.forEach((image) => void ensureThumb(image));
         }
-        return;
+        return true;
       }
+      return false;
     },
     [ensureThumb],
   );
 
-  // This page stays mounted across routes, so an archive restore needs a resync.
-  useEffect(
-    () =>
-      subscribeGalleryChanged("images", () => {
-        // Bumped FIRST so in-flight reads are discarded.
-        stripEpoch.current += 1;
+  const refreshLoadedGallery = useCallback(() => {
+    const ticket = (refreshSeq.current += 1);
+    // Bumped FIRST so in-flight reads are discarded.
+    stripEpoch.current += 1;
+    void (async () => {
+      // Retried: a pin or archive mid-fetch discards it, and nothing else refetches the new image.
+      for (let attempt = 0; attempt < PAGE_MAX_ATTEMPTS && refreshSeq.current === ticket; attempt += 1) {
+        // After pending pin PATCHes, or this read could undo a pin on screen.
+        if (attempt > 0) await serializeById("image-pin", async () => {});
         const epoch = stripEpoch.current;
-        void resyncWindow(
-          galleryCache.images.length,
-          () => stripEpoch.current === epoch,
-        ).catch(() => void loadGallery());
-      }),
-    [loadGallery, resyncWindow],
-  );
+        const fresh = () => stripEpoch.current === epoch && refreshSeq.current === ticket;
+        if (await resyncWindow(galleryCache.images.length, fresh)) return;
+      }
+    })().catch(() => void loadGallery());
+  }, [loadGallery, resyncWindow]);
+
+  // This page stays mounted across routes, so an archive restore needs a resync.
+  useEffect(() => subscribeGalleryChanged("images", refreshLoadedGallery), [refreshLoadedGallery]);
 
   const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
@@ -2803,7 +3055,7 @@ export function ImagesPage({
     // advances it again.
     if (!viaConnection) setSeed(String(image.batch_seed ?? image.seed));
     // A Hires fix image records its output size; the Width / Height controls take the base pass.
-    const base = hiresBaseSize(image) ?? { width: image.width, height: image.height };
+    const base = hiresBaseSize(image) ?? xyGridCellSize(image) ?? { width: image.width, height: image.height };
     const restored = restorableSize(base.width, base.height, image.workflow, sizeLimits);
     setHires(resolveRestoredHires(hiresFromRecipe(image), status?.hires));
     setUpscaleModel(image.upscale_model ?? null);
@@ -3195,9 +3447,11 @@ export function ImagesPage({
   );
 
   const refreshStatus = useCallback(async () => {
+    // A read during teardown can still see the resident and supersede the unload response.
+    if (pendingUnload.current) await pendingUnload.current;
     const ticket = ++statusTicket.current;
     try {
-      setStatusIfNewest(ticket, await getDiffusionStatus());
+      setStatusIfNewest(ticket, ownDiffusionStatus(await getDiffusionStatus()));
     } catch {
       // Status is best-effort; a failed poll should not surface an error toast.
     }
@@ -3313,7 +3567,7 @@ export function ImagesPage({
       if (p.phase === "ready") {
         dismissLoadToast();
         const ticket = ++statusTicket.current;
-        const loaded = await getDiffusionStatus();
+        const loaded = ownDiffusionStatus(await getDiffusionStatus());
         if (seq !== cancelSeq.current) {
           // Cancelled mid-read: drop it, the unload's own response is authoritative.
           return;
@@ -3401,25 +3655,25 @@ export function ImagesPage({
       }
       // Include bytes_total: the estimate lands as a 0->real jump while the rest holds.
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
-      if (loadToastId.current != null && sig !== lastLoadSig.current) {
+      if (sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        loadToast.update(p);
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor, rememberFinishedLoad]);
+  }, [dismissLoadToast, refreshStatus, loadToast, offerLoadAnywayFor, rememberFinishedLoad]);
 
   // The unload failed, so restore the poll and toast. refreshStatus cannot: a first load is not resident.
   const restoreLoadTracking = useCallback(() => {
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToast.open(IDLE_PROGRESS);
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, loadToast]);
 
   // generate-progress carries no terminal record, so refresh the gallery on completion.
   const resumeGeneratePoll = useCallback(() => {
@@ -3441,9 +3695,9 @@ export function ImagesPage({
             genVisibilityListener.current = null;
           }
           if (!isMounted.current) return;
-          setBusy(null);
+          setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
-          void loadGallery();
+          refreshLoadedGallery();
           void refreshStatus();
           return;
         }
@@ -3462,7 +3716,72 @@ export function ImagesPage({
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
-  }, [loadGallery, refreshStatus]);
+  }, [refreshLoadedGallery, refreshStatus]);
+
+  const imageQueue = useImageQueue(active, (finished) => {
+    if (finished.some((job) => job.status === "done")) refreshLoadedGallery();
+    let latest: ImageQueueJob | null = null;
+    for (const job of finished) {
+      if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
+      if (job.status === "done" && queuedHere.current.delete(job.id) && typeof job.seed_used === "number") {
+        if (!latest || (job.finished_at ?? 0) > (latest.finished_at ?? 0)) latest = job;
+      }
+    }
+    // Newer than the session seed's run (server clock both sides), as a direct Generate's would be, for Reuse last seed.
+    if (latest && (latest.finished_at ?? 0) > sessionSeedAt.current) {
+      sessionSeedAt.current = latest.finished_at ?? 0;
+      setSessionSeed(latest.seed_used);
+    }
+  });
+  const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
+  const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
+  if (
+    pickedDuringRun &&
+    pickReleased({
+      statusKnown: generateProbed && imageQueue.polled,
+      generating: busy === "generating",
+      queueBusy: queueBusy(imageQueue.jobs),
+    })
+  ) {
+    setPickedDuringRun(false);
+  }
+  useEffect(() => {
+    if (busy !== null) return;
+    followingJob.current = null;
+    localRun.current = false;
+  }, [busy]);
+  useEffect(() => {
+    // Busy on a run this page did not start: it is the queue's running job, so Stop targets it by id.
+    if (queueRunningId && busy === "generating" && !localRun.current && followingJob.current !== queueRunningId) {
+      // A different job: the previous one's Stop state and in-flight acknowledgement do not carry over.
+      if (followingJob.current !== null) resetStopState();
+      followingJob.current = queueRunningId;
+      return;
+    }
+    // The followed job ended while another render keeps the page busy: Stop goes back to that render.
+    if (!queueRunningId && followingJob.current) followingJob.current = null;
+    // Idle with a job running (also after a gap in its progress, e.g. captioning): follow it once it denoises.
+    if (!queueRunningId || busy !== null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const p = await getGenerateProgress();
+        // Not denoising yet: the next queue poll (a new jobs array) asks again.
+        if (cancelled || !p.active || !isMounted.current) return;
+        resetStopState();
+        followingJob.current = queueRunningId;
+        runTarget.current = undefined;
+        setBusy("generating");
+        setGenStep(p);
+        resumeGeneratePoll();
+      } catch {
+        // best-effort, like the mount probe
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [queueRunningId, busy, resumeGeneratePoll, imageQueue.jobs, resetStopState]);
 
   useEffect(() => {
     void (async () => {
@@ -3470,17 +3789,17 @@ export function ImagesPage({
       // A load runs on the backend as a daemon thread that survives navigation, so resume tracking one still in flight.
       let inFlight = false;
       try {
-        const p = await getDiffusionLoadProgress();
+        const p = await readAfterUnload(pendingUnload, () => getDiffusionLoadProgress());
         inFlight = isLoadInFlightPhase(p.phase);
         if (inFlight) {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToast.open(p);
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
-          const loaded = await getDiffusionStatus();
+          const loaded = ownDiffusionStatus(await getDiffusionStatus());
           setStatusIfNewest(ticket, loaded);
           const resumed = finishedLoadTarget<LastLoad>(null, loaded);
           if (resumed) {
@@ -3495,7 +3814,7 @@ export function ImagesPage({
       setInitialLoadProbe(inFlight ? "loading" : "idle");
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
-        const g = await getGenerateProgress();
+        const g = await readAfterUnload(pendingUnload, getGenerateProgress);
         if (g.active) {
           runTarget.current = g.target ?? undefined;
           setBusy("generating");
@@ -3505,6 +3824,7 @@ export function ImagesPage({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      setGenerateProbed(true);
     })();
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -3515,7 +3835,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
+  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, loadToast, rememberFinishedLoad]);
 
   // Seed from a resident model's recipe, else flux.1-dev generates garbage at 9 steps.
   const residentSeeded = useRef(false);
@@ -3558,6 +3878,7 @@ export function ImagesPage({
     const matched = matchAspect(size.width, size.height);
     setAspect(matched.key);
     setPortrait(matched.portrait);
+    setReferenceRaise(null);
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
@@ -3634,6 +3955,8 @@ export function ImagesPage({
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const int8 = int8AttentionSelection(record.int8_attention);
+    if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -3657,6 +3980,8 @@ export function ImagesPage({
         transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
         text_encoder_quant: textEncoderQuant === "auto" ? undefined : textEncoderQuant,
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
+        // Always sent: the backend reads "auto" as no per-load override.
+        int8_attention: int8Attention,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         family_override: familyOverrideRequired ? explicitFamily(familyOverride) : undefined,
@@ -3680,6 +4005,7 @@ export function ImagesPage({
       transformerQuant,
       textEncoderQuant,
       attentionBackend,
+      int8Attention,
       memoryMode,
       transformerCache,
       familyOverride,
@@ -3720,8 +4046,7 @@ export function ImagesPage({
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToast.open(IDLE_PROGRESS, pickToast.take(pickToastId));
       // Snapshot first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       // A torchao int8/fp8 transformer takes adapters only at LOAD time and /images/generate then
@@ -3761,8 +4086,8 @@ export function ImagesPage({
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
-        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
-          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {
+          loadToast.update(SAVING_PROGRESS);
         }
       });
       try {
@@ -3781,6 +4106,7 @@ export function ImagesPage({
             : undefined,
           text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
+          int8_attention: advanced.int8_attention,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
           family_override: advanced.family_override,
@@ -3829,7 +4155,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, loadToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
   );
 
   const handleInitChange = useCallback((dataUrl: string | null) => {
@@ -3899,11 +4225,24 @@ export function ImagesPage({
     applyEditSource(dataUrl);
   }, [pendingLibraryEdit, capabilitiesKnown, applyEditSource]);
   const editImageItem = (image: GalleryImage) => (
-    <DropdownMenuItem onClick={() => void editGalleryImage(image)}>
-      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-      Edit image
-    </DropdownMenuItem>
+    <EditImageMenuItem onClick={() => void editGalleryImage(image)} />
   );
+  // Refreshed after every commit, read only from tile event handlers, so new page closures never re-render a tile.
+  const [stripTileActions] = useState(() => new StripTileActionsBox());
+  useLayoutEffect(() => {
+    stripTileActions.set({
+      tileProps: stripReorder.tileProps,
+      select: pickImage,
+      setMenuId: setTileMenuId,
+      togglePin: (id, pinned) => void handleTogglePin(id, pinned),
+      archive: (id) => void handleArchive(id),
+      remove: (id) => void handleDelete(id),
+      download: (image) => void handleQuickDownload(image),
+      addToProject: addGalleryImageToProject,
+      toggleFavorite,
+      editImage: (image) => void editGalleryImage(image),
+    });
+  });
   const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
     initImage,
     handleInitChange,
@@ -4154,9 +4493,11 @@ export function ImagesPage({
       let incompatible: string | null = null;
       let incompatibleCode: string | null = null;
       try {
-        const plan = retiredSnapshot
-          ? await requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
-          : await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
+        const plan = await withSettledVramBudget(() =>
+          retiredSnapshot
+            ? requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
+            : requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced),
+        );
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);
@@ -4209,6 +4550,16 @@ export function ImagesPage({
           return true;
         }
       } catch (error) {
+        // Not a plan failure: the fallback load below would run on the budget the user replaced.
+        if (error instanceof VramBudgetSaveError) {
+          pickToast.dismiss(pickToastId);
+          if (ownRevert && quantRevert.current === ownRevert) {
+            revertPick(ownRevert);
+            quantRevert.current = null;
+          }
+          toast.error(error.message);
+          return true;
+        }
         if (downloadOnly) {
           toast.error("Could not plan the download", {
             description: error instanceof Error ? error.message : "Try selecting the model again.",
@@ -4361,8 +4712,8 @@ export function ImagesPage({
     }
     // `routeSearch` is rebuilt every render, so depend on the two fields.
     const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
-    const routedFilename = routedGgufFilename(routed);
-    const routedLabel = routedGgufLabel(routed);
+    const routedFilename = routedImageFilename(routed);
+    const routedLabel = routedFilename ? null : routedGgufLabel(routed);
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
@@ -4399,7 +4750,7 @@ export function ImagesPage({
         wanted,
         "auto",
         false,
-        pick.opts.kind === "gguf" ? (pick.opts.filename ?? null) : null,
+        pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null),
       );
     }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
@@ -4445,14 +4796,14 @@ export function ImagesPage({
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
       if (found) {
-        setSelectedId(routedItem);
+        pickImage(routedItem);
       } else {
         toast(translate("library.toast.imageNotFound"), {
           description: translate("library.toast.notFoundDescription"),
         });
       }
     });
-  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+  }, [routedItem, navigateSelf, loadGallery, loadMore, pickImage]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
@@ -4679,7 +5030,13 @@ export function ImagesPage({
   );
 
   const handleDeployAdapter = useCallback(
-    (args: { baseRepo: string; family: string; catalogPath: string; trigger: string }) => {
+    (args: {
+      baseRepo: string;
+      family: string;
+      families?: string[];
+      catalogPath: string;
+      trigger: string;
+    }) => {
       if (busy !== null) {
         toast.error("Finish the current model load before deploying the adapter.");
         return;
@@ -4694,16 +5051,28 @@ export function ImagesPage({
       pickGuard.cancel();
       pickToast.dismissAll();
       setExternalModelId(null);
-      pendingDeploy.current = { loraId: stem, family: args.family };
+      pendingDeploy.current = {
+        loraId: stem,
+        family: args.family,
+        families: args.families?.length ? args.families : [args.family],
+      };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
       applyImageModelDefaults(args.baseRepo, "auto", true);
-      void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
+      // Sent with the load: an int8 / fp8 build takes adapters only at load time and refuses one picked after.
+      const deployLoras: LoraSpecInput[] = [{ id: stem, weight: 1 }];
+      const prevLoras = loras;
+      setLoras(deployLoras);
+      void handleLoad(args.baseRepo, { kind: "pipeline" }, {
+        ...currentLoadAdvanced(args.baseRepo),
+        loras: deployLoras,
+      }).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
+          setLoras(prevLoras);
           if (quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
@@ -4711,7 +5080,18 @@ export function ImagesPage({
         }
       });
     },
-    [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
+    [
+      applyImageModelDefaults,
+      busy,
+      currentLoadAdvanced,
+      handleLoad,
+      loras,
+      pickGuard,
+      pickToast,
+      quant,
+      revertPick,
+      setPageMode,
+    ],
   );
   const deployFromVideo = useImageWorkflowStore((s) => s.pendingDeploy);
   useEffect(() => {
@@ -4724,35 +5104,47 @@ export function ImagesPage({
     if (trainingCompletions > 0) setLoraRefreshKey((k) => k + 1);
   }, [trainingCompletions]);
 
-  const handleUnload = useCallback(async (): Promise<boolean> => {
+  const handleUnload = useCallback((): Promise<boolean> => {
+    if (pendingUnload.current) return pendingUnload.current;
+
     pendingRecalledGeneration.current = null;
     dropResidentState();
     loadTrackingRestored.current = false;
     setBusy("unloading");
-    try {
-      setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
-      setQuant(null);
-      // Wait for any in-flight load start to finish, compensating unload included, or the older load
-      // keeps running with no toast or cancel control.
-      const pending = pendingStart.current;
-      if (pending) {
-        try {
-          await pending;
-        } catch {
-          // Its own handler reports the failure; this only waits for the window to close.
+
+    async function unload(): Promise<boolean> {
+      try {
+        setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
+        setQuant(null);
+        // Wait for any in-flight load start to finish, compensating unload included, or the older load
+        // keeps running with no toast or cancel control.
+        const pending = pendingStart.current;
+        if (pending) {
+          try {
+            await pending;
+          } catch {
+            // Its own handler reports the failure; this only waits for the window to close.
+          }
         }
+        // Tracking RESTORED means the compensating unload failed and the load is still running.
+        return !loadTrackingRestored.current;
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to unload model");
+        void refreshStatus();
+        return false;
       }
-      // Tracking RESTORED means the compensating unload failed and the load is still running.
-      return !loadTrackingRestored.current;
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to unload model");
-      void refreshStatus();
-      return false;
-    } finally {
+    }
+
+    pendingUnload.current = unload().finally(() => {
+      pendingUnload.current = null;
       // Not an unconditional clear: a restore may have set "loading" deliberately.
       setBusy((prev) => (prev === "unloading" ? null : prev));
-    }
-  }, [refreshStatus, dropResidentState]);
+    });
+    return pendingUnload.current;
+  }, [refreshStatus, dropResidentState, setStatusIfNewest]);
+
+  const ejecting = useRef(false);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
 
   // The unload cancels the load; it leaves only cache, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
@@ -4769,8 +5161,8 @@ export function ImagesPage({
   }, [busy, handleUnload, restoreLoadTracking]);
 
   useEffect(() => {
-    cancelLoadRef.current = () => void handleCancelLoad();
-  }, [handleCancelLoad]);
+    loadToast.setCancel(() => void handleCancelLoad());
+  }, [loadToast, handleCancelLoad]);
 
   const buildKey = status?.loaded
     ? [
@@ -4780,6 +5172,7 @@ export function ImagesPage({
         status.transformer_quant,
         status.resolved?.transformer_quant?.source ?? "",
         (status.conditioning?.reference_resolutions ?? []).join(","),
+        status.conditioning?.edit_output_resolution ?? "",
       ].join("|")
     : null;
   const [seededBuild, setSeededBuild] = useState<string | null>(null);
@@ -4794,17 +5187,60 @@ export function ImagesPage({
       setReferenceResolution(
         seedReferenceResolution(status.conditioning?.reference_resolutions ?? [], tier),
       );
-      setMatchResolution(tier);
+      setMatchResolution(
+        seedMatchResolution(
+          tier,
+          status.conditioning?.edit_output_resolution,
+          sizeLimitsFrom(status.conditioning ?? null).maxSide,
+        ),
+      );
     }
   }
 
+  // Fit before the Reference raise so it starts from the fitted size.
   const limitsKey = `${sizeLimits.multiple}|${sizeLimits.maxSide}|${sizeLimits.maxPixels}`;
   const [fittedLimits, setFittedLimits] = useState(limitsKey);
+  let fittedWidth = width;
+  let fittedHeight = height;
   if (limitsKey !== fittedLimits) {
     setFittedLimits(limitsKey);
     const fitted = fitSize(width, height, sizeLimits);
     if (fitted.width !== width) setWidth(fitted.width);
     if (fitted.height !== height) setHeight(fitted.height);
+    fittedWidth = fitted.width;
+    fittedHeight = fitted.height;
+  }
+
+  // Width / Height are shared with Create: raise once per load on Reference, restore on leaving unless changed.
+  const referenceKey = workflow === "reference" && buildKey ? buildKey : null;
+  if (referenceKey !== null && referenceKey !== referenceRaise?.key) {
+    const raised = raiseToEditResolution(
+      fittedWidth,
+      fittedHeight,
+      status?.conditioning?.edit_output_resolution,
+      sizeLimits,
+    );
+    setReferenceRaise({
+      key: referenceKey,
+      raised: raised ?? undefined,
+      from: raised ? { width: fittedWidth, height: fittedHeight, aspect, portrait } : undefined,
+    });
+    if (raised) {
+      setWidth(raised.width);
+      setHeight(raised.height);
+      const m = matchAspect(raised.width, raised.height);
+      setAspect(m.key);
+      setPortrait(m.portrait);
+    }
+  } else if (referenceKey === null && referenceRaise?.from) {
+    const restore = sizeAfterReference(width, height, referenceRaise);
+    setReferenceRaise(restore ? null : { key: referenceRaise.key });
+    if (restore) {
+      setWidth(restore.width);
+      setHeight(restore.height);
+      setAspect(restore.aspect);
+      setPortrait(restore.portrait);
+    }
   }
 
   const [sourceRead, setSourceRead] = useState<{
@@ -4828,11 +5264,25 @@ export function ImagesPage({
 
   const editSize = useMemo(
     () =>
-      resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
-    [editSizing, sourceDims, matchResolution, width, height, sizeLimits],
+      resolveEditSize(
+        editSizing,
+        sourceDims,
+        matchResolution,
+        { width, height },
+        sizeLimits,
+        status?.family ?? null,
+      ),
+    [editSizing, sourceDims, matchResolution, width, height, sizeLimits, status?.family],
   );
-  const officialPresets = useMemo(() => presetsWithin(sizeLimits), [sizeLimits]);
+  const loadedFamily = status?.family ?? null;
+  const officialPresets = useMemo(
+    () => familyPresetsWithin(loadedFamily, sizeLimits),
+    [loadedFamily, sizeLimits],
+  );
+  const presetsCopy = familyPresetsCopy(loadedFamily);
   const showOfficialPresets = sizeLimits.maxSide > MAX_OUTPUT_DEFAULT && officialPresets.length > 0;
+  // "Picture" where the family's prompts name the inputs <Picture N> (MiniMax-H3-Image), else "Image".
+  const imageWord = inputImageWord(loadedFamily);
   const unifiedEditActive = workflow === "edit" && unifiedEdit;
   const onLocalizedLayer = useCallback((dataUrl: string | null) => setLocalizedLayer(dataUrl), []);
   const onLocalizedColors = useCallback((names: string[]) => setLocalizedColors(names), []);
@@ -4840,15 +5290,15 @@ export function ImagesPage({
   const renderAdditionalImages = (numberOf: (i: number) => number, hint: string) => (
     <>
       {referenceImages.map((img, i) => (
-        <Field key={i} label={`Image ${numberOf(i)}`} hint={hint}>
+        <Field key={i} label={`${imageWord} ${numberOf(i)}`} hint={hint}>
           <div className="space-y-1.5">
             <ImageDropzone
               value={img}
               onChange={(v) =>
                 setReferenceImages((prev) => prev.map((p, j) => (j === i ? (v ?? "") : p)))
               }
-              removeLabel={`Remove image ${numberOf(i)}`}
-              cropSubject={`Image ${numberOf(i)}`}
+              removeLabel={`Remove ${imageWord.toLowerCase()} ${numberOf(i)}`}
+              cropSubject={`${imageWord} ${numberOf(i)}`}
             />
             <Button
               type="button"
@@ -4857,8 +5307,8 @@ export function ImagesPage({
               className="w-full"
               onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-              Remove image {numberOf(i)}
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
+              Remove {imageWord.toLowerCase()} {numberOf(i)}
             </Button>
           </div>
         </Field>
@@ -4878,7 +5328,7 @@ export function ImagesPage({
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          Add image
+          Add {imageWord.toLowerCase()}
         </Button>
       )}
     </>
@@ -4968,10 +5418,7 @@ export function ImagesPage({
         </div>
       </Field>
       {showOfficialPresets && (
-        <Field
-          label="2K presets"
-          hint="The model's native 2K sizes. They take several times the memory and time of a 1 megapixel image."
-        >
+        <Field label={presetsCopy.label} hint={presetsCopy.hint}>
           <Select
             value=""
             onValueChange={(v) => {
@@ -4984,8 +5431,8 @@ export function ImagesPage({
               setPortrait(m.portrait);
             }}
           >
-            <SelectTrigger aria-label="2K presets">
-              <SelectValue placeholder="Choose a 2K size" />
+            <SelectTrigger aria-label={presetsCopy.label}>
+              <SelectValue placeholder="Choose a size" />
             </SelectTrigger>
             <SelectContent>
               {officialPresets.map((p) => (
@@ -5000,7 +5447,8 @@ export function ImagesPage({
     </>
   );
 
-  const handleGenerate = useCallback(async () => {
+  // toQueue: the runs go to the server queue instead of running here.
+  const handleGenerate = useCallback(async (toQueue = false) => {
     const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
     oversizedOnce.current = false;
     const vary = sdCaps?.variation_seed ? varyOnce.current : null;
@@ -5162,7 +5610,81 @@ export function ImagesPage({
       return;
     }
 
+    // One run's request; Generate sends them here one by one, Queue hands them all to the server queue.
+    const requestFor = (i: number): DiffusionGenerateRequest => {
+      const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
+      return compareRequest(compare, i, baseSeed, {
+        prompt: prompt.trim(),
+        // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
+        negative_prompt: negativeEngaged ? negativePrompt.trim() || undefined : undefined,
+        width: w,
+        height: h,
+        steps,
+        guidance: effectiveGuidance,
+        seed: runBaseSeed,
+        batch_size: batchSize,
+        // Transform/Inpaint/Extend send the source image (and mask) with a strength; the backend
+        // derives output size from the image.
+        init_image: condInit,
+        mask_image: condMask,
+        strength: condStrength,
+        ...condInpaint,
+        upscale: condUpscale,
+        upscale_model: isUpscale ? upscaleModelRequest(upscaleModel, upscaleModels) : undefined,
+        hires: hiresRequest(hires, hiresCapability, workflow),
+        allow_oversized: allowOversizedSent ? true : undefined,
+        live_preview: livePreview,
+        ...samplerRequestFields(samplerOptions, samplerChoice),
+        ...sdControlsRequestFields(
+          sdCaps,
+          runChoice,
+          // A compare grid keeps the form's variation seed for every cell (its axis, if any, replaces it), so
+          // only the swept setting differs between cells.
+          baseVariationSeed !== null ? (baseVariationSeed + (compare ? 0 : i * batchSize)) % 2 ** 32 : null,
+          varying,
+          !controlnetEngaged,
+        ),
+        ...shiftRequestFields(shiftControl, shiftValue),
+        ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
+        ...condFields,
+        ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
+        // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
+        // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
+        loras: (() => {
+          if (!loraCapable) return undefined;
+          const active = loras
+            .map((l) => ({ id: l.id.trim(), weight: l.weight }))
+            .filter((l) => l.id && l.weight > 0);
+          // [] (not omitted): the server reads an omitted list as the load's adapters, as /v1 does.
+          return active;
+        })(),
+        // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only.
+        controlnet:
+          controlnetCapable && controlnetId && controlImage && workflow === "create"
+            ? {
+                id: controlnetId,
+                image: controlImage,
+                control_type: controlType,
+                strength: controlStrength,
+              }
+            : undefined,
+        ...(external && { provider_id: external.providerId, model: external.modelId }),
+      });
+    };
+
+    // Saved only once the request passes validation, so a rejected attempt is not kept.
     saveLastPrompt(`images:${workflow}`, prompt);
+    if (toQueue && !compare && !external) {
+      try {
+        for (let i = 0; i < runs; i++) queuedHere.current.add((await enqueueDiffusionImage(requestFor(i))).id);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Could not queue the generation");
+      }
+      return;
+    }
+    followingJob.current = null;
+    localRun.current = true;
+    setPickedDuringRun(false);
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -5203,6 +5725,8 @@ export function ImagesPage({
     // Captured BEFORE the first POST: settleLostGeneration needs a record outside it as proof.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
+      // Not crypto.randomUUID: a LAN Studio over plain http is not a secure context.
+      const sequenceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
       for (let i = 0; i < runTotal; i++) {
         // Stop issuing more GPU generations once the page unmounted or Stop was pressed: the backend
         // cancel only reaches the denoise in flight, so a count > 1 request would run on.
@@ -5224,59 +5748,7 @@ export function ImagesPage({
         const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
-          res = await generateDiffusionImage(compareRequest(compare, i, baseSeed, {
-            prompt: prompt.trim(),
-            // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
-            negative_prompt: negativeEngaged ? negativePrompt.trim() || undefined : undefined,
-            width: w,
-            height: h,
-            steps,
-            guidance: effectiveGuidance,
-            seed: runBaseSeed,
-            batch_size: batchSize,
-            init_image: condInit,
-            mask_image: condMask,
-            strength: condStrength,
-            ...condInpaint,
-            upscale: condUpscale,
-            upscale_model: isUpscale ? upscaleModelRequest(upscaleModel, upscaleModels) : undefined,
-            hires: hiresRequest(hires, hiresCapability, workflow),
-            allow_oversized: allowOversizedSent ? true : undefined,
-            live_preview: livePreview,
-            ...samplerRequestFields(samplerOptions, samplerChoice),
-            ...sdControlsRequestFields(
-              sdCaps,
-              runChoice,
-              // A compare grid keeps the form's variation seed for every cell (its axis, if any, replaces it), so
-              // only the swept setting differs between cells.
-              baseVariationSeed !== null ? (baseVariationSeed + (compare ? 0 : i * batchSize)) % 2 ** 32 : null,
-              varying,
-              !controlnetEngaged,
-            ),
-            ...shiftRequestFields(shiftControl, shiftValue),
-            ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
-            ...condFields,
-            ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
-            // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
-            // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
-            loras: (() => {
-              if (!loraCapable) return undefined;
-              const active = loras
-                .map((l) => ({ id: l.id.trim(), weight: l.weight }))
-                .filter((l) => l.id && l.weight > 0);
-              return active.length ? active : undefined;
-            })(),
-            controlnet:
-              controlnetCapable && controlnetId && controlImage && workflow === "create"
-                ? {
-                    id: controlnetId,
-                    image: controlImage,
-                    control_type: controlType,
-                    strength: controlStrength,
-                  }
-                : undefined,
-            ...(external && { provider_id: external.providerId, model: external.modelId }),
-          }));
+          res = await generateDiffusionImage(requestFor(i), { id: sequenceId, more: i < runTotal - 1 });
         } catch (err) {
           // The tunnel caps the response near 100s; retrying would duplicate the work.
           if (!(err instanceof GenerateResponseLostError)) throw err;
@@ -5284,12 +5756,17 @@ export function ImagesPage({
           if (!isMounted.current) break;
           await loadGallery();
           // A compare cell takes its record from what the gallery gained (matched by seed in compare/).
-          compare?.onImages(i, galleryCache.images.filter((image) => !knownIds.has(image.id)));
+          const gained = galleryCache.images.filter((image) => !knownIds.has(image.id));
+          compare?.onImages(i, gained);
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
           // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
-          // The run landed without its records, so Reuse last seed takes the seed it was sent.
-          if (!external) setSessionSeed(compare?.sentSeed(i) ?? runBaseSeed);
+          // No records came back: Reuse last seed takes the sent seed, unless a later queued run already set one.
+          const gainedAt = Math.max(0, ...gained.map((image) => image.created_at));
+          if (!external && gainedAt >= sessionSeedAt.current) {
+            sessionSeedAt.current = gainedAt;
+            setSessionSeed(compare?.sentSeed(i) ?? runBaseSeed);
+          }
           setGenDone(i + 1);
           continue;
         }
@@ -5299,9 +5776,14 @@ export function ImagesPage({
         // Deduplicated: a resync may already have fetched the record.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
-        if (res.images[0]) setSelectedId(res.images[0].id);
+        if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);
         const runSeed = lastSeedOf(res.images);
-        if (runSeed !== null) setSessionSeed(runSeed);
+        const runAt = Math.max(0, ...res.images.map((image) => image.created_at));
+        // A late reply never replaces the seed of a queued run that finished after it.
+        if (runSeed !== null && runAt >= sessionSeedAt.current) {
+          sessionSeedAt.current = runAt;
+          setSessionSeed(runSeed);
+        }
         // Asked for enhancement and did not get it: say so once, without blocking the result.
         if (enhanceOn && upsamplerCapability.supported) {
           const notice = enhancementNotice(res.images[0]?.prompt_enhancement);
@@ -5356,7 +5838,7 @@ export function ImagesPage({
       cancelRequested.current = false;
       // Await on EVERY exit: a run can change status (compile, cancelled native run), so Generate could 409.
       if (isMounted.current) await refreshStatus();
-      setBusy(null);
+      setBusy((prev) => (prev === "generating" ? null : prev));
       setGenDone(null);
       setGenStep(null);
       setStopping(false);
@@ -5374,13 +5856,18 @@ export function ImagesPage({
     const abort = new AbortController();
     cancelAbort.current = abort;
     try {
-      const { cancelled } = runTarget.current
-        ? await cancelConnectionImageGeneration(abort.signal)
-        : await cancelDiffusionGeneration(abort.signal);
+      const followed = followingJob.current;
+      const { cancelled } = followed
+        ? { cancelled: (await cancelDiffusionQueueJob(followed)).status !== "done" }
+        : runTarget.current
+          ? await cancelConnectionImageGeneration(abort.signal)
+          : await cancelDiffusionGeneration(abort.signal);
+      // The page moved on to another job meanwhile: this answer is about the old one.
+      if (runToken.current !== token) return;
       cancelAcked.current = Boolean(cancelled);
       if (!cancelled) setStopping(false);
     } catch {
-      if (!abort.signal.aborted) {
+      if (!abort.signal.aborted && runToken.current === token) {
         cancelAcked.current = false;
         setStopping(false);
         toast.error("Could not reach the server to stop this generation; it is still running");
@@ -5390,6 +5877,32 @@ export function ImagesPage({
       if (cancelAbort.current === abort) cancelAbort.current = null;
     }
   }, []);
+
+  const handleQueue = useCallback(async () => {
+    if (!imagePresets.hydrated) return;
+    await handleGenerate(true);
+    await imageQueue.refresh();
+  }, [handleGenerate, imagePresets.hydrated, imageQueue.refresh]);
+  const queueAction = useCallback(
+    async (action: () => Promise<unknown>) => {
+      try {
+        await action();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Could not update the queue");
+      }
+      await imageQueue.refresh();
+    },
+    [imageQueue.refresh],
+  );
+  const handleCancelQueued = useCallback(
+    (job: ImageQueueJob) => void queueAction(() => cancelDiffusionQueueJob(job.id)),
+    [queueAction],
+  );
+  const handleMoveQueued = useCallback(
+    (job: ImageQueueJob, index: number) => void queueAction(() => moveDiffusionQueueJob(job.id, index)),
+    [queueAction],
+  );
+  const handleClearQueue = useCallback(() => void queueAction(clearDiffusionQueue), [queueAction]);
 
   // Compare grid: handleGenerate reads the run from compareOnce, so a grid shares Stop, progress and the gallery
   // merge with Generate. Text-to-image on a loaded local model only.
@@ -5410,6 +5923,7 @@ export function ImagesPage({
     [busy, handleGenerate, imagePresets.hydrated],
   );
   const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
+  const canQueue = !external && Boolean(status?.loaded);
   const compareSdControls = sdCaps;
   const compareContext = useMemo<CompareContext>(
     () => ({
@@ -5432,12 +5946,13 @@ export function ImagesPage({
         })),
       sdControls: compareSdControls,
       hiresEngagesNegative: hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance),
+      detailerEngagesNegative: detailerEngagesNegative(detailerOn, detailerReady, detailerOptions, negativeMinGuidance),
       // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
       controlnetEngaged,
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {
@@ -5574,7 +6089,7 @@ export function ImagesPage({
 
   useEffect(() => {
     if (external) {
-      setSupported(["create"]);
+      setSupported([...CONNECTION_WORKFLOWS]);
       return;
     }
     if (!status?.loaded) {
@@ -5712,7 +6227,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint={ATTENTION_SELECT_HINT}
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -5725,8 +6240,19 @@ export function ImagesPage({
         ]}
       />
       <AdvancedSelect
+        label={INT8_ATTENTION_LABEL}
+        hint={INT8_ATTENTION_HINT}
+        badge={<ResolvedBadge status={status} controlKey="int8_attention" />}
+        value={int8Attention}
+        onValueChange={(v) => setInt8Attention(v as Int8AttentionChoice)}
+        options={INT8_ATTENTION_OPTIONS}
+      />
+      {!external && imageGpuDevices.length > 0 && (
+        <VramBudgetControl image modelLoading={busy === "loading"} />
+      )}
+      <AdvancedSelect
         label="Memory"
-        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
+        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram also streams the text encoders and tiles the VAE decode (lowest VRAM, slowest)."
         badge={<ResolvedBadge status={status} controlKey="memory_mode" />}
         value={memoryMode}
         onValueChange={(v) => setMemoryMode(v as typeof memoryMode)}
@@ -5885,12 +6411,12 @@ export function ImagesPage({
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
-      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface media-header-layout @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
       <MediaRailResizeHandle kind="images" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(var(--media-header-min-width),1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
@@ -5922,7 +6448,8 @@ export function ImagesPage({
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
-                onEject={status?.loaded ? handleUnload : undefined}
+                loaded={busy === "unloading" ? false : undefined}
+                onEject={status?.loaded && busy !== "unloading" ? handleEject : undefined}
                 variant="ghost"
                 className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
@@ -5950,6 +6477,9 @@ export function ImagesPage({
                 </TooltipTrigger>
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
+            )}
+            {pageMode !== "train" && busy === "loading" && closedLoad && (
+              <LoadInlineStatus p={closedLoad} />
             )}
           </div>
         </div>
@@ -5990,11 +6520,17 @@ export function ImagesPage({
             }
             onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
             onDeploy={handleDeployAdapter}
+            // Video-family adapters bake into the Video loader, which takes the request on arrival.
+            onDeployVideo={(args) => {
+              useVideoDeployStore.getState().requestDeploy(args);
+              void navigateSelf({ to: "/video" });
+            }}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
             onBaseChoiceChange={setTrainBaseChoice}
             onFamiliesChange={setTrainFamilies}
+            savedPresets={true}
           />
         </div>
       )}
@@ -6004,7 +6540,7 @@ export function ImagesPage({
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="images-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           <div
             ref={attachSettingsScroll}
@@ -6118,7 +6654,7 @@ export function ImagesPage({
                           setMaskResetKey((k) => k + 1);
                         }}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Clear mask
                       </Button>
                       <Button
@@ -6279,10 +6815,10 @@ export function ImagesPage({
             {workflow === "reference" && (
               <>
                 <Field
-                  label={unifiedEdit ? "Image 1" : "Reference image"}
+                  label={unifiedEdit ? `${imageWord} 1` : "Reference image"}
                   hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? "Image 1" : "Reference image"} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? `${imageWord} 1` : "Reference image"} />
                 </Field>
                 {renderAdditionalImages(
                   (i) => i + 2,
@@ -6347,17 +6883,21 @@ export function ImagesPage({
                         className="w-full"
                         onClick={() => handleInitChange(null)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Remove source image
                       </Button>
                     </div>
                   </Field>
                 ) : (
                   <Field
-                    label="Image 1 (source)"
-                    hint="The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
+                    label={`${imageWord} 1 (source)`}
+                    hint={
+                      imageWord === "Picture"
+                        ? "The image to edit. Describe the change in the instruction below; add up to 15 more pictures and refer to them as <Picture 1>, <Picture 2> and so on, saying what to keep and what to change."
+                        : "The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
+                    }
                   >
-                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Image 1" />
+                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={`${imageWord} 1`} />
                   </Field>
                 )}
                 {conditioning?.localized_edit_modes?.length ? (
@@ -6468,7 +7008,7 @@ export function ImagesPage({
                         <SelectItem value="custom">Custom</SelectItem>
                       </SelectContent>
                     </Select>
-                    {editSizing === "source" && (
+                    {editSizing === "source" && matchSizeChoosable(status?.family) && (
                       <Select
                         value={String(matchResolution)}
                         onValueChange={(v) => setMatchResolution(Number(v))}
@@ -6544,6 +7084,7 @@ export function ImagesPage({
                 enabled={enhanceOn}
                 onEnabledChange={changeEnhancePrompt}
                 modelKey={`${status?.repo_id ?? ""}|${status?.gguf_filename ?? ""}|${loadEpoch}`}
+                family={status?.family ?? null}
                 prompt={prompt}
                 previewRequest={() => {
                   // Edit and Reference condition on their images, so the caption describes them too.
@@ -6554,6 +7095,7 @@ export function ImagesPage({
                   return {
                     prompt: prompt.trim(),
                     variant: upsamplerVariantFor(status?.family),
+                    ...(status?.family ? { family: status.family } : {}),
                     ...(images.length ? { reference_images: images } : {}),
                   };
                 }}
@@ -6601,7 +7143,7 @@ export function ImagesPage({
             {loraCapable && (
               <Field
                 label="LoRAs"
-                hint="Style or character adapters applied on top of the model. Enter a Hugging Face repo id (or pick a suggestion) and set the strength (1.0 = full effect, 0 disables). Stack several."
+                hint="Style or character adapters applied on top of the model. Pick one from Add LoRA, enter a Hugging Face repo id, or add a folder of LoRA files, then set the strength (1.0 = full effect, 0 disables). Stack several."
               >
                 <div className="space-y-2">
                   {availableLoras.length > 0 && (
@@ -6623,6 +7165,9 @@ export function ImagesPage({
                       <div className="flex items-center gap-2">
                         <Input
                           value={sel.id}
+                          autoFocus={i === focusLoraRow}
+                          // One-shot, so a later row mounting at this index (recipe restore) stays unfocused.
+                          onFocus={i === focusLoraRow ? () => setFocusLoraRow(null) : undefined}
                           list={availableLoras.length > 0 ? "diffusion-lora-suggestions" : undefined}
                           placeholder="owner/name or owner/name:file.safetensors"
                           spellCheck={false}
@@ -6643,7 +7188,7 @@ export function ImagesPage({
                           aria-label={`Remove LoRA ${i + 1}`}
                           onClick={() => setLoras((prev) => prev.filter((_, j) => j !== i))}
                         >
-                          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                          <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         </Button>
                       </div>
                       <SliderField
@@ -6660,30 +7205,20 @@ export function ImagesPage({
                   ))}
                   <div className="flex gap-2">
                     {loras.length < 8 && (
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        className="flex-1"
-                        onClick={() => {
-                          // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
-                          const taken = new Set(loras.map((l) => l.id));
-                          const next = sortedLoras.find((a) => !taken.has(a.id));
-                          setLoras((prev) => [
-                            ...prev,
-                            next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
-                          ]);
+                      <LoraAddMenu
+                        catalog={sortedLoras}
+                        takenIds={takenLoraIds}
+                        onAdd={(spec, focusRow) => {
+                          setFocusLoraRow(focusRow ? loras.length : null);
+                          setLoras((prev) => [...prev, spec]);
                         }}
-                      >
-                        <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-                        Add LoRA
-                      </Button>
+                      />
                     )}
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      title="Add a custom models folder. Image LoRAs exported from Unsloth in it show up here."
+                      title="Add a custom models folder. Image LoRA .safetensors files in it show up here."
                       onClick={() => setLoraFoldersOpen(true)}
                     >
                       <HugeiconsIcon icon={FolderAddIcon} className="size-3.5" />
@@ -6748,7 +7283,8 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            {!unifiedEditActive && sizeControls}
+            {/* A connection edit sends no size. */}
+            {!unifiedEditActive && !(external && workflow === "edit") && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
             {!external && (
@@ -6756,10 +7292,14 @@ export function ImagesPage({
                 <div className="pt-2">
                   <SliderField
                     label="Steps"
-                    hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
-                    value={steps}
+                    hint={
+                      maxSteps !== null
+                        ? `The loaded model is distilled to ${maxSteps} steps, one output head per step: it runs 1 to ${maxSteps}, and the reference workflows use ${maxSteps}.`
+                        : "Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
+                    }
+                    value={maxSteps !== null ? Math.min(steps, maxSteps) : steps}
                     min={1}
-                    max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
+                    max={maxSteps ?? stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
                   />
@@ -6899,7 +7439,7 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <HistoryIcon className="size-4" strokeWidth={1.5} />
+                      <HugeiconsIcon icon={HistoryIcon} className="size-4" strokeWidth={1.5} />
                     </Button>
                     </div>
                   </div>
@@ -6927,25 +7467,46 @@ export function ImagesPage({
             )}
 
           </div>
+          <GenerationQueuePanel
+            jobs={imageQueue.jobs}
+            onCancel={handleCancelQueued}
+            onMove={handleMoveQueued}
+            onClear={handleClearQueue}
+          />
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
           <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
+            {!external && busy === null && heldByOtherAccount(status) && (
+              <p role="status" className="w-full text-center text-ui-11 leading-snug text-muted-foreground">
+                {HELD_BY_OTHER_ACCOUNT_NOTICE}
+              </p>
+            )}
             {busy === "generating" ? (
-              <Button
-                className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
-                variant="outline"
-                onClick={handleCancelGenerate}
-              >
-                <Spinner className="mr-2 size-4" />
-                {stopButtonLabel({ stopping, done: genDone, count })}
-              </Button>
+              /* Replaces Generate while a run is in flight. Every workflow funnels through the same
+                 handler, so one control stops all of them. */
+              <>
+                <Button
+                  className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
+                  variant="outline"
+                  onClick={handleCancelGenerate}
+                >
+                  <Spinner className="mr-2 size-4" />
+                  {stopButtonLabel({ stopping, done: genDone, count })}
+                </Button>
+                {canQueue && compareRun === null && (
+                  <Button className="relative z-10 text-ui-13" onClick={handleQueue} disabled={!imagePresets.hydrated}>
+                    Queue
+                  </Button>
+                )}
+              </>
             ) : (
               <>
                 <Button variant="primary"
                   className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                  onClick={handleGenerateWithRecall}
+                  // Jobs still waiting: a new one lines up behind them instead of jumping the queue.
+                  onClick={queueWaiting && canQueue ? handleQueue : handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
-                  Generate
+                  {queueWaiting && canQueue ? "Queue" : "Generate"}
                 </Button>
                 {canVary && (
                   <Tooltip>
@@ -7050,9 +7611,9 @@ export function ImagesPage({
             </MediaViewer>
           )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
-            {livePreviewSrc ? (
+            {stagePreviewSrc ? (
               <img
-                src={livePreviewSrc}
+                src={stagePreviewSrc}
                 alt="Live preview of the image being generated"
                 data-testid="images-live-preview"
                 style={{ maxWidth: width, maxHeight: height }}
@@ -7186,7 +7747,7 @@ export function ImagesPage({
               </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={Image03Icon} className="size-12" strokeWidth={1.5} />
+                <HugeiconsIcon icon={ImageIcon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
@@ -7232,83 +7793,34 @@ export function ImagesPage({
               }}
             >
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-wash-30">
+                <button
+                  type="button"
+                  data-testid="images-live-tile"
+                  aria-label="Follow the running generation"
+                  title="Follow the running generation"
+                  onClick={() => setPickedDuringRun(false)}
+                  className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 outline-none ring-2 ring-wash-30 focus-visible:ring-ring"
+                >
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (
                     <Spinner className="size-5 text-muted-foreground" />
                   )}
-                </div>
+                </button>
               )}
               {images.map((image) => (
-                <div
+                <GalleryStripTile
                   key={image.id}
-                  data-image-id={image.id}
-                  {...stripReorder.tileProps(image.id)}
-                  // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
-                  // Portalled children (the New project dialog) bubble here too: leave their menu alone.
-                  onContextMenu={(event) => {
-                    if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
-                    event.preventDefault();
-                    setTileMenuId(image.id);
-                  }}
-                  className={cn(
-                    "group relative size-16 shrink-0",
-                    stripReorder.draggingId === image.id && "opacity-40",
-                  )}
-                >
-                  {stripReorder.cue?.id === image.id && (
-                    <StripDropLine edge={stripReorder.cue.edge} />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setSelectedId(image.id)}
-                    className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {(thumbById[image.id] ?? srcById[image.id]) ? (
-                      <img
-                        src={thumbById[image.id] ?? srcById[image.id]}
-                        alt={image.prompt}
-                        draggable={false}
-                        className="size-full object-cover"
-                      />
-                    ) : (
-                      <span className="flex size-full items-center justify-center">
-                        <Spinner className="size-4 text-muted-foreground" />
-                      </span>
-                    )}
-                    {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
-                    {image.id === selected?.id && (
-                      <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
-                    )}
-                  </button>
-                  {image.pinned && (
-                    <GalleryPinBadge
-                      noun="image"
-                      className="bottom-0.5 left-0.5"
-                      onUnpin={() => void handleTogglePin(image.id, false)}
-                    />
-                  )}
-                  <div className="absolute right-0.5 top-0.5">
-                    <GalleryItemMenu
-                      variant="overlay"
-                      noun="image"
-                      active={active}
-                      open={tileMenuId === image.id}
-                      onOpenChange={(open) => setTileMenuId(open ? image.id : null)}
-                      pinned={Boolean(image.pinned)}
-                      archived={Boolean(image.archived)}
-                      favorite={isFavorite(`image:${image.id}`)}
-                      onToggleFavorite={() => toggleFavorite(`image:${image.id}`)}
-                      onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
-                      onToggleArchive={() => void handleArchive(image.id)}
-                      onDelete={() => void handleDelete(image.id)}
-                    onDownload={() => void handleQuickDownload(image)}
-                    onAddToProject={(projectId) => addGalleryImageToProject(image.id, projectId)}
-                      leadingItems={editImageItem(image)}
-                    />
-                  </div>
-                </div>
+                  image={image}
+                  src={thumbById[image.id] ?? srcById[image.id]}
+                  selected={!stagePreviewSrc && image.id === selected?.id}
+                  menuOpen={tileMenuId === image.id}
+                  active={active}
+                  favorite={isFavorite(`image:${image.id}`)}
+                  dragging={stripReorder.draggingId === image.id}
+                  cueEdge={stripReorder.cue?.id === image.id ? stripReorder.cue.edge : null}
+                  actions={stripTileActions}
+                />
               ))}
               {hasMore && (
                 <div className="flex size-16 shrink-0 items-center justify-center">

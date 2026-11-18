@@ -26,9 +26,8 @@ _WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json"
 
 
 def _is_intro_line(line):
-    """True for the Colab run announcement, bare or inside a single-line HTML comment.
-    Only a comment that OPENS AND CLOSES on one line matches, so dropping it can never
-    leave a dangling `<!--` that swallows the rest of the cell."""
+    """True for the Colab run announcement, bare or in a one-line HTML comment; only a comment that
+    opens and closes on one line matches, so no dangling <!-- can swallow the cell."""
     stripped = line.strip()
     low = stripped.lower()
     if low.startswith(_INTRO_PREFIX):
@@ -132,11 +131,9 @@ def _unlink(path):
 
 
 def _stage_clean(path):
-    """(tmp, hash_before, hash_after) for a cleaned copy written beside the notebook but
-    NOT published, or None when there was nothing to change or the write failed.
-
-    Split out of strip_notebook so migrate can record the new hash before the notebook
-    carries it."""
+    """Returns (tmp, hash_before, hash_after) for a cleaned copy staged beside the notebook but not
+    published, or None if nothing changed or the write failed; split out so migrate can record
+    the new hash first."""
     try:
         before = _sha256(path)
         with open(path, "r", encoding = "utf-8") as f:
@@ -176,10 +173,8 @@ def _publish(tmp, path, before):
 
 
 def _write_state(state_path, lines):
-    """Replace the state file durably; False when it could not be written.
-
-    fsync before the rename, because a crash between the two makes the rename visible
-    with the content unwritten, which strands the notebooks the same way."""
+    """Replaces the state file durably, returning False on failure; fsync runs before the rename,
+    since a crash between them would leave the rename visible with the content unwritten."""
     tmp = state_path + ".tmp"
     try:
         with open(tmp, "w", encoding = "utf-8") as f:
@@ -194,15 +189,9 @@ def _write_state(state_path, lines):
 
 
 def _resume(path, rec):
-    """Finish a publish that was interrupted after its record landed. True if it did.
-
-    Recording before publishing closes the window that stranded the whole set at once,
-    but it leaves a one-notebook window of its own: a stop between os.replace on the
-    state file and os.replace on the notebook leaves `rec` describing the cleaned bytes
-    while the file still holds the pristine ones, and every later run reads that
-    mismatch as a user edit and carries the stale record forward forever. Cleaning what
-    is actually on disk tells the two apart, because only the interrupted case
-    reproduces `rec` byte for byte; a real edit cannot, so nothing else is touched."""
+    """Finishes a publish interrupted between the state and notebook renames, True if it did; that
+    stop would otherwise read as a user edit, and only that case reproduces the record byte for
+    byte."""
     st = _stage_clean(path)
     if st is None:
         return False
@@ -236,21 +225,8 @@ def _sha256(path):
 
 
 def migrate(state_path, dest):
-    """Clean every notebook the state file says we own, recording each one BEFORE it is
-    published.
-
-    Publishing the whole set first and then writing the state once meant that losing
-    that single write left every cleaned notebook no longer matching its record. The
-    refresh reads a hash mismatch as a user edit and carries the stale record forward,
-    so upstream updates stop reaching those notebooks permanently, while this reports
-    success. It is not a one-notebook risk either: on the first boot after this ships,
-    migrate cleans the entire set in one pass, so a docker stop or an ENOSPC anywhere
-    in that window stranded all of them at once.
-
-    Ordering it the other way is safe in the direction that matters. If the state write
-    fails, nothing has been published and the disk still matches the record, so the next
-    start simply tries again. The narrow window that is left, a stop between the two
-    renames, is reconciled by _resume rather than mistaken for a user edit."""
+    """Cleans every owned notebook, recording each in the state file before it is published, so one
+    lost state write cannot strand the set; a stop between the renames is reconciled by _resume."""
     try:
         with open(state_path, "r", encoding = "utf-8") as f:
             lines = f.read().splitlines()

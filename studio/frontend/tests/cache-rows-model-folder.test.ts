@@ -40,8 +40,9 @@ function loadRows(): Rows {
     "@/features/hub/stores/inventory-events": { useInventoryVersion: () => 0 },
     "@/i18n": { useT: () => (key: string) => key },
     "@/lib/toast": { toast: {} },
-    "@hugeicons/core-free-icons": { Delete02Icon: {} },
-    "@/lib/folder-icons": { Delete02Icon: {} },
+    "@hugeicons/core-free-icons": {},
+    "@/lib/hugeicons-derived": { TrashIcon: {} },
+    "@/lib/folder-icons": {},
     "@hugeicons/react": { HugeiconsIcon: noop },
     "../api/caches": {
       bulkPurgeKeys: () => [],
@@ -49,6 +50,10 @@ function loadRows(): Rows {
       purgeCaches: async () => null,
     },
     "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+    "./npu-model-clear": {
+      NpuModelClear: "NpuModelClear",
+      refreshNpuCatalogIfListed: () => undefined,
+    },
     "./storage-overview": { SettingsCardRow: noop },
   });
 }
@@ -187,8 +192,9 @@ function driveRows(options: {
         error: () => undefined,
       },
     },
-    "@hugeicons/core-free-icons": { Delete02Icon: {} },
-    "@/lib/folder-icons": { Delete02Icon: {} },
+    "@hugeicons/core-free-icons": {},
+    "@/lib/hugeicons-derived": { TrashIcon: {} },
+    "@/lib/folder-icons": {},
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "../api/caches": {
       bulkPurgeKeys: () => ["uv"],
@@ -196,6 +202,10 @@ function driveRows(options: {
       purgeCaches: options.purge ?? (async () => ({})),
     },
     "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+    "./npu-model-clear": {
+      NpuModelClear: "NpuModelClear",
+      refreshNpuCatalogIfListed: () => undefined,
+    },
     "./storage-overview": { SettingsCardRow: "SettingsCardRow" },
   });
 

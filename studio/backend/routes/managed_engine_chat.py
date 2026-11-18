@@ -3,6 +3,7 @@
 
 """Native managed-engine tool calls and Studio's shared execution loop."""
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import asyncio
 import json
 import threading
@@ -35,11 +36,13 @@ class ManagedToolTransport:
         preserve_thinking = None,
         message_fitter = None,
         continuing = False,
+        reply_cap = None,
     ):
         self.client, self.engine, self.body = client, engine, body
         self._continuing = continuing
         self._preserve_thinking = preserve_thinking
         self._message_fitter = message_fitter
+        self._reply_cap = reply_cap
         # The tool loop keeps a turn's reasoning_content on the assistant message only when asked.
         self.preserves_reasoning = bool(engine.reasoning_parser and preserve_thinking)
 
@@ -70,6 +73,8 @@ class ManagedToolTransport:
         else:
             body.pop("tools", None)
             body.pop("tool_choice", None)
+        if self._reply_cap is not None:
+            await self._reply_cap(body)
         if cancel_event.is_set():
             return
         async with self.client.stream(
@@ -177,6 +182,15 @@ def _message_fitter(
     return fit
 
 
+def _has_image(messages) -> bool:
+    return any(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+
+
 def _with_model(line: str, public: str) -> str:
     if not line.startswith("data:") or '"model"' not in line:
         return line
@@ -204,7 +218,13 @@ async def managed_tool_chat(
     from state.tool_policy import get_tool_policy
     from core.inference.sse_control_frames import sanitize_provider_sse_line
 
-    tools_on = bool(api._effective_enable_tools(payload))
+    info = backend.models.get(backend.active_model_name, {})
+    # Memory can still supply facts to a model that cannot execute its update tool.
+    tools_on = bool(
+        api._effective_enable_tools(payload)
+        if info.get("supports_tools")
+        else api._base_enable_tools(payload)
+    )
     ui_events = api._ui_stream_events_enabled(request)
     if tools_on and not api._launcher_tool_default_applies(payload, ui_events):
         tools_on = False
@@ -220,7 +240,6 @@ async def managed_tool_chat(
         and get_tool_policy() is not False
     )
     has_history = any(m.role == "tool" or m.tool_calls for m in payload.messages)
-    info = backend.models.get(backend.active_model_name, {})
     # A catalog sent with tool_choice "none" and no tool turns cannot produce a call, so a model
     # without a parser serves it as plain chat; one with a parser still renders the catalog.
     idle_catalog = payload.tool_choice == "none" and not has_history
@@ -329,6 +348,23 @@ async def managed_tool_chat(
     if response_format is not None:
         body["response_format"] = response_format
     continuing = api._continue_final_message(payload)
+    thinking = {
+        "enable_thinking": payload.enable_thinking,
+        "reasoning_effort": payload.reasoning_effort,
+        "preserve_thinking": payload.preserve_thinking,
+    }
+
+    async def cap_reply(request_body):
+        # As in ManagedEngine.generate, an image prompt is left to the engine to judge.
+        if request_body.get("max_tokens") and not _has_image(request_body["messages"]):
+            request_body["max_tokens"] = await asyncio.to_thread(
+                engine._reply_cap_in_window,
+                request_body["messages"],
+                "",
+                request_body["max_tokens"],
+                thinking,
+                request_body.get("tools"),
+            )
 
     cancel = api._chat_cancel_event(request)
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:12]
@@ -353,6 +389,7 @@ async def managed_tool_chat(
                 payload, engine, public, tools or payload.tools, studio_loop = bool(tools)
             ),
             continuing = continuing,
+            reply_cap = cap_reply,
         )
         stripper = api.ServerToolCallStripper()
         stream = None
@@ -375,7 +412,7 @@ async def managed_tool_chat(
                         tools = tools,
                         max_calls = payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25,
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                         timeout = payload.tool_call_timeout or 300,
                         permission_mode = payload.permission_mode or "auto",
                         sandbox_level = payload.sandbox_level,
@@ -402,6 +439,7 @@ async def managed_tool_chat(
                     )
                     if max_tokens:
                         request_body["max_tokens"] = max_tokens
+                await cap_reply(request_body)
                 if continuing:
                     engine.continue_final_message(request_body)
                 response = await client.post(
@@ -455,6 +493,10 @@ async def managed_tool_chat(
                 ):
                     continue
                 yield _with_model(line, public)
+            # The loop can end without opening the turn a withheld call promised; flush the owed terminal chunk.
+            owed = stripper.owed_terminal_chunk()
+            if owed is not None:
+                yield _with_model(owed, public)
         except asyncio.CancelledError:
             cancel.set()
             raise
@@ -530,7 +572,12 @@ async def managed_tool_chat(
                 return JSONResponse(line)
             if not line.startswith("data:") or line[5:].strip() == "[DONE]":
                 continue
-            event = json.loads(line[5:])
+            try:
+                event = json.loads(line[5:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
             if event.get("error"):
                 raise HTTPException(status_code = 502, detail = event)
             if event.get("usage"):
@@ -539,6 +586,8 @@ async def managed_tool_chat(
                 result["context_truncated"] = event["context_truncated"]
             message = result["choices"][0]["message"]
             for choice in event.get("choices", []):
+                if not isinstance(choice, dict):
+                    continue
                 delta = choice.get("delta") or {}
                 message["content"] += delta.get("content") or ""
                 if delta.get("reasoning_content"):
@@ -559,6 +608,11 @@ async def managed_engine_completions(request, current_subject, backend, body):
     stream = bool(body.get("stream"))
     include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
     upstream = {**body, "model": engine.model}
+    limit = body.get("max_tokens")
+    if isinstance(limit, int) and limit > 0 and isinstance(body.get("prompt"), str):
+        upstream["max_tokens"] = await asyncio.to_thread(
+            engine._completion_cap_in_window, body["prompt"], limit
+        )
     if stream:
         # Always asked for so the monitor counts tokens; dropped again unless the caller opted in.
         upstream["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}

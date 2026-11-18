@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Batch-1 NF4 GEMV for decoding, out[1, 1, N] = X[1, 1, K] @ dequant(W).T, in one Triton launch
-# (nested absmax decode, NF4 lookup and dot product fused) on torch's current stream. Registered
-# as unsloth::gemv_nf4 so torch.compile traces it and CUDA graphs capture it. Each quantization
-# block is summed before scaling, so it matches bitsandbytes to fp32 accumulation noise, not bitwise.
-# Every weight row must start a new quantization block (K % blocksize == 0); callers check.
+# Batch-1 NF4 GEMV for decoding, out[1, 1, N] = X @ dequant(W).T in one launch, registered as
+# unsloth::gemv_nf4 for torch.compile and CUDA graphs; each block is summed before scaling, matching
+# bitsandbytes to fp32 noise, not bitwise; every row must start a quant block (K % blocksize == 0).
 
 import functools
 import os
@@ -27,6 +25,8 @@ __all__ = [
 ]
 
 
+# M stays specialized: M == 1 folds the row split (unspecialized 0.5-0.9% slower on T4), and M == 1
+# vs 2..4 are separate call sites, so no extra variants.
 @triton.jit
 def _gemv_nf4_kernel(
     X,
@@ -39,16 +39,16 @@ def _gemv_nf4_kernel(
     OUT,
     N,
     K,
-    M,
+    M,  # specialized on == 1 (see above)
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    EVEN_K: tl.constexpr,
-    LUT_MODE: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, from N
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
+    EVEN_K: tl.constexpr,  # K % BLOCK_K == 0, per weight
+    LUT_MODE: tl.constexpr,  # codebook lookup, from BLOCK_K
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
@@ -108,14 +108,14 @@ def _gemv_nf4_words_kernel(
     OUT,
     N,
     K,
-    M,
+    M,  # specialized on == 1 (see above)
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, 1 here
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))
@@ -362,14 +362,10 @@ def gemv_nf4(
     dtype,
     out = None,
 ):
-    """X @ dequant(W).T for a single token; returns (1, 1, shape[0]) in X's dtype.
-
-    ``code2/absmax2/offset`` are None for a quant state without double quantization, and
-    ``offset`` is bitsandbytes' 0-dim device tensor (read in the kernel, so no host sync).
-    Eager calls launch the kernel directly: the torch.library dispatcher costs about 20us
-    per call, as much as the kernel itself at decode sizes. Compiled code goes through
-    the registered op so Dynamo sees it.
-    """
+    """X @ dequant(W).T for one token, returning (1, 1, shape[0]) in X's dtype; code2, absmax2 and
+    offset are None without double quant (offset is a 0-dim device tensor, so no host sync);
+    eager calls skip the torch.library dispatcher (costly at decode sizes), compiled code uses
+    the registered op."""
     out_features, in_features = int(shape[0]), int(shape[1])
     if not X.is_contiguous():
         X = X.contiguous()

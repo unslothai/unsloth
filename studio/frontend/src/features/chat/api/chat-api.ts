@@ -30,6 +30,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import { takeSseFrame } from "@/lib/sse-framing";
 import type { AgentsMdRecord } from "../utils/agents-md";
 import { showLoadWarning } from "../utils/load-warning-toast";
 import { readAdvertisedPatchGuards } from "../utils/openapi-support";
@@ -134,7 +135,7 @@ const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
     "The model ran out of room to answer: thinking used what the context window " +
     "had left after the prompt, before any answer was written. Raising Max " +
     "Tokens cannot create room the window does not have -- increase the " +
-    "Context Length in Model settings, or disable thinking, then retry.",
+    "Context in Model settings, or disable thinking, then retry.",
   // No Studio setting controls a connected model's window.
   context_window:
     "The conversation filled the model's context window before an answer was " +
@@ -447,14 +448,30 @@ export async function countChatInputTokens(payload: {
   auto_heal_tool_calls?: boolean;
   studio_tool_history?: boolean;
   run_tools_locally?: boolean;
+  breakdown?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<ChatCountTokensResponse> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: serializedPayload,
   });
-  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
+  return parseJsonOrThrow<ChatCountTokensResponse>(response);
+}
+
+export interface ChatCountTokensResponse {
+  input_tokens: number;
+  model?: string;
+  breakdown?: {
+    system: number;
+    tools: number;
+    messages: number;
+    tool_names: string[];
+  };
+  context_length?: number | null;
+  compaction_budget?: number | null;
+  // Null on MLX.
+  prompt?: string | null;
 }
 
 export async function validateModel(
@@ -607,6 +624,8 @@ export async function getGgufDownloadProgress(
   variant: string,
   expectedBytes: number,
   hfToken?: string | null,
+  /** The standalone Engram table the load fetches, so the bar counts it. */
+  engramPrecision?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -617,6 +636,9 @@ export async function getGgufDownloadProgress(
     variant,
     expected_bytes: String(expectedBytes),
   });
+  if (engramPrecision) {
+    params.set("engram_precision", engramPrecision);
+  }
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
     { headers: hubTokenHeader(hfToken) },
@@ -1067,6 +1089,27 @@ export async function getChatThread(
   }
 }
 
+export type ChatHistoryRevision = {
+  revision: number;
+  threads: Record<string, number>;
+};
+
+/** Null when the server predates the endpoint. */
+export async function getChatHistoryRevision(
+  threadIds: readonly string[],
+  signal?: AbortSignal,
+): Promise<ChatHistoryRevision | null> {
+  const query = new URLSearchParams();
+  for (const threadId of threadIds) query.append("threadId", threadId);
+  const encoded = query.toString();
+  const response = await authFetch(
+    `/api/chat/revision${encoded ? `?${encoded}` : ""}`,
+    { signal },
+  );
+  if (response.status === 404 || response.status === 405) return null;
+  return parseJsonOrThrow<ChatHistoryRevision>(response);
+}
+
 export class ChatThreadDeletedError extends Error {
   constructor(message: string) {
     super(message);
@@ -1263,14 +1306,99 @@ export async function getChatAgentsMd(
   return parseJsonOrThrow<AgentsMdRecord>(response);
 }
 
+export type ProjectFileEntry = {
+  name: string;
+  kind: "dir" | "file";
+  size?: number | null;
+  hidden: boolean;
+};
+
+export type ProjectFileListing = {
+  root: string;
+  path: string;
+  entries: ProjectFileEntry[];
+  truncated: boolean;
+  chosen: boolean;
+};
+
+export type ProjectFileSearch = {
+  results: { path: string; name: string }[];
+  truncated: boolean;
+};
+
+export type ProjectChangeStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflicted";
+
+export type ProjectChanges = {
+  repo: boolean;
+  branch: string | null;
+  changes: { path: string; status: ProjectChangeStatus }[];
+  truncated: boolean;
+};
+
+function projectFilesUrl(projectId: string, suffix: string): string {
+  return `/api/chat/projects/${encodeURIComponent(projectId)}/${suffix}`;
+}
+
+export async function listProjectFiles(
+  projectId: string,
+  path: string,
+  showHidden: boolean,
+  signal?: AbortSignal,
+): Promise<ProjectFileListing> {
+  const query = new URLSearchParams({ path, show_hidden: String(showHidden) });
+  const response = await authFetch(
+    `${projectFilesUrl(projectId, "files")}?${query}`,
+    { signal },
+  );
+  return parseJsonOrThrow<ProjectFileListing>(response);
+}
+
+export async function searchProjectFiles(
+  projectId: string,
+  q: string,
+  signal?: AbortSignal,
+): Promise<ProjectFileSearch> {
+  const query = new URLSearchParams({ q });
+  const response = await authFetch(
+    `${projectFilesUrl(projectId, "files/search")}?${query}`,
+    { signal },
+  );
+  return parseJsonOrThrow<ProjectFileSearch>(response);
+}
+
+export async function getProjectChanges(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ProjectChanges> {
+  const response = await authFetch(projectFilesUrl(projectId, "changes"), {
+    signal,
+  });
+  return parseJsonOrThrow<ProjectChanges>(response);
+}
+
+export type SaveChatProjectOptions = {
+  reuseExisting?: boolean;
+};
+
 export async function saveChatProject(
   project: ProjectRecord,
   nativePathLease?: string,
+  options: SaveChatProjectOptions = {},
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...project, ...(nativePathLease ? { nativePathLease } : {}) }),
+    body: JSON.stringify({
+      ...project,
+      ...(nativePathLease ? { nativePathLease } : {}),
+      ...(nativePathLease && options.reuseExisting ? { reuseExisting: true } : {}),
+    }),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatProjectsUpdated();
@@ -1314,6 +1442,31 @@ export async function setChatProjectWorkingFolder(
   return project;
 }
 
+export async function setChatProjectWorkingFolderPath(
+  projectId: string,
+  serverPath: string,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}/working-folder`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverPath }),
+    },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatProjectsUpdated();
+  return project;
+}
+
+export async function getProjectFolderAccess(): Promise<{
+  serverPath: boolean;
+}> {
+  const response = await authFetch("/api/chat/project-folder-access");
+  const body = await parseJsonOrThrow<{ serverPath?: unknown }>(response);
+  return { serverPath: body?.serverPath === true };
+}
+
 /** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,
@@ -1349,16 +1502,22 @@ export async function listChatMessages(
   return data.messages;
 }
 
-/** Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers. */
+/**
+ * Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers.
+ * view "search" trims messages to what the search index reads; older backends ignore it.
+ */
 export async function batchListChatMessages(
   threadIds: string[],
+  options: { view?: "search" } = {},
 ): Promise<Map<string, MessageRecord[]>> {
   const out = new Map<string, MessageRecord[]>();
   if (threadIds.length === 0) return out;
   const response = await authFetch("/api/chat/messages:batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ threadIds }),
+    body: JSON.stringify(
+      options.view ? { threadIds, view: options.view } : { threadIds },
+    ),
   });
   if (response.status === 404 || response.status === 405) {
     const per = await Promise.all(
@@ -1534,7 +1693,11 @@ export async function buildBackendChatExport(): Promise<{
   messages: MessageRecord[];
 }> {
   const response = await authFetch("/api/chat/export");
-  return parseJsonOrThrow(response);
+  const data = await parseJsonOrThrow<Awaited<
+    ReturnType<typeof buildBackendChatExport>
+  > | null>(response);
+  if (!data) throw new Error("The chat export did not download completely.");
+  return data;
 }
 
 // Server-side legacy-Dexie import ledger, so a studio.db wipe keeps the import recoverable.
@@ -1587,11 +1750,18 @@ export interface BrowseEntry {
   hidden: boolean;
 }
 
+export interface BrowsePlace {
+  path: string;
+  label: string;
+  kind: "home" | "user" | "drive" | "models";
+}
+
 export interface BrowseFoldersResponse {
   current: string;
   parent: string | null;
   entries: BrowseEntry[];
   suggestions: string[];
+  places?: BrowsePlace[];
   truncated?: boolean;
   model_files_here?: number;
 }
@@ -1606,16 +1776,30 @@ export async function browseFolders(
   path?: string,
   showHidden = false,
   signal?: AbortSignal,
+  modelHints = true,
 ): Promise<BrowseFoldersResponse> {
   const params = new URLSearchParams();
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
+  if (!modelHints) params.set("model_hints", "false");
   const qs = params.toString();
   // Forward the signal so a cancelled navigation also cancels the server-side walk.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,
   );
+  return parseJsonOrThrow<BrowseFoldersResponse>(response);
+}
+
+export async function createBrowseFolder(
+  parent: string,
+  name: string,
+): Promise<BrowseFoldersResponse> {
+  const response = await authFetch("/api/models/browse-folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parent, name }),
+  });
   return parseJsonOrThrow<BrowseFoldersResponse>(response);
 }
 
@@ -1863,7 +2047,17 @@ export async function* streamChatCompletions(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        // A dropped socket rejects with TypeError: treat it as a cut stream.
+        if (!signal.aborted && error instanceof TypeError) {
+          throw new StreamInterruptedError();
+        }
+        throw error;
+      }
+      const { done, value } = chunk;
       if (done) {
         completed = true;
         if (!sawTerminalSignal) {
@@ -1875,15 +2069,16 @@ export async function* streamChatCompletions(
 
       buffer += decoder.decode(value, { stream: true });
 
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
+      for (
+        let frame = takeSseFrame(buffer);
+        frame;
+        frame = takeSseFrame(buffer)
+      ) {
+        const rawEvent = frame.event;
+        buffer = frame.remainder;
 
         const dataLines = parseSseEvent(rawEvent);
         if (dataLines.length === 0) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
 
@@ -1903,21 +2098,18 @@ export async function* streamChatCompletions(
         }
         if ("type" in parsed && parsed.type === "skill_load") {
           yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "tool_status") {
           yield {
             _toolStatus: parsed.content ?? "",
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "diffusion_frame") {
           yield {
             _diffusionFrame: parsed,
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if (
@@ -1930,7 +2122,6 @@ export async function* streamChatCompletions(
             parsed.type === "tool_approved")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if (
@@ -1943,18 +2134,15 @@ export async function* streamChatCompletions(
             _reasoningDurationMs: (parsed as { duration_ms?: number })
               .duration_ms,
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         // A tool loop's context as it hands off to a tool, so the meter moves mid-turn.
         if ("type" in parsed && parsed.type === "context_usage") {
           yield { _contextUsage: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "generation_progress") {
           yield { _generationProgress: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         const {
@@ -2003,7 +2191,6 @@ export async function* streamChatCompletions(
           sawTerminalSignal = true;
         }
         yield parsed as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
     }
   } finally {

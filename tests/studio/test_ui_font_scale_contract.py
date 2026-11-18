@@ -118,9 +118,8 @@ def test_radix_select_viewport_owns_the_scroll_state():
 
 
 def test_cn_knows_the_ui_typography_tokens():
-    """Stock tailwind-merge classifies text-ui-* as a text color and deletes
-    it whenever a real color class follows in the same cn() call, so the
-    element falls back to the unscaled inherited font size."""
+    """Stock tailwind-merge treats the text-ui- prefixed classes as text colors and drops them when
+    a real color follows in the same cn() call, falling back to the unscaled font size."""
     assert "extendTailwindMerge" in UTILS
     assert '"font-size": [{ text: [isUiToken] }]' in UTILS
     assert "leading: [{ leading: [isUiToken] }]" in UTILS

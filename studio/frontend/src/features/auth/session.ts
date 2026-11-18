@@ -59,9 +59,26 @@ export function getRefreshToken(): string | null {
   return localStorage.getItem(AUTH_REFRESH_TOKEN_KEY);
 }
 
+export function getAuthSessionMark(): string | null {
+  if (!canUseStorage()) return null;
+  return localStorage.getItem(AUTH_SESSION_MARK_KEY);
+}
+
+/** Give sessions created before session markers the same cross-window boundary as new ones. */
+export function ensureAuthSessionMark(): string | null {
+  if (!canUseStorage()) return null;
+  let mark = getAuthSessionMark();
+  if (!mark) {
+    mark = `${Date.now()}.${Math.random()}`;
+    localStorage.setItem(AUTH_SESSION_MARK_KEY, mark);
+  }
+  return mark;
+}
+
 export function storeAuthTokens(
   accessToken: string,
   refreshToken: string,
+  preserveSessionMark = false,
 ): void {
   // must_change_password is set via setMustChangePassword() so CodeQL does not flag the JWT writes.
   if (!canUseStorage()) return;
@@ -70,10 +87,12 @@ export function storeAuthTokens(
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
   if (sessionStarted) {
     authSessionEpoch += 1;
-    localStorage.setItem(
-      AUTH_SESSION_MARK_KEY,
-      `${Date.now()}.${Math.random()}`,
-    );
+    if (!preserveSessionMark || !getAuthSessionMark()) {
+      localStorage.setItem(
+        AUTH_SESSION_MARK_KEY,
+        `${Date.now()}.${Math.random()}`,
+      );
+    }
     window.dispatchEvent(new Event(AUTH_SESSION_STORED_EVENT));
   } else if (!localStorage.getItem(AUTH_SESSION_MARK_KEY)) {
     // Backfill the key for pre-existing sessions so a later sign-out has something to remove (and

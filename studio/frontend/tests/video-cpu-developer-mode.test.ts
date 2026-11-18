@@ -103,7 +103,7 @@ test("the health verdict carries the opt-in into the platform store", () => {
   for (const file of ["components/app-sidebar.tsx", "app/routes/__root.tsx"]) {
     assert.match(
       readSrc(file),
-      /videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\)/,
+      /videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining\)/,
       file,
     );
   }

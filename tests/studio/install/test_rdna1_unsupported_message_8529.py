@@ -536,9 +536,8 @@ class TestAdviceIsNotEmittedForRdna1:
         ids = [f"{p.name}:{c[:34]}" for p, c, _g in _HIPSDK_ARMS],
     )
     def test_the_hip_sdk_arm_does_not_outrank_the_unsupported_arm(self, path, condition, guard):
-        """Stated as a ban on the UNGUARDED condition, not as a search for the guarded
-        one: asserting only that the guarded text exists stays green if someone adds a
-        second, unguarded copy of the arm, and both spellings would then be present."""
+        """Stated as a ban on the unguarded condition, since checking only that the guarded text
+        exists stays green when an unguarded copy of the arm is added."""
         src = _normalised(path)
         assert condition + guard in src, (
             f"{path.name}: the {condition!r} arm has lost its unsupported-arch guard, so an "
@@ -669,10 +668,8 @@ _KFD_NAVI31 = [
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX shell only")
 class TestSetupShKfdOnlyHost:
-    """The KFD sysfs fallback marks the host AMD without rocminfo or amd-smi, so it
-    leaves _setup_mkt empty -- and a host with no ROCm userspace is exactly the one
-    #8529 and #8458 describe. Handed "", the lookup used to fall through to the plain
-    "AMD ROCm" report on a machine that has no ROCm."""
+    """The KFD sysfs fallback leaves _setup_mkt empty without rocminfo or amd-smi; the lookup must
+    not fall through to a plain AMD ROCm report there (issues 8529 and 8458)."""
 
     def test_the_kfd_host_is_diagnosed_from_lspci(self, tmp_path):
         assert _run_setup_kfd_lookup("", _KFD_NAVI10, tmp_path) == "gfx1010"
@@ -708,9 +705,8 @@ class TestSetupShKfdOnlyHost:
         ), "studio/setup.sh: the gpu report no longer goes through the lspci-aware lookup"
 
     def test_the_lspci_name_never_reaches_the_routing_table(self):
-        """Routing must stay byte-identical. The supported inference table keys on
-        _setup_mkt, which feeds --rocm-gfx into the prebuilt and whisper commands, so
-        the lspci read must not be written back into it."""
+        """Routing must stay byte-identical: the supported inference table keys on _setup_mkt, which
+        feeds --rocm-gfx into the prebuilt and whisper commands, so no lspci read goes there."""
         src = _normalised(_SETUP_SH)
         assigns = re.findall(r"^\s*_setup_mkt=(.*)$", src, re.MULTILINE)
         assert assigns, "studio/setup.sh: no _setup_mkt assignment found"
@@ -838,9 +834,8 @@ def test_no_advice_arm_speaks_for_the_whole_host(source_path):
 
 @pytest.mark.parametrize("name,claims", sorted(_SCOPED_CLAIMS.items()))
 def test_the_scoped_wording_is_the_one_that_ships(name, claims):
-    """The other half: dropping the sentence entirely would also pass the ban above,
-    and would take the answer with it. Each arm still has to say ROCm cannot reach
-    the card it just named."""
+    """Each arm must still say ROCm cannot reach the card it just named; dropping the sentence
+    entirely would also pass the ban above and lose the answer."""
     source_path = next(p for p in _ALL_SOURCES if p.name == name)
     src = _normalised(source_path)
     emitted = [ln for ln in src.split("\n") if not ln.lstrip().startswith("#")]
@@ -1060,17 +1055,15 @@ class TestVulkanAdvice:
 
     @pytest.mark.parametrize("needle,what", _REQUIRED, ids = lambda v: v if " " not in v else None)
     def test_the_vulkan_advice_is_reached_by_the_rdna1_wmi_path(self, needle, what):
-        """Source-text assertions cannot tell a live branch from a dead one, and the
-        Python copy's message is not readable line by line. Drive the real Windows
-        path and read what it actually printed."""
+        """Source-text assertions cannot tell a live branch from a dead one, and the Python message
+        is not readable line by line; drive the Windows path and read its output."""
         arch, out = _wmi_detect(["AMD Radeon RX 580"])
         assert arch is None, "routing must be unchanged; this is a wording fix"
         assert needle in out, f"the printed advice is missing {what} ({needle!r})"
 
     def test_the_printed_advice_uses_powershell_syntax(self):
-        """This branch is Windows-only, so its setter has to be pasteable into
-        PowerShell. Read the live output, not the source: the message is built from
-        implicitly-joined fragments and no single source line carries it."""
+        """The Windows-only branch's setter must paste into PowerShell; read the live output, since
+        the message is built from implicitly joined fragments no source line carries."""
         _arch, out = _wmi_detect(["AMD Radeon RX 580"])
         assert _PWSH_SETTER in out, f"the printed advice is not pasteable into PowerShell:\n{out}"
         assert (

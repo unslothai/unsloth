@@ -108,10 +108,16 @@ def _sanitize_filename(name: str) -> str:
     return _document_label(parts[-1])
 
 
-def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str, str]:
+def _persist_upload_stream(
+    source,
+    filename: str,
+    *,
+    empty_detail: str,
+    extra_exts: frozenset[str] = frozenset(),
+) -> tuple[str, str, str]:
     """Returns the content hash so ingestion does not need a second full read of the file."""
     ext = os.path.splitext(filename)[1].lower()
-    if ext not in config.UPLOAD_EXTS:
+    if ext not in config.UPLOAD_EXTS and ext not in extra_exts:
         raise HTTPException(
             status_code = 400,
             detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
@@ -147,13 +153,16 @@ def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple
     return stored_path, filename, digest.hexdigest()
 
 
-def _save_upload(file: UploadFile) -> tuple[str, str, str]:
+def _save_upload(
+    file: UploadFile, extra_exts: frozenset[str] = frozenset()
+) -> tuple[str, str, str]:
     """Persist a browser upload; returns (stored_path, filename, content_hash)."""
     filename = _sanitize_filename(file.filename or "document")
     return _persist_upload_stream(
         file.file,
         filename,
         empty_detail = "Uploaded file is empty.",
+        extra_exts = extra_exts,
     )
 
 
@@ -339,9 +348,7 @@ def _require_scope_owner(
     scope_id: str,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """404 unless the scope's owner still exists. ``conn`` reuses a connection the caller already holds:
-    sqlite-vec loads per connection, so opening a second one to read a single row pays that twice.
-    """
+    """404 unless the scope owner exists; pass conn to reuse one since sqlite-vec loads per connection."""
     if scope_type == "knowledge_base":
         if conn is not None:
             exists = store.get_kb(conn, scope_id) is not None
@@ -918,6 +925,8 @@ def _folder_job_view(row: dict) -> dict:
         "removedFiles": row.get("deleted") or 0,
         "renamedFiles": row.get("renamed") or 0,
         "failedFiles": row.get("failed") or 0,
+        # Folder-wide, out of discoveredFiles; processedFiles counts only this pass's changes.
+        "syncedFiles": (row.get("up_to_date") or 0) + (row.get("checked") or 0),
         "error": row.get("error"),
         "createdAt": row.get("created_at"),
         "completedAt": row.get("completed_at"),
@@ -970,12 +979,74 @@ def folder_job_events(
 _EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
 
 
+_IMAGE_TEXT_EXTS = frozenset(".png .jpg .jpeg .webp .gif .bmp .tif .tiff".split())
+# A letter page at OCR_DPI, as PDF OCR sends.
+_IMAGE_MAX_PIXELS = int(8.5 * 11 * config.OCR_DPI**2)
+_IMAGE_DECODE_MAX_PIXELS = 50_000_000
+
+
+def _image_png(path: str) -> bytes:
+    """Native pixels, never rescaled by the file's DPI tag (PyMuPDF does, and cannot open WebP)."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as opened:
+        width, height = opened.size
+        if width * height > _IMAGE_DECODE_MAX_PIXELS:
+            raise ValueError(f"the image is too large ({width} x {height} pixels)")
+        scale = min(1.0, (_IMAGE_MAX_PIXELS / (width * height)) ** 0.5)
+        size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        opened.thumbnail(size, Image.Resampling.LANCZOS)
+        rgba = ImageOps.exif_transpose(opened).convert("RGBA")
+    # On white like PyMuPDF, or dark text on a transparent PNG turns black on black.
+    image = Image.new("RGB", rgba.size, "white")
+    image.paste(rgba, mask = rgba.getchannel("A"))
+    out = io.BytesIO()
+    # Tagged at OCR_DPI so Tesseract renders it 1:1.
+    image.save(out, "PNG", dpi = (config.OCR_DPI, config.OCR_DPI))
+    return out.getvalue()
+
+
+def _image_text(path: str) -> str:
+    """The loaded vision model reads the image, else local Tesseract; "" when neither can."""
+    import tempfile
+
+    from core.rag import captioner, pdf_ocr
+
+    png = _image_png(path)
+    text = captioner.ocr_pages({1: png}).get(1, "")
+    if text:
+        return text
+    with tempfile.TemporaryDirectory() as tmp:
+        normalized = os.path.join(tmp, "image.png")
+        with open(normalized, "wb") as handle:
+            handle.write(png)
+        return pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
+
+
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
 @router.post("/extract-text")
 def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
     from core.rag import parsers
 
-    stored_path, filename, _digest = _save_upload(file)
+    stored_path, filename, _digest = _save_upload(file, _IMAGE_TEXT_EXTS)
+    if os.path.splitext(filename)[1].lower() in _IMAGE_TEXT_EXTS:
+        try:
+            text = _image_text(stored_path)
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 422, detail = f"{filename} could not be read: {exc}"
+            ) from exc
+        finally:
+            _remove_stored_upload(stored_path)
+        if not text.strip():
+            raise HTTPException(
+                status_code = 422,
+                detail = f"No text could be read from {filename}. Reading images needs a vision "
+                "model loaded in Chat, or Tesseract OCR installed.",
+            )
+        return {"filename": filename, "text": text, "truncated": False}
     try:
         pages = parsers.parse(stored_path)
     except ImportError as exc:

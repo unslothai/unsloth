@@ -144,14 +144,18 @@ export function audioSourceReducer(
   }
 }
 
-export function audioFileProblem(file: {
-  size: number;
-  type?: string;
-  name?: string;
-}): string | null {
+/** `maxBytes` null: the server takes any size. */
+export function audioFileProblem(
+  file: {
+    size: number;
+    type?: string;
+    name?: string;
+  },
+  maxBytes: number | null = AUDIO_INPUT_MAX_BYTES,
+): string | null {
   if (file.size <= 0) return "This file is empty.";
-  if (file.size > AUDIO_INPUT_MAX_BYTES)
-    return "Audio is too large. Keep it under 200 MB.";
+  if (maxBytes !== null && file.size > maxBytes)
+    return `Audio is too large. Keep it under ${Math.floor(maxBytes / 2 ** 20)} MB.`;
   const type = file.type ?? "";
   const name = (file.name ?? "").toLowerCase();
   if (

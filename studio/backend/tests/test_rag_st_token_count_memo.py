@@ -38,8 +38,7 @@ def test_a_repeated_text_is_tokenized_once(monkeypatch):
 
 
 def test_switching_the_model_between_calls_recounts(monkeypatch):
-    """model_name=None follows the configured model on every call, so a count memoized
-    for the old tokenizer must not answer for the new one."""
+    """model_name=None follows the live model, so memoized counts must not outlive a switch."""
     old, new = _Tok(1), _Tok(5)
     models = {"current": _Model(old)}
     looked_up = []

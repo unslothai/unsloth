@@ -13,6 +13,7 @@ from collections.abc import Iterable
 import fnmatch
 import functools
 import hashlib
+import io
 from html.parser import HTMLParser
 import json
 import math
@@ -26,13 +27,16 @@ import signal
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 import asyncio
+import contextvars
 import queue
 import random
 import re
 import sqlite3
 import shlex
+import posixpath
 import shutil
 import ssl
+import tokenize
 import stat
 from stat import S_ISREG
 import subprocess
@@ -40,12 +44,14 @@ import sys
 import tempfile
 import contextlib
 import threading
+import unicodedata
 import zlib
 from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .computer_use import execute_computer_tool, is_computer_tool
 from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
 
@@ -87,7 +93,9 @@ from core.inference.mcp_client import (
     get_cached_resources,
     get_cached_tools,
     in_failure_cooloff,
+    invalidate_tool_cache,
     is_studio_decisions,
+    is_studio_tools,
     is_stdio,
     list_tools_async,
     oauth_client_kwargs,
@@ -101,9 +109,17 @@ from core.inference.mcp_client import (
     tool_visible_to,
 )
 from storage import mcp_servers_db
-from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.account_context import (
+    account_thread,
+    current_account,
+    current_account_id,
+    is_owner_context,
+)
 from utils.current_date_prompt_settings import strip_current_date_update_note
+from utils.host_policy import _literal_ip_address
+from core.inference.providers import _metadata_host as _provider_metadata_host
 from utils import sandbox_memory_limit, tool_result_limit
+from core.inference import tool_facts
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
@@ -132,6 +148,9 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
+# While text engines fail, no early image lookup: its answer is discarded and adds to rate limiting.
+_TEXT_SEARCH_FAILURE_HOLD_S = 120.0
+_text_search_failed_at: "float | None" = None
 # Not "connection error": DNS failures and refused connections are not resets (#12638).
 _DDGS_RESET_MARKERS = (
     "connection reset",
@@ -149,7 +168,7 @@ _DDGS_CONNECT_TIMEOUT_MARKERS = ("connection timed out", "connecttimeout")
 _DDGS_CONNECT_TIMEOUT_LOCK = threading.Lock()
 _DDGS_PENDING = threading.local()
 
-# Tier 2 runs only if tier 1 found nothing; engines in neither tier are never contacted.
+# Tier 2 runs unless tier 1 found more than Wikipedia; engines in neither tier are never contacted.
 _SEARCH_ENGINE_TIERS = (
     ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
     ("grokipedia", "google", "yahoo"),
@@ -269,6 +288,475 @@ _APPROVED_RM_REFUSED = (
     "e.g. rm notes.txt old.log. Recursive deletion (-r, -R, -rf, --recursive) is never allowed, "
     "nor are globs, pipes, xargs, chained commands or $ expansion."
 )
+
+# rm, rsync and recursive chmod stay blocked: the shared Hugging Face cache is writable inside the sandbox.
+# Seatbelt denies the process list (sysmond for pkill, sysctl KERN_PROC for killall): they would only fail there.
+_OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
+    {"curl", "wget", "kill", "pkill", "killall", "source", ".", "chmod"}
+) - ({"pkill", "killall"} if sys.platform == "darwin" else set())
+# The sandbox shares the host network, so these get only the per-call proxy that refuses metadata addresses.
+_OS_SANDBOX_PROXIED_COMMANDS = frozenset({"curl", "wget"})
+_OS_SANDBOX_BACKENDS = frozenset({"bubblewrap", "macos-seatbelt"})
+_CHMOD_MODE_RE = re.compile(r"[0-7]{3,4}|[ugoa]*[-+=][rwxXst]*(,[ugoa]*[-+=][rwxXst]*)*")
+_CHMOD_OPTION_RE = re.compile(r"-[vcf]+")
+_SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*\+?=")
+_CHMOD_OPERAND_UNSAFE = frozenset("*?[]{}$`~")
+_SHELL_OPERATOR_CHARS = frozenset(";&|()<>")
+_SHELL_COMMAND_PREFIXES = frozenset(
+    {"{", "}", "!", "if", "then", "elif", "else", "while", "until", "do", "time"}
+)
+# Where this reading and bash could part ways: substitutions, heredocs, ANSI-C quotes, line continuations, extglobs.
+_CHMOD_UNREADABLE_SYNTAX = ("$(", "`", "<(", ">(", "<<", "$'", "\\\n", "@(", "!(", "+(")
+
+
+def _shell_words(command: str) -> "list[tuple[str, bool, int, int]] | None":
+    """(text, is_operator, start, end) per token as bash splits them; None for a comment or an open quote."""
+    tokens: list[tuple[str, bool, int, int]] = []
+    text: list[str] = []
+    start = -1
+    i, n = 0, len(command)
+    while i <= n:
+        ch = command[i] if i < n else "\n"
+        if ch in " \t\n" or ch in _SHELL_OPERATOR_CHARS:
+            if start >= 0:
+                tokens.append(("".join(text), False, start, i))
+                text, start = [], -1
+            if ch == "\n":
+                tokens.append((";", True, i, i))
+            elif ch in _SHELL_OPERATOR_CHARS:
+                end = i
+                while end < n and command[end] in _SHELL_OPERATOR_CHARS:
+                    end += 1
+                tokens.append((command[i:end], True, i, end))
+                i = end
+                continue
+            i += 1
+            continue
+        if start < 0:
+            if ch == "#":
+                return None
+            start = i
+        if ch == "\\":
+            if i + 1 >= n:
+                return None
+            text.append(command[i + 1])
+            i += 2
+        elif ch in "'\"":
+            end = i + 1
+            while end < n and command[end] != ch:
+                end += 2 if ch == '"' and command[end] == "\\" else 1
+            if end >= n:
+                return None
+            text.append(command[i + 1 : end])
+            i = end + 1
+        else:
+            text.append(ch)
+            i += 1
+    return tokens
+
+
+def _readable_shell_words(command: str) -> "list[tuple[str, bool, int, int]] | None":
+    if any(marker in command for marker in _CHMOD_UNREADABLE_SYNTAX):
+        return None
+    tokens = _shell_words(command)
+    if tokens is None:
+        return None
+    # History expansion (!!, ^a^b) and fc replay lines this reading never sees.
+    if any(
+        not is_operator
+        and (word in ("history", "fc") or word.startswith("^") or ("!" in word and word != "!"))
+        for word, is_operator, _, _ in tokens
+    ):
+        return None
+    return tokens
+
+
+def _is_plain_chmod(command: str) -> bool:
+    """Every chmod is a plain `chmod [-vcf] MODE FILE...` at command position: no -R, globs or expansions."""
+    tokens = _readable_shell_words(command)
+    if tokens is None:
+        return False
+    rest: list[str] = []
+    copied = 0
+    seen = 0
+    at_start = True
+    i = 0
+    while i < len(tokens):
+        token, is_operator, start, _ = tokens[i]
+        if is_operator:
+            at_start = not set(token) & {"<", ">"}
+            i += 1
+            continue
+        if at_start and "$" in token:
+            return False
+        if not (at_start and (token == "chmod" or token.endswith("/chmod"))):
+            at_start = at_start and (
+                command[start : tokens[i][3]] in _SHELL_COMMAND_PREFIXES
+                or _SHELL_ASSIGNMENT_RE.match(token) is not None
+            )
+            i += 1
+            continue
+        end = i + 1
+        while end < len(tokens) and not tokens[end][1]:
+            end += 1
+        # A redirection does not end the command: words after it are still chmod's arguments.
+        if end < len(tokens) and set(tokens[end][0]) & {"<", ">"}:
+            return False
+        args = [word for word, _, _, _ in tokens[i + 1 : end]]
+        while args and _CHMOD_OPTION_RE.fullmatch(args[0]):
+            args.pop(0)
+        if len(args) < 2 or not _CHMOD_MODE_RE.fullmatch(args[0]):
+            return False
+        if any(arg.startswith("-") or set(arg) & _CHMOD_OPERAND_UNSAFE for arg in args[1:]):
+            return False
+        seen += 1
+        rest.append(command[copied:start] + "true")
+        copied = tokens[end - 1][3]
+        i = end
+    rest.append(command[copied:])
+    # Any chmod the plain form did not account for (xargs, find -exec, $(...)) keeps the block.
+    return seen > 0 and "chmod" not in _find_blocked_commands("".join(rest))
+
+
+# Allowlist, not denylist: both tools accept abbreviated long options and read data/config from files.
+_CURL_PLAIN_FLAGS = frozenset(
+    {
+        "--silent",
+        "--show-error",
+        "--location",
+        "--fail",
+        "--fail-with-body",
+        "--insecure",
+        "--head",
+        "--include",
+        "--verbose",
+        "--progress-bar",
+        "--no-progress-meter",
+        "--remote-name",
+        "--remote-header-name",
+        "--remote-time",
+        "--globoff",
+        "--compressed",
+        "--create-dirs",
+        "--no-buffer",
+        "--ipv4",
+        "--http1.1",
+        "--http2",
+        "--version",
+    }
+)
+# No -6/--ipv6: curl applies it to the IPv4-only proxy too.
+_CURL_PLAIN_SHORT_FLAGS = frozenset("sSLfkIivOJRgN4V#")
+_CURL_PLAIN_VALUES = {
+    "--output": "o",
+    "--output-dir": None,
+    "--user-agent": "A",
+    "--header": "H",
+    "--referer": "e",
+    "--range": "r",
+    "--continue-at": "C",
+    "--max-time": "m",
+    "--connect-timeout": None,
+    "--retry": None,
+    "--retry-delay": None,
+    "--retry-max-time": None,
+    "--max-filesize": None,
+    "--max-redirs": None,
+    "--limit-rate": None,
+    # Only narrows where the call can go: without the proxy it has no network.
+    "--noproxy": None,
+}
+_WGET_PLAIN_FLAGS = frozenset(
+    {
+        "--quiet",
+        "--verbose",
+        "--no-verbose",
+        "--continue",
+        "--timestamping",
+        "--no-clobber",
+        "--show-progress",
+        "--no-check-certificate",
+        "--content-disposition",
+        "--server-response",
+        "--spider",
+        "--no-directories",
+        "--force-directories",
+        "--no-proxy",
+        "--version",
+        "-nv",
+        "-nc",
+        "-nd",
+    }
+)
+_WGET_PLAIN_SHORT_FLAGS = frozenset("qvcNSxV")
+_WGET_PLAIN_VALUES = {
+    "--output-document": "O",
+    "--directory-prefix": "P",
+    "--tries": "t",
+    "--timeout": "T",
+    "--user-agent": "U",
+    "--header": None,
+    "--progress": None,
+    "--wait": None,
+    "--waitretry": None,
+    "--read-timeout": None,
+    "--connect-timeout": None,
+    "--limit-rate": None,
+}
+_PLAIN_URL_RE = re.compile(r"https?://", re.IGNORECASE)
+# Proxied launches point these at empty rc files; a command that names them could undo that.
+_DOWNLOADER_CONFIG_NAMES_RE = re.compile(r"CURL_HOME|WGETRC|XDG_CONFIG_HOME|NETRC|\bHOME=")
+# What a download may be piped into: text tools with no option that runs a program (not sort: --compress-program).
+# A wrapper (env bash, timeout 5 sh) would hide an interpreter from the pipe-to-shell check.
+_DOWNLOAD_PIPE_TARGETS = frozenset(
+    {
+        "head",
+        "tail",
+        "jq",
+        "grep",
+        "wc",
+        "uniq",
+        "cat",
+        "tee",
+        "sha256sum",
+        "sha1sum",
+        "md5sum",
+    }
+)
+# Anything else (an interpreter, unset/export of the rc variables, source, aliases) keeps the block.
+_DOWNLOAD_COMPANIONS = _DOWNLOAD_PIPE_TARGETS | frozenset(
+    {
+        "cd",
+        "mkdir",
+        "ls",
+        "echo",
+        "pwd",
+        "test",
+        "[",
+        "true",
+        "false",
+        "sleep",
+        "mv",
+        "cp",
+        "touch",
+        "chmod",
+        "fi",
+        "done",
+    }
+)
+
+
+_DOWNLOAD_OPERATORS = frozenset(
+    {";", "&&", "||", "|", "|&", "&", "(", ")", "<", ">", ">>", ">&", "&>", "&>>", ">|"}
+)
+
+
+_DOWNLOAD_BUILTINS = frozenset({"cd", "echo", "pwd", "test", "[", "true", "false", "fi", "done"})
+
+
+def _on_safe_path(name: str) -> bool:
+    # Found ahead of the sandbox's writable package bin, which PATH lists last: a planted jq or curl is never run.
+    return shutil.which(name, path = _safe_path()[0]) is not None
+
+
+def _unquoted(raw: str) -> str:
+    out, quote = [], None
+    for ch in raw:
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
+    flags, short_flags, values = (
+        (_CURL_PLAIN_FLAGS, _CURL_PLAIN_SHORT_FLAGS, _CURL_PLAIN_VALUES)
+        if name == "curl"
+        else (_WGET_PLAIN_FLAGS, _WGET_PLAIN_SHORT_FLAGS, _WGET_PLAIN_VALUES)
+    )
+    short_values = {letter: option for option, letter in values.items() if letter}
+
+    args = [word for word, _ in words]
+
+    def value_ok(value: str, raw: str) -> bool:
+        # A value read from a file (@file) is an upload; an unquoted glob or $ could expand into more options.
+        single_quoted = len(raw) >= 2 and raw[0] == raw[-1] == "'" and raw.count("'") == 2
+        return (
+            not value.startswith("@")
+            and not set(raw) & set("$`")
+            and (single_quoted or not set(raw) & set("*?[]{}~"))
+        )
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if _PLAIN_URL_RE.match(arg):
+            if set(arg) & set("$`"):
+                return False
+            continue
+        if arg in flags:
+            continue
+        if arg.startswith("--"):
+            option, has_value, value = arg.partition("=")
+            if option not in values:
+                return False
+            raw = words[i - 1][1].partition("=")[2]
+            if not has_value:
+                if i >= len(args):
+                    return False
+                value, raw, i = args[i], words[i][1], i + 1
+            if not value_ok(value, raw):
+                return False
+            continue
+        if not arg.startswith("-") or len(arg) < 2:
+            return False
+        for position, letter in enumerate(arg[1:], 2):
+            if letter in short_flags:
+                continue
+            if letter not in short_values:
+                return False
+            value, raw = arg[position:], words[i - 1][1]
+            if not value:
+                if i >= len(args):
+                    return False
+                value, raw, i = args[i], words[i][1], i + 1
+            if not value_ok(value, raw):
+                return False
+            break
+    return True
+
+
+def _is_plain_download(command: str) -> bool:
+    """Every curl/wget is a plain download at command position: allowlisted options, http(s) URLs, no expansions."""
+    # No $ (but $?) or backticks anywhere: a variable name built at run time could unset CURL_HOME.
+    if _DOWNLOADER_CONFIG_NAMES_RE.search(command) or set(command.replace("$?", "")) & set("$`"):
+        return False
+    tokens = _readable_shell_words(command)
+    if tokens is None:
+        return False
+    # The words as bash reads them too: CURL_HO''ME is CURL_HOME.
+    if (
+        _DOWNLOADER_CONFIG_NAMES_RE.search(" ".join(token for token, _, _, _ in tokens))
+        or any(
+            (is_operator and token.startswith("(") and k > 0 and not tokens[k - 1][1])
+            # A CR/LF in a header value smuggles a second request through the opaque CONNECT tunnel.
+            or (not is_operator and any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in token))
+            # Brace expansion builds words at run time: unset CURL_{HOME,X}.
+            or (
+                not is_operator
+                and not _PLAIN_URL_RE.match(token)
+                and bool(set(_unquoted(command[first:last])) & {"{", "}"})
+            )
+            or (
+                is_operator
+                and token in ("|", "|&")
+                and (k + 1 >= len(tokens) or tokens[k + 1][0] not in _DOWNLOAD_PIPE_TARGETS)
+            )
+            for k, (token, is_operator, first, last) in enumerate(tokens)
+        )
+    ):
+        return False
+    rest: list[str] = []
+    copied = 0
+    seen = 0
+    at_start = True
+    i = 0
+    while i < len(tokens):
+        token, is_operator, start, end_offset = tokens[i]
+        if is_operator:
+            # A run like &&< is two operators this reading would treat as one.
+            if token not in _DOWNLOAD_OPERATORS:
+                return False
+            is_redirect = bool(set(token) & {"<", ">"})
+            # A redirection before the command word (<run.sh bash) leaves the next words in command position.
+            if is_redirect and at_start:
+                return False
+            at_start = not is_redirect
+            i += 1
+            continue
+        if at_start and "$" in token:
+            return False
+        # Quoted "fi" is a program, not the keyword; ./curl or a planted jq may be a downloaded script.
+        if at_start and command[start:end_offset] != token:
+            return False
+        if (
+            at_start
+            and (token in _DOWNLOAD_COMPANIONS or token in ("curl", "wget"))
+            and token not in _DOWNLOAD_BUILTINS
+            and not _on_safe_path(token)
+        ):
+            return False
+        name = token
+        if not (at_start and name in ("curl", "wget")):
+            is_prefix = command[start:end_offset] in _SHELL_COMMAND_PREFIXES
+            # No assignments (PATH=. picks another curl); check the command word only (jq's . is not bash's .).
+            if at_start and (
+                _SHELL_ASSIGNMENT_RE.match(token) is not None
+                or (not is_prefix and token not in _DOWNLOAD_COMPANIONS)
+            ):
+                return False
+            at_start = at_start and is_prefix
+            i += 1
+            continue
+        end = i + 1
+        while end < len(tokens) and not tokens[end][1]:
+            end += 1
+        args = [(word, command[first:last]) for word, _, first, last in tokens[i + 1 : end]]
+        # 2>&1, >out: an fd number glued to its operator and the target word are not arguments.
+        is_fd = lambda k: (
+            not tokens[k][1]
+            and tokens[k][0].isdigit()
+            and k + 1 < len(tokens)
+            and tokens[k][3] == tokens[k + 1][2]
+            and bool(set(tokens[k + 1][0]) & {"<", ">"})
+        )
+        if end - 1 > i and is_fd(end - 1):
+            args.pop()
+        while end < len(tokens):
+            if is_fd(end):
+                end += 1
+            elif tokens[end][1] and set(tokens[end][0]) & {"<", ">"}:
+                if end + 1 >= len(tokens) or tokens[end + 1][1]:
+                    return False
+                end += 2
+            elif not tokens[end][1]:
+                return False
+            else:
+                break
+        # No arguments: `curl() {...}` defines a function, not a download.
+        if not args or not _plain_download_args(name, args):
+            return False
+        seen += 1
+        rest.append(command[copied:start] + "true")
+        copied = tokens[end - 1][3]
+        i = end
+    rest.append(command[copied:])
+    # A curl/wget the plain form did not account for (xargs, find -exec, env curl) keeps the block.
+    return seen > 0 and not {"curl", "wget"} & _find_blocked_commands("".join(rest))
+
+
+# Without these the model reads the block as final and gives up on the download.
+_PLAIN_DOWNLOAD_HINT = (
+    "In the OS sandbox curl and wget run only as a plain download: common options, http(s) URLs, "
+    "no $ or globs, piped only into head, tail, jq, grep, wc, cat or a checksum tool. "
+    "Run the download as its own command, then unpack or run it in the next one."
+)
+_PLAIN_CHMOD_HINT = (
+    "In the OS sandbox chmod runs only as a plain `chmod MODE FILE...`: no -R, globs, $ or xargs."
+)
+
+
+def _runs_in_os_sandbox(prepared) -> bool:
+    record = getattr(prepared, "execution_record", None)
+    return bool(
+        record is not None
+        and record.os_isolation
+        and getattr(prepared, "backend", None) in _OS_SANDBOX_BACKENDS
+    )
 
 
 def _is_approvable_rm(command: str) -> bool:
@@ -1037,6 +1525,50 @@ def _quoted_redirection_indexes(
         index
         for index, token in enumerate(tokens)
         if _REDIRECTION_RE.match(token) and not _REDIRECTION_RE.match(marked[index])
+    )
+
+
+def _is_bare_redirection(token: str) -> bool:
+    redir = _REDIRECTION_RE.match(token)
+    return bool(redir) and redir.end() == len(token)
+
+
+def _redirect_word_is_high_risk(word: str) -> bool:
+    """A dropped redirection target still runs its substitutions, and shlex hides their extent: ask."""
+    return any(mark in word for mark in ("$(", "`", "<(", ">("))
+
+
+def _without_split_redirections(tokens: "list[str]") -> "tuple[str, list[str]] | None":
+    """The command with every shlex-split `>&` / `<&` / `>|` removed, and the removed targets."""
+    out: "list[str]" = []
+    targets: "list[str]" = []
+    i, changed = 0, False
+    while i < len(tokens):
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if _is_bare_redirection(tokens[i]) and (
+            nxt == "&" or (nxt == "|" and tokens[i].endswith(">"))
+        ):
+            targets.extend(tokens[i + 2 : i + 3])
+            i += 3
+            changed = True
+            continue
+        token = tokens[i]
+        out.append(token if token and not set(token) - set(";&|()") else shlex.quote(token))
+        i += 1
+    return (" ".join(out), targets) if changed else None
+
+
+def _unquoted_redirection_indexes(text: str, tokens: "list[str]") -> "frozenset[int] | None":
+    """Tokens that are real redirections; None when quoting cannot be told apart."""
+    if not any(char in _REDIRECT_CHARS for char in text):
+        return frozenset()
+    marked = _masked_tokens(text, tokens, ";&|()", _REDIRECT_CHARS, _QUOTED_REDIRECT_MARK)
+    if marked is None:
+        return None
+    return frozenset(
+        index
+        for index, token in enumerate(tokens)
+        if _REDIRECTION_RE.match(token) and _REDIRECTION_RE.match(marked[index])
     )
 
 
@@ -2116,11 +2648,6 @@ _AUTO_EXEC_MCP_VERB_ONLY_RE = re.compile(
     r"powershell|pwsh|terminal|subprocess|interpreter)(?:[_\-]|$)",
     re.IGNORECASE,
 )
-_AUTO_EXEC_MCP_RUNTIME_NOUN_RE = re.compile(
-    r"(?:^|[_\-])(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|"
-    r"script|repl|sandbox|notebook)(?:[_\-]|$)",
-    re.IGNORECASE,
-)
 # Code/command runners run on the MCP server outside the sandbox; whole segments only.
 _AUTO_EXEC_MCP_TOOL_RE = re.compile(
     r"(?:^|[_\-])(?:"
@@ -2652,6 +3179,14 @@ _PY_DESTRUCTIVE_FS_ATTRS = frozenset({"unlink", "rmtree", "rmdir", "removedirs"}
 # psutil ends a process exactly as os.kill does, which is already gated.
 _PY_PROCESS_KILL_ATTRS = frozenset({"kill", "terminate", "send_signal", "suspend"})
 _PY_PROCESS_MODULES = frozenset({"psutil"})
+_PY_CODE_STRING_RUNNERS = {
+    "timeit": frozenset({"timeit", "repeat", "Timer"}),
+    "cProfile": frozenset({"run", "runctx"}),
+    "profile": frozenset({"run", "runctx"}),
+    "pdb": frozenset({"run", "runeval", "runctx"}),
+}
+_PY_CODE_RUNNER_CLASSES = {"cProfile": "Profile", "profile": "Profile", "pdb": "Pdb"}
+_PY_CODE_RUNNER_SOURCE_KWARGS = frozenset({"cmd", "command", "statement", "expression"})
 # Gated only on the os module or an alias so same-named methods stay out; os.truncate zeroes a file, os.kill and os.killpg terminate processes
 _PY_DESTRUCTIVE_FS_OS_ATTRS = frozenset({"remove", "truncate", "ftruncate", "kill", "killpg"})
 _PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
@@ -3287,20 +3822,6 @@ def _references_studio_credential(text: str) -> bool:
 
 # Any run of text that could be a path argument, used to read one token at a time.
 _PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]+")
-# Only traversal is worth resolving: a relative path without `..` stays inside the sandbox.
-_TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|&<>]*")
-# Used only after a `cd`, where `auth/auth.db` stops meaning "inside the sandbox".
-_RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]{},;|&<>]*")
-# Case-insensitive: the shell is `cmd /c` on Windows without a trusted bash.
-_CD_TARGET_RE = re.compile(
-    # `builtin cd`, `command cd`, `! cd` and `time cd` move like a bare `cd`.
-    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
-    # Bash allows assignment words before a special builtin, so `X=1 cd ../..` moves like a bare `cd`.
-    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
-    r"(?:cd|pushd)\s+"
-    r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
-    re.IGNORECASE,
-)
 # `cd -` and `popd` return; matched in one pass so order is kept.
 _DIRECTORY_MOVE_RE = re.compile(
     r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
@@ -4543,6 +5064,9 @@ def _token_command_base(token: str) -> str:
 @functools.lru_cache(maxsize = 64)
 def _parse_python(code: str):
     """Parses each snippet once; the tree is only read, so the source-keyed cache cannot go stale."""
+    # The interpreter skips one leading UTF-8 BOM in the script file; parse what it runs.
+    if code.startswith("\ufeff"):
+        code = code[1:]
     try:
         return ast.parse(code), None
     except SyntaxError as exc:
@@ -6365,6 +6889,7 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "web_search",
         "search_knowledge_base",
         "search_conversation",
+        "update_memory",
         "read_skill",
         "deep_research",
         "mcp_tool_search",
@@ -6380,7 +6905,7 @@ _ALWAYS_SAFE_TOOLS = frozenset(
 
 def never_needs_approval(name: str) -> bool:
     """search_conversation only reads this chat's own compacted turns (#11671)."""
-    return name == "search_conversation"
+    return name in {"search_conversation", "update_memory"}
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -6395,8 +6920,9 @@ _TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal", "edit_file"})
 def has_text_only_provisional_card(name: str) -> bool:
     """True when streaming this tool's arguments before approval shows only text. A large code
     payload takes a minute or more to write, and suppressing the card until the call completes
-    leaves the chat blank the whole time. Nothing runs before the decision either way."""
-    return name in _TEXT_PREVIEW_TOOLS
+    leaves the chat blank the whole time. Nothing runs before the decision either way. MCP calls
+    qualify too: an editor script (Unreal, Blender, Godot) is just as long, and the card is text."""
+    return name in _TEXT_PREVIEW_TOOLS or name.startswith(MCP_TOOL_PREFIX)
 
 
 def _web_search_fetches_url(name: str, arguments: dict) -> bool:
@@ -6594,8 +7120,6 @@ _HIGH_RISK_FORWARDING_COMMANDS = frozenset(
         "valgrind",
     }
 )
-# Tracers and profilers run the rest of the line as a child.
-_TRACER_LAUNCHERS = frozenset({"strace", "ltrace", "ktrace", "dtruss", "perf", "valgrind"})
 _EXEC_FLAG_FORWARDING_COMMANDS = frozenset({"find", "fd"})
 _EXEC_FORWARD_FLAGS = frozenset(
     {"-exec", "-execdir", "-ok", "-okdir", "--exec", "--exec-batch", "-x", "-X"}
@@ -6647,16 +7171,26 @@ _CURL_UPLOAD_LONG_FLAGS = frozenset(
         "--data-raw",
         "--data-urlencode",
         "--form",
+        "--form-string",
+        "--json",
         "--upload-file",
+        "--config",
     }
 )
-_CURL_UPLOAD_SHORT_FLAGS = ("-d", "-F", "-T")
+_CURL_UPLOAD_SHORT_FLAGS = frozenset("dFTK")
+# Short options that take an argument: the rest of the cluster is that argument, not more flags.
+_CURL_SHORT_WITH_ARG = frozenset("AbcCdDeEFHKmoPQrtTuUwxXyYz")
 # POST is omitted: already caught by the body/upload flags.
 _WGET_METHOD_FLAGS = frozenset({"--method"})
 _CURL_METHOD_FLAGS = frozenset({"-X", "--request"})
 _CURL_DESTRUCTIVE_METHODS = frozenset({"delete", "put", "patch"})
 # Separate from curl's so wget -T/-F are not misread as uploads.
-_WGET_UPLOAD_FLAGS = frozenset({"--post-data", "--post-file", "--body-data", "--body-file"})
+_WGET_UPLOAD_FLAGS = frozenset(
+    {"--post-data", "--post-file", "--body-data", "--body-file", "--config", "--execute"}
+)
+_WGET_SHORT_WITH_ARG = frozenset("aABDeiIlOoPQRtTUwX")
+# Points curl/wget at another rc file than the empty ones a proxied launch sets.
+_DOWNLOADER_RC_ENV_RE = re.compile(r"\b(?:CURL_HOME|WGETRC|XDG_CONFIG_HOME|HOME)=")
 # curl/wget output piped straight into an interpreter is remote code execution.
 _PIPE_TO_INTERPRETER_RE = re.compile(
     r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|ruby|perl|php)\b"
@@ -6665,6 +7199,348 @@ _BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?
 _HERESTRING_TO_INTERPRETER_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
 )
+_HEREDOC_INTERPRETER_RE = re.compile(
+    r"(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)"
+)
+_HEREDOC_COMMAND_BREAKS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;", "\n"})
+_PYTHON_STDIN_DATA_MODULES = frozenset({"json.tool", "base64"})
+_SHELL_LINE_OPERATORS = (
+    "&>>",
+    "&>",
+    "<<-",
+    "<<<",
+    "&&",
+    "||",
+    ";;",
+    "|&",
+    ">>",
+    "<<",
+    ">&",
+    "<&",
+    "<>",
+    ">|",
+    ";",
+    "&",
+    "|",
+    "(",
+    ")",
+    "<",
+    ">",
+    "\n",
+)
+_HEREDOC_INTERPRETER_MENTION_RE = re.compile(
+    r"(?<![\w.-])(?i:(?:python|pypy|node|nodejs|bun|deno|ruby|perl|php)[0-9.]*)(?![\w-])"
+)
+_COMPOUND_CLOSERS = frozenset({"}", "done", "fi", "esac"})
+_SHELL_KEYWORDS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "{"})
+_HEREDOC_SHELL_RE = re.compile(r"(?:ba|z|da|k|a|fi)?sh")
+
+
+def _heredoc_name(word: str) -> str:
+    return re.sub(r"\.exe$", "", ntpath.basename(word), flags = re.IGNORECASE)
+
+
+# Commands that only read a heredoc as data; any other owner may forward stdin to an interpreter.
+_HEREDOC_DATA_COMMANDS = _AUTO_SAFE_TERMINAL_COMMANDS | {
+    "tee",
+    "git",
+    "gh",
+    "read",
+    ":",
+    "base64",
+    "patch",
+}
+_SOURCE_ENCODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
+_PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
+
+
+def _quote_end(line: str, i: int) -> int:
+    """Index of the quote closing the one at ``i``; a `$(` or backtick inside double quotes opens a
+    fresh quoting context, as in bash. -1 when unterminated."""
+    quote, j, n = line[i], i + 1, len(line)
+    while j < n and line[j] != quote:
+        if quote == '"' and line[j] == "\\":
+            j += 2
+        elif quote == '"' and line.startswith("$(", j):
+            j = _quoted_substitution_end(line, j + 2)
+            if j < 0:
+                return -1
+        elif quote == '"' and line[j] == "`":
+            j = line.find("`", j + 1) + 1
+            if not j:
+                return -1
+        else:
+            j += 1
+    return j if j < n else -1
+
+
+def _quoted_substitution_end(line: str, j: int) -> int:
+    depth, n = 1, len(line)
+    while j < n:
+        ch = line[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch in "'\"":
+            j = _quote_end(line, j)
+            if j < 0:
+                return -1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if not depth:
+                return j + 1
+        j += 1
+    return -1
+
+
+def _shell_line_tokens(line: str) -> "list | None":
+    """Bash's word split of one line as (kind, text, quoted), kind word / op / fd; adjacent quoted
+    parts concatenate. None on an unterminated quote or arithmetic expansion."""
+    tokens, word, quoted, active = [], [], False, False
+    i, n = 0, len(line)
+
+    def flush(kind = "word"):
+        nonlocal word, quoted, active
+        if active:
+            tokens.append((kind, "".join(word), quoted))
+        word, quoted, active = [], False, False
+
+    while i < n:
+        ch = line[i]
+        if ch in " \t":
+            flush()
+            i += 1
+        elif ch == "#" and not active:
+            j = line.find("\n", i)
+            if j < 0:
+                break
+            i = j
+        elif ch == "\\":
+            word.append(line[i + 1 : i + 2])
+            quoted = active = True
+            i += 2
+        elif ch in "'\"":
+            j = _quote_end(line, i)
+            if j < 0:
+                return None
+            text = line[i + 1 : j]
+            word.append(re.sub(r'\\([$`"\\\n])', r"\1", text) if ch == '"' else text)
+            quoted = active = True
+            i = j + 1
+        elif line.startswith("$((", i) or (line.startswith("((", i) and not active):
+            j = line.find("))", i)
+            if j < 0:
+                return None
+            word.append(line[i : j + 2])
+            active = True
+            i = j + 2
+        else:
+            op = next((o for o in _SHELL_LINE_OPERATORS if line.startswith(o, i)), None)
+            if op is None:
+                word.append(ch)
+                active = True
+                i += 1
+                continue
+            text = "".join(word)
+            flush("fd" if op[0] in "<>" and text.isdigit() and not quoted else "word")
+            tokens.append(("op", op, False))
+            i += len(op)
+    flush()
+    return tokens
+
+
+def _expansion_has_heredoc(expansion: str) -> bool:
+    inner = expansion[2:] if expansion.startswith("$(") else expansion.strip("`")
+    tokens = _shell_line_tokens(inner[:-1] if inner.endswith(")") else inner)
+    return tokens is None or any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens)
+
+
+def _python_reads_stdin_program(words: list) -> "bool | None":
+    """CPython's option grammar: True when stdin is executed (program `-`, or -i), False when it is
+    only data (-c, -m, a script operand), None when the words cannot be resolved."""
+    interactive = False
+    words = iter(words)
+    for word in words:
+        if any(ch in word for ch in "$`*?[{~"):
+            return None
+        if word == "-" or posixpath.normpath(word) in (
+            "/dev/stdin",
+            "/dev/fd/0",
+            "/proc/self/fd/0",
+        ):
+            return True
+        if posixpath.normpath(word).startswith(("/dev/", "/proc/")):
+            return None
+        if word == "--check-hash-based-pycs":
+            if re.search(r"[$`]", next(words, "")):
+                return None
+        elif word.startswith("--"):
+            if not word.startswith("--check-hash-based-pycs="):
+                return None
+        elif word.startswith("-"):
+            for i, ch in enumerate(word[1:], 1):
+                if ch == "c":
+                    return interactive
+                if ch == "m":
+                    module = word[i + 1 :] or next(words, "")
+                    return interactive if module in _PYTHON_STDIN_DATA_MODULES else None
+                if ch in "WX":
+                    if i == len(word) - 1 and re.search(r"[$`]", next(words, "")):
+                        return None
+                    break
+                if ch == "i":
+                    interactive = True
+                elif ch not in _PYTHON_FLAG_LETTERS:
+                    return None
+        else:
+            return interactive
+    return True
+
+
+def _heredoc_feeds_risky_program(command: str, depth: int) -> bool:
+    """Heredocs taken in shell order, each owned by its simple command: Python executing stdin gets
+    the body screened. Other interpreters, a second stdin redirection, expansions in an unquoted
+    body, or any owner or terminator this cannot resolve while an interpreter is named fail closed."""
+    mentioned = bool(_HEREDOC_INTERPRETER_MENTION_RE.search(command))
+    lines = command.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        while i < len(lines) and (len(line) - len(line.rstrip("\\"))) % 2:
+            if "#" in line and mentioned:
+                return True
+            line = line[:-1] + lines[i]
+            i += 1
+        if "<<" not in line and "'" not in line and '"' not in line:
+            continue
+        tokens = _shell_line_tokens(line)
+        while tokens is None and i < len(lines):
+            line += "\n" + lines[i]
+            i += 1
+            tokens = _shell_line_tokens(line)
+        if tokens is None:
+            if mentioned:
+                return True
+            continue
+        if not any(kind == "op" and text in ("<<", "<<-") for kind, text, _ in tokens):
+            if mentioned and any(map(_expansion_has_heredoc, _shell_expansions(line))):
+                return True
+            continue
+        commands, current = [], []
+        for token in tokens:
+            if token[0] == "op" and token[1] in _HEREDOC_COMMAND_BREAKS:
+                commands.append(current)
+                current = []
+            else:
+                current.append(token)
+        commands.append(current)
+        pending = []
+        for words in commands:
+            names, stdin_redirects, expect = [], 0, None
+            for kind, text, quoted in words:
+                if kind == "op":
+                    stdin_redirects += text[0] == "<"
+                    expect = "heredoc" if text in ("<<", "<<-") else "target"
+                    if expect == "heredoc":
+                        pending.append([None, text == "<<-", False, None])
+                elif expect:
+                    if expect == "heredoc" and kind == "word":
+                        pending[-1][0], pending[-1][2] = text, quoted
+                    expect = None
+                elif kind == "word":
+                    names.append(text)
+            for heredoc in pending:
+                if heredoc[3] is None:
+                    heredoc[3] = (names, stdin_redirects)
+        for delimiter, dash, quoted, (names, stdin_redirects) in pending:
+            body, terminated = [], False
+            while i < len(lines):
+                text = lines[i].lstrip("\t") if dash else lines[i]
+                i += 1
+                if text == delimiter:
+                    terminated = True
+                    break
+                body.append(text)
+            if not terminated and _HEREDOC_INTERPRETER_MENTION_RE.search("\n".join(body)):
+                return True
+            if mentioned and not quoted and re.search(r"[$`]|\\\n", "\n".join(body) + "\n"):
+                return True
+            command_word, wrapper, skip = "", "", False
+            for w in names:
+                if skip:
+                    skip = False
+                elif re.match(r"\w+=", w) or (not wrapper and w in _SHELL_KEYWORDS):
+                    continue
+                elif wrapper and w.startswith("-"):
+                    skip = w in _WRAPPER_VALUE_FLAGS_BY_CMD.get(wrapper, ())
+                elif wrapper == "timeout" and _WRAPPER_DURATION_RE.match(w):
+                    wrapper = "timeout:"
+                elif _heredoc_name(w) in _COMMAND_PREFIXES:
+                    wrapper = _heredoc_name(w)
+                else:
+                    command_word = w
+                    break
+            if mentioned and [w for w in names if not re.match(r"\w+=", w)] == ["exec"]:
+                return True
+            if _heredoc_name(command_word) in _HEREDOC_DATA_COMMANDS:
+                continue
+            if mentioned and (
+                not command_word
+                or command_word in _COMPOUND_CLOSERS
+                or any(ch in command_word for ch in "$`")
+            ):
+                return True
+            at = next(
+                (
+                    n
+                    for n, w in enumerate(names)
+                    if _HEREDOC_INTERPRETER_RE.fullmatch(_heredoc_name(w))
+                ),
+                None,
+            )
+            if any(_HEREDOC_SHELL_RE.fullmatch(_heredoc_name(w)) for w in names):
+                body_text = "\n".join(body)
+                if (
+                    depth >= 3
+                    or _HEREDOC_INTERPRETER_MENTION_RE.search(" ".join(names) + "\n" + body_text)
+                    or _terminal_is_high_risk(body_text, depth + 1)
+                ):
+                    return True
+                continue
+            if at is None:
+                if mentioned and _heredoc_name(command_word) not in _HEREDOC_DATA_COMMANDS:
+                    return True
+                continue
+            if stdin_redirects > 1 or any("PYTHONINSPECT" in w for w in names[:at]):
+                return True
+            if not _heredoc_name(names[at]).lower().startswith(("python", "pypy")) or depth >= 3:
+                return True
+            if any(_HEREDOC_INTERPRETER_RE.fullmatch(_heredoc_name(w)) for w in names[at + 1 :]):
+                return True
+            reads = _python_reads_stdin_program(names[at + 1 :])
+            if reads is None:
+                return True
+            if not reads:
+                continue
+            program = "\n".join(body)
+            cookie = next(filter(None, map(_SOURCE_ENCODING_RE.match, body[:2])), None)
+            if cookie and cookie.group(1).lower().replace("_", "-") not in (
+                "utf-8",
+                "utf8",
+                "ascii",
+                "latin-1",
+            ):
+                return True
+            if not quoted and re.search(r"[$`]|\\[\\$`\n]", program + "\n"):
+                return True
+            if _inline_python_is_high_risk(program):
+                return True
+    return False
+
+
 # Generated script content is unscreenable; diff <(...) only reads and stays out.
 _PROC_SUBST_EXEC_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|source|eval|python[0-9.]*|node|nodejs|bun|ruby|perl|php)\b"
@@ -6703,7 +7579,6 @@ _INLINE_CODE_INTERPRETERS = frozenset(
         "php",
     }
 )
-_INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
 # Flags are per interpreter (`python -E` is not eval). Value: (exact flags, cluster letters).
 _INLINE_CODE_FLAG_SPEC = {
     "python": (frozenset({"-c"}), "c"),
@@ -6980,6 +7855,18 @@ _GIT_GLOBAL_VALUE_FLAGS = frozenset(
 )
 # Recursively screened; the hard-block only recurses for its own smaller set.
 _SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
+# `script` short options that take a value (util-linux -TIOBEom, BSD -t, -c).
+_SCRIPT_VALUE_LETTERS = "cTIOBEomt"
+_SCRIPT_LONG_VALUE_OPTS = (
+    "--command",
+    "--echo",
+    "--log-in",
+    "--log-io",
+    "--log-out",
+    "--log-timing",
+    "--logging-format",
+    "--output-limit",
+)
 # Command-position substitutions ($(printf rm) -rf build) are unreadable; argument ones are not.
 _COMMAND_SUBST_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
@@ -7164,7 +8051,7 @@ _VAR_EXECUTED_AS_COMMAND_RE = re.compile(
 )
 
 
-_SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&)$")
+_SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&|\(|\)|;;)$")
 
 
 # Wrappers (env, timeout, nohup...) that keep the client at command position behind them.
@@ -7194,6 +8081,31 @@ _WGET_AT_CMD_RE = re.compile(
     + r"(?:\S*/)?wget\b",
     re.IGNORECASE,
 )
+
+
+_OPERATOR_MASK = {ord(ch): 0xE000 + i for i, ch in enumerate(";&|()<>")}
+_OPERATOR_UNMASK = {code: ch for ch, code in _OPERATOR_MASK.items()}
+
+
+def _mask_quoted_operators(command: str) -> str:
+    # Quoted or escaped operators are word text: shlex strips the quotes, so `-o "("` would read as a separator.
+    out: list[str] = []
+    quote = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == "\\" and quote != "'" and i + 1 < len(command):
+            out += [ch, command[i + 1].translate(_OPERATOR_MASK)]
+            i += 2
+            continue
+        if quote:
+            quote = None if ch == quote else quote
+            out.append(ch if quote is None else ch.translate(_OPERATOR_MASK))
+        else:
+            quote = ch if ch in "'\"" else None
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
@@ -7248,15 +8160,26 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
         return True
     if "<(" in command:  # bash <(curl ...) process substitution
         return True
+    if _DOWNLOADER_RC_ENV_RE.search(command):
+        return True
     try:
-        tokens = shlex.split(command.replace("\n", " "), posix = True)
+        # Operators as their own words, so `echo ok; curl -d @f` still has a segment that starts with curl.
+        lexer = shlex.shlex(
+            _mask_quoted_operators(command.replace("\n", " ; ")), posix = True, punctuation_chars = True
+        )
+        lexer.whitespace_split = True
+        # As shlex.split read it: a # here would swallow every later line.
+        lexer.commenters = ""
+        tokens = list(lexer)
     except ValueError:
         return True
-    # Scope flags to the segment running curl/wget.
+    # Scope flags to the segment running curl/wget; split while quoted operators are still masked.
     tokens = _tokens_for_client_segment(tokens, has_curl, has_wget)
     if tokens is None:
         return False
+    tokens = [token.translate(_OPERATOR_UNMASK) for token in tokens]
     method_pending = False
+    query_pending = False
     for t in tokens:
         name = t.split("=", 1)[0]
         # curl -X DELETE / --request PUT mutate a remote resource; separate, attached and = forms count.
@@ -7270,8 +8193,26 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
                     return True
                 method_pending = True
                 continue
-            if t.startswith("-X") and t[2:].lower() in _CURL_DESTRUCTIVE_METHODS:
+            uploads, method = _curl_short_cluster(t)
+            if uploads:
                 return True
+            if method is not None:
+                if method.lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+                method_pending = not method
+                continue
+            # --url-query @file / name@file sends the file, like --data-urlencode.
+            if query_pending:
+                query_pending = False
+                if "@" in t:
+                    return True
+            if name == "--url-query":
+                if "=" in t:
+                    if "@" in t.split("=", 1)[1]:
+                        return True
+                else:
+                    query_pending = True
+                continue
         if has_wget:
             # wget --method=DELETE / --method DELETE is the same remote mutation.
             if method_pending:
@@ -7283,14 +8224,34 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
                     return True
                 method_pending = True
                 continue
-        if has_curl and (
-            name in _CURL_UPLOAD_LONG_FLAGS
-            # a curl short upload flag, attached or not (-d@f, -Ffile=@dump.sql)
-            or (not name.startswith("--") and name.startswith(_CURL_UPLOAD_SHORT_FLAGS))
-        ):
+        if has_curl and name in _CURL_UPLOAD_LONG_FLAGS:
             return True
-        if has_wget and name in _WGET_UPLOAD_FLAGS:
+        if has_wget and (name in _WGET_UPLOAD_FLAGS or _wget_short_cluster_executes(t)):
             return True
+    return False
+
+
+def _curl_short_cluster(token: str) -> "tuple[bool, str | None]":
+    # (has an upload flag, the -X method: "" when it is the next word, None without -X), e.g. -sd@f, -sXDELETE.
+    if not token.startswith("-") or token.startswith("--"):
+        return False, None
+    for i, ch in enumerate(token[1:], 1):
+        if ch in _CURL_UPLOAD_SHORT_FLAGS:
+            return True, None
+        if ch in _CURL_SHORT_WITH_ARG:
+            return False, token[i + 1 :] if ch == "X" else None
+    return False, None
+
+
+def _wget_short_cluster_executes(token: str) -> bool:
+    # -e runs a wgetrc command (post_file = ...), attached or clustered: -e x, -qe x, -epost_file=x.
+    if not token.startswith("-") or token.startswith("--"):
+        return False
+    for ch in token[1:]:
+        if ch == "e":
+            return True
+        if ch in _WGET_SHORT_WITH_ARG:
+            return False
     return False
 
 
@@ -7395,6 +8356,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     _herestring = _HERESTRING_TO_INTERPRETER_RE.search(command)
     if _herestring:
         return True
+    if "<<" in command and _heredoc_feeds_risky_program(command, _depth):
+        return True
     # shlex reads newlines as whitespace; ANSI-C quoting hides names.
     decoded = _decode_ansi_c(command, keep_one_word = True)
     normalized = decoded.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
@@ -7477,6 +8440,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         current_command = ""  # the resolved command whose flags / git subcommand we judge
         git_subcommand = ""  # the first positional after `git`
         shell_c_pending = False  # a shell `-c` precedes its inline payload
+        command_arg_pending = False
+        script_operand_seen = False
+        redir_target_pending = False
+        split_redirects_checked = False
+        unquoted_redirs: "frozenset[int] | None | bool" = False  # False: not computed yet
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
         git_checkout_positionals = 0  # positionals seen after `git checkout`
@@ -7494,6 +8462,21 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         for _tok_idx, token in enumerate(tokens):
             after_coproc = coproc_kw
             coproc_kw = False
+            # shlex splits `2>&1` / `>|log`: also judge the command with those redirections removed.
+            if (
+                token in ("&", "|")
+                and not split_redirects_checked
+                and _tok_idx
+                and _is_bare_redirection(tokens[_tok_idx - 1])
+            ):
+                split_redirects_checked = True
+                split = _without_split_redirections(tokens)
+                if split is not None and (
+                    _depth >= 3
+                    or _terminal_is_high_risk(split[0], _depth + 1)
+                    or any(_redirect_word_is_high_risk(t) for t in split[1])
+                ):
+                    return True
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
@@ -7517,6 +8500,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_submodule_action = ""
                 awk_program_pending = False
                 shell_c_pending = False
+                command_arg_pending = False
+                script_operand_seen = False
+                redir_target_pending = False
                 git_glob_pending = False
                 chdir_pending = False
                 continue
@@ -7536,8 +8522,38 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if win_operand_pending:
                 win_operand_pending = False
                 continue
-            if expect_command and _REDIR_PREFIX_RE.match(token):
-                # Bash accepts a redirection before the command word (`</dev/null rm -rf build`); skip it.
+            # Bash drops redirections from argv anywhere (`nohup 2> log rm`); a bare `2>` takes the next word.
+            if redir_target_pending:
+                redir_target_pending = False
+                # Behind a quoted operator this word may be the pending command string itself.
+                if command_arg_pending or shell_c_pending:
+                    if _depth >= 3 or _terminal_is_high_risk(token, _depth + 1):
+                        return True
+                elif _redirect_word_is_high_risk(token):
+                    return True
+                continue
+            redir = None
+            if expect_command:
+                redir = _REDIR_PREFIX_RE.match(token)
+            elif command_arg_pending or shell_c_pending:
+                redir = _REDIRECTION_RE.match(token)
+                if redir:
+                    # Quoted (`bash -c '>out rm -rf x'`) it is the command string itself.
+                    readings = [token, " ".join(tokens[_tok_idx:])] if shell_c_pending else [token]
+                    if _depth >= 3 or any(_terminal_is_high_risk(r, _depth + 1) for r in readings):
+                        return True
+            elif (prefix_pending or scan_forward) and not wrapper_value_pending:
+                redir = _REDIRECTION_RE.match(token)
+                if redir:
+                    if unquoted_redirs is False:
+                        unquoted_redirs = _unquoted_redirection_indexes(text, tokens)
+                    # A quoted `'>log'` is a word (`exec -a '>log' git ...`); unknown quoting keeps it one.
+                    if unquoted_redirs is None or _tok_idx not in unquoted_redirs:
+                        redir = None
+            if redir:
+                if _redirect_word_is_high_risk(token[redir.end() :]):
+                    return True
+                redir_target_pending = redir.end() == len(token)
                 continue
             if exec_flag_pending and token == "--":
                 # Nothing after fd's `--` is an option.
@@ -7624,6 +8640,29 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                                 return True
                         else:
                             shell_c_pending = True
+                # getopt: the first value-taking letter owns the rest of the cluster (-chalt, -Tdoc/c.log).
+                if current_command == "script":
+                    letter, payload = "", None
+                    if token.startswith("--"):
+                        # getopt_long takes an exact name or a unique prefix (--comm=, --log-t FILE).
+                        longs = [o for o in _SCRIPT_LONG_VALUE_OPTS if o.startswith(flag)]
+                        if len(longs) == 1 or flag in longs:
+                            letter = (
+                                "c" if (flag if flag in longs else longs[0]) == "--command" else "T"
+                            )
+                            payload = token.split("=", 1)[1] if "=" in token else ""
+                    else:
+                        for i, ch in enumerate(token[1:]):
+                            if ch in _SCRIPT_VALUE_LETTERS:
+                                letter, payload = ch, token[i + 2 :]
+                                break
+                    if letter == "c" and payload:
+                        if _depth >= 3 or _terminal_is_high_risk(payload, _depth + 1):
+                            return True
+                    elif letter == "c":
+                        command_arg_pending = True
+                    elif letter and not payload:
+                        wrapper_value_pending = True
                 # env -S runs a string as a command; env -C chdirs (enabling relative sensitive reads).
                 if current_command == "env":
                     if flag in ("-C", "--chdir"):
@@ -7705,7 +8744,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     if not git_subcommand and "=" not in token and flag in _GIT_GLOBAL_VALUE_FLAGS:
                         git_glob_pending = True
                 continue
-            if _ASSIGNMENT_RE.match(token):
+            # A pending command string may itself start with an assignment (`trap 'rc=$?; rm -rf x' EXIT`).
+            if _ASSIGNMENT_RE.match(token) and not (shell_c_pending or command_arg_pending):
                 _assign_name, _, _assign_value = token.partition("=")
                 # `alias zap='rm -rf'` stores a command bash runs when invoked, like a git alias body.
                 if current_command == "alias" and _assign_value:
@@ -7723,6 +8763,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             # cmd.exe /c or /k runs the next token as a nested command; they are not dash-flags, so they are handled in argument position.
             if current_command in _CMD_SHELLS and raw.lower() in ("/c", "/k"):
                 shell_c_pending = True
+                continue
+            # Screen that one word (`trap ARG SIGNAL...`, `script -c CMD log`), not the words after it.
+            if command_arg_pending:
+                command_arg_pending = False
+                if _depth >= 3 or _terminal_is_high_risk(token, _depth + 1):
+                    return True
                 continue
             # The payload of a shell `-c`, screened recursively (bounded depth).
             if shell_c_pending:
@@ -7810,6 +8856,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     scan_forward = False
                 # Remember the resolved command so its own flags (python -c), git subcommand or chdir target are judged.
                 current_command = base
+                command_arg_pending = base == "trap"
                 if base in _CHDIR_COMMANDS:
                     chdir_pending = True
                 if base in _AWK_COMMANDS:
@@ -7895,6 +8942,22 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 and not git_submodule_action
             ):
                 git_submodule_action = base
+            elif (
+                current_command == "script"
+                and _REDIRECTION_RE.match(token)
+                and not script_operand_seen
+            ):
+                if unquoted_redirs is False:
+                    unquoted_redirs = _unquoted_redirection_indexes(text, tokens)
+                if unquoted_redirs is not None and _tok_idx in unquoted_redirs:
+                    redir_target_pending = _REDIRECTION_RE.match(token).end() == len(token)
+                else:
+                    script_operand_seen = True
+                    scan_forward = True
+            elif current_command == "script" and not script_operand_seen:
+                # util-linux permutes argv; BSD/macOS `script file command ...` runs the words after it.
+                script_operand_seen = True
+                scan_forward = True
             elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
                 # The database name is the whole request; no path is mentioned.
                 return True
@@ -7959,12 +9022,35 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     return False
 
 
+_RUNNER_SOURCES_ACTIVE: "contextvars.ContextVar[tuple[str, ...]]" = contextvars.ContextVar(
+    "_RUNNER_SOURCES_ACTIVE", default = ()
+)
+
+
+def _runner_source_is_high_risk(source: str) -> bool:
+    # Folded sources can reproduce their caller (s.format(s)): a cycle or deep nesting asks.
+    active = _RUNNER_SOURCES_ACTIVE.get()
+    if source in active or len(active) >= 8:
+        return True
+    token = _RUNNER_SOURCES_ACTIVE.set((*active, source))
+    try:
+        return _python_is_high_risk(source)
+    except (RecursionError, ValueError):
+        # Too deep, or unencodable (a lone surrogate): unanalyzable source asks.
+        return True
+    finally:
+        _RUNNER_SOURCES_ACTIVE.reset(token)
+
+
 def _python_is_high_risk(code: str) -> bool:
     """Flags code the static checks refuse, credential-path access, or code built to run past them."""
     if not code or not code.strip():
         return False
     # A confirmation beats a silent refusal at execution time.
-    if _check_code_safety(code) is not None:
+    analysis = _check_signal_escape_patterns(code)
+    if _check_code_safety(code, analysis = analysis) is not None:
+        return True
+    if any(_terminal_is_high_risk(command) for command in analysis[1].get("shell_commands", ())):
         return True
     tree, _parse_error = _parse_python(code)
     if _parse_error is not None:
@@ -8141,7 +9227,9 @@ def _python_is_high_risk(code: str) -> bool:
                     if isinstance(tgt, ast.Name):
                         destructive_fs_aliases.add(tgt.id)
         elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
-            if _is_destructive_attr(node.value.attr, node.value.value):
+            if _is_destructive_attr(node.value.attr, node.value.value) or _is_process_kill(
+                node.value
+            ):
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name):
                         destructive_fs_aliases.add(tgt.id)
@@ -8151,7 +9239,9 @@ def _python_is_high_risk(code: str) -> bool:
             and isinstance(node.target, ast.Name)
         ):
             # An annotated binding (f: object = os.remove) is the same alias.
-            if _is_destructive_attr(node.value.attr, node.value.value):
+            if _is_destructive_attr(node.value.attr, node.value.value) or _is_process_kill(
+                node.value
+            ):
                 destructive_fs_aliases.add(node.target.id)
     for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
@@ -8189,6 +9279,40 @@ def _python_is_high_risk(code: str) -> bool:
                     return True
             elif _is_destructive_attr(attr_name, func.args[0]):
                 return True
+    # Handed to map, partial or a thread, the function runs with no call node naming it.
+    bound = {
+        id(node.value)
+        for node in _tree_nodes(tree)
+        if (isinstance(node, ast.Assign) and all(isinstance(tgt, ast.Name) for tgt in node.targets))
+        or (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and isinstance(node.value, ast.Attribute)
+        )
+    }
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Load) and node.id in destructive_fs_aliases:
+                return True
+        elif id(node) in bound:
+            continue
+        elif isinstance(node, ast.Attribute):
+            if isinstance(node.ctx, ast.Load) and (
+                _is_destructive_attr(node.attr, node.value) or _is_process_kill(node)
+            ):
+                return True
+        elif isinstance(node, ast.Subscript):
+            if _folded_str_literal(node.slice) is not None and _is_module_dict_lookup(node):
+                return True
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+        ):
+            attr_name = _folded_str_literal(node.args[1])
+            if attr_name is not None and _is_destructive_attr(attr_name, node.args[0]):
+                return True
     # Fold split paths through variables; unresolved fragments use a sentinel so partial folds
     # never false-positive.
     str_vars: "dict[str, str]" = {}
@@ -8213,11 +9337,233 @@ def _python_is_high_risk(code: str) -> bool:
             folded = _folded_path(node, str_vars)
             if folded and _folded_is_sensitive(folded):
                 return True
+    # name -> possible runner modules; sets only grow, so alias propagation converges.
+    runner_modules: "dict[str, set[str]]" = {}
+    runner_funcs: "dict[str, set[str]]" = {}
+    runner_class_names: "dict[str, str]" = {}
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in _PY_CODE_STRING_RUNNERS:
+                    runner_modules.setdefault(alias.asname or alias.name, set()).add(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module in _PY_CODE_STRING_RUNNERS:
+            runner_class = _PY_CODE_RUNNER_CLASSES.get(node.module)
+            for alias in node.names:
+                if alias.name == "*":
+                    for name in _PY_CODE_STRING_RUNNERS[node.module]:
+                        runner_funcs.setdefault(name, set()).add(node.module)
+                    if runner_class:
+                        runner_class_names[runner_class] = node.module
+                elif alias.name in _PY_CODE_STRING_RUNNERS[node.module]:
+                    runner_funcs.setdefault(alias.asname or alias.name, set()).add(node.module)
+                elif alias.name == runner_class:
+                    runner_class_names[alias.asname or alias.name] = node.module
+
+    def _runner_instance_module(value):
+        if not isinstance(value, ast.Call):
+            return None
+        ctor = value.func
+        if isinstance(ctor, ast.Name):
+            return runner_class_names.get(ctor.id)
+        if isinstance(ctor, ast.Attribute) and isinstance(ctor.value, ast.Name):
+            for module in runner_modules.get(ctor.value.id, ()):
+                if ctor.attr == _PY_CODE_RUNNER_CLASSES.get(module):
+                    return module
+        return None
+
+    runner_instances: "dict[str, set[str]]" = {}
+    for node in _tree_nodes(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and (module := _runner_instance_module(node.value))
+        ):
+            runner_instances.setdefault(node.targets[0].id, set()).add(module)
+
+    def _runner_modules_of(func) -> "set[str]":
+        if isinstance(func, ast.Name):
+            return runner_funcs.get(func.id, set())
+        if not isinstance(func, ast.Attribute):
+            return set()
+        receiver = func.value
+        if isinstance(receiver, ast.Name):
+            candidates = runner_instances.get(receiver.id) or runner_modules.get(receiver.id, ())
+        else:
+            candidates = {_runner_instance_module(receiver)} - {None}
+        return {m for m in candidates if func.attr in _PY_CODE_STRING_RUNNERS[m]}
+
+    def _code_runner_module(func):
+        # A name that may be either runner gets the stricter profiler rule.
+        modules = _runner_modules_of(func)
+        return min(modules - {"timeit"}, default = None) or min(modules, default = None)
+
+    simple_assigns = [
+        (node.targets[0].id, node.value)
+        for node in _tree_nodes(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ]
+    readers: "dict[str, list[int]]" = {}
+    for index, (_target, value) in enumerate(simple_assigns):
+        read = value.value if isinstance(value, ast.Attribute) else value
+        if isinstance(read, ast.Name):
+            readers.setdefault(read.id, []).append(index)
+    pending = list(range(len(simple_assigns)))
+    while pending:
+        target, value = simple_assigns[pending.pop()]
+        aliased = runner_modules.get(value.id, set()) if isinstance(value, ast.Name) else set()
+        grew = False
+        for table, found in ((runner_funcs, _runner_modules_of(value)), (runner_modules, aliased)):
+            if found - table.get(target, set()):
+                table.setdefault(target, set()).update(found)
+                grew = True
+        if grew:
+            pending.extend(readers.get(target, ()))
+
+    # Every binding of a name, so a reassigned source cannot hide the value a runner saw.
+    name_bindings: "dict[str, list]" = {}
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    name_bindings.setdefault(target.id, []).append(node.value)
+                elif isinstance(target, (ast.Tuple, ast.List)):
+                    for elt in target.elts:
+                        if isinstance(elt, ast.Name):
+                            name_bindings.setdefault(elt.id, []).append(None)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and isinstance(node.target, ast.Name):
+            name_bindings.setdefault(node.target.id, []).append(node.value)
+        elif isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor)) and isinstance(
+            node.target, ast.Name
+        ):
+            name_bindings.setdefault(node.target.id, []).append(None)
+
+    name_sources: "dict[str, tuple[list[str], bool]]" = {}
+
+    def _code_strings(arg, seen = frozenset()) -> "tuple[list[str], bool]":
+        """Candidate sources for a runner argument, and whether any binding stayed unresolved."""
+        if isinstance(arg, ast.Name) and name_bindings.get(arg.id):
+            if arg.id in seen or len(seen) >= 32:
+                return [], True
+            if arg.id not in name_sources:
+                sources, unresolved = [], False
+                for value in name_bindings[arg.id]:
+                    if value is None:
+                        unresolved = True
+                        continue
+                    found, missing = _code_strings(value, seen | {arg.id})
+                    sources.extend(found)
+                    unresolved |= missing
+                name_sources[arg.id] = (list(dict.fromkeys(sources)), unresolved)
+            return name_sources[arg.id]
+        folded = _folded_path(arg, str_vars)
+        if folded is None or "\x00" in folded or "\x02" in folded:
+            return [], True
+        return [folded], False
+
+    def _string_shaped(node, seen) -> bool:
+        # A str built at runtime ("...".strip(), f-strings): unscreenable, so it asks; callables do not.
+        if isinstance(node, ast.Name):
+            if len(seen) >= 32:
+                return True
+            if node.id in seen:
+                return False
+            seen.add(node.id)
+            bindings = name_bindings.get(node.id, ())
+            return any(v is not None and _string_shaped(v, seen) for v in bindings)
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (str, bytes))
+        if isinstance(node, ast.JoinedStr):
+            return True
+        if isinstance(node, ast.BinOp):
+            return _string_shaped(node.left, seen) or _string_shaped(node.right, seen)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            return _string_shaped(node.func.value, seen)
+        if isinstance(node, ast.Subscript):
+            return _string_shaped(node.value, seen)
+        return False
+
+    runner_verdicts: "dict[object, bool]" = {}
+
+    def _cached_runner_verdict(source: str) -> bool:
+        if source not in runner_verdicts:
+            runner_verdicts[source] = _runner_source_is_high_risk(source)
+        return runner_verdicts[source]
+
+    def _cached_timeit_verdict(program: str) -> bool:
+        # An unparsable combination could hide what setup binds for stmt.
+        key = ("timeit", program)
+        if key not in runner_verdicts:
+            try:
+                unparsable = _parse_python(program)[1] is not None
+            except (RecursionError, ValueError):
+                unparsable = True
+            runner_verdicts[key] = bool(program.strip()) and (
+                unparsable or _cached_runner_verdict(program)
+            )
+        return runner_verdicts[key]
+
+    def _kwarg_items(node):
+        """(name, value) for a call's keywords with literal ** dicts flattened; None name = opaque."""
+        stack = [(kw.arg, kw.value) for kw in reversed(node.keywords)]
+        while stack:
+            name, value = stack.pop()
+            if name is not None:
+                yield name, value
+            elif isinstance(value, ast.Dict):
+                for key, item in reversed(list(zip(value.keys, value.values))):
+                    if key is None:
+                        stack.append((None, item))
+                    elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        stack.append((key.value, item))
+                    else:
+                        yield None, item
+            else:
+                yield None, value
+
+    def _runner_arg(node, index, keywords):
+        if len(node.args) > index:
+            return node.args[index]
+        return next((v for k, v in _kwarg_items(node) if k in keywords), None)
+
+    def _opaque_kwargs(node) -> bool:
+        return any(k is None for k, _ in _kwarg_items(node))
+
     # Non-literal exec/eval/compile/__import__ runs unseen code: ask. Literal ones are screened.
     for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
+        runner = _code_runner_module(func)
+        if runner == "timeit":
+            # timeit also takes callables: screen resolvable strings, setup + stmt as one program.
+            stmt = _runner_arg(node, 0, ("stmt",))
+            setup = _runner_arg(node, 1, ("setup",))
+            if _opaque_kwargs(node):
+                return True
+            candidates = []
+            for arg in (setup, stmt):
+                sources, unresolved = _code_strings(arg) if arg is not None else ([], False)
+                if unresolved and _string_shaped(arg, set()):
+                    return True
+                candidates.append(sources or [""])
+            setups, stmts = candidates
+            if len(setups) * len(stmts) <= 16:
+                programs = [f"{a}\n{b}" for a in setups for b in stmts]
+            else:
+                programs = ["\n".join([*setups, *stmts])]
+            if any(map(_cached_timeit_verdict, dict.fromkeys([*setups, *stmts, *programs]))):
+                return True
+        elif runner is not None:
+            if _opaque_kwargs(node):
+                return True
+            arg = _runner_arg(node, 0, _PY_CODE_RUNNER_SOURCE_KWARGS)
+            if arg is not None:
+                sources, unresolved = _code_strings(arg)
+                if unresolved or any(map(_cached_runner_verdict, dict.fromkeys(sources))):
+                    return True
         name = None
         if isinstance(func, ast.Name):
             name = func.id
@@ -8363,19 +9709,22 @@ def _windows_program_roots() -> list[str]:
 def _resolve_trusted_windows_git() -> tuple[str, str]:
     """Finds git in a trusted Program Files dir; the first PATH match may be an untrusted shim, so the other entries are scanned."""
     exts = [e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)]
-    candidates: list[str] = []
-    primary = shutil.which("git")
-    if primary:
-        candidates.append(primary)
-    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
-        entry = entry.strip().strip('"')
-        if not entry or not os.path.isabs(entry):
-            continue
-        for ext in exts:
-            cand = os.path.join(entry, "git" + ext)
-            if os.path.isfile(cand):
-                candidates.append(cand)
-    for git_exe in candidates:
+
+    def _candidates():
+        # Lazy, in the original order: a trusted hit stops the PATH x PATHEXT stat scan.
+        primary = shutil.which("git")
+        if primary:
+            yield primary
+        for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if not entry or not os.path.isabs(entry):
+                continue
+            for ext in exts:
+                cand = os.path.join(entry, "git" + ext)
+                if os.path.isfile(cand):
+                    yield cand
+
+    for git_exe in _candidates():
         git_dir = os.path.dirname(git_exe)
         if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
             return os.path.realpath(git_dir), os.path.splitext(git_exe)[1].upper()
@@ -8445,8 +9794,8 @@ _ISOLATED_CMD_GIT_ENV = {
 }
 
 
-def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
-    """Env is built from a whitelist, not inherited; user-writable PATH entries could shadow commands."""
+def _safe_path(shell: "str | None" = None) -> "tuple[str, str]":
+    # (PATH, the trusted Windows git's extension); every entry is read-only inside the sandbox.
     exe_dir = os.path.dirname(sys.executable)
     path_entries = [exe_dir] if exe_dir else []
 
@@ -8481,19 +9830,28 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
+    return os.pathsep.join(deduped), git_ext
 
+
+def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
+    """Env is built from a whitelist, not inherited; user-writable PATH entries could shadow commands."""
+    path, git_ext = _safe_path(shell)
+    venv = os.environ.get("VIRTUAL_ENV")
     temp_dir = _sandbox_temp_dir(workdir)
     env = {
-        "PATH": os.pathsep.join(deduped),
+        "PATH": path,
         "HOME": workdir,
         "TMPDIR": temp_dir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONUNBUFFERED": "1",
         # A GUI backend opens a native window and blocks plt.show() until closed.
         "MPLBACKEND": "Agg",
         # Remaps ChatGPT code-interpreter paths (/mnt/data) onto the sandbox cwd.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
+        # Read by sandbox_site: refuses connects to cloud-metadata addresses at runtime.
+        "_UNSLOTH_SANDBOX_BLOCK_METADATA": "1",
     }
     if venv:
         env["VIRTUAL_ENV"] = venv
@@ -8676,6 +10034,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
         if var in os.environ:
             env[var] = workdir
     env.setdefault("MPLBACKEND", "Agg")
+    env["PYTHONUNBUFFERED"] = "1"
     return env
 
 
@@ -9090,15 +10449,23 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
         packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
         if os.path.isdir(packages):
             # Served by sitecustomize's last-resort finder, not sys.path, so plugin discovery never sees them.
-            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
+            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = os.pathsep.join(
+                os_sandbox.session_package_paths(packages)
+            )
             env["PYTHONNOUSERSITE"] = "1"
             # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
             # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
-            requested = _requested_chat_clis(
-                os.path.join(packages, "Scripts" if os.name == "nt" else "bin"),
-                script if script is not None else " ".join(map(str, argv)),
-                os.path.join(private, ".unsloth-chat-bin"),
-            )
+            requested = None
+            # Reversed, so the scheme's own scripts dir wins a name clash, as it does on PATH.
+            for scripts in reversed(os_sandbox.session_script_dirs(packages)):
+                requested = (
+                    _requested_chat_clis(
+                        scripts,
+                        script if script is not None else " ".join(map(str, argv)),
+                        os.path.join(private, ".unsloth-chat-bin"),
+                    )
+                    or requested
+                )
             if requested:
                 env["PATH"] = os.pathsep.join(
                     part for part in (env.get("PATH", ""), requested) if part
@@ -9113,7 +10480,7 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
             # Written here, not read back from the workdir copy: a sandboxed call could have replaced that file.
             path = os.path.join(private, os.path.basename(argv[-1]))
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w", encoding = "utf-8") as f:
+            with os.fdopen(fd, "w", encoding = _python_source_encoding(script) or "utf-8") as f:
                 f.write(script)
             argv = (*argv[:-1], path)
             # The script's own folder stays off sys.path too (CPython >= 3.11).
@@ -9443,6 +10810,111 @@ def _windows_bash_userland_dirs() -> list[str]:
 def _shell_is_posix() -> bool:
     """True when the shell that will run a command parses POSIX syntax."""
     return sys.platform != "win32" or _windows_bash() is not None
+
+
+# cmd's `>nul` idiom; `<<` is matched first by the heredoc pattern, and `x->nul` / `a=>nul` are not redirects.
+_NUL_REDIRECT_RE = re.compile(
+    r"(?<![-=<>])((?:[0-9]+|&)?(?:>>?|>\||>&)|<)([ \t]*)nul(?=[\s;&|()<>]|$)", re.IGNORECASE
+)
+_HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(['\"]?)([^\s'\"<>;&|()]+)\2")
+
+
+def _substitution_end(command: str, i: int) -> int:
+    depth, n = 1, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c in "'\"":
+            j = command.find(c, i + 1)
+            i = n if j < 0 else j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return n
+
+
+def _bash_nul_to_dev_null(command: str) -> str:
+    """Git Bash turns `2>nul` into a real file named nul that Explorer cannot delete (#16991).
+    Quoted text and heredoc bodies (a .bat written through cat) keep their spelling."""
+    if "nul" not in command.lower():
+        return command
+    out: list[str] = []
+    heredocs: list[tuple[bool, str]] = []
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        if c == "'":
+            j = command.find("'", i + 1)
+            j = n if j < 0 else j + 1
+            out.append(command[i:j])
+            i = j
+            continue
+        if c == '"':
+            # A $( ) inside double quotes still runs: `x="$(cmd 2>nul)"`.
+            out.append(c)
+            i += 1
+            while i < n and command[i] != '"':
+                if command.startswith("$(", i):
+                    end = _substitution_end(command, i + 2)
+                    out.append("$(" + _bash_nul_to_dev_null(command[i + 2 : end]))
+                    i = end
+                    continue
+                step = 2 if command[i] == "\\" else 1
+                out.append(command[i : i + step])
+                i += step
+            out.append(command[i : i + 1])
+            i += 1
+            continue
+        if c == "#" and (i == 0 or command[i - 1] in " \t\n;&|()"):
+            j = command.find("\n", i)
+            j = n if j < 0 else j
+            out.append(command[i:j])
+            i = j
+            continue
+        if c == "\n" and heredocs:
+            i += 1
+            out.append("\n")
+            for strip_tabs, delim in heredocs:
+                while i < n:
+                    j = command.find("\n", i)
+                    j = n if j < 0 else j + 1
+                    line = command[i:j].rstrip("\n")
+                    out.append(command[i:j])
+                    i = j
+                    if (line.lstrip("\t") if strip_tabs else line) == delim:
+                        break
+            heredocs = []
+            continue
+        if command.startswith("<<<", i):
+            out.append("<<<")
+            i += 3
+            continue
+        if command.startswith("<<", i):
+            m = _HEREDOC_RE.match(command, i)
+            if m:
+                heredocs.append((m.group(1) == "-", m.group(3)))
+                out.append(m.group(0))
+                i = m.end()
+                continue
+        m = _NUL_REDIRECT_RE.match(command, i)
+        if m:
+            out.append(f"{m.group(1)}{m.group(2)}/dev/null")
+            i = m.end()
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _get_shell_cmd(command: str) -> list[str]:
@@ -9934,15 +11406,6 @@ def live_project_owns(
     return False
 
 
-def _project_exists(project_id: str) -> bool:
-    """Whether a project of the user's is stored under this exact id."""
-    try:
-        from storage.studio_db import get_chat_project
-        return get_chat_project(project_id) is not None
-    except Exception:  # noqa: BLE001 - a storage hiccup must not delete files
-        return True
-
-
 def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
     """Compares with the sandbox path, not the working-folder setting, which can change before the chmod."""
     if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
@@ -9978,6 +11441,23 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
     if not _usable_session_id(session_id) and not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     return _get_project_workdir(session_id)
+
+
+def session_runs_in_user_folder(session_id: "str | None") -> bool:
+    """Whether this session's code tools run in the owner's chosen project folder, resolved as the executor does."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+
+        # One read rules out most projects before the four the full resolution makes.
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        if not available_project_working_folder(project):
+            return False
+        workdir = _project_workdir_for(session_id)
+        return bool(workdir) and _is_user_project_folder(session_id, workdir)
+    except Exception:
+        return False
 
 
 def _get_project_workdir(session_id: str) -> str | None:
@@ -11223,18 +12703,23 @@ def _edit_file_write(
 ) -> str:
     """Atomic rename from a temp file; will not revert a file another chat rewrote since expect; containment rechecked before the rename catches a symlink swap."""
     payload = (bom + text.replace("\n", newline)).encode("utf-8")
-    directory = os.path.dirname(path) or "."
     try:
-        os.makedirs(directory, exist_ok = True)
+        dir_fd, leaf = _edit_file_parent(path, workdir, create_dirs = True)
     except OSError as exc:
         return f"Error: cannot create directory for '{os.path.basename(path)}': {exc}"
     tmp = ""
     try:
-        fd, tmp = tempfile.mkstemp(dir = directory, prefix = ".unsloth_edit_")
+        if dir_fd is None:
+            fd, tmp = tempfile.mkstemp(dir = os.path.dirname(path) or ".", prefix = ".unsloth_edit_")
+        else:
+            tmp = f".unsloth_edit_{uuid.uuid4().hex}"
+            fd = os.open(
+                tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600, dir_fd = dir_fd
+            )
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
         try:
-            shutil.copymode(path, tmp)
+            os.chmod(tmp, stat.S_IMODE(os.stat(leaf, dir_fd = dir_fd).st_mode), dir_fd = dir_fd)
         except OSError:
             pass  # new file, or a mode we cannot read; the default is fine
         if workdir is not None and _is_outside_workdir(path, workdir):
@@ -11244,7 +12729,9 @@ def _edit_file_write(
             )
         if expect is not None:
             try:
-                with open(path, "rb") as fh:
+                with os.fdopen(
+                    os.open(leaf, os.O_RDONLY | getattr(os, "O_BINARY", 0), dir_fd = dir_fd), "rb"
+                ) as fh:
                     current = fh.read(len(expect) + 1)
             except OSError:
                 current = None
@@ -11256,14 +12743,16 @@ def _edit_file_write(
                 )
         from core import library
 
-        library.replace_file(tmp, path)
+        library.replace_file(tmp, path, dir_fd = dir_fd)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"
     finally:
         if tmp:
             with contextlib.suppress(OSError):
-                os.remove(tmp)
+                os.remove(tmp, dir_fd = dir_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
     return ""
 
 
@@ -11402,6 +12891,23 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
     return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
 
 
+def _edit_file_parent(
+    target: str, workdir: "str | None", create_dirs: bool
+) -> "tuple[int | None, str]":
+    """(folder fd or None, name to use with it). Confined POSIX writes open every parent below the
+    workdir without following links, so a folder swapped for a link mid-call fails instead of
+    carrying the write outside; unconfined calls and Windows keep the path."""
+    if workdir is None or not file_history.DIR_FD_WALK:
+        if create_dirs:
+            os.makedirs(os.path.dirname(target) or ".", exist_ok = True)
+        return None, target
+    root = os.path.realpath(workdir)
+    parts = os.path.relpath(target, root).split(os.sep)
+    if parts[0] == os.pardir:
+        raise OSError("not inside the working directory")
+    return file_history.open_dir_below(root, parts[:-1], create_dirs), parts[-1]
+
+
 def _edit_file_create(
     target: str,
     new: str,
@@ -11412,37 +12918,40 @@ def _edit_file_create(
     """Creates with O_EXCL, not a lexists check, so two chats cannot drop each other's file; never clobbers, and a zero-byte target stays writable on purpose."""
     payload = (new.replace("\n", newline)).encode("utf-8")
     if not os.path.lexists(target):
-        directory = os.path.dirname(target) or "."
         try:
-            os.makedirs(directory, exist_ok = True)
+            dir_fd, leaf = _edit_file_parent(target, workdir, create_dirs = True)
         except OSError as exc:
             return f"Error: cannot create directory for '{name}': {exc}"
-        if workdir is not None and _is_outside_workdir(target, workdir):
-            return (
-                f"Error: '{name}' moved outside the working directory while the "
-                "edit was being prepared; nothing was written."
-            )
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        # Never follow a symlink planted at the final component in the meantime.
-        flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(target, flags, 0o666)
-        except FileExistsError:
-            return (
-                f"Error: '{name}' was created by something else while this call "
-                "was preparing it; nothing was written."
-            )
-        except OSError as exc:
-            return f"Error: cannot write '{name}': {exc}"
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(payload)
-        except OSError as exc:
-            # A partial write after ENOSPC cannot be retried (empty old_string refuses non-empty), so
-            # remove the inode.
-            with contextlib.suppress(OSError):
-                os.remove(target)
-            return f"Error: cannot write '{name}': {exc}"
+            if workdir is not None and _is_outside_workdir(target, workdir):
+                return (
+                    f"Error: '{name}' moved outside the working directory while the "
+                    "edit was being prepared; nothing was written."
+                )
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+            # Never follow a symlink planted at the final component in the meantime.
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd = os.open(leaf, flags, 0o666, dir_fd = dir_fd)
+            except FileExistsError:
+                return (
+                    f"Error: '{name}' was created by something else while this call "
+                    "was preparing it; nothing was written."
+                )
+            except OSError as exc:
+                return f"Error: cannot write '{name}': {exc}"
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(payload)
+            except OSError as exc:
+                # A partial write after ENOSPC cannot be retried (empty old_string refuses non-empty), so
+                # remove the inode.
+                with contextlib.suppress(OSError):
+                    os.remove(leaf, dir_fd = dir_fd)
+                return f"Error: cannot write '{name}': {exc}"
+        finally:
+            if dir_fd is not None:
+                os.close(dir_fd)
         return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
     try:
         st = os.stat(target)
@@ -12209,7 +13718,10 @@ READ_SKILL_TOOL = {
                 },
                 "resource": {
                     "type": "string",
-                    "description": "Relative resource path. Defaults to SKILL.md.",
+                    "description": (
+                        "Relative path of a file inside the skill's folder, "
+                        "never a chat attachment. Defaults to SKILL.md."
+                    ),
                 },
                 "offset": {
                     "type": "integer",
@@ -12329,12 +13841,12 @@ _MCP_TOOL_SEARCH_LIMIT = 5
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
 _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
-# Tools a turn loads by search or by name, newest first; older ones leave the listing to stay within it.
 _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds.
+# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds; its
+# ranked tools hold until a message's best match is listable and not among them.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -12343,8 +13855,11 @@ _MCP_LISTING_THREAD: ContextVar = ContextVar("mcp_listing_thread", default = Non
 _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
+_MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
+# (account, thread) -> (held ranked tools, the last listing's order).
+_MCP_HELD_THREADS: "OrderedDict[tuple, tuple[list[str], list[str]]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -12357,11 +13872,13 @@ def set_mcp_listing_context_tokens(
     messages = None,
     tool_choice = None,
     mcp_image = None,
+    remember = True,
 ) -> None:
     """The local window the next MCP listing in this context is sized against; unset lists every tool in full.
     ``thread_id`` keeps the tools a chat ran listed; ``messages`` ranks the deferred ones listed up front; a
     ``tool_choice`` forcing a tool keeps that one listed, and an attached image (in the message or, sent to MCP tools
-    only, as ``mcp_image``) keeps the tools mapped to take it listed."""
+    only, as ``mcp_image``) keeps the tools mapped to take it listed. ``remember = False`` (token counts) reads the
+    held listing without replacing it."""
     from core.inference.chat_template_helpers import forced_tool_name, last_user_text  # noqa: PLC0415
 
     valid = isinstance(context_tokens, int) and context_tokens > 0
@@ -12370,6 +13887,7 @@ def set_mcp_listing_context_tokens(
     dicts = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages or []]
     _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
     _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
+    _MCP_LISTING_REMEMBER.set(bool(remember))
     last_user = next(
         (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
     )
@@ -12571,6 +14089,26 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
+def _mcp_held(by_name: dict) -> tuple[list[str], list[str]]:
+    key = _mcp_thread_key()
+    if key is None:
+        return [], []
+    with _MCP_LOADED_LOCK:
+        ranked, listed = _MCP_HELD_THREADS.get(key, ((), ()))
+    return [n for n in ranked if n in by_name], list(listed)
+
+
+def _mcp_hold(ranked: list[str], listed: list[str]) -> None:
+    key = _mcp_thread_key()
+    if key is None or not _MCP_LISTING_REMEMBER.get():
+        return
+    with _MCP_LOADED_LOCK:
+        _MCP_HELD_THREADS.pop(key, None)
+        _MCP_HELD_THREADS[key] = (ranked, listed)
+        while len(_MCP_HELD_THREADS) > _MCP_LOADED_THREADS_MAX:
+            _MCP_HELD_THREADS.popitem(last = False)
+
+
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
     specs = [spec for _, _, server_specs in listed for spec in server_specs]
     ctx = _MCP_LISTING_CONTEXT_TOKENS.get()
@@ -12624,21 +14162,45 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     )
     ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
     ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
-    for name in dict.fromkeys(ran + ranked[:_MCP_TOOL_PRELOAD]):
-        if by_name[name] in listing:
-            continue
-        cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
-        if cost <= room:
-            listing.append(by_name[name])
-            room -= cost
-    return listing
+    ranked = ranked[:_MCP_TOOL_PRELOAD]
+
+    def filled(names: list[str]) -> list[dict]:
+        chosen = list(listing)
+        left = room
+        for name in dict.fromkeys(ran + names):
+            if by_name[name] in chosen:
+                continue
+            cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
+            if cost <= left:
+                chosen.append(by_name[name])
+                left -= cost
+        return chosen
+
+    held, listed_before = _mcp_held(by_name)
+    chosen = filled(held)
+    held = [name for name in held if by_name[name] in chosen]
+    if ranked and (not held or by_name[ranked[0]] not in chosen):
+        fresh = filled(ranked)
+        # A best match too big to list is not worth dropping the held tools for.
+        if not held or by_name[ranked[0]] in fresh:
+            chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
+    # Listed tools keep their places, new ones go last: a reorder in the tool block reprocesses the whole chat.
+    names = [spec["function"]["name"] for spec in chosen[1:]]
+    order = list(dict.fromkeys([name for name in listed_before if name in names] + names))
+    _mcp_hold(held, order)
+    return chosen[:1] + [by_name[name] for name in order]
+
+
+def _runs_local_mcp(server: dict) -> bool:
+    """A local command, or a managed editor whose loopback tools run code here: both follow the stdio gate."""
+    return is_stdio(server["url"]) or server.get("builtin_id") in mcp_servers_db.MANAGED_MCP_IDS
 
 
 def _cached_mcp_catalog() -> list[dict]:
     """Every model-visible MCP tool spec already cached for this account's enabled servers."""
     servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
     specs: list[dict] = []
     for server in servers:
         payload = get_cached_tools(server["id"])
@@ -12693,12 +14255,15 @@ def _mcp_search_index(specs: list[dict]) -> sqlite3.Connection:
     conn.execute(
         "CREATE VIRTUAL TABLE tool_text USING fts5(description, params, tokenize='porter unicode61')"
     )
+    from storage.rag_db import fts_text  # noqa: PLC0415
+
     conn.executemany(
-        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)", [(i, r[0]) for i, r in enumerate(rows)]
+        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)",
+        [(i, fts_text(r[0])) for i, r in enumerate(rows)],
     )
     conn.executemany(
         "INSERT INTO tool_text(rowid, description, params) VALUES (?, ?, ?)",
-        [(i, r[1], r[2]) for i, r in enumerate(rows)],
+        [(i, fts_text(r[1]), fts_text(r[2])) for i, r in enumerate(rows)],
     )
     _MCP_SEARCH_INDEXES[digest] = conn
     while len(_MCP_SEARCH_INDEXES) > 4:
@@ -12816,13 +14381,33 @@ def mcp_fit_loaded(specs: list[dict]) -> list[dict]:
     return fitted
 
 
+def _mcp_search_result(found: list[dict]) -> str:
+    lines = [
+        f"- {spec['function']['name']}: {_mcp_summary(spec['function'].get('description') or '')}\n"
+        f"  schema: {json.dumps(spec, separators=(',', ':'))}"
+        for spec in found
+    ]
+    return (
+        f"Loaded {len(found)} MCP tool{'s' if len(found) != 1 else ''}. Call the one that fits directly, "
+        "with the parameters in its schema:\n" + "\n".join(lines)
+    )
+
+
 def _mcp_search_matches(arguments) -> tuple[list[dict], list[dict]]:
     """(the cached MCP tools a mcp_tool_search call loads, the matches too large to)."""
     arguments = arguments if isinstance(arguments, dict) else {}
     specs = _cached_mcp_catalog()
     order, exact = _mcp_ranked(specs, arguments.get("query"))
     picked = [specs[i] for i in order[: max(_mcp_search_limit(arguments.get("limit")), exact)]]
-    fitted = mcp_fit_loaded(picked)
+    fitted = []
+    for spec in picked:
+        retained = [*fitted, spec]
+        if len(mcp_fit_loaded(retained)) != len(retained):
+            continue
+        candidate = _mcp_search_result(retained)
+        # Include the envelope so the result cap cannot split a schema.
+        if _fit_result_to_room(candidate, MCP_TOOL_SEARCH_NAME) == candidate:
+            fitted.append(spec)
     return fitted, [spec for spec in picked if spec not in fitted]
 
 
@@ -12845,18 +14430,12 @@ def _mcp_tool_search(arguments) -> str:
             f"No MCP tool matched '{query.strip()}'. Try other keywords, or one of the tool names "
             f"listed in the {MCP_TOOL_SEARCH_NAME} description."
         )
-    lines = [
-        f"- {spec['function']['name']}: {_mcp_summary(spec['function'].get('description') or '')}"
-        for spec in found
-    ]
-    return (
-        f"Loaded {len(found)} MCP tool{'s' if len(found) != 1 else ''}. Call the one that fits directly, "
-        "with the parameters in its schema:\n" + "\n".join(lines)
-    )
+    return _mcp_search_result(found)
 
 
 def _mcp_tool_prefix(server: dict) -> str:
-    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+    builtin_id = server.get("builtin_id")
+    server_key = builtin_id if builtin_id in mcp_servers_db.MANAGED_MCP_IDS else server["id"]
     return f"{MCP_TOOL_PREFIX}{server_key}__"
 
 
@@ -13019,6 +14598,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
             logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
         seen_names.add(name)
+        tool_facts.note_mcp_tool(name, tool, studio = is_studio_tools(server.get("url") or ""))
         description = tool.get("description") or ""
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name
@@ -13047,7 +14627,14 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 
 
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
-    enabled = [server for server in servers if server.get("is_enabled")]
+    from core.inference.studio_tools_mcp import keyless_caller
+
+    keyless = keyless_caller(current_account())
+    enabled = [
+        server
+        for server in servers
+        if server.get("is_enabled") and not (keyless and is_studio_tools(server["url"]))
+    ]
     if not any(is_studio_decisions(server["url"]) for server in enabled):
         return enabled
     from utils import systemone_settings
@@ -13063,7 +14650,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     """Reads only cached MCP schemas so a background count never probes servers; complete is False for an uncached server not in cool-off; callers must decline."""
     servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
 
     listed: list[tuple[dict, list[dict], list[dict]]] = []
     complete = True
@@ -13086,13 +14673,17 @@ async def get_enabled_mcp_tools(
     if server_ids is not None:
         servers = [server for server in servers if server["id"] in server_ids]
     if not include_stdio or not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
     if not servers:
         return []
 
-    # cool-off avoids blocking every send for the full probe timeout when a server is down.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down. The in-process
+    # Unsloth Studio row is re-listed every send, so tool toggles apply at once.
     uncached = [
-        s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
+        s
+        for s in servers
+        if is_studio_tools(s["url"])
+        or (get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"]))
     ]
     if uncached:
         results = await asyncio.gather(
@@ -13125,6 +14716,9 @@ async def get_enabled_mcp_tools(
                 )
                 # Not cached, but a failure is recorded so a down server isn't re-probed during the cool-off.
                 record_probe_failure(server["id"], bool(fresh.get("use_oauth")))
+                if is_studio_tools(server["url"]):
+                    # Never fall back to an older listing that may name a tool since turned off.
+                    invalidate_tool_cache(server["id"])
                 continue
             cache_tools(server["id"], payload)
 
@@ -13165,7 +14759,7 @@ async def mcp_search_tools(
     if server_ids is not None:
         servers = [server for server in servers if server["id"] in server_ids]
     if not include_stdio or not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
     found = []
     for server in servers:
         for tool in get_cached_tools(server["id"]) or ():
@@ -13253,6 +14847,7 @@ def execute_tool(
     tool_execution_mode: str = "auto",
     host_access_approved: bool = False,
     mcp_image = None,
+    started_read: "StartedUrlRead | None" = None,
 ) -> str:
     """Runs a tool by name; disable_sandbox skips python/terminal checks, blocklist and caps (secrets stay stripped); tool_execution_mode full is refused here."""
     from state.tool_policy import require_tool_access
@@ -13302,6 +14897,19 @@ def execute_tool(
             website_policy = website_policy,
             timeout = effective_timeout,
         )
+    if name == "update_memory":
+        from core.chat_memory import execute
+        return execute(arguments, thread_id)
+
+    if is_computer_tool(name):
+        return execute_computer_tool(
+            arguments,
+            cancel_event = cancel_event,
+            # The conversation: a project's chats share session_id, and each asks for itself.
+            session_id = thread_id or session_id,
+            approved = host_access_approved,
+            full_access = disable_sandbox,
+        )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -13326,6 +14934,7 @@ def execute_tool(
         from .skills import (
             MAX_SKILL_PAGE_CHARS,
             MIN_SKILL_PAGE_CHARS,
+            SKILL_FILES_HINT,
             SkillError,
             read_skill_resource,
         )
@@ -13352,7 +14961,10 @@ def execute_tool(
                     )
                 page_chars //= 2
         except SkillError as exc:
-            return f"Error: {exc}"
+            error = f"Error: {exc}"
+            fitted = _fit_result_to_room(error, name)
+            # Only the optional listing is cut: the controller needs the whole `Error:` reply.
+            return error if fitted == error else error.split(SKILL_FILES_HINT, 1)[0]
 
     if name == "search_knowledge_base":
         return _fit_result_to_room(
@@ -13401,7 +15013,7 @@ def execute_tool(
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
             return f"Error: MCP server '{display}' is disabled"
-        if is_stdio(server["url"]) and not stdio_mcp_enabled():
+        if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)
         headers = parse_server_headers(server)
@@ -13503,6 +15115,8 @@ def execute_tool(
         image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
         if not query and not url and not _clean_image_queries(image_queries):
             return "No query provided."
+        if started_read is not None:
+            return _fit_result_to_room(started_read.result(), name)
         return _fit_result_to_room(
             _web_search(
                 query,
@@ -14021,8 +15635,10 @@ def build_conversation_recall(
     style: str = "tool",
     top_k: int | None = None,
     branch_messages: list[dict] | None = None,
+    query_messages: list[dict] | None = None,
 ) -> dict | None:
-    """Not gated on rag_scope, since compaction happens with or without document RAG; style=inline avoids forged tool_calls, which break strict templates."""
+    """Not gated on rag_scope, since compaction happens with or without document RAG; style=inline avoids forged tool_calls, which break strict templates.
+    ``query_messages`` (the client's transcript) supplies the query when the branch carries a loop's own user-role notices."""
     if not thread_id:
         return None
     try:
@@ -14033,7 +15649,8 @@ def build_conversation_recall(
         return None
 
     # The branch's last user turn: the loop conversation may end with an internal nudge.
-    query = _last_user_text(branch_messages or conversation) or _last_user_text(conversation)
+    _asked = query_messages or branch_messages or conversation
+    query = _last_user_text(_asked) or _last_user_text(conversation)
     if not query:
         return None
     # A nudge ("continue") retrieves nothing, so also query the last real instruction. Not for
@@ -14044,7 +15661,7 @@ def build_conversation_recall(
         from core.inference import instruction_pin
         thin = instruction_pin.is_thin_query(query)
         if thin:
-            _behind = branch_messages or conversation
+            _behind = _asked
             anchor = instruction_pin.last_substantive_instruction(_behind)
             if not anchor:
                 # Use is_thin_query, not a length rule: short prompts can still name something.
@@ -14092,7 +15709,7 @@ def build_conversation_recall(
         sources = sources,
     )
     built["sources"] = len(sources)
-    logger.info("Conversation recall: %d earlier passage(s) for %r", len(sources), query[:80])
+    logger.info("Conversation recall: %d earlier passage(s)", len(sources))
     return built
 
 
@@ -14145,6 +15762,16 @@ def _thread_document_ids(thread_id) -> set | None:
 
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieves the latest turn for models that skip search_knowledge_base. Toggle rag_scope.autoinject or RAG_AUTOINJECT; floor RAG_AUTOINJECT_MIN_SCORE."""
+    try:
+        from core.rag.retrieval import query_vector_memo
+    except Exception:  # noqa: BLE001 - the build reports an unavailable RAG stack itself
+        return _build_rag_autoinject(conversation, rag_scope)
+    # The thread retry, the hybrid retry and the dense probe re-ask the same query: encode it once.
+    with query_vector_memo():
+        return _build_rag_autoinject(conversation, rag_scope)
+
+
+def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
     if not enabled and not whole_doc_requested:
         return None
@@ -14318,7 +15945,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         text = text,
         sources = sources,
     )
-    logger.info("RAG auto-inject: %d passage(s) for %r", len(sources), query[:80])
+    logger.info("RAG auto-inject: %d passage(s)", len(sources))
     return built
 
 
@@ -14336,6 +15963,8 @@ _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 _MAX_FETCH_BYTES = 512 * 1024
 # news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
 _MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
+# docs sites put large menus before the page text, so the read runs a window past the first of each of these.
+_HTML_CONTENT_START_RE = re.compile(rb"<(main|article|h1)[\s>]", re.IGNORECASE)
 # keep % safe to avoid encoding existing escapes as %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
@@ -15319,11 +16948,17 @@ def _read_capped_body(
         read = lambda size: decoder.read(read_wire, size)
     chunks = []
     remaining = max_bytes
+    got = 0
     body_at = None
+    window_end = None
+    fallback_end = None
     body_locator = _HTMLBodyLocator(charset) if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
+            if fallback_end is not None:
+                window_end = fallback_end
+                break
             try:
                 resp.close()
             except Exception:
@@ -15336,8 +16971,11 @@ def _read_capped_body(
                 pass
         try:
             chunk = read(min(65536, remaining))
-        except (ValueError, zlib.error) as exc:
-            if decoder is None:
+        except Exception as exc:
+            if fallback_end is not None:
+                window_end = fallback_end
+                break
+            if decoder is None or not isinstance(exc, (ValueError, zlib.error)):
                 raise
             if decoder.wire > decoder.wire_limit:
                 return f"(compressed content exceeds the {decoder.wire_limit} byte limit)", b""
@@ -15349,8 +16987,8 @@ def _read_capped_body(
             break
         chunks.append(chunk)
         remaining -= len(chunk)
+        got += len(chunk)
         if body_locator is not None and body_at is None:
-            got = max_bytes - remaining
             try:
                 body_locator.feed_bytes(chunk)
             except Exception:
@@ -15358,14 +16996,36 @@ def _read_capped_body(
             if body_locator is not None and body_locator.body_at is not None:
                 body_at = body_locator.body_at
                 remaining = max(0, min(remaining, body_at + body_window - got))
-    budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+        elif window_end is not None and _HTML_CONTENT_START_RE.search(chunks[-2][-8:] + chunk):
+            window_end = None
+            remaining = min(remaining, body_window)
+        if (
+            not remaining
+            and got < max_bytes
+            and body_at is not None
+            and body_locator._codec == "latin-1"
+            and not _has_pdf_magic(so_far := b"".join(chunks))
+        ):
+            starts = {}
+            for match in _HTML_CONTENT_START_RE.finditer(so_far, body_at):
+                starts.setdefault(match.group(1).lower(), match.start())
+            latest = max(starts.values(), default = None)
+            if latest is None:
+                window_end = fallback_end = got
+                remaining = max_bytes - got
+            elif latest + body_window - got > 65536:
+                fallback_end = got
+                remaining = min(max_bytes, latest + body_window) - got
+    budget_error = _fetch_budget_exceeded(
+        None if fallback_end is not None else deadline, cancel_event
+    )
     if budget_error is not None:
         try:
             resp.close()
         except Exception:
             pass
         return budget_error, b""
-    return None, b"".join(chunks)
+    return None, b"".join(chunks)[:window_end]
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
@@ -15684,11 +17344,23 @@ def _fetch_url_raw(
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", content_type
+            from ..rag.parsers import MUPDF_LOCK
+
+            queued_at = time.monotonic()
+            # Indexing can hold the lock for minutes, so Stop must still work while queued.
+            while not MUPDF_LOCK.acquire(timeout = 0.25):
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Failed to fetch URL: cancelled.", "", content_type
             try:
+                # Time queued behind another PDF is not spent on this read.
+                if deadline is not None:
+                    deadline += time.monotonic() - queued_at
                 pdf_text = _extract_pdf_text(raw_bytes)
             except Exception as exc:
                 logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
                 return "(PDF content could not be read as text)", "", content_type
+            finally:
+                MUPDF_LOCK.release()
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", content_type
@@ -16252,8 +17924,18 @@ def _fetch_page_text(
     website_policy: dict | None = None,
 ) -> str:
     """Fetches a URL as readable text (HTML to Markdown); blocks private, loopback and link-local hosts"""
-    if max_chars is None:
-        max_chars = _page_char_budget()
+    page = _download_page(
+        url, timeout = timeout, cancel_event = cancel_event, website_policy = website_policy
+    )
+    return _render_page(page, max_chars)
+
+
+def _download_page(
+    url: str,
+    timeout: int = 30,
+    cancel_event = None,
+    website_policy: dict | None = None,
+):
     # One deadline for the whole fetch so the HTML fallback does not get a fresh timeout.
     deadline = None if timeout is None else time.monotonic() + timeout
     from .web_access_policy import check_url_access
@@ -16279,17 +17961,7 @@ def _fetch_page_text(
         )
         # A 200 README body is authoritative even when HTML; fall back only on failure.
         if err is None and body.strip():
-            readme_body = body
-            # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
-            if _looks_like_html_document(body):
-                from ._html_to_md import html_to_markdown
-                converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
-                readme_body = converted if converted.strip() else body
-            if readme_body.strip():
-                return _truncate_page_text(
-                    f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
-                    max_chars,
-                )
+            return ("readme", url, body)
 
     raw_file_url = _github_blob_raw_url(url)
     if raw_file_url:
@@ -16301,7 +17973,7 @@ def _fetch_page_text(
             **policy_kwargs,
         )
         if err is None and body.strip():
-            return _truncate_page_text(body.strip(), max_chars)
+            return ("text", url, body.strip())
 
     meta: dict = {}
     err, body, content_type = _fetch_url_raw(
@@ -16321,13 +17993,33 @@ def _fetch_page_text(
         return err
 
     # Sniff the body when Content-Type is missing or wrong.
-    is_html = "html" in content_type or _looks_like_html(body)
-    if not is_html:
-        # Converting plain text through the HTML renderer would collapse whitespace.
-        return _truncate_page_text(body.strip(), max_chars)
+    if "html" in content_type or _looks_like_html(body):
+        return ("html", url, body)
+    # Converting plain text through the HTML renderer would collapse whitespace.
+    return ("text", url, body.strip())
 
-    # Convert HTML to Markdown with the builtin converter (no external deps).
+
+# Reads the call's budget context vars: run inside execute_tool, never on a prefetch thread.
+def _render_page(page, max_chars: int | None = None) -> str:
+    if isinstance(page, str):
+        return page
+    if max_chars is None:
+        max_chars = _page_char_budget()
+    kind, url, body = page
+    if kind == "text":
+        return _truncate_page_text(body, max_chars)
     from ._html_to_md import SiteLinks, html_to_markdown
+
+    if kind == "readme":
+        readme_body = body
+        # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
+        if _looks_like_html_document(body):
+            converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
+            readme_body = converted if converted.strip() else body
+        return _truncate_page_text(
+            f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
+            max_chars,
+        )
 
     site_links = SiteLinks(url)
     # generated span cells get half the window budget, as html_to_markdown's own cap does for 16K
@@ -16645,7 +18337,111 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
     cls._unsloth_http1_retry = True
 
 
-def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
+class StartedUrlRead:
+    def __init__(self, url: str, timeout, cancel_event, website_policy) -> None:
+        self._done = threading.Event()
+        self._value = None
+        self._error: BaseException | None = None
+        context = contextvars.copy_context()
+        threading.Thread(
+            target = context.run,
+            args = (self._run, url, timeout, cancel_event, website_policy),
+            name = "web-url-read",
+            daemon = True,
+        ).start()
+
+    def _run(self, url, timeout, cancel_event, website_policy) -> None:
+        try:
+            self._value = _download_page(
+                url,
+                timeout = _url_read_timeout(timeout),
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller by result()
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def result(self) -> str:
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return _render_page(self._value)
+
+
+def _url_read_timeout(timeout):
+    return 60 if timeout is None else min(timeout, 60)
+
+
+class _ImageSweep:
+    """Image lookup started beside the text search; the caller still decides whether to register it."""
+
+    def __init__(self, lookup) -> None:
+        from .search_images import cache_generation
+
+        # Read before the sweep so a clear-all during it invalidates new entries.
+        self.generation = cache_generation()
+        self._done = threading.Event()
+        self._value = None
+        self._error: BaseException | None = None
+        context = contextvars.copy_context()
+        threading.Thread(
+            target = context.run,
+            args = (self._run, lookup),
+            name = "web-search-images",
+            daemon = True,
+        ).start()
+
+    def _run(self, lookup) -> None:
+        try:
+            self._value = lookup()
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller by result()
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def result(self):
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return self._value
+
+    @classmethod
+    def start(cls, subjects, query, wanted, timeout, website_policy) -> "_ImageSweep | None":
+        """None when the serial path would not reach the network."""
+        try:
+            from ddgs import DDGS
+
+            if not callable(getattr(DDGS, "images", None)):
+                return None
+            if subjects:
+                cleaned = _clean_image_queries(subjects)
+                if not cleaned:
+                    return None
+                return cls(lambda: _image_lookups(cleaned, timeout, website_policy))
+            from .search_images import MAX_IMAGES_PER_SEARCH
+
+            images_fn = DDGS(timeout = timeout).images
+            return cls(
+                lambda: images_fn(
+                    query,
+                    max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2),
+                    safesearch = "moderate",
+                )
+            )
+        except Exception:  # noqa: BLE001 - the serial path stays available
+            logger.debug("image lookup not started early", exc_info = True)
+            return None
+
+
+def _image_search_or_none(
+    subjects: list,
+    timeout,
+    cancel_event,
+    website_policy,
+    sweep = None,
+) -> "str | None":
     """Returns None on failure: an image error must not discard the text results already found."""
     try:
         return _image_search(
@@ -16653,6 +18449,7 @@ def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy)
             timeout = timeout,
             cancel_event = cancel_event,
             website_policy = website_policy,
+            sweep = sweep,
         )
     except Exception as exc:  # noqa: BLE001 - a garnish must not become the answer
         logger.debug("image lookup failed (%s)", type(exc).__name__)
@@ -16660,7 +18457,13 @@ def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy)
 
 
 def _empty_result_with_requested_images(
-    empty_text: str, subjects: list, include_images: bool, timeout, cancel_event, website_policy
+    empty_text: str,
+    subjects: list,
+    include_images: bool,
+    timeout,
+    cancel_event,
+    website_policy,
+    sweep = None,
 ) -> str:
     """Explicitly named image subjects still return pictures when the text search comes back empty."""
     if not subjects:
@@ -16670,7 +18473,7 @@ def _empty_result_with_requested_images(
         return empty_text + "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
     if cancel_event is not None and cancel_event.is_set():
         return empty_text
-    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy, sweep)
     if found is None:
         return empty_text
     return empty_text + "\n\n---\n\n" + found
@@ -16717,6 +18520,11 @@ def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, websi
     ]
 
 
+def _is_wikipedia_result(result) -> bool:
+    host = urllib.parse.urlsplit(str(result.get("href") or "").strip()).hostname or ""
+    return host == "wikipedia.org" or host.endswith(".wikipedia.org")
+
+
 def _usable_search_results(results, website_policy):
     from .web_access_policy import check_url_access
     return [
@@ -16725,6 +18533,16 @@ def _usable_search_results(results, website_policy):
         if isinstance(r, dict)
         and check_url_access(str(r.get("href") or "").strip(), website_policy)[0]
     ]
+
+
+def _note_text_search_outcome(found: bool, error, timeout) -> None:
+    """Holds back early image lookups after an engine failure; any answer, even empty, clears it."""
+    global _text_search_failed_at
+    if found:
+        _text_search_failed_at = None
+    elif error is not None:
+        empty = _search_failure_message(error, timeout) == EMPTY_SEARCH_RESULTS[0]
+        _text_search_failed_at = None if empty else time.monotonic()
 
 
 def _web_search(
@@ -16740,10 +18558,9 @@ def _web_search(
     """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
-        fetch_timeout = 60 if timeout is None else min(timeout, 60)
         return _fetch_page_text(
             url.strip(),
-            timeout = fetch_timeout,
+            timeout = _url_read_timeout(timeout),
             cancel_event = cancel_event,
             website_policy = website_policy,
         )
@@ -16763,6 +18580,7 @@ def _web_search(
     # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
+    sweep = None
     try:
         from .web_access_policy import check_url_access, scope_search_query
 
@@ -16790,6 +18608,13 @@ def _web_search(
                 raise RuntimeError("no approved search engine is available.")
             # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
             deadline = time.monotonic() + timeout if timeout else None
+            failed_at = _text_search_failed_at
+            if include_images and (
+                failed_at is None or time.monotonic() - failed_at > _TEXT_SEARCH_FAILURE_HOLD_S
+            ):
+                sweep = _ImageSweep.start(
+                    subjects, effective_query, wanted, timeout, website_policy
+                )
             client = DDGS(timeout = timeout)
             # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
             for backend in engine_tiers:
@@ -16802,15 +18627,18 @@ def _web_search(
                     client = DDGS(timeout = remaining)
                 try:
                     candidates = _ddgs_text(client, effective_query, wanted, backend)
-                    results = _usable_search_results(candidates, website_policy)
-                    rejected_results = rejected_results or bool(candidates and not results)
+                    found = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not found)
                 except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
                     last_error = exc
                     continue
-                if results:
+                seen = {r.get("href") for r in results}
+                results += [r for r in found if r.get("href") not in seen]
+                if not all(_is_wikipedia_result(r) for r in results):
                     break
         except Exception as exc:
             last_error = exc
+        _note_text_search_outcome(bool(results) or rejected_results, last_error, timeout)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
@@ -16851,6 +18679,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         parts = []
         for r in results:
@@ -16871,6 +18700,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         text = "\n\n---\n\n".join(parts)
         if wikipedia_fallback:
@@ -16886,7 +18716,7 @@ def _web_search(
         )
         if include_images and subjects:
             # named subjects require one image each rather than a generic image batch.
-            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy, sweep)
             if found is not None:
                 text += "\n\n---\n\n" + found
         elif include_images and not wikipedia_fallback:
@@ -16896,6 +18726,7 @@ def _web_search(
                 wanted,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         elif subjects:
             # replayed history must retain the disabled-search reminder.
@@ -16912,6 +18743,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         return failure
 
@@ -16941,33 +18773,12 @@ def _clean_image_queries(queries) -> list[str]:
     return cleaned
 
 
-def _image_search(
-    queries,
-    timeout: int = _EXEC_TIMEOUT,
-    cancel_event = None,
-    website_policy: dict | None = None,
-) -> str:
-    # One lookup per subject, concurrently; same registry and tokens as web_search.
+def _image_lookups(cleaned: list, timeout, website_policy) -> list:
     from concurrent.futures import ThreadPoolExecutor
 
-    from .search_images import cache_generation, images_envelope, register_images
+    from ddgs import DDGS
 
-    cleaned = _clean_image_queries(queries)
-    if not cleaned:
-        return "No subjects provided."
-    if cancel_event is not None and cancel_event.is_set():
-        return "Search cancelled."
-    expected_generation = cache_generation()
-    try:
-        from ddgs import DDGS
-
-        from .web_access_policy import scope_search_query
-    except Exception as e:
-        return _search_failure_message(e, timeout)
-    _install_ddgs_http1_retry()
-    _install_ddgs_connect_timeout()
-    if not callable(getattr(DDGS, "images", None)):
-        return "Image search is unavailable in this install."
+    from .web_access_policy import scope_search_query
 
     def lookup(subject: str) -> list:
         # A client per call: ddgs instances are not documented thread-safe.
@@ -16985,7 +18796,40 @@ def _image_search(
             return []
 
     with ThreadPoolExecutor(max_workers = len(cleaned)) as pool:
-        raw_by_subject = list(pool.map(lookup, cleaned))
+        return list(pool.map(lookup, cleaned))
+
+
+def _image_search(
+    queries,
+    timeout: int = _EXEC_TIMEOUT,
+    cancel_event = None,
+    website_policy: dict | None = None,
+    sweep: "_ImageSweep | None" = None,
+) -> str:
+    # Same registry and tokens as web_search; a sweep is these lookups already under way.
+    from .search_images import cache_generation, images_envelope, register_images
+
+    cleaned = _clean_image_queries(queries)
+    if not cleaned:
+        return "No subjects provided."
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
+    expected_generation = cache_generation() if sweep is None else sweep.generation
+    try:
+        from ddgs import DDGS
+
+        from .web_access_policy import scope_search_query  # noqa: F401 - fail here, as before
+    except Exception as e:
+        return _search_failure_message(e, timeout)
+    _install_ddgs_http1_retry()
+    _install_ddgs_connect_timeout()
+    if not callable(getattr(DDGS, "images", None)):
+        return "Image search is unavailable in this install."
+
+    if sweep is not None:
+        raw_by_subject = sweep.result()
+    else:
+        raw_by_subject = _image_lookups(cleaned, timeout, website_policy)
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
 
@@ -17019,7 +18863,14 @@ def _image_search(
     return header + "\n\n" + "\n\n".join(sections) + images_envelope(entries_all)
 
 
-def _web_search_images_suffix(client, query, wanted, cancel_event, website_policy) -> str:
+def _web_search_images_suffix(
+    client,
+    query,
+    wanted,
+    cancel_event,
+    website_policy,
+    sweep = None,
+) -> str:
     # "" when images are unavailable; never raises, the text results stand on their own.
     from .search_images import (
         MAX_IMAGES_PER_SEARCH,
@@ -17033,11 +18884,14 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     if not callable(images_fn):
         return ""
     # Read before the sweep so a clear-all during it invalidates new entries.
-    expected_generation = cache_generation()
+    expected_generation = cache_generation() if sweep is None else sweep.generation
     try:
-        raw = images_fn(
-            query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
-        )
+        if sweep is not None:
+            raw = sweep.result()
+        else:
+            raw = images_fn(
+                query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
+            )
     except Exception as exc:  # noqa: BLE001 - optional extra; the text results stand on their own
         logger.debug("web_search image lookup skipped (%s)", type(exc).__name__)
         return ""
@@ -17107,6 +18961,7 @@ def _check_signal_escape_patterns(code: str):
     signal_tampering = []
     exception_catching = []
     shell_escapes = []
+    shell_commands = []
     warnings = []
 
     def _ast_name_matches(node, names):
@@ -17157,6 +19012,14 @@ def _check_signal_escape_patterns(code: str):
             "subprocess.Popen",
             "subprocess.getoutput",
             "subprocess.getstatusoutput",
+            "asyncio.create_subprocess_shell",
+            "asyncio.create_subprocess_exec",
+            "pty.spawn",
+            "psutil.Popen",
+            "anyio.run_process",
+            "anyio.open_process",
+            "loop.subprocess_shell",
+            "loop.subprocess_exec",
         }
     )
 
@@ -17178,7 +19041,23 @@ def _check_signal_escape_patterns(code: str):
         return []
 
     # Kwarg names that carry command content (not control flags like check=True, text=True, capture_output=True).
-    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
+    _CMD_KWARGS = frozenset(
+        {"args", "command", "executable", "path", "file", "cmd", "program", "argv"}
+    )
+    # Variadic argv APIs: index of argv[0] among the positionals (after the path, or mode + path).
+    _VARIADIC_ARGV_START = {
+        "asyncio.create_subprocess_exec": 0,
+        "loop.subprocess_exec": 0,
+        **{f"os.exec{s}": 1 for s in ("l", "le", "lp", "lpe")},
+        **{f"os.spawn{s}": 2 for s in ("l", "le", "lp", "lpe")},
+    }
+    # Vector argv APIs: index of the executable; the argv list follows it, its [0] only a label.
+    _VECTOR_PROGRAM_INDEX = {
+        **{f"os.exec{s}": 0 for s in ("v", "ve", "vp", "vpe")},
+        **{f"os.spawn{s}": 1 for s in ("v", "ve", "vp", "vpe")},
+        "os.posix_spawn": 0,
+        "os.posix_spawnp": 0,
+    }
 
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
@@ -17192,15 +19071,35 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
         return found
 
+    _STAR_EXPORTS = frozenset(
+        fq.split(".", 1)[1] for fq in _SHELL_EXEC_FUNCS if not fq.startswith("loop.")
+    ) | {"modules"}
+
+    def _module_expr(dotted):
+        # posix and nt are the os module under its platform name.
+        top, _, rest = dotted.partition(".")
+        if top in ("posix", "nt"):
+            dotted = "os" + (f".{rest}" if rest else "")
+        return ast.parse(dotted, mode = "eval").body
+
     class SignalEscapeVisitor(ast.NodeVisitor):
         def __init__(self):
             self.imports_signal = False
             self.signal_aliases = {"signal"}
-            self.os_aliases = {"os"}
-            self.subprocess_aliases = {"subprocess"}
-            # Bare name -> fully-qualified form for from-import tracking (e.g. "system" -> "os.system").
-            self.shell_exec_aliases: dict[str, str] = {}
+            # Name -> every value bound to it anywhere; flow- and scope-insensitive, so it fails closed.
+            self.bindings: dict[str, list] = {}
+            self._final: dict = {}
+            self._cache: dict = {}
+            self._guess: dict = {}
+            self._active: set = set()
+            self._cyclic = False
+            self.collecting = False
             self.loop_depth = 0
+            self._followed: set = set()
+
+        def _bind(self, name, value):
+            if self.collecting:
+                self.bindings.setdefault(name, []).append(value)
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -17208,10 +19107,8 @@ def _check_signal_escape_patterns(code: str):
                     self.imports_signal = True
                     if alias.asname:
                         self.signal_aliases.add(alias.asname)
-                elif alias.name == "os":
-                    self.os_aliases.add(alias.asname or "os")
-                elif alias.name == "subprocess":
-                    self.subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.asname or alias.name in ("posix", "nt"):
+                    self._bind(alias.asname or alias.name, _module_expr(alias.name))
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -17229,16 +19126,240 @@ def _check_signal_escape_patterns(code: str):
                         "alarm",
                     ):
                         self.signal_aliases.add(alias.asname or alias.name)
-            elif node.module in ("os", "subprocess"):
-                if node.module == "os":
-                    self.os_aliases.add("os")
-                else:
-                    self.subprocess_aliases.add("subprocess")
-                # Track from-imports of dangerous functions.
+            if node.module and not node.level:
                 for alias in node.names:
-                    fq = f"{node.module}.{alias.name}"
-                    if fq in _SHELL_EXEC_FUNCS:
-                        self.shell_exec_aliases[alias.asname or alias.name] = fq
+                    if alias.name != "*":
+                        names = (alias.name,)
+                    elif node.module in (
+                        "os",
+                        "posix",
+                        "nt",
+                        "subprocess",
+                        "sys",
+                        "asyncio",
+                        "asyncio.subprocess",
+                        "pty",
+                        "psutil",
+                        "anyio",
+                    ):
+                        names = _STAR_EXPORTS
+                    else:
+                        continue
+                    for name in names:
+                        self._bind(
+                            alias.asname or name,
+                            ast.Attribute(_module_expr(node.module), name, ast.Load()),
+                        )
+            self.generic_visit(node)
+
+        def _memo(self, kind, node, compute, pending):
+            key = (kind, node.id if isinstance(node, ast.Name) else id(node))
+            if key in self._final:
+                return self._final[key]
+            if key in self._cache:
+                return self._cache[key]
+            if key in self._active:
+                self._cyclic = True
+                return self._guess.get(key, pending)
+            self._active.add(key)
+            try:
+                self._cache[key] = compute(node)
+            finally:
+                self._active.discard(key)
+            return self._cache[key]
+
+        def _converged(self, query, node):
+            # A self-referential binding (d = d["system"]) reads the previous pass's answer, so repeat
+            # until no answer grows (they are finite sets, so this ends); keep only converged answers.
+            # Each pass writes a fresh layer over _final: copying _final per query made scans quadratic.
+            previous, self._guess = None, {}
+            while True:
+                self._cache, self._cyclic = {}, False
+                result = query(node)
+                if not self._cyclic or self._cache == previous:
+                    self._final.update(self._cache)
+                    return result
+                previous = self._guess = self._cache
+
+        def _resolve(self, node):
+            while isinstance(node, ast.NamedExpr):
+                node = node.value
+            if not isinstance(node, ast.Name):
+                return frozenset((node,))
+            return self._memo("resolve", node, self._values_of, frozenset((node,)))
+
+        def _values_of(self, node):
+            values, seen, todo = [], set(), [node]
+            while todo:
+                value = todo.pop()
+                while isinstance(value, ast.NamedExpr):
+                    value = value.value
+                values.append(value)
+                if isinstance(value, ast.Name) and value.id not in seen:
+                    seen.add(value.id)
+                    todo.extend(self.bindings.get(value.id, ()))
+            return frozenset(values)
+
+        def _lookups(self, node):
+            # (owner, name) for owner.name, getattr(owner, "name"), and owner.__dict__ / vars(owner) by key or .get().
+            return self._memo("lookups", node, self._find_lookups, frozenset())
+
+        def _find_lookups(self, node):
+            found = []
+            for value in self._resolve(node):
+                if isinstance(value, ast.Attribute):
+                    found.append((value.value, value.attr))
+                elif isinstance(value, ast.Subscript):
+                    found.extend(self._namespace_lookup(value.value, value.slice))
+                elif isinstance(value, ast.Call) and value.args:
+                    if len(value.args) >= 2 and self._is_builtin(value.func, "getattr"):
+                        found.append((value.args[0], _folded_str_literal(value.args[1])))
+                    for owner, attr in self._lookups(value.func):
+                        if attr == "get":
+                            found.extend(self._namespace_lookup(owner, value.args[0]))
+            return frozenset(found)
+
+        def _namespace_lookup(self, namespace, key):
+            name = _folded_str_literal(key)
+            found = [
+                (owner, name) for owner, attr in self._lookups(namespace) if attr == "__dict__"
+            ]
+            for value in self._resolve(namespace):
+                if (
+                    isinstance(value, ast.Call)
+                    and len(value.args) == 1
+                    and self._is_builtin(value.func, "vars")
+                ):
+                    found.append((value.args[0], name))
+            return found
+
+        def _is_builtin(self, node, name):
+            # By its own name, an alias, or as an attribute (builtins.getattr, importlib.import_module).
+            return any(
+                isinstance(v, ast.Name) and v.id == name for v in self._resolve(node)
+            ) or any(attr == name for _owner, attr in self._lookups(node))
+
+        def _is_registry(self, node):
+            return any(attr == "modules" for _owner, attr in self._lookups(node))
+
+        @staticmethod
+        def _keyword_arg(call, name):
+            found = None
+            for kw in call.keywords:
+                if kw.arg == name:
+                    found = kw.value
+                elif kw.arg is None and isinstance(kw.value, ast.Dict):
+                    for key, value in zip(kw.value.keys, kw.value.values):
+                        if key is not None and _extract_string_from_node(key) == name:
+                            found = value
+            return found
+
+        def _modules_of(self, node):
+            return self._memo("modules", node, self._find_modules, frozenset())
+
+        def _find_modules(self, node):
+            modules = set()
+            for value in self._resolve(node):
+                name = None
+                if isinstance(value, ast.Name):
+                    name = value.id
+                elif isinstance(value, ast.Call):
+                    if self._is_builtin(value.func, "__import__") or self._is_builtin(
+                        value.func, "import_module"
+                    ):
+                        arg = value.args[0] if value.args else self._keyword_arg(value, "name")
+                        name = None if arg is None else _folded_str_literal(arg)
+                    elif value.args and any(
+                        attr == "get" and self._is_registry(owner)
+                        for owner, attr in self._lookups(value.func)
+                    ):
+                        name = _folded_str_literal(value.args[0])
+                elif isinstance(value, ast.Subscript) and self._is_registry(value.value):
+                    name = _folded_str_literal(value.slice)
+                elif (
+                    isinstance(value, ast.Attribute)
+                    and value.attr == "subprocess"
+                    and "asyncio" in self._modules_of(value.value)
+                ):
+                    name = "asyncio"
+                # __import__("os.path") returns the top-level os package.
+                top = (name or "").split(".")[0]
+                if top in ("os", "subprocess", "asyncio", "pty", "psutil", "anyio"):
+                    modules.add(top)
+                elif top in ("posix", "nt") and not isinstance(value, ast.Name):
+                    modules.add("os")
+            return frozenset(modules)
+
+        def _shell_func_of(self, node):
+            loop_method = None
+            for owner, attr in self._lookups(node):
+                # Event loop methods behind create_subprocess_*; any receiver, since a loop comes from a call.
+                if attr in ("subprocess_shell", "subprocess_exec"):
+                    loop_method = f"loop.{attr}"
+                for module in self._modules_of(owner):
+                    if f"{module}.{attr}" in _SHELL_EXEC_FUNCS:
+                        return f"{module}.{attr}"
+            # Only when no other binding matches: a loop target skips argument zero, which may be the command.
+            return loop_method
+
+        def _shell_method_named_by(self, call):
+            if call.args and self._is_builtin(call.func, "methodcaller"):
+                name = _folded_str_literal(call.args[0])
+                for fq in _SHELL_EXEC_FUNCS:
+                    if fq.split(".", 1)[1] == name:
+                        return fq
+            return None
+
+        def _flag_shell_reference(self, query, node):
+            shell_func = self._converged(query, node)
+            if shell_func:
+                shell_escapes.append(
+                    {
+                        "type": "shell_escape_dynamic",
+                        "line": node.lineno,
+                        "description": f"{shell_func} referenced without a direct call (potential shell escape)",
+                    }
+                )
+
+        def _skip_type_hint(self, hint):
+            # A call inside an annotation still runs.
+            if hint is not None and not isinstance(hint, ast.Call):
+                self._followed.add(id(hint))
+                for child in ast.iter_child_nodes(hint):
+                    self._skip_type_hint(child)
+
+        def visit(self, node):
+            self._skip_type_hint(getattr(node, "annotation", None))
+            self._skip_type_hint(getattr(node, "returns", None))
+            # Dispatched here: super().visit() costs a stack frame per nesting level.
+            getattr(self, "visit_" + type(node).__name__, self.generic_visit)(node)
+            # After the children, so a nested a[0][0]... resolves from their memoised lookups.
+            if (
+                not self.collecting
+                and id(node) not in self._followed
+                and isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Call))
+                and not isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del))
+            ):
+                self._flag_shell_reference(self._shell_func_of, node)
+
+        def visit_Assign(self, node):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    self._bind(tgt.id, node.value)
+            if all(isinstance(tgt, ast.Name) for tgt in node.targets):
+                self._followed.add(id(node.value))
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            if node.value is not None and isinstance(node.target, ast.Name):
+                self._bind(node.target.id, node.value)
+                self._followed.add(id(node.value))
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node):
+            if isinstance(node.target, ast.Name):
+                self._bind(node.target.id, node.value)
+                self._followed.add(id(node.value))
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -17252,6 +19373,9 @@ def _check_signal_escape_patterns(code: str):
             self.loop_depth -= 1
 
         def visit_Call(self, node):
+            if self.collecting:
+                self.generic_visit(node)
+                return
             func = node.func
             func_name = None
             if isinstance(func, ast.Attribute):
@@ -17301,16 +19425,9 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Shell escape detection: resolve the FQ function name for os.*/subprocess.*
-            shell_func = None
-            if isinstance(func, ast.Attribute):
-                if isinstance(func.value, ast.Name):
-                    if func.value.id in self.os_aliases:
-                        shell_func = f"os.{func.attr}"
-                    elif func.value.id in self.subprocess_aliases:
-                        shell_func = f"subprocess.{func.attr}"
-            elif isinstance(func, ast.Name):
-                # from-import aliases: from os import system; system(...)
-                shell_func = self.shell_exec_aliases.get(func.id)
+            self._followed.add(id(func))
+            self._flag_shell_reference(self._shell_method_named_by, node)
+            shell_func = self._converged(self._shell_func_of, func)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 # Expand **kwargs dicts to inspect their keys.
@@ -17328,8 +19445,71 @@ def _check_signal_escape_patterns(code: str):
                         has_opaque_kwargs = True
 
                 cmd_kw_values = [v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS]
-                all_call_args = list(node.args) + cmd_kw_values
+                # A loop method's first positional is the protocol factory, not the command.
+                positional = node.args[1:] if shell_func.startswith("loop.") else node.args
+                all_call_args = list(positional) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
+                argv_start = _VARIADIC_ARGV_START.get(shell_func)
+                # A name bound to several spawners must not get argv semantics from just one.
+                targets = {
+                    f"{module}.{attr}"
+                    for owner, attr in self._lookups(func)
+                    for module in self._modules_of(owner)
+                }
+                if any(
+                    t in _SHELL_EXEC_FUNCS and t not in _VARIADIC_ARGV_START for t in targets
+                ) or any(isinstance(a, ast.Starred) for a in positional[: (argv_start or 0) + 1]):
+                    argv_start = None
+                if argv_start is None:
+                    shell_commands.extend(
+                        s for s in map(_extract_string_from_node, all_call_args) if s is not None
+                    )
+                else:
+                    # Operands are argv data, not commands; exec*/spawn* run the path, argv[0] is a label.
+                    argv = []
+                    tail = positional[argv_start:]
+                    if argv_start and len(positional) >= argv_start:
+                        program = _extract_string_from_node(positional[argv_start - 1])
+                        if program is not None and tail:
+                            argv.append(program)
+                            tail = tail[1:]
+                    for a in tail:
+                        if isinstance(a, ast.Starred):
+                            argv.extend(_extract_strings_from_list(a.value) or ())
+                        elif (s := _extract_string_from_node(a)) is not None:
+                            argv.append(s)
+                    if argv:
+                        shell_commands.append(shlex.join(argv))
+                shell_kw = expanded_kwargs.get("shell")
+                runs_shell = shell_kw is not None and not (
+                    isinstance(shell_kw, ast.Constant) and not shell_kw.value
+                )
+                program_index = _VECTOR_PROGRAM_INDEX.get(shell_func)
+                vector = None
+                if program_index is not None and len(positional) > program_index + 1:
+                    program = _extract_string_from_node(positional[program_index])
+                    if program is not None:
+                        vector = positional[program_index + 1]
+                executable = expanded_kwargs.get("executable")
+                executable = None if executable is None else _extract_string_from_node(executable)
+                argv_node = positional[0] if positional else expanded_kwargs.get("args")
+                for a in all_call_args:
+                    if isinstance(a, (ast.List, ast.Tuple)):
+                        strings = _extract_strings_from_list(a)
+                        if a is vector and a.elts:
+                            strings = [program, *_extract_strings_from_list(ast.List(a.elts[1:]))]
+                        elif a is argv_node and a.elts and executable and not runs_shell:
+                            # executable= replaces the program; argv[0] is only its name.
+                            strings = [
+                                executable,
+                                *_extract_strings_from_list(ast.List(a.elts[1:])),
+                            ]
+                        shell_commands.append(shlex.join(strings))
+                        # POSIX shell=True runs args[0] as shell source.
+                        if runs_shell and a.elts:
+                            head = _extract_string_from_node(a.elts[0])
+                            if head is not None:
+                                shell_commands.append(head)
 
                 if has_opaque_kwargs:
                     # Can't inspect dynamic **kwargs; flag as unsafe.
@@ -17398,7 +19578,7 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_ExceptHandler(self, node):
-            if self.loop_depth == 0:
+            if self.collecting or self.loop_depth == 0:
                 self.generic_visit(node)
                 return
             if node.type is None:
@@ -17433,6 +19613,9 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
     visitor = SignalEscapeVisitor()
+    visitor.collecting = True
+    visitor.visit(tree)
+    visitor.collecting = False
     visitor.visit(tree)
 
     if visitor.imports_signal and not signal_tampering:
@@ -17882,9 +20065,17 @@ def _check_signal_escape_patterns(code: str):
         return h
 
     def _is_metadata_host(host: str) -> bool:
-        h = _normalize_host(host)
+        h = _normalize_host(unicodedata.normalize("NFKC", host or ""))
         if not h:
             return False
+        if _provider_metadata_host(h):
+            return True
+        try:
+            ip = _literal_ip_address(h)
+        except ValueError:
+            return True
+        if ip is not None:
+            h = str(ip)
         if h in _METADATA_HOST_LITERALS:
             return True
         if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):
@@ -19774,16 +21965,56 @@ def _check_signal_escape_patterns(code: str):
         "signal_tampering": signal_tampering,
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
+        "shell_commands": shell_commands,
         "network_calls": network_calls,
         "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
     }
 
 
-def _check_code_safety(code: str) -> str | None:
+def _nested_python_payload(command: str) -> "str | None":
+    """The literal program of a `python -c PROGRAM` argv the code launches, else None."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if len(argv) < 2:
+        return None
+    name = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if not name.startswith(("python", "pypy")) or _inline_code_flag_spec(name) is None:
+        return None
+    for i, arg in enumerate(argv[1:], 1):
+        if not arg.startswith("-") or arg in ("-", "--", "-m"):
+            # A script path, stdin or a module runs, not an inline program.
+            return None
+        attached = _short_flag_arg(arg, "c")
+        if attached is not None:
+            if attached:
+                return attached
+            return argv[i + 1] if i + 1 < len(argv) else None
+    return None
+
+
+def _check_code_safety(
+    code: str,
+    *,
+    host_approved: bool = False,
+    analysis: "tuple | None" = None,
+    _depth: int = 0,
+) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
-    unsafe, or None if OK."""
-    safe, info = _check_signal_escape_patterns(code)
+    unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
+    safe, info = analysis or _check_signal_escape_patterns(code)
+    # A literal `python -c PROGRAM` the code launches runs PROGRAM unscreened; screen it the same way.
+    if _depth < 3 and not info.get("error"):
+        for command in info.get("shell_commands", ()):
+            payload = _nested_python_payload(command)
+            if payload:
+                nested = _check_code_safety(payload, host_approved = host_approved, _depth = _depth + 1)
+                if nested is not None:
+                    return nested
     if not safe:
         # Let SyntaxError through so the child reports a normal traceback.
         if info.get("error"):
@@ -19794,7 +22025,11 @@ def _check_code_safety(code: str) -> str | None:
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
-        network_reasons = [item.get("description", "") for item in info.get("network_calls", [])]
+        network_reasons = [
+            item.get("description", "")
+            for item in info.get("network_calls", [])
+            if not (host_approved and item.get("type") == "untrusted_host_blocked")
+        ]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
@@ -19870,6 +22105,31 @@ class _WindowsToolJob:
             return False
         return bool(self._kernel32.TerminateJobObject(self._handle, 1))
 
+    def active_processes(self) -> "int | None":
+        """JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses; None when the query fails."""
+        if not self._handle:
+            return None
+        import ctypes
+
+        class _Accounting(ctypes.Structure):
+            _fields_ = [("times", ctypes.c_int64 * 4)] + [
+                (name, ctypes.c_uint32)
+                for name in (
+                    "TotalPageFaultCount",
+                    "TotalProcesses",
+                    "ActiveProcesses",
+                    "TotalTerminatedProcesses",
+                )
+            ]
+
+        info = _Accounting()
+        # 1 = JobObjectBasicAccountingInformation
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle, 1, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            return None
+        return info.ActiveProcesses
+
     def close(self) -> None:
         handle, self._handle = self._handle, None
         if handle:
@@ -19900,6 +22160,14 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         kernel32.AssignProcessToJobObject.restype = BOOL
         kernel32.TerminateJobObject.argtypes = [H, UINT]
         kernel32.TerminateJobObject.restype = BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            H,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ]
+        kernel32.QueryInformationJobObject.restype = BOOL
         kernel32.CloseHandle.argtypes = [H]
         kernel32.CloseHandle.restype = BOOL
 
@@ -19993,6 +22261,22 @@ def _killpg_captured(pgid) -> None:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
+
+
+def _captured_group_alive(pgid) -> bool:
+    """False when no member provably remains; a pid-only Windows capture cannot tell, nor kill one."""
+    if pgid is None:
+        return False
+    if isinstance(pgid, tuple):
+        if pgid[0] != "windows-job":
+            return False
+        active = pgid[1].active_processes()
+        return active is None or active > 0
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
 
 
 def _cancel_watcher(
@@ -21092,6 +23376,13 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
 
 # Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`; also the drain's read size.
 _DRAIN_TAIL_CHARS = 64 * 1024
+_DRAIN_EOF_GRACE_S = 1.5
+# A holder that never lets the reader go quiet is still stopped this long after the leader exits.
+_DRAIN_BUSY_CAP_S = 10.0
+_BACKGROUND_STOPPED_NOTE = (
+    "[Background processes still writing to this output were stopped when the command exited. "
+    "To keep one running, redirect its output to a file, e.g. `nohup cmd > out.log 2>&1 &`.]\n"
+)
 
 
 def _drain_process_output(
@@ -21106,13 +23397,14 @@ def _drain_process_output(
     chunks: list[str] = []
     tail: "deque[str]" = deque()
     kept = joined = tail_chars = omitted_chars = omitted_lines = 0
+    last_read = time.monotonic()
 
     # Captured before waiting so a pipe-holding grandchild can be killed after the leader is reaped.
     if pgid is None:
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
-        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines
+        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines, last_read
         try:
             # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
             for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
@@ -21137,6 +23429,7 @@ def _drain_process_output(
                         output_callback(line)
                     except Exception:  # noqa: BLE001 - observer must never kill the tool
                         logger.debug("tool output_callback raised", exc_info = True)
+                last_read = time.monotonic()
         except (ValueError, OSError):
             pass  # pipe closed during kill
 
@@ -21155,30 +23448,38 @@ def _drain_process_output(
             proc.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             pass
-    # A grandchild that inherited stdout can hold the pipe open past the main process's exit.
+    # A grandchild holding the inherited stdout outlives the leader: stop the group once the reader has
+    # sat idle for the grace, so a slow drain never kills a redirected background job.
+    background_stopped = False
     if not timed_out:
-        if timeout is not None:
-            # Poll cancel_event in slices: the cancel watcher is gone once the leader exits.
-            deadline = started_at + timeout
-            while reader.is_alive():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    timed_out = True
-                    _killpg_captured(pgid)
-                    break
-                if cancel_event is not None and cancel_event.is_set():
-                    _killpg_captured(pgid)
-                    break
-                reader.join(timeout = min(0.5, remaining))
-        else:
-            # Unlimited timeout drains until the pipe closes, like communicate(timeout=None); cancel stops it.
-            while reader.is_alive():
-                if cancel_event is not None and cancel_event.is_set():
-                    _killpg_captured(pgid)
-                    break
-                reader.join(timeout = 0.5)
+        exited_at = time.monotonic()
+        deadline = None if timeout is None else started_at + timeout
+        # Poll cancel_event in slices: the cancel watcher is gone once the leader exits.
+        while reader.is_alive():
+            if cancel_event is not None and cancel_event.is_set():
+                _killpg_captured(pgid)
+                break
+            now = time.monotonic()
+            past_deadline = deadline is not None and now >= deadline
+            give_up = (
+                now - max(exited_at, last_read) >= _DRAIN_EOF_GRACE_S
+                or now - exited_at >= _DRAIN_BUSY_CAP_S
+                or past_deadline
+            )
+            if give_up and _captured_group_alive(pgid):
+                _killpg_captured(pgid)
+                background_stopped = True
+                break
+            if past_deadline:
+                timed_out = True
+                _killpg_captured(pgid)
+                break
+            reader.join(timeout = 0.25)
     reader.join(timeout = 5)
-    return "".join(chunks) + "".join(tail), timed_out, (omitted_chars, omitted_lines)
+    output = "".join(chunks) + "".join(tail)
+    if background_stopped:
+        output += ("\n" if output and not output.endswith("\n") else "") + _BACKGROUND_STOPPED_NOTE
+    return output, timed_out, (omitted_chars, omitted_lines)
 
 
 _MAX_REPORTED_FILES = 25
@@ -21617,6 +23918,31 @@ def _timed_out_result(
     return result
 
 
+def _python_source_encoding(code: str) -> "str | None":
+    """Encoding to write the python tool's script in, so the child decodes exactly the analysed str.
+
+    ast.parse(str) ignores a PEP 263 `# coding:` line the interpreter honours on the file, so a
+    cookie like utf_7 would run source the screen never saw. Written in the declared encoding, the
+    file decodes back to the same str; None when that cannot hold."""
+    try:
+        data = code.encode("utf-8")
+        declared = tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    except (UnicodeError, SyntaxError, LookupError):
+        # The write or the child's own decode fails with an ordinary error, as before.
+        return "utf-8"
+    if declared in ("utf-8", "utf-8-sig"):
+        return "utf-8"
+    try:
+        data = code.encode(declared)
+        if tokenize.detect_encoding(io.BytesIO(data).readline)[0] != declared:
+            return None
+        if data.decode(declared) != code:
+            return None
+    except (UnicodeError, SyntaxError, LookupError):
+        return None
+    return declared
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -21640,9 +23966,19 @@ def _python_exec(
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
 
+    source_encoding = _python_source_encoding(code)
+    if source_encoding is None:
+        return (
+            "Error: the code's `# coding:` line would make Python run different source than "
+            "was written. Remove the coding line and run it again."
+        )
+
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        error = _check_code_safety(code)
+        # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
+        error = _check_code_safety(
+            code, host_approved = host_access_approved and not _api_host_access_refused()
+        )
         if error:
             # Capped: repeated forbidden constructs can produce an oversized error.
             return _truncate(error)
@@ -21677,7 +24013,7 @@ def _python_exec(
         _scratch_name = os.path.basename(tmp_path)
         with _scratch_lock:
             _active_scratch.add(_scratch_name)
-        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        with os.fdopen(fd, "w", encoding = source_encoding) as f:
             f.write(code)
 
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
@@ -21861,6 +24197,8 @@ def _bash_exec(
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
     # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
     profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
+    if profile == "bash" and sys.platform == "win32":
+        command = _bash_nul_to_dev_null(command)
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()
@@ -21868,6 +24206,8 @@ def _bash_exec(
             return _CMD_MULTILINE_REFUSED
 
     # Block dangerous commands (skipped when the sandbox is disabled)
+    contained: set[str] = set()
+    hints: list[str] = []
     if not disable_sandbox:
         if profile in _CMD_PROFILES:
             # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
@@ -21887,9 +24227,26 @@ def _bash_exec(
             if profile in _CMD_PROFILES or not _is_approvable_rm(command):
                 return _APPROVED_RM_REFUSED
             blocked = set()
+        if sys.platform != "win32" and profile not in _CMD_PROFILES:
+            # Decided at launch: allowed only if this call really runs inside the OS sandbox.
+            contained = blocked & _OS_SANDBOX_CONTAINED_COMMANDS
+            if "chmod" in contained and not _is_plain_chmod(command):
+                contained.discard("chmod")
+                hints.append(_PLAIN_CHMOD_HINT)
+            if contained & _OS_SANDBOX_PROXIED_COMMANDS and not _is_plain_download(command):
+                contained -= _OS_SANDBOX_PROXIED_COMMANDS
+                hints.append(_PLAIN_DOWNLOAD_HINT)
+            blocked -= contained
         if blocked:
             # Capped: the blocked list names what it found in the command, so it can exceed the room left.
-            return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(blocked))}")
+            return _truncate(
+                f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+                + (
+                    "".join(f"\n{hint}" for hint in hints)
+                    if tool_execution_mode != "software"
+                    else ""
+                )
+            )
         # A same-UID child can read /proc/<ppid>/environ; best-effort since the child env is scrubbed.
         _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
@@ -21974,15 +24331,23 @@ def _bash_exec(
                     timeout_seconds = timeout,
                     execution_kind = "terminal",
                     cancel_event = cancel_event,
+                    egress_proxy = bool(contained & _OS_SANDBOX_PROXIED_COMMANDS),
                 ),
                 host_access_approved = host_reach_approved,
                 user_folder = chosen_folder,
             )
+            if contained and (chosen_folder or not _runs_in_os_sandbox(prepared)):
+                return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
+            proxied = contained & _OS_SANDBOX_PROXIED_COMMANDS
+            if proxied and not prepared.egress_proxy:
+                return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(proxied))}")
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
             )
             _note_tool_execution(prepared.execution_record)
         else:
+            if contained:
+                return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
                 popen_kwargs["preexec_fn"] = base_preexec

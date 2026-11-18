@@ -45,8 +45,8 @@ import {
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Download01Icon,
   InformationCircleIcon,
   PlusSignIcon,
@@ -719,7 +719,7 @@ function FolderRow({
                 <Spinner className="size-3.5" />
               ) : (
                 <HugeiconsIcon
-                  icon={Delete02Icon}
+                  icon={TrashIcon}
                   strokeWidth={1.75}
                   className="size-4"
                 />

@@ -151,8 +151,7 @@ def test_imatrix_is_never_picked_as_the_model(tmp_path):
 
 # ---------------------------------------------------------------- reasoning
 
-# The effort handling of the shipped template, verbatim, plus its self-channel opener
-# (which routes replies through the recipient-channel normalizer).
+# Shipped template verbatim, covering effort handling and the self-channel opener.
 MUSE_TEMPLATE = """
 {%- set reasoning_effort = reasoning_effort | default('xhigh', true) -%}
 {%- set reasoning_effort_map = {'low': 8, 'medium': 32, 'high': 256, 'xhigh': 512} -%}

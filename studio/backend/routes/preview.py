@@ -168,6 +168,11 @@ async def _serve_chat(
         )
     is_lora = (path / "adapter_config.json").exists()
     payload = _sanitize_preview_payload(payload, is_lora)
+    # An external::<provider>::<model> id would route to a saved connection and spend its key.
+    if isinstance(payload.model, str) and payload.model.startswith("external::"):
+        payload = payload.model_copy(
+            update = {"model": run if not checkpoint else f"{run}/{checkpoint}"}
+        )
     scope = getattr(request, "scope", None)
     disable_openai_auto_switch_for_request(scope)
     from core.inference.llama_keepwarm import (
@@ -211,7 +216,7 @@ async def list_previews(
     base = str(request.base_url)
     sharing_on = get_preview_sharing_enabled() and not no_credential
     previews = []
-    for target in list_preview_targets():
+    for target in await asyncio.to_thread(list_preview_targets):
         ref = quote(target["ref"], safe = "/")
         token = sign_preview_ref(target["ref"]) if sharing_on else None
         previews.append(

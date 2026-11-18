@@ -26,12 +26,17 @@ class _FakeExternalClient:
         self.provider_type = kwargs.get("provider_type")
 
     def stream_chat_completion(self, **kwargs):
+        _FakeExternalClient.last["request"] = kwargs
+
         async def gen():
             yield "data: [DONE]\n\n"
 
         return gen()
 
     async def served_chat_template(self, model):
+        return None
+
+    async def served_model_reads_images(self, model):
         return None
 
     async def close(self):
@@ -163,8 +168,7 @@ def test_a_provider_without_that_tool_is_not_offered_it():
 
 @pytest.mark.parametrize("provider_type", ["llama_cpp", "vllm", "ollama", "custom"])
 def test_a_self_hosted_server_is_sent_no_hosted_names_at_all(provider_type):
-    """These declare no hosted tools, and an unknown name is a 400 from some of
-    them, so the filter has to be empty rather than pass-through."""
+    """These servers declare no hosted tools, and some 400 on unknown names, so send none."""
     assert hosted_only_tools(provider_type, ["python", "image_generation"]) == []
 
 
@@ -186,8 +190,7 @@ def test_images_plus_a_studio_tool_still_reaches_the_provider(monkeypatch, provi
 
 
 def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
-    """A project with automatic RAG selects the loop without the user touching a
-    tool pill, which is the quietest way to lose Images."""
+    """Automatic RAG selects the loop silently, which can quietly drop the user's image tool."""
     transport = _loop_transport(
         monkeypatch,
         "openai",
@@ -199,8 +202,7 @@ def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
 
 
 def test_the_loop_keeps_its_own_search(monkeypatch):
-    """Unsloth's web_search is running locally this turn, so the provider must not
-    be asked to run its own as well."""
+    """Unsloth's web_search runs locally this turn, so the provider must not run its own too."""
     transport = _loop_transport(monkeypatch, "openai", ["web_search", "python"])
     assert transport._request_kwargs["enabled_tools"] is None
 
@@ -234,3 +236,37 @@ def test_custom_mixed_tools_keep_local_search_and_scope_hosted_tools(
     )
     assert "web_search" in transport._selected_local_tool_names
     assert transport._request_kwargs["enabled_tools"] == expected_hosted_tools
+
+
+@pytest.fixture
+def _memory_on(monkeypatch):
+    from core import chat_memory
+    monkeypatch.setattr(chat_memory, "thread_context", lambda thread_id: {"projectId": None})
+    monkeypatch.setattr(chat_memory, "offer", lambda thread_id: [chat_memory.TOOL])
+
+
+def _proxy(monkeypatch, **overrides):
+    inf = _install(monkeypatch, "openai")
+
+    async def go():
+        resp = await inf._proxy_to_external_provider(
+            _payload(thread_id = "saved-chat", **overrides), _request(), current_subject = "t"
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    _drive(go())
+    return _FakeExternalClient.last["request"]
+
+
+@pytest.mark.parametrize("enable_tools", [False, None])
+def test_memory_keeps_the_client_tool_catalog(monkeypatch, _memory_on, enable_tools):
+    catalog = [{"type": "function", "function": {"name": "client_weather", "parameters": {}}}]
+    choice = {"type": "function", "function": {"name": "client_weather"}}
+    sent = _proxy(monkeypatch, enable_tools = enable_tools, tools = catalog, tool_choice = choice)
+    assert sent["tools"] == catalog
+    assert sent["tool_choice"] == choice
+
+
+def test_memory_keeps_hosted_search_with_the_provider(monkeypatch, _memory_on):
+    sent = _proxy(monkeypatch, enabled_tools = ["web_search"])
+    assert sent["enabled_tools"] == ["web_search"]

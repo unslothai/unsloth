@@ -5,6 +5,7 @@
 own the weights, the HF load takes fp16 as well, so the engine and the shared weights agree."""
 
 import ast
+import builtins
 import sys
 import types
 from pathlib import Path
@@ -131,9 +132,17 @@ def _loader_family_gate():
                     if isinstance(body[j], ast.If) and "xpu_vllm_refuses_bf16()" in ast.unparse(
                         body[j].test
                     ):
-                        module = ast.Module(body = body[i : j + 1], type_ignores = [])
-                        return compile(module, "loader.py", "exec")
+                        return ast.Module(body = body[i : j + 1], type_ignores = [])
     raise AssertionError("FORCE_FLOAT32 family gate not found in loader.py")
+
+
+def _free_names(module):
+    """Names the slice reads but never binds itself: the ones the harness has to provide."""
+    loaded, bound = set(), set()
+    for node in ast.walk(module):
+        if isinstance(node, ast.Name):
+            (loaded if isinstance(node.ctx, ast.Load) else bound).add(node.id)
+    return loaded - bound
 
 
 def _load_family(
@@ -158,8 +167,19 @@ def _load_family(
         "DEVICE_TYPE": device_type,
         "is_vLLM_available": lambda: True,
         "xpu_vllm_refuses_bf16": lambda: refuses,
+        # #17950: an explicit float32 16-bit load skips forced float32; these loads are 16-bit and not float32.
+        "user_float32": dtype == torch.float32,
+        "load_in_4bit": False,
+        "load_in_8bit": False,
+        "quantization_config": None,
     }
-    exec(_loader_family_gate(), namespace)
+    module = _loader_family_gate()
+    missing = sorted(_free_names(module) - set(namespace) - set(dir(builtins)))
+    assert not missing, (
+        f"loader.py's FORCE_FLOAT32 gate now reads {missing}, which this harness does not define; add them "
+        "to the namespace in _load_family so the gate runs instead of raising NameError"
+    )
+    exec(compile(module, "loader.py", "exec"), namespace)
     return namespace["dtype"], env.get("UNSLOTH_FORCE_FLOAT32")
 
 

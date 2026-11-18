@@ -629,3 +629,59 @@ def test_the_layer_registry_is_weak_so_an_unloaded_model_stops_counting():
     del layer
     gc.collect()
     assert ctl.capable_layers() == 0
+
+
+def _cpu_protected_layer():
+    torch = pytest.importorskip("torch")
+    from core.inference.diffusion_nvfp4_protect import NVFP4StepController
+
+    torch.manual_seed(7)
+    q = torch.randint(0, 256, (32, 32), dtype = torch.uint8)
+    scales = torch.full((32, 4), 0.5, dtype = torch.float8_e4m3fn)
+    packed = ops.swizzle_sf(scales, 32, 64).reshape(ops.sf_matrix_shape(32, 4))
+    layer = nl.nvfp4_linear_class()(
+        64,
+        32,
+        wq = q,
+        w_sf = packed,
+        alpha = torch.ones(1),
+        a_gsf = torch.ones(1),
+        w_scale = torch.tensor([0.125]),
+    )
+    layer.protect = NVFP4StepController("auto")
+    layer.protect.begin(9)
+    assert layer.protect.armed and layer.protect.protected
+    return torch, layer
+
+
+def test_a_cold_lut_compiles_the_protected_branch_once():
+    torch, layer = _cpu_protected_layer()
+    from torch._dynamo.testing import CompileCounter
+
+    ops.reset_lut_cache()
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = torch.compile(layer, backend = counter, fullgraph = True, dynamic = True)
+    x = torch.randn(4, 64, dtype = torch.bfloat16)
+    with torch.inference_mode():
+        ref = layer(x)
+        ops.reset_lut_cache()  # the eager reference memoised it; the compiled calls start cold
+        outs = [compiled(x) for _ in range(3)]
+        ops.e2m1_lut(x.device)  # an eager dequantise between renders memoises the table
+        outs.append(compiled(x))
+    assert counter.frame_count == 1
+    assert all(torch.equal(out, ref) for out in outs)
+    torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("dtype_name", ["float16", "bfloat16", "float32"])
+def test_the_protected_branch_keeps_the_input_dtype(dtype_name):
+    torch, layer = _cpu_protected_layer()
+    dtype = getattr(torch, dtype_name)
+    x = torch.randn(4, 64, dtype = dtype)
+    compute = torch.bfloat16 if dtype is torch.float32 else dtype
+    weight = ops.dequantize_nvfp4_weight(layer.wq, layer.w_sf, layer.w_scale, dtype = compute)
+    with torch.inference_mode():
+        out = layer(x)
+    assert out.dtype == dtype
+    assert torch.equal(out, torch.nn.functional.linear(x.to(compute), weight).to(dtype))

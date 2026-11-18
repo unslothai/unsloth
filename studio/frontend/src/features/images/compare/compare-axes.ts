@@ -48,6 +48,7 @@ export interface CompareContext {
   controlnetEngaged: boolean;
   // Hires CFG makes the refine pass read the negative prompt at any base CFG; no axis varies Hires, so it is grid-wide.
   hiresEngagesNegative?: boolean;
+  detailerEngagesNegative?: boolean;
 }
 
 type Value = number | string;
@@ -400,7 +401,10 @@ function cellProblem(plan: CompareGridPlan, ctx: CompareContext): string | null 
 function negativeEngaged(ctx: CompareContext, guidance: number): boolean {
   return (
     ctx.negativeCapable &&
-    (ctx.negativeMinGuidance === null || guidance > ctx.negativeMinGuidance || ctx.hiresEngagesNegative === true)
+    (ctx.negativeMinGuidance === null ||
+      guidance > ctx.negativeMinGuidance ||
+      ctx.hiresEngagesNegative === true ||
+      ctx.detailerEngagesNegative === true)
   );
 }
 
@@ -471,7 +475,8 @@ export function buildCellRequest(
     const loras: LoraSpecInput[] = ctx.loras
       .map((l, i) => ({ id: l.id.trim(), weight: cell.loraWeights[i] ?? l.weight }))
       .filter((l) => l.id && l.weight > 0);
-    req.loras = loras.length ? loras : undefined;
+    // [] (not omitted) when every weight is 0: the server reads an omitted list as the load's adapters.
+    req.loras = loras;
   }
   if (cell.replacements.length > 0) {
     let prompt = req.prompt;

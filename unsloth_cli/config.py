@@ -29,6 +29,7 @@ class TrainingConfig(BaseModel):
     training_type: Literal["lora", "full"] = "lora"
     max_seq_length: int = 2048
     load_in_4bit: bool = True
+    trust_remote_code: bool = False
     output_dir: Path = Path("./outputs")
     num_epochs: int = 3
     learning_rate: float = 2e-4

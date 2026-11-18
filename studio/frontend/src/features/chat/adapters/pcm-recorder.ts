@@ -106,6 +106,21 @@ function createAudioContext(): AudioContext {
 export class PcmRecorder implements SegmentRecorder {
   readonly mimeType = "audio/wav";
   readonly sampleRate: number;
+
+  static isSupported(): boolean {
+    return (
+      typeof window !== "undefined" &&
+      window.isSecureContext &&
+      typeof (
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: unknown })
+          .webkitAudioContext
+      ) === "function" &&
+      navigator.mediaDevices?.getUserMedia !== undefined
+    );
+  }
+  /** stop() trims the WAV to this many bytes, header included. */
+  maxBytes = Number.POSITIVE_INFINITY;
   private recordingState: RecordingState = "inactive";
   private readonly context: AudioContext;
   private readonly source: MediaStreamAudioSourceNode;
@@ -141,6 +156,10 @@ export class PcmRecorder implements SegmentRecorder {
 
   get state(): RecordingState {
     return this.recordingState;
+  }
+
+  bytesFor(seconds: number): number {
+    return WAV_HEADER_BYTES + Math.ceil(seconds * this.sampleRate) * BYTES_PER_SAMPLE;
   }
 
   /** Seconds that fit in `maxBytes`, less a second of slack for the buffer still in flight. */
@@ -187,11 +206,14 @@ export class PcmRecorder implements SegmentRecorder {
   stop(): void {
     if (this.recordingState === "inactive") return;
     this.recordingState = "inactive";
-    const samples = new Float32Array(this.frames);
+    const fit = Math.floor((this.maxBytes - WAV_HEADER_BYTES) / BYTES_PER_SAMPLE);
+    const samples = new Float32Array(Math.max(0, Math.min(this.frames, fit)));
     let offset = 0;
     for (const chunk of this.chunks) {
-      samples.set(chunk, offset);
-      offset += chunk.length;
+      if (offset >= samples.length) break;
+      const part = chunk.subarray(0, samples.length - offset);
+      samples.set(part, offset);
+      offset += part.length;
     }
     this.chunks.length = 0;
     this.frames = 0;
@@ -214,7 +236,19 @@ export class PcmRecorder implements SegmentRecorder {
     for (const entry of listeners) entry.listener(stopEvent);
   }
 
+  discard(): void {
+    if (this.tornDown) return;
+    this.recordingState = "inactive";
+    this.chunks.length = 0;
+    this.frames = 0;
+    this.teardown();
+  }
+
+  private tornDown = false;
+
   private teardown(): void {
+    if (this.tornDown) return;
+    this.tornDown = true;
     this.source.disconnect();
     this.processor.disconnect();
     this.sink.disconnect();

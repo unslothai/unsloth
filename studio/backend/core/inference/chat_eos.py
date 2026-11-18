@@ -63,9 +63,7 @@ def resolve_chat_turn_end_eos_ids_using(template_tokenizer, id_tokenizer) -> lis
 
 
 def resolve_chat_turn_end_eos_ids(tokenizer) -> list:
-    """tokenizer.eos plus any canonical turn-end marker the model's chat_template
-    actually uses. Cheap (convert_tokens_to_ids per marker, no get_vocab); intended
-    to be resolved once at load. Returns eos unchanged for harmony templates."""
+    """tokenizer.eos plus turn-end markers the chat_template uses; resolve at load, harmony keeps eos."""
     return resolve_chat_turn_end_eos_ids_using(tokenizer, tokenizer)
 
 

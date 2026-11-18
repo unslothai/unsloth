@@ -287,6 +287,13 @@ test("LoRA weight targets one row; 0 drops it; the prompt enhancer is off for ev
   const req = (i: number) =>
     buildCellRequest(p, i, base({ enhance_prompt: true }), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false });
   assert.deepEqual(req(0).loras, [{ id: "a/style", weight: 1 }]);
+  // Every weight at 0 sends [] (none), not an omitted list, which the server reads as the load's adapters.
+  const one = sdxl({ loraCapable: true, loras: [{ id: "a/style", weight: 1, label: "style" }] });
+  const off = plan([{ axisId: "lora:0", text: "0, 1" }], one);
+  assert.deepEqual(
+    buildCellRequest(off, 0, base(), one, { base: 1, keepRandom: false, seedFieldEmpty: false }).loras,
+    [],
+  );
   assert.deepEqual(req(2).loras, [
     { id: "a/style", weight: 1 },
     { id: "b/detail", weight: 1 },
@@ -431,10 +438,14 @@ test("the Images page (its own lazy chunk) renders the panel and loops cells thr
   const root = readSrc("app/routes/__root.tsx");
   assert.match(root, /lazy\(\(\) =>\s*import\("@\/features\/images"\)/);
   assert.match(page, /for \(let i = 0; i < runTotal; i\+\+\)/);
-  assert.match(page, /generateDiffusionImage\(compareRequest\(compare, i, baseSeed, \{/);
+  assert.match(page, /return compareRequest\(compare, i, baseSeed, \{/);
+  assert.match(page, /generateDiffusionImage\(requestFor\(i\), { id: sequenceId, more: i < runTotal - 1 }\)/);
   assert.match(page, /compare\?\.onImages\(i, res\.images\)/);
   // The lost-response branch also reports the cell, from the records the gallery gained.
-  assert.match(page, /compare\?\.onImages\(i, galleryCache\.images\.filter\(\(image\) => !knownIds\.has\(image\.id\)\)\)/);
+  assert.match(
+    page,
+    /const gained = galleryCache\.images\.filter\(\(image\) => !knownIds\.has\(image\.id\)\);\s+compare\?\.onImages\(i, gained\)/,
+  );
   assert.match(page, /workflow === "create"/);
 });
 
@@ -500,8 +511,8 @@ test("LoRA weight cells: every weighted cell runs before any adapter-free one, a
     ],
     ctx,
   );
-  const hasLora = p.order.map((i) =>
-    Boolean(buildCellRequest(p, i, base(), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false }).loras),
+  const hasLora = p.order.map(
+    (i) => (buildCellRequest(p, i, base(), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false }).loras?.length ?? 0) > 0,
   );
   const firstOff = hasLora.indexOf(false);
   assert.ok(firstOff > 0);
@@ -962,6 +973,22 @@ test("Hires CFG keeps the negative prompt on a CFG cell whose base guidance leav
   const off = plan([{ axisId: "steps", text: "10, 20" }], { ...sr, negativePrompt: "blurry" });
   assert.equal(gridNegativePrompt(off, { ...sr, negativePrompt: "blurry" }), undefined);
   assert.equal(gridNegativePrompt(off, { ...sr, negativePrompt: "blurry", hiresEngagesNegative: true }), "blurry");
+});
+
+test("Detailer CFG keeps the negative prompt on a CFG cell whose base guidance leaves it off, as Generate does", () => {
+  const detailer = { guidance: 7 } as never;
+  const g = plan([{ axisId: "guidance", text: "1, 7" }]);
+  const seeds = { base: 1, keepRandom: false, seedFieldEmpty: false };
+  const ctx = sdxl({ detailerEngagesNegative: true });
+  assert.equal(buildCellRequest(g, 0, base({ detailer }), ctx, seeds).negative_prompt, "blurry");
+  assert.equal(buildCellRequest(g, 1, base({ detailer }), ctx, seeds).negative_prompt, "blurry");
+  assert.equal(buildCellRequest(g, 0, base(), sdxl(), seeds).negative_prompt, undefined);
+  const sr = sdxl({ prompt: "a fox", negativePrompt: "red eyes", guidance: 1 });
+  assert.ok(planCompare([{ axisId: "prompt_sr", text: "red, blue" }], { ...sr, detailerEngagesNegative: true }).ok);
+  const off = plan([{ axisId: "steps", text: "10, 20" }], { ...sr, negativePrompt: "blurry" });
+  assert.equal(gridNegativePrompt(off, { ...sr, negativePrompt: "blurry", detailerEngagesNegative: true }), "blurry");
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /detailerEngagesNegative: detailerEngagesNegative\(detailerOn, detailerReady, detailerOptions, negativeMinGuidance\),/);
 });
 
 test("grid metadata records the Hires fix every cell ran, in A1111 names, and drops it when cells differ", () => {

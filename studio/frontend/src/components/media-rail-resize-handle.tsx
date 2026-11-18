@@ -12,10 +12,10 @@ import {
 } from "@/hooks/use-media-rail-width";
 import { cn } from "@/lib/utils";
 
-/** The rail's rendered width, mirroring the pages' `min(rail, 100% - 13rem)`. */
+/** The rail's rendered width, leaving the same preview minimum as its page. */
 const RAIL_BOX_WIDTH: Record<MediaRailKind, string> = {
-  images: "min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100% - 13rem))",
-  video: "min(var(--media-rail-width,calc(400px*var(--ui-space-scale,1))),calc(100% - 13rem))",
+  images: "min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100% - var(--media-header-min-width,13rem)))",
+  video: "min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100% - var(--media-header-min-width,13rem)))",
   audio: "min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100% - 13rem))",
 };
 
@@ -33,7 +33,7 @@ export function MediaRailResizeHandle({
   const anchorRef = useRef<HTMLSpanElement>(null);
   const root = () =>
     anchorRef.current?.closest<HTMLElement>(`[${MEDIA_RAIL_ROOT_ATTR}]`) ?? null;
-  // The `100% - 13rem` cap in layout px, so drags and keys start from the width actually shown.
+  // Match the page cap in layout px, so drags and keys start from the width actually shown.
   const [cap, setCap] = useState<number | null>(null);
   useLayoutEffect(() => {
     const anchor = anchorRef.current;
@@ -47,13 +47,19 @@ export function MediaRailResizeHandle({
           ? block.clientWidth
           : block.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-      setCap((inner - 13 * rem) / rail.scale);
+      // A present 0px header inset wins over the window-control fallback, as in the CSS var().
+      const rightInset = parseFloat(
+        style.getPropertyValue("--studio-chat-header-right-inset").trim() ||
+          style.getPropertyValue("--studio-window-control-inset").trim(),
+      ) || 0;
+      const previewMinimum = kind === "audio" ? 13 * rem : 14 * rem * rail.scale + rightInset;
+      setCap((inner - previewMinimum) / rail.scale);
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(block);
     return () => observer.disconnect();
-  }, [placement, rail.scale]);
+  }, [kind, placement, rail.scale]);
   // The cap can fall below the stored minimum (high interface scale near the breakpoint).
   const max = cap === null ? rail.max : Math.max(0, Math.min(rail.max, cap));
   const width = Math.min(rail.width, max);

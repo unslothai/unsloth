@@ -13,20 +13,26 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import type { NativeDocumentFolderSelection } from "@/features/native-intents";
-import { WorkingFolderPicker } from "./working-folder-picker";
-import { LinkedFoldersManager } from "@/features/rag";
+import {
+  type WorkingFolderSelection,
+  WorkingFolderPicker,
+} from "./working-folder-picker";
+import { LinkedFoldersManager } from "@/features/rag/components/linked-folders-manager";
 import { isModEnter } from "@/features/settings/lib/keyboard-shortcuts";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 
-import { setChatProjectWorkingFolder } from "../api/chat-api";
+import {
+  setChatProjectWorkingFolder,
+  setChatProjectWorkingFolderPath,
+} from "../api/chat-api";
 import {
   renameChatProject,
   updateChatProjectInstructions,
 } from "../hooks/use-chat-projects";
 import type { ProjectRecord } from "../types";
+import { projectFolderState } from "../utils/project-folder-state";
 import {
   imeOwnsInputKeydown,
   inputImeHandlers,
@@ -42,25 +48,27 @@ function ProjectWorkingFolder({
   disabled: boolean;
   onPendingChange: (pending: boolean) => void;
 }) {
-  const [folder, setFolder] = useState(project.workingFolder ?? null);
-  const seed = `${project.id}\n${project.workingFolder ?? ""}`;
+  const [saved, setSaved] = useState(project);
+  const seed = `${project.id}\n${project.workingFolder ?? ""}\n${project.workingFolderStatus ?? ""}`;
   const [seededFor, setSeededFor] = useState(seed);
   if (seed !== seededFor) {
     setSeededFor(seed);
-    setFolder(project.workingFolder ?? null);
+    setSaved(project);
   }
+  const folder = projectFolderState(saved);
 
-  async function apply(selection: NativeDocumentFolderSelection | null) {
-    const saved = await setChatProjectWorkingFolder(
-      project.id,
-      selection?.token ?? null,
+  async function apply(selection: WorkingFolderSelection | null) {
+    setSaved(
+      selection && "serverPath" in selection
+        ? await setChatProjectWorkingFolderPath(project.id, selection.serverPath)
+        : await setChatProjectWorkingFolder(project.id, selection?.token ?? null),
     );
-    setFolder(saved.workingFolder ?? null);
   }
 
   return (
     <WorkingFolderPicker
-      value={folder}
+      value={folder.chosen ? folder.label : null}
+      detail={folder}
       onChange={apply}
       disabled={disabled}
       onPendingChange={onPendingChange}
@@ -153,9 +161,8 @@ export function EditProjectDialog({
       <DialogContent
         className="corner-squircle dialog-soft-surface grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-xl"
         {...nameImeHandlers}
-        // Enter saves from the name field, which a multi-line instructions box cannot do; the
-        // chord saves from either. The menus and confirmations inside portal out of here, so
-        // their own keys never reach this.
+        // Enter saves from the name field, which a multi-line instructions box cannot do, and the
+        // chord saves from either; portaled menus and confirmations keep their keys out of here.
         onKeyDown={(e) => {
           if (
             imeOwnsInputKeydown(e, nameImeRef.current, {

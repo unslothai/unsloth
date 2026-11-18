@@ -42,8 +42,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
   const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
   const mlxAnePrefill = useChatRuntimeStore((s) => s.mlxAnePrefill);
+  const mlxFastVerify = useChatRuntimeStore((s) => s.mlxFastVerify);
   const mlxPleOffload = useChatRuntimeStore((s) => s.mlxPleOffload);
   const mlxExpertOffload = useChatRuntimeStore((s) => s.mlxExpertOffload);
+  const npuPowerMode = useChatRuntimeStore((s) => s.npuPowerMode);
+  const npuPrefillChunkLen = useChatRuntimeStore((s) => s.npuPrefillChunkLen);
+  const npuImgPreResize = useChatRuntimeStore((s) => s.npuImgPreResize);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
@@ -69,6 +73,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
+  const engramPrecision = useChatRuntimeStore((s) => s.engramPrecision);
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -103,6 +108,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
   const effectiveMlxInt8Prefill = isMlx && mlxInt8Prefill;
   const effectiveMlxAnePrefill = isMlx && mlxAnePrefill;
+  const effectiveMlxFastVerify = isMlx && mlxFastVerify;
   const effectiveMlxPleOffload = isMlx ? (mlxPleOffload ?? null) : null;
   const effectiveMlxExpertOffload = isMlx ? (mlxExpertOffload ?? null) : null;
 
@@ -121,9 +127,15 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       mlxKvQuant: effectiveMlxKvQuant,
       mlxInt8Prefill: effectiveMlxInt8Prefill,
       mlxAnePrefill: effectiveMlxAnePrefill,
+      mlxFastVerify: effectiveMlxFastVerify,
       mlxPleOffload: effectiveMlxPleOffload,
       mlxExpertOffload: effectiveMlxExpertOffload,
-      speculativeType: speculativeType ?? "auto",
+      // The store keeps the last NPU load's values after a GPU model loads.
+      npuPowerMode: isNpuModelId(checkpoint) ? npuPowerMode : null,
+      npuPrefillChunkLen: isNpuModelId(checkpoint) ? npuPrefillChunkLen : null,
+      npuImgPreResize: isNpuModelId(checkpoint) ? npuImgPreResize : null,
+      // FastFlowLM has no speculative decoding; "auto" here reads as an edit right after an NPU load.
+      speculativeType: isNpuModelId(checkpoint) ? null : (speculativeType ?? "auto"),
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
       reasoningBudget: isGguf ? reasoningBudget : -1,
@@ -136,6 +148,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       cacheRam: cacheRam ?? null,
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
+      engramPrecision: isGguf ? (engramPrecision ?? null) : null,
       chatTemplateOverride: chatTemplateOverride ?? null,
       ...(isGguf || isMlx ? {} : { loadIn4bit }),
     };
@@ -181,8 +194,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     effectiveMlxKvQuant,
     effectiveMlxInt8Prefill,
     effectiveMlxAnePrefill,
+    effectiveMlxFastVerify,
     effectiveMlxPleOffload,
     effectiveMlxExpertOffload,
+    npuPowerMode,
+    npuPrefillChunkLen,
+    npuImgPreResize,
     speculativeType,
     specDraftNMax,
     nParallel,
@@ -196,6 +213,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     cacheRam,
     tensorParallel,
     disableVision,
+    engramPrecision,
     chatTemplateOverride,
     loadedLlamaExtraArgs,
     gpuMemoryMode,

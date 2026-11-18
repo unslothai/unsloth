@@ -37,9 +37,13 @@ _CHUNK = 1 << 20
 def archive_names(version: str) -> list[str]:
     return [
         f"node-v{version}-linux-x64.tar.gz",
+        f"node-v{version}-linux-x64.tar.xz",
         f"node-v{version}-linux-arm64.tar.gz",
+        f"node-v{version}-linux-arm64.tar.xz",
         f"node-v{version}-darwin-x64.tar.gz",
+        f"node-v{version}-darwin-x64.tar.xz",
         f"node-v{version}-darwin-arm64.tar.gz",
+        f"node-v{version}-darwin-arm64.tar.xz",
         f"node-v{version}-win-x64.zip",
         f"node-v{version}-win-arm64.zip",
     ]

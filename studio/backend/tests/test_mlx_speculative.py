@@ -3,6 +3,7 @@
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -95,6 +96,20 @@ def test_auto_takes_every_cached_kind_in_preference_order(cache):
     assert _resolve("ngram-mod").speculative
 
 
+def test_a_bundled_drafter_follows_the_head_and_precedes_cached_ones(cache, tmp_path):
+    _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
+    (draft := tmp_path / "org--Qwen3.5-4B-4bit" / "draft").mkdir()
+    (draft / "config.json").write_text(json.dumps({**_ASSISTANT, "backbone_hidden_size": 8}))
+    paths = lambda: [
+        Path(os.path.relpath(s.path, draft.parent)).as_posix() for s in _resolve("auto").sources
+    ]
+    assert paths() == [".", "../g--Qwen3.5-4B-assistant"]  # no weights beside the config
+    (draft / "model.safetensors").touch()
+    assert paths() == [".", "draft", "../g--Qwen3.5-4B-assistant"]
+    (draft.parent / "config.json").write_text(json.dumps({"vocab_size": 10, "hidden_size": 4}))
+    assert paths() == [".", "../g--Qwen3.5-4B-assistant"]  # built for another width
+
+
 def test_an_auto_offload_plan_makes_room_for_a_modes_first_drafter(cache, tmp_path):
     cache({"a/Qwen3.5-4B-DFlash": _DFLASH, "g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
     target = str(tmp_path / "org--Qwen3.5-4B-4bit")
@@ -142,6 +157,37 @@ def test_cached_drafters_are_matched_by_shape_and_weights_then_marked_by_name(ca
     assert len(spec.discover_companions("unsloth/Qwen3.5-4B-UD-MLX-4bit", target)) == 2
     assert len(spec.discover_companions("unsloth/Qwen3.5-4B-UD-MLX-4bit", target, found[1])) == 1
     assert spec._stem("g/gemma-4-31B-it-qat-q4_0-unquantized-assistant") == "gemma431bit"
+
+
+@pytest.mark.parametrize("decision", [None, False, True])
+def test_a_drafter_build_hears_fast_verify_only_from_a_zoo_that_takes_it(monkeypatch, decision):
+    drafters = pytest.importorskip("unsloth_zoo.mlx.speculative")
+    told = []
+    factory = lambda path, target, **kw: told.append(kw) or SimpleNamespace(max_depth = 8)
+    monkeypatch.setattr(drafters, "companion_drafter", factory)
+    monkeypatch.setattr(drafters, "native_mtp_drafter", factory)
+    sources = (spec.DrafterSource("dflash", "a", False), spec.DrafterSource("mtp", "b", True))
+    for source in sources:
+        resolution = spec.SpecResolution("dflash", (source,))
+        spec.build_draft(None, resolution, fits = lambda _: (True, None), fast_verify = decision)
+    assert told == [{} if decision is None else {"fast_verify": decision}] * 2
+
+
+def test_the_installed_zoo_refuses_a_fast_verify_flip_or_reports_no_support():
+    import inspect
+
+    from core.inference import mlx_inference as mi
+
+    zoo = pytest.importorskip("unsloth_zoo.mlx.inference")
+    if "fast_verify" not in inspect.signature(zoo.inference_scopes).parameters:
+        assert mi._fast_verify_status(True, object())["reason"] == "unsupported_zoo"
+        assert mi.mlx_fast_verify_checkpoint_status("/none") == (False, "unsupported_zoo")
+        return
+    assert mi._fast_verify_zoo() is zoo
+    target = SimpleNamespace()
+    zoo.pin_fast_verify(target, True)
+    with pytest.raises(ValueError):
+        zoo.pin_fast_verify(target, False)
 
 
 def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeypatch):

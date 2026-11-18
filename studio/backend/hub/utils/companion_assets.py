@@ -9,6 +9,7 @@ import json
 import os
 import threading
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -247,12 +248,18 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
         logger.debug("Hosted text-encoder table unavailable: %s", exc)
 
     try:
-        from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES, H3_TE_QUANT_REPO
+        from core.inference.video_minimax_h3_te import (
+            H3_TE_QUANT_FILES,
+            H3_TE_QUANT_REPO,
+            h3_te_quant_source,
+        )
 
         # Old released builds kept the identical conditioner outside official/; both locations are this asset.
+        # The GGUF conditioner ships from the GGUF mirror, already covered elsewhere.
         names = [
             n
-            for name in H3_TE_QUANT_FILES.values()
+            for scheme, name in H3_TE_QUANT_FILES.items()
+            if h3_te_quant_source(scheme) == H3_TE_QUANT_REPO
             for n in (name, name.replace("/official/", "/"))
         ]
         for owner in by_name.get("minimax-h3", ()):
@@ -268,6 +275,17 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
 
     image_bases = {_normalise(b) for b in _with_mirrors(_curated_base_ids())}
     return {repo: files for repo, files in table.items() if repo not in image_bases}
+
+
+@lru_cache(maxsize = None)
+def hosted_supporting_names(repo_id: str) -> frozenset[str]:
+    """Lowercased names of the encoder and VAE files *repo_id* hosts, leaving out its denoisers."""
+    files = _hosted_component_table().get(_normalise(repo_id)) or {}
+    return frozenset(
+        name
+        for name, owners in files.items()
+        if not any(owner[2] == _HOSTED_DENOISER for owner in owners)
+    )
 
 
 def _hosted_names(table, repo_id: str) -> Optional[set[str]]:

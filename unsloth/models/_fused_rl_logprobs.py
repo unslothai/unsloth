@@ -70,9 +70,13 @@ def fused_head(model):
     head = _unsloth_gkd_dense_head(model)
     if head is None:
         return None, None, "output head is not a dense nn.Linear"
-    # The kernel reads weight / bias directly: a hooked head is not F.linear(h, W, b).
+    # The kernel reads weight / bias directly: a hooked head (its own or torch's global module hooks) is not
+    # F.linear(h, W, b).
+    from .dpo import _global_module_hooks
+
     if (
-        hasattr(head, "_hf_hook")
+        _global_module_hooks()
+        or hasattr(head, "_hf_hook")
         or "forward" in vars(head)
         or head._forward_hooks
         or head._forward_pre_hooks
@@ -114,9 +118,8 @@ def score_hidden_states(
     entropy = False,
     head_info = None,
 ):
-    """``(logps, entropy | None)`` from ``tensor`` when it is the final hidden states of ``model``, else None (the
-    forward ignored the flag and ``tensor`` is real logits). Entropy is detached, as every caller logs it under
-    ``no_grad``; rows outside ``mask`` are 0."""
+    """Returns (logps, entropy or None) from the final hidden states, else None; entropy is detached
+    since callers log it under no_grad; rows outside mask are 0"""
     from .rl_replacements import _unsloth_pref_returns_hidden_states
 
     head, transforms, _ = head_info if head_info is not None else fused_head(model)
@@ -184,12 +187,63 @@ def _right_pad_cat(tensors, value):
     )
 
 
+def _ppo_scores_are_tempered_logits(model, queries, generation_config):
+    """Whether generation scores can be recomputed as logits / temperature."""
+    from transformers import LogitsProcessorList, TemperatureLogitsWarper
+    from unsloth.models.rl import _caller_sampling_only
+
+    kwargs = {"generation_config": generation_config}
+    if getattr(getattr(model, "generate", None), "_unsloth_caller_sampling_only", False):
+        kwargs = _caller_sampling_only(model, kwargs)
+    config, model_kwargs = model._prepare_generation_config(
+        kwargs.pop("generation_config"), **kwargs
+    )
+    model._prepare_special_tokens(config, True, device = queries.device)
+    processors = model._get_logits_processor(
+        generation_config = config,
+        input_ids_seq_length = queries.shape[1],
+        encoder_input_ids = queries,
+        prefix_allowed_tokens_fn = None,
+        logits_processor = LogitsProcessorList(),
+        device = queries.device,
+        model_kwargs = model_kwargs,
+    )
+    temperature = getattr(generation_config, "temperature", None)
+    if len(processors) == 0:
+        return temperature == 1.0
+    return (
+        len(processors) == 1
+        and type(processors[0]) is TemperatureLogitsWarper
+        and processors[0].temperature == temperature
+    )
+
+
 @torch.no_grad()
 def ppo_batch_generation(
-    model, queries, local_rollout_forward_batch_size, pad_token_id, generation_config
+    route,
+    batch_generation,
+    model,
+    queries,
+    local_rollout_forward_batch_size,
+    pad_token_id,
+    generation_config,
 ):
-    """TRL's ``batch_generation`` without ``output_scores``: the rollout log-probs are scored from hidden states, so
-    the stacked float32 [batch, response, vocab] scores are never built. Returns ``(query_responses, None)``."""
+    """Omit generation scores only when the fused scorer can reproduce them."""
+    if route is not None:
+        try:
+            tempered = _ppo_scores_are_tempered_logits(model, queries, generation_config)
+        except Exception:
+            tempered = False
+        if not tempered:
+            _note(
+                route.trainer,
+                "_unsloth_ppo_fused_fallbacks",
+                "generation logits processors besides temperature",
+            )
+    if route is None or not tempered:
+        return batch_generation(
+            model, queries, local_rollout_forward_batch_size, pad_token_id, generation_config
+        )
     query_responses = []
     for i in range(0, queries.shape[0], local_rollout_forward_batch_size):
         query = queries[i : i + local_rollout_forward_batch_size]
@@ -230,9 +284,7 @@ def ppo_score(
     temperature,
     entropy = False,
 ):
-    """``(logps, entropy | None)`` for PPO from ``tensor = output.logits[:, context_length - 1 : -1]``, or None when
-    the route is off or the forward returned real logits (TRL's lines then run on them unchanged). ``model`` is the
-    PolicyAndValueWrapper (its policy head scores) or a standalone reference policy."""
+    """PPO logps and entropy from the hidden states; None when the route is off or real logits came back."""
     if route is None:
         return None
     model = _ppo_policy(route, model)
@@ -250,9 +302,10 @@ def ppo_score(
             "forward returned logits, not hidden states",
         )
         return None
-    route.trainer.__dict__["_unsloth_ppo_fused_calls"] = (
-        route.trainer.__dict__.get("_unsloth_ppo_fused_calls", 0) + 1
-    )
+    if not torch.compiler.is_compiling():
+        route.trainer.__dict__["_unsloth_ppo_fused_calls"] = (
+            route.trainer.__dict__.get("_unsloth_ppo_fused_calls", 0) + 1
+        )
     return out
 
 
@@ -379,9 +432,10 @@ def rloo_fused_logps(
         all_logps.append(out[0])
         if compute_entropy:
             all_entropies.append(out[1])
-    self.__dict__["_unsloth_rloo_fused_calls"] = (
-        self.__dict__.get("_unsloth_rloo_fused_calls", 0) + 1
-    )
+    if not torch.compiler.is_compiling():
+        self.__dict__["_unsloth_rloo_fused_calls"] = (
+            self.__dict__.get("_unsloth_rloo_fused_calls", 0) + 1
+        )
     logps = torch.cat(all_logps, dim = 0)
     entropies = torch.cat(all_entropies, dim = 0) if compute_entropy else None
     if traits["aux"]:

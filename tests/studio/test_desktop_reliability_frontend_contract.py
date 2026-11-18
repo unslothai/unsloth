@@ -233,8 +233,13 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "pickNativeChatImport" in projects
     assert "if (!isTauri)" in projects
     assert 'type="file"' in data_tab
-    # Open WebUI exports are .json arrays.
-    assert 'accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"' in data_tab
+    assert "accept={CHAT_IMPORT_ACCEPT}" in data_tab
+    assert "accept={CHAT_IMPORT_ACCEPT}" in projects
+    import_chats = _ui_source(FRONTEND / "features/chat/utils/import-chats.ts")
+    assert (
+        'export const CHAT_IMPORT_ACCEPT = ".json,.jsonl,.ndjson,.csv,.md,.markdown";'
+        in import_chats
+    )
 
     native_dialogs = _ui_source(NATIVE_DIALOGS)
     assert (
@@ -447,7 +452,7 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
         'types.includes("files")',
         'type.includes("uri-list")',
         '"read_native_clipboard_files"',
-        "globalThis.atob(file.base64)",
+        "decodeBase64Bytes(file.base64)",
         "new File([bytes], file.name",
         "MAX_CLIPBOARD_BYTES",
         'import("@tauri-apps/plugin-clipboard-manager")',
@@ -752,8 +757,11 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "!size-[30px]" in new_chat_tokens, new_chat_tokens
     assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
     assert "text-muted-foreground" in new_chat_tokens, new_chat_tokens
+    # The model picker moved into the composer; New chat leads the header's model controls.
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
-    assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
+    controls = chat_page.index('data-chat-model-controls=""')
+    assert controls < new_chat_click < chat_page.index("<ChatModelNotice", new_chat_click)
+    assert "<ModelSelector" not in chat_page[controls:new_chat_click]
 
 
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
@@ -813,12 +821,46 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         ), (combination, hidden[0])
 
 
+_TITLEBAR_MIRROR = re.compile(
+    r'set\(\s*"--studio-custom-titlebar-height",\s*usesCustomTitlebar\s*\?\s*'
+    r'(?P<value>"[^"]*"|[A-Za-z_]\w*)\s*:\s*null\s*,?\s*\)'
+)
+
+
+def _mirrored_titlebar_heights(provider: str) -> set[str]:
+    """The values the <html> mirror gives --studio-custom-titlebar-height for a custom titlebar.
+
+    A literal is read as is; a local (fullscreen picks `customTop`) is read from its `const`."""
+    m = _TITLEBAR_MIRROR.search(provider)
+    if m is None:
+        return set()
+    value = m.group("value")
+    if value.startswith('"'):
+        return {value.strip('"')}
+    decl = re.search(rf"const {re.escape(value)}\s*=\s*([^;]+);", provider)
+    return set(re.findall(r'"([^"]*)"', decl.group(1))) if decl else set()
+
+
+def test_the_titlebar_mirror_reader_follows_a_local():
+    assert _mirrored_titlebar_heights(
+        'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);'
+    ) == {"34px"}
+    assert _mirrored_titlebar_heights(
+        'const customTop = customTitlebarHidden ? "0px" : "34px";\n'
+        'set("--studio-custom-titlebar-height", usesCustomTitlebar ? customTop : null);'
+    ) == {"0px", "34px"}
+    assert _mirrored_titlebar_heights('set("--studio-titlebar-height", "34px");') == set()
+
+
 def test_fixed_sheets_start_below_the_custom_titlebar():
     provider = _window_chrome_source(APP_PROVIDER)
     sheet = _ui_source(SHEET)
 
-    # Portalled sheets read the height off <html>, so the mirror has to stay.
-    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
+    # Portalled sheets read the height off <html>, so the mirror has to stay, and give the 34px
+    # titlebar band whenever the titlebar shows (fullscreen hides it, so 0px is allowed too).
+    heights = _mirrored_titlebar_heights(provider)
+    assert "34px" in heights, f"the <html> titlebar-height mirror is gone or changed: {heights}"
+    assert heights <= {"34px", "0px"}, heights
 
     assert 'position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE' in sheet
     for side in ("left", "right", "top"):
@@ -1042,6 +1084,11 @@ RAIL_WIDTH_SCALED = (
     "@[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))]"
 )
 HEADER_COLUMNS = "grid-cols-[minmax(0,var(--media-rail-width,408px))_minmax(13rem,1fr)]"
+# Images and Video reserve a UI-scaled minimum (index.css `.media-header-layout`); Audio keeps 13rem.
+MEDIA_MIN = "var(--media-header-min-width)"
+IMAGE_RAIL_WIDTH = RAIL_WIDTH.replace("13rem", MEDIA_MIN)
+IMAGE_RAIL_WIDTH_SCALED = RAIL_WIDTH_SCALED.replace("13rem", MEDIA_MIN)
+IMAGE_HEADER_COLUMNS = HEADER_COLUMNS.replace("13rem", MEDIA_MIN)
 MEDIA_HEADER_ACTIONS = FRONTEND / "components/media-header-actions.tsx"
 # Since #15919 the preview column is pill | links, the links' column never narrower than the links.
 MEDIA_HEADER_ROW = "grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]"
@@ -1650,10 +1697,8 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 builder_end = index
                 break
     assert builder_end is not None, "unbalanced `const buttonClass = cn(` in the sidebar"
-    # On the row button itself, not merely somewhere in the function. The row also renders a
-    # pin, and handing buttonClass to it or another element while the button
-    # went without would leave every padding check below describing classes that reach nothing
-    # the gutters are measured against.
+    # The row also renders a pin, so buttonClass must reach the row button itself: if the button
+    # went without it, padding checks would measure classes that reach nothing.
     carriers = [
         tag
         for tag in _opening_jsx_tags(applied, "<SidebarMenuButton")
@@ -1709,8 +1754,25 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "pin's fixed rem offset and padding into the pr-N units the row's gutters are in, and "
         "the two sides of every comparison below would be in different scales"
     )
+    # The open-menu / focused-action gutters key on the row's own later sibling,
+    # `[&:has(~.sidebar-row-action...)]:pr-N`, instead of a `group-has-*/<variant>` class (a style
+    # after a :has() restyles the whole thread). They carry no variant name, so read the variant
+    # from the branch that renders them, `variant === "project"`, and name it the way the
+    # group-scoped classes did, so every check below still knows which row it is reading.
+    sibling_gutter = re.compile(r"\[&:has\(~\.sidebar-row-action[^\s]*\)\]:(pr-\d+(?:\.\d+)?)")
+
+    def _named_variant(constraints: dict[str, bool], cls: str) -> str:
+        match = sibling_gutter.fullmatch(cls)
+        project = constraints.get('variant === "project"')
+        if not match or project is None:
+            return cls
+        return f"has-sibling/{'project-chat-item' if project else 'recent-item'}:{match.group(1)}"
+
     rendered = [
-        (constraints, [_as_spacing_units(cls, spacing) for cls in rendering])
+        (
+            constraints,
+            [_as_spacing_units(_named_variant(constraints, cls), spacing) for cls in rendering],
+        )
         for constraints, rendering in _rendered_with_conditions(_cn_arguments(row_classes))
     ]
     renderings = [classes for _, classes in rendered]
@@ -2024,9 +2086,11 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
 
     assert "@container" in shell
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
-    # Clamped so the canvas keeps the 13rem its header column reserves.
-    assert RAIL_WIDTH in section
-    assert RAIL_WIDTH_SCALED in IMAGES_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
+    # Clamped so the canvas keeps the minimum its header column reserves.
+    assert IMAGE_RAIL_WIDTH in section
+    assert IMAGE_RAIL_WIDTH_SCALED in IMAGES_PAGE.read_text(
+        encoding = "utf-8"
+    ), "the rail stopped scaling"
     assert "md:flex-row" not in section
     # pb-6 is only correct while the -action fade dissolves the last control into the footer.
     assert "panel-scroll-fade-action" in section
@@ -2047,7 +2111,8 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
-    assert "@[50rem]:border-r" in header
+    # The rail continues the sidebar surface: no divider between rail and preview.
+    assert "@[50rem]:border-r" not in header
     # The media model picker shares Chat's control height (scaled in index.css), see _MEDIA_PICKER_CLASS.
     assert _MEDIA_PICKER_CLASS in header
     # No label override: the trigger reads exactly like Chat's.
@@ -2056,18 +2121,18 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "<LibraryPageLink" in links
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
-    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "@[50rem]:flex-row @[50rem]:gap-0 @[50rem]:overflow-hidden" in layout
     assert RAIL_WIDTH in layout
     assert RAIL_WIDTH_SCALED in AUDIO_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
-    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
-    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
+    assert "@[50rem]:border-r" not in layout
+    assert "gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[60px] @[50rem]:overflow-y-auto" in layout
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
-    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3" in layout
+    assert "relative z-10 flex shrink-0 justify-center px-6 pt-3 pb-5" in layout
     assert "btn-float-action" not in layout
     assert "absolute inset-x-0 bottom-0" not in layout
-    assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
+    assert layout.count("p-6 @[50rem]:mt-[52px] @[50rem]:pt-4") == 2
 
 
 TRAIN_SCROLLER_LAYOUT = (
@@ -2094,7 +2159,7 @@ def test_image_train_rail_matches_create_and_header():
     step = r"(?:0|[1-9]\d*)(?:\.(?:25|5|75))?"
     rail = re.search(
         r"(?<=[\s\"])pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
-        rf"calc\(100%-13rem\+--spacing\(({step})\)\)\)\](?=[\s\"])",
+        rf"calc\(100%-var\(--media-header-min-width,13rem\)\+--spacing\(({step})\)\)\)\](?=[\s\"])",
         layout,
     )
     assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
@@ -2201,7 +2266,7 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     )
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert HEADER_COLUMNS in opening
+    assert IMAGE_HEADER_COLUMNS in opening
     assert "@[50rem]:border-r" in header
     assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
@@ -2231,9 +2296,8 @@ def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
     assert '"failed"' not in call
 
 
-# `_ui_source` hides whether a length still scales, so the scaling is asserted here, per
-# variant (`h-[...]` and `hover:h-[...]` differ).
-# Images, Audio and Video line their model picker up with Chat: same left inset, same control height.
+# _ui_source hides whether a length still scales, so scaling is asserted per variant (h-[...] and
+# hover:h-[...] differ); Images, Audio and Video match Chat's picker inset and height.
 _MEDIA_PICKER_CLASS = (
     'className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 '
     '!h-[var(--studio-chat-control-height,34px)]"'
@@ -2246,21 +2310,22 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (VIDEO_PAGE, "", "h", "48px", 1),
     (CHAT_PAGE, "", "h", "48px", 1),
     (IMAGES_PAGE, "@[50rem]:", "pt", "60px", 1),
-    (AUDIO_PAGE, "@[50rem]:", "pt", "60px", 2),
+    # The header overlays the panes (-mt cancels its 64px); rail and preview then clear it.
+    (AUDIO_PAGE, "@[50rem]:", "h", "64px", 1),
+    (AUDIO_PAGE, "@[50rem]:", "-mt", "64px", 1),
+    (AUDIO_PAGE, "@[50rem]:", "pt", "22px", 3),
+    (AUDIO_PAGE, "@[50rem]:", "mt", "60px", 1),
+    (AUDIO_PAGE, "@[50rem]:", "mt", "52px", 2),
     (DIFFUSION_TRAIN_PANEL, "@[50rem]:", "pt", "42px", 1),
     (DIFFUSION_TRAIN_PANEL, "", "pt", "42px", 1),
-    # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
-    # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
-    # stay put while the labels grew, so the row clips its own text at a larger setting.
-    # Seven rows: #11589 added the drop-cue row, #12016 a second section header for the
-    # custom sidebar sections, and #12927 the pinned-pages label; #13575 dropped the inline
-    # rename input (one 30px height, one 39px indent).
+    # Hand-set sidebar lengths stay put as labels grow, so rows clip their text; seven 30px rows
+    # (ref 11589 drop-cue row, ref 12016 second section header, ref 12927 pinned-pages label) and
+    # ref 13575 removed the inline rename input (one 30px, one 39px indent).
     (APP_SIDEBAR, "", "h", "30px", 7),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 1),
-    # The 34px pill controls in the media headers, in all three spellings the pages use. The
-    # band around them scales and so does their own text, so a control left fixed is the one
-    # thing in that row that does not move, and it crowds out its label.
+    # The 34px pill controls in the media headers are checked in all three spellings, since a
+    # control left fixed would not scale with the band and would crowd its label.
     (IMAGES_PAGE, "!", "h", "34px", 1),
     (IMAGES_PAGE, "", "h", "34px", 1),
     (IMAGES_PAGE, "[&>button]:", "h", "34px", 1),

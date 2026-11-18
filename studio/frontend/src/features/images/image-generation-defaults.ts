@@ -56,18 +56,28 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 25, guidance: 3 },
   { match: "ideogram", steps: 20, guidance: 7 },
-  { match: "moss-image", steps: 50, guidance: 3 },
-  { match: "moss_image", steps: 50, guidance: 3 },
-  { match: "mossimage", steps: 50, guidance: 3 },
+  { match: "minimax-h3-image", steps: 6, guidance: 1 },
+  { match: "moss-image", steps: 25, guidance: 2.5 },
+  { match: "moss_image", steps: 25, guidance: 2.5 },
+  { match: "mossimage", steps: 25, guidance: 2.5 },
+  { match: "kromoss", steps: 25, guidance: 2.5 },
   { match: "lumina", steps: 50, guidance: 4 },
   { match: "hunyuanimage", steps: 50, guidance: 3.25 },
   { match: "hidream-i1-dev", steps: 28, guidance: 0 },
   { match: "hidream-i1-fast", steps: 16, guidance: 0 },
   { match: "hidream", steps: 50, guidance: 5 },
-  { match: "sdxl-turbo", steps: 3, guidance: 0 },
+  { match: "sdxl-turbo", steps: 1, guidance: 0 },
   { match: "stable-diffusion-xl", steps: 25, guidance: 7 },
   { match: "sdxl", steps: 25, guidance: 7 },
 ];
+
+// Families whose checkpoint caps the step count (one head per step): the slider stops there.
+const MAX_STEPS: Readonly<Record<string, number>> = { "minimax-h3-image": 6 };
+
+/** The most steps the loaded family accepts, or null when only the request's own limit applies. */
+export function maxStepsFor(family: string | null | undefined): number | null {
+  return MAX_STEPS[(family ?? "").trim().toLowerCase()] ?? null;
+}
 
 // The Steps slider's usual top, and the request's (DiffusionGenerateRequest.steps is 1-100).
 export const STEPS_SLIDER_MAX = 50;
@@ -94,6 +104,20 @@ export function defaultsFor(repoId: string): {
   return matched
     ? { steps: matched.steps, guidance: matched.guidance }
     : DEFAULT_GEN;
+}
+
+// Families whose model card names a native output size: picking one sets it (the reference recipe renders
+// MiniMax-H3-Image at 2048x2048 by default).
+const DEFAULT_SIZES: ReadonlyArray<{ match: string; width: number; height: number }> = [
+  { match: "minimax-h3-image", width: 2048, height: 2048 },
+];
+
+/** The text-to-image size a pick of this key starts at, or null to keep the current size. */
+export function defaultSizeFor(repoId: string): { width: number; height: number } | null {
+  const fold = (text: string) => text.replace(/[-_.\s]+/g, "-");
+  const id = repoId.toLowerCase();
+  const hit = DEFAULT_SIZES.find((entry) => id.includes(entry.match) || fold(id).includes(fold(entry.match)));
+  return hit ? { width: hit.width, height: hit.height } : null;
 }
 
 // Families whose explicit choice outranks the name: FLUX.3 base and distilled share names (BFL's ComfyUI base
@@ -147,6 +171,11 @@ export function residentDefaultsKey(
 
 export const DEFAULT_RESOLUTION = { width: 1024, height: 1024 } as const;
 
+// Families trained at a smaller canvas on every build (incl. GGUF); SDXL-Turbo is a 512x512 model.
+const NATIVE_CANVAS: Array<{ match: string; width: number; height: number }> = [
+  { match: "sdxl-turbo", width: 512, height: 512 },
+];
+
 // Quantised builds of activation-heavy families default to a smaller canvas so they fit 24 GB
 // (Qwen-Image-2.1: ~26 GB at 1024 vs ~19 GB at 512). Only a picked quant shrinks it; GGUF keeps 1024.
 const QUANTISED_CANVAS: Array<{
@@ -171,6 +200,13 @@ export function resolutionFor(
     transformerQuantSource?: string | null;
   },
 ): { width: number; height: number } {
+  const fold = (text: string) => text.toLowerCase().replace(/[-_.\s]+/g, "-");
+  const native = NATIVE_CANVAS.find((entry) =>
+    fold(repoId).includes(fold(entry.match)),
+  );
+  if (native) {
+    return { width: native.width, height: native.height };
+  }
   // A GGUF resident has no family substring in repo_id, so exclude it by kind.
   if ((build.modelKind ?? "").toLowerCase() === "gguf") {
     return DEFAULT_RESOLUTION;

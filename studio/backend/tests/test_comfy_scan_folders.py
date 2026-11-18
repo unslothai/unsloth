@@ -266,7 +266,7 @@ def test_extra_model_paths_yaml(tmp_path, monkeypatch):
         shared / "missing_dir",
     ]
     assert extra["unet"] == [no_base]
-    assert "loras" not in extra
+    assert extra["loras"] == [shared / "loras"]
 
     layout = comfy_models.comfy_layout(root)
     assert layout is not None and layout.models_dir is None

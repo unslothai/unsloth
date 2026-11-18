@@ -707,9 +707,7 @@ def test_a_multi_commit_reopen_is_not_a_mis_declared_floor() -> None:
 
 
 def test_subtracting_a_floor_the_reopen_never_paid_is_a_failure() -> None:
-    """The other side of the lower bound. Equality is no longer required, so the check has to
-    still catch the direction that invents time: a cell whose reopen resolved without waiting a
-    paint at all, while the axis removes one."""
+    """Subtracting a floor the reopen never waited out must still fail, since that invents time."""
     problems = HARNESS.floor_declaration_problems(floor_row(0))
     assert len(problems) == 1 and "never waited out" in problems[0], problems
 
@@ -1010,9 +1008,8 @@ def test_a_counter_is_still_judged_as_a_counter() -> None:
 
 
 def test_the_counter_set_is_stated_and_non_empty() -> None:
-    """Inferring which axes are counts is what produced the defect. If a rename ever empties this
-    set, every counter silently becomes a timing and the liveness verdict loses its only
-    zero-based axis, so the set is pinned against the axis list itself."""
+    """Inferring counts from axis names caused the defect; if a rename empties this set, counters
+    silently become timings and the liveness verdict loses its zero-based axis."""
     assert HARNESS.COUNTER_AXES, "no axis is classified as a counter any more"
     names = {name for name, _pick, _floored in HARNESS.GROWTH_AXES}
     assert (
@@ -1089,9 +1086,8 @@ def wall_cells_for_report(paint_waits: int) -> dict:
 
 
 def test_a_fractional_median_wait_count_is_not_truncated() -> None:
-    """`summarise` medians the wait count across repetitions, so an even-repetition run whose
-    repetitions paid 1 and 2 reports 1.5. Truncating that to 1 left half a vsync floor in the
-    wall axis, and the documented two-repetition configurations are the ones that produce it."""
+    """summarise medians wait counts, so an even repetition count can give 1.5; truncating that to 1
+    left half a vsync floor in the wall axis, as two-repetition configs do."""
     assert (
         HARNESS.resolve_floor(
             HARNESS._floor_from("menu", "paint_waits"), {"actions": {"menu": {"paint_waits": 1.5}}}

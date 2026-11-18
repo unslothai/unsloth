@@ -87,9 +87,8 @@ def test_padding_returns_the_unpadded_result(m, lead):
 
 
 def test_pad_rows_replicate_row_zero_rather_than_being_zeros():
-    """An all-zero pad row has amax 0, so the activation quantizer divides by zero and the
-    intermediate goes NaN. Replicating row 0 costs the same and keeps it finite -- and it is
-    also what makes a per-tensor AMAX invariant, since it introduces no new element values."""
+    """Zero pad rows give amax 0 and NaN in the activation quantizer; replicating row 0 stays
+    finite, adds no new element values, and keeps the per-tensor AMAX invariant."""
     inner = _RecordingLinear(8, 6)
     wrapped = PadToMinM(inner, min_m = 17, pad_to = 32)
     x = torch.randn(5, 8)
@@ -142,9 +141,8 @@ def test_pad_to_can_never_sit_below_min_m():
 
 
 def test_forward_holds_no_mutable_integer_state():
-    """dynamo guards on an nn.Module's integer attributes, so a counter incremented in forward
-    would recompile on every call until the recompile limit silently drops the module to eager.
-    The wrapper's ints must be exactly the two configured constants, before and after use."""
+    """Dynamo guards on module int attributes: a counter bumped in forward recompiles each call
+    until the limit drops to eager; wrapper ints must be exactly the two configured constants."""
 
     def int_attrs(module):
         return {
@@ -234,9 +232,8 @@ def test_wrap_raises_rather_than_skipping_an_unprovable_linear():
 
 
 def test_wrap_skips_dense_and_already_wrapped_linears():
-    """One gate covers both. A dense ``F.linear`` has no row floor, so there is nothing to pad
-    and nothing to prove; and a ``PadToMinM`` is not an ``nn.Linear`` either, so a second pass
-    cannot nest the padding and double the row count."""
+    """Dense F.linear has no row floor and a PadToMinM is not an nn.Linear, so one gate skips both
+    and a second pass cannot double the padding."""
     model = _Tiny()
     assert wrap_small_m_linears(model, ["context_embedder"]) == ()
     assert isinstance(model.context_embedder, nn.Linear)
@@ -252,8 +249,7 @@ def test_wrap_skips_dense_and_already_wrapped_linears():
 
 
 def test_wrap_ignores_names_absent_from_this_checkpoint_variant():
-    """The pruned and dense H3 trees differ, so a family token list is a name list rather than a
-    promise that every name exists."""
+    """Family token lists are name lists, not promises: pruned and dense H3 trees differ."""
     assert wrap_small_m_linears(_Tiny(), ["token_refiner.refiner_blocks.0.attn.to_q"]) == ()
 
 

@@ -57,14 +57,9 @@ def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
 
 
 def _optimizer_for_host(requested: Optional[str] = None) -> str:
-    """The CLI exposes no --optim, so trainer.py would fall back to its own `adamw_8bit`
-    literal, which cannot complete a step on Intel XPU. Resolve the same device policy the
-    Studio route and worker config use, so `unsloth train` lands on the same optimizer a
-    Studio run on this host would. Non-XPU hosts keep `adamw_8bit` exactly as before.
-
-    Takes `requested` rather than only filling a default, so a future --optim carrying a
-    bitsandbytes name is normalized too instead of reaching the trainer unchanged.
-    """
+    """The CLI has no --optim, so trainer.py's adamw_8bit default cannot finish a step on Intel XPU;
+    resolve the Studio device policy here, keep adamw_8bit elsewhere, and normalize any requested
+    name."""
     ensure_studio_backend_path()
     with studio_backend_imports("unsloth train"):
         from studio.backend.core.training.training import (
@@ -92,7 +87,7 @@ def _dataset_modalities(
     ensure_studio_backend_path()
     with studio_backend_imports("unsloth train"):
         from hub.services.datasets.local import _load_local_preview_slice
-        from hub.utils.dataset_format import detect_multimodal_dataset
+        from utils.datasets.format_detection import detect_multimodal_dataset
         from utils.datasets.audio_decode import ensure_audio_decoding
         from utils.datasets.cache_safe import load_dataset_cache_safe
         from utils.datasets.saved import load_saved_dataset
@@ -142,7 +137,7 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
     from itertools import islice
 
     from datasets import Audio, Image
-    from hub.utils.dataset_format import (
+    from utils.datasets.format_detection import (
         _AUDIO_EXTENSIONS,
         _has_image_header,
         _holds_images,
@@ -337,6 +332,15 @@ def train(
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
 
+    # Otherwise it trains 0 steps, saves an untrained adapter and exits 0 (Studio refuses this too).
+    if cfg.training.num_epochs <= 0 and cfg.training.max_steps <= 0:
+        typer.echo(
+            "Error: num_epochs (--num-epochs) or max_steps (--max-steps) must be > 0; "
+            f"got num_epochs={cfg.training.num_epochs}, max_steps={cfg.training.max_steps}.",
+            err = True,
+        )
+        raise typer.Exit(code = 2)
+
     # CLI/env tokens take precedence; guard against unresolved typer.Option.
     from typer.models import OptionInfo
 
@@ -394,6 +398,7 @@ def train(
         hf_token = hf_token,
         is_dataset_image = is_dataset_image,
         is_dataset_audio = is_dataset_audio,
+        trust_remote_code = cfg.training.trust_remote_code,
         use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)

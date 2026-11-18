@@ -72,9 +72,11 @@ def _canonical_output_dir(output_dir: Optional[str]) -> Optional[Path]:
 
 def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
     """The signed /p ref is a capability, omitted when public sharing is off so the UI hides the link."""
-    ref = preview_ref(output_dir)
+    previewable = has_preview_model(output_dir)
+    # preview_ref is None without a preview model.
+    ref = preview_ref(output_dir) if previewable else None
     return {
-        "has_preview_model": has_preview_model(output_dir),
+        "has_preview_model": previewable,
         "preview_ref": ref,
         "preview_sig": sign_preview_ref(ref) if (ref and sharing_on) else None,
     }
@@ -84,14 +86,14 @@ def _resume_blocked_reason(row: dict) -> Optional[str]:
     """The provenance gate's own explanation, for runs it refuses. Only consulted for a row that is
     already known unresumable, so the extra work is bounded to those. Returns None when the
     checkpoint is what is missing, leaving the client's existing wording in place for that case."""
-    from core.training.provenance import resource_provenance_resume_blocker
-    from core.training.resume import has_resume_state, training_run_config
-
+    from core.training.resume import has_resume_state, resource_resume_blocker, training_run_config
     try:
+        # Gate first: the checkpoint read only changes the answer for refused runs.
+        reason = resource_resume_blocker(training_run_config(row))
         # A missing checkpoint is refused for that reason, not provenance.
-        if not has_resume_state(row.get("output_dir")):
+        if reason is None or not has_resume_state(row.get("output_dir")):
             return None
-        return resource_provenance_resume_blocker(training_run_config(row))
+        return reason
     except Exception:
         return None
 
