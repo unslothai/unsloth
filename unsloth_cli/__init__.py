@@ -102,9 +102,11 @@ _COMMAND_ORDER = (
     "doctor",
     "run",
     "install-kernels",
+    "worker",
     "studio",
     "start",
     "mcp",
+    "cluster",
     "connect",
 )
 
@@ -133,6 +135,7 @@ if _load_every_command:
     from unsloth_cli.commands.eval import evaluate as eval_command
     from unsloth_cli.commands.doctor import doctor
     from unsloth_cli.commands.mcp import mcp_app
+    from unsloth_cli.commands.cluster import cluster_app, worker as cluster_worker
     from unsloth_cli.commands.studio import run as studio_run, _LlamaPassthroughCommand
 
 # Always eager: `unsloth studio run` is the command Desktop starts the backend with.
@@ -272,8 +275,10 @@ _LAZY_COMMANDS = (
     "list-checkpoints",
     "doctor",
     "run",
+    "worker",
     "start",
     "mcp",
+    "cluster",
     "connect",
 )
 _ACTIVE_LAZY_COMMANDS = () if _windows_studio_mutation_entry else _LAZY_COMMANDS
@@ -314,6 +319,16 @@ def _register_command(app, name):
         app.add_typer(
             mcp_app, name = "mcp", help = "Connect coding agents to the Unsloth Studio MCP server."
         )
+    elif name == "cluster":
+        from unsloth_cli.commands.cluster import cluster_app
+        app.add_typer(
+            cluster_app,
+            name = "cluster",
+            help = "Pair machines on this network and serve one model across them.",
+        )
+    elif name == "worker":
+        from unsloth_cli.commands.cluster import worker as cluster_worker
+        app.command("worker")(cluster_worker)
     elif name == "connect":
         from unsloth_cli.commands.start import start_app
 
@@ -406,6 +421,8 @@ _LAZY_ATTRIBUTES = {
     "eval_command": ("unsloth_cli.commands.eval", "evaluate"),
     "doctor": ("unsloth_cli.commands.doctor", "doctor"),
     "mcp_app": ("unsloth_cli.commands.mcp", "mcp_app"),
+    "cluster_app": ("unsloth_cli.commands.cluster", "cluster_app"),
+    "cluster_worker": ("unsloth_cli.commands.cluster", "worker"),
     "studio_run": ("unsloth_cli.commands.studio", "run"),
     "studio_app": ("unsloth_cli.commands.studio", "studio_app"),
     "_LlamaPassthroughCommand": ("unsloth_cli.commands.studio", "_LlamaPassthroughCommand"),

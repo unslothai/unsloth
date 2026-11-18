@@ -248,6 +248,8 @@ export interface LoadModelResponse {
   /** Unknown-typed so an older backend cannot render "undefined GB"; see parseCarveoutAdvice. */
   carveout_advice?: unknown;
   memory_warning?: string | null;
+  /** Which machines serve a model split across paired cluster workers; absent or null otherwise. */
+  cluster_summary?: string | null;
   is_diffusion?: boolean;
   /** Requested ngl when it differs from applied (a shim without --ngl reports -1). */
   diffusion_requested_ngl?: number | null;
