@@ -1326,8 +1326,6 @@ def test_codex_deleting_the_base_rollout_keeps_studio_edits(codex_home):
 
 
 def test_a_session_that_crashes_costs_only_its_own_chat(claude_home):
-    # Sorted ahead of the good file, a record the parser chokes on used to abort the run
-    # with every later session silently skipped behind a 500.
     _session(claude_home, sid = "bad", records = [{"type": "user", "uuid": "b1", "message": None}])
     _session(claude_home, sid = "good")
 
@@ -1361,5 +1359,4 @@ def test_a_cyclic_parent_chain_reimports_instead_of_looping(claude_home):
     rows = {m["id"]: m for m in _messages(source, "s1")}
     assert summary.messages == 2
     assert {"cycle-x", "cycle-y"} <= set(rows)
-    # One of the pair lands as a root, which lets the other keep it as a parent.
     assert all(m["parentId"] is None or m["parentId"] in rows for m in rows.values())

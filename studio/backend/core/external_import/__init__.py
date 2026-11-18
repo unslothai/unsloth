@@ -287,7 +287,7 @@ def _pending_messages(
             seen.add(parent)
             parent = by_id.get(parent, {}).get("parentId")
         if parent in seen:
-            parent = None  # a cyclic chain has no surviving ancestor; a missing one orphans the row
+            parent = None  # cycle: no surviving ancestor
         reseated.append({**message, "parentId": parent})
         present.add(message["id"])
     return reseated
@@ -386,10 +386,8 @@ def _import_project(
         try:
             imported += _import_session(source, path, project_id, summary)
         except sqlite3.Error:
-            # Storage failures must propagate after rollback, not look like a corrupt file.
-            raise
+            raise  # storage failure, not a corrupt file
         except Exception as exc:
-            # A corrupt file costs only its own chat; the rest of the import still runs.
             summary.warnings.append(f"{path.name}: could not be imported ({exc}).")
     if studio_db.list_chat_threads(project_id = project_id):
         # updatedAt only moves when something landed, so a no-op click does not re-sort the sidebar.
