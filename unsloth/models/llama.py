@@ -1634,9 +1634,8 @@ def LlamaModel_fast_forward(
         )
         device_index = hidden_states.device.index
         if isinstance(self.rotary_emb, LongRopeRotaryEmbedding):
-            # As transformers' longrope_frequency_update: factors from max(position_ids) + 1
-            # (a host sync), not max_seq_length, so 2048 tokens stay short at max_seq_length 8192.
-            # Other models stay sync-free (an in-graph choice would rebuild tables each forward).
+            # transformers' longrope_frequency_update: factors from max(position_ids) + 1 (a host
+            # sync), not max_seq_length. Other models stay sync-free.
             rope_len = seq_length_with_past if position_ids is None else int(position_ids.max()) + 1
         # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
         position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
@@ -1644,8 +1643,8 @@ def LlamaModel_fast_forward(
             rope_len < seq_length_with_past
             and position_embeddings[0].shape[0] < seq_length_with_past
         ):
-            # Packed positions restart, so the short table covers them, but each layer checks rows
-            # against the packed length and would rebuild it long: pad rows no position reads.
+            # Packed positions restart under original; pad so layers, which check rows against
+            # the packed length, keep the short table.
             position_embeddings = tuple(
                 torch.nn.functional.pad(x, (0, 0, 0, seq_length_with_past - x.shape[0]))
                 for x in position_embeddings
@@ -4814,8 +4813,7 @@ class FastLlamaModel:
                 scaling.get("rope_type"),
                 scaling.get("type"),
             ):
-                # LlamaModel builds one rotary for every rope type; patch_llama_rope_scaling only
-                # reaches pre-4.48 attention layers, so Phi-3.5 kept its short factors past 4096.
+                # patch_llama_rope_scaling only reaches pre-4.48 attention layers.
                 rotary_emb = model.model.rotary_emb = LongRopeRotaryEmbedding(
                     original_max_position_embeddings = int(
                         getattr(config, "original_max_position_embeddings", None)

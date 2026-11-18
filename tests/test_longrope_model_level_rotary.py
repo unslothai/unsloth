@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import copy
 import math
 import pathlib
 import types
@@ -113,7 +114,7 @@ def _unsloth_cos_sin(positions, packed):
     from transformers import LlamaConfig
 
     tree, ns = _llama()
-    config = LlamaConfig(num_hidden_layers = 1, **CONFIG)
+    config = LlamaConfig(num_hidden_layers = 1, **copy.deepcopy(CONFIG))
     # pre_patch puts Unsloth's LlamaRotaryEmbedding into transformers; LlamaModel builds this one.
     model = types.SimpleNamespace(
         config = config,
@@ -169,7 +170,7 @@ def test_longrope_checkpoint_matches_transformers_phi3(positions, packed):
     from transformers.models.phi3.modeling_phi3 import Phi3RotaryEmbedding
 
     cos, sin = _unsloth_cos_sin(positions, packed)
-    ref_cos, ref_sin = Phi3RotaryEmbedding(Phi3Config(**CONFIG))(
+    ref_cos, ref_sin = Phi3RotaryEmbedding(Phi3Config(**copy.deepcopy(CONFIG)))(
         torch.zeros(1, positions.shape[0], DIM), positions[None]
     )
     # The caches are fp16 here (no bf16 on CPU), the reference fp32.
