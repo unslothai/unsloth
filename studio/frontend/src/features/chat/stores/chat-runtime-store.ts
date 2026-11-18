@@ -3847,30 +3847,44 @@ function getHydratedSettingsState(
   return nextState;
 }
 
-/** MCP chains (editor tools, tool search) run long, so turning MCP on lifts the tool-call cap to Max; turning it off restores the saved value unless the user set the cap meanwhile. */
-function mcpToolCallCapPatch(
+function readCapBeforeMcp(): number | null {
+  const saved = Number.parseInt(
+    readStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY) ?? "",
+    10,
+  );
+  return Number.isInteger(saved) && saved >= 0 ? saved : null;
+}
+
+let capBeforeMcp: number | null = readCapBeforeMcp();
+
+function saveCapBeforeMcp(value: number | null): void {
+  capBeforeMcp = value;
+  writeStorageValue(
+    MAX_TOOL_CALLS_BEFORE_MCP_KEY,
+    value === null ? "" : String(value),
+  );
+}
+
+// MCP chains run long: MCP on lifts the cap to Max, MCP off restores the saved value unless the user
+// set one since. A store listener, so chat switches and settings hydrated after a reload reconcile too.
+function reconcileMcpToolCallCap(
   state: ChatRuntimeStore,
-  mcpOn: boolean,
-): Partial<ChatRuntimeStore> {
-  if (mcpOn === state.mcpEnabledForChat) return {};
+  previous: ChatRuntimeStore,
+): void {
   const current = state.maxToolCallsPerMessage;
   let next: number;
-  if (mcpOn) {
-    if (current >= UNLIMITED_TOOL_CALLS) return {};
-    writeStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY, String(current));
+  if (state.mcpEnabledForChat) {
+    if (previous.mcpEnabledForChat || current >= UNLIMITED_TOOL_CALLS) return;
+    saveCapBeforeMcp(current);
     next = UNLIMITED_TOOL_CALLS;
   } else {
-    const saved = Number.parseInt(
-      readStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY) ?? "",
-      10,
-    );
-    writeStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY, "");
-    if (!Number.isInteger(saved) || saved < 0) return {};
-    if (current < UNLIMITED_TOOL_CALLS) return {};
-    next = saved;
+    if (capBeforeMcp === null) return;
+    next = capBeforeMcp;
+    saveCapBeforeMcp(null);
+    if (current < UNLIMITED_TOOL_CALLS) return;
   }
   setScalarSettingVersion("maxToolCallsPerMessage", next, current);
-  return { maxToolCallsPerMessage: next };
+  useChatRuntimeStore.setState({ maxToolCallsPerMessage: next });
 }
 
 function setScalarSettingVersion<K extends ScalarSettingKey>(
@@ -5431,13 +5445,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         applied.reasoningEnabled = false;
         if (state.reasoningEnabled !== false) target.reasoningEnabled = false;
       }
-      // The cap is global but MCP is per chat: follow the incoming chat like a toggle would.
-      if (typeof target.mcpEnabledForChat === "boolean") {
-        Object.assign(
-          nextState,
-          mcpToolCallCapPatch(state, target.mcpEnabledForChat),
-        );
-      }
       if (threadId !== null && (stored === null || heldFields.size > 0)) {
         scheduleThreadScopedSettingsWrite(
           threadId,
@@ -5775,7 +5782,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return deepResearchEnabled
         ? {
-            ...mcpToolCallCapPatch(state, false),
             deepResearchEnabled,
             toolsEnabled: false,
             codeToolsEnabled: false,
@@ -5854,7 +5860,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       if (mcpEnabledForChat) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       return {
-        ...mcpToolCallCapPatch(state, mcpEnabledForChat),
         ...(mcpEnabledForChat
           ? { mcpEnabledForChat, deepResearchEnabled: false }
           : { mcpEnabledForChat }),
@@ -6427,7 +6432,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
       // A value the user picks, Max included, is theirs: turning MCP off must not replace it.
-      writeStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY, "");
+      saveCapBeforeMcp(null);
       setScalarSettingVersion(
         "maxToolCallsPerMessage",
         maxToolCallsPerMessage,
@@ -6528,8 +6533,12 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
 }
 
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
+const unsubscribeMcpToolCallCap = useChatRuntimeStore.subscribe(
+  reconcileMcpToolCallCap,
+);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);
+  import.meta.hot.dispose(unsubscribeMcpToolCallCap);
   import.meta.hot.dispose(() => {
     window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
     window.removeEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);

@@ -134,3 +134,32 @@ test("switching to a chat with MCP off restores the cap, and back lifts it", asy
   assert.equal(state().mcpEnabledForChat, true);
   assert.equal(cap(runtime), MAX);
 });
+
+test("after a reload with MCP's Max saved, a chat with MCP off gets the old cap back", async (t) => {
+  const first = await boot(t);
+  const before = () => first.useChatRuntimeStore.getState();
+  before().setMaxToolCallsPerMessage(12);
+  before().setActiveThreadId("mcp-chat");
+  before().applyThreadScopedSettings("mcp-chat", null);
+  before().setMcpEnabledForChat(true);
+  await first.flushPendingChatSettings();
+  assert.equal(settingsHttp.puts.at(-1)?.maxToolCallsPerMessage, MAX);
+
+  settingsHttp.settings = { ...settingsHttp.settings, maxToolCallsPerMessage: MAX };
+  const reloaded = (await import(
+    `${runtimeUrl}?scenario=${encodeURIComponent(`${t.name} reload`)}`
+  )) as RuntimeModule;
+  t.after(() => reloaded.flushPendingChatSettings());
+  const state = () => reloaded.useChatRuntimeStore.getState();
+  await state().hydratePersistedSettings();
+  state().setActiveThreadId("plain-chat");
+  state().applyThreadScopedSettings("plain-chat", {
+    mcpEnabledForChat: false,
+  } as never);
+  assert.equal(cap(reloaded), 12);
+  state().setActiveThreadId("mcp-chat");
+  state().applyThreadScopedSettings("mcp-chat", {
+    mcpEnabledForChat: true,
+  } as never);
+  assert.equal(cap(reloaded), MAX);
+});
