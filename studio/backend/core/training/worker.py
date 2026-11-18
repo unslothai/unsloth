@@ -4616,8 +4616,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
-            # bnb's import-time hipinfo.exe arch probe is unused; keep the unsigned venv copy off PATH
-            # (Smart App Control blocks it) and drop the resulting "could not detect" log.
+            # bnb never reads its hipinfo.exe arch; the venv copy is unsigned (Smart App Control blocks it).
             import logging as _logging
 
             _logging.getLogger("bitsandbytes.cuda_specs").addFilter(

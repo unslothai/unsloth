@@ -220,8 +220,7 @@ if sys.platform == "win32":
     _add_rocm_dll_dirs()
     del _add_rocm_dll_dirs
 
-    # bitsandbytes runs hipinfo.exe at import for an arch it never reads. The venv copy is unsigned and
-    # Smart App Control blocks it, so leave it off PATH and drop bnb's "could not detect" log instead.
+    # bnb never reads its hipinfo.exe arch; the venv copy is unsigned (Smart App Control blocks it).
     import logging as _logging
 
     _logging.getLogger("bitsandbytes.cuda_specs").addFilter(

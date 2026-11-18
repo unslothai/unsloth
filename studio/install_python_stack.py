@@ -3786,8 +3786,7 @@ def _install_bnb_windows_rocm() -> bool:
         _persist_detected_version = True
     if _persist_detected_version:
         _persist_bnb_rocm_version(_ver)
-    # Don't put venv Scripts on PATH for bnb's hipinfo probe: that hipInfo.exe is an unsigned
-    # uv launcher Smart App Control blocks, and children (the backend) would inherit it.
+    # Venv Scripts stays off PATH: its hipInfo.exe is unsigned and children would inherit it.
     return True
 
 
