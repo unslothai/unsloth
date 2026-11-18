@@ -286,12 +286,14 @@ from ._utils import _ignore_block_swap_params_for_ddp
 from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
+from ._lora_fold_generate import lora_fold_generate as _lora_fold_generate
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
 from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
+from . import _decode_graphs, _generic_decode_graphs, _flex_decode
 from .loader_utils import (
     _bnb_bits_requested,
     vlm_gradient_checkpointing_reentrant,
@@ -311,6 +313,7 @@ from .loader_utils import (
     _restore_dropped_fp8_scales,
     _dequantize_multihead_attention_out_proj,
     _prepare_compressed_tensors_model,
+    quantize_moe_experts_if_requested,
     _dequantize_bitsandbytes_for_full_finetuning,
     planner_class_mismatch_reason,
     planner_model_class,
@@ -700,10 +703,10 @@ def _hook_no_placement_ancestors(model):
     }
     if len(placed_devices) < 2:
         return 0
-    names = getattr(model, "_no_placement_params", None) or []
-    owners = {
-        n.rsplit(".", 1)[0] for n in unplaced if any(n == x or n.endswith("." + x) for x in names)
-    }
+    from .loader_utils import no_placement_matcher
+
+    match = no_placement_matcher(model)
+    owners = {n.rsplit(".", 1)[0] for n in unplaced if match(n)}
     skip_keys = getattr(model, "_skip_keys_device_placement", None)
     hooked = 0
     for owner in owners:
@@ -732,6 +735,23 @@ def _hook_no_placement_ancestors(model):
             )
             hooked += 1
     return hooked
+
+
+def _host_read_tensor_names(model):
+    """Names of CPU input embedding tensors TP sharded loading read into host (tp_native._mark_host_loaded)."""
+    names = set()
+    try:
+        marked_model = bool(model.__dict__.get("_unsloth_tp_host_load_model", False))
+        embed = model.get_input_embeddings() if marked_model else None
+        for name, p in model.named_parameters(remove_duplicate = False):
+            if p.device.type == "cpu" and (
+                p.__dict__.get("_unsloth_tp_host_loaded", False)
+                or (embed is not None and any(p is q for q in embed.parameters()))
+            ):
+                names.add(name)
+    except Exception:
+        return set()
+    return names
 
 
 def _attach_bnb_multidevice_hooks(
@@ -768,6 +788,8 @@ def _attach_bnb_multidevice_hooks(
         _unplaced = no_placement_tensor_names(model)
     except Exception:
         _unplaced = set()
+    # Host-read TP embeddings are served from host: dispatch would meta-offload them.
+    _unplaced = set(_unplaced) | _host_read_tensor_names(model)
     try:
         all_devs = {p.device for n, p in model.named_parameters() if n not in _unplaced}
     except Exception as exc:
@@ -1087,7 +1109,7 @@ def _pin_device_to_decoder(model):
         def _unsloth_device(self):
             if getattr(self, "_unsloth_embedding_offloaded", False):
                 for param in self.parameters():
-                    if param.device.type != "cpu":
+                    if param.device.type not in ("cpu", "meta"):
                         return param.device
             return original.fget(self)
 
@@ -1504,6 +1526,9 @@ def _eager_decodes(model):
     return _is_decode_compile_model(model) and "forward" not in model.__dict__
 
 
+_NO_FORWARD = object()
+
+
 class _EagerDecodeSteps:
     """One generate() call. Each eager decode step (one new token per row) runs inside zoo's
     `unsloth_eager_decode()`, so compiled regions call their eager originals; prefill and
@@ -1531,16 +1556,101 @@ class _EagerDecodeSteps:
         def forward(*args, **kwargs):
             return step(*args, **kwargs)
 
+        self._previous = self.model.__dict__.get("forward", _NO_FORWARD)
         self.model.forward = forward
         return self
 
     def __exit__(self, *exc):
-        del self.model.forward
+        if self._previous is _NO_FORWARD:
+            del self.model.forward
+        else:
+            self.model.forward = self._previous
         return False
 
 
-# One-token decode is slower on flex than SDPA, but prefill must stay on flex (its block mask skips tiles a
-# dense mask computes). The path is picked in prepare_inputs_for_generation, where the step's mask is built.
+try:
+    from unsloth_zoo.decode_graph_state import (
+        graph_generate as _zoo_graph_generate,
+        graph_decode_step as _zoo_graph_decode_step,
+    )
+except ImportError:
+    _zoo_graph_generate = _zoo_graph_decode_step = None
+
+
+def _one_token_step(kwargs):
+    ids = kwargs.get("input_ids")
+    if ids is None:
+        ids = kwargs.get("inputs_embeds")
+    return isinstance(ids, torch.Tensor) and ids.dim() >= 2 and ids.shape[1] == 1
+
+
+class _GraphDecodeSteps(_EagerDecodeSteps):
+    """One generate() call over a static cache with decode CUDA graphs on: each one-token decode
+    step replays a captured graph of the step the eager path runs (_generic_decode_graphs), else
+    runs as before (inside `unsloth_eager_decode()` for the models that compile their decode)."""
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.eager_decodes = _eager_decodes(model)
+        # Diagnostic: =1 graphs the eager originals of compiled regions (not what eager decode runs).
+        self.eager_regions = self.eager_decodes or (
+            os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_EAGER_REGIONS", "0") == "1"
+        )
+        # Set by generate() after the call: keep the graphs and their cache for the next call.
+        self.keep = False
+        self.caches = _generic_decode_graphs.reuse_kept_cache(model)
+
+    def _forward(self, *args, **kwargs):
+        # zoo picks its graph-safe decode kernels (gpt-oss dense sink attention, routed MoE below sm80) for
+        # one-token steps in this scope: the eager warm-up, the capture and every eager step agree.
+        if _zoo_graph_decode_step is not None and _one_token_step(kwargs):
+            with _zoo_graph_decode_step():
+                return self._graph_forward(*args, **kwargs)
+        return self._graph_forward(*args, **kwargs)
+
+    def _graph_forward(self, *args, **kwargs):
+        if not args and not torch.compiler.is_compiling():
+            # Compiled regions stay compiled unless this model's eager decode leaves them: a
+            # different kernel mix rounds differently and greedy tokens drift after a few dozen steps.
+            out = _generic_decode_graphs.decode_step(
+                self.model,
+                self.forward,
+                kwargs,
+                unsloth_eager_decode if self.eager_regions else None,
+            )
+            if out is not None:
+                return out
+        if self.eager_decodes:
+            return super()._forward(*args, **kwargs)
+        return self.forward(*args, **kwargs)
+
+    def __enter__(self):
+        _generic_decode_graphs.begin(self.model)
+        self.caches.__enter__()
+        # Masks are built in prepare_inputs_for_generation, outside the forward: the call-wide scope covers them.
+        self._zoo_scope = _zoo_graph_generate() if _zoo_graph_generate is not None else None
+        if self._zoo_scope is not None:
+            self._zoo_scope.__enter__()
+        try:
+            return super().__enter__()
+        except BaseException:
+            if self._zoo_scope is not None:
+                self._zoo_scope.__exit__(None, None, None)
+            self.caches.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, *exc):
+        try:
+            return super().__exit__(*exc)
+        finally:
+            if self._zoo_scope is not None:
+                self._zoo_scope.__exit__(None, None, None)
+            self.caches.__exit__(*exc)
+            _generic_decode_graphs.end(self.model, keep = self.keep and exc[0] is None)
+
+
+# One-token decode on stock flex is slower than SDPA, but prefill must stay on flex (its block mask skips tiles a
+# dense mask computes). StaticCache decode steps use _flex_decode where supported, else the non-flex path.
 _FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
 _FLEX_GENERATE_LOCK = threading.Lock()
 
@@ -1595,6 +1705,54 @@ def _flex_generate_configs(model):
     ]
 
 
+def _model_device(model):
+    device = getattr(model, "device", None)
+    if isinstance(device, torch.device):
+        return device
+    try:
+        return next(model.parameters()).device
+    except Exception:
+        return None
+
+
+def _wants_attentions(model, kwargs):
+    if kwargs.get("output_attentions") is not None:
+        return bool(kwargs["output_attentions"])
+    config = kwargs.get("generation_config") or getattr(model, "generation_config", None)
+    return bool(getattr(config, "output_attentions", False))
+
+
+def _generate_routes(model, flex_decode = True):
+    """(config, prefill attention, decode attention) per text attention config the generate call switches.
+    Flex-preferred configs prefill on flex and decode on flex decode or the non-flex path; other configs of a
+    flex-decode model keep their attention for prefill and decode on flex decode. flex_decode=False (attention
+    weights requested: flex decode returns none) keeps every decode on its non-flex attention."""
+    routes = [(c, "flex_attention", _NON_FLEX_DECODE) for c in _flex_generate_configs(model)]
+    config = getattr(model, "config", None)
+    if config is None or not flex_decode or not _flex_decode.wanted(_model_device(model)):
+        return routes
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if getattr(base, _EXPLICIT_FLEX_ATTR, False) or getattr(model, _EXPLICIT_FLEX_ATTR, False):
+        return routes
+    seen = {id(c) for c, _, _ in routes}
+    out = []
+    for c, prefill, decode in routes:
+        if _flex_decode.routable(base, c):
+            decode = _flex_decode.ATTN_KEY
+        out.append((c, prefill, decode))
+    for c in _text_attention_configs(config):
+        if id(c) in seen:
+            continue
+        impl = _config_get(c, "_attn_implementation", None)
+        if impl in ("sdpa", "eager") and _flex_decode.routable(base, c):
+            out.append((c, impl, _flex_decode.ATTN_KEY))
+    return out
+
+
+def _static_cache(cache):
+    return cache is not None and bool(getattr(cache, "is_compileable", False))
+
+
 def _step_query_length(model_inputs):
     if not isinstance(model_inputs, dict):
         return None
@@ -1608,18 +1766,35 @@ def _step_query_length(model_inputs):
 class _NonFlexGenerate:
     """Threads are serialised per model: they share one config, switched between mask build and forward."""
 
-    def __init__(self, model):
+    def __init__(
+        self,
+        model,
+        flex_decode = True,
+    ):
         self.model = model
+        self.flex_decode = flex_decode
         self.active = False
         self.serial = None
         self.base = model.get_base_model() if hasattr(model, "get_base_model") else model
 
-    def _set(self, decode):
+    def _set(
+        self,
+        decode,
+        static = False,
+        batch = None,
+    ):
         state = self.model.__dict__
         if state.get("_unsloth_non_flex_generate_pinned", False):
             decode = True
-        value = _NON_FLEX_DECODE if decode else "flex_attention"
-        for c in state.get("_unsloth_non_flex_generate_configs", ()):
+        for c, prefill, decode_impl in state.get("_unsloth_non_flex_generate_configs", ()):
+            value = decode_impl if decode else prefill
+            # Needs fixed shapes (StaticCache); pays off only under CUDA graphs.
+            if value == _flex_decode.ATTN_KEY and not (
+                static
+                and _flex_decode.batch_ok(batch)
+                and (_flex_decode.forced() or _decode_graphs.call_plan() == "graph")
+            ):
+                value = _NON_FLEX_DECODE if prefill == "flex_attention" else prefill
             if _config_get(c, "_attn_implementation", None) != value:
                 _config_set(c, "_attn_implementation", value)
 
@@ -1634,11 +1809,14 @@ class _NonFlexGenerate:
             else:
                 decode = scope.steps > 0
             scope.steps += 1
-            scope._set(decode)
+            static = _static_cache(kwargs.get("past_key_values"))
+            ids = args[0] if args else kwargs.get("input_ids")
+            batch = ids.shape[0] if isinstance(ids, torch.Tensor) and ids.dim() >= 1 else None
+            scope._set(decode, static, batch)
             model_inputs = prepare(*args, **kwargs)
             q_len = _step_query_length(model_inputs)
             if q_len is not None and (q_len == 1) != decode:
-                scope._set(q_len == 1)
+                scope._set(q_len == 1, static, batch)
                 model_inputs = prepare(*args, **kwargs)
             return model_inputs
 
@@ -1648,7 +1826,7 @@ class _NonFlexGenerate:
         state = self.model.__dict__
         with _FLEX_GENERATE_LOCK:
             routed = _FLEX_GENERATE_ROUTING.get(self.base, 0) > 0 or bool(
-                _flex_generate_configs(self.model)
+                _generate_routes(self.model, self.flex_decode)
             )
             serial = None
             if routed:
@@ -1662,7 +1840,7 @@ class _NonFlexGenerate:
         with _FLEX_GENERATE_LOCK:
             depth = state.get("_unsloth_non_flex_generate", 0)
             if depth == 0:
-                configs = _flex_generate_configs(self.model)
+                configs = _generate_routes(self.model, self.flex_decode)
                 if not configs:
                     self._release()
                     return self
@@ -2035,8 +2213,7 @@ def _static_cache_does_not_fit(model, input_ids, kwargs):
         need = _static_cache_bytes(model, input_ids, kwargs, exact = False)
         if need is None:
             return False
-        # mem_get_info is a driver call (p90 7-10 ms on a busy host), so a cache under 1/16
-        # of the card never pays it.
+        # mem_get_info is a slow driver call, so caches under 1/16 of the card skip it.
         if need * 16 <= backend.get_device_properties(device).total_memory:
             return False
         free = backend.mem_get_info(device)[0]
@@ -2156,6 +2333,9 @@ def _uses_flash_attention_for_generation(config):
 
 
 def _clear_generation_caches(model):
+    # The StaticCache decode graphs keep for the next call stays. Guarded: tests exec this function alone.
+    graphs = globals().get("_generic_decode_graphs")
+    kept = graphs.kept_cache(model) if graphs is not None else None
     for name, module in model.named_modules():
         if hasattr(module, "_flex_attention_cache"):
             try:
@@ -2163,6 +2343,8 @@ def _clear_generation_caches(model):
             except:
                 pass
         # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'.
+        if kept is not None and module.__dict__.get("_cache") is kept:
+            continue
         if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
             try:
                 del module._cache
@@ -2303,7 +2485,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if kwargs.get("past_key_values") is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
-            with _get_inference_mode_context_manager(self), autocaster:
+            with (
+                _get_inference_mode_context_manager(self),
+                autocaster,
+                _lora_fold_generate(self, args, kwargs),
+            ):
                 return self._old_generate(*args, **kwargs)
         finally:
             _clear_generation_caches(self)
@@ -2341,6 +2527,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 cache_implementation = "static"
     if do_bfloat16_mixed_precision:
         cache_implementation = None
+    # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
+    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
+    if kwargs.get("past_key_values") is not None or any(
+        (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
+        for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
+    ):
+        cache_implementation = None
     # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
     force_dynamic_cache = kwargs.get(
         "past_key_values"
@@ -2356,7 +2549,6 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         force_dynamic_cache = False
 
-    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     compile_decode = (
         cache_implementation == "static"
         and not force_dynamic_cache
@@ -2388,20 +2580,99 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             kwargs["compile_config"] = compile_config
 
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
-    eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
-    try:
+
+    def _eager_scope():
+        return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
+
+    def _run(scope, plan):
         with (
-            _NonFlexGenerate(self),
+            _NonFlexGenerate(self, flex_decode = not _wants_attentions(self, kwargs)),
             decode_scope,
-            eager_scope,
+            scope,
+            _decode_graphs.plan_scope(plan),
             _get_inference_mode_context_manager(self),
             autocaster,
+            _lora_fold_generate(self, args, kwargs),
         ):
-            output = self._old_generate(*args, **kwargs)
+            out = self._old_generate(*args, **kwargs)
+            if isinstance(scope, _GraphDecodeSteps):
+                scope.keep = _generic_decode_graphs.keepable(self, kwargs, out)
+            return out
+
+    try:
+        with _decode_graphs.generate_scope():
+            if cache_implementation == "static" and not force_dynamic_cache and not compile_decode:
+                plan = _generic_decode_graphs.plan(self, args, kwargs, input_ids)
+            else:
+                plan = _generic_decode_graphs.ineligible(self)
+            if plan != "graph":
+                output = _run(_eager_scope(), "eager")
+            else:
+                rng = _generic_decode_graphs.rng_state(input_ids.device)
+                out_of_memory = False
+                try:
+                    output = _run(_GraphDecodeSteps(self), "graph")
+                except torch.cuda.OutOfMemoryError:
+                    if not _generic_decode_graphs.replayable(kwargs):
+                        raise
+                    out_of_memory = True
+                if out_of_memory:
+                    # Outside the handler: its traceback holds the failed call's frames (cache, graph
+                    # buffers), which would stay allocated through the redo.
+                    _generic_decode_graphs.redo_eagerly(self)
+                    _clear_generation_caches(self)
+                    _generic_decode_graphs.set_rng_state(rng)
+                    with _decode_graphs.eager_scope():
+                        output = _run(_eager_scope(), "eager")
     finally:
         _clear_generation_caches(self)
 
     return output
+
+
+def unsloth_nested_fast_generate(self, *args, **kwargs):
+    """Per-step sub-model generate() (CSM depth decoder): replays a decode graph kept across frames.
+    Relies on the parent's inference mode/autocast; outside a parent call (or with a caller cache) it is stock."""
+    if (
+        not torch.is_inference_mode_enabled()
+        or kwargs.get("past_key_values") is not None
+        or "cache_implementation" in kwargs
+        or kwargs.get("generation_config") is not None
+        # FlashAttention builds no mask for unpadded rows, so a static cache's empty slots would be attended.
+        or _uses_flash_attention_for_generation(self.config)
+    ):
+        return self._old_generate(*args, **kwargs)
+    input_ids = args[0] if args else kwargs.get("input_ids")
+    if not isinstance(input_ids, torch.Tensor):
+        return self._old_generate(*args, **kwargs)
+    static = dict(kwargs, cache_implementation = "static")
+    # As the parent: a static cache would otherwise auto-compile the forward (transformers' compile_config).
+    static.setdefault("compile_config", _compile_config)
+    with _decode_graphs.generate_scope():
+        if _generic_decode_graphs.plan(self, args, static, input_ids) != "graph":
+            # Graphs off (kill switch, ROCm, short call): stock call; static eager is 13% slower (T4, csm-1b).
+            with _decode_graphs.plan_scope("eager"):
+                return self._old_generate(*args, **kwargs)
+        scope = _GraphDecodeSteps(self)
+        with scope, _decode_graphs.plan_scope("graph"):
+            out = self._old_generate(*args, **static)
+            scope.keep = _generic_decode_graphs.keepable(self, static, out)
+        return out
+
+
+def _patch_nested_generate(model):
+    """CSM: the depth decoder's per-frame generate() through unsloth_nested_fast_generate."""
+    depth = getattr(model, "depth_decoder", None)
+    if (
+        depth is None
+        or not hasattr(depth, "generate")
+        or not hasattr(depth, "_prepare_static_cache")
+    ):
+        return
+    if getattr(depth.generate, "__name__", "") == "unsloth_nested_fast_generate":
+        return
+    depth._old_generate = depth.generate
+    depth.generate = types.MethodType(unsloth_nested_fast_generate, depth)
 
 
 # Offline helpers live in loader_utils.py, the shared canonical source.
@@ -3085,6 +3356,10 @@ def _architecture_skip_modules(model_types):
             )
         )
         skip.extend(f"encoder.layers.{i}.attention" for i in range(48))
+    # DeepSeek-V4.1's o_a_proj is a grouped nn.Linear (G weight blocks applied per head group); bitsandbytes swaps it
+    # for a plain Linear4bit whose forward multiplies every group by the whole weight.
+    if any(mt.startswith("deepseek_v41") for mt in model_types):
+        skip.append("o_a_proj")
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
@@ -3695,6 +3970,19 @@ def _offload_activation_hooks(owner = None):
 _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 
+def _router_aux_loss_on(model):
+    """MoE aux loss on: reentrant GC's no_grad pass would leave it without a gradient."""
+    config = getattr(model, "config", None)
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    if text is None or not hasattr(text, "output_router_logits"):
+        return False
+    try:
+        coef = float(getattr(text, "router_aux_loss_coef", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        coef = 0.0
+    return bool(getattr(text, "output_router_logits", False)) or coef > 0.0
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -3764,6 +4052,26 @@ class FastBaseModel:
             _offload_layers = refuse_block_swap_load(
                 _offload_layers,
                 "needs a discrete CUDA or ROCm GPU; unified memory has no separate RAM to load into.",
+            )
+        # The same load modes FastLanguageModel refuses: the host tail is rebuilt as dense or bnb 4-bit layers.
+        if _offload_layers and load_in_8bit:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers, "supports 16-bit and 4-bit loads, not load_in_8bit."
+            )
+        if _offload_layers and _quantization_config_requested is not None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "does not take a quantization_config; pass load_in_4bit = True instead.",
+            )
+        if _offload_layers and kwargs.get("state_dict") is not None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "does not take a state_dict; save it as a safetensors checkpoint and load that.",
+            )
+        if _offload_layers and (kwargs.get("gguf_file") or kwargs.get("use_safetensors") is False):
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "needs a safetensors checkpoint; it does not support gguf_file or use_safetensors = False.",
             )
 
         # Offline snapshot for the loads below; not popped, so the weight load still reads local_files_only from **kwargs. See _get_effective_local_files_only.
@@ -4289,8 +4597,6 @@ class FastBaseModel:
             ),
         )
 
-        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
-
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
@@ -4346,6 +4652,8 @@ class FastBaseModel:
         if (_offload_layers or _embedding_needed) and _block_swap_device is not None:
             # A placement strategy would spill the host-bound weights to the CPU, which 4-bit loads refuse.
             device_map = {"": _block_swap_device}
+        # After the Block Swap decisions: Auto plans only `{"": N}`, and the collapse above would re-cover the CPU-kept table.
+        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
         _block_swap_state = None
 
         # Prefetch the repo (killable child) so the in-process load is a cache hit. vLLM owns the download only when actually available; if it was requested but is missing, the load falls through in-process, so warm the weights here.
@@ -4702,6 +5010,7 @@ class FastBaseModel:
                         "Unsloth: dequantized 4-bit nn.MultiheadAttention out_proj weights."
                     )
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
+                quantize_moe_experts_if_requested(model, full_finetuning = full_finetuning)
                 if full_finetuning:
                     _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
                 elif fsdp2_requested():
@@ -5099,6 +5408,11 @@ class FastBaseModel:
             if patch_medias_processor is not None:
                 patch_medias_processor(tokenizer)
         # FSDP2 packs 4-bit weights in a float dtype, which the dtype passes in here would cast.
+        try:
+            from .tp_native import cast_host_read_tables
+            cast_host_read_tables(model, do_forced_float32, correct_dtype)
+        except Exception:
+            pass
         with packed_4bit_as_uint8(model, enabled = fsdp2_requested()):
             model, tokenizer = patch_model_and_tokenizer(
                 model,
@@ -5261,6 +5575,7 @@ class FastBaseModel:
                 model._old_generate = model.generate
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
+            _patch_nested_generate(model)
         model._unsloth_trust_remote_code = trust_remote_code
         # Export's trusted config re-read pins to this commit, not a moved branch head.
         model._unsloth_trust_remote_code_commit = (
@@ -5373,6 +5688,31 @@ class FastBaseModel:
             return model
         transformers_set_seed(random_state)
 
+        # Models with their own projection names (native DeepSeek-V4.1) map the standard aliases to real Linears.
+        _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
+        _targets_remapped = False
+        _remapped_moe_targets = None
+        if callable(_remap_targets) and finetune_language_layers:
+            _requested_targets = target_modules
+            _remapped = _remap_targets(
+                target_modules,
+                attention = finetune_attention_modules,
+                mlp = finetune_mlp_modules,
+            )
+            if _remapped is not target_modules:
+                # Routed-expert intent comes from the caller's bare aliases; remapped MLP names are shared-expert only.
+                if _requested_targets is None or _requested_targets == "all-linear":
+                    _requested_targets = ["gate_proj", "up_proj", "down_proj"]
+                _remapped_moe_targets = [
+                    name
+                    for name in _requested_targets
+                    if finetune_mlp_modules
+                    and name in ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
+                ]
+                target_modules = _remapped
+                # Final module-name suffixes: get_peft_regex would read the qualified ones as leaves.
+                _targets_remapped = True
+
         if type(r) is not int:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
         if r <= 0:
@@ -5455,6 +5795,8 @@ class FastBaseModel:
                 ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+        if _targets_remapped:
+            _moe_detect_target = _remapped_moe_targets
         # Auto regex is built after MXFP4 expert stacking, so it no longer names per-expert Linears.
         _auto_targets = target_modules is None or target_modules == "all-linear"
 
@@ -5539,8 +5881,10 @@ class FastBaseModel:
                 "." not in str(name) for name in target_modules
             )
             # Qualified paths already name their module; get_peft_regex treats every entry as a leaf.
-            if type(target_modules) in (list, tuple) and (
-                _scoping or finetune_audio_layers or (_core_prefix and _leaf_list)
+            if (
+                type(target_modules) in (list, tuple)
+                and not _targets_remapped
+                and (_scoping or finetune_audio_layers or (_core_prefix and _leaf_list))
             ):
                 if _scoping:
                     print(
@@ -5869,7 +6213,10 @@ class FastBaseModel:
         use_reentrant = vlm_gradient_checkpointing_reentrant()
         # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
-        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
+        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES) or (
+            # Gemma 3n / 4 keep reentrant checkpointing (AOT backward strides, below).
+            _router_aux_loss_on(model) and not _gc_model_type.startswith(("gemma3n", "gemma4"))
+        )
         if _force_non_reentrant:
             use_reentrant = False
         model._unsloth_vlm_gc_non_reentrant = bool(
@@ -5885,17 +6232,14 @@ class FastBaseModel:
             )
             _offload = use_gradient_checkpointing == "unsloth"
             _register_gc_offload_root(model, _offload)
+            from .non_reentrant_checkpoint import non_reentrant_checkpoint
 
-            def _nonre_checkpoint(function, *args, **kwargs):
-                kwargs["use_reentrant"] = False
-                if not _offload:
-                    return _orig_checkpoint(function, *args, **kwargs)
-                with _offload_activation_hooks(_gc_checkpoint_owner(function)):
-                    return _orig_checkpoint(function, *args, **kwargs)
-
-            _nonre_checkpoint._unsloth_original = _orig_checkpoint
-            # Already offloads through _offload_activation_hooks: transformers' offload=True would nest it.
-            _nonre_checkpoint._unsloth_offloads = _offload
+            _nonre_checkpoint = non_reentrant_checkpoint(
+                _orig_checkpoint,
+                (lambda function: _offload_activation_hooks(_gc_checkpoint_owner(function)))
+                if _offload
+                else None,
+            )
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
         else:
@@ -6027,6 +6371,10 @@ class FastBaseModel:
             )
         _tensor_parallel_for_inference(model)
         restore_fp8_lora_for_inference(model)
+        # Training's NF4 dequant cache (kernels/dequant_cache.py) would hold memory generation may need.
+        from ..kernels.dequant_cache import clear_dequant_cache
+
+        clear_dequant_cache()
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -6076,6 +6424,7 @@ class FastBaseModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
         _tensor_parallel_for_training(model)
+        _decode_graphs.release_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(

@@ -137,9 +137,7 @@ _INTENDED_RENAMES = {("qwen-image", "qwen-image-2.1")}
 
 
 def test_every_previously_detected_name_keeps_its_family():
-    """Regression over the whole alias table and the audit's file names: separator normalisation
-    only ADDS matches (None -> family), never moves a name to another family, except the
-    documented Qwen-Image-2.1 correction."""
+    """Separator normalisation only adds matches; the one move allowed is the Qwen-Image-2.1 correction."""
     changed = []
     for needle in sorted(_corpus()):
         low = needle.lower()
@@ -157,8 +155,7 @@ def test_every_previously_detected_name_keeps_its_family():
 
 
 def test_audit_name_table_before_vs_after():
-    """The recorded before/after name verdicts for the 216 audit files: no regression, the listed
-    gaps closed."""
+    """Before/after name verdicts for the audit files: no regression, listed gaps closed."""
     regressions, gained, renamed = [], 0, 0
     for rel, row in _AUDIT.items():
         base = rel.split("/")[-1]

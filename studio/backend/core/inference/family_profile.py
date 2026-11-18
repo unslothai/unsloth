@@ -29,7 +29,8 @@ class ConvRotSpec:
     artifacts still validate. ``filename`` / ``repo`` name the hosted rotated build (only ``repo`` gets the rotated
     name prepended), ``variant_repos`` the variant repos that host one under their own name, ``default_on`` whether
     int8 rotates unless ``UNSLOTH_DIFFUSION_INT8_CONVROT`` turns it off (the rest are opt-in with ``=1``). ``group`` 0
-    means no runtime rotation: the entry only names a hosted build whose rotation is baked into the file."""
+    means no runtime rotation: the entry only names a hosted build whose rotation is baked into the file.
+    ``hosted_plain``: older hosted int8 files are unrotated, so with ConvRot on only ``filename`` is read."""
 
     group: int
     suffixes: tuple[str, ...]
@@ -37,6 +38,7 @@ class ConvRotSpec:
     repo: Optional[str] = None
     variant_repos: tuple[str, ...] = ()
     default_on: bool = False
+    hosted_plain: bool = False
 
 
 @dataclass(frozen = True)
@@ -80,6 +82,13 @@ class FamilyProfile:
     auto_scheme_skip: frozenset[str] = frozenset()
     # Reason auto keeps bf16 while bf16 fits (INT8 still picked once bf16 would offload); None = not this family.
     auto_bf16_when_resident: Optional[str] = None
+    # ROCm RDNA AUTO W8A8 evidence (gfx1151); None = bf16. Kill switch UNSLOTH_NATIVE_INT8_ACT=0.
+    rdna_auto_w8a8: Optional[str] = None
+    # ROCm RDNA evidence that W8A8 beats weight-only int8 for an EXPLICIT int8 request (gfx1151; AUTO still keeps
+    # bf16 unless ``rdna_auto_w8a8``); None = weight-only. Kill switch UNSLOTH_NATIVE_INT8_ACT=0.
+    rdna_explicit_w8a8: Optional[str] = None
+    # Turing (sm_75, fp16-only) AUTO int8 evidence; None = fp16. Kill switch UNSLOTH_DIFFUSION_FP16_CARD_INT8=0.
+    turing_auto_int8: Optional[str] = None
     # Video: prequant DiT schemes AUTO seeds even where bf16 fits resident (else auto keeps resident bf16).
     auto_prequant_when_resident: frozenset[str] = frozenset()
     # Text-encoder int8 keep-bf16 schedule (skip_first, skip_last) decoder blocks; None = int8 falls back to fp8.
@@ -103,6 +112,9 @@ class FamilyProfile:
     compile_static: bool = False
     # Install the LTX-2 STG compile adapter after a successful compile (``ltx_stg_compile_adapter`` family hook).
     stg_compile_adapter: bool = False
+    # Measured reason a dense (unquantized) denoiser with speed unset compiles from render 1 instead of the deferred
+    # profile's two exact eager images; None = deferred. Only for an eager path measured far slower than compiled.
+    compile_from_render_one: Optional[str] = None
 
 
 DEFAULT_PROFILE = FamilyProfile()
@@ -128,6 +140,13 @@ def profile_table(attr: str, *, quant: bool = False) -> dict[str, Any]:
             for name in profile.quant_names:
                 table.setdefault(name, value)
     return table
+
+
+def compile_from_render_one_reason(family: Any) -> Optional[str]:
+    """``FamilyProfile.compile_from_render_one`` of ``family`` (a registry row or a stand-in with its ``name``)."""
+    if family is None:
+        return None
+    return profile_for(family).compile_from_render_one
 
 
 def profile_for(family: Any) -> FamilyProfile:

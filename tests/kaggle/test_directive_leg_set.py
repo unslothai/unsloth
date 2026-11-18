@@ -63,9 +63,8 @@ def test_the_expensive_exports_stay_off():
 
 
 def test_at_least_one_wired_leg_still_exports():
-    """The rule above must not be satisfiable by removing every export. Read
-    off KERNELS, not off the list here, so dropping the exporting leg from the
-    wired set fails too."""
+    """The rule above must not pass by removing every export, so this reads KERNELS rather than a
+    local list; dropping the exporting leg from the wired set fails too."""
     wired = {name for kernel in legs.KERNELS for name in kernel}
     exporting = [n for n in wired if "--export-gguf" in legs.LEGS[n].args]
     assert exporting, (
@@ -75,9 +74,8 @@ def test_at_least_one_wired_leg_still_exports():
 
 
 def test_the_grpo_leg_keeps_the_settings_it_was_measured_with():
-    """0.95 utilisation and sleep mode were asked for and both were measured
-    passing on Kaggle AND Colab; the flashinfer uninstall stays because
-    removing it broke the leg. None of the three is a default."""
+    """0.95 gpu memory utilisation and sleep mode were measured passing on Kaggle and Colab; the
+    flashinfer uninstall stays because removing it broke the leg; none is a default."""
     grpo = legs.LEGS["grpo"]
     args = grpo.args
     assert "--gpu-memory-utilization" in args

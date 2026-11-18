@@ -232,8 +232,7 @@ def test_vision_tools_turn_keeps_the_system_message():
 
 
 def test_vision_tool_loop_followup_still_renders():
-    """A tool-result turn whose image came from an earlier user message must not hard-fail:
-    MLX only raises when the render actually breaks."""
+    """Earlier-image tool turns must not hard-fail; MLX raises only when the render breaks."""
     backend, seen = _vision_probe()
     _drain(
         backend,
@@ -433,8 +432,7 @@ def test_a_processor_that_cannot_process_images_is_not_mirrored():
 
 
 def test_the_named_template_list_form_survives_the_mirror():
-    """Discarding the named-template list form at the mirror would silently drop the
-    image-turn override for Hermes-style models."""
+    """Dropping the named-template list at the mirror loses Hermes image-turn overrides."""
     listed = [
         {"name": "default", "template": _PROCESSOR_TEMPLATE_NO_TOOLS},
         {"name": "tool_use", "template": _CHATML_WITH_TOOLS},
@@ -548,8 +546,7 @@ def test_a_transformers_vision_model_is_served_every_image_its_template_can_mark
 
 
 def test_a_processor_body_that_cannot_advertise_empties_the_healing_catalog():
-    """The route profiles the mirrored processor body for image turns, so a body with no
-    tool handling at all must leave nothing authorized to heal."""
+    """A processor body with no tool handling must leave the healing catalog empty."""
     from core.inference.chat_template_helpers import renderable_tool_catalog_for_targets
 
     catalog = renderable_tool_catalog_for_targets(
@@ -629,8 +626,7 @@ def test_the_mlx_backend_mirrors_the_processor_template_too():
 
 
 def test_a_processor_body_is_not_rescued_by_the_native_tokenizer_template(monkeypatch):
-    """A processor body has no native-template fallback behind it, so a native template
-    that reads tools must not re-authorize the catalog."""
+    """A processor body has no native fallback, so a native template must not re-enable tools."""
     from core.inference import chat_template_helpers as helpers
 
     monkeypatch.setattr(helpers, "resolve_native_chat_template", lambda *a, **k: _CHATML_WITH_TOOLS)
@@ -645,8 +641,7 @@ def test_a_processor_body_is_not_rescued_by_the_native_tokenizer_template(monkey
 
 
 def test_a_folded_system_turn_is_wrapped_as_content_parts():
-    """The folded instruction arrives as a bare string, which a parts-expecting processor
-    raised on, and the no-system retry then dropped it (#10092)."""
+    """System text must be content parts: a bare string made processors raise (issue 10092)."""
     from core.inference.chat_template_helpers import messages_with_attached_image
 
     out = messages_with_attached_image(
@@ -742,8 +737,7 @@ def test_a_video_is_attached_the_way_an_image_is():
 
 
 def test_an_mlx_processor_without_apply_chat_template_is_not_mirrored():
-    """A processor template alone does not mean the render selects it; mirroring it anyway
-    profiles an unused body with processor semantics (#10092)."""
+    """Mirroring a processor template the render skips profiles an unused body (issue 10092)."""
     mlx = pytest.importorskip("core.inference.mlx_inference")
 
     class _Tok:
@@ -787,8 +781,7 @@ def _image_request(**kwargs):
 
 
 def test_an_image_with_explicit_enable_tools_still_passes_the_client_catalog():
-    """The server loop refuses images, so withdrawing the client catalog too answered an
-    image-plus-tools request with prose and no schemas at all (#10092)."""
+    """Server refuses images, so dropping the catalog left prose with no schemas (issue 10092)."""
     import os
     import sys
 
@@ -1511,8 +1504,7 @@ def test_an_image_capable_processor_without_a_template_still_marks_its_turn():
 
 
 def test_a_catalog_render_failure_does_not_drop_the_system_turn():
-    """Once the no-tools probe kept the system turn the role is supported, so a failure on
-    the tools render must not drop the caller's instructions (#10092)."""
+    """A failed tools render must not drop the system turn kept by the probe (issue 10092)."""
     calls: list = []
 
     backend, seen = _vision_probe()

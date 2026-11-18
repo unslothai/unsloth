@@ -102,9 +102,8 @@ def test_a_volume_from_an_earlier_image_runs_this_images_code(tmp_path):
 
 
 def test_nothing_in_the_way_is_deleted_it_is_kept_aside(tmp_path):
-    """What an earlier image left, or what the user put under a code entry's name, is
-    a rename away, not gone: the old venv, the old source tree with an uncommitted
-    file, a real file where the lock is, and a link the user pointed elsewhere."""
+    """Anything in the way (an old venv, an old source tree with an uncommitted file, a real file
+    where the lock is, a user link) is renamed aside, never deleted."""
     app = _app(tmp_path)
     home = _legacy_home(tmp_path)
     (home / "bin").mkdir()
@@ -196,11 +195,8 @@ def test_restore_without_a_legacy_dir_or_an_app_dir_says_which_image_to_use(tmp_
 
 
 def test_the_restore_hint_this_file_expects_is_the_one_the_script_prints() -> None:
-    """Catch a copy edit at the source, not as a mismatch in someone else's run.
-
-    The test above compares against stderr, so when the wording moves it fails with two long
-    strings and no indication that the fix is one line of shell. This names the file.
-    """
+    """Catches a reworded restore hint at the source: the linker must still print
+    RESTORE_NEEDS_APP_HINT, and the failure names the file to update."""
     assert RESTORE_NEEDS_APP_HINT in LINKER.read_text(encoding = "utf-8"), (
         f"{LINKER.relative_to(REPO)} no longer prints {RESTORE_NEEDS_APP_HINT!r}. If the wording "
         f"changed on purpose, update RESTORE_NEEDS_APP_HINT here to match."

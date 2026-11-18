@@ -18,6 +18,12 @@ export const UserAttentionType = { Critical: 1, Informational: 2 };
 
 export function getCurrentWindow() {
   return {
+    isFullscreen: async () => control.fullscreen ?? false,
+    setFullscreen: async (fullscreen) => {
+      if (control.fullscreenGate) await control.fullscreenGate;
+      control.fullscreen = fullscreen;
+      control.fullscreenChanges?.push(fullscreen);
+    },
     onScaleChanged: async () => () => undefined,
     scaleFactor: async () => 1,
     requestUserAttention: async (type) => {

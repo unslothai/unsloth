@@ -8,6 +8,7 @@ export function attachedMediaUnavailableReason({
   audio,
   audioCount = audio ? 1 : 0,
   video,
+  externalTakesVideo = false,
 }: {
   activeModel:
     | { hasAudioInput?: boolean; hasVideoInput?: boolean; isMlx?: boolean }
@@ -17,6 +18,7 @@ export function attachedMediaUnavailableReason({
   audio: boolean;
   audioCount?: number;
   video: boolean;
+  externalTakesVideo?: boolean;
 }): string | null {
   if (!checkpoint || (!audio && !video)) return null;
   if (audio && !activeModel?.hasAudioInput) {
@@ -25,7 +27,7 @@ export function attachedMediaUnavailableReason({
   if (audio && audioCount > 1 && activeModel?.isMlx) {
     return `${modelLabel} takes one audio file per message. Remove the extra audio files, or load a GGUF model to send several.`;
   }
-  if (video && !activeModel?.hasVideoInput) {
+  if (video && !activeModel?.hasVideoInput && !externalTakesVideo) {
     return `${modelLabel} cannot accept video. Load a model that reads video, or remove the video.`;
   }
   return null;

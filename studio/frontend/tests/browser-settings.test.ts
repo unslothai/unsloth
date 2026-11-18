@@ -565,6 +565,9 @@ test("files that run code are recognised however the name is cased, padded or pa
   for (const { name, dangerous } of fixture.cases) assert.equal(isDangerousDownload(name), dangerous, name);
   assert.equal(isDangerousDownload("C:\\Users\\a\\setup.exe"), true);
   assert.equal(isDangerousDownload("dir.exe/readme.txt"), false);
+  // Terminal opens a .term and runs its ExecutionString; tcsh sits with csh, ksh and zsh.
+  assert.equal(isDangerousDownload("notes.term"), true);
+  assert.equal(isDangerousDownload("run.tcsh"), true);
   // Saved names are cut to 240 bytes: a tail too long to keep as the extension is cut off, leaving .exe last.
   assert.equal(isDangerousDownload(`${"a".repeat(236)}.exe${"x".repeat(40)}`), true);
   assert.equal(isDangerousDownload(`${"a".repeat(300)}.txt`), false);
@@ -1192,7 +1195,7 @@ test("the agent's Downloads rule covers its tab while a chat run is using it, an
   const { agentDownloadRule, endBrowserAgentRun, patchAgentChat, useBrowserAgentStore } = await import(
     "../src/features/browser/agent/agent-store.ts"
   );
-  const blocked = { browsing: "ask", actions: "ask", downloads: "block", unlabelled: "ask" } as const;
+  const blocked = { browsing: "ask", actions: "ask", downloads: "block", unlabelled: "ask", scripts: "ask" } as const;
   useBrowserAgentStore.setState({ permissions: { defaults: blocked, sites: {} } });
   patchAgentChat("single:c1", { tabId: "t1", runKey: "run1" });
   assert.equal(agentDownloadRule("t1", "https://example.com/", "https://example.com/f.pdf"), "block");

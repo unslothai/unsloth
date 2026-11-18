@@ -339,8 +339,9 @@ test("shift-click selects a range anchored on a chat id", () => {
 test("a chat exports per pane with Markdown, several chats combined or per chat", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.match(items, /chatExportOptions\(\)\.map/);
-  assert.match(items, /<BulkExportItems onExport=/);
-  assert.match(readSrc("features/chat/components/bulk-export-items.tsx"), /COMBINED_EXPORT_FORMATS_LIST\.map/);
+  assert.match(items, /<ExportFormatItems\s+options=\{chatExportOptions\(\)/);
+  assert.match(items, /<BulkExportItems\s+onExport=/);
+  assert.match(readSrc("features/chat/components/bulk-export-items.tsx"), /options\(COMBINED_EXPORT_FORMATS_LIST\)/);
   assert.match(items, /disabled=\{!actions\.projectChatCounts\.get\(project\.id\)\}/);
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /for \(const id of threadIds\) await exportConversationByFormat\(id, choice\.format\);/);

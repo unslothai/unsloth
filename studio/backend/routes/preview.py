@@ -168,6 +168,11 @@ async def _serve_chat(
         )
     is_lora = (path / "adapter_config.json").exists()
     payload = _sanitize_preview_payload(payload, is_lora)
+    # An external::<provider>::<model> id would route to a saved connection and spend its key.
+    if isinstance(payload.model, str) and payload.model.startswith("external::"):
+        payload = payload.model_copy(
+            update = {"model": run if not checkpoint else f"{run}/{checkpoint}"}
+        )
     scope = getattr(request, "scope", None)
     disable_openai_auto_switch_for_request(scope)
     from core.inference.llama_keepwarm import (

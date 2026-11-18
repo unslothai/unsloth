@@ -106,6 +106,7 @@ export function emptyStore(
     checkpoint: null,
     checkpointIsExternal: false,
     activeGgufVariant: null,
+    residentCheckpoint: undefined,
     modelLoading: false,
     idleUnloadArmed: false,
     ...overrides,

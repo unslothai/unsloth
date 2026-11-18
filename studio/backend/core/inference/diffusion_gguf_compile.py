@@ -8,7 +8,11 @@ lazily; UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT=0 disables.
 Q8_0 GGUFLinear weights also get one fused dequant+cast kernel (UNSLOTH_DIFFUSION_GGUF_FUSED_Q8_0=0 disables): the
 stock forward runs the compiled dequant (fp16 out, several kernels) and then an eager ``.to(compute_dtype)`` copy per
 linear per forward. The fused kernel keeps the fp16 rounding of ``d * q`` before the cast (see ``_q8_0_blocks_dequant_cast``),
-so the weight it produces is bit-identical to the stock one."""
+so the weight it produces is bit-identical to the stock one.
+
+Other fp16-dequantised types under a bf16 compute dtype are cast in the dequant's own buffer, bit-identical to the stock
+cast (UNSLOTH_DIFFUSION_GGUF_FUSED_CAST=0 disables); a compiled-in cast was not bit-identical for Q4_K / Q5_K.
+diffusion_gguf_exact types compile its dequant per type, cast inside the kernel."""
 
 from __future__ import annotations
 
@@ -50,6 +54,10 @@ _Q8_0_TYPE_SIZE = 34  # one fp16 scale + 32 int8 codes per block
 _FUSED_Q8_0_MIN_TORCH = (2, 7)
 _fused_q8_0_installed = False
 
+_ENV_FUSED_CAST = "UNSLOTH_DIFFUSION_GGUF_FUSED_CAST"
+_fused_cast_installed = False
+_forward_patched = False
+
 
 def _q8_0_blocks_dequant_cast(raw: Any, dtype: Any) -> Any:
     """Q8_0 bytes (any shape, ``n_blocks * 34`` bytes) -> ``(n_blocks, 32)`` weight in ``dtype``. Same ops and order
@@ -67,6 +75,17 @@ def _q8_0_blocks_dequant_cast(raw: Any, dtype: Any) -> Any:
     x = blocks.view(torch.int8)[:, 2:]
     half_bits = (d * x).view(torch.int16) & -1
     return half_bits.view(torch.float16).to(dtype)
+
+
+def _cast_in_place(half: Any, dtype: Any) -> Any:
+    """``half.to(dtype)`` for an fp16 weight and a 2-byte ``dtype``, written over ``half`` (same conversion kernel)."""
+    dense = half.view(dtype)
+    dense.copy_(half)
+    return dense
+
+
+def is_fused_cast_installed() -> bool:
+    return _fused_cast_installed
 
 
 def _q8_0_dequant_cast(
@@ -118,6 +137,9 @@ def install_compiled_dequant(logger: Any = None) -> bool:
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
             _compile_error = None
+            from . import diffusion_gguf_exact  # noqa: PLC0415
+
+            diffusion_gguf_exact.set_compiled_dequant(True)
             _install_fused_q8_0(gguf_utils, logger)
             return True
         return False
@@ -161,10 +183,12 @@ def _guard(compiled: Any, eager: Any, logger: Any) -> Any:
 
 
 def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
-    """Patch ``GGUFLinear.forward_native`` so a Q8_0 weight is dequantised and cast in one compiled kernel; every
-    other weight (other quant types, no compute dtype) takes the stock forward unchanged."""
-    global _fused_q8_0_installed
-    if _fused_q8_0_installed or not _enabled(_ENV_FUSED_Q8_0):
+    """Patch ``GGUFLinear.forward_native``: Q8_0 dequant+cast in one kernel, an fp16 dequant cast to bf16 in place;
+    anything else takes the stock forward."""
+    global _fused_q8_0_installed, _fused_cast_installed, _forward_patched
+    q8_0 = _enabled(_ENV_FUSED_Q8_0)
+    fused_cast = _enabled(_ENV_FUSED_CAST)
+    if _forward_patched or not (q8_0 or fused_cast):
         return _fused_q8_0_installed
     linear_cls = getattr(gguf_utils, "GGUFLinear", None)
     if linear_cls is None or not callable(getattr(linear_cls, _FORWARD_ATTR, None)):
@@ -174,8 +198,12 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
 
         if not _torch_supports_fused_q8_0(torch.__version__):
             return False
+        from . import diffusion_gguf_exact as gguf_exact  # noqa: PLC0415
+
         compiled = torch.compile(_q8_0_blocks_dequant_cast, dynamic = True)
         blocks_fn = _guard(compiled, _q8_0_blocks_dequant_cast, logger)
+        # one compile per type, so no type evicts another
+        exact_fns = {fn: _guard(torch.compile(fn), fn, logger) for fn in gguf_exact.EXACT_FUNCTIONS}
         stock_forward = getattr(linear_cls, _FORWARD_ATTR)
         F = torch.nn.functional
 
@@ -183,19 +211,38 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
         def forward_native(self: Any, inputs: Any) -> Any:
             weight = self.weight
             dtype = self.compute_dtype
-            if (
-                getattr(weight, "quant_type", None) != _Q8_0
-                or dtype is None
-                or weight.dim() != 2
-                or weight.shape[-1] % _Q8_0_TYPE_SIZE
-            ):
+            quant_type = getattr(weight, "quant_type", None)
+            if dtype is None or weight.dim() != 2:
                 return stock_forward(self, inputs)
-            dense = _q8_0_dequant_cast(weight.as_tensor(), dtype, blocks_fn)
+            exact_fn = gguf_exact.exact_function(quant_type) if quant_type is not None else None
+            if exact_fn is not None:
+                if not (q8_0 if quant_type == _Q8_0 else fused_cast) or not gguf_exact.row_aligned(
+                    weight, quant_type
+                ):
+                    return (gguf_exact.stock_forward() or stock_forward)(self, inputs)
+                dense = gguf_exact.dequantize_cast(
+                    weight.as_tensor(), quant_type, dtype, exact_fns[exact_fn]
+                )
+            elif quant_type == _Q8_0:
+                if not q8_0 or weight.shape[-1] % _Q8_0_TYPE_SIZE:
+                    return stock_forward(self, inputs)
+                dense = _q8_0_dequant_cast(weight.as_tensor(), dtype, blocks_fn)
+            else:
+                if not fused_cast or dtype != torch.bfloat16 or quant_type is None:
+                    return stock_forward(self, inputs)
+                half = gguf_utils.dequantize_gguf_tensor(weight)
+                if half.dtype == torch.float16 and half.is_contiguous():
+                    dense = _cast_in_place(half, dtype)
+                else:
+                    dense = half.to(dtype)
+                del half  # as in the stock forward, an fp32 dequant is freed before the matmul
             bias = self.bias.to(dtype) if self.bias is not None else None
             return F.linear(inputs, dense, bias)
 
         if apply_patch(linear_cls, _FORWARD_ATTR, forward_native, force = True):
-            _fused_q8_0_installed = True
+            _forward_patched = True
+            _fused_q8_0_installed = q8_0
+            _fused_cast_installed = fused_cast
         return _fused_q8_0_installed
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "install fused Q8_0 dequant", exc)
@@ -203,13 +250,15 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
 
 
 def _uninstall_fused_q8_0(gguf_utils: Any) -> None:
-    global _fused_q8_0_installed
-    if not _fused_q8_0_installed:
+    global _fused_q8_0_installed, _fused_cast_installed, _forward_patched
+    if not _forward_patched:
         return
     linear_cls = getattr(gguf_utils, "GGUFLinear", None) if gguf_utils is not None else None
     if linear_cls is not None:
         revert_patch(linear_cls, _FORWARD_ATTR)
     _fused_q8_0_installed = False
+    _fused_cast_installed = False
+    _forward_patched = False
 
 
 def uninstall_compiled_dequant() -> None:
@@ -222,6 +271,9 @@ def uninstall_compiled_dequant() -> None:
     if gguf_utils is not None:
         revert_patch(gguf_utils, _DEQUANT_ATTR)
     _compiled_dequant_installed = False
+    from . import diffusion_gguf_exact  # noqa: PLC0415
+
+    diffusion_gguf_exact.set_compiled_dequant(False)
 
 
 def uninstall_all() -> None:

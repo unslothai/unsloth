@@ -553,8 +553,7 @@ class TrainingStartRequest(BaseModel):
     save_steps: int = Field(100, description = "Steps between checkpoints")
     # NaN clears _check_weight_decay's 0..10 range check (every comparison with it is False), so it is refused here.
     weight_decay: float = Field(0.001, allow_inf_nan = False, description = "Weight decay")
-    # Finite as well as non-negative: JSON 1e309 floats to inf, which clears ge=0 but never binds, so
-    # the run would train unclipped while reporting a threshold.
+    # Reject inf too: JSON 1e309 parses to inf, which passes ge=0 but never binds the clip.
     max_grad_norm: Optional[float] = Field(
         None,
         ge = 0,
@@ -1389,6 +1388,8 @@ class DiffusionTrainableFamily(BaseModel):
     deploy_base: Optional[str] = None
     # maps each training base, including public mirrors, to its inference base.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
+    # Must be declared or Pydantic drops it and Deploy to Create loses the Klein Base adapter on Klein.
+    lora_families: Optional[List[str]] = None
     # overlays checkpoint-specific parameter and VRAM guidance on family defaults.
     base_specs: Dict[str, dict] = Field(default_factory = dict)
 

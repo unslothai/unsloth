@@ -228,8 +228,7 @@ def test_it_waits_for_a_generating_reply_instead_of_reporting_no_menu():
 
 
 def test_a_reply_that_never_lands_is_reported_honestly_rather_than_waited_on_forever():
-    """The wait is bounded by the slot's own budget: a reply that never finishes must not swallow
-    the rest of the film."""
+    """Waits capped by the slot budget; a reply that never lands must not swallow the film."""
     page = _RunningPage(runs_for = 10_000)
     assert A._wait_for_the_reply_to_land(_running_ctx(page, budget_ms = 200)) is False
 

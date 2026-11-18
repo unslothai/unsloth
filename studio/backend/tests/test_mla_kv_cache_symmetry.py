@@ -80,16 +80,14 @@ class TestTheRetryKeepsKAndVEqualOnMla:
         assert _types_of(out) == ("f16", "f16")
 
     def test_a_quantized_k_alone_still_comes_down(self):
-        """A quantized K with no V flag at all is NOT already symmetric: V falls
-        back to the f16 default, so llama.cpp sees K=q8_0 against V=f16 and
-        rejects it on MLA. Lowering K is what makes the retry start."""
+        """A quantized K with no V flag is not symmetric: V falls back to f16 and MLA rejects it, so
+        lower K."""
         cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0"]
         out = LlamaCppBackend._with_flash_attn_off(cmd, mla = True)
         assert out[out.index("--cache-type-k") + 1] == "f16"
 
     def test_argv_k_comes_down_when_v_is_quantized_only_in_the_env(self):
-        """The env-only V case still needs K lowered, or q8_0 K would abort against the f16 V that
-        results."""
+        """Env-only V still needs K lowered, or q8_0 K would abort against the resulting f16 V."""
         cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0"]
         env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}
         out = LlamaCppBackend._with_flash_attn_off(cmd, mla = True)
@@ -99,8 +97,7 @@ class TestTheRetryKeepsKAndVEqualOnMla:
 
 
 class TestTheEnvDropKeepsMlaKAndVEqual:
-    """llama.cpp reads LLAMA_ARG_* before parsing argv, so an inherited quantized
-    K env survives an argv-only fix and reintroduces the mismatch."""
+    """Inherited LLAMA_ARG_ env is read before argv; a quantized K survives argv-only fixes."""
 
     def test_the_k_env_goes_with_the_v_env_on_mla(self):
         env = {
@@ -125,8 +122,7 @@ class TestTheEnvDropKeepsMlaKAndVEqual:
         assert env == {}
 
     def test_non_mla_keeps_the_quantized_k_env(self):
-        """The size argument is unchanged off MLA: a quantized K runs fine
-        without flash attention, so its env var is preserved."""
+        """Off MLA, quantized K runs fine without flash attention, so its env var is kept."""
         env = {
             "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
             "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
@@ -141,8 +137,7 @@ class TestTheEnvDropKeepsMlaKAndVEqual:
         assert env == {"LLAMA_ARG_CACHE_TYPE_K": "q8_0"}
 
     def test_an_unquantized_k_env_is_left_alone_on_mla(self):
-        """f16/bf16/f32 satisfy the V rule already; dropping them would silently
-        change a launch the user configured deliberately."""
+        """f16/bf16/f32 meet the V rule; dropping them would change a deliberate launch."""
         env = {"LLAMA_ARG_CACHE_TYPE_K": "bf16", "LLAMA_ARG_CACHE_TYPE_V": "bf16"}
         assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True) is False
         assert env == {"LLAMA_ARG_CACHE_TYPE_K": "bf16", "LLAMA_ARG_CACHE_TYPE_V": "bf16"}
@@ -164,9 +159,8 @@ class TestNonMlaBehaviourIsUnchanged:
 
 class TestTheSignalStudioAlreadyHas:
     def test_every_call_site_passes_both_per_model_signals(self):
-        """The target and the drafter are separate models with separate contexts,
-        so every reset site gates each side on its own metadata rather than
-        reusing the target's answer for both."""
+        """Target and drafter are separate models, so each reset site gates each side on its own
+        metadata."""
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert src.count("mla = self._target_kv_symmetry()") >= 2
         assert src.count("draft_mla = self._draft_kv_symmetry(") == src.count(
@@ -174,8 +168,7 @@ class TestTheSignalStudioAlreadyHas:
         )
 
     def test_kv_lora_rank_is_the_mla_marker(self):
-        """kv_lora_rank stands in for is_mla(): the MLA archs' converter writes it
-        alongside the MLA head dims that is_mla() actually reads."""
+        """kv_lora_rank stands in for is_mla(); MLA converters write it next to the head dims."""
         assert LlamaCppBackend._requires_symmetric_kv(512, "deepseek2") is True
         assert LlamaCppBackend._requires_symmetric_kv(None, "llama") is False
 
@@ -200,8 +193,7 @@ class TestTheSignalStudioAlreadyHas:
 
 
 class TestTheDrafterIsGatedOnItsOwnModel:
-    """llama.cpp applies the K == V restriction per context, and the drafter is a
-    separate model, so the target's answer must not decide the draft flags."""
+    """The K == V rule is per context, so the target's answer must not decide the draft flags."""
 
     DRAFT_CMD = [
         "llama-server",
@@ -224,22 +216,19 @@ class TestTheDrafterIsGatedOnItsOwnModel:
         return out[out.index("--cache-type-k") + 1]
 
     def test_an_mla_target_leaves_a_non_mla_drafters_k_quantized(self):
-        """Resetting it would needlessly double the drafter's K cache, which is
-        the OOM the size argument warns about."""
+        """Resetting a non-MLA drafter's K needlessly doubles its K cache: the OOM case."""
         out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla = True, draft_mla = False)
         assert self._main_k(out) == "f16"
         assert self._draft_k(out) == "q8_0"
 
     def test_a_non_mla_target_still_brings_an_mla_drafters_k_down(self):
-        """The mirror case, and the more serious one: leaving the draft K
-        quantized against an f16 draft V aborts the draft context."""
+        """Mirror case: draft K quantized against an f16 draft V aborts the draft context."""
         out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla = False, draft_mla = True)
         assert self._main_k(out) == "q8_0"
         assert self._draft_k(out) == "f16"
 
     def test_an_unknown_drafter_falls_back_to_the_target(self):
-        """None means the drafter's GGUF could not be read. An unnecessary reset
-        only costs memory; a missing one aborts, so it follows the target."""
+        """Drafter GGUF unreadable (None) follows the target; a reset only costs memory."""
         out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla = True, draft_mla = None)
         assert self._main_k(out) == "f16"
         assert self._draft_k(out) == "f16"
@@ -256,8 +245,7 @@ class TestTheDrafterIsGatedOnItsOwnModel:
 
 
 class TestTheDraftSignalComesFromTheLaunchCommand:
-    """The drafter that matters is the one llama.cpp actually loads, which is the
-    one named on the command being launched."""
+    """The drafter that matters is the one llama.cpp loads, named on the launched command."""
 
     def _backend(self, drafters):
         """A backend whose drafter metadata lookup is stubbed, not read from disk."""
@@ -278,22 +266,19 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
         return b
 
     def test_an_extra_args_drafter_is_the_one_that_counts(self):
-        """--model-draft in extras is the drafter llama.cpp loads, so an MLA one
-        must be seen even though the managed sidecar path is unset."""
+        """--model-draft in extras names the drafter llama.cpp loads; an MLA one must be seen."""
         b = self._backend({"/d/mla.gguf": (512, "deepseek2")})
         cmd = ["llama-server", "-m", "t.gguf", "--model-draft", "/d/mla.gguf"]
         assert b._draft_kv_symmetry(cmd, {}) is True
 
     def test_the_managed_sidecar_is_seen_through_the_same_flag(self):
-        """_build_speculative_flags emits --model-draft <sidecar> into the same
-        command, so one source covers both."""
+        """Its --model-draft sidecar shares the command, so one source covers both."""
         b = self._backend({"/d/plain.gguf": (None, "llama")})
         cmd = ["llama-server", "-m", "t.gguf", "--model-draft", "/d/plain.gguf"]
         assert b._draft_kv_symmetry(cmd, {}) is False
 
     def test_the_stored_path_is_not_consulted(self):
-        """_mtp_draft_path is assigned after the launch-site reset has already run,
-        so it is stale there. Only the command decides."""
+        """_mtp_draft_path is set after the reset, so it is stale there; the command decides."""
         b = self._backend({"/d/mla.gguf": (512, "deepseek2")})
         b._mtp_draft_path = "/d/mla.gguf"
         assert b._draft_kv_symmetry(["llama-server", "-m", "t.gguf"], {}) is None
@@ -310,9 +295,7 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
         assert b._draft_kv_symmetry(cmd, {}) is False
 
     def test_an_hf_repo_drafter_takes_the_conservative_path(self):
-        """A repo id is not a local file, so its metadata cannot be read. Falling
-        back to the target would leave an MLA drafter's K quantized against an f16
-        draft V and abort; resetting a non-MLA drafter's K only costs memory."""
+        """Repo ids have no readable metadata, so falling back to the target would abort an MLA drafter."""
         b = self._backend({})
         cmd = ["llama-server", "--hf-repo-draft", "org/drafter-GGUF"]
         assert b._draft_kv_symmetry(cmd, {}) is True

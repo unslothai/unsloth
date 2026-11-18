@@ -146,9 +146,8 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
         : "llama.cpp";
   const whisper = nestedOffer(s.whisper);
   const audio = nestedOffer(s.audio);
-  // Legacy top-level version fields intentionally retain their llama meaning.
-  // A whisper-only or audio-only update must display the nested release instead
-  // of presenting equal llama tags as a new llama update.
+  // Legacy top-level version fields keep their llama meaning; a whisper-only or audio-only update
+  // must show the nested release, not equal llama tags as a new llama update.
   const details =
     component === "whisper.cpp" && whisper
       ? whisper

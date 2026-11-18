@@ -32,9 +32,8 @@ def invalidate_account_cache() -> None:
 
 @contextlib.contextmanager
 def account_mutation():
-    """Wrap an account write, invalidation included. Post-commit invalidation alone leaves a window
-    where the row is durable but the cache still answers the pre-write verdict, so the cache is
-    bypassed for the whole write. Counted, so nesting works."""
+    """Bypass the cache for the whole write, since post-commit invalidation alone leaves a stale
+    window; counted, so nested account_mutation calls work."""
     global _mutating, _generation, _cached
     with _lock:
         _mutating += 1
@@ -107,6 +106,16 @@ def api_full_access_refused() -> bool:
     outside the sandbox is the Unsloth UI's to choose, unless the operator sets the env opt-in."""
     from utils.account_context import via_api_key_context
     return via_api_key_context() and os.environ.get("UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS") != "1"
+
+
+def server_folder_pick_permitted() -> bool:
+    """Path-named folders run tools unsandboxed: only on a loopback bind with no tunnel/LAN (the bind decides, not the MCP env)."""
+    from utils.account_context import is_owner_context, via_api_key_context
+    from utils.host_policy import serves_this_machine_only
+
+    if not is_owner_context() or via_api_key_context():
+        return False
+    return serves_this_machine_only()
 
 
 def _forbid(detail: str) -> HTTPException:

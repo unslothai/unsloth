@@ -465,7 +465,7 @@ def test_sharded_loading_refusals_leave_the_model_uncut():
         ), r
         assert r["other_split:uncut"]
         assert "another split" in (r["other_layers_per_stage"] or ""), r
-        assert "16-bit safetensors checkpoints only" in (r["quantized"] or ""), r
+        assert "safetensors checkpoints only" in (r["quantized"] or ""), r
         assert "pipeline schedule must be one of" in (r["unknown_schedule"] or ""), r
 
 

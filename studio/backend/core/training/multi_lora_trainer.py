@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Several queued LoRA jobs trained together on one base model with the fused multi-LoRA kernels.
-
-Each member keeps its own dataset, rank, alpha, learning rate, epochs, seed, optimizer and output, and
-reports its own events (``member_run_id``) with the same shapes a lone job sends."""
+"""LoRA jobs trained together on one base via fused multi-LoRA kernels; each member keeps its own
+dataset, rank, alpha, LR, epochs, seed, optimizer and output; events carry member_run_id."""
 
 from __future__ import annotations
 
@@ -25,7 +23,19 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _DEFAULT_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-_OPTIMIZERS = ("adamw_8bit", "adamw_torch", "adamw_torch_fused")
+# Copied from unsloth.models._utils.EMBEDDING_MODULES, not imported, so the route never loads unsloth.
+_EMBEDDING_TARGETS = frozenset(("embed_tokens", "lm_head"))
+
+
+def embedding_targets(target_modules) -> list[str]:
+    """Targets the single job trains fully (modules_to_save); batched LoRA cannot."""
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
+    return [
+        m
+        for m in target_modules or ()
+        if isinstance(m, str) and m.rsplit(".", 1)[-1] in _EMBEDDING_TARGETS
+    ]
 
 
 @dataclass
@@ -244,8 +254,7 @@ def _lone_target_modules(target_modules):
 
 
 def _resolve_targets(model, target_modules) -> list[str]:
-    """Leaf names as PEFT resolves them: an explicit list, the Studio default, or every linear layer
-    except the output head for ``all-linear``."""
+    """PEFT leaf names: a list or the Studio default; all-linear skips only the output head."""
     if isinstance(target_modules, str):
         target_modules = [target_modules]
     target_modules = list(target_modules or [])
@@ -564,15 +573,12 @@ class _MemberLossScale:
         self.good_steps = [0] * members
         self.growth_interval = growth_interval
 
-    def scale_backward(self, logits, adapter_ids):
-        """GradScaler's loss scaling per token, in fp32: a logit's gradient comes only from its member's loss."""
+    def grad_scale(self, adapter_ids, device):
+        """GradScaler's loss scaling per row or token, in fp32: a logit's gradient comes only from its member's loss."""
         import torch
 
-        scale = torch.tensor(self.scale, dtype = torch.float32, device = logits.device)
-        per_token = scale[adapter_ids.to(logits.device).clamp_min(0)]
-        per_token = per_token[:, None, None] if per_token.dim() == 1 else per_token[..., None]
-        logits.register_hook(lambda grad: grad * per_token)
-        return logits
+        scale = torch.tensor(self.scale, dtype = torch.float32, device = device)
+        return scale[adapter_ids.to(device).clamp_min(0)]
 
     def unscale_(self, slot: int, params: list) -> bool:
         """Unscales the member's gradients; False (and its gradients dropped) when any is not finite."""
@@ -665,20 +671,28 @@ def _packed_forward_isolated(model) -> bool:
     return bool((packed - alone).abs().mean() <= 0.05 * alone.abs().mean())
 
 
-def _pack_num_proc(tokenizer) -> Optional[int]:
+def _pack_num_proc(tokenizer, trainer = None) -> Optional[int]:
     """The single job's packing workers: TRL packs each worker's shard on its own, so the count moves the rows."""
-    from core.training.trainer import _tokenizer_blocks_map_workers
+    from core.training.trainer import _block_swap_engaged, _tokenizer_blocks_map_workers
+    from utils.datasets.online_tokenization import host_memory_fork_veto
     from utils.hardware import dataset_map_num_proc
+    from utils.hardware.hardware import _shared_policy
 
-    try:
-        from unsloth_zoo.dataset_num_proc import get_dataset_num_proc
-    except ImportError:
-        from unsloth.dataset_num_proc import get_dataset_num_proc
-    return get_dataset_num_proc(
-        dataset_map_num_proc(
-            1 if _tokenizer_blocks_map_workers(tokenizer) else None, serial_as_none = False
-        )
+    # The pool forks the loaded base model, as the single job's tokenize pool does.
+    fork_veto = host_memory_fork_veto(_block_swap_engaged(trainer)) if trainer is not None else None
+    if fork_veto:
+        logger.info("Packing in process: %s", fork_veto)
+
+    count = dataset_map_num_proc(
+        1 if (_tokenizer_blocks_map_workers(tokenizer) or fork_veto) else None,
+        serial_as_none = False,
     )
+    # The same loader as the tokenize pool: `import unsloth.dataset_num_proc` would run the package
+    # __init__ (torch patches, the model stack) and fails outright on an install without unsloth_zoo.
+    policy = _shared_policy()
+    if policy is None:
+        return None if count is None or count <= 1 else count
+    return policy.get_dataset_num_proc(count)
 
 
 def _pack_rows(
@@ -908,6 +922,12 @@ def _finish_stopped(event_queue, members, save: bool, export) -> None:
 
 
 def _run(event_queue, stop_queue, config: dict, members: list) -> None:
+    embedding = embedding_targets(config.get("target_modules"))
+    if embedding:
+        raise ValueError(
+            f"Batched LoRA training cannot train {embedding}: they train fully on their own, so run "
+            "these jobs one at a time."
+        )
     from core.import_guards import ensure_real_packages
 
     ensure_real_packages("unsloth_zoo", "unsloth")
@@ -1007,7 +1027,7 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             if member.config.get("packing") and final_format != PRETOKENIZED_FORMAT:
                 if packs is None:
                     packs = _packs(model)
-                    pack_workers = _pack_num_proc(processor) if packs else None
+                    pack_workers = _pack_num_proc(processor, trainer) if packs else None
                 if packs:
                     documents = len(member.rows)
                     member.rows, member.seq_lengths = _pack_rows(
@@ -1161,9 +1181,8 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
 def _build_sft_trainer(
     model, tokenizer, config, live, grad_accum, device, event_queue, export, take_messages, stop_all
 ):
-    """TRL's SFTTrainer over the batch: each optimizer step gives every running member its own next
-    window, losses and gradient clipping stay per adapter, and each member keeps its own learning rate
-    schedule (one parameter group each)."""
+    """TRL SFTTrainer over the batch: each step gives members their own window, clipping, and LR
+    schedule."""
     import torch
     from datasets import Dataset
     from torch.utils.data import DataLoader
@@ -1349,8 +1368,6 @@ def _build_sft_trainer(
                     attention_mask = inputs["attention_mask"],
                     use_cache = False,
                 ).logits
-            if self.loss_scale is not None:
-                logits = self.loss_scale.scale_backward(logits.float(), ids)
             loss, per = per_adapter_loss(
                 logits,
                 inputs["labels"],
@@ -1358,6 +1375,9 @@ def _build_sft_trainer(
                 U,
                 model = self.model,
                 num_items_in_batch = num_items_in_batch,
+                grad_scale = None
+                if self.loss_scale is None
+                else self.loss_scale.grad_scale(ids, logits.device),
             )
             self.round_losses += per.detach().float().cpu()
             return loss

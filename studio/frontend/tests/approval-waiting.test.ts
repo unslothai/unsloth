@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A chat waiting on an Allow / Deny prompt is marked in the sidebar, and on Desktop the window asks
-// for attention. app-sidebar.tsx is .tsx, which node's type stripping cannot import, so its wiring
-// is pinned from source.
+// A chat awaiting Allow or Deny is marked in the sidebar and on Desktop asks for window attention;
+// app-sidebar.tsx cannot be imported by node type stripping, so it is checked from source.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -53,9 +52,8 @@ function parked(entries: Record<string, string>) {
 // Loaded once up front, so the module's own dynamic import is a cache hit in every case.
 await import("@tauri-apps/api/window");
 
-// The attention request is a dynamic import, so wait on the calls rather than a turn count. A case
-// expecting none still waits a while, so a call that should not happen has time to land. Real
-// time, since setTimeout and Date are mocked.
+// Waits on the attention calls rather than a turn count, since the request is a dynamic import; a
+// case expecting none waits real time, as setTimeout and Date are mocked.
 async function attention(
   expected: number,
 ): Promise<(number | null | undefined)[]> {

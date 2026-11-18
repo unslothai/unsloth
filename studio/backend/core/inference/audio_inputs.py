@@ -151,8 +151,7 @@ def _write_json(path: Path, meta: dict[str, Any]) -> None:
 
 
 def _protocol_options(source) -> dict:
-    # A probed concat or HLS playlist opens the files or URLs it names: a path may read
-    # files only, a buffer nothing.
+    # Playlists open what they name: a path may read files only, a buffer nothing.
     local = isinstance(source, (str, os.PathLike))
     return {"protocol_whitelist": "file" if local else "none"}
 
@@ -499,8 +498,7 @@ def _has_inputs() -> bool:
 
 
 def sweep_all_accounts() -> int:
-    """``sweep`` for the owner and every account with inputs; otherwise an account's expired
-    inputs would wait on disk for its next upload."""
+    """Sweeps owner and every account with inputs, else expired inputs wait until next upload."""
     from auth.storage import list_accounts
 
     accounts = [OWNER] + [
@@ -599,9 +597,7 @@ def sweep(
     ttl: Optional[float] = None,
     byte_cap: Optional[int] = None,
 ) -> int:
-    """Remove expired inputs, then the oldest beyond the byte cap; prepared copies of clips and
-    voices past the TTL; stale partial uploads. ``keep`` (the input just saved) is never removed.
-    Best-effort; returns the number of inputs removed."""
+    """Best-effort: removes expired inputs and the oldest over the byte cap, never the one just saved."""
     ttl = TTL_SECONDS if ttl is None else ttl
     byte_cap = BYTE_CAP if byte_cap is None else byte_cap
     try:
@@ -704,7 +700,9 @@ def resolve_source(ref: dict[str, Any]) -> Source:
             raise AudioInputError(404, "That clip is no longer in your history.")
         meta = audio_gallery._read_meta(audio_gallery._sidecar_path(source_id, path.parent)) or {}
         prompt = " ".join(str(meta.get("prompt") or "").split())
-        return Source("clip", source_id, path, (prompt[:60] or "Clip"))
+        # A cut name ends in an ellipsis, so the title it becomes doesn't stop mid-word.
+        name = prompt if len(prompt) <= 60 else prompt[:59].rstrip() + "…"
+        return Source("clip", source_id, path, (name or "Clip"))
     from core.inference import audio_voices
 
     path = audio_voices.voice_path(source_id)

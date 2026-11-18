@@ -3,6 +3,7 @@
 
 """Query-chunked VAE attention where no fused SDPA takes the head dim; the score tile is bounded."""
 
+import threading
 import types
 
 import pytest
@@ -16,8 +17,7 @@ from torch.utils._python_dispatch import TorchDispatchMode  # noqa: E402
 
 from core.inference import diffusion_vae_attn_chunked as C  # noqa: E402
 
-# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
-# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+# CUDA version tag: Studio also reads ROCm from "+rocm" (AMD wheels leave torch.version.hip unset).
 _CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 
@@ -81,7 +81,7 @@ def test_mode_bounds_the_score_tile(rocm):
         probe = _LargestTensor()
         with probe:
             ref = F.scaled_dot_product_attention(q, q, q)
-        assert probe.max_bytes >= full  # the math kernel materialises every score
+        assert probe.max_bytes >= full
         mode = C.chunked_attention_mode(budget)
         probe = _LargestTensor()
         with mode, probe:
@@ -97,7 +97,6 @@ def test_mode_chunks_keyword_calls(rocm):
         ref = F.scaled_dot_product_attention(q, q, q, scale = 0.2)
         mode = C.chunked_attention_mode(512 * 512 * 4 // 8)
         with mode:
-            # the call shape of diffusers' native dispatch_attention_fn
             out = F.scaled_dot_product_attention(
                 query = q,
                 key = q,
@@ -119,7 +118,7 @@ def test_mode_leaves_fused_small_masked_and_causal_calls_alone(monkeypatch):
     real = C.chunked_sdpa
     monkeypatch.setattr(C, "chunked_sdpa", lambda *a, **k: calls.append(1) or real(*a, **k))
     q = torch.randn(1, 1, 256, 16)
-    big = 1024  # bytes: every call here is over budget
+    big = 1024
     mask = torch.ones(256, 256, dtype = torch.bool)
     with _math():
         ref = F.scaled_dot_product_attention(q, q, q)
@@ -297,3 +296,232 @@ def test_speed_layer_installs_on_rocm_and_mps_even_when_off(rocm, monkeypatch):
         speed_mode = S.SPEED_OFF,
     )
     assert not any(getattr(m, C._PATCHED, False) for m in nvidia.modules())
+
+
+_HALF_FLAG = getattr(torch.backends.cuda, "fp16_bf16_reduction_math_sdp_allowed", None)
+
+
+@pytest.mark.skipif(_HALF_FLAG is None, reason = "torch < 2.5 has no fp32 upcast to skip")
+@pytest.mark.parametrize("chunk", [False, True])
+def test_half_math_keeps_dtype_scoped_and_close(rocm, monkeypatch, chunk):
+    monkeypatch.setattr(C, "_half_math_call", lambda q: q.dtype == torch.bfloat16)
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 1024, 512, generator = g).to(torch.bfloat16) for _ in range(3))
+    ref32 = F.scaled_dot_product_attention(q.float(), k.float(), v.float())
+    before = _HALF_FLAG()
+    with _math():
+        upcast = F.scaled_dot_product_attention(q, k, v)
+        torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(True)
+        try:
+            want = F.scaled_dot_product_attention(q, k, v)
+        finally:
+            torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(before)
+        mode = C.chunked_attention_mode(1024 * 1024 * 4 // 4 if chunk else 1 << 40)
+        with mode:
+            out = F.scaled_dot_product_attention(q, k, v)
+    assert _HALF_FLAG() == before
+    assert mode.half == 1 and mode.chunked == int(chunk)
+    if not chunk:
+        assert torch.equal(out, want)
+        assert not torch.equal(out, upcast)
+    torch.testing.assert_close(out.float(), ref32, atol = 2e-2, rtol = 2e-2)
+
+
+@pytest.mark.skipif(_HALF_FLAG is None, reason = "torch < 2.5")
+@pytest.mark.parametrize("scale", [None, 0.3, -0.3])
+def test_half_math_sdpa_matches_the_flag(scale):
+    g = torch.Generator().manual_seed(1)
+    q, k, v = (torch.randn(2, 3, 200, 64, generator = g).to(torch.bfloat16) for _ in range(3))
+    before = _HALF_FLAG()
+    with _math():
+        torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(True)
+        try:
+            want = F.scaled_dot_product_attention(q, k, v, scale = scale)
+        finally:
+            torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(before)
+    assert torch.equal(C.half_math_sdpa(q, k, v, scale), want)
+
+
+class _BlockFirstOp(TorchDispatchMode):
+    """Parks this thread at its first aten op until released (dispatch modes are per thread)."""
+
+    def __init__(self):
+        super().__init__()
+        self.inside = threading.Event()
+        self.release = threading.Event()
+
+    def __torch_dispatch__(
+        self,
+        func,
+        types_,
+        args = (),
+        kwargs = None,
+    ):
+        if not self.inside.is_set():
+            self.inside.set()
+            assert self.release.wait(10)
+        return func(*args, **(kwargs or {}))
+
+
+@pytest.mark.skipif(_HALF_FLAG is None, reason = "torch < 2.5")
+def test_half_math_leaves_other_threads_and_the_flag_alone(rocm, monkeypatch):
+    monkeypatch.setattr(C, "_half_math_call", lambda q: q.dtype == torch.bfloat16)
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 64, 64, generator = g).to(torch.bfloat16) for _ in range(3))
+    other = torch.randn(1, 1, 32, 64, generator = g).to(torch.bfloat16)
+
+    def unrelated():
+        with _math():
+            return F.scaled_dot_product_attention(other, other, other)
+
+    before = _HALF_FLAG()
+    reference = unrelated()
+    modes, blocks, errors = [], [], []
+
+    def vae_call(mode, block):
+        try:
+            with mode, block:
+                F.scaled_dot_product_attention(q, k, v)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            block.inside.set()
+
+    threads = []
+    try:
+        for _ in range(2):  # two overlapping VAE calls, as image and video decodes can be
+            modes.append(C.chunked_attention_mode(1 << 40))
+            blocks.append(_BlockFirstOp())
+            threads.append(threading.Thread(target = vae_call, args = (modes[-1], blocks[-1])))
+            threads[-1].start()
+            assert blocks[-1].inside.wait(10)
+        assert _HALF_FLAG() == before
+        assert torch.equal(unrelated(), reference)
+    finally:
+        for block, thread in zip(blocks, threads):
+            block.release.set()
+            thread.join(10)
+    assert not errors and not any(t.is_alive() for t in threads)
+    assert [m.half for m in modes] == [1, 1]
+    assert _HALF_FLAG() == before
+    assert torch.equal(unrelated(), reference)
+
+
+def test_half_math_runs_in_the_autocast_dtype(rocm, monkeypatch):
+    monkeypatch.setattr(C, "_half_math_call", lambda q: q.dtype in (torch.bfloat16, torch.float16))
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 128, 64, generator = g).to(torch.bfloat16) for _ in range(3))
+    want = C.half_math_sdpa(q, k, v)
+    mode = C.chunked_attention_mode(1 << 40)
+    with torch.autocast("cpu", dtype = torch.bfloat16), mode:
+        out = F.scaled_dot_product_attention(q, k.float(), v.float())
+    assert mode.half == 1 and out.dtype == torch.bfloat16
+    assert torch.equal(out, want)
+
+
+def _flux1_vae_scale_qkv(dtype):
+    """512 px FLUX.1 / Z-Image VAE mid-block shape (4096 tokens, head 512) at its real magnitudes: q / k entries up to
+    ~1600 / ~900 put every score near 1e6 (the real decoder measures 1e6 to 5e7), far past fp16's 65504, while the
+    softmax over the small per-key differences stays well conditioned."""
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 4096, 512, generator = g) for _ in range(3))
+    q[..., :16] = 1600.0
+    k[..., :16] = 900.0
+    return tuple(t.to(dtype) for t in (q, k, v))
+
+
+def _gate_on_cuda(monkeypatch):
+    """CPU tensors through the real ``_half_math_call`` dtype / ROCm / env gate, as if they were on the GPU."""
+    real = C._half_math_call
+    monkeypatch.setattr(
+        C,
+        "_half_math_call",
+        lambda q: real(
+            types.SimpleNamespace(device = types.SimpleNamespace(type = "cuda"), dtype = q.dtype)
+        ),
+    )
+
+
+def test_fp16_vae_scores_past_fp16_range_stay_finite(rocm, monkeypatch):
+    """#18016: ROCm cards without native bf16 (gfx103x) run the VAE in fp16; half math stored the scores in fp16, every
+    one overflowed to inf and the decode came back NaN. fp16 now takes the fp32 upcast (UNSLOTH_VAE_ATTN_HALF_MATH=0)."""
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV, raising = False)
+    _gate_on_cuda(monkeypatch)
+    q, k, v = _flux1_vae_scale_qkv(torch.float16)
+    assert torch.isnan(C.half_math_sdpa(q, k, v)).all()  # the overflow these inputs hit
+    mode = C.chunked_attention_mode(1 << 40)
+    with mode:
+        out = F.scaled_dot_product_attention(q, k, v)
+    assert mode.half == 0
+    assert torch.isfinite(out).all()
+    monkeypatch.setenv(C.VAE_ATTN_HALF_MATH_ENV, "0")
+    with C.chunked_attention_mode(1 << 40):
+        workaround = F.scaled_dot_product_attention(q, k, v)
+    assert torch.equal(out, workaround)
+    ref = F.scaled_dot_product_attention(q.double(), k.double(), v.double())
+    torch.testing.assert_close(out.double(), ref, atol = 0.2, rtol = 0)
+
+
+def test_bf16_vae_keeps_half_math_at_the_same_scores(rocm, monkeypatch):
+    """bf16 has fp32's exponent range: the same scores stay finite, so gfx11 / gfx1151 keep the faster half math."""
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV, raising = False)
+    _gate_on_cuda(monkeypatch)
+    q, k, v = _flux1_vae_scale_qkv(torch.bfloat16)
+    mode = C.chunked_attention_mode(1 << 40)
+    with mode:
+        out = F.scaled_dot_product_attention(q, k, v)
+    assert mode.half == 1
+    assert torch.equal(out, C.half_math_sdpa(q, k, v))
+    ref = F.scaled_dot_product_attention(q.double(), k.double(), v.double())
+    torch.testing.assert_close(out.double(), ref, atol = 0.25, rtol = 0)
+
+
+def test_half_math_gates(monkeypatch):
+    cuda_bf16 = types.SimpleNamespace(
+        device = types.SimpleNamespace(type = "cuda"), dtype = torch.bfloat16
+    )
+    cuda_fp16 = types.SimpleNamespace(
+        device = types.SimpleNamespace(type = "cuda"), dtype = torch.float16
+    )
+    cuda_fp32 = types.SimpleNamespace(
+        device = types.SimpleNamespace(type = "cuda"), dtype = torch.float32
+    )
+    cpu_bf16 = types.SimpleNamespace(device = types.SimpleNamespace(type = "cpu"), dtype = torch.bfloat16)
+    monkeypatch.setattr(torch.version, "hip", "7.2.0", raising = False)
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV, raising = False)
+    assert C._half_math_call(cuda_bf16)
+    assert not C._half_math_call(cuda_fp16)
+    assert not C._half_math_call(cuda_fp32)
+    assert not C._half_math_call(cpu_bf16)
+    monkeypatch.setenv(C.VAE_ATTN_HALF_MATH_ENV, "0")
+    assert not C._half_math_call(cuda_bf16)
+    monkeypatch.delenv(C.VAE_ATTN_HALF_MATH_ENV)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION)
+    assert not C._half_math_call(cuda_bf16)
+
+
+@pytest.mark.parametrize("redispatch", [False, True])
+def test_mode_matches_through_an_sdpa_wrapper(rocm, monkeypatch, redispatch):
+    """Something replaced F.scaled_dot_product_attention (Unsloth core's Windows ROCm wide-head guard, a
+    cuDNN workaround): the mode must still chunk, whether the wrapper re-dispatches torch functions
+    (func = the wrapper) or just calls torch's builtin (func = the builtin)."""
+    from torch.overrides import handle_torch_function, has_torch_function
+
+    builtin = torch._C._nn.scaled_dot_product_attention
+
+    def wrapper(query, key, value, *args, **kwargs):
+        if redispatch and has_torch_function((query, key, value)):
+            return handle_torch_function(
+                wrapper, (query, key, value), query, key, value, *args, **kwargs
+            )
+        return builtin(query, key, value, *args, **kwargs)
+
+    monkeypatch.setattr(F, "scaled_dot_product_attention", wrapper)
+    q = torch.randn(1, 1, 512, 32)
+    with _math():
+        ref = builtin(q, q, q)
+        with C.chunked_attention_mode(512 * 512 * 4 // 8) as mode:
+            out = F.scaled_dot_product_attention(q, q, q)
+    assert mode.chunked == 1
+    torch.testing.assert_close(out, ref, atol = 1e-5, rtol = 1e-5)

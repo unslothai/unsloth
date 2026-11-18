@@ -211,8 +211,22 @@ export interface GgufVariantDetail {
   partial?: boolean;
   partial_transport?: string | null;
   partial_resumable?: boolean;
+  /** An empty leftover quant folder, listed only so it can be deleted; no such file exists. */
+  cleanable?: boolean;
   /** Variants sharing this key share one companion download footprint. */
   dependency_key?: string | null;
+  /** Precision of the Engram table this quant ships with, when the repo publishes others. */
+  engram_precision?: string | null;
+  /** Engram precisions this quant loads with without downloading anything. */
+  engram_ready?: string[];
+}
+
+/** A standalone Engram table a GGUF repo publishes. */
+export interface EngramTableDetail {
+  precision: string;
+  filename: string;
+  size_bytes: number;
+  downloaded: boolean;
 }
 
 export interface GgufVariantsResponse {
@@ -223,6 +237,10 @@ export interface GgufVariantsResponse {
   dependencies_resolved?: boolean;
   /** "mlx" for precision folders of an MLX repo. */
   variant_format?: string | null;
+  /** Standalone Engram tables, most precise first; absent or empty when the repo has none. */
+  engram_tables?: EngramTableDetail[];
+  /** Whether this server's llama.cpp takes --ple; null when there are no tables or no probe. */
+  engram_supported?: boolean | null;
 }
 
 async function parseJsonOrThrow<T>(
@@ -452,6 +470,16 @@ export async function revealLocalModel(path: string, id?: string): Promise<void>
     body: JSON.stringify({ path, id }),
   });
   await throwIfNotOk(response);
+}
+
+export async function deleteUploadedDataset(id: string): Promise<void> {
+  const response = await authFetch("/api/hub/datasets/local/upload", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  await throwIfNotOk(response);
+  bumpInventoryVersion();
 }
 
 export async function deleteLocalModel(path: string, id?: string): Promise<void> {

@@ -282,10 +282,9 @@ def test_a_stale_unwritable_state_temp_is_not_published_as_our_state(tmp_path: P
 
 @behavioural
 def test_an_unstageable_state_leaves_the_marker_off_instead_of_copying(tmp_path: Path):
-    """Fail CLOSED when the staging path cannot be cleared either, exactly as the
-    refresh child does: notebooks we cannot record read as user edits on the next run,
-    which is `kept`, not `failed`, so the marker would be stamped over them for good.
-    A DIRECTORY at the staging path is unlinkable and untruncatable for root too."""
+    """Fail closed when the staging path cannot be cleared: unrecorded notebooks read as kept user
+    edits, so the marker would be stamped over them; a directory there cannot be unlinked or
+    truncated even by root."""
     template = _template(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
@@ -393,9 +392,8 @@ _ACCOUNTED = (
 
 
 def _exempt_lines(lines):
-    """record_state() is dead code (no caller anywhere; the companion test below
-    keeps it that way), and record_tmpstate() is the shared helper whose whole job is
-    to perform the append and report the status its CALLERS must handle."""
+    """record_state() is dead code kept dead by a companion test, while record_tmpstate() is the
+    shared append helper whose callers must handle the status it reports."""
     out = set()
     for name in ("record_state() {", "record_tmpstate() {"):
         start = next(i for i, l in enumerate(lines) if l.startswith(name))
@@ -465,9 +463,8 @@ def test_the_marker_advance_is_gated_on_the_failure_counters():
 
 
 def test_record_state_is_still_uncalled():
-    """The exemption above depends on it. A call site makes its unchecked append live,
-    and it has a second problem waiting: its loop is a PIPELINE, so a failure counter
-    set inside would not survive the subshell."""
+    """Any call site would make the unchecked append live, and its loop is a pipeline, so a failure
+    counter set inside would be lost in the subshell; the exemption depends on this."""
     body = SYNC.read_text(encoding = "utf-8")
     calls = [
         ln.strip()

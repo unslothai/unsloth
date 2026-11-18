@@ -327,8 +327,7 @@ class _LoRALinear(nn.Module):
 
 @needs_fp16
 def test_guard_holds_through_a_lora_injected_after_install():
-    """LoRA wrappers replace the Linear children after the guard is installed; the rescale lives on the parents, so the
-    adapted branch is scaled as a whole."""
+    """LoRA wrappers replace Linear children after the guard; the rescale lives on the parents."""
     targets = ["w1", "w2", "w3", "to_q", "to_k", "to_v", "to_out.0"]
 
     def adapted(model):
@@ -351,6 +350,148 @@ def test_guard_holds_through_a_lora_injected_after_install():
             _LoRALinear,
         )
         fixed = half(x.half())
+    assert torch.isfinite(fixed).all()
+    err = (fixed.float() - ref).abs().max() / ref.abs().max()
+    assert err < 2e-2, float(err)
+
+
+class _Layers(nn.Module):
+    """A ZImageTransformer2DModel-shaped root: ``layers`` is what the per-checkpoint headroom check reads."""
+
+    def __init__(self, n = 3):
+        super().__init__()
+        self.layers = nn.ModuleList([_Block() for _ in range(n)])
+
+    def forward(self, x):
+        for blk in self.layers:
+            x = blk(x)
+        return x
+
+
+def _undistilled_like_model(norm_std = 0.6):
+    """Branch magnitudes of the undistilled Z-Image base (bf16 L4: to_out 2.9e6, FFN w2 5.3e7), scaled down: past
+    what (16, 128) keeps finite, and an ffn_norm1 weight spread like the base checkpoint's (std 0.565)."""
+    torch.manual_seed(0)
+    model = _Layers()
+    with torch.no_grad():
+        for blk in model.layers:
+            blk.feed_forward.w1.weight.mul_(40.0)
+            blk.feed_forward.w3.weight.mul_(40.0)
+            blk.feed_forward.w2.weight.mul_(12000.0)
+            blk.attention.to_v.weight.mul_(2000.0)
+            blk.attention.to_out[0].weight.mul_(2000.0)
+            blk.ffn_norm1.weight.copy_(1.0 + norm_std * torch.randn(64))
+    return model
+
+
+@needs_fp16
+def test_undistilled_checkpoint_stays_finite_and_accurate():
+    """Z-Image base on a T4 decoded NaN: its FFN w2 output overflowed float16 even at 1/128."""
+    model = _undistilled_like_model()
+    x = torch.randn(2, 16, 64)
+    with torch.no_grad():
+        ref = model.float()(x.float())
+        blk = model.layers[0]
+        assert blk.feed_forward(blk.ffn_norm1(x)).abs().max() > 65504 * 128
+        half = model.half()
+        assert guard.install_fp16_guard(half, "rescale_post_norm", torch.float16) == 3
+        fixed = half(x.half())
+    assert torch.isfinite(fixed).all()
+    err = (fixed.float() - ref).abs().max() / ref.abs().max()
+    assert err < 2e-2, float(err)
+
+
+def test_checkpoint_headroom_resolution():
+    assert guard.resolve_checkpoint_recipe(_undistilled_like_model(0.6), "rescale_post_norm") == (
+        "rescale_post_norm_wide"
+    )
+    # Turbo's spread (0.350) and roots without `layers` keep the declared recipe; other recipes never widen.
+    assert (
+        guard.resolve_checkpoint_recipe(_undistilled_like_model(0.3), "rescale_post_norm")
+        == "rescale_post_norm"
+    )
+    assert guard.resolve_checkpoint_recipe(
+        nn.Sequential(_Block(), _Block()), "rescale_post_norm"
+    ) == ("rescale_post_norm")
+    assert (
+        guard.resolve_checkpoint_recipe(_undistilled_like_model(0.6), "rescale_residual")
+        == "rescale_residual"
+    )
+    assert guard.resolve_checkpoint_recipe(_undistilled_like_model(0.6), None) is None
+
+
+@needs_fp16
+def test_distilled_checkpoint_is_bit_identical_to_the_declared_recipe(monkeypatch):
+    """A Turbo-like checkpoint (low ffn_norm1 spread) installs exactly the (16, 128) recipe it always had."""
+
+    def turbo_like():
+        model = _Layers()
+        model.layers = nn.ModuleList(_overflowing_model())
+        with torch.no_grad():
+            for blk in model.layers:
+                blk.ffn_norm1.weight.copy_(1.0 + 0.3 * torch.randn(64))
+        return model.half()
+
+    x = torch.randn(2, 16, 64).half()
+    with torch.no_grad():
+        torch.manual_seed(2)
+        head = turbo_like()
+        assert guard.install_fp16_guard(head, "rescale_post_norm", torch.float16) == 2
+        out_head = head(x)
+        monkeypatch.setattr(guard, "_HEADROOM", {})
+        torch.manual_seed(2)
+        base = turbo_like()
+        assert guard.install_fp16_guard(base, "rescale_post_norm", torch.float16) == 2
+        out_base = base(x)
+    assert torch.isfinite(out_head).all()
+    assert torch.equal(out_head, out_base)
+    blk = head.layers[0]
+    assert blk.attention_norm2.eps == 1e-5 / 16**2 and blk.ffn_norm2.eps == 1e-5 / 128**2
+
+
+@needs_fp16
+def test_wide_recipe_is_removable():
+    model = _undistilled_like_model().half()
+    assert guard.install_fp16_guard(model, "rescale_post_norm", torch.float16) == 3
+    assert model.layers[0].ffn_norm2.eps == 1e-5 / 4096**2
+    assert model.layers[0].attention.norm_q.eps == 1e-5 / 256**2
+    assert guard.remove_fp16_guard(model) == 3
+    assert all(m.eps == 1e-5 for m in model.modules() if isinstance(m, _RMS))
+    assert "forward" not in model.layers[0].feed_forward.__dict__
+
+
+class _ModBlock(_Block):
+    """Modulated like Z-Image's main layers: attention(attention_norm1(x) * scale_msa)."""
+
+    def __init__(self, scale_msa):
+        super().__init__()
+        self.register_buffer("scale_msa", torch.full((64,), float(scale_msa)))
+
+    def forward(self, x):
+        x = x + 0.5 * self.attention_norm2(self.attention(self.attention_norm1(x) * self.scale_msa))
+        return x + 0.5 * self.ffn_norm2(self.feed_forward(self.ffn_norm1(x)))
+
+
+@needs_fp16
+def test_undistilled_modulated_attention_input_stays_finite():
+    """The base checkpoint's scale_msa reaches 5.4e4 (layers.28 at t=0), so attention_norm1(x) * scale_msa overflows
+    float16 before the attention runs: the wide recipe scales attention_norm1's output, not the attention input."""
+    torch.manual_seed(0)
+    model = _Layers()
+    model.layers = nn.ModuleList([_ModBlock(2e4) for _ in range(3)])
+    with torch.no_grad():
+        for blk in model.layers:
+            blk.ffn_norm1.weight.copy_(1.0 + 0.6 * torch.randn(64))
+    x = torch.randn(2, 16, 64)
+    with torch.no_grad():
+        ref = model.float()(x.float())
+        blk = model.layers[0]
+        assert (blk.attention_norm1(x) * blk.scale_msa).abs().max() > 65504
+        half = model.half()
+        assert guard.install_fp16_guard(half, "rescale_post_norm", torch.float16) == 3
+        fixed = half(x.half())
+        assert guard.remove_fp16_guard(half) == 3
+        assert not half.layers[0].attention_norm1._forward_hooks
     assert torch.isfinite(fixed).all()
     err = (fixed.float() - ref).abs().max() / ref.abs().max()
     assert err < 2e-2, float(err)

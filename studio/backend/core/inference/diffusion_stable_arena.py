@@ -370,11 +370,8 @@ def _set_tensor(owner: Any, leaf: str, kind: str, value: Any) -> None:
 
 
 def _entries(module: Any) -> list:
-    """(qualified name, registrations, kind, tensor) for every parameter and buffer, each tensor once.
-
-    ``registrations`` lists every (owner module, leaf name, qualified name) the tensor is registered under: a buffer
-    shared by several submodules (or names) has one registry slot per registration, and each must point at the placed
-    copy."""
+    """Yields (qualified name, registrations, kind, tensor) per tensor, each once; a shared buffer's
+    registrations must each point at the placed copy."""
     out: list = []
     index: dict = {}
     for mod_name, mod in module.named_modules(remove_duplicate = False):
@@ -440,9 +437,8 @@ class ModuleArena:
                 pass
 
     def detach(self) -> None:
-        """Give the module its stock onload back and close the range. Detached while the weights still live in the
-        range (graphing stopped mid-render), it stops placing at once and finishes on the offload that moves them
-        out, so the range is never left mapped."""
+        """Restores the stock onload and closes the range; if weights still sit in it when detached,
+        placing stops and the offload finishes, so the range is never left mapped."""
         module = self._module()
         if self.arena is not None and module is not None and self._referenced(module):
             self.failed = self.failed or "detached"
@@ -703,11 +699,9 @@ def arena_of(module: Any) -> Optional[ModuleArena]:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Block offload: stable addresses for the resident groups a prompt encode streams and pins again.
-#
-# The stock re-pin after an encode release lands at new allocator addresses, re-recording the step graph every new
-# prompt. A reserved range per group unmaps on release and remaps at the same addresses, so the step keeps replaying.
-# Opt out with UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0.
+# Block offload gives resident groups a reserved address range, since the stock re-pin after an
+# encode lands at new allocator addresses and re-records the step graph each prompt; opt out with
+# UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0.
 
 REPIN_ENV = "UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE"
 _REPIN_ATTR = "_unsloth_repin_range"

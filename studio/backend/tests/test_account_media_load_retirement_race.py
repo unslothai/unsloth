@@ -104,7 +104,7 @@ def _load():
 def test_load_parked_before_admission_is_refused_after_retirement(monkeypatch, engine):
     blocked, release, result = threading.Event(), threading.Event(), {}
 
-    def access_check(model_name):
+    def access_check(model_name, **_):
         blocked.set()
         release.wait(timeout = 30)
 
@@ -129,7 +129,7 @@ def test_load_parked_before_admission_is_refused_after_retirement(monkeypatch, e
 
 
 def test_load_admitted_before_retirement_is_torn_down(monkeypatch, engine):
-    monkeypatch.setattr(access, "require_model_access", lambda model_name: None)
+    monkeypatch.setattr(access, "require_model_access", lambda model_name, **_: None)
     status = run_as(ALICE, _load)
     assert status.loaded is False and engine.loading
     _retire()
@@ -138,7 +138,7 @@ def test_load_admitted_before_retirement_is_torn_down(monkeypatch, engine):
 
 
 def test_retirement_leaves_another_accounts_load_alone(monkeypatch, engine):
-    monkeypatch.setattr(access, "require_model_access", lambda model_name: None)
+    monkeypatch.setattr(access, "require_model_access", lambda model_name, **_: None)
     run_as(AccountContext("b" * 32, "bob"), _load)
     _retire()
     assert engine.unloaded == 0 and engine.loading
