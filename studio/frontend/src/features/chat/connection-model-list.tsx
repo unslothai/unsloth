@@ -126,7 +126,11 @@ export function ConnectionModelList({
   onClear: () => void;
 }) {
   // Subscribed so the names and facts follow a catalog refresh or a fresh listing.
-  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
+  useSyncExternalStore(
+    subscribeModelCatalog,
+    modelCatalogVersion,
+    modelCatalogVersion,
+  );
   useModelDisplayNamesVersion();
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
   const rows = models.map((model) => ({
