@@ -37,6 +37,18 @@ def _memory_headroom(monkeypatch):
     monkeypatch.setattr(policy, "_affordable_workers", lambda: 64)
 
 
+def _trainer_or_skip():
+    """core.training.trainer imports unsloth, which needs unsloth_zoo (absent from some CPU CI buckets)."""
+    # Not importorskip: unsloth_zoo raises NotImplementedError on hosts with no accelerator.
+    try:
+        import core.training.trainer as trainer
+    except Exception as error:
+        pytest.skip(
+            f"core.training.trainer is not importable here: {type(error).__name__}: {error}"
+        )
+    return trainer
+
+
 def _require_fork(multiprocess):
     """Skip without fork: spawn pools fail for unrelated reasons (WinError 10038, missing os.WNOHANG)."""
     if _HOST_PLATFORM == "win32" or "fork" not in multiprocess.get_all_start_methods():
@@ -530,7 +542,7 @@ def test_block_swap_counts_for_the_veto_only_when_it_offloads(layers, swapper, e
     """Auto with nothing to offload attaches no swapper: such a run keeps its tokenizer workers."""
     from types import SimpleNamespace
 
-    from core.training.trainer import _block_swap_engaged
+    _block_swap_engaged = _trainer_or_skip()._block_swap_engaged
 
     model = SimpleNamespace() if swapper is None else SimpleNamespace(_unsloth_block_swap = swapper)
     assert _block_swap_engaged(SimpleNamespace(_offload_layers = layers, model = model)) == expected
@@ -544,11 +556,7 @@ def test_the_batched_packing_pool_asks_the_same_veto(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC", raising = False)
     from types import SimpleNamespace
 
-    pytest.importorskip("core.training.trainer", exc_type = ImportError)
-    try:
-        import unsloth_zoo.dataset_num_proc  # noqa: F401
-    except ImportError:
-        pytest.importorskip("unsloth.dataset_num_proc", exc_type = ImportError)
+    _trainer_or_skip()
     from core.training import multi_lora_trainer
     import utils.datasets.online_tokenization as online
 
