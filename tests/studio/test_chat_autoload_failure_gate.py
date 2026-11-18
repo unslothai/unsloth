@@ -569,7 +569,8 @@ function recordLastLocalModelLoad(x: any) {
 function normalizeMaxSeqLength(value: any) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
-function resolveInitialConfig(_id: string, _variant: any) {
+function resolveInitialConfig(id: string, variant: any) {
+  EVENTS.push({ kind: "resolveInitialConfig", id, variant });
   return { config: {
     customContextLength: null, maxSeqLength: null, gpuMemoryMode: null,
     gpuLayers: null, nCpuMoe: null, selectedGpuIds: undefined,
@@ -1426,6 +1427,118 @@ def test_a_last_used_model_that_loads_is_still_recorded_without_a_warning():
     assert _loaded_paths(out) == ["r2"]
     assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == ["r2"]
     assert _toasts(out, "toast.warning") == []
+
+
+def test_a_failed_last_used_model_in_another_cache_is_still_named_and_kept():
+    out = _run(
+        "(() => { const snap = (repo, size) => {"
+        " const p = `/mnt/old/hub/models--${repo.replace('/', '--')}/snapshots/abc`;"
+        " return { id: p, load_id: p, path: p, model_id: repo, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: size,"
+        " capabilities: { can_chat: true, requires_variant: true } }; };"
+        " const big = snap('unsloth/gemma-4-26B-A4B-it-GGUF', 2);"
+        " const small = snap('unsloth/gemma-4-E2B-it-GGUF', 1);"
+        " return scenario({ ggufRepos: 'throw', modelRepos: 'throw', localModels: [small, big],"
+        " variants: { [big.path]: GEMMA_VARIANTS, [small.path]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: 'unsloth/gemma-4-26B-A4B-it-GGUF', kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' },"
+        " load: (p) => p.model_path === big.path ? new Error(OOM) : LOADED(p) }); })()"
+    )
+
+    big = "/mnt/old/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/abc"
+    small = "/mnt/old/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/abc"
+    assert _loaded_paths(out) == [big, small]
+    assert [e for e in out["events"] if e["kind"] == "recordLastLocal"] == []
+    [warning] = _toasts(out, "toast.warning")
+    assert warning["msg"] == "Loaded unsloth/gemma-4-E2B-it-GGUF (UD-Q4_K_XL)"
+    assert warning["description"].startswith(
+        "Your last used model unsloth/gemma-4-26B-A4B-it-GGUF (UD-Q4_K_XL) did not load: Failed to load model"
+    )
+
+
+def test_an_exact_last_used_row_outranks_a_snapshot_matched_by_repo_id():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " const v = (q, size) => ({ quant: q, filename: `${q}/m-${q}.gguf`, downloaded: true, size_bytes: size });"
+        " return scenario({ ggufRepos: [{ ...GEMMA, repo_id: R, load_id: R, size_bytes: 30 }],"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [R]: { variants: [v('Q4_K_M', 10), v('Q8_0', 20)] }, [p]: { variants: [v('Q4_K_M', 10)] } },"
+        " lastLoaded: { id: R, kind: 'gguf', ggufVariant: 'Q8_0' } }); })()"
+    )
+
+    loads = [
+        (e["model_path"], e["gguf_variant"]) for e in out["events"] if e["kind"] == "loadModel"
+    ]
+    assert loads == [("unsloth/gemma-4-26B-A4B-it-GGUF", "Q8_0")]
+
+
+def test_a_repo_id_snapshot_is_not_retried_when_the_exact_last_used_row_failed():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " const v = (q, size) => ({ quant: q, filename: `${q}/m-${q}.gguf`, downloaded: true, size_bytes: size });"
+        " return scenario({ ggufRepos: [{ ...GEMMA, repo_id: R, load_id: R, size_bytes: 30 },"
+        " { ...GEMMA, repo_id: 'small', load_id: 'small', size_bytes: 5 }],"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [R]: { variants: [v('Q4_K_M', 10), v('Q8_0', 20)] }, [p]: { variants: [v('Q4_K_M', 10)] },"
+        " small: { variants: [v('Q4_K_M', 5)] } },"
+        " lastLoaded: { id: R, kind: 'gguf', ggufVariant: 'Q8_0' },"
+        " load: (x) => x.model_path === 'small' ? LOADED(x) : new Error(OOM) }); })()"
+    )
+
+    assert _loaded_paths(out) == [
+        "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "small",
+    ]
+    assert out["result"]["loaded"] is True
+
+
+def test_a_repo_id_snapshot_loads_by_path_but_keeps_the_repo_settings_and_record():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " return scenario({ ggufRepos: 'throw', modelRepos: 'throw',"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [p]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: R, kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' } }); })()"
+    )
+
+    repo = "unsloth/gemma-4-26B-A4B-it-GGUF"
+    assert _loaded_paths(out) == [
+        "/mnt/old/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/old"
+    ]
+    assert [e["id"] for e in out["events"] if e["kind"] == "resolveInitialConfig"] == [repo]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == [repo]
+    assert _toasts(out, "toast.success")[0]["msg"] == f"Loaded {repo} (UD-Q4_K_XL)"
+
+
+def test_a_snapshot_remembered_by_its_path_keeps_its_path_keyed_settings():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " return scenario({ ggufRepos: 'throw', modelRepos: 'throw',"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [p]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: p, kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' } }); })()"
+    )
+
+    path = "/mnt/old/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/old"
+    assert _loaded_paths(out) == [path]
+    assert [e["id"] for e in out["events"] if e["kind"] == "resolveInitialConfig"] == [path]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == [path]
+    assert (
+        _toasts(out, "toast.success")[0]["msg"]
+        == "Loaded unsloth/gemma-4-26B-A4B-it-GGUF (UD-Q4_K_XL)"
+    )
 
 
 def test_without_a_last_used_model_a_fallback_is_recorded_as_before():

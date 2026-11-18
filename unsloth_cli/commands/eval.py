@@ -392,7 +392,8 @@ def resolve_tasks(
                 # copied alone so an unrelated broken yaml beside it cannot break lm-eval's index
                 custom_dir = (tmp_dir / "custom").resolve()
                 custom_dir.mkdir(parents = True, exist_ok = True)
-                shutil.copy2(path, custom_dir / f"{name}.yaml")
+                # lm-eval indexes by content, so a fixed file name keeps a task name like "../x" inside custom_dir.
+                shutil.copy2(path, custom_dir / f"task_{len(names)}.yaml")
                 add(name, custom_dir)
         elif suffix in _DATASET_SUFFIXES:
             if not path.exists():
