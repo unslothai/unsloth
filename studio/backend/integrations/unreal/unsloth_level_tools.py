@@ -56,11 +56,21 @@ class LevelSaveTools(unreal.ToolsetDefinition):
         world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
         if not unreal.EditorLoadingAndSavingUtils.save_map(world, level_path):
             raise RuntimeError(f"Saving the level as {level_path!r} failed; see the editor log")
+        if _current_level_path() != level_path:
+            # A level already on disk is copied, not renamed (FEditorFileUtils SaveWorld duplicates it), and
+            # the editor stays on the original with its unsaved changes. Saving dirty map packages now would
+            # write those changes over the original, so open the copy first: loading discards them, and the
+            # copy already has them.
+            unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).load_level(level_path)
+        if _current_level_path() != level_path:
+            raise RuntimeError(
+                f"Saved {level_path!r} but could not open it; {current!r} was left as it is on disk"
+            )
         if not unreal.EditorLoadingAndSavingUtils.save_dirty_packages(True, True):
             raise RuntimeError(
                 f"The level was saved as {level_path!r}, but some other assets were not; see the editor log"
             )
-        return _current_level_path()
+        return level_path
 
     @toolset_registry.tool_call
     @staticmethod

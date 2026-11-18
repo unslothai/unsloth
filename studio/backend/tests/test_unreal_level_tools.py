@@ -111,6 +111,7 @@ class _FakeEditor:
         self.level, self.existing, self.calls = level, set(existing), []
         self.ticks = []
         self.assets_save = True
+        self.load_switches = True  # LevelEditorSubsystem.load_level opens the level asked for
         world = types.SimpleNamespace(
             get_outermost = lambda: types.SimpleNamespace(get_name = lambda: self.level)
         )
@@ -119,20 +120,34 @@ class _FakeEditor:
         class Utils:
             @staticmethod
             def save_map(w, path):
+                # As in UE 5.8 SaveWorld: a never-saved level is renamed (the editor follows it); a level
+                # already on disk is duplicated and the editor stays on the original.
                 editor.calls.append(("save_map", w is world, path))
-                editor.level = path
+                editor.existing.add(path)
+                if editor.level.startswith("/Temp/"):
+                    editor.level = path
                 return True
 
             @staticmethod
             def save_dirty_packages(maps, content):
-                editor.calls.append(("save_dirty_packages", maps, content))
+                # Map packages are the open level's, so this writes whatever level is open.
+                editor.calls.append(("save_dirty_packages", maps, content, editor.level))
                 return editor.assets_save
+
+        def load_level(path):
+            editor.calls.append(("load_level", path))
+            if editor.load_switches:
+                editor.level = path
+            return editor.load_switches
 
         self.module = types.SimpleNamespace(
             uclass = lambda: (lambda cls: cls),
             ToolsetDefinition = object,
-            UnrealEditorSubsystem = object,
-            get_editor_subsystem = lambda _cls: types.SimpleNamespace(get_editor_world = lambda: world),
+            UnrealEditorSubsystem = "UnrealEditorSubsystem",
+            LevelEditorSubsystem = "LevelEditorSubsystem",
+            get_editor_subsystem = lambda cls: types.SimpleNamespace(get_editor_world = lambda: world)
+            if cls == "UnrealEditorSubsystem"
+            else types.SimpleNamespace(load_level = load_level),
             EditorAssetLibrary = types.SimpleNamespace(does_asset_exist = lambda p: p in self.existing),
             EditorLoadingAndSavingUtils = Utils,
             log = lambda _msg: None,
@@ -188,7 +203,7 @@ def test_toolset_saves_a_new_level_then_the_current_one(monkeypatch):
     assert tools.save_current_level_as(" /Game/Maps/City/ ") == "/Game/Maps/City"
     assert editor.calls == [
         ("save_map", True, "/Game/Maps/City"),
-        ("save_dirty_packages", True, True),
+        ("save_dirty_packages", True, True, "/Game/Maps/City"),
     ]
     assert tools.save_current_level() == "/Game/Maps/City"
 
@@ -211,3 +226,28 @@ def test_save_as_reports_assets_that_did_not_save(monkeypatch):
     editor.assets_save = False  # e.g. a read-only Blueprint package
     with pytest.raises(RuntimeError, match = "some other assets were not"):
         toolset.LevelSaveTools.save_current_level_as("/Game/Maps/City")
+
+
+def test_save_as_from_a_saved_level_leaves_the_original_on_disk(monkeypatch):
+    # An agent emptied a saved city, then saved "as" a new level: UE copies a level that is already on
+    # disk and stays on the original, so saving dirty maps then wrote the emptied city over itself.
+    editor = _FakeEditor(level = "/Game/Maps/City", existing = {"/Game/Maps/City"})
+    toolset, _ = _load_toolset(monkeypatch, editor)
+    assert (
+        toolset.LevelSaveTools.save_current_level_as("/Game/Maps/Village") == "/Game/Maps/Village"
+    )
+    assert editor.calls == [
+        ("save_map", True, "/Game/Maps/Village"),
+        ("load_level", "/Game/Maps/Village"),
+        ("save_dirty_packages", True, True, "/Game/Maps/Village"),
+    ]
+    assert toolset.LevelSaveTools.get_current_level_path() == "/Game/Maps/Village"
+
+
+def test_save_as_that_cannot_open_the_copy_saves_nothing_more(monkeypatch):
+    editor = _FakeEditor(level = "/Game/Maps/City", existing = {"/Game/Maps/City"})
+    editor.load_switches = False
+    toolset, _ = _load_toolset(monkeypatch, editor)
+    with pytest.raises(RuntimeError, match = "could not open it"):
+        toolset.LevelSaveTools.save_current_level_as("/Game/Maps/Village")
+    assert not [call for call in editor.calls if call[0] == "save_dirty_packages"]
