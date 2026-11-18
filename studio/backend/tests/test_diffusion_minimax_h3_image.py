@@ -1681,7 +1681,7 @@ def test_the_plan_is_redone_for_a_local_text_encoder_folder(h3i, release, tmp_pa
     pipe.release()
 
 
-def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i):
+def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i, monkeypatch):
     args = {
         "vram_gb": 95.0,
         "host_gb": 177.0,
@@ -1702,6 +1702,10 @@ def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i):
         h3i.replan_for_encoder(
             h3i.plan_placement(te_gb = 27.2, **small), h3i.H3_IMAGE_TE_BF16_GB, small
         )
+    # the measured working set floors the stream tier at about 4.5 GB, the old pricing at 7.2 GB
+    with pytest.raises(RuntimeError, match = "free GPU memory"):
+        h3i.plan_placement(te_gb = 27.2, **dict(args, vram_gb = 4.0))
+    monkeypatch.setenv(h3i.MEASURED_WORKING_SET_ENV, "0")
     with pytest.raises(RuntimeError, match = "free GPU memory"):
         h3i.plan_placement(te_gb = 27.2, **dict(args, vram_gb = 6.0))
 

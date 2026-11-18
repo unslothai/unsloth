@@ -102,6 +102,17 @@ class EditorTest(EditorSettings):
     consent: bool = Field(default = False, strict = True)
 
 
+class UnrealToolsInstall(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    project_path: StrictStr = Field(..., min_length = 1, max_length = 4096, pattern = r"^[^\x00]*$")
+
+
+class UnrealToolsInstallResult(BaseModel):
+    files: list[str]
+    restart_required: bool = True
+
+
 class EditorSetup(EditorSettings):
     is_enabled: bool
     consent: bool = False

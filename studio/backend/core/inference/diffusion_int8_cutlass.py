@@ -7,7 +7,10 @@ Any load failure or tile failing the bit-exact probe keeps today's path; a tile 
 the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` skips the race.
 ``UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE=0`` lets the 4096-row winner serve every large M (no ``_RACE_M_HUGE``);
 ``UNSLOTH_DIFFUSION_INT8_CUTLASS_SUSTAINED=0`` decides every race on interleaved short timings, ``=huge`` only the
-16384-row race on sustained timings (the 4096-row race on short ones, as before)."""
+16384-row race on sustained timings (the 4096-row race on short ones, as before).
+Large calls (1024 to 8191 rows) take the winner of a race at their own row bucket once an earlier load recorded it
+(``row_bucket``: a 1024^2 FLUX.3 joint call has 4176 rows, where the 4096-row winner's 256-row tile leaves a 17th row
+tile 31% full); ``UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE=0`` keeps the 4096-row race for every large call."""
 
 from __future__ import annotations
 
@@ -59,24 +62,55 @@ def huge_race_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
-def race_points() -> tuple:
-    """Race M values for a weight shape's plan entry: ``_RACE_M`` plus ``_RACE_M_HUGE`` unless switched off."""
-    return _RACE_M + ((_RACE_M_HUGE,) if huge_race_enabled() else ())
+ROW_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE"
+# A large call's row bucket: rounding up to 64 rows keeps the row tile count of every M tile (64, 128, 256 rows).
+ROW_BUCKET = 64
+# Recorded buckets raced per weight shape (the most recently seen); more keeps the 4096-row race.
+_MAX_ROW_RACES = 2
+
+
+def row_race_enabled() -> bool:
+    raw = (os.environ.get(ROW_RACE_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def row_bucket(m: int) -> int:
+    return -(-int(m) // ROW_BUCKET) * ROW_BUCKET
+
+
+def large_points(rows: Any = None) -> tuple:
+    """Recorded row buckets (``rows``, oldest first) in place of the 4096-row race when any exist."""
+    if row_race_enabled() and rows:
+        picks = [int(b) for b in rows if _LARGE_M <= int(b) < _HUGE_M][-_MAX_ROW_RACES:]
+        if picks:
+            return tuple(sorted(set(picks)))
+    return (max(_RACE_M),)
+
+
+def race_points(rows: Any = None) -> tuple:
+    return (min(_RACE_M),) + large_points(rows) + ((_RACE_M_HUGE,) if huge_race_enabled() else ())
 
 
 def slot(m: int, entry: dict) -> Optional[int]:
     """The plan entry's tile for an ``m``-row call: below ``_LARGE_M`` the small race, from ``_HUGE_M`` the huge race
-    when the entry has one (None there keeps today's path), else the 4096-row race."""
+    when the entry has one (None there keeps today's path), else the race at the call's row bucket, else the nearest
+    large race (the 4096-row one when nothing was recorded)."""
     if m < _LARGE_M:
         return entry.get(min(_RACE_M))
     if m >= _HUGE_M and _RACE_M_HUGE in entry:
         return entry.get(_RACE_M_HUGE)
-    return entry.get(max(_RACE_M))
+    b = row_bucket(m)
+    if b in entry:
+        return entry[b]
+    if max(_RACE_M) in entry:
+        return entry[max(_RACE_M)]
+    large = [r for r in entry if _LARGE_M <= r < _HUGE_M]
+    return entry[min(large, key = lambda r: abs(r - m))] if large else None
 
 
 def large_slots(entry: dict) -> tuple:
     """Tiles of the entry's slots that serve M >= ``_LARGE_M``."""
-    return tuple(entry.get(m) for m in (max(_RACE_M), _RACE_M_HUGE) if m in entry)
+    return tuple(v for r, v in entry.items() if r >= _LARGE_M)
 
 
 def family(capability: Optional[tuple]) -> Optional[int]:

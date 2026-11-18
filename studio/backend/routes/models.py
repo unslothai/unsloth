@@ -1433,6 +1433,8 @@ async def remove_scan_folder_endpoint(
 
 def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
     """Any weight file counts, but an empty Ollama or LM Studio scaffold does not."""
+    from hub.services.models import ollama_mlx
+
     # Resolve the model layer blob: a failed pull can leave a manifest with no blob.
     visited = 0
     manifests = directory / "manifests"
@@ -1458,7 +1460,11 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                 for layer in layers:
                     if not isinstance(layer, dict):
                         continue
-                    if layer.get("mediaType") != "application/vnd.ollama.image.model":
+                    media_type = layer.get("mediaType")
+                    # MLX-format tags count only where Studio can load them.
+                    if media_type != "application/vnd.ollama.image.model" and not (
+                        media_type == ollama_mlx.TENSOR_MEDIA_TYPE and ollama_mlx.mlx_host()
+                    ):
                         continue
                     digest = layer.get("digest", "")
                     if (
