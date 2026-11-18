@@ -2371,3 +2371,25 @@ def test_each_visible_gpu_reads_its_own_engines(win_rocm, monkeypatch):
     monkeypatch.setattr(hw, "_rocm_windows_d3dkmt_temperature_c", lambda luid: 50.0)
     devices = hw.get_gpu_utilization()["devices"]
     assert [d["gpu_utilization_pct"] for d in devices] == [90.0, 0.0]
+
+
+def test_rows_the_hip_join_rejects_still_leave_each_gpu_its_luid(win_rocm, monkeypatch):
+    """Dedicated rows that do not join by LUID (here the discrete card's row is missing) cost the VRAM
+    join, not the adapter identity the engine and temperature reads need."""
+    _igpu_beside_dgpu(monkeypatch)
+    rows = [(f"luid_0x00000000_0x{IGPU_LUID:08x}_phys_0", 0.3 * GB)]
+    monkeypatch.setattr(
+        hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda counter = "Dedicated Usage": rows
+    )
+    assert (
+        hw._match_adapter_used_by_hip_luid(
+            rows,
+            [
+                {"visible_ordinal": i, "name": n, "total_bytes": 1, "dedicated_bytes": 1}
+                for i, n in enumerate(("a", "b"))
+            ],
+        )
+        is None
+    )
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["luid"] for d in devices] == [DGPU_LUID, IGPU_LUID]

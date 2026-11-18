@@ -4932,6 +4932,7 @@ def _rocm_windows_per_device_vram(
         adapters = _rocm_windows_perf_counter_vram_by_adapter()
     aggregate_gb: Optional[float] = None
     whole_adapter: list[Optional[int]] = [None] * len(dev_meta)
+    by_hip = None
     if adapters:
         # Identity first, in the order the keys are exact: HIP's own LUID, then the DirectX record reached by name or arch. Either answers where capacity ranking declines unless the sizes force a pairing, which one visible GPU never does.
         by_hip = _match_adapter_used_by_hip_luid(adapters, dev_meta)
@@ -4954,15 +4955,26 @@ def _rocm_windows_per_device_vram(
     else:
         # Counter unavailable: show every GPU with a correct total, used unknown.
         assigned = [None] * len(dev_meta)
-        # A standard user's Get-Counter overruns its timeout (#18005), but HIP still names each plain adapter,
-        # which the in-process engine and temperature reads need. A linked node (mask set) stays unknown.
+
+    # The engine and temperature reads need only the adapter's LUID, not a VRAM join: when the counters failed (a standard user's
+    # Get-Counter overruns its timeout, #18005) or their rows did not join by LUID, HIP still names each plain adapter. A linked node stays unknown.
+    engine_luid = whole_adapter
+    if by_hip is None:
         identities = _rocm_windows_hip_adapter_ids(
             [int(meta["visible_ordinal"]) for meta in dev_meta],
             [str(meta["name"]) for meta in dev_meta],
         )
+        # Rows that name a second node on the LUID mean a linked adapter HIP shows only part of.
+        linked = {
+            luid
+            for instance, _ in adapters or []
+            if (luid := _parse_adapter_luid(instance)) is not None
+            and re.search(r"_phys_(?!0(?!\d))\d+", instance, re.IGNORECASE)
+        }
         if identities is not None and len({luid for luid, _ in identities}) == len(identities):
-            whole_adapter = [
-                None if node_mask & (node_mask - 1) else luid for luid, node_mask in identities
+            engine_luid = [
+                None if node_mask & (node_mask - 1) or luid in linked else luid
+                for luid, node_mask in identities
             ]
 
     # A pool-scoped total needs a numerator spanning the same ground, and Dedicated Usage saturates at the carve-out, so pairing them reports a loaded card as mostly free (#9362 measured the plateau at ~30.5 GiB on a gfx1151). _rocm_windows_unified_used_bytes sums Dedicated and Shared for exactly this, and a decline must null the reading rather than leave the carve-out figure under a pool-sized total. Pool-scoped covers both routes -- a total this call widened, and a confirmed APU whose props.total_memory already spanned the pool -- while being a UMA part is not enough by itself, since an APU whose driver probe failed still carries a carve-out-sized total Dedicated Usage is right for.
@@ -4989,13 +5001,7 @@ def _rocm_windows_per_device_vram(
             # Beside another GPU only HIP's LUID says which counters are the iGPU's (#8942).
             for position, luid in enumerate(whole_adapter):
                 meta = dev_meta[position]
-                # HIP alone can name the LUID (#18005); without a Dedicated snapshot there is nothing to sum.
-                if (
-                    pool_scoped[position]
-                    and meta["positively_unified"]
-                    and luid is not None
-                    and adapters
-                ):
+                if pool_scoped[position] and meta["positively_unified"] and luid is not None:
                     assigned[position] = _rocm_windows_unified_used_bytes_for_luid(
                         luid, adapters, float(meta["total_bytes"])
                     )
@@ -5010,7 +5016,7 @@ def _rocm_windows_per_device_vram(
             )
 
     devices: list[Dict[str, Any]] = []
-    for meta, used_bytes, luid in zip(dev_meta, assigned, whole_adapter):
+    for meta, used_bytes, luid in zip(dev_meta, assigned, engine_luid):
         total_gb = round(meta["total_bytes"] / (1024**3), 2)
         used_gb = round(used_bytes / (1024**3), 2) if used_bytes is not None else None
         devices.append(
