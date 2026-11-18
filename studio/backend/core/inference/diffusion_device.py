@@ -141,7 +141,8 @@ def install_vae_sync(
 
     def _sync(_module, _args, _output) -> None:
         try:
-            torch.mps.synchronize()
+            # torch.mps.synchronize() skips the stream's queue and aborts under a second thread.
+            torch.zeros(1, device = "mps").cpu()
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 
