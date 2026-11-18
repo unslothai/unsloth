@@ -264,3 +264,20 @@ def test_auto_holds_weights_for_one_step_only(monkeypatch):
     monkeypatch.setattr(dc, "_MODE", float(GiB))
     dc._on_optimizer_step(None, (), {})
     assert dc.cached_count() == 1
+
+
+def test_admission_keeps_the_transient_reserve(monkeypatch):
+    # Memory taken after the safe point (a callback's tensor, a second model) is not in the budget: an
+    # admission must still leave 2 x transient + margin usable.
+    _memory(monkeypatch, usable = 10 * GiB)  # transient 1 GiB (peak 4 - allocated 3)
+    dc._SEEN.add(None)
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 7 * GiB
+    _memory(monkeypatch, usable = 3 * GiB - 1)  # 7 GiB allocated by someone else since then
+    calls = []
+    W, absmax = _weight()
+    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16)
+    assert calls == [False] and dc.cached_count() == 0 and dc.STATS["declined"] == 1
+    _memory(monkeypatch, usable = 3 * GiB + 4096)
+    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16)
+    assert calls == [False, True] and dc.cached_count() == 1

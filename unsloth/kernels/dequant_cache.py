@@ -446,7 +446,14 @@ def _miss(W, absmax, decode, dtype, index):
             return decode(False)
         measured = _usable(index)
         ref = _storage_ref(W)
-        if ref is None or measured is None or measured[0] - need < _margin(measured[1]):
+        # Leave the budget's reserve (2 x transient + margin) free after every admission, whatever was allocated
+        # since the safe point (a callback's tensor, a second model): the rest of the step still fits.
+        if (
+            ref is None
+            or measured is None
+            or measured[0] - need
+            < _margin(measured[1]) + int(TRANSIENT_SLACK * _TRANSIENT.get(index, 0))
+        ):
             STATS["declined"] += 1
             return decode(False)
         try:
