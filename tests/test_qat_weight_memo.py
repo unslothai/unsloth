@@ -171,22 +171,49 @@ def test_disabled_at_prepare(monkeypatch):
     assert not any("_unsloth_qat_weight_memo" in vars(m) for m in model.modules())
 
 
-def test_compile_trace_unchanged(monkeypatch):
+def _compile_count(model, x):
     from torch._dynamo.testing import CompileCounter
 
-    model = _model("int8-int4", monkeypatch)
-    x = torch.randn(4, DIM)
-    for _ in range(2):
-        _run(model, x)
     torch._dynamo.reset()
     counter = CompileCounter()
     compiled = torch.compile(model, backend = counter, fullgraph = True)
     with torch.no_grad():
         for _ in range(2):
             out = compiled(x)
-        monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
+    return counter.frame_count, out
+
+
+@pytest.mark.parametrize("scheme", ["int4", "int8-int4"])
+def test_compile_trace_unchanged(scheme, monkeypatch):
+    model = _model(scheme, monkeypatch)
+    x = torch.randn(4, DIM)
+    for _ in range(2):
+        _run(model, x)
+    try:
+        frames, out = _compile_count(model, x)
+    except Exception as error:
+        # Some torchao / torch pairs cannot trace their own quantizers with fullgraph (torchao 0.17 +
+        # torch 2.11 skips _per_token_quant_qparam_dim_check). That is only this PR's problem if the
+        # unwrapped quantizer forward does trace there.
+        owners = {
+            owner
+            for m in model.modules()
+            for owner in type(m).__mro__
+            if getattr(owner.__dict__.get("forward"), "_unsloth_qat_weight_memo", False)
+        }
+        for owner in owners:
+            monkeypatch.setattr(owner, "forward", owner.__dict__["forward"].__wrapped__)
+        try:
+            _compile_count(model, x)
+        except Exception:
+            pytest.skip(
+                f"{scheme} does not compile fullgraph without the memo either: {type(error).__name__}"
+            )
+        raise
+    monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
+    with torch.no_grad():
         want = model(x)
-    assert counter.frame_count == 1
+    assert frames == 1
     assert torch.equal(out, want)
 
 
