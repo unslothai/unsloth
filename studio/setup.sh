@@ -1145,6 +1145,30 @@ _has_local_rpc_server() {
     return 1
 }
 
+# 0 when $1/build was configured in another directory and moved here (source builds are staged
+# in ${LLAMA_CPP_DIR}.build.$$): cmake cannot reconfigure or build in such a tree any more.
+_llama_build_relocated() {
+    local _cache="$1/build/CMakeCache.txt" _was _here
+    [ -f "$_cache" ] || return 1
+    _was="$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' "$_cache" | head -n 1)"
+    [ -n "$_was" ] || return 1
+    _here="$(CDPATH= cd -P -- "$1/build" 2>/dev/null && pwd -P)" || return 1
+    # The recorded path may name this directory through a symlink.
+    [ -d "$_was" ] && _was="$(CDPATH= cd -P -- "$_was" 2>/dev/null && pwd -P)"
+    [ "$_was" != "$_here" ]
+}
+
+# 0 when a reused source build predates ggml-rpc-server and only a fresh build can add it: the tree
+# has the target, the moved build directory never enabled RPC, and RPC was not turned off on purpose.
+_llama_rpc_needs_rebuild() {
+    local _dir=$1
+    _has_local_rpc_server "$_dir" && return 1
+    [ -n "$(_llama_rpc_server_target "$_dir")" ] || return 1
+    _llama_build_relocated "$_dir" || return 1
+    [ -f "$_dir/build/.unsloth_rpc_disabled" ] && return 1
+    ! grep -q '^GGML_RPC:BOOL=ON' "$_dir/build/CMakeCache.txt"
+}
+
 # An install made before this tree built ggml-rpc-server has llama-server and nothing else new.
 _backfill_local_rpc_server() {
     local _dir=$1 _target _jobs
@@ -1158,6 +1182,10 @@ _backfill_local_rpc_server() {
     fi
     if [ ! -f "$_dir/build/CMakeCache.txt" ]; then
         substep "the reused build has no $_target and no configured build directory to add it to; re-run with UNSLOTH_LLAMA_FORCE_COMPILE=1 for RPC support" "$C_WARN"
+        return 0
+    fi
+    if _llama_build_relocated "$_dir"; then
+        substep "the reused build has no $_target and was configured in another directory, so it cannot be added in place; re-run with UNSLOTH_LLAMA_FORCE_COMPILE=1 for RPC support" "$C_WARN"
         return 0
     fi
     substep "the reused build has no $_target; building it in place..."
@@ -1205,6 +1233,8 @@ _llama_build_rpc_server() {
     if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then _args="$CMAKE_ARGS"; else _args="$CPU_FALLBACK_CMAKE_ARGS"; fi
     rm -rf "$_BUILD_TMP/build"
     if run_quiet_no_exit "cmake llama.cpp (no rpc)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $_args -DGGML_RPC=OFF; then
+        # A later setup run must not rebuild this tree to add the RPC server it turned off.
+        : > "$_BUILD_TMP/build/.unsloth_rpc_disabled" 2>/dev/null || true
         run_quiet_no_exit "build llama-server (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
         if [ "$BUILD_OK" = true ]; then
             run_quiet_no_exit "build llama-quantize (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
@@ -4839,6 +4869,14 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
     python "$SCRIPT_DIR/install_llama_prebuilt.py" \
         --check-existing-install "$LLAMA_CPP_DIR" >/dev/null 2>&1 \
         || _LLAMA_REUSE_EXISTING=false
+fi
+
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && [ "$_LLAMA_REUSE_EXISTING" = true ] && \
+   [ "$_LLAMA_FORCE_COMPILE" != "1" ] && [ -z "$_LLAMA_PR" ] && \
+   _llama_rpc_needs_rebuild "$LLAMA_CPP_DIR"; then
+    # Its build directory was moved into place, so the target cannot be added to it.
+    substep "the existing source build predates ggml-rpc-server; rebuilding once to add it"
+    _LLAMA_REUSE_EXISTING=false
 fi
 
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \

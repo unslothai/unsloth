@@ -1592,6 +1592,34 @@ function Get-LlamaRpcServerTarget {
 
 # Best-effort, like Step G: adds the RPC server to a reused build that predates it. The target
 # exists only once the build is configured with GGML_RPC=ON; cmake keeps every other cached option.
+# True when $BuildDir was configured in another directory and moved here (source builds are staged
+# in "$LlamaCppDir.build.$PID"): cmake cannot reconfigure or build in such a tree any more.
+function Test-LlamaBuildRelocated {
+    param([string]$BuildDir)
+    $cache = Join-Path $BuildDir "CMakeCache.txt"
+    if (-not (Test-PathQuiet $cache "Leaf")) { return $false }
+    $line = Select-String -LiteralPath $cache -Pattern '^CMAKE_CACHEFILE_DIR:INTERNAL=(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $line) { return $false }
+    try {
+        $was = [System.IO.Path]::GetFullPath($line.Matches[0].Groups[1].Value.Trim()).TrimEnd('\', '/')
+        $here = [System.IO.Path]::GetFullPath($BuildDir).TrimEnd('\', '/')
+    } catch { return $false }
+    return -not [string]::Equals($was, $here, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# True when a reused source build predates ggml-rpc-server and only a fresh build can add it: the
+# tree has the target and its moved build directory never enabled RPC.
+function Test-LlamaRpcNeedsRebuild {
+    param([string]$SourceDir, [string]$BuildDir)
+    foreach ($rpcName in @('ggml-rpc-server', 'rpc-server')) {
+        if (Test-PathQuiet (Join-Path $BuildDir "bin\Release\$rpcName.exe") "Leaf") { return $false }
+    }
+    if (-not (Get-LlamaRpcServerTarget -SourceDir $SourceDir)) { return $false }
+    if (-not (Test-LlamaBuildRelocated -BuildDir $BuildDir)) { return $false }
+    $cache = Join-Path $BuildDir "CMakeCache.txt"
+    return -not (Select-String -LiteralPath $cache -Pattern '^GGML_RPC:BOOL=ON' -Quiet -ErrorAction SilentlyContinue)
+}
+
 function Backfill-LlamaRpcServer {
     param([string]$SourceDir, [string]$BuildDir)
     foreach ($rpcName in @('ggml-rpc-server', 'rpc-server')) {
@@ -1602,6 +1630,10 @@ function Backfill-LlamaRpcServer {
     $cache = Join-Path $BuildDir "CMakeCache.txt"
     if (-not (Test-PathQuiet $cache "Leaf")) {
         substep "the reused build has no $target and no configured build directory to add it to; re-run with UNSLOTH_LLAMA_FORCE_COMPILE=1 for RPC support" "Yellow"
+        return
+    }
+    if (Test-LlamaBuildRelocated -BuildDir $BuildDir) {
+        substep "the reused build has no $target and was configured in another directory, so it cannot be added in place; re-run with UNSLOTH_LLAMA_FORCE_COMPILE=1 for RPC support" "Yellow"
         return
     }
     if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
@@ -9887,6 +9919,12 @@ $CanReuseLlamaBuild = (Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedReb
     $RequestedLlamaTag -ne "master"
 if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinked) {
     $CanReuseLlamaBuild = Test-LlamaTreeStillHealthy $LlamaCppDir
+}
+if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinked -and `
+    (Test-LlamaRpcNeedsRebuild -SourceDir $LlamaCppDir -BuildDir $BuildDir)) {
+    # Its build directory was moved into place, so the target cannot be added to it.
+    substep "the existing source build predates ggml-rpc-server; rebuilding once to add it"
+    $CanReuseLlamaBuild = $false
 }
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild
 if ($script:LlamaBuildToolsDeclined -and -not $CanReuseLlamaBuild) { $WillBuildLlamaFromSource = $false }
