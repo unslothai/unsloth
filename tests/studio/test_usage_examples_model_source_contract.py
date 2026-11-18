@@ -95,7 +95,8 @@ def test_a_failed_refresh_does_not_erase_what_the_server_holds():
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "listOpenAIModels().catch(() => null)" in hook
     assert ".catch(() => null)," in hook
-    assert "if (models !== null) setCatalog(models);" in hook
+    # Linked-instance models are filtered out of a catalog that did load; a null one is never set.
+    assert re.search(r"if \(models !== null\)\s*setCatalog\(models\.filter\(", hook)
     assert "if (settings !== null) {" in hook
     assert "catch(() => [] as OpenAIModel[])" not in hook
     assert "catch(() => [false, false] as const)" not in hook

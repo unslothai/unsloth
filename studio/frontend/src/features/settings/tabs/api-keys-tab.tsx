@@ -36,6 +36,7 @@ import {
 import { CreateKeyForm } from "../components/create-key-form";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { KeylessApiAccessLink } from "../components/keyless-api-access-link";
+import { LinkedInstancesSection } from "../components/linked-instances-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { ModelMemorySection } from "../components/model-memory-section";
@@ -319,6 +320,8 @@ export function ApiKeysTab() {
           <ModelAutoSwitchSection />
 
           <ModelAliasesSection />
+
+          <LinkedInstancesSection />
         </>
       ) : null}
 
