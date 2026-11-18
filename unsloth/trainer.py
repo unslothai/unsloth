@@ -94,8 +94,6 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         self._mm_rope_index = None
         if self._padding_free:
             from unsloth.utils.mm_packing import prepare_packed_multimodal_model
-
-            # mRoPE models: per-document position planes, computed on the collator side.
             self._mm_rope_index = prepare_packed_multimodal_model(
                 args[0] if args else kwargs.get("model")
             )
