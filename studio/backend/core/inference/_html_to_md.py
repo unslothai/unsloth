@@ -886,11 +886,9 @@ class _TabLabelScan(HTMLParser):
         self._parts: list[str] = []
         self._list_at = -1  # _open index of the tablist being read
         self._list_tabs: list[int] = []
-        # a tab names its panel by aria-controls, so order is not trusted
         self._list_explicit = False
-        # a closed tablist, until its next sibling opens
         self._closed_list: tuple[int, list[int]] | None = None
-        # (_open index of the panels' wrapper, its tab slots, (position, has aria-labelledby) per panel), innermost last
+        # (wrapper _open index, tab slots, (panel position, has aria-labelledby)), innermost last
         self._groups: list[tuple[int, list[int], list[tuple[tuple[int, int], bool]]]] = []
 
     def _finish_tab(self) -> None:
@@ -934,14 +932,14 @@ class _TabLabelScan(HTMLParser):
         # an omitted </li> or </p> ends the element at a sibling that closes it, a tab included
         while self._open and tag in _IMPLICIT_CLOSERS.get(self._open[-1], ()):
             self._pop_to(len(self._open) - 1)
-        # Headless UI links panels to tabs only by order, inside the element right after the tablist
+        # order-paired panels live in the element right after the tablist
         if self._closed_list:
             if tag not in _VOID_TAGS:
                 self._groups.append((len(self._open), self._closed_list[1], []))
             self._closed_list = None
         attr_dict = dict(attrs)
         if tag in _VOID_TAGS:
-            # a void tab or panel has no text, but still takes its slot and controls its panels
+            # a void tab still takes its slot
             if self._take_slot(attr_dict, len(self._open) - 1):
                 self._start_tab(attr_dict, len(self._open))
                 self._finish_tab()
