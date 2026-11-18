@@ -374,3 +374,11 @@ def test_user_facing_peaks_survive_restarts(monkeypatch):
     assert M.max_memory_allocated(0) == 9
     torch.cuda.reset_peak_memory_stats(0)  # the user's own reset drops what was kept
     assert torch.cuda.memory_stats(0)["allocated_bytes.all.peak"] == 3 and 0 not in dc._PEAKS_KEPT
+
+
+def test_host_bookkeeping_is_skipped_while_tracing(monkeypatch):
+    # Under torch.compile neither the row count nor the model pre-hook may touch module state or add guards.
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    assert dc.rows_of(torch.zeros(4, 8)) == 0
+    dc._model_pre_hook(None, (), {"input_ids": torch.zeros(2, 64, dtype = torch.long)})
+    assert dc._SHAPE_NEW == [0, 0] and dc.STATS["shape_drops"] == 0

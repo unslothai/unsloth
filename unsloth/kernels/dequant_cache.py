@@ -572,7 +572,10 @@ def _is_bnb_nf4(quant_state):
 
 
 def rows_of(X):
-    """Rows of the matmul X @ W.t() (tokens): what the activations of the step scale with."""
+    """Rows of the matmul X @ W.t() (tokens): what the activations of the step scale with. 0 while tracing:
+    traced callers never read the cache here, and a shape test on a SymInt would add a guard."""
+    if torch.compiler.is_compiling():
+        return 0
     return X.numel() // X.shape[-1] if X.dim() > 1 and X.shape[-1] else X.numel()
 
 
@@ -810,6 +813,10 @@ def _input_shape(args, kwargs):
 def _model_pre_hook(module, args, kwargs):
     # Runs before the model allocates anything for this call (embeddings, attention masks that grow with the
     # square of the sequence): a call larger than every step the budget was measured on drops the cache now.
+    if torch.compiler.is_compiling():
+        # A whole-model torch.compile would trace this host bookkeeping (graph breaks, guards on module state);
+        # the LoRA ops' own row check still runs eagerly inside the opaque op at run time.
+        return
     shape = _input_shape(args, kwargs)
     if shape is None:
         return
