@@ -1307,6 +1307,23 @@ def _has_padding_before_tokens(attention_mask):
     return bool((real[:, 1:] & ~real[:, :-1]).any())
 
 
+def _pad_queries_attend_self(mask_4d, mask_2d):
+    # A fully masked pad query is unmasked to every key (transformers' _unmask_unattended, and the SDPA
+    # dispatch), so the label it predicts (the first real token, kept by DataCollatorForSeq2Seq) would
+    # see later tokens. In training, pad queries attend only themselves: causal and never fully masked.
+    if mask_4d is None or mask_4d.dim() != 4 or mask_2d.dim() != 2:
+        return mask_4d
+    q_len = mask_2d.shape[-1]
+    if mask_4d.shape[-2] != q_len or mask_4d.shape[-1] != q_len:
+        return mask_4d
+    pad_q = (mask_2d == 0)[:, None, :, None]
+    diag = torch.eye(q_len, dtype = torch.bool, device = mask_4d.device)
+    if mask_4d.dtype == torch.bool:
+        return (mask_4d & ~pad_q) | (pad_q & diag)
+    blocked = torch.finfo(mask_4d.dtype).min
+    return mask_4d.masked_fill(pad_q & ~diag, blocked).masked_fill(pad_q & diag, 0)
+
+
 class Gemma2AttentionMaskConverter(AttentionMaskConverter):
     """Gemma2's window counts the current key as well as the preceding keys."""
 
@@ -1508,6 +1525,7 @@ def LlamaModel_fast_forward(
             ):
                 attention_mask = None
             else:
+                mask_2d = attention_mask
                 attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                     attention_mask,
                     (batch_size, seq_length),
@@ -1515,6 +1533,8 @@ def LlamaModel_fast_forward(
                     past_key_values_length,
                     sliding_window = band,
                 )
+                if self.training and past_key_values_length == 0:
+                    attention_mask = _pad_queries_attend_self(attention_mask, mask_2d)
         # Must NOT convert to bool; that weirdly causes errors.
 
     hidden_states = inputs_embeds
