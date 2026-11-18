@@ -140,17 +140,10 @@ class WaylandBackend(LinuxBackend):
         return self._session
 
     def _check_stopped(self) -> None:
-        """Call with the lock held. A session the desktop closed was stopped by the user: the saved
-        grant is dropped so the portal asks again instead of restoring it unseen."""
-        if self._session is None or not self._session.closed:
-            return
-        self._end()
-        if self._token_file is not None:
-            try:
-                self._token_file.unlink(missing_ok = True)
-            except OSError:
-                pass
-        raise BackendError(_USER_STOPPED)
+        """Call with the lock held."""
+        if self._session is not None and self._session.closed:
+            self._end()
+            raise BackendError(_USER_STOPPED)
 
     def _touch(self) -> None:
         self._last_use = time.monotonic()
@@ -172,8 +165,9 @@ class WaylandBackend(LinuxBackend):
             else:
                 self._end()
 
-    def _end(self) -> None:
-        """Call with the lock held."""
+    def _end(self) -> bool:
+        """Call with the lock held. True when the desktop had closed the session: the user stopped
+        it, so the saved grant is dropped and the portal asks again instead of restoring it unseen."""
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
@@ -184,9 +178,16 @@ class WaylandBackend(LinuxBackend):
             except Exception:  # noqa: BLE001
                 pass
         session, self._session = self._session, None
+        stopped = session is not None and session.closed
+        if stopped and self._token_file is not None:
+            try:
+                self._token_file.unlink(missing_ok = True)
+            except OSError:
+                pass
         if session is not None:
             session.close()
         self._displays = []
+        return stopped
 
     def close(self) -> None:
         with self._lock:
@@ -200,9 +201,7 @@ class WaylandBackend(LinuxBackend):
         except BackendError:
             raise
         except Exception as exc:  # noqa: BLE001 - a closed session or a lost bus
-            self._check_stopped()
-            self._end()
-            raise BackendError(_STOPPED) from exc
+            raise BackendError(_USER_STOPPED if self._end() else _STOPPED) from exc
 
     def displays(self) -> list[Display]:
         with self._lock:
@@ -231,8 +230,8 @@ class WaylandBackend(LinuxBackend):
             return grabber.grab(stream.node).convert("RGB")
         except Exception as exc:  # noqa: BLE001 - the stream ended or never sent a frame
             with self._lock:
-                self._check_stopped()
-                self._end()
+                if self._end():
+                    raise BackendError(_USER_STOPPED) from exc
             raise BackendError("the shared screen could not be captured. Try again.") from exc
 
     def cursor(self) -> tuple[float, float]:

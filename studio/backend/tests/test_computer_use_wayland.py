@@ -370,6 +370,15 @@ def test_a_capture_failing_because_the_user_stopped_sharing_stops_too(bus, tmp_p
     assert not (tmp_path / "token").exists()
 
 
+def test_a_user_stop_seen_only_by_the_idle_timer_still_drops_the_grant(bus, tmp_path):
+    backend = _backend(tmp_path, idle_close = 0.5)
+    backend.displays()
+    bus.close_session()
+    time.sleep(1.0)
+    assert backend._session is None
+    assert not (tmp_path / "token").exists()
+
+
 def test_an_idle_closed_session_is_restored_without_asking(bus, tmp_path):
     backend = _backend(tmp_path, idle_close = 0.3)
     backend.displays()
