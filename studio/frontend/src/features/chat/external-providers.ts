@@ -35,7 +35,6 @@ export interface ExternalProviderConfig {
   maxOutputTokens?: number;
   /** Tokens after which chats on this connection compact; unset uses 75% of the model's window. */
   autoCompactTokens?: number;
-  /** "evict" drops whole oldest turns into the thread's archive instead of summarizing them. */
   compactionMode?: ProviderCompactionMode;
   extraHeaders?: Record<string, string>;
 

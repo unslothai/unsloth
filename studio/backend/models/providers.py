@@ -12,7 +12,6 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 ProviderApiType = Literal["chat_completions", "responses", "systemone"]
-# What a chat on the connection does once it passes its compaction trigger.
 ProviderCompactionMode = Literal["summary", "evict"]
 
 

@@ -30721,8 +30721,7 @@ async def _proxy_to_external_provider(
                 "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
             }
         )
-    # The connection's "Drop oldest turns": no summary call. Whole turns go to the thread's
-    # archive and /compact starts a checkpoint epoch, as on a local model.
+    # "Drop oldest turns": no summary call; turns go to the archive, /compact starts an epoch.
     _evict_only = managed is None and payload.compaction_mode == "evict" and not _provider_compacts
     # Eviction's replacement: providers that compact server-side keep doing so themselves.
     _auto_summary = (
@@ -30783,7 +30782,6 @@ async def _proxy_to_external_provider(
                     _studio_db.chat_thread_has_context_truncation, str(payload.thread_id)
                 )
             )
-    # Managed engines and "Drop oldest turns" connections fit by eviction only.
     _evicting_fit = managed is not None or _evict_only
     _evicting_payload = payload
     if _evict_only and _fit_active and not (payload.compaction_threshold and _rolling):

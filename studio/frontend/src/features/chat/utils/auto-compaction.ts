@@ -141,7 +141,6 @@ export function apiCompactionRequestFields(options: {
   contextLength: number | null | undefined;
   /** The connection's "Auto-compact after", which replaces the 75% default. */
   autoCompactTokens?: number | null;
-  /** The connection's "When the chat is full"; the backend ignores it where the provider compacts. */
   compactionMode?: ProviderCompactionMode | null;
   // /compact: asked for by the user, so it applies with auto-compaction off too
   compactNow?: boolean;
