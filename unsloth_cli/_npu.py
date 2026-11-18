@@ -41,6 +41,21 @@ def npu_needs_studio_message(npu_path: str, *, no_server: bool) -> str:
     )
 
 
+def npu_detected() -> bool:
+    """Studio's own detector (stdlib only, loaded from its file) sees a supported AMD NPU."""
+    try:
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "studio/backend/utils/hardware/npu.py"
+        spec = importlib.util.spec_from_file_location("_unsloth_cli_npu_detect", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return bool(module.detect_amd_npu().get("supported"))
+    except Exception:
+        return False
+
+
 def _unsupported_reason(status: dict) -> Optional[str]:
     if status.get("supported"):
         return None

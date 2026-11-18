@@ -302,8 +302,9 @@ def _register_command(app, name):
         from unsloth_cli.commands.export import list_checkpoints
         app.command("list-checkpoints")(list_checkpoints)
     elif name == "list-npu-models":
+        from unsloth_cli._npu import npu_detected
         from unsloth_cli.commands.npu import list_npu_models
-        app.command("list-npu-models")(list_npu_models)
+        app.command("list-npu-models", hidden = not npu_detected())(list_npu_models)
     elif name == "doctor":
         from unsloth_cli.commands.doctor import doctor
         app.command("doctor")(doctor)

@@ -564,3 +564,21 @@ def test_run_and_chat_help_name_context_length(monkeypatch):
         result = CliRunner().invoke(app, [command, "--help"], terminal_width = 80)
         assert result.exit_code == 0, result.output
         assert "--context-length" in result.output, command
+
+
+@pytest.mark.parametrize("supported", [False, True])
+def test_list_npu_models_is_in_help_only_with_a_supported_npu(monkeypatch, supported):
+    import unsloth_cli
+    from unsloth_cli import _npu
+
+    monkeypatch.setattr(_npu, "npu_detected", lambda: supported)
+    app = typer.Typer()
+    unsloth_cli._register_command(app, "list-npu-models")
+    group = typer.main.get_group(app)
+    assert group.commands["list-npu-models"].hidden is not supported
+
+
+def test_npu_detected_reads_studios_detector(monkeypatch):
+    from unsloth_cli import _npu
+    monkeypatch.setenv("UNSLOTH_STUDIO_ENABLE_NPU", "0")
+    assert _npu.npu_detected() is False
