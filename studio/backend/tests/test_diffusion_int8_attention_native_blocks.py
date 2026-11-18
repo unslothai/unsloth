@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``NATIVE_BLOCKS``: under Auto, Qwen-Image-2.1's block 0 attention keeps its incumbent (its INT8 error on real inputs
-is several times every other block's); a forced request and ``UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_BLOCKS=0``
-still route it. CPU: the card, the check and the race are faked as in test_diffusion_int8_attention_dispatch."""
+"""NATIVE_BLOCKS: Auto keeps Qwen-Image-2.1 block 0 native; forced or the env switch =0 routes it. CPU, fakes as in
+test_diffusion_int8_attention_dispatch."""
 
 from __future__ import annotations
 
