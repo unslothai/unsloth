@@ -8,6 +8,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from packaging.version import Version
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.utils import attention_dispatch as ad
 
@@ -91,7 +92,7 @@ def test_padded_masked_call_is_exact(monkeypatch, q_len, additive, gqa):
         torch.testing.assert_close(a, b, atol = 1e-5, rtol = 1e-5)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize("gqa", [False, True])
 def test_compiled_masked_training_sdpa_backward_at_unaligned_lengths(gqa):
     """Compiled bf16 backward at lengths 9..17: no fault, matches eager, one dynamic graph."""
