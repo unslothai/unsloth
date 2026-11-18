@@ -2623,6 +2623,8 @@ type AutoLoadCandidate = {
   ggufVariant: string | null;
   maxSeqLength: number;
   successLabel: string;
+  /** Shown instead of id when they differ, e.g. a repo id for a snapshot path. */
+  label?: string;
 };
 
 // Same case rules as autoLoadSourceKey: folding a POSIX target would conflate /models/Foo and /models/foo.
@@ -3147,9 +3149,10 @@ async function resolveAutoLoadCandidate(
   source: AutoLoadSource,
   rememberedVariant: string | null,
   isSkipped: (candidate: AutoLoadCandidate) => boolean,
+  // Keys saved settings and the record: the repo id when only that matched the last used model.
+  id: string = source.id,
 ): Promise<AutoLoadCandidate | null> {
-  // Like a cached repo row: the repo id keys saved settings and the record, the snapshot path loads.
-  const id = source.repoId ?? source.id;
+  const label = source.repoId ?? id;
   const build = (ggufVariant: string | null): AutoLoadCandidate => ({
     id,
     loadId: source.loadId,
@@ -3157,8 +3160,9 @@ async function resolveAutoLoadCandidate(
     ggufVariant,
     maxSeqLength: source.maxSeqLength,
     successLabel: ggufVariant
-      ? `Loaded ${id} (${ggufVariant})`
-      : `Loaded ${id}`,
+      ? `Loaded ${label} (${ggufVariant})`
+      : `Loaded ${label}`,
+    label,
   });
   if (!source.listVariants) {
     const variants =
@@ -4192,6 +4196,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             source,
             isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
             isTried,
+            isRemembered &&
+              lastLoaded &&
+              rememberedMatch(source, lastLoaded) === "repo"
+              ? lastLoaded.id
+              : source.id,
           );
           options?.abortSignal?.throwIfAborted();
           if (!candidate) break;

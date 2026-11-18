@@ -1519,6 +1519,28 @@ def test_a_repo_id_snapshot_loads_by_path_but_keeps_the_repo_settings_and_record
     assert _toasts(out, "toast.success")[0]["msg"] == f"Loaded {repo} (UD-Q4_K_XL)"
 
 
+def test_a_snapshot_remembered_by_its_path_keeps_its_path_keyed_settings():
+    out = _run(
+        "(() => { const R = 'unsloth/gemma-4-26B-A4B-it-GGUF';"
+        " const p = `/mnt/old/hub/models--${R.replace('/', '--')}/snapshots/old`;"
+        " return scenario({ ggufRepos: 'throw', modelRepos: 'throw',"
+        " localModels: [{ id: p, load_id: p, path: p, model_id: R, source: 'hf_cache',"
+        " active_cache: false, model_format: 'gguf', size_bytes: 10,"
+        " capabilities: { can_chat: true, requires_variant: true } }],"
+        " variants: { [p]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: p, kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' } }); })()"
+    )
+
+    path = "/mnt/old/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/old"
+    assert _loaded_paths(out) == [path]
+    assert [e["id"] for e in out["events"] if e["kind"] == "resolveInitialConfig"] == [path]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == [path]
+    assert (
+        _toasts(out, "toast.success")[0]["msg"]
+        == "Loaded unsloth/gemma-4-26B-A4B-it-GGUF (UD-Q4_K_XL)"
+    )
+
+
 def test_without_a_last_used_model_a_fallback_is_recorded_as_before():
     out = _run(
         "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
