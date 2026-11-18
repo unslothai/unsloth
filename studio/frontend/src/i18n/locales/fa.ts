@@ -973,6 +973,7 @@ export const fa = {
   chatMenu: {
     more: "گزینه‌های گفتگو",
     copy: "کپی",
+    addScheduledTask: "افزودن کار زمان‌بندی‌شده…",
     compact: "فشرده‌سازی گفتگو",
     compactQueued: "فشرده‌سازی برای پیام بعدی درخواست شد",
     compactEmpty: "هنوز چیزی برای فشرده‌سازی وجود ندارد",
@@ -5302,6 +5303,7 @@ export const fa = {
       intervalHours: "فاصله (ساعت)",
       hourlyNote: "نخستین اجرا یک فاصله پس از ذخیره انجام می‌شود. تغییر فاصله یا ازسرگیری، انتظار را از نو آغاز می‌کند.",
       createTitle: "زمان‌بندی یک وظیفه",
+      repliesInChat: "هر اجرا در «{title}» پاسخ می‌دهد.",
       editTitle: "ویرایش وظیفهٔ زمان‌بندی‌شده",
       name: "نام",
       namePlaceholder: "نام (اختیاری)",

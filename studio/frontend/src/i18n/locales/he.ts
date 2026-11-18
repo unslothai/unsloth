@@ -917,6 +917,7 @@ export const he = {
   chatMenu: {
     more: "אפשרויות צ'אט",
     copy: "העתקה",
+    addScheduledTask: "הוספת משימה מתוזמנת…",
     compact: "כווץ שיחה",
     compactQueued: "התבקש כיווץ שיחה עבור ההודעה הבאה",
     compactEmpty: "אין עדיין מה לכווץ",
@@ -5061,6 +5062,7 @@ export const he = {
       intervalHours: "מרווח (שעות)",
       hourlyNote: "ההרצה הראשונה תתחיל לאחר מרווח אחד מרגע השמירה. שינוי המרווח או חידוש המשימה מתחילים את ההמתנה מחדש.",
       createTitle: "תזמון משימה",
+      repliesInChat: "כל הרצה עונה ב„{title}”.",
       editTitle: "עריכת משימה מתוזמנת",
       name: "שם",
       namePlaceholder: "שם (אופציונלי)",

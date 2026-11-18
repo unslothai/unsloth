@@ -986,6 +986,7 @@ export const nl = {
   chatMenu: {
     more: "Chatopties",
     copy: "Kopiëren",
+    addScheduledTask: "Geplande taak toevoegen…",
     compact: "Gesprek comprimeren",
     compactQueued: "Comprimeren aangevraagd voor het volgende bericht",
     compactEmpty: "Nog niets om te comprimeren",
@@ -5371,6 +5372,7 @@ export const nl = {
       intervalHours: "Interval (uren)",
       hourlyNote: "De eerste uitvoering vindt één interval na het opslaan plaats. Het interval wijzigen of hervatten start de wachttijd opnieuw.",
       createTitle: "Een taak plannen",
+      repliesInChat: "Elke uitvoering antwoordt in ‘{title}’.",
       editTitle: "Geplande taak bewerken",
       name: "Naam",
       namePlaceholder: "Naam (optioneel)",

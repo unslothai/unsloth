@@ -879,6 +879,7 @@ export const de = {
   chatMenu: {
     more: "Chat-Optionen",
     copy: "Kopieren",
+    addScheduledTask: "Geplante Aufgabe hinzufügen…",
     compact: "Unterhaltung komprimieren",
     compactQueued: "Komprimierung für die nächste Nachricht angefordert",
     compactEmpty: "Noch nichts zu komprimieren",
@@ -5053,6 +5054,7 @@ export const de = {
       intervalHours: "Intervall (Stunden)",
       hourlyNote: "Der erste Lauf erfolgt ein Intervall nach dem Speichern. Beim Ändern des Intervalls oder Fortsetzen beginnt die Wartezeit von vorn.",
       createTitle: "Aufgabe planen",
+      repliesInChat: "Jeder Lauf antwortet in „{title}“.",
       editTitle: "Geplante Aufgabe bearbeiten",
       name: "Name",
       namePlaceholder: "Name (optional)",

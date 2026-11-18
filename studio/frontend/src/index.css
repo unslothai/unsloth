@@ -49,6 +49,14 @@
 	min-height: round(up, 1lh + 16px * var(--ui-space-scale, 1), 1px);
 }
 
+/* Padding keeps descenders unclipped. */
+@utility cap-centered {
+	@supports (text-box: trim-both cap alphabetic) {
+		text-box: trim-both cap alphabetic;
+		padding-block: 0.3em;
+	}
+}
+
 @utility size-control {
 	width: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
 	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);

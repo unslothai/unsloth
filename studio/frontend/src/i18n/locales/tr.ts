@@ -971,6 +971,7 @@ export const tr = {
   chatMenu: {
     more: "Sohbet seçenekleri",
     copy: "Kopyala",
+    addScheduledTask: "Zamanlanmış görev ekle…",
     compact: "Konuşmayı sıkıştır",
     compactQueued: "Sıkıştırma bir sonraki mesaj için istendi",
     compactEmpty: "Henüz sıkıştırılacak bir şey yok",
@@ -5321,6 +5322,7 @@ export const tr = {
       intervalHours: "Aralık (saat)",
       hourlyNote: "İlk çalıştırma, kaydettikten bir aralık sonra yapılır. Aralığı değiştirmek veya devam ettirmek beklemeyi yeniden başlatır.",
       createTitle: "Görev zamanla",
+      repliesInChat: "Her çalıştırma “{title}” sohbetinde yanıt verir.",
       editTitle: "Zamanlanmış görevi düzenle",
       name: "Ad",
       namePlaceholder: "Ad (isteğe bağlı)",
