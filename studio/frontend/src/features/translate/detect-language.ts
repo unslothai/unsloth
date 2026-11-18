@@ -65,7 +65,8 @@ const MONGOLIAN = words("нь юм бол энэ вэ болон байна ба
 
 function cyrillic(text: string): string | null {
   if (countOf(text, "әғқңұһ") > 0) return "kk";
-  if (countOf(text, "өү") > 0) return "mn";
+  // Kazakh shares ө and ү with Mongolian; і is Kazakh only of the two.
+  if (countOf(text, "өү") > 0) return countOf(text, "і") > 0 ? "kk" : "mn";
   const tokens = tokensOf(text);
   if (hits(tokens, MONGOLIAN) > hits(tokens, RUSSIAN)) return "mn";
   const ukrainian = countOf(text, "іїєґ") + hits(tokens, UKRAINIAN);
