@@ -951,13 +951,10 @@ class _TabLabelScan(HTMLParser):
                 # an id-less tab still takes its slot, or every panel after it would shift
                 self._list_tabs.append(attr_dict.get("id"))
                 self._list_explicit |= bool((attr_dict.get("aria-controls") or "").strip())
-            if attr_dict.get("id"):
-                self._tab_at = len(self._open) - 1
-                self._tab_id = attr_dict["id"]
-                self._tab_controls = attr_dict.get("aria-controls") or ""
-                self._tab_selected = (
-                    attr_dict.get("aria-selected") or ""
-                ).strip().lower() == "true"
+            self._tab_at = len(self._open) - 1
+            self._tab_id = attr_dict.get("id") or ""
+            self._tab_controls = attr_dict.get("aria-controls") or ""
+            self._tab_selected = (attr_dict.get("aria-selected") or "").strip().lower() == "true"
         if (
             self._groups
             and self._groups[-1][0] == len(self._open) - 2

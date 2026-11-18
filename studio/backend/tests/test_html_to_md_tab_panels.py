@@ -219,6 +219,12 @@ def test_headless_ui_panels_are_named_by_their_tab_in_order():
         ),
         (
             '<div role="tablist"><button role="tab" id="a" aria-controls="p">npm</button>'
+            '<button role="tab" aria-controls="p" aria-selected="true">pnpm</button></div>'
+            '<div role="tabpanel" id="p">pnpm add x</div>',
+            ["**pnpm**"],
+        ),
+        (
+            '<div role="tablist"><button role="tab" id="a" aria-controls="p">npm</button>'
             '<button role="tab" id="b" aria-controls="p">pnpm</button></div>'
             '<div role="tabpanel" id="p">pnpm add x</div>',
             [],
