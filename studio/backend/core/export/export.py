@@ -606,6 +606,20 @@ def _dir_is_fresh(directory):
     )
 
 
+def _copy_replacing_links(source, destination):
+    # copytree writes through a destination symlink or hard link, changing the file it points at.
+    for dirpath, _, files in os.walk(source):
+        target = os.path.join(destination, os.path.relpath(dirpath, source))
+        if os.path.islink(target):
+            os.unlink(target)
+        os.makedirs(target, exist_ok = True)
+        for name in files:
+            dst = os.path.join(target, name)
+            if os.path.lexists(dst):
+                os.unlink(dst)
+            shutil.copy2(os.path.join(dirpath, name), dst)
+
+
 def _holds_checkpoint_weights(directory, files = None):
     if files is not None:
         return any(
@@ -2861,7 +2875,7 @@ class ExportBackend:
                 staged = os.path.join(tmp_dir, Path(directory).name)
                 ensure_dir(Path(staged))
                 ggufs = save_lora_gguf(staged)
-                shutil.copytree(staged, directory, dirs_exist_ok = True)
+                _copy_replacing_links(staged, directory)
                 staged_gguf_dir = staged
                 return [os.path.join(directory, os.path.basename(f)) for f in ggufs]
             final_ggufs = sorted(

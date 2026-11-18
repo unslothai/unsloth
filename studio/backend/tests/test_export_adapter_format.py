@@ -163,6 +163,35 @@ def test_gguf_lora_export_accepts_new_artifact(monkeypatch, tmp_path, stale):
     backend._write_export_metadata.assert_called_once_with(str(out))
 
 
+@pytest.mark.parametrize("link", [os.link, os.symlink])
+def test_mlx_gguf_lora_reexport_leaves_linked_originals_alone(monkeypatch, tmp_path, link):
+    backend = _backend(monkeypatch, True, tmp_path)
+    _peft_writer(backend.current_model)
+    backend.current_model.peft_config = {}
+    backend._write_export_metadata = MagicMock()
+
+    def _convert(directory, outtype, token):
+        with open(os.path.join(directory, f"model-lora-{outtype}.gguf"), "wb") as f:
+            f.write(b"GGUF")
+
+    backend._convert_peft_dir_to_gguf = _convert
+    out = tmp_path / "out"
+    out.mkdir()
+    original = tmp_path / "original.safetensors"
+    original.write_text("user adapter")
+    try:
+        link(original, out / "adapter_model.safetensors")
+    except OSError as exception:  # Windows without the symlink privilege
+        pytest.skip(f"{link.__name__} unavailable: {exception}")
+
+    ok, message, _ = backend.export_lora_adapter(str(out), gguf = True)
+
+    assert ok, message
+    assert original.read_text() == "user adapter"
+    assert (out / "adapter_model.safetensors").read_text() == "peft"
+    assert (out / "model-lora-q8_0.gguf").read_bytes() == b"GGUF"
+
+
 def test_outdated_zoo_hard_error(monkeypatch, tmp_path):
     backend = _backend(monkeypatch, True, tmp_path)
 
