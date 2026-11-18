@@ -277,3 +277,16 @@ def test_kl_strips_decline_off_their_cards_without_the_memory_reading(monkeypatc
         out = vae.decoder(z)
     assert out.shape[1] == 3 and not ran and not calls
     assert not S.engaged(vae)
+
+
+@pytest.mark.skipif(not _cuda_triton(), reason = "needs NVIDIA CUDA + Triton")
+def test_strip_upsample_kernel_launch_matches_torch():
+    # The strip decoder swallows kernel errors and falls back, so call the launch directly.
+    x = torch.randn(1, 64, 12, 20, device = "cuda", dtype = torch.bfloat16).contiguous(
+        memory_format = torch.channels_last
+    )
+    ref = torch.empty(1, 10, 40, 64, device = "cuda", dtype = torch.bfloat16)
+    out = torch.empty_like(ref)
+    S._up_rows(x, 3, 5, ref, kernel = False)
+    S._up_rows(x, 3, 5, out, kernel = True)
+    assert torch.equal(ref, out)
