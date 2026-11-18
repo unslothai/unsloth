@@ -160,6 +160,7 @@ studio = [
     "structlog>=24.1.0",
     "diceware==1.0.1",
     "json5>=0.9.25",
+    "jeepney>=0.8 ; sys_platform == 'linux'",
     "ddgs==9.14.4 ; python_version >= '3.10'",
     "ddgs==9.8.0 ; python_version < '3.10'",
     "cryptography>=42.0.0; sys_platform != 'win32' or platform_machine != 'ARM64'",
