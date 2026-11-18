@@ -257,6 +257,7 @@ class TestSetupPs1Decision:
         (INSTALL_SRC, "$ProbeAmdBesideNvidia = "),
         (SETUP_SRC, "$script:ProbeAmdBesideNvidia = "),
     ],
+    ids = ["install.ps1", "setup.ps1"],
 )
 @pytest.mark.parametrize(
     "env, nvidia, expected",
