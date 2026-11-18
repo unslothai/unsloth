@@ -1756,7 +1756,7 @@ def test_a_render_releases_the_segmenter_first(monkeypatch):
     source = inspect.getsource(inference_routes._generate_diffusion_image_run)
     release = source.index("_release_mask_segmenter_for_render")
     assert (
-        source.index("_enhance_generate_prompts(backend, request)")
+        source.index("_enhance_generate_prompts(backend, request")
         < release
         < source.index("for attempt in range(2)")
     )

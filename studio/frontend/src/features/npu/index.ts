@@ -5,18 +5,30 @@ export {
   isNpuModelId,
   NPU_MODEL_PREFIX,
   type NpuDownloadPhase,
+  type NpuLocalModel,
   type NpuModel,
   type NpuStatus,
   npuCapabilities,
   npuContextLabel,
+  npuDeleteDescription,
   npuDownloadLabel,
   npuReadmeNote,
   npuMemoryTag,
   npuMemoryWarning,
   npuResumeLabel,
+  npuRowDetails,
   npuRowsFor,
+  npuRowTooltip,
   npuSizeLabel,
 } from "./api";
+export {
+  NPU_CATALOG_TAG,
+  NPU_TAG_TEXT,
+  type NpuCompat,
+  type NpuFit,
+  type NpuTag,
+  npuFit,
+} from "./compat";
 export {
   npuDisplayName,
   npuDisplayNameOf,
@@ -35,4 +47,5 @@ export {
   useNpuDisplayName,
   useNpuDisplayNames,
 } from "./use-npu-display-name";
+export { useNpuCompat } from "./use-npu-compat";
 export { useNpuStatus } from "./use-npu-status";

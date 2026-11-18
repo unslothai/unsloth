@@ -23,7 +23,11 @@ import {
   orderBySection,
   pickerAlignOffset,
   pickerDropOffset,
+  pickerMinHeight,
+  pickerRoomBelow,
   pickerSide,
+  pickerWidth,
+  pickerZoomOut,
   pinCoversId,
   repoSection,
   sectionsHaveRows,
@@ -223,11 +227,29 @@ test("a loaded row ejects from its menu and the collapsed view, never its dot", 
   // The dot is only a mark: hovering it never turns it into Eject.
   assert.match(picker, /<LoadedDot \/>/);
   assert.doesNotMatch(picker, /Loaded\. Click to eject/);
-  assert.match(picker, /\.\.\.\(row\.loaded && canEject/);
+  assert.match(
+    picker,
+    /\.\.\.\(\(row\.loaded \|\|\s+\(chosenExternal && row\.id === checkpoint\)\) &&\s+canEject/,
+  );
   assert.match(picker, /key: "eject"/);
   assert.match(picker, /aria-label=\{`Eject \$\{chosenName\}`\}/);
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /eject: handleEject,/);
+});
+
+test("a model with no thinking skips the collapsed view and closes once loaded", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const isExpanded =\s+expanded \|\| !chosenName \|\| noThinking \|\| smallScreen;/,
+  );
+  assert.match(picker, /if \(fresh\) \{\s+closeIfNoThinking\.current\(\);/);
+  assert.match(
+    picker,
+    /\{chosenName && !noThinking && !smallScreen \? \(\s+<Hint label="Collapse">/,
+  );
 });
 
 test("Run settings open inside the composer picker, not the header picker", () => {
@@ -265,7 +287,14 @@ test("On Device groups rows like the header picker, NPU and custom folders inclu
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /useNpuCatalog\(/);
-  assert.match(picker, /kind: "npu",\s+section: "npu"/);
+  assert.match(
+    picker,
+    /device\.push\(\.\.\.npuPickerRows\(npuModels, true\)\)/,
+  );
+  assert.match(
+    readSrc("components/assistant-ui/composer-model-picker/npu-rows.ts"),
+    /kind: "npu",\s+section: "npu"/,
+  );
   assert.match(picker, /useCustomFolders\(/);
   assert.match(
     picker,
@@ -316,6 +345,30 @@ test("the picker opens with its list unless the user collapsed it", () => {
   assert.match(picker, /localStorage\.getItem\(EXPANDED_KEY\) !== "false"/);
   assert.match(picker, /useState\(readExpanded\)/);
   assert.match(picker, /onClick=\{\(\) => setExpanded\(false\)\}/);
+});
+
+test("each load starts collapsed, keeps the user's choice per model, and an eject forgets it", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /chosenLoaded && checkpoint \? `\$\{checkpoint\}/);
+  assert.match(
+    picker,
+    /if \(modelLoading\) \{\s+if \(loadingFresh\) \{\s+sawLoad\.current = true;/,
+  );
+  assert.match(
+    picker,
+    /\(fresh \? undefined : readModelExpanded\(\)\[residentKey\]\) \?\? false/,
+  );
+  assert.match(
+    picker,
+    /if \(residentKeyRef\.current\) \{\s+writeModelExpanded\(residentKeyRef\.current, next\);/,
+  );
+  assert.match(
+    picker,
+    /writeModelExpanded\(prev, null\);\s+setExpanded\(true\);/,
+  );
+  assert.match(picker, /Math\.max\(0, keys\.length - MODEL_EXPANDED_MAX\)/);
 });
 
 test("On Device sections follow the header picker's buckets and order", () => {
@@ -623,13 +676,32 @@ test("Discover keeps rows the Hub search matched by maker alias", () => {
   );
 });
 
-test("the open picker is one height on every tab, loaded model or not", () => {
+test("the open picker is at least 420px and grows only into the room under Select model", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(
     picker,
-    /\(isExpanded \|\| configTarget\) &&\s+"h-\[calc\(460px\*var\(--ui-space-scale,1\)\)\]"/,
+    /configTarget\s+\? "h-\(--composer-picker-min-h\) max-h-\[var\(--picker-floor,calc\(100dvh-16px\)\)\]"/,
+  );
+  const pickerCss = readSrc("index.css");
+  assert.doesNotMatch(pickerCss, /^\s*--picker-floor:/m);
+  assert.match(
+    picker,
+    /isExpanded\s+\? "min-h-\(--composer-picker-min-h\) max-h-\(--composer-picker-max-h\)"/,
+  );
+  assert.match(
+    picker,
+    /openSide !== "bottom" &&\s+"\[--picker-floor:var\(--radix-popover-content-available-height\)\]"/,
+  );
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 420px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
+  );
+  assert.match(
+    css,
+    /--composer-picker-max-h: max\(var\(--composer-picker-min-h\), min\(calc\(540px \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-room, var\(--picker-floor, calc\(100dvh - 16px\)\)\)\)\);/,
   );
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
@@ -639,17 +711,40 @@ test("the open picker is one height on every tab, loaded model or not", () => {
   );
 });
 
-test("a panel opening down rides up over the composer when the room below is short", () => {
-  // Room below: the usual 8px gap.
+test("short landscape windows get a 400px floor; phones and tall windows keep 420px", () => {
+  assert.equal(pickerMinHeight(1366, 768, 1), 400);
+  assert.equal(pickerMinHeight(1280, 640, 1), 400);
+  assert.equal(pickerMinHeight(1440, 900, 1), 400);
+  assert.equal(pickerMinHeight(1920, 1080, 1), 420);
+  assert.equal(pickerMinHeight(390, 844, 1), 420);
+  // 1366x768 at 67% zoom.
+  assert.equal(pickerMinHeight(2039, 1146, 1.49), 400);
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /"--picker-min-base": `\$\{pickerMinBase\}px`/);
+});
+
+test("opening down, the room under Select model sets the growth and only the floor rides up", () => {
+  assert.equal(pickerRoomBelow(480, 900), 404);
+  assert.equal(pickerRoomBelow(900, 900), 0);
+  assert.equal(pickerDropOffset(480, 420, 900), -8);
   assert.equal(pickerDropOffset(400, 300, 900), 8);
-  // 100px short: up by that much, over the composer.
-  assert.equal(pickerDropOffset(500, 492, 900), -100);
   // Taller than the window: pinned 8px from its top.
   assert.equal(pickerDropOffset(500, 2000, 900), -492);
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /sideOffset=\{dropsDown \? dropOffset : PICKER_GAP\}/);
+  assert.match(
+    picker,
+    /setRoomBelow\(pickerRoomBelow\(rect\.bottom, window\.innerHeight\)\)/,
+  );
+  assert.match(picker, /"--picker-room": `\$\{roomBelow\}px`/);
+  assert.match(
+    picker,
+    /pickerDropOffset\(rect\.bottom, panel\.offsetHeight, window\.innerHeight\)/,
+  );
 });
 
 test("the picker's side is fixed per opening by the trigger, not the panel", () => {
@@ -887,6 +982,41 @@ test("the picker slides back inside a narrow window instead of hanging off its e
     0,
   );
   assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
+  assert.equal(pickerAlignOffset("end", { left: 0, right: 0 }, 520, 2000), 0);
+  assert.match(
+    readSrc(
+      "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+    ),
+    /pickerAlignOffset\(align, rect, panel\.offsetWidth, window\.innerWidth\)/,
+  );
+});
+
+test("the picker caps at 520px on a big screen but keeps its on-screen size zoomed out", () => {
+  assert.equal(pickerWidth(390, 1), 360);
+  assert.equal(pickerWidth(1440, 1), 432);
+  assert.equal(pickerWidth(2560, 1), 520);
+  assert.equal(pickerWidth(960, 1), 360);
+  assert.equal(pickerWidth(960, 1.25), 450);
+  // 1512px window at 50% zoom.
+  const zoomOut = pickerZoomOut(3024, 1512, null);
+  assert.equal(zoomOut, 2);
+  assert.equal(Math.round(pickerWidth(3024, 1, zoomOut) / zoomOut), 454);
+  assert.equal(pickerZoomOut(1512, 1512, null), 1);
+  assert.equal(pickerZoomOut(1008, 1512, null), 1);
+  assert.equal(pickerZoomOut(1500, 1512, null), 1);
+  assert.equal(pickerZoomOut(2257, 1512, 0.5), 2);
+  assert.equal(pickerZoomOut(1512, 1512, 1.25), 1);
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /\.composer-model-picker \{\s+--composer-picker-w: clamp\(calc\(360px \* var\(--ui-space-scale, 1\)\), 30vw, calc\(520px \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\)\);/,
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /w-\(--composer-picker-w\)/);
+  assert.match(picker, /"--picker-zoom-out": pickerZoomOutState/);
+  assert.match(picker, /pickerWidth\(window\.innerWidth, scale, zoomOut\)/);
 });
 
 test("the Connected tab lists every connection's models, favorites then newest first", () => {
@@ -1496,4 +1626,186 @@ test("a pinned-quant row reads its repo's disk state, opens its own Run settings
     picker,
     /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*foldedQuants,\s*expandQuantizations,\s*quantsEpoch,\s*\]\);/,
   );
+});
+
+test("a model with no logo of its own shows a letter tile from its name", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const mark = picker.slice(
+    picker.indexOf("function RowMark("),
+    picker.indexOf("interface SourceTab"),
+  );
+  assert.doesNotMatch(mark, /OwnerAvatar|LaptopIcon|Download01Icon|CloudIcon/);
+  assert.match(mark, /providerType=\{null\}\s+name=\{name\}/);
+  assert.match(
+    mark,
+    /-m-\[calc\(1px\*var\(--ui-space-scale,1\)\)\] size-\[calc\(16px\*var\(--ui-space-scale,1\)\)\]/,
+  );
+  assert.match(
+    picker,
+    /: rowMaker\(row\) !== null \|\| rowMarkName\(row\) !== undefined;/,
+  );
+  const logo = readSrc("features/chat/api-provider-logo.tsx");
+  assert.match(logo, /if \(!src && letter\) \{\s+return \(\s+<LetterTile/);
+  assert.match(picker, /\) : hasRowMark\(row\) \? \(/);
+  assert.equal(picker.match(/chosenName && chosenEjectable \? \(/g)?.length, 2);
+  assert.equal(
+    picker.match(
+      /: "-my-0\.5 -mr-1\.5 w-0 overflow-hidden group-hover\/chip:-mx-0\.5 group-hover\/chip:w-\[calc\(18px\*var\(--ui-space-scale,1\)\)\]"/g,
+    )?.length,
+    2,
+  );
+});
+
+test("a loaded cache path keeps its maker logo before the inventory lands", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /hubParts\(row\.id \? \(hfCacheRepoId\(row\.id\) \?\? undefined\) : undefined\)/,
+  );
+});
+
+test("run settings keep Back and the title pinned, as the Library header", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /el\.querySelector<HTMLElement>\("\[data-config-header-row\]"\)/,
+  );
+  assert.match(picker, /el\.dataset\.headerStuck = "";/);
+  const page = readSrc(
+    "features/model-picker/components/model-config-page.tsx",
+  );
+  assert.match(
+    page,
+    /<>\s*<div\s+data-config-eyebrow=""[\s\S]*?Run settings\s*<\/div>\s*<div\s+data-config-header=""\s+data-config-header-row=""\s+className="mt-1\.5 flex items-center gap-2\.5 pb-5"\s*>/,
+  );
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /\.composer-run-settings \[data-config-header-row\] \{\s*position: sticky;\s*top: calc\(var\(--run-settings-stick-at\) - var\(--run-settings-pad-y\)\);/,
+  );
+  assert.match(
+    css,
+    /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::before,\s*\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::after \{\s*opacity: 1;/,
+  );
+  assert.match(
+    css,
+    /\[data-config-header-row\] > button:first-child \{\s*transform: translateY\(calc\(-0\.5 \* \(var\(--config-eyebrow-h\) \+ var\(--config-header-gap\)\)\)\);/,
+  );
+  assert.match(
+    css,
+    /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\] > button:first-child \{\s*transform: none;/,
+  );
+  assert.doesNotMatch(css, /\[data-scrolled\] \[data-config-eyebrow\]/);
+});
+
+test("a cancelled or failed eject keeps the expand choice; only a real load starts collapsed", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const loadPicked = useChatRuntimeStore\(\(s\) => s\.loadingModelPick !== null\);/,
+  );
+  assert.match(
+    picker,
+    /const loadingFresh = pane \? modelLoading : modelLoading && loadPicked;/,
+  );
+  assert.match(
+    picker,
+    /if \(modelLoading\) \{\s*if \(loadingFresh\) \{\s*sawLoad\.current = true;/,
+  );
+});
+
+test("a connected model in use offers eject, which clears the pick", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const chosenExternal =\s+!pane && Boolean\(checkpoint && isExternalModelId\(checkpoint\)\);\s+const chosenEjectable = chosenLoaded \|\| chosenExternal;/,
+  );
+  assert.equal(picker.match(/chosenName && chosenEjectable \?/g)?.length, 2);
+  assert.match(picker, /\(chosenEjectable \|\| loadedModels\.length > 0\)/);
+  assert.match(picker, /!pending && chosenEjectable && !modelLoading/);
+  assert.match(
+    picker,
+    /\(chosenExternal && row\.id === checkpoint\)\) &&\s+canEject/,
+  );
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(
+    runtime,
+    /if \(isExternalModelId\(checkpoint\)\) \{\s+clearCheckpoint\(\);/,
+  );
+});
+
+test("on a small screen the picker keeps the keyboard down and every action within reach", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+
+  assert.match(
+    picker,
+    /touchPress\.current = !open && event\.pointerType === "touch";/,
+  );
+  assert.match(picker, /if \(isExpanded && !\(byTouch && smallScreen\)\) \{/);
+  assert.match(
+    picker,
+    /buttonClassName=\{cn\(ACTION_DOTS, actionClass, TOUCH_DOTS\)\}/,
+  );
+  assert.match(
+    picker,
+    /className=\{cn\(ACTION_ROUND, actionClass, TOUCH_IN_MENU\)\}/,
+  );
+  assert.match(picker, /\[actionClass, npuOffer \? TOUCH_DOTS : TOUCH_IN_MENU\]/);
+  const header = picker.slice(picker.indexOf("function SectionHeader("));
+  assert.match(
+    header.slice(0, header.indexOf("\n}\n")),
+    /max-md:flex-1 max-md:self-stretch/,
+  );
+});
+
+test("on a small screen a pick closes the picker at once", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /closeOnPick\.current = smallScreen;/);
+  assert.match(
+    picker,
+    /rawSource\.onPick\(id, meta\);\s+\}\s+if \(closeOnPick\.current\) \{\s+rawSource\.onOpenChange\(false\);/,
+  );
+});
+
+test("only small screens change: every phone class and branch is gated on the mobile width", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.doesNotMatch(picker, /pointer-coarse:/);
+  assert.match(picker, /const smallScreen = useIsMobile\(\);/);
+  assert.match(picker, /data-pill-detail=\{chipDetail\}/);
+  assert.match(picker, /setChipTipOpen\(next && !chipIconOnly\(\)\)/);
+  assert.match(picker, /isMobileViewport\(\) &&\s+label instanceof HTMLElement/);
+  const css = readSrc("index.css");
+  const small = css.slice(css.indexOf("@media (width < 48rem) {"));
+  assert.match(small, /\.composer-model-chip \[data-eject-hit\] \{\s+pointer-events: none;/);
+});
+
+test("hiding the star on small screens never strands Favorite", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const menus =
+    picker.match(
+      /<ModelRowMenu\s+ariaLabel=\{`More options for \$\{row\.label\}`\}[\s\S]*?items=\{\[/g,
+    ) ?? [];
+  assert.equal(menus.length, 2);
+  for (const menu of menus) {
+    assert.match(menu, /pin=\{\s+canStar\s+\?/);
+  }
+  assert.match(picker, /\[actionClass, npuOffer \? TOUCH_DOTS : TOUCH_IN_MENU\]/);
 });

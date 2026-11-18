@@ -65,6 +65,46 @@ export function seedReferenceResolution(
   return allowed[0];
 }
 
+/** "Match Image 1" size: the family's edit resolution (capped at maxSide), else the build's tier. */
+export function seedMatchResolution(
+  tier: number,
+  editOutputResolution: number | null | undefined,
+  maxSide: number,
+): number {
+  if (editOutputResolution == null || editOutputResolution <= 0) return tier;
+  return Math.max(tier, Math.min(editOutputResolution, maxSide));
+}
+
+/** Raise a size below the edit resolution's area to it, same aspect; null when no raise applies. */
+export function raiseToEditResolution(
+  width: number,
+  height: number,
+  editOutputResolution: number | null | undefined,
+  limits: SizeLimits,
+): { width: number; height: number } | null {
+  if (editOutputResolution == null || editOutputResolution <= 0) return null;
+  if (width * height >= editOutputResolution * editOutputResolution) return null;
+  const raised = matchSourceSize(width, height, editOutputResolution, limits);
+  return raised.width * raised.height > width * height ? raised : null;
+}
+
+export interface ReferenceRaise {
+  key: string;
+  raised?: { width: number; height: number };
+  from?: { width: number; height: number; aspect: string; portrait: boolean };
+}
+
+/** Leaving Reference: the replaced Create size, unless the user changed the raised size. */
+export function sizeAfterReference(
+  width: number,
+  height: number,
+  raise: ReferenceRaise | null | undefined,
+): { width: number; height: number; aspect: string; portrait: boolean } | null {
+  if (!raise?.from || !raise.raised) return null;
+  if (width !== raise.raised.width || height !== raise.raised.height) return null;
+  return raise.from;
+}
+
 export const OFFICIAL_2K_PRESETS: ReadonlyArray<{
   label: string;
   width: number;
@@ -91,9 +131,8 @@ export function presetsWithin(limits: SizeLimits) {
 
 export const MINIMAX_H3_IMAGE_FAMILY = "minimax-h3-image";
 
-/** MiniMax-H3-Image's own sizes (its model card): the 4 MP canvas per aspect, then the 16 MP table. It renders
- *  on at least 4 MP and resizes back, so a smaller request costs the 4 MP time. Mirrors the backend's
- *  H3_IMAGE_PRESETS. */
+/** MiniMax-H3-Image's own sizes (its model card): the 4 MP canvas per aspect, then the 16 MP table. Studio
+ *  renders at the requested size (the backend's 4 MP floor is opt-in). Mirrors the backend's H3_IMAGE_PRESETS. */
 export const MINIMAX_H3_IMAGE_PRESETS: ReadonlyArray<{
   label: string;
   width: number;
@@ -141,7 +180,7 @@ export function familyPresetsCopy(family: string | null | undefined): {
   if (isMinimaxH3Image(family)) {
     return {
       label: "Model sizes",
-      hint: "MiniMax-H3-Image's native sizes. It always renders at least 4 MP and resizes back to the size you ask for; the 16 MP sizes take about four times the memory and time.",
+      hint: "MiniMax-H3-Image's native sizes. Its model card gives 4 to 20 MP as the working range, best around 16 MP; the 16 MP sizes take about four times the memory and time.",
     };
   }
   return {
@@ -206,12 +245,13 @@ function joinWords(words: readonly string[]): string {
 
 export type EditSizing = "source" | "custom";
 
-/** MiniMax-H3-Image's edit size: Image 1 at the size its reference latent is encoded at (short edge clamped to
- *  1024..2048, aspect kept, both sides on the 32 grid). Mirrors the backend's size_short_edge. */
+/** MiniMax-H3-Image's edit size, as the reference edit workflow derives it: Image 1 scaled to 4 MP (aspect kept,
+ *  sides rounded), then cut to the 32 grid (each side floored; sizes already on it, or flooring to 0, are kept).
+ *  Mirrors the backend's reference_edit_size. */
 export function h3ImageSourceSize(width: number, height: number): { width: number; height: number } {
   const m = 32;
-  const short = Math.min(width, height);
-  const scale = Math.min(Math.max(short, 1024), 2048) / short;
+  const total = 4 * 1024 * 1024;
+  const scale = Math.sqrt(total / (width * height));
   // Python's round(): halves go to the even neighbour
   const round = (x: number) => {
     const f = Math.floor(x);
@@ -220,10 +260,12 @@ export function h3ImageSourceSize(width: number, height: number): { width: numbe
     if (d < 0.5) return f;
     return f % 2 === 0 ? f : f + 1;
   };
-  return {
-    width: Math.max(m, round((width * scale) / m) * m),
-    height: Math.max(m, round((height * scale) / m) * m),
-  };
+  const w = round(width * scale);
+  const h = round(height * scale);
+  const tw = Math.floor(w / m) * m;
+  const th = Math.floor(h / m) * m;
+  if (tw === 0 || th === 0) return { width: w, height: h };
+  return { width: tw, height: th };
 }
 
 /** ``width`` x ``height`` scaled down as one pair (aspect kept, sides floored to the grid) until both the side and
@@ -249,6 +291,12 @@ export function boundedSize(
     else h -= m;
   }
   return { width: w, height: h };
+}
+
+/** Whether "Match Image 1" takes the size picker beside it. MiniMax-H3-Image ignores it: its match size is always
+ *  the reference edit workflow's (Image 1 at 4 MP, ``h3ImageSourceSize``), so the picker is not shown. */
+export function matchSizeChoosable(family: string | null | undefined): boolean {
+  return !isMinimaxH3Image(family);
 }
 
 export function resolveEditSize(

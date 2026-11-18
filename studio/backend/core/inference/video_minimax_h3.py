@@ -641,9 +641,9 @@ _H3_RGB24_FORMATS = ("yuvj420p", "yuvj422p", "yuvj444p", "rgb24", "rgba", "pal8"
 
 
 def h3_float_rgb_to_uint8(pixels: Any) -> Any:
-    """Float RGB in [0, 1] to uint8, rounded (the reference truncates here, which darkens by half a step)."""
+    """Float RGB in [0, 1] to uint8 truncated, as the reference's LANCZOS helper quantises (``astype(uint8)``)."""
     import numpy as np
-    return np.clip(np.rint(pixels * 255.0), 0, 255).astype(np.uint8)
+    return np.clip(255.0 * pixels, 0, 255).astype(np.uint8)
 
 
 def h3_video_frame_rgb(frame: Any) -> Any:
@@ -1674,8 +1674,15 @@ def amdgpu_vram_free_bytes(
     pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
 ) -> Optional[int]:
     """Free VRAM of the amdgpu card at pci_slot, or the sole one; None without both readings."""
+    return amdgpu_vram_reading(pci_slot, sysfs_root)[0]
+
+
+def amdgpu_vram_reading(
+    pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
+) -> "tuple[Optional[int], Optional[int]]":
+    """(free, total) VRAM bytes of the amdgpu card at pci_slot, or the sole one; (None, None) without both."""
     want = pci_slot.lower() if pci_slot else None
-    found: list[int] = []
+    found: list[tuple[int, int]] = []
     for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_vram_total"):
         device = total_path.parent
         if _sysfs_int(device / "vendor") != 0x1002:
@@ -1687,9 +1694,9 @@ def amdgpu_vram_free_bytes(
         total = _sysfs_int(total_path)
         used = _sysfs_int(device / "mem_info_vram_used")
         if total is None or used is None:
-            return None
-        found.append(max(total - used, 0))
-    return found[0] if len(found) == 1 else None
+            return None, None
+        found.append((max(total - used, 0), total))
+    return found[0] if len(found) == 1 else (None, None)
 
 
 def amdgpu_gtt_free_bytes(

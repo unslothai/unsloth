@@ -423,3 +423,36 @@ def test_an_unrun_card_shows_the_id_the_call_named():
 
     assert start["type"] == "tool_start"
     assert start["arguments_text"] == '{"id":9007199254740993}'
+
+
+def _finishes(lines):
+    return [
+        choice.get("finish_reason")
+        for payload in _payloads(lines)
+        for choice in payload.get("choices") or []
+        if isinstance(choice, dict) and choice.get("finish_reason")
+    ]
+
+
+def test_an_intent_cut_off_at_the_output_limit_is_not_nudged(executed):
+    transport = FakeTransport(
+        [
+            [_sse({"content": "Let me search for that."}), _sse(finish = "length"), _DONE],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport, nudge_tool_calls = True)
+    assert len(transport.requests) == 1
+    assert _finishes(lines)[-1] == "length"
+    assert executed == []
+
+
+def test_an_intent_that_stopped_normally_is_still_nudged(executed):
+    transport = FakeTransport(
+        [
+            [_sse({"content": "Let me search for that."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, nudge_tool_calls = True)
+    assert len(transport.requests) == 2

@@ -27,6 +27,10 @@ export interface DiffusionResolvedControl {
   reason: string;
   artifact?: string | null;
   replaced?: string | null;
+  // int8_attention only (absent on older backends, sd.cpp, MLX): "on" when the kernel engaged.
+  engaged?: boolean;
+  impl?: string | null;
+  modules?: number;
 }
 
 export interface DiffusionStatus {
@@ -131,6 +135,8 @@ export interface DiffusionConditioning {
   max_output_side: number;
   max_output_pixels: number;
   reference_resolutions: number[];
+  // null = the build's tier
+  edit_output_resolution?: number | null;
   unified_edit: boolean;
   // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to
   // max_condition_images in total). Absent on older backends.
@@ -213,6 +219,7 @@ export interface DiffusionLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
+  int8_attention?: "auto" | "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
@@ -974,6 +981,8 @@ export interface DiffusionTrainableFamily {
   // Deploy previews on this repo instead of the trained checkpoint (Krea trains on Raw, runs on Turbo).
   deploy_base?: string | null;
   deploy_bases?: Record<string, string>;
+  // Families the trained adapter loads on; absent on an older backend (the trained family alone).
+  lora_families?: string[];
   base_specs?: Record<
     string,
     {

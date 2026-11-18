@@ -186,7 +186,7 @@ def test_rocm_call_runs_the_triton_kernel(monkeypatch):
         calls.append((tuple(q.shape), dict(config), pv, scale))
         return v.clone()
 
-    monkeypatch.setattr(T, "int8_attention", fake)
+    monkeypatch.setattr(T, "_int8_attention", fake)
     monkeypatch.setattr(I, "unsupported_reason", lambda q, k, v: None)
     monkeypatch.setattr(torch.cuda, "device", lambda *a, **k: contextlib.nullcontext())
     q = torch.randn(1, 8, 2, 128, dtype = torch.bfloat16)
@@ -282,6 +282,85 @@ def test_triton_kernel_numerics_interpreted():
         assert m["cos"] >= (I.MIN_COSINE if gain == 1.0 else I.MIN_SHARP_COSINE), (key, m)
         if gain == 1.0:
             assert m["rel_l1"] <= I.MAX_REL_L1 / 2, (key, m)
+
+
+_LAUNCHES = textwrap.dedent(
+    """
+    import json, torch
+    from core.inference import diffusion_int8_attention_triton as T
+    out = {}
+    for tokens, D, strided in ((131, 64, False), (200, 128, True)):
+        g = torch.Generator().manual_seed(tokens)
+        if strided:
+            q, k, v = (torch.randn(1, tokens, 3, 2, D, generator = g) * 1.6).half().unbind(2)
+        else:
+            q, k, v = ((torch.randn(1, tokens, 2, D, generator = g) * 1.6).half() for _ in range(3))
+        for pv in ("int8", "half_strided", "f16_t"):
+            cfg = {"bm": 64, "bn": 32, "warps": 4, "stages": 1, "kscale": "tile"}
+            fused = T.int8_attention(q, k, v, cfg, pv = pv)
+            again = T.int8_attention(q, k, v, cfg, pv = pv)
+            T.GRID_LIMIT, limit = 0, T.GRID_LIMIT
+            T._PLANS.clear()
+            single = T.int8_attention(q, k, v, cfg, pv = pv)
+            T.GRID_LIMIT = limit
+            T._PLANS.clear()
+            out[f"{tokens}/{D}/{pv}"] = [torch.equal(single, x) for x in (fused, again)]
+    print("RESULT " + json.dumps(out))
+    """
+)
+
+
+@pytest.mark.skipif(not _interpreter_ok(), reason = "needs the Triton >= 3.7 interpreter")
+def test_fused_launches_match_one_launch_per_quantiser_interpreted():
+    """The two quantiser launches (prep_kernel, kv_kernel) and a cached launch plan give the output of one launch per
+    quantiser bit for bit (Triton interpreter, CPU)."""
+    env = dict(os.environ, TRITON_INTERPRET = "1")
+    r = subprocess.run(
+        [sys.executable, "-c", _LAUNCHES],
+        cwd = BACKEND_DIR,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    line = [x for x in r.stdout.splitlines() if x.startswith("RESULT ")]
+    assert line, (r.stdout[-2000:], r.stderr[-3000:])
+    res = json.loads(line[0][7:])
+    assert len(res) == 6 and all(all(v) for v in res.values()), res
+
+
+def test_launch_plan_is_made_once_per_call_signature(monkeypatch):
+    from core.inference import diffusion_int8_attention_triton as T
+
+    monkeypatch.setattr(T, "_PLANS", {})
+    q = torch.zeros(1, 1000, 4, 128, dtype = torch.float16)
+    cfg = {
+        "bm": 64,
+        "bn": 32,
+        "warps": 4,
+        "stages": 1,
+        "pv": "f16_t",
+        "kscale": "tile",
+        "long_keys": 800,
+        "long": {"bm": 128, "warps": 8},
+    }
+    p = T._plan(q, q, q, dict(cfg), None, None)
+    assert T._plan(q, q, q, dict(cfg), None, None) is p
+    # the long overrides apply from long_keys keys on; Q tiles and the channel-major V copy share the first launch
+    assert (
+        p["bm"] == 128 and p["attn_meta"]["num_warps"] == 8 and p["attn_grid"] == (1024 // 128, 4)
+    )
+    assert (
+        p["fused"]
+        and p["prep_grid"] == (4, 1 + 1024 // 64 + 1024 // 64)
+        and p["kv_grid"] == (4, 1024 // 32)
+    )
+    strided = torch.zeros(1, 1000, 3, 4, 128, dtype = torch.float16)[:, :, 0]
+    assert T._plan(strided, q, q, dict(cfg), None, None) is not p and len(T._PLANS) == 2
+    # past the grid limit: one launch per quantiser
+    monkeypatch.setattr(T, "GRID_LIMIT", 32)
+    T._PLANS.clear()
+    assert not T._plan(q, q, q, dict(cfg), None, None)["fused"]
 
 
 def _rotate_ref(x):
@@ -382,3 +461,117 @@ def test_long_sequences_take_the_long_config():
     assert T.select_config(plain, 10**6) == plain
     assert T._launch_options(plain) == {"num_warps": 4, "num_stages": 1}
     assert T._launch_options(dict(plain, waves_per_eu = 2))["waves_per_eu"] == 2
+
+
+def test_direct_launch_passes_every_argument_in_parameter_order():
+    """The arguments handed to a compiled kernel's launcher after the first call are the ones JITFunction.run binds:
+    every parameter in order, constexprs from the launch keywords or their defaults, launch options left out; an
+    unexpected layout means no direct launch."""
+    from core.inference import diffusion_int8_attention_triton as T
+
+    P = types.SimpleNamespace
+    kernel = P(
+        params = [
+            P(name = "x", is_constexpr = False, default = None),
+            P(name = "y", is_constexpr = False, default = None),
+            P(name = "n", is_constexpr = False, default = None),
+            P(name = "BM", is_constexpr = True, default = None),
+            P(name = "Q", is_constexpr = True, default = 7),
+        ]
+    )
+    compiled = P(run = 1, function = 2, packed_metadata = 3)
+    got = T._launcher(kernel, compiled, ("tx", "ty"), (5,), {"BM": 64, "num_warps": 4})
+    assert got == (compiled, [None, None, 5, 64, 7])
+    # the cached template must not hold the first call's tensors: the plan outlives the call, and a held buffer
+    # stays allocated next to the following call's (one extra set of quantised tensors per cached plan)
+    import gc
+    import weakref
+
+    class Buf:
+        pass
+
+    a, b = Buf(), Buf()
+    refs = (weakref.ref(a), weakref.ref(b))
+    kept = T._launcher(kernel, compiled, (a, b), (5,), {"BM": 64})
+    del a, b
+    gc.collect()
+    assert kept is not None and all(r() is None for r in refs)
+    assert T._launcher(kernel, compiled, ("tx", "ty"), (5, 6), {"BM": 64}) is None
+    assert T._launcher(kernel, None, ("tx", "ty"), (5,), {"BM": 64}) is None
+    assert T._launcher(kernel, P(run = 1), ("tx", "ty"), (5,), {"BM": 64}) is None
+
+
+def test_direct_launch_never_crosses_cards(monkeypatch):
+    """The cached direct launcher belongs to the card it was compiled on: a call on another card (or with operands on
+    another card than the current one) takes the regular launch, and each card gets its own cached launcher."""
+    pytest.importorskip("triton")
+    from core.inference import diffusion_int8_attention_triton as T
+
+    if T.triton is None:
+        pytest.skip("no Triton")
+    from triton.runtime.driver import driver
+
+    P = types.SimpleNamespace
+    current = {"dev": 0}
+    log = []
+
+    class Compiled:
+        def __init__(self, dev):
+            self.dev, self.function, self.packed_metadata = dev, dev, None
+
+        def run(self, *a):
+            log.append(("direct", self.dev, current["dev"]))
+
+    class Kernel:
+        params = [
+            P(name = "x", is_constexpr = False, default = None),
+            P(name = "n", is_constexpr = False, default = None),
+        ]
+
+        def __getitem__(self, grid):
+            def launch(*a, **k):
+                log.append(("regular", current["dev"]))
+                return Compiled(current["dev"])
+
+            return launch
+
+    class Buf:
+        def __init__(self, dev):
+            self.dev = dev
+
+        def data_ptr(self):
+            return 4096
+
+        def get_device(self):
+            return self.dev
+
+    class Driver:
+        def get_current_device(self):
+            return current["dev"]
+
+        def get_current_stream(self, dev):
+            return 0
+
+    monkeypatch.setattr(T.triton.runtime.jit, "JITFunction", Kernel)
+    monkeypatch.setattr(T, "_FAST_LAUNCH", {"ok": True})
+    monkeypatch.setattr(
+        driver, "_active", Driver()
+    )  # restored after the test, no real driver is created
+    plan = {"k_grid": (1, 1, 1), "k_args": (5,), "k_meta": {}}
+    kernel = Kernel()
+    T._launch(
+        kernel, plan, "k", (Buf(0),)
+    )  # first call on card 0: regular, caches card 0's launcher
+    T._launch(kernel, plan, "k", (Buf(0),))  # card 0 again: direct, card 0's kernel
+    current["dev"] = 1
+    T._launch(kernel, plan, "k", (Buf(1),))  # card 1: regular, never card 0's kernel
+    T._launch(kernel, plan, "k", (Buf(1),))  # card 1 again: direct, card 1's kernel
+    T._launch(kernel, plan, "k", (Buf(0),))  # operands on card 0 while card 1 is current: regular
+    assert log == [
+        ("regular", 0),
+        ("direct", 0, 0),
+        ("regular", 1),
+        ("direct", 1, 1),
+        ("regular", 1),
+    ], log
+    assert T._FAST_LAUNCH["ok"] is True

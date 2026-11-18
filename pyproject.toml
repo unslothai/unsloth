@@ -79,6 +79,8 @@ studio = [
     "backend/requirements/**/*",
     "backend/vendor/**/*",
     "backend/integrations/blender/*.py",
+    # Copied into Unreal projects by Studio, never imported by it.
+    "backend/integrations/unreal/*.py",
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
@@ -92,6 +94,7 @@ studio = [
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
     "systemd/*",
+    "launchd/*",
 ]
 
 [tool.setuptools.packages.find]
@@ -159,6 +162,7 @@ studio = [
     "structlog>=24.1.0",
     "diceware==1.0.1",
     "json5>=0.9.25",
+    "jeepney>=0.8 ; sys_platform == 'linux'",
     "ddgs==9.14.4 ; python_version >= '3.10'",
     "ddgs==9.8.0 ; python_version < '3.10'",
     "cryptography>=42.0.0; sys_platform != 'win32' or platform_machine != 'ARM64'",
@@ -196,7 +200,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.11.4",
+    "unsloth_zoo>=2026.11.6",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -216,7 +220,7 @@ huggingfacenotorch = [
     "diffusers ; python_version < '3.10'",
     # Ceiling = newest release the version matrix ran. Each `!=` was tested and rejected: keep them.
     # Apple Silicon stays at 5.5.0 via unsloth_zoo's marker-split requirement.
-    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.18.0",
     "trl>=0.18.2,!=0.19.0,<=1.15.0",
     "sentence-transformers",
 ]
@@ -244,7 +248,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.11.4",
+    "unsloth_zoo>=2026.11.6",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -883,9 +887,9 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.11.4",
+    "unsloth_zoo>=2026.11.6",
     "packaging",
-    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.18.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",
     "sentencepiece>=0.2.0",
     "tqdm",

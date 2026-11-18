@@ -76,6 +76,7 @@ import {
   subscribeModelCatalog,
 } from "./model-catalog";
 
+import { ManagedEngineHint, isManagedEngineType } from "./managed-engine-hint";
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
@@ -97,7 +98,10 @@ import {
 } from "./custom-reasoning";
 import { normalizeProviderBaseUrl } from "./provider-base-url";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
-import { getExternalMinOutputTokens } from "./provider-capabilities";
+import {
+  externalMaxTokensUnboundedAtMax,
+  getExternalMinOutputTokens,
+} from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -153,7 +157,11 @@ import {
   withNewlyOfferedCodexModels,
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
-import { parseAutoCompactTokens } from "./utils/auto-compaction";
+import {
+  normalizeCompactionMode,
+  parseAutoCompactTokens,
+  type ProviderCompactionMode,
+} from "./utils/auto-compaction";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 import {
   learnModelDisplayNames,
@@ -388,6 +396,8 @@ export function ChatProvidersSettings({
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
   const [autoCompactTokensDraft, setAutoCompactTokensDraft] = useState("");
+  const [compactionModeDraft, setCompactionModeDraft] =
+    useState<ProviderCompactionMode>("summary");
   const [extraHeadersDraft, setExtraHeadersDraft] = useState("");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
@@ -487,6 +497,7 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
+    setShowOlderModels(false);
     if (isCustomProviderType(value)) {
       setCustomProviderName(customProviderDisplayName(value));
     }
@@ -624,10 +635,12 @@ export function ChatProvidersSettings({
       (model) => selected.has(model) || !isOlderModel(providerType, model),
     );
   }, [availableModels, modelSearchQuery, providerType, showOlderModels, selectedModelIds, catalogVersion]);
-  const olderModelCount = useMemo(
-    () => availableModels.filter((model) => isOlderModel(providerType, model)).length,
-    [availableModels, providerType, catalogVersion],
-  );
+  const olderModelCount = useMemo(() => {
+    const selected = new Set(selectedModelIds);
+    return availableModels.filter(
+      (model) => !selected.has(model) && isOlderModel(providerType, model),
+    ).length;
+  }, [availableModels, providerType, selectedModelIds, catalogVersion]);
   const keyOptional = isCustomProvider && !isCloudPresetProviderType(providerType);
   const apiKeyUrl =
     customProviderApiKeyUrl(providerType) ?? selectedProviderContract?.api_key_url ?? null;
@@ -724,6 +737,7 @@ export function ChatProvidersSettings({
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
     setAutoCompactTokensDraft("");
+    setCompactionModeDraft("summary");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
@@ -832,6 +846,7 @@ export function ChatProvidersSettings({
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
     setAutoCompactTokensDraft("");
+    setCompactionModeDraft("summary");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
@@ -840,6 +855,7 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
+    setShowOlderModels(false);
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
     setAutoReloadModels(false);
@@ -1333,6 +1349,9 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
         autoCompactTokens: autoCompactTokens ?? undefined,
+        ...(supportsAutoCompactTokens && compactionModeDraft !== "summary"
+          ? { compactionMode: compactionModeDraft }
+          : {}),
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1363,6 +1382,7 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
         autoCompactTokens: created.auto_compact_tokens ?? undefined,
+        compactionMode: normalizeCompactionMode(created.compaction_mode),
         extraHeaders: created.extra_headers ?? extraHeaders,
         reasoningConfig: created.provider_type === "custom"
           ? normalizeCustomReasoningConfig(created.reasoning_config)
@@ -1520,6 +1540,10 @@ export function ChatProvidersSettings({
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
         autoCompactTokens,
+        // null clears the column back to the default summary.
+        compactionMode: supportsAutoCompactTokens
+          ? (compactionModeDraft === "summary" ? null : compactionModeDraft)
+          : undefined,
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1557,6 +1581,7 @@ export function ChatProvidersSettings({
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
         autoCompactTokens: updated.auto_compact_tokens ?? undefined,
+        compactionMode: normalizeCompactionMode(updated.compaction_mode),
         extraHeaders: updated.extra_headers ?? extraHeaders,
         reasoningConfig: updated.provider_type === "custom"
           ? normalizeCustomReasoningConfig(updated.reasoning_config)
@@ -1744,9 +1769,11 @@ export function ChatProvidersSettings({
     setAutoCompactTokensDraft(
       provider.autoCompactTokens == null ? "" : provider.autoCompactTokens.toString(),
     );
+    setCompactionModeDraft(provider.compactionMode ?? "summary");
     setExtraHeadersDraft(extraHeadersToDraft(provider.extraHeaders));
     setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
+    setShowOlderModels(false);
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)
         ? provider.isReasoningModel === true
@@ -2060,8 +2087,10 @@ export function ChatProvidersSettings({
                     {pickerGroups.map((group, groupIndex) => (
                       <Fragment key={group.id}>
                         {groupIndex > 0 ? <SelectSeparator className="mx-2" /> : null}
-                        <SelectGroup>
-                          <SelectLabel>{group.label}</SelectLabel>
+                        <SelectGroup aria-label={group.label}>
+                          {group.id === "popular" ? null : (
+                            <SelectLabel>{group.label}</SelectLabel>
+                          )}
                           {group.items.map((item, itemIndex) => (
                             <SelectItem
                               key={item.providerType}
@@ -2089,6 +2118,9 @@ export function ChatProvidersSettings({
                   </SelectContent>
                 </Select>
               </div>
+              {editingProviderId == null && isManagedEngineType(providerType) ? (
+                <ManagedEngineHint engine={providerType} />
+              ) : null}
 
               {isOpenCodeProviderType(providerType) ? (
                 <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
@@ -2336,7 +2368,10 @@ export function ChatProvidersSettings({
                   id="provider-auto-compact-tokens-help"
                   className="text-xs leading-snug text-muted-foreground"
                 >
-                  Tokens before older messages are summarized. Blank uses 75% of
+                  {compactionModeDraft !== "summary"
+                    ? "Tokens before the oldest messages are dropped."
+                    : "Tokens before older messages are summarized."}{" "}
+                  Blank uses 75% of
                   the model's context window
                   {providerType === "anthropic" || providerType === "openai"
                     ? ", up to 200,000"
@@ -2371,6 +2406,53 @@ export function ChatProvidersSettings({
             </div>
           ) : null}
 
+          {supportsAutoCompactTokens ? (
+            <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <Label
+                  htmlFor="provider-compaction-mode"
+                  className="text-sm font-medium"
+                >
+                  When the chat is full
+                </Label>
+                <p
+                  id="provider-compaction-mode-help"
+                  className="text-xs leading-snug text-muted-foreground"
+                >
+                  {compactionModeDraft === "rolling"
+                    ? "Just enough of the oldest turns leave the model's context on each message, with no summary call. Search conversation brings them back word for word."
+                    : compactionModeDraft === "checkpoint"
+                      ? "Everything before the latest turn leaves the model's context at once, as on a local model, with no summary call. Search conversation brings it back word for word."
+                      : "The same model writes a summary of the older turns; the recent ones stay as they are."}
+                  {providerType === "anthropic" || providerType === "openai"
+                    ? " Models that compact on the provider's side keep doing so."
+                    : ""}
+                </p>
+              </div>
+              <Select
+                value={compactionModeDraft}
+                onValueChange={(value) =>
+                  setCompactionModeDraft(
+                    normalizeCompactionMode(value) ?? "summary",
+                  )
+                }
+              >
+                <SelectTrigger
+                  id="provider-compaction-mode"
+                  aria-describedby="provider-compaction-mode-help"
+                  className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="summary">Summarize older turns</SelectItem>
+                  <SelectItem value="rolling">Drop oldest turns</SelectItem>
+                  <SelectItem value="checkpoint">Reset to latest turn</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+
           <Collapsible
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
@@ -2398,8 +2480,9 @@ export function ChatProvidersSettings({
                       id="provider-max-output-tokens-help"
                       className="text-xs leading-snug text-muted-foreground"
                     >
-                      Caps Max Tokens for this connection. Blank uses the model's
-                      limit, or 32,768 without one.
+                      {externalMaxTokensUnboundedAtMax(providerType, null)
+                        ? "Caps Max Tokens for this connection. Blank lets Max send no limit, so the server stops at its context window."
+                        : "Caps Max Tokens for this connection. Blank uses the model's limit, or 32,768 without one."}
                     </p>
                   </div>
                   <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
@@ -2592,12 +2675,19 @@ export function ChatProvidersSettings({
               ) : null}
               {showReasoningToggle ? (
                 <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
-                  <Label
-                    htmlFor="provider-is-reasoning"
-                    className="text-sm font-medium"
-                  >
-                    Reasoning model
-                  </Label>
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-is-reasoning"
+                      className="text-sm font-medium"
+                    >
+                      Unrecognized reasoning model
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Known models like Qwen3 and gpt-oss are detected
+                      automatically. Turn on to show a Thinking switch for any
+                      other model.
+                    </p>
+                  </div>
                   <label
                     htmlFor="provider-is-reasoning"
                     className="flex cursor-pointer items-center gap-2 text-sm"
@@ -2609,7 +2699,7 @@ export function ChatProvidersSettings({
                         setIsReasoningModel(checked === true)
                       }
                     />
-                    This server runs a reasoning model
+                    Show a Thinking switch
                   </label>
                 </div>
               ) : null}
@@ -2878,8 +2968,8 @@ export function ChatProvidersSettings({
           </div>
           {runsStudioToolsLocally ? (
             <p className="-mb-1 px-1 pt-1.5 text-xs leading-snug text-muted-foreground">
-              Search, Tools, MCP and Docs run on this machine and send their results to
-              the provider. Risky code and terminal calls still ask first.
+              Search, Tools and MCP run on this machine and send results to the
+              provider. Risky calls still ask first.
             </p>
           ) : null}
         </div>
@@ -2911,7 +3001,7 @@ export function ChatProvidersSettings({
         </div>
         {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
         <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
-          <label className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
+          <label className="flex h-9 shrink-0 items-center gap-4 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
             <span>Enable connections</span>
             <Switch
               className="scale-[0.88]"

@@ -40,6 +40,8 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+import { isTranslationHeldSlot, isTranslationOnlyRepo } from "@/lib/translation-models";
+import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-cache-snapshot";
 import {
   isServedByLlamaCpp,
   resumesThought,
@@ -80,6 +82,8 @@ function userTexts(
 }
 import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
 import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
+import { computerUseAsk } from "@/features/computer-use/summary";
+import { computerUseToolsForTurn } from "@/features/computer-use/tools";
 import { shownBrowserChat } from "@/features/browser/panel-availability";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
@@ -269,10 +273,9 @@ import {
   clampReasoningEffortToLevels,
   externalMaxOutputTokensNeedsConnectionCap,
   externalStopWindow,
-  getExternalMaxOutputTokens,
+  externalRequestMaxTokens,
   getPublishedExternalMaxOutputTokens,
   getGroundedExternalMaxOutputTokens,
-  getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   providerModelReplaysReasoning,
   providerSupportsPreserveThinking,
@@ -360,6 +363,12 @@ import {
   recordLastLocalModelLoad,
   type LastLocalModelKind,
 } from "../utils/last-local-model-load";
+import {
+  failureLabelFor,
+  rememberedMissNote,
+  sameVariant,
+  withRememberedMiss,
+} from "../utils/auto-load-remembered";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import {
   createImageGateRunOwner,
@@ -381,6 +390,7 @@ import {
 import {
   createThinkTagTracker,
   extractDeltaText,
+  markLiteralThinkTags,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 import { createSegmentedAssistantText } from "../utils/incremental-assistant-content";
@@ -2109,7 +2119,11 @@ export function findLatestUserVideoBase64(
  */
 function boundMcpImageResults(
   messages: RunMessages,
-  { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
+  {
+    readsImages,
+    localMarkers,
+    uncapped = false,
+  }: { readsImages: boolean; localMarkers: boolean; uncapped?: boolean },
 ): RunMessages {
   type Carrier = { message: number; part: number; images: McpImage[] };
   // One entry per replay exchange, partitioned by the serializer's own rule so they cannot drift.
@@ -2148,7 +2162,11 @@ function boundMcpImageResults(
   const plan = readsImages
     ? planMcpImageBound(
         batches.map((batch) => batch.map((carrier) => carrier.images)),
-        { localMarkers },
+        {
+          localMarkers,
+          exchanges: perExchange.map((batch) => batch.map((carrier) => carrier.images)),
+          uncapped,
+        },
       )
     : batches.map((batch) => batch.map((): McpImage[] => []));
   const edits = new Map<number, Map<number, McpImage[]>>();
@@ -2176,6 +2194,28 @@ function boundMcpImageResults(
     });
     return { ...message, content } as typeof message;
   }) as RunMessages;
+}
+
+/** llama.cpp with auto-compaction keeps every tool picture, as the backend's loop does (#18231). */
+function compactingLlamaCppChat(
+  state: Pick<
+    ChatRuntimeState,
+    | "loadedIsGguf"
+    | "activeGgufVariant"
+    | "activeNativePathToken"
+    | "params"
+    | "autoCompactEnabled"
+  >,
+): boolean {
+  return (
+    state.autoCompactEnabled &&
+    isServedByLlamaCpp({
+      loadedIsGguf: state.loadedIsGguf,
+      activeGgufVariant: state.activeGgufVariant,
+      activeNativePathToken: state.activeNativePathToken,
+      checkpoint: state.params.checkpoint,
+    })
+  );
 }
 
 /** The SELECTED model's vision flag wins (a queued send may target another model); loaded state
@@ -2207,6 +2247,7 @@ export async function buildLocalTokenCountHistory(
   const messages = boundMcpImageResults(rawMessages, {
     readsImages: localTargetReadsImages(runtimeState),
     localMarkers: activeModel?.isGguf === false,
+    uncapped: compactingLlamaCppChat(runtimeState),
   });
   const survivingMessages = pruneOutboundHistory(messages, true);
   const outboundMessages = survivingMessages
@@ -2350,6 +2391,7 @@ export async function buildLocalTokenCountExtras(
     userTexts(messages),
   );
   const browserTools = browserAgentToolsForTurn();
+  const computerTools = computerUseToolsForTurn();
   const localMediaTools = localMediaToolsForTurn(state);
   if (
     !toolsEnabled &&
@@ -2358,6 +2400,7 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled &&
     browserTools.length === 0 &&
+    computerTools.length === 0 &&
     localMediaTools.length === 0 &&
     skillTools.length === 0
   ) {
@@ -2388,6 +2431,7 @@ export async function buildLocalTokenCountExtras(
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
       ...browserTools,
+      ...computerTools,
       ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -2610,6 +2654,8 @@ type AutoLoadCandidate = {
   ggufVariant: string | null;
   maxSeqLength: number;
   successLabel: string;
+  /** Shown instead of id when they differ, e.g. a repo id for a snapshot path. */
+  label?: string;
 };
 
 // Same case rules as autoLoadSourceKey: folding a POSIX target would conflate /models/Foo and /models/foo.
@@ -2897,6 +2943,7 @@ function applyAutoLoadRuntimeState(
 
 /** Whether a cache row is chattable. Every field is optional so an older backend keeps trying. */
 function isChattableCachedRepo(repo: {
+  repo_id?: string;
   partial?: boolean;
   task?: string | null;
   model_format?: string | null;
@@ -2908,7 +2955,9 @@ function isChattableCachedRepo(repo: {
     // Adapters fetch base weights from the Hub, and can_chat is true on file layout alone.
     repo.model_format !== "adapter" &&
     // Cached diffusion and speech repos report can_chat true on file format alone.
-    !NON_CHAT_TASKS.has(repo.task ?? "")
+    !NON_CHAT_TASKS.has(repo.task ?? "") &&
+    // Translate's models are tagged text-generation, but would translate the user's prompt.
+    !isTranslationOnlyRepo(repo.repo_id)
   );
 }
 
@@ -2941,13 +2990,14 @@ function isAutoLoadableLocalRow(
 ): boolean {
   return (
     (AUTO_LOAD_LOCAL_SOURCES.has(row.source) ||
-      (admitHfCache && row.source === "hf_cache")) &&
+      (row.source === "hf_cache" && (admitHfCache || isOtherCacheSnapshot(row)))) &&
     // Absent capabilities means unclassified, not "not chat": requiring true fell through to downloading the default.
     row.capabilities?.can_chat !== false &&
     row.partial !== true &&
     // Allowlist: backends send "unknown" or omit the field, so a denylist admitted pickles.
     (isGgufLocalRow(row) || row.model_format === "safetensors") &&
     !NON_CHAT_TASKS.has(row.task ?? "") &&
+    !isTranslationOnlyRepo(row.model_id) &&
     runsOnThisPlatform(row) &&
     !isHiddenModelId(row.model_id, row.id, row.path)
   );
@@ -2988,6 +3038,8 @@ type AutoLoadSource = {
   id: string;
   /** Sent to /api/inference/load as model_path. */
   loadId: string;
+  /** Hub repo id of an hf_cache row: in another cache its id and loadId are the snapshot path. */
+  repoId?: string;
   sizeBytes: number;
   maxSeqLength: number;
   /** null when the target is one file already (a local .gguf) or safetensors. */
@@ -3052,6 +3104,8 @@ function buildAutoLoadSources(
       kind: isGguf ? "gguf" : "model",
       id: row.id,
       loadId: row.load_id || row.id,
+      repoId:
+        row.source === "hf_cache" && row.model_id ? row.model_id : undefined,
       sizeBytes: row.size_bytes ?? 0,
       maxSeqLength: isGguf ? 0 : safetensorsMaxSeqLength,
       listVariants: needsVariant
@@ -3067,16 +3121,40 @@ function buildAutoLoadSources(
   return sources;
 }
 
-function isRememberedSource(
+function rememberedMatch(
   source: AutoLoadSource,
   remembered: { id: string; kind: LastLocalModelKind },
-): boolean {
-  if (source.kind !== remembered.kind) return false;
+): "exact" | "repo" | null {
+  if (source.kind !== remembered.kind) return null;
   // Same case rules as the dedupe key.
   const target = normalizeTarget(remembered.id);
-  return (
+  if (
     normalizeTarget(source.id) === target ||
     normalizeTarget(source.loadId) === target
+  ) {
+    return "exact";
+  }
+  return source.repoId !== undefined &&
+    normalizeTarget(source.repoId) === target
+    ? "repo"
+    : null;
+}
+
+/** A snapshot matched only by repo id stands in for a missing exact row, never retries a failed one. */
+function rememberedSources(
+  sources: AutoLoadSource[],
+  remembered: { id: string; kind: LastLocalModelKind } | null,
+): Set<AutoLoadSource> {
+  if (!remembered) return new Set();
+  const exact = sources.filter(
+    (source) => rememberedMatch(source, remembered) === "exact",
+  );
+  return new Set(
+    exact.length > 0
+      ? exact
+      : sources.filter(
+          (source) => rememberedMatch(source, remembered) === "repo",
+        ),
   );
 }
 
@@ -3085,8 +3163,9 @@ function orderAutoLoadSources(
   sources: AutoLoadSource[],
   remembered: { id: string; kind: LastLocalModelKind } | null,
 ): AutoLoadSource[] {
+  const preferred = rememberedSources(sources, remembered);
   const rank = (source: AutoLoadSource): number => {
-    if (remembered && isRememberedSource(source, remembered)) return 0;
+    if (preferred.has(source)) return 0;
     return source.kind === "gguf" ? 1 : 2;
   };
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
@@ -3101,16 +3180,20 @@ async function resolveAutoLoadCandidate(
   source: AutoLoadSource,
   rememberedVariant: string | null,
   isSkipped: (candidate: AutoLoadCandidate) => boolean,
+  // Keys saved settings and the record: the repo id when only that matched the last used model.
+  id: string = source.id,
 ): Promise<AutoLoadCandidate | null> {
+  const label = source.repoId ?? id;
   const build = (ggufVariant: string | null): AutoLoadCandidate => ({
-    id: source.id,
+    id,
     loadId: source.loadId,
     kind: source.kind,
     ggufVariant,
     maxSeqLength: source.maxSeqLength,
     successLabel: ggufVariant
-      ? `Loaded ${source.id} (${ggufVariant})`
-      : `Loaded ${source.id}`,
+      ? `Loaded ${label} (${ggufVariant})`
+      : `Loaded ${label}`,
+    label,
   });
   if (!source.listVariants) {
     const variants =
@@ -3501,14 +3584,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     cpuFallbackReason?: CpuFallbackReason | null,
     mmprojFallbackReason?: MmprojFallbackReason | null,
     offloadCounts?: OffloadCounts,
+    missedNote?: string | null,
   ): void => {
     // Both reasons composed (mmproj and CPU); see loadFallbackNotice.
-    const notice = loadFallbackNotice(
-      message,
-      cpuFallbackReason,
-      mmprojFallbackReason,
-      offloadWarning(offloadCounts ?? {}),
-      expertSpillNote(offloadCounts ?? {}),
+    const notice = withRememberedMiss(
+      loadFallbackNotice(
+        message,
+        cpuFallbackReason,
+        mmprojFallbackReason,
+        offloadWarning(offloadCounts ?? {}),
+        expertSpillNote(offloadCounts ?? {}),
+      ),
+      missedNote ?? null,
     );
     const options = {
       description: notice.description,
@@ -3533,6 +3620,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const loadFailure: {
     current: { label: string; detail: string; blamesModel: boolean } | null;
   } = { current: null };
+  // Set when the last used model was tried and did not load: a fallback must say so and must not replace it (#18002).
+  const rememberedMiss: { current: string | null } = { current: null };
 
   // Set once the user declines the HF token dialog, so nothing asks again.
   let autoLoadCancelled = false;
@@ -3618,6 +3707,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
+    // Set when this load stands in for a last used model that failed.
+    missedNote: string | null = null,
   ): Promise<boolean> {
     if (
       autoLoadCancelled ||
@@ -3628,9 +3719,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     }
     const currentStore = useChatRuntimeStore.getState();
     const modelPath = candidate.loadId ?? candidate.id;
-    const failureLabel = candidate.ggufVariant
-      ? `${candidate.id} (${candidate.ggufVariant})`
-      : candidate.id;
+    const failureLabel = failureLabelFor(candidate);
     const { config } = resolveInitialConfig(
       candidate.id,
       candidate.ggufVariant,
@@ -4035,7 +4124,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           activeModelIsLocal: loadResp.is_local_model ?? false,
         });
       }
-      if (!(loadResp.is_lora ?? false)) {
+      if (!(loadResp.is_lora ?? false) && missedNote === null) {
         recordLastLocalModelLoad({
           id: candidate.id,
           kind: candidate.kind,
@@ -4047,6 +4136,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         loadResp.cpu_fallback_reason,
         loadResp.mmproj_fallback_reason,
         offloadCountsFrom(loadResp),
+        missedNote,
       );
     });
     return true;
@@ -4105,6 +4195,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     );
 
     // A target can be in several lists; a twin is tried only if the preferred row resolved nothing.
+    const remembered = rememberedSources(sources, lastLoaded);
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
       if (
@@ -4116,9 +4207,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
-      const isRemembered = lastLoaded
-        ? isRememberedSource(source, lastLoaded)
-        : false;
+      const isRemembered = remembered.has(source);
       const isTried = (entry: AutoLoadCandidate): boolean =>
         skippedAutoLoadCandidates.has(
           autoLoadCandidateKey(
@@ -4138,22 +4227,47 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             source,
             isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
             isTried,
+            isRemembered &&
+              lastLoaded &&
+              rememberedMatch(source, lastLoaded) === "repo"
+              ? lastLoaded.id
+              : source.id,
           );
           options?.abortSignal?.throwIfAborted();
           if (!candidate) break;
           candidateResolvedFor.add(sourceKey);
           updateAutoLoadToast(
             isRemembered ? "Loading last used model…" : "Loading a model…",
-            candidate.ggufVariant
-              ? `${candidate.id} (${candidate.ggufVariant})`
-              : candidate.id,
+            failureLabelFor(candidate),
           );
+          const isRememberedCandidate =
+            isRemembered &&
+            sameVariant(candidate.ggufVariant, lastLoaded?.ggufVariant ?? null);
+          const failuresBefore = loadFailure.current;
+          const noteRememberedMiss = (): void => {
+            if (!isRememberedCandidate || rememberedMiss.current !== null) {
+              return;
+            }
+            const failure =
+              loadFailure.current !== failuresBefore ? loadFailure.current : null;
+            rememberedMiss.current = rememberedMissNote(
+              failureLabelFor(candidate),
+              failure?.detail ?? null,
+            );
+          };
           try {
-            if (await loadAutoLoadCandidate(candidate)) {
+            if (
+              await loadAutoLoadCandidate(
+                candidate,
+                isRememberedCandidate ? null : rememberedMiss.current,
+              )
+            ) {
               return { loaded: true, blockedByTrustRemoteCode: false };
             }
+            noteRememberedMiss();
           } catch {
             options?.abortSignal?.throwIfAborted();
+            noteRememberedMiss();
             hadNonTrustFailure = true;
             // loadAutoLoadCandidate does not record rejections; mark here or the same quant loops forever.
             skippedAutoLoadCandidates.add(
@@ -4357,16 +4471,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           activeModelIsLocal: loadResp.is_local_model ?? false,
           ...resolveLoadedSpeculativeSettings(loadResp),
         });
-        recordLastLocalModelLoad({
-          id: DEFAULT_CHAT_MODEL_REPO,
-          kind: "gguf",
-          ggufVariant: DEFAULT_CHAT_MODEL_VARIANT,
-        });
+        if (rememberedMiss.current === null) {
+          recordLastLocalModelLoad({
+            id: DEFAULT_CHAT_MODEL_REPO,
+            kind: "gguf",
+            ggufVariant: DEFAULT_CHAT_MODEL_VARIANT,
+          });
+        }
         showAutoLoadSuccess(
           `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
           loadResp.cpu_fallback_reason,
           loadResp.mmproj_fallback_reason,
           offloadCountsFrom(loadResp),
+          rememberedMiss.current,
         );
       });
       return { loaded: true, blockedByTrustRemoteCode: false };
@@ -4423,8 +4540,9 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
         };
       }
       const status = settled.status;
-      // A speech model is not one chat can queue against, so read the slot as empty.
-      const checkpoint = isSpeechOnlyStatus(status)
+      // A speech or Translate-held model is not one chat can queue against, so read the slot as empty.
+      const checkpoint =
+        isSpeechOnlyStatus(status) || isTranslationHeldSlot(status.active_model, null)
         ? null
         : resolveInferenceCheckpointId(status);
       if (checkpoint) {
@@ -4944,6 +5062,8 @@ export function createOpenAIStreamAdapter(
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
       const browserTools = browserAgentToolsForTurn();
+      const computerTools = computerUseToolsForTurn();
+      const stepwiseTools = browserTools.length > 0 || computerTools.length > 0;
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane and thread
       // (unstable_threadId only, matching the reader's remoteId).
@@ -5279,6 +5399,7 @@ export function createOpenAIStreamAdapter(
       const messages = boundMcpImageResults(rawMessages, {
         readsImages: targetReadsImages,
         localMarkers: mcpImagesLocalMarkers,
+        uncapped: !isExternalRequest && compactingLlamaCppChat(runtime),
       });
       const replayReasoning = !isExternalRequest || (
         providerSupportsPreserveThinking(externalProvider?.providerType) &&
@@ -5712,8 +5833,11 @@ export function createOpenAIStreamAdapter(
       // Both this stream and recovery followers persist it, or reload blocks the composer again.
       let generationStalled = false;
       let parseThink = true;
-      const generationCustom = () =>
-        generationRunId
+      // Recovery and Continue mark tags as this stream does only if they know reasoning arrived split out.
+      let reasoningContentSeen = false;
+      const generationCustom = () => ({
+        ...(reasoningContentSeen ? { splitReasoningSeen: true } : {}),
+        ...(generationRunId
           ? {
               generationRunId,
               generationSeq,
@@ -5729,7 +5853,8 @@ export function createOpenAIStreamAdapter(
               serverManaged: true,
               parseThinkTags: parseThink,
             }
-          : {};
+          : {}),
+      });
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
@@ -5828,7 +5953,11 @@ export function createOpenAIStreamAdapter(
         owner: serverCancel,
       });
       const continuationPartial = continuation
-        ? continuationSeed(continuation.partial, resumedThought)
+        ? continuationSeed(
+            continuation.partial,
+            resumedThought,
+            continuation.splitReasoningSeen === true,
+          )
         : "";
       const geminiContinuationReplayTurns =
         continuation?.geminiReplayTurns?.length
@@ -5980,6 +6109,8 @@ export function createOpenAIStreamAdapter(
       }
       // Keep the <think> block open across reasoning deltas; answer content closes it.
       let reasoningContentOpen = resumesInsideThought;
+      reasoningContentSeen =
+        resumesInsideThought || continuation?.splitReasoningSeen === true;
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -6766,6 +6897,12 @@ export function createOpenAIStreamAdapter(
                 }
               }
             }
+            const externalMaxTokens = externalRequestMaxTokens(
+              externalProvider?.providerType,
+              externalSelection?.modelId,
+              externalProvider?.maxOutputTokens,
+              params.maxTokens,
+            );
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
@@ -6784,18 +6921,9 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.topP !== false && params.topP < 1
                 ? { top_p: params.topP }
                 : {}),
-              // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
-              max_tokens: Math.min(
-                Math.max(
-                  params.maxTokens,
-                  getExternalMinOutputTokens(externalProvider?.providerType),
-                ),
-                getExternalMaxOutputTokens(
-                  externalProvider?.providerType,
-                  externalSelection?.modelId,
-                  externalProvider?.maxOutputTokens,
-                ),
-              ),
+              ...(externalMaxTokens == null
+                ? {}
+                : { max_tokens: externalMaxTokens }),
 
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.minP
@@ -6816,7 +6944,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
-                browserTools.length > 0 ||
+                stepwiseTools ||
                 localMediaTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
@@ -6831,6 +6959,7 @@ export function createOpenAIStreamAdapter(
                       ...skillTools,
                       ...studioLocalCodeTools,
                       ...browserTools,
+                      ...computerTools,
                       ...localMediaTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
@@ -6857,8 +6986,8 @@ export function createOpenAIStreamAdapter(
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
-                    // Browser use is the exception: a step announced and not taken ends the task.
-                    nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false,
+                    // Browser and computer use are the exception: a step announced and not taken ends the task.
+                    nudge_tool_calls: stepwiseTools ? runtime.nudgeToolCalls : false,
                     deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
@@ -6936,6 +7065,7 @@ export function createOpenAIStreamAdapter(
                   externalProvider.providerType,
                   externalModelId,
                 )?.contextLength,
+                compactionMode: externalProvider.compactionMode,
                 autoCompactTokens: externalProvider.autoCompactTokens,
                 compactNow,
               }),
@@ -7052,7 +7182,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
-                browserTools.length > 0 ||
+                stepwiseTools ||
                 localMediaTools.length > 0 ||
                 deepResearchArmed)
               ? {
@@ -7068,6 +7198,7 @@ export function createOpenAIStreamAdapter(
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
                     ...browserTools,
+                    ...computerTools,
                     ...localMediaTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
@@ -7795,6 +7926,7 @@ export function createOpenAIStreamAdapter(
                         confirmationThreadKey === "__default" ? "" : confirmationThreadKey,
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
                         cancelId,
+                        computerUseAsk(toolEvent.computer_use),
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
@@ -8626,17 +8758,22 @@ export function createOpenAIStreamAdapter(
               if (reasoning) {
                 if (!reasoningContentOpen) {
                   reasoningDurationTracker.startGroup();
-                  appendCumulative(`<think>${reasoning}`);
+                  appendCumulative(`<think>${markLiteralThinkTags(reasoning)}`);
                   reasoningContentOpen = true;
+                  reasoningContentSeen = true;
                 } else {
-                  appendCumulative(reasoning);
+                  appendCumulative(markLiteralThinkTags(reasoning));
                 }
               }
               if (delta) {
                 if (reasoningContentOpen) {
                   closeReasoningContent();
                 }
-                appendCumulative(delta);
+                if (reasoningContentSeen && typeof rawDelta === "string") {
+                  appendCumulative(markLiteralThinkTags(delta));
+                } else {
+                  appendCumulative(delta);
+                }
               }
               streamedChars += reasoning.length + delta.length;
               producedReplyText = true;
@@ -8917,9 +9054,13 @@ export function createOpenAIStreamAdapter(
           )
         ) {
           toast.info("This chat was not compacted", {
-            description: isCloudForCompaction
-              ? "There was nothing before your latest message to summarize."
-              : "Compaction needs the conversation archive and the default checkpoint policy.",
+            description: !isCloudForCompaction
+              ? "Compaction needs the conversation archive and the default checkpoint policy."
+              : externalProvider?.compactionMode === "rolling"
+                ? "Drop oldest turns only drops turns once the chat is full. Pick Reset to latest turn or Summarize older turns for this connection to compact on demand."
+                : externalProvider?.compactionMode === "checkpoint"
+                  ? "Compaction needs the conversation archive and a model that can use Studio's tools."
+                  : "There was nothing before your latest message to summarize.",
           });
         }
         const finalTiming = withPriorTiming(
@@ -9094,22 +9235,22 @@ export function createOpenAIStreamAdapter(
               description: oneTurnIsTheProblem
                 ? userCanShortenIt
                   ? `This message is ${tooLong}` +
-                    'Shorten this message, or raise "Context Length" ' +
+                    'Shorten this message, or raise "Context" ' +
                     "in the chat Settings panel (⚙ in the top-right)."
                   : `The last tool result is ${tooLong}` +
-                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    'Raise "Context" in the chat Settings panel (⚙ in the top-right), ' +
                     "or ask for less output from that tool."
                 : historyCannotHelp(irreducible)
                   ?
                     "Even with every earlier turn dropped, this prompt would still be " +
                     "too long, so shortening the conversation will not help. " +
-                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    'Raise "Context" in the chat Settings panel (⚙ in the top-right), ' +
                     "or reduce what every request carries: the system prompt and any " +
                     "tools that are enabled."
                   // llama-server runs with --no-context-shift, so point at the control that raises the ceiling.
                   :
                     "The conversation has filled the model's context window. " +
-                    'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    'Increase "Context" in the chat Settings panel (⚙ in the top-right), ' +
                     "or start a new chat.",
               duration: 8000,
             });

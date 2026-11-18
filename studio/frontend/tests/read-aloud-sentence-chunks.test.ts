@@ -16,7 +16,9 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 type Utterance = { status: { type: string }; cancel: () => void };
 type Adapter = {
   readAloudChunks: (text: string) => string[];
-  StudioSpeechSynthesisAdapter: new () => { speak: (text: string) => Utterance };
+  StudioSpeechSynthesisAdapter: new () => {
+    speak: (text: string, lang?: string, options?: { systemFallback?: boolean }) => Utterance;
+  };
 };
 
 class FakeAudio {
@@ -43,7 +45,7 @@ class FakeAudio {
   }
 }
 
-function load() {
+function load(failFrom = Infinity) {
   const spoken: string[] = [];
   const answers: ((v: unknown) => void)[] = [];
   const adapter = loadWithStubs<Adapter>(
@@ -54,6 +56,9 @@ function load() {
           if (input === "/api/inference/loaded-models" || input === "/v1/models") return { ok: true, status: 200, json: async () => ({ data: [] }) };
           spoken.push(JSON.parse(init?.body ?? "{}").messages[0].content);
           await new Promise((resolve) => answers.push(resolve));
+          if (spoken.length > failFrom) {
+            return { ok: false, status: 400, json: async () => ({ detail: "No model loaded" }) };
+          }
           return { ok: true, status: 200, json: async () => ({ audio: { data: String(spoken.length) } }) };
         },
       },
@@ -71,7 +76,7 @@ function load() {
           getState: () => ({ ttsEngine: "studio", ttsStudioVoiceId: "", ttsRate: 1, ttsVolume: 1 }),
         },
       },
-      "@/lib/toast": { toast: { error: () => {}, warning: () => {} } },
+      "@/lib/toast": { toast: { error: () => {}, warning: () => {}, info: () => {} } },
       "@/features/audio/audio-workspace-constants": { TTS_MAX_TOKENS: 1000 },
     },
   );
@@ -126,6 +131,40 @@ test("playback starts after the first chunk and the next one synthesizes while i
   assert.equal(FakeAudio.live.length, total);
   assert.equal(utterance.status.type, "ended");
   assert.deepEqual(spoken, adapter.readAloudChunks(REPLY));
+});
+
+for (const systemFallback of [true, false]) test(`a missing speech model mid-reply ${systemFallback ? "resumes on the device voice at the first unplayed chunk" : "ends with an error when the caller asked for no fallback"}`, async () => {
+  FakeAudio.live = [];
+  const said: string[] = [];
+  const g = globalThis as Record<string, unknown>;
+  g.Audio = FakeAudio;
+  g.window = g;
+  g.speechSynthesis = { getVoices: () => [], cancel: () => {}, speak: (u: { text: string }) => said.push(u.text) };
+  g.SpeechSynthesisUtterance = class {
+    text: string;
+    constructor(text: string) {
+      this.text = text;
+    }
+    addEventListener() {}
+  };
+  try {
+    const { adapter, answers } = load(1);
+    const u = new adapter.StudioSpeechSynthesisAdapter().speak(REPLY, "en", { systemFallback });
+    await tick();
+    answers.shift()?.(undefined);
+    await tick();
+    answers.shift()?.(undefined);
+    await tick();
+    FakeAudio.live[0]?.end();
+    await tick();
+    const chunks = adapter.readAloudChunks(REPLY);
+    assert.deepEqual(said, systemFallback ? [chunks.slice(1).join(" ")] : []);
+    assert.equal(u.status.type, systemFallback ? "running" : "ended");
+  } finally {
+    Reflect.deleteProperty(g, "window");
+    Reflect.deleteProperty(g, "speechSynthesis");
+    Reflect.deleteProperty(g, "SpeechSynthesisUtterance");
+  }
 });
 
 test("cancel stops playback and requests nothing further", async () => {

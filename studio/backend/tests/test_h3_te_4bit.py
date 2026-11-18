@@ -65,7 +65,7 @@ def _blob(meta: dict):
     return torch.tensor(list(json.dumps(meta).encode()), dtype = torch.uint8)
 
 
-def _write_file(tmp_path):
+def _write_file(tmp_path, norm_gain: float = 1.0):
     import transformers
     from safetensors.torch import save_file
 
@@ -77,6 +77,10 @@ def _write_file(tmp_path):
     (tmp_path / "text_encoder").mkdir()
     config.save_pretrained(tmp_path / "text_encoder")
     ref = transformers.Qwen3VLForConditionalGeneration(config).to(torch.bfloat16).eval()
+    if norm_gain != 1.0:
+        with torch.no_grad():
+            for layer in ref.model.language_model.layers:
+                layer.input_layernorm.weight.mul_(norm_gain)
     out = {}
     for key, tensor in ref.state_dict().items():
         if key.startswith("lm_head") or key.endswith("language_model.norm.weight"):
@@ -104,7 +108,13 @@ def _write_file(tmp_path):
     return path, ref
 
 
-def _load(monkeypatch, tmp_path, scheme, path):
+def _load(
+    monkeypatch,
+    tmp_path,
+    scheme,
+    path,
+    dtype = None,
+):
     import sys
     monkeypatch.setitem(
         sys.modules,
@@ -114,7 +124,7 @@ def _load(monkeypatch, tmp_path, scheme, path):
     return te.load_h3_quantized_text_encoder(
         "MiniMaxAI/MiniMax-H3",
         scheme,
-        dtype = torch.bfloat16,
+        dtype = dtype or torch.bfloat16,
         local_base = str(tmp_path),
         local_files_only = True,
     )
@@ -138,6 +148,23 @@ def test_the_int8_file_still_loads_through_the_same_loader(monkeypatch, tmp_path
     ids = torch.randint(0, 96, (1, 9))
     got, want = _hidden(enc, ids), _hidden(ref, ids)
     assert float((got - want).norm() / want.norm()) < 0.05
+
+
+def test_the_int8_conditioner_stays_finite_in_fp16_where_the_card_has_no_bf16(
+    monkeypatch, tmp_path
+):
+    """sm75 loads the conditioner in fp16: the int8 modules scale the weight before the matmul, as their fp16
+    contract says, so the unscaled int8 sum (here past 65504) never reaches the fp16 output."""
+    path, ref = _write_file(tmp_path, norm_gain = 64.0)
+    enc = _load(monkeypatch, tmp_path, "int8", path, dtype = torch.float16)
+    assert enc is not None
+    ids = torch.randint(0, 96, (1, 9))
+    got, want = _hidden(enc, ids), _hidden(ref.float(), ids)
+    assert torch.isfinite(got).all()
+    assert float((got - want).norm() / want.norm()) < 0.05
+    cls = te._int8_convrot_linear_class()
+    int8 = [m for m in enc.modules() if isinstance(m, cls)]
+    assert int8 and all(m.scale_weight_first for m in int8)
 
 
 def test_a_file_under_the_wrong_scheme_is_refused(monkeypatch, tmp_path):

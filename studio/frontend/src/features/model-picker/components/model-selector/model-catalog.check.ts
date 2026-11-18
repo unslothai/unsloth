@@ -170,22 +170,38 @@ assert.deepEqual(
   const group = groupForRepoId(h3i, IMAGE_CATALOG);
   assert.ok(group);
   assert.equal(groupForRepoId("unsloth/MiniMax-H3-Image-FP8", IMAGE_CATALOG), group);
-  // The dense row IS the Fast FP8 row: no unpinned bf16 twin.
-  assert.equal(group.artifacts.length, 1);
+  assert.equal(group.artifacts.length, 2);
+  assert.equal(group.artifacts[1].repoId, "unsloth/MiniMax-H3-Image-GGUF");
+  assert.equal(group.artifacts[1].loadKind, "gguf");
+  assert.equal(groupForRepoId("unsloth/MiniMax-H3-Image-GGUF", IMAGE_CATALOG), group);
+  assert.equal(
+    curatedRowLabelFor("unsloth/MiniMax-H3-Image-GGUF", IMAGE_CATALOG, "dense-quant", ["int8", "fp8"])?.name,
+    "MiniMax-H3-Image-GGUF (Slow)",
+  );
   assert.equal(group.artifacts[0].prequantRepo, "unsloth/MiniMax-H3-Image-FP8");
   assert.deepEqual(group.artifacts[0].prequantSizeGb, { fp8: 18.88, int8: 18.88 });
   assert.equal(group.artifacts[0].fetchedFrom, undefined);
   for (const schemes of [["int8", "fp8"], ["fp8"], ["int8"]]) {
     assert.equal(curatedRowLabelFor(h3i, IMAGE_CATALOG, "dense-quant", schemes)?.name, "MiniMax-H3-Image (Fast FP8)");
   }
-  // The backend refuses Apple Silicon and CPU.
   for (const host of ["accelerated", "gguf-only", "unknown"] as const) {
     assert.equal(curatedRowLabelFor(h3i, IMAGE_CATALOG, host)?.name, "MiniMax-H3-Image", host);
+  }
+  // The backend refuses the pipeline on Apple Silicon and CPU, so there only the GGUF row is offered.
+  const ggufOnlyIds = catalogToModelOptions(IMAGE_CATALOG, "gguf-only").map((o) => o.id);
+  assert.ok(!ggufOnlyIds.includes(h3i));
+  assert.ok(ggufOnlyIds.includes("unsloth/MiniMax-H3-Image-GGUF"));
+  for (const host of ["accelerated", "dense-quant", "unknown"] as const) {
+    assert.ok(catalogToModelOptions(IMAGE_CATALOG, host).some((o) => o.id === h3i), host);
   }
   const names = catalogToModelOptions(IMAGE_CATALOG, "dense-quant", ["int8", "fp8"])
     .filter((o) => IMAGE_CATALOG.some((g) => g.pinToTop && groupForRepoId(o.id, IMAGE_CATALOG) === g))
     .map((o) => o.name);
-  assert.deepEqual(names.slice(0, 2), ["MiniMax-H3-Image (Fast FP8)", "FLUX.3 Image Klein (Fast FP8)"]);
+  assert.deepEqual(names.slice(0, 3), [
+    "MiniMax-H3-Image (Fast FP8)",
+    "MiniMax-H3-Image-GGUF (Slow)",
+    "FLUX.3 Image Klein (Fast FP8)",
+  ]);
   const fits = (gpuGb: number, systemRamGb: number, denseQuantSchemes?: string[]) =>
     curatedArtifactFitsDevice(h3i, IMAGE_CATALOG, { gpuGb, systemRamGb, denseQuantSchemes });
   assert.equal(fits(24, 64, ["int8", "fp8"]), true);
@@ -353,6 +369,7 @@ for (const id of [
   "unsloth/flux-3-image-klein-base-GGUF",
   "unsloth/MOSS-Image-SFT-GGUF",
   "unsloth/MOSS-Image-Base-GGUF",
+  "unsloth/MiniMax-H3-Image-GGUF",
   "unsloth/Qwen-Image-Edit-2511-GGUF",
   "unsloth/FLUX.1-Kontext-dev-GGUF",
   ...Object.keys(OLD_SAFETENSORS_MODELS),
@@ -577,7 +594,7 @@ for (const id of [
 // Non-GGUF is not the test: diffusion runs on MPS and STT via the whisper.cpp sidecar.
 for (const [label, catalog, refused] of [
   ["video", VIDEO_CATALOG, ["MiniMaxAI/MiniMax-H3"]],
-  ["image", IMAGE_CATALOG, []],
+  ["image", IMAGE_CATALOG, ["MiniMaxAI/MiniMax-H3-Image"]],
   ["audio", AUDIO_CATALOG, []],
 ] as const) {
   const all = catalogToModelOptions(catalog).map((o) => o.id);
