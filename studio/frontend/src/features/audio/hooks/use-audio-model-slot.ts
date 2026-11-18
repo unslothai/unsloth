@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { requestScopedLocalPromptQueueStop } from "@/features/chat/utils/prompt-queue-boundary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isAccountOwner } from "@/features/auth";
 import {
@@ -1133,12 +1134,9 @@ export function useAudioModelSlot({
         const slotEject =
           slotModel !== null || (statusRef.current?.serving?.length ?? 0) > 1;
         const stopDecision = slotEject
-          ? {
-              proceed: true,
-              forceCancelActive: false,
-              promptQueueThreadIds: [],
-              preStreamRunTokens: [],
-            }
+          ? await confirmStopRunningChatsIfNeeded(
+              "Unloading this model", "unloadOne", slotModel ?? activeModel,
+            )
           : await confirmStopRunningChatsIfNeeded("Unloading the model", "unload");
         if (!stopDecision.proceed) {
           setBusy(null);
@@ -1151,7 +1149,9 @@ export function useAudioModelSlot({
 
         const toastId = toast.loading("Unloading model…");
         try {
-          if (!slotEject) {
+          if (slotEject) {
+            requestScopedLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+          } else {
             cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
             requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
           }

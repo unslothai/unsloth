@@ -52,15 +52,16 @@ test("a speech load from Audio keeps the chat model loaded", () => {
     /if \(!keepsChat\) \{\s*cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}/,
   );
   // Ejecting a speech model with the chat model kept beside it (in a slot, or active with the chat
-  // model in a slot) asks nothing, stops no queue and unloads it by its routing id.
+  // model in a slot) confirms only its own requests and stops only its own queues.
   assert.match(
     slotHook,
     /const slotModel = audioSlotRoutingId\(activeModel\);\s*const slotEject =\s*slotModel !== null \|\| \(statusRef\.current\?\.serving\?\.length \?\? 0\) > 1;/,
   );
   assert.match(
     slotHook,
-    /if \(!slotEject\) \{\s*cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*await unloadModel\(\{\s*model_path: slotModel \?\? activeModel,[\s\S]*?if \(!slotEject\) requestLocalPromptQueueStop\(\);/,
+    /if \(slotEject\) \{\s*requestScopedLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\} else \{\s*cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*await unloadModel\(\{\s*model_path: slotModel \?\? activeModel,[\s\S]*?if \(!slotEject\) requestLocalPromptQueueStop\(\);/,
   );
+  assert.match(slotHook, /const stopDecision = slotEject\s*\? await confirmStopRunningChatsIfNeeded\(\s*"Unloading this model",\s*"unloadOne",\s*slotModel \?\? activeModel,/);
   // What the load unloaded is shown, and the other pages hear about it.
   assert.match(slotHook, /const evicted = evictedSlotsFrom\(res\);/);
   assert.match(slotHook, /resyncEvicted\(evicted, "audio"\);/);
