@@ -938,8 +938,10 @@ def test_a_load_cancelled_during_the_replica_startup_is_undone_and_refused(monke
     assert raised.value.status_code == 409 and unloaded == [1]
 
 
-def test_a_callers_own_rpc_placement_is_never_read_as_ours():
+def test_a_callers_own_rpc_placement_is_never_read_as_ours(monkeypatch):
     """With nothing recorded, an argument list shaped like a split block is still the caller's."""
+    monkeypatch.setattr(ss, "_PROVIDER", None)
+    monkeypatch.setattr(ss, "_PROVIDER_LOOKED_UP", True, raising = False)  # no provider installed
     users = [
         "--rpc", "10.0.0.2:50052", "--device", "RPC0,CUDA0", "-sm", "layer",
         "--tensor-split", "0.5,0.5", "--cache-ram", "0",
