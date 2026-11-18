@@ -651,20 +651,23 @@ def _mlx_video_guards(zoo_has_video):
     return namespace["_mlx_video_preflight"], namespace["_require_mlx_video_collation"]
 
 
-def test_mlx_video_preflight_refuses_only_what_would_be_dropped():
+def test_mlx_video_preflight_refuses_only_an_old_zoo():
     preflight, _ = _mlx_video_guards(zoo_has_video = True)
-    preflight(_flat_rows(), is_vlm = True, raw_text = False)
-    with pytest.raises(ValueError, match = "not a vision model"):
-        preflight(_flat_rows(), is_vlm = False, raw_text = False)
-    preflight(Dataset.from_dict({"text": ["a", "b"]}), is_vlm = False, raw_text = False)
+    preflight(_flat_rows())
     old_zoo, _ = _mlx_video_guards(zoo_has_video = False)
     with pytest.raises(ValueError, match = "newer unsloth-zoo"):
-        old_zoo(_flat_rows(), is_vlm = True, raw_text = False)
+        old_zoo(_flat_rows())
+    old_zoo(Dataset.from_dict({"text": ["a", "b"]}))
 
 
-def test_mlx_raw_text_ignores_an_unused_video_column():
-    preflight, _ = _mlx_video_guards(zoo_has_video = False)
-    preflight(Dataset.from_dict({"text": ["a", "b"], "video": CLIPS}), is_vlm = False, raw_text = True)
+def test_mlx_adapter_checks_inline_clips_the_formatter_never_saw():
+    row = {
+        "messages": [
+            {"role": "user", "content": [{"type": "video", "video": "https://example.com/c.mp4"}]}
+        ]
+    }
+    with pytest.raises(ValueError, match = "Remote video URLs"):
+        _mlx_adapter()([row])
 
 
 def test_mlx_old_zoo_refuses_clips_in_any_forwarded_split():

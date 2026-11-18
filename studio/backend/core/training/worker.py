@@ -2639,7 +2639,8 @@ def _adapt_for_mlx_vlm(
                     elif isinstance(part, dict) and part.get("type") == "video":
                         video = part.get("video")
                         if video is not None:
-                            videos.append(video)
+                            # Parts beyond the formatter's detection sample were never checked there.
+                            videos.append(_own_mlx_video_values(video, hub))
                         # Decode hints (fps, nframes, ...) stay: the collator pairs them with the hoisted clip.
                         new_content.append(
                             {k: v for k, v in part.items() if k != "video" and v is not None}
@@ -2713,21 +2714,13 @@ def _mlx_zoo_collates_video():
     return "all_videos" in inspect.signature(mlx_utils._processor_vlm_inputs).parameters
 
 
-def _mlx_video_preflight(dataset, *, is_vlm, raw_text):
-    # Raw text / CPT trains the text column only, so a video column is not data it would drop.
-    if raw_text:
+def _mlx_video_preflight(dataset):
+    if _mlx_zoo_collates_video():
         return
     from utils.datasets.format_detection import detect_video_columns, video_sample
 
     first_row = next(iter(dataset), None)
-    if not (isinstance(first_row, dict) and detect_video_columns(video_sample(dataset, first_row))):
-        return
-    if not is_vlm:
-        raise ValueError(
-            "This dataset has a video column but the model is not a vision model. "
-            "Video data needs a VLM; pick a vision model or drop the video column."
-        )
-    if not _mlx_zoo_collates_video():
+    if isinstance(first_row, dict) and detect_video_columns(video_sample(dataset, first_row)):
         raise ValueError(_MLX_ZOO_VIDEO_TOO_OLD)
 
 
@@ -3626,7 +3619,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             _send("status", status_message = status_message)
 
         # Before formatting: it would fetch every Hub clip only to be refused.
-        _mlx_video_preflight(dataset, is_vlm = is_vlm, raw_text = format_type == "raw")
+        if is_vlm:
+            _mlx_video_preflight(dataset)
 
         if is_dataset_audio:
             _send("status", status_message = "Formatting audio dataset...")
