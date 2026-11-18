@@ -62,7 +62,7 @@ export type BrowserAction = {
   newText?: string;
   replaceAll?: boolean;
   content?: string;
-  /** open_file: a file from the chat's tool workspace, base64 (browser_agent._workspace_file_request). */
+  /** open_file (browser_agent._workspace_file_request). */
   name?: string;
   path?: string;
   contentType?: string;

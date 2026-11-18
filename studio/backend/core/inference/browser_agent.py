@@ -557,7 +557,6 @@ def _redirect_target(url: str) -> Optional[str]:
     return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
 
 
-# Sent inline in the action.
 _MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024
 # A bare first segment ending in one of these is a file name, not a host: none is a top-level domain.
 _FILE_SUFFIXES = (
@@ -639,9 +638,8 @@ def _workspace_file_named(target: str, session_id: Optional[str]) -> Optional[st
 
 
 def _read_inside(full: str, workdir: str) -> Optional[bytes]:
-    """The bytes of `full`, None if too large; OSError unless it is still a regular file in the
-    workspace. A workspace writer racing the checks above can swap the file or a parent for a link,
-    so the open walks from a held root without following links, as view_image does."""
+    """`full`'s bytes, None if too large. Walks from a held root without following links, as
+    view_image does: a writer racing the checks can swap the file or a parent for a link."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_BINARY", 0)
     if os.open in os.supports_dir_fd:
