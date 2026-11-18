@@ -733,12 +733,19 @@ def test_causal_levers_default_and_kill_switches(monkeypatch):
         assert F.lever_on(env) is True
         monkeypatch.setenv(env, "0")
         assert F.lever_on(env) is False
+    # pre-padded conv input: per compute capability where measured faster, off on CPU / unmeasured cards
     monkeypatch.delenv(F.PREPAD_ENV, raising = False)
-    assert (
-        F.lever_on(F.PREPAD_ENV) is False
-    )  # measured no faster (L4 / A100 / RTX PRO 6000): opt-in
+    assert F.lever_on(F.PREPAD_ENV) is False
+    assert F.lever_on(F.PREPAD_ENV, torch.device("cpu")) is False
+    monkeypatch.setattr(F, "_capability", lambda index: (8, 0))
+    assert F.lever_on(F.PREPAD_ENV, torch.device("cuda", 0)) is True
+    monkeypatch.setattr(F, "_capability", lambda index: (12, 0))
+    assert F.lever_on(F.PREPAD_ENV, torch.device("cuda", 0)) is False
     monkeypatch.setenv(F.PREPAD_ENV, "1")
     assert F.lever_on(F.PREPAD_ENV) is True
+    monkeypatch.setenv(F.PREPAD_ENV, "0")
+    monkeypatch.setattr(F, "_capability", lambda index: (8, 0))
+    assert F.lever_on(F.PREPAD_ENV, torch.device("cuda", 0)) is False
 
 
 @pytest.mark.parametrize("n_cache", [0, 1, 2])

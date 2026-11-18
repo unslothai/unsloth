@@ -865,11 +865,29 @@ _LEVER_DEFAULTS = {
 ENGAGED: dict = {}
 
 
-def lever_on(env: str) -> bool:
+# cuDNN's in-kernel zero padding vs a pre-padded input, Wan2.2 decode convs (same kernel, same call count): the
+# pre-padded input is faster on sm80 (A100); slower on sm120 (RTX PRO 6000). Default per capability where measured.
+_PREPAD_CAPS = frozenset({(8, 0)})
+
+
+@lru_cache(maxsize = 16)
+def _capability(index: int) -> tuple:
+    try:
+        return tuple(_torch().cuda.get_device_capability(index))
+    except Exception:  # noqa: BLE001
+        return (0, 0)
+
+
+def lever_on(env: str, device: Any = None) -> bool:
     raw = os.environ.get(env, "").strip().lower()
-    if not raw:
-        return _LEVER_DEFAULTS.get(env, False)
-    return raw not in _FALSE
+    if raw:
+        return raw not in _FALSE
+    if env == PREPAD_ENV:
+        if device is None or getattr(device, "type", None) != "cuda":
+            return False
+        index = device.index if device.index is not None else _torch().cuda.current_device()
+        return _capability(index) in _PREPAD_CAPS
+    return _LEVER_DEFAULTS.get(env, False)
 
 
 def _count(name: str) -> None:
@@ -949,7 +967,7 @@ def causal_conv(
     kt = conv.kernel_size[0]
     spatial = (0, ph, pw)
     t = x.shape[2]
-    prepad = bool(ph or pw) and lever_on(PREPAD_ENV)
+    prepad = bool(ph or pw) and lever_on(PREPAD_ENV, x.device)
     zero_pad = (ph, pw) if prepad else None
     conv_pad = (0, 0, 0) if prepad else spatial
     if front == 0:
