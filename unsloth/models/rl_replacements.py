@@ -1484,6 +1484,9 @@ def sft_trainer_compute_loss(function_name, function):
         return_outputs = False,
         num_items_in_batch = None,
     ):
+        # TRL >= 1.18 requests router logits per forward, not via config; do the same so aux_loss is kept.
+        if getattr(self, "aux_loss_enabled", False):
+            inputs = {**inputs, "output_router_logits": True}
         # Runs DFT on the TRL fused LM head (TRL >= 1.15 computes it only in compute_loss; older TRL
         # routes it via compute_loss_func); label smoothing must not opt dft out.
         if getattr(self.args, "loss_type", None) == "dft" and self.compute_loss_func is None:

@@ -79,7 +79,7 @@ import {
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
-import { ChatHeaderMenu } from "./components/chat-header-menu";
+import { ChatHeaderMenu, ChatTitleMenu } from "./components/chat-header-menu";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -5017,6 +5017,9 @@ export function ChatPage({
                 />
               </Button>
             )}
+            {view.mode === "single" && !currentProjectId && !incognito && (
+              <ChatTitleMenu threadId={activeThreadId} />
+            )}
             {view.mode === "single" && (
               <ChatModelNotice
                 active={active}
@@ -5045,9 +5048,14 @@ export function ChatPage({
                   onOpenChange={setProjectPickerOpen}
                 />
                 {currentProject && activeThreadId ? (
-                  <span className="min-w-0 truncate">
-                    {currentChatTitle ?? "New chat"}
-                  </span>
+                  <ChatTitleMenu
+                    threadId={incognito ? null : activeThreadId}
+                    fallback={
+                      <span className="min-w-0 truncate">
+                        {currentChatTitle ?? "New chat"}
+                      </span>
+                    }
+                  />
                 ) : null}
               </nav>
             )}
