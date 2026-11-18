@@ -1448,7 +1448,8 @@ def _tower_adapter_state(model, parts):
 
 
 class _PPLayerTableSlice(nn.Module):
-    """This rank's layers' columns of embed_tokens_per_layer; lookups zero-fill the other layers."""
+    """This rank's layers' columns of embed_tokens_per_layer; lookups zero-fill the other layers. Rows come out in
+    the dtype the table itself returns: forced float32 (float16 weights) upcasts before the scale, as one GPU does."""
 
     def __init__(self, source, owned, layers, width):
         super().__init__()
@@ -1465,13 +1466,17 @@ class _PPLayerTableSlice(nn.Module):
             self.register_buffer("embed_scale", scale.detach().clone(), persistent = False)
         self.padding_idx = getattr(source, "padding_idx", None)
         self.__dict__["_pp_layers"] = (tuple(owned), layers, width)
+        self.__dict__["_pp_out_dtype"] = _embedding_output_dtype(source)
 
     def forward(self, input_ids):
         owned, layers, width = self._pp_layers
         rows = torch.nn.functional.embedding(input_ids, self.weight, self.padding_idx)
+        dtype = self.__dict__.get("_pp_out_dtype") or self.weight.dtype
+        if rows.dtype != dtype:
+            rows = rows.to(dtype)
         scale = self._buffers.get("embed_scale")
         if scale is not None:
-            rows = rows * scale.to(self.weight.dtype)
+            rows = rows * scale.to(dtype)
         out = rows.new_zeros((*input_ids.shape, layers, width))
         index = torch.tensor(owned, dtype = torch.long, device = rows.device)
         return out.index_copy(-2, index, rows.view(*input_ids.shape, len(owned), width))
@@ -1519,7 +1524,9 @@ def _ple_project(
         ctx.ple_output = projection[:, :, ctx.end :]
     if per_layer_inputs is None:
         return projection
-    return (projection + per_layer_inputs.to(projection.dtype)) * decoder.per_layer_input_scale
+    # As the model's own project_per_layer_inputs: no cast, so float16 projections meet forced float32 per-layer
+    # inputs in float32 (a float16 sum rounds every layer's input and moved Gemma-4 T4 step-1 gradients 2x).
+    return (projection + per_layer_inputs) * decoder.per_layer_input_scale
 
 
 def _install_per_layer_inputs(pp_stage, parts, owned, kept):
