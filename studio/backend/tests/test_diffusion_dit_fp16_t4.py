@@ -358,7 +358,7 @@ def test_island_wraps_the_peft_layer_not_just_its_base(monkeypatch):
     assert m.ff.w2.seen is False and y.dtype is torch.float32
 
 
-def test_zimage_islands_match_the_measured_refiner_overflows():
+def test_zimage_islands_cover_every_block_output_projection():
     from core.training import diffusion_dit_fp16 as f16
 
     names = [
@@ -378,6 +378,8 @@ def test_zimage_islands_match_the_measured_refiner_overflows():
     assert got == [
         "noise_refiner.0.attention.to_out.0",
         "context_refiner.1.feed_forward.w2",
+        "layers.3.feed_forward.w2",
+        "layers.3.attention.to_out.0",
         "t_embedder",
     ]
 
