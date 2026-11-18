@@ -585,9 +585,13 @@ function rowMaker(
 const MAKER_BY_ID = new Map(PROVIDER_LOGOS.map((logo) => [logo.id, logo]));
 
 /** As rowMaker, without a fine-tune's base model: an org filter lists only that org's own repos. */
-function rowOrg(row: Pick<Row, "kind" | "id">): Maker | null {
+function rowOrg(row: Pick<Row, "kind" | "id" | "npu">): Maker | null {
   if (row.kind === "external") {
     return null;
+  }
+  const npuOwner = npuMarkOwner(row);
+  if (npuOwner) {
+    return MAKER_BY_ID.get(ownerOrgId(npuOwner)) ?? null;
   }
   const parts =
     hubParts(row.id) ??
@@ -2212,7 +2216,10 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    const npuOffers: Row[] = npuPickerRows(npuModels, false);
+    const npuOffers: Row[] = npuPickerRows(npuModels, false).map((row) => ({
+      ...row,
+      org: rowOrg(row)?.id,
+    }));
     const all = [...marked, ...npuOffers, ...hub, ...external];
     return browseOnly
       ? all.filter(

@@ -230,6 +230,17 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		// Not facebookresearch, which is an unrelated account.
 		owners: ["meta-models", "meta-llama", "facebook"],
 	},
+
+	{
+		id: "fastflowlm",
+		name: "FastFlowLM",
+		logoPath: "/hub/profile/logo/fastflowlm.png",
+		treatment: "original",
+		background: "white",
+		fit: "cover",
+		prefixes: [],
+		owners: ["FastFlowLM"],
+	},
 ];
 
 function stemMatchesAtBoundary(haystack: string, stem: string): boolean {

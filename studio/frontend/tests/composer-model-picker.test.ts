@@ -174,6 +174,12 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
   assert.equal(ownerOrgId("ibm-granite"), "ibm");
   assert.equal(ownerOrgId("CohereLabs"), "cohere");
   assert.equal(ownerOrgId("bartowski"), "bartowski");
+  // NPU rows file under their repo's owner, FastFlowLM by default, which Settings can pick as an org.
+  assert.match(rowOrgBody, /const npuOwner = npuMarkOwner\(row\);/);
+  assert.match(picker, /npuPickerRows\(npuModels, false\)\.map\(\(row\) => \(\{\s+\.\.\.row,\s+org: rowOrg\(row\)\?\.id,/);
+  const logos = readSrc("features/hub/lib/provider-logos.ts");
+  assert.match(logos, /id: "fastflowlm",[\s\S]{0,240}?owners: \["FastFlowLM"\]/);
+  assert.equal(ownerOrgId("FastFlowLM"), "fastflowlm");
   assert.match(rowOrgBody, /MAKER_BY_ID\.get\(ownerOrgId\(parts\.owner\)\)/);
 });
 
