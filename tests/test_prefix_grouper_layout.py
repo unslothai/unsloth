@@ -268,3 +268,65 @@ def test_host_tables_ignore_the_default_device():
     finally:
         torch.set_default_device(None)
     _assert_same(ref, got)
+
+
+def _check_layout_semantics(layout, ids, lp, logits_to_keep, pad):
+    """Every target reads its own row's token, is predicted by that row's previous real token,
+    and sits at that row's RoPE position; every row's completion is covered exactly once."""
+    flat = layout.flat_ids[0]
+    pos = layout.position_ids[0]
+    L = ids.shape[1]
+    cstart = (L - logits_to_keep) - lp
+    real = [[c for c in range(L) if int(ids[r, c]) != pad] for r in range(ids.shape[0])]
+    expected = {
+        (r, c)
+        for r, cols in enumerate(real)
+        for k, c in enumerate(cols)
+        if k >= 1 and c >= int(cstart[r])
+    }
+    got = set()
+    for r, c, p, f in zip(
+        layout.tgt_rows.tolist(),
+        layout.tgt_cols.tolist(),
+        layout.tgt_pred.tolist(),
+        layout.tgt_flat.tolist(),
+    ):
+        k = real[r].index(c)
+        assert int(flat[f]) == int(ids[r, c])
+        assert int(flat[p]) == int(ids[r, real[r][k - 1]])
+        assert int(pos[f]) == k and int(pos[p]) == k - 1
+        got.add((r, c))
+    assert got == expected
+
+
+def test_shuffled_micro_batch_still_groups_by_prompt():
+    # TRL shuffles the generation batch before splitting it into gradient accumulation
+    # micro-batches (grpo_trainer _prepare_inputs, shuffle_sequence_dict), and Unsloth's GRPO
+    # default is gradient_accumulation_steps = 2, so a micro-batch holds a prompt's completions
+    # in any order and count. The layout must still share each prompt instead of declining.
+    rng = torch.Generator().manual_seed(0)
+    G, P, C = 4, 200, 8
+    ids, lp = _batch(rng, 2, G, P, C)
+    perm = torch.tensor([0, 5, 6, 3, 1, 4, 2, 7])  # rows of prompts A, B, B, A | A, B, A, B
+    ids, lp = ids[perm], lp[perm]
+    for rows in (slice(0, 4), slice(4, 8), slice(0, 8)):
+        mb_ids, mb_lp = ids[rows].contiguous(), lp[rows].contiguous()
+        got = pg.build_group_layout(mb_ids, C, 0, G, mb_lp)
+        assert got is not None
+        assert got.signature[0] == 2 and sum(got.signature[1]) == mb_ids.shape[0]
+        assert got.tok_r > 1.3
+        _assert_same(pg._build_group_layout_reference(mb_ids, C, 0, G, mb_lp), got)
+        _check_layout_semantics(got, mb_ids, mb_lp, C, 0)
+
+
+def test_layout_semantics_on_random_cases():
+    checked = 0
+    for i, (ids, ltk, pad, num_gen, lp), kwargs in _cases():
+        if ids.dtype != torch.long:
+            continue
+        got = pg.build_group_layout(ids, ltk, pad, num_gen, lp, **kwargs)
+        if got is None:
+            continue
+        _check_layout_semantics(got, ids, lp, ltk, pad)
+        checked += 1
+    assert checked >= 100
