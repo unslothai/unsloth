@@ -10,3 +10,16 @@ export const TTS_MAX_TOKENS = 8192;
 // Max tokens caps output only and the prompt shares the context, so TTS_MAX_TOKENS itself is unreachable.
 export const TTS_PROMPT_CONTEXT_RESERVE = 2048;
 export const AUDIO_DEVICE_KEY = "unsloth_audio_device";
+
+/** Starter sentences for an empty "what to say" box, on Text to speech and Clone. */
+export const SPEECH_TEXT_EXAMPLES = [
+  { label: "Phone greeting", text: "Thanks for calling. How can I help you today?" },
+  {
+    label: "Pangram",
+    text: "The quick brown fox jumps over the lazy dog near the river bank.",
+  },
+  {
+    label: "Weekly update",
+    text: "Welcome back. Here is a short summary of what changed this week.",
+  },
+] as const;

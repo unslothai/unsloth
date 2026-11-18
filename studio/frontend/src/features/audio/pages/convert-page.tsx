@@ -32,6 +32,7 @@ import {
 } from "../hooks/use-convert-generation";
 import { useAudioConvertStore } from "../stores/audio-convert-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
 
 type RailProps = Omit<
@@ -402,7 +403,6 @@ export function ConvertOutput({
   recommendedModels?: readonly ModelOption[];
   onPickModel?: (id: string) => void;
 }) {
-  const picks = modelReady || !onPickModel ? [] : recommendedModels.slice(0, 3);
   const compareSide = useAudioConvertStore((state) => state.compareSide);
   const setCompareSide = useAudioConvertStore((state) => state.setCompareSide);
   const sourceSide = useSourceSide(props.selectedClip);
@@ -427,29 +427,15 @@ export function ConvertOutput({
         />
       )}
       emptyActions={
-        picks.length > 0 ? (
-          <div
-            className="flex flex-wrap justify-center gap-2"
-            aria-label="Recommended models"
-          >
-            {picks.map((model) => (
-              <Button
-                key={model.id}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onPickModel?.(model.id)}
-              >
-                Use {model.name}
-              </Button>
-            ))}
-          </div>
-        ) : null
+        modelReady ? null : (
+          <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+        )
       }
+      emptyTitle="Converted recordings will appear here"
       emptyText={
         modelReady
-          ? "Converted recordings land here. Add a recording and the target voice, and press Generate."
-          : "Converted recordings land here. Load a model that can convert a voice, add a recording, and press Generate."
+          ? "Add a recording and the target voice, and press Generate."
+          : "Load a model that can convert a voice, add a recording and a target voice, and press Generate."
       }
     />
   );

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
+import { audioWorkflowTab } from "../workflows";
 import {
   GalleryItemMenu,
   GalleryPinBadge,
@@ -418,7 +420,6 @@ export function SeparateOutput({
   const announcement = lastResult
     ? `Separated into ${lastResult.stems} stem${lastResult.stems === 1 ? "" : "s"}.`
     : "";
-  const picks = modelReady || !onPickModel ? [] : recommendedModels.slice(0, 3);
 
   const pinGroup = (group: SeparationGroup, pinned: boolean) => {
     for (const clip of group.stems) void handleTogglePin(clip.id, pinned);
@@ -487,7 +488,8 @@ export function SeparateOutput({
       </output>
       <ClipsCard
         label={groups.length > 0 ? "Separations" : "Separate audio"}
-        title={groups.length > 0 ? "Separations" : "Separate audio"}
+        title="Separations"
+        bare={groups.length === 0 && !pendingRun && !selected && !fallbackClip}
         count={groups.length}
         countMore={hasMore}
         action={
@@ -562,30 +564,17 @@ export function SeparateOutput({
           />
         ) : (
           <ClipsCardEmpty
+            icon={audioWorkflowTab("separate").icon}
+            title="Stems will appear here"
             text={
               modelReady
-                ? "Stems land here. Add a track and press Generate."
-                : "Stems land here. Load a separation model, add a track, and press Generate."
+                ? "Add a track and press Generate."
+                : "Load a separation model, add a track, and press Generate."
             }
             actions={
-              picks.length > 0 ? (
-                <div
-                  className="flex flex-wrap justify-center gap-2"
-                  aria-label="Recommended models"
-                >
-                  {picks.map((model) => (
-                    <Button
-                      key={model.id}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onPickModel?.(model.id)}
-                    >
-                      Use {model.name}
-                    </Button>
-                  ))}
-                </div>
-              ) : null
+              modelReady ? null : (
+                <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+              )
             }
           />
         )}

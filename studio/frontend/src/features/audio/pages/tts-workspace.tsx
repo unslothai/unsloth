@@ -42,7 +42,10 @@ import {
   MOSS_TTS_DEFAULT_SECONDS,
   MOSS_TTS_FRAMES_PER_SECOND,
 } from "../audio-page-policy";
-import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
+import {
+  SPEECH_TEXT_EXAMPLES,
+  TTS_MAX_TOKENS,
+} from "../audio-workspace-constants";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import {
   ClipCard,
@@ -57,6 +60,7 @@ import {
   ClipsCard,
   ClipsCardEmpty,
 } from "../components/clips-card";
+import { PromptExamples } from "../components/prompt-examples";
 import { MusicSendToMenuItems } from "../components/music-send-to";
 import {
   VariationChips,
@@ -248,7 +252,7 @@ export function TtsRailFields({
           hint={
             musicGeneration
               ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
-              : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
+              : undefined
           }
         >
           <Textarea
@@ -263,6 +267,15 @@ export function TtsRailFields({
             }
             className="min-h-28"
           />
+          {musicGeneration ? null : (
+            <PromptExamples
+              label="Example sentences"
+              examples={SPEECH_TEXT_EXAMPLES}
+              empty={!prompt.trim()}
+              onPick={setPrompt}
+              disabled={busy === "generating"}
+            />
+          )}
         </Field>
       )}
       {toolPanels}
@@ -734,7 +747,8 @@ export function TtsOutput({
       </output>
       <ClipsCard
         label={clips.length > 0 ? "Clips" : tab.heading}
-        title={clips.length > 0 ? "Clips" : (emptyTitle ?? tab.heading)}
+        title="Clips"
+        bare={clips.length === 0 && !pending && !selectedClip && !fallbackClip}
         count={clips.length}
         countMore={hasMore}
         action={
@@ -816,7 +830,12 @@ export function TtsOutput({
             }
           />
         ) : (
-          <ClipsCardEmpty text={emptyText} actions={emptyActions} />
+          <ClipsCardEmpty
+            icon={tab.icon}
+            title={emptyTitle}
+            text={emptyText}
+            actions={emptyActions}
+          />
         )}
       {listRows.length > 0 ? (
           <div

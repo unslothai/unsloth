@@ -329,6 +329,19 @@ export function AudioPage({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_audio_advanced_open",
   );
+  // Text to speech has one field, so its Advanced starts open to fill the rail. The stored flag is
+  // "closed" because the toggle only persists true.
+  const [speakAdvancedClosed, setSpeakAdvancedClosed] = usePersistedToggle(
+    "unsloth_audio_speak_advanced_closed",
+  );
+  // A run that needs an Advanced option opens the section on the rail that is showing.
+  const revealAdvanced = useCallback(
+    (next: boolean) => {
+      if (next && ttsWorkflow === "speak") setSpeakAdvancedClosed(false);
+      else setAdvancedOpen(next);
+    },
+    [ttsWorkflow, setAdvancedOpen, setSpeakAdvancedClosed],
+  );
   // Read at load time; the handler below ejects so a change takes effect.
   const [audioDevice, setAudioDeviceState] = usePersistedChoice(
     AUDIO_DEVICE_KEY,
@@ -631,7 +644,7 @@ export function AudioPage({
     updateGenerationPhase,
     generateAbort,
     setMode,
-    setAdvancedOpen,
+    setAdvancedOpen: revealAdvanced,
     refreshStatus,
     activeRef,
     modeRef,
@@ -976,6 +989,7 @@ export function AudioPage({
       }
       handleAudioOptionChange("seed", seed);
       setAdvancedOpen(true);
+      setSpeakAdvancedClosed(false);
       toast.success(`Seed ${seed} set for the next take.`);
     },
     [
@@ -984,6 +998,7 @@ export function AudioPage({
       audioOptionSpecs,
       handleAudioOptionChange,
       setAdvancedOpen,
+      setSpeakAdvancedClosed,
     ],
   );
   const [voiceClip, setVoiceClip] = useState<{
@@ -1814,24 +1829,15 @@ export function AudioPage({
               : "The loaded model is not a music model."
         : status?.active_model
           ? "The loaded model is not a TTS audio model."
-          : ttsWorkflow === "music"
-            ? "No music model loaded."
-            : ttsWorkflow === "separate"
-              ? "No separation model loaded."
-            : ttsWorkflow === "clone"
-              ? "No voice cloning model loaded."
-              : ttsWorkflow === "edit"
-                ? "No speech editing model loaded."
-                : ttsWorkflow === "convert"
-                  ? "No voice conversion model loaded."
-                  : "No TTS model loaded."
+          : // Nothing loaded: the note under Generate already says so, with the fix beside it.
+            null
       : transcribeConnection
         ? `Transcribes through ${transcribeConnection.providerName}.`
         : sttSelected
           ? audioCapabilityLine("stt", sttReady ? "ready" : "loading")
           : transcribeRepo
             ? `${transcribeModelName} is not loaded. It loads when you transcribe.`
-            : "No transcription model selected.";
+            : null;
 
   // Options belong to the loaded model; when it can't run this page (a music model on Text to speech), they're not shown.
   const pageAudioOptionSpecs = pageModelLoaded ? audioOptionSpecs : [];
@@ -1841,20 +1847,12 @@ export function AudioPage({
       ? !connection && !showLastPageModel && ttsLoaded && pageModelLoaded
       : !transcribeConnection && sttSelected && sttReady;
 
-  // The sidebar seam rule keys off the root, so it can skip a :has() on the whole document.
-  useEffect(() => {
-    if (!active) return;
-    const root = document.documentElement;
-    root.setAttribute("data-audio-attached-rail", "");
-    return () => root.removeAttribute("data-audio-attached-rail");
-  }, [active]);
-
   return (
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
       ref={pageRootRef}
-      className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
@@ -1881,20 +1879,20 @@ export function AudioPage({
       />
       {/* Keep the tabs centered over the preview at every width. The model rail holds at its
           (draggable) width when space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 @[50rem]:h-[calc(64px*var(--ui-space-scale,1))] grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
-            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden",
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
             isMobileShell
             ? "pl-12"
             : // Collapsed desktop sidebar: clear the titlebar buttons, as Chat does.
               !pinned && isTauri
               ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-              : "pl-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:pl-2",
+              : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
           )}
         >
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
-          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))]">
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
             <ModelSelector
               triggerDataTour="audio-model"
               models={selectorModels}
@@ -1971,7 +1969,7 @@ export function AudioPage({
           </div>
         </div>
         <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
-          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               ariaLabel="Page mode"
               // Always "create": Train navigates away, so the pill never latches.
@@ -1992,7 +1990,7 @@ export function AudioPage({
                 void navigateSelf({ to: "/studio" });
               }}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 [[data-media-header-tight]_&]:[&>button]:px-3 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 {
                   value: "create",
@@ -2017,9 +2015,8 @@ export function AudioPage({
               ]}
             />
           </div>
-          {/* Inside the preview panel at wide widths: the same 22px drop and right inset as its other controls.
-              No group gap: the buttons' own padding spaces them evenly around the divider. */}
-          <MediaHeaderActions className="pr-2 @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))] @[50rem]:pr-6" groupClassName="gap-0">
+          {/* The chat header's right inset, as on Images and Video. */}
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
             {connection || (mode === "transcribe" && transcribeConnection) ? null : (
               <UseViaApiButton
                 workflow={pageWorkflow}
@@ -2034,35 +2031,38 @@ export function AudioPage({
           </MediaHeaderActions>
         </div>
       </div>
-      {/* Below 50rem the panes stack and the page scrolls as one column, as on Images and Video. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden pb-3 @[50rem]:-mt-[calc(64px*var(--ui-space-scale,1))] @[50rem]:flex-row @[50rem]:gap-0 @[50rem]:overflow-hidden @[50rem]:pb-0">
+      {/* Settings rail + output pane, the Images and Video shell: structural borders run edge to edge and
+          spacing belongs inside each pane. Below 50rem the panes stack and the page scrolls as one column. */}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="audio-settings"
-          className="flex w-full shrink-0 flex-col @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-initial flex-col gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[calc(60px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto @[50rem]:pt-2 @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*6-var(--classic-scrollbar-width,0px))]",
+              "hover-scrollbar flex min-h-0 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
+              // Text to speech is a short form: Generate follows it, and pins only once the rail scrolls.
+              mode === "speak" && ttsWorkflow === "speak" ? "flex-initial" : "flex-1",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
               settingsFadeClass,
             )}
           >
-            {/* Keep one child: scroll fades watch only the first. The list sizes to its content, so Generate follows a short form and pins once it scrolls. */}
+            {/* Keep one child: scroll fades watch only the first. */}
             <div className="flex flex-col gap-7">
-              <div className="grid gap-1">
+              <div className="grid gap-1.5">
                 <WorkflowTitleMenu
                   workflow={pageWorkflow}
                   onSelect={transitionWorkflow}
                 />
-                <p className="text-ui-13 leading-normal text-muted-foreground">
+                <p className="text-xs leading-snug text-muted-foreground">
                   {workflowTab.hint}
                 </p>
-                {capabilityReady ? null : (
-                  <p className="mt-1 text-ui-12 leading-normal text-muted-foreground/80">
+                {capabilityReady || capabilityLine === null ? null : (
+                  <p className="mt-2 rounded-lg bg-wash-5 px-3 py-2 text-ui-12 leading-normal text-muted-foreground">
                     {capabilityLine}
                   </p>
                 )}
@@ -2169,7 +2169,11 @@ export function AudioPage({
                       disabled={busy === "generating"}
                     />
                   ) : (
-                    <SpeakRail {...railProps} />
+                    <SpeakRail
+                      {...railProps}
+                      advancedOpen={!speakAdvancedClosed}
+                      setAdvancedOpen={(open) => setSpeakAdvancedClosed(!open)}
+                    />
                   );
                 })()
               ) : (
@@ -2191,7 +2195,7 @@ export function AudioPage({
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center px-6 pt-3 pb-5">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-3 pb-5 max-sm:px-5">
               {ttsWorkflow === "edit" ? (
                 <EditFooter
                   busy={busy}
@@ -2270,7 +2274,7 @@ export function AudioPage({
               )}
             </div>
           ) : (
-            <div className="relative z-10 flex shrink-0 justify-center px-6 pt-3 pb-5">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-3 pb-5 max-sm:px-5">
               <TranscribeFooter
                 busy={busy}
                 blocker={transcribeBlocker}
@@ -2291,7 +2295,7 @@ export function AudioPage({
 
         <div
           data-tour="audio-output"
-          className="relative mx-3 flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden rounded-2xl bg-background ring-1 ring-border/60 @[50rem]:my-3 @[50rem]:ml-0 @[50rem]:min-h-0"
+          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
         >
           {mode === "transcribe" ? (
             <div
@@ -2300,7 +2304,7 @@ export function AudioPage({
               }
               className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto"
             >
-              <div className="mx-auto flex w-full max-w-[calc(880px*var(--ui-space-scale,1))] flex-col gap-3 p-6 @[50rem]:mt-[calc(52px*var(--ui-space-scale,1))] @[50rem]:pt-4"
+              <div className="mx-auto flex min-h-full w-full max-w-[calc(880px*var(--ui-space-scale,1))] flex-col gap-3 px-10 pt-7 pb-6 max-sm:px-5"
             >
               <TranscribeOutput
                 transcriptionStartedAt={transcriptionStartedAt}
@@ -2334,7 +2338,7 @@ export function AudioPage({
               </div>
             </div>
           ) : (
-            <div className="flex min-h-0 flex-1 flex-col gap-4 mx-auto w-full max-w-[calc(880px*var(--ui-space-scale,1))] p-6 @[50rem]:mt-[calc(52px*var(--ui-space-scale,1))] @[50rem]:pt-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 mx-auto w-full max-w-[calc(880px*var(--ui-space-scale,1))] px-10 pt-7 pb-6 max-sm:px-5">
               {(() => {
                 const outputProps = {
                   workflow: ttsWorkflow,
@@ -2381,7 +2385,14 @@ export function AudioPage({
                   announcement,
                 };
                 return ttsWorkflow === "music" ? (
-                  <MusicOutput {...outputProps} modelReady={pageModelLoaded} loading={busy === "loading"} onChooseModel={openSelector} />
+                  <MusicOutput
+                    {...outputProps}
+                    modelReady={pageModelLoaded}
+                    loading={busy === "loading"}
+                    onChooseModel={openSelector}
+                    recommendedModels={selectorModels}
+                    onPickModel={pickRecommendedModel}
+                  />
                 ) : ttsWorkflow === "edit" ? (
                   <EditOutput
                     {...outputProps}
@@ -2415,7 +2426,12 @@ export function AudioPage({
                     onPickModel={pickRecommendedModel}
                   />
                 ) : (
-                  <SpeakOutput {...outputProps} modelReady={pageModelLoaded} />
+                  <SpeakOutput
+                    {...outputProps}
+                    modelReady={pageModelLoaded || Boolean(connection)}
+                    recommendedModels={selectorModels}
+                    onPickModel={pickRecommendedModel}
+                  />
                 );
               })()}
             </div>

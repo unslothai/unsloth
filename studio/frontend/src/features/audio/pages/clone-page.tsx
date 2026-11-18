@@ -10,7 +10,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useState } from "react";
 import type { AudioGalleryClip } from "../api";
 import type { AudioSourceSelection } from "../audio-run-request";
-import { CLONE_TEXT_EXAMPLES } from "../clone-policy";
+import { SPEECH_TEXT_EXAMPLES } from "../audio-workspace-constants";
+import { PromptExamples } from "../components/prompt-examples";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
@@ -26,6 +27,7 @@ import {
 import { useAudioCloneStore } from "../stores/audio-clone-store";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
 
 type RailProps = Omit<
@@ -156,27 +158,12 @@ function CloneInputs({
           placeholder="Type what the voice should say…"
           className="min-h-28"
         />
-        {clone.text.trim() ? null : (
-          <fieldset
-            className="m-0 flex min-w-0 flex-wrap items-center gap-1 border-0 p-0"
-            aria-label="Example sentences"
-          >
-            <span className="me-0.5 text-ui-11p5 text-muted-foreground">Try</span>
-            {CLONE_TEXT_EXAMPLES.map((example) => (
-              <Button
-                key={example.label}
-                type="button"
-                variant="muted"
-                size="sm"
-                className="h-[calc(24px*var(--ui-space-scale,1))] px-2.5 text-ui-11p5 font-normal"
-                title={example.text}
-                onClick={() => setText(example.text)}
-              >
-                {example.label}
-              </Button>
-            ))}
-          </fieldset>
-        )}
+        <PromptExamples
+          label="Example sentences"
+          examples={SPEECH_TEXT_EXAMPLES}
+          empty={!clone.text.trim()}
+          onPick={setText}
+        />
       </div>
       {clone.languageShown ? (
         <LanguageSelect
@@ -329,7 +316,6 @@ export function CloneOutput({
   recommendedModels?: readonly ModelOption[];
   onPickModel?: (id: string) => void;
 }) {
-  const picks = modelReady || !onPickModel ? [] : recommendedModels.slice(0, 3);
   return (
     <TtsOutput
       {...props}
@@ -337,29 +323,15 @@ export function CloneOutput({
         place === "history" ? (clip.reference_name ?? null) : null
       }
       emptyActions={
-        picks.length > 0 ? (
-          <div
-            className="flex flex-wrap justify-center gap-2"
-            aria-label="Recommended models"
-          >
-            {picks.map((model) => (
-              <Button
-                key={model.id}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onPickModel?.(model.id)}
-              >
-                Use {model.name}
-              </Button>
-            ))}
-          </div>
-        ) : null
+        modelReady ? null : (
+          <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+        )
       }
+      emptyTitle="Cloned speech will appear here"
       emptyText={
         modelReady
-          ? "Cloned speech lands here. Add a reference, type the text, and press Generate."
-          : "Cloned speech lands here. Load a model that can clone, add a reference, and press Generate."
+          ? "Add a reference recording, type the text, and press Generate."
+          : "Load a model that can clone a voice, add a reference recording, and press Generate."
       }
     />
   );

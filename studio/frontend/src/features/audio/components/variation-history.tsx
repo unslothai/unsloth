@@ -65,7 +65,7 @@ export function VariationChips({
   return (
     <fieldset
       aria-label="Variations"
-      className="m-0 flex min-w-0 flex-wrap items-center gap-1 border-0 p-0"
+      className="m-0 flex min-w-0 flex-wrap items-center gap-1 border-0 p-0 ps-3"
     >
       <span className="mr-1 text-ui-11p5 text-muted-foreground">
         {variationLabel(siblings.length)}

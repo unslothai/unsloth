@@ -31,7 +31,7 @@ test("Reuse seed shows only for a clip with a numeric seed and fills the field",
   assert.match(handler, /toast\.info\("This model doesn't take a seed\."\)/);
   assert.match(
     handler,
-    /handleAudioOptionChange\("seed", seed\);\s*setAdvancedOpen\(true\);\s*toast\.success\(`Seed \$\{seed\} set for the next take\.`\)/,
+    /handleAudioOptionChange\("seed", seed\);\s*setAdvancedOpen\(true\);\s*setSpeakAdvancedClosed\(false\);\s*toast\.success\(`Seed \$\{seed\} set for the next take\.`\)/,
   );
   assert.match(page, /onReuseSeed: handleReuseSeed/);
 });

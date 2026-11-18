@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { audioWorkflowTab } from "./workflows";
 import {
   useCallback,
   useEffect,
@@ -374,7 +375,11 @@ export function TranscriptGallery({
       >
         {topRow}
         {!topRow && !archived && !loading && records.length === 0 ? (
-          <ClipsCardEmpty text={emptyText} />
+          <ClipsCardEmpty
+            icon={audioWorkflowTab("transcribe").icon}
+            title="Transcripts will appear here"
+            text={emptyText}
+          />
         ) : null}
         {/* The open transcript is the top row, so the list leaves it out. */}
         {records.some((record) => !topRow || record.id !== currentId) ||
