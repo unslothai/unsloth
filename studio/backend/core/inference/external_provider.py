@@ -730,8 +730,7 @@ def _anthropic_supports_compaction(model: str) -> bool:
 
 
 def _with_summary_notice(block: dict[str, Any]) -> dict[str, Any]:
-    """Open a replayed compaction summary with Studio's summary notice. Done on replay because
-    custom compaction instructions make Haiku 5.5 and Opus 5.5 return no summary at all."""
+    """Added on replay: custom compaction instructions make Haiku/Opus 5.5 return no summary."""
     content = block.get("content")
     if (
         block.get("type") != "compaction"
