@@ -4716,6 +4716,14 @@
     "mxfp8",
     "nf4"
    ],
+   "moss-image": [
+    "fp8",
+    "mxfp8"
+   ],
+   "moss-image-base": [
+    "fp8",
+    "mxfp8"
+   ],
    "qwen-image": [
     "fp8"
    ],
