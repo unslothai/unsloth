@@ -137,8 +137,23 @@ test("nothing is claimed for text too short or too mixed to tell", () => {
   for (const text of ["", "  ", "42", "a", "OK", "Hi", "https://unsloth.ai"])
     assert.equal(detectTranslateLanguage(text), null, text);
   assert.equal(detectTranslateLanguage("Merhaba dunya"), null);
+  // No Simplified or Traditional only character: either is a guess.
+  assert.equal(detectTranslateLanguage("你好"), null);
   // Indonesian and Malay share these words.
   assert.equal(detectTranslateLanguage("Saya ada di rumah dengan dia."), null);
+});
+
+test("decomposed accents and uppercase links read like any other text", () => {
+  assert.equal(
+    detectTranslateLanguage("Cảm ơn bạn rất nhiều.".normalize("NFD")),
+    "vi",
+  );
+  assert.equal(
+    detectTranslateLanguage(
+      "HTTPS://EXAMPLE.COM/the-and-is-of Ich habe keine Zeit, danke.",
+    ),
+    "de",
+  );
 });
 
 test("only the start of a long text is read", () => {

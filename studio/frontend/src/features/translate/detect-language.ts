@@ -45,18 +45,22 @@ const SIMPLIFIED =
 const TRADITIONAL =
   "這個們說來時國會對為發學過還沒麼嗎見讓經關東車門長問間開電話語書寫買賣頭氣樣親愛聽覺現應該種實點從無機進動業產員萬與區處將並體華軍網線級認識論設計證記議農場報聲類務達運選際傳統濟戰權歷觀兩難題風飛馬魚鳥龍醫藥錢銀鐵錯樂";
 
-function chinese(text: string): string {
+function chinese(text: string): string | null {
   if (countOf(text, "嘅咗唔冇佢哋嚟啲喺嘢嗰") > 0) return "yue";
-  return countOf(text, TRADITIONAL) > countOf(text, SIMPLIFIED)
-    ? "zh-Hant"
-    : "zh";
+  const traditional = countOf(text, TRADITIONAL);
+  const simplified = countOf(text, SIMPLIFIED);
+  if (traditional === simplified) return null;
+  return traditional > simplified ? "zh-Hant" : "zh";
 }
 
 // Uyghur and Urdu letters first; Persian and Arabic differ in ye, kaf and ta marbuta.
-function arabicScript(text: string): string {
+function arabicScript(text: string): string | null {
   if (countOf(text, "ېۆۈۇۋە") > 0) return "ug";
   if (countOf(text, "ےٹڈڑںہ") > 0) return "ur";
-  return countOf(text, "پچژگیک") > countOf(text, "يكة") ? "fa" : "ar";
+  const persian = countOf(text, "پچژگیک");
+  const arabic = countOf(text, "يكة");
+  if (persian === arabic) return null;
+  return persian > arabic ? "fa" : "ar";
 }
 
 const UKRAINIAN = words("що та це він вона як де дякую добре так від для");
@@ -190,9 +194,11 @@ function latin(text: string): string | null {
 export function detectTranslateLanguage(text: string): string | null {
   const sample = text
     .slice(0, SAMPLE_CHARS)
-    .replace(/https?:\/\/\S+/g, " ")
+    .normalize("NFC")
+    .replace(/https?:\/\/\S+/gi, " ")
     .toLowerCase();
-  const letters = count(sample, /\p{L}/gu);
+  // Marks too: the script patterns below count Devanagari vowel signs and the like.
+  const letters = count(sample, /[\p{L}\p{M}]/gu);
   if (letters < 2) return null;
   const dominant = (pattern: RegExp) => count(sample, pattern) >= letters * 0.6;
 

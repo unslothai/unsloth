@@ -105,6 +105,9 @@ test("with an automatic source, swap uses the detected language", async () => {
   state().swap(null);
   assert.equal(state().prefs.from, AUTO_SOURCE);
   assert.equal(state().source, "Hello");
+  // Already in the target language: nothing to swap to.
+  state().swap("fr");
+  assert.equal(state().prefs.from, AUTO_SOURCE);
   state().swap("en");
   assert.equal(state().source, "FR:Hello");
   assert.equal(state().prefs.from, "fr");

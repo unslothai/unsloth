@@ -1048,7 +1048,9 @@ export function TranslatePage() {
     () => (prefs.from === AUTO_SOURCE ? detectTranslateLanguage(source) : null),
     [prefs.from, source],
   );
-  const canSwap = prefs.from !== AUTO_SOURCE || detected !== null;
+  const canSwap =
+    prefs.from !== AUTO_SOURCE ||
+    (detected !== null && detected !== prefs.target);
   const stale = translationIsStale({ result, source, prefs });
   const modelKey = translateModelKey(prefs.modelId, prefs.customModel);
   const dedicated = dedicatedTranslateModel(prefs.modelId);

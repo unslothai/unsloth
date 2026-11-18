@@ -296,6 +296,8 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     const { prefs, output, phase, result } = state;
     const from = prefs.from === AUTO_SOURCE ? detected : prefs.from;
     if (!from || !findTranslateLanguage(from) || phase) return;
+    // Text already in the target: swapping would leave automatic detection with nothing to do.
+    if (prefs.from === AUTO_SOURCE && from === prefs.target) return;
     // Only a finished translation of the current draft replaces it; an edit is never lost.
     const current = output && result !== null && !translationIsStale(state);
     get().setPrefs({ from: prefs.target });
