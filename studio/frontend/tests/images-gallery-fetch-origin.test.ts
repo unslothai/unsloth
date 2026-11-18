@@ -13,3 +13,8 @@ test("an authenticated gallery fetch refuses a URL off this Studio before sendin
   const guard = body.indexOf("if (!isStudioUrl(url))");
   assert.ok(guard > 0 && guard < body.indexOf("authFetch(url)"));
 });
+
+test("a gallery id from a linked instance cannot climb out of the gallery path", () => {
+  assert.doesNotMatch(api, /gallery\/\$\{id\}/);
+  assert.equal(new URL(`/p/gallery/${encodeURIComponent("../../../api/auth/x")}`, "http://h").pathname.includes("/api/auth/"), false);
+});
