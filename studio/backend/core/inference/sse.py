@@ -8,6 +8,8 @@ from __future__ import annotations
 import codecs
 from typing import Any, AsyncIterator
 
+from core.inference.http_stream import SSE_LINE_END
+
 
 class SSELineDecoder:
     """Complete lines from split text/byte pieces; a trailing "\\r" waits one piece for its "\\n".
@@ -31,33 +33,18 @@ class SSELineDecoder:
             self._first = False
             if text.startswith("\ufeff"):
                 text = text[1:]
-        lines: list[str] = []
-        if text and self._parts and self._parts[-1].endswith("\r"):
-            lines.append("".join(self._parts)[:-1])
-            self._parts.clear()
-            if text[0] == "\n":
-                text = text[1:]
-        start = 0
-        index = 0
-        end = len(text)
-        while index < end:
-            char = text[index]
-            if char == "\n":
-                lines.append("".join(self._parts) + text[start:index])
-                self._parts.clear()
-                index += 1
-                start = index
-            elif char == "\r":
-                if index + 1 == end:
-                    break
-                lines.append("".join(self._parts) + text[start:index])
-                self._parts.clear()
-                index += 2 if text[index + 1] == "\n" else 1
-                start = index
-            else:
-                index += 1
-        if start < end:
-            self._parts.append(text[start:])
+        held_cr = bool(self._parts) and self._parts[-1].endswith("\r")
+        if not held_cr and "\n" not in text and "\r" not in text:
+            if text:
+                self._parts.append(text)
+            return []
+        pending = "".join(self._parts) + text
+        self._parts.clear()
+        cut = len(pending) - pending.endswith("\r")
+        *lines, rest = SSE_LINE_END.split(pending[:cut])
+        rest += pending[cut:]
+        if rest:
+            self._parts.append(rest)
         return lines
 
     def flush(self) -> list[str]:
