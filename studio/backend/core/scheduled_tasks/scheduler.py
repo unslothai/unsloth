@@ -163,18 +163,52 @@ def _target_chat(task: dict) -> Optional[dict]:
     return thread if thread is not None and not thread.get("pairId") else None
 
 
+_ROLE_ORDER = {"system": 0, "user": 1, "assistant": 2}
+
+
 def _shown_branch(messages: list[dict]) -> list[dict]:
-    """The newest message and its ancestors, oldest first."""
+    """The branch Chat shows, oldest first: the newest message followed down to its newest leaf, then
+    up its parents. Mirrors message-order.ts: a null parent before any recorded one chains to the
+    previous message (legacy chats), and an edited turn can be newer than the reply below it."""
     if not messages:
         return []
-    by_id = {message["id"]: message for message in messages}
-    node: Optional[dict] = max(messages, key = lambda message: message.get("createdAt") or 0)
+    ordered = sorted(
+        messages,
+        key = lambda m: (m.get("createdAt") or 0, _ROLE_ORDER.get(m.get("role") or "", 99), m["id"]),
+    )
+    by_id = {message["id"]: message for message in ordered}
+    order = {message["id"]: index for index, message in enumerate(ordered)}
+    parent_of: dict[str, Optional[str]] = {}
+    children: dict[str, list[str]] = {}
+    previous: Optional[str] = None
+    saw_recorded = False
+    for message in ordered:
+        recorded = message.get("parentId")
+        parent = previous if recorded is None and not saw_recorded else recorded
+        saw_recorded = saw_recorded or recorded is not None
+        parent_of[message["id"]] = parent
+        if parent is not None:
+            children.setdefault(parent, []).append(message["id"])
+        previous = message["id"]
+    head, head_order = ordered[-1]["id"], -1
+    pending, seen = [head], set()
+    while pending:
+        node = pending.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        below = children.get(node)
+        if below:
+            pending.extend(below)
+        elif order[node] > head_order:
+            head, head_order = node, order[node]
     branch: list[dict] = []
-    seen: set[str] = set()
-    while node is not None and node["id"] not in seen:
-        seen.add(node["id"])
-        branch.append(node)
-        node = by_id.get(node.get("parentId"))
+    walked: set[str] = set()
+    current: Optional[str] = head
+    while current is not None and current in by_id and current not in walked:
+        walked.add(current)
+        branch.append(by_id[current])
+        current = parent_of.get(current)
     return branch[::-1]
 
 

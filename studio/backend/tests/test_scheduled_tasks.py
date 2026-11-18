@@ -2867,3 +2867,70 @@ def test_a_run_whose_chat_was_deleted_gets_a_chat_of_its_own(monkeypatch):
     thread_id = db.get_task(task["id"])["lastRun"]["threadId"]
     assert thread_id not in (None, "chat-1")
     assert studio_db.get_chat_thread(thread_id)["title"] == "Morning brief"
+
+
+def _chat_with(thread_id, messages):
+    studio_db.upsert_chat_thread(
+        {"id": thread_id, "title": "Chat", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        thread_id,
+        [
+            {
+                "id": message_id,
+                "threadId": thread_id,
+                "parentId": parent,
+                "role": role,
+                "content": [{"type": "text", "text": text}],
+                "createdAt": created,
+            }
+            for message_id, parent, role, text, created in messages
+        ],
+    )
+
+
+def test_a_legacy_chat_without_parents_is_read_in_order(monkeypatch):
+    _chat_with(
+        "legacy",
+        [
+            ("l1", None, "user", "First question.", 10),
+            ("l2", None, "assistant", "First answer.", 20),
+            ("l3", None, "user", "Second question.", 30),
+            ("l4", None, "assistant", "Second answer.", 40),
+        ],
+    )
+    producer = FakeProducer(completion("Done."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "legacy"))
+
+    assert [m.content for m in producer.payload.messages[1:-1]] == [
+        "First question.",
+        "First answer.",
+        "Second question.",
+        "Second answer.",
+    ]
+
+
+def test_an_edited_turn_newer_than_its_reply_still_ends_on_the_reply(monkeypatch):
+    _chat_with(
+        "edited",
+        [
+            ("e1", None, "user", "Edited question.", 50),
+            ("e2", "e1", "assistant", "Answer to the edit.", 40),
+        ],
+    )
+    producer = FakeProducer(completion("Done."))
+    task = make_task(threadId = "edited")
+
+    generate(monkeypatch, producer, task = task)
+
+    assert [m.content for m in producer.payload.messages[1:-1]] == [
+        "Edited question.",
+        "Answer to the edit.",
+    ]
+    db.request_run(task["id"])
+    _task, run = claim()
+    answer = Answer(content = "Later.", reasoning = "", model = "m")
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+    prompt_id, _ = db.message_ids_for_run(run["id"])
+    assert studio_db.get_chat_message("edited", prompt_id)["parentId"] == "e2"
