@@ -88,6 +88,10 @@ tool, and smaller models may miss tools they need.
 UNSLOTH_STUDIO_MCP_SEARCH_ONLY=1 unsloth studio
 ```
 
+```powershell
+$env:UNSLOTH_STUDIO_MCP_SEARCH_ONLY = "1"; unsloth studio
+```
+
 ## Unsloth Decisions MCP
 
 When the Decision API is on (**Settings → API**), the chat's MCP menu lists
