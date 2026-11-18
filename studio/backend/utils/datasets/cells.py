@@ -62,14 +62,16 @@ def content_text(content):
     return cell_text(content)
 
 
-def _turn_text(content):
-    if (
+def only_text_parts(content):
+    return (
         isinstance(content, list)
-        and content
+        and bool(content)
         and all(isinstance(part, dict) and part.get("type") == "text" for part in content)
-    ):
-        return content_text(content)
-    return cell_text(content)
+    )
+
+
+def _turn_text(content):
+    return content_text(content) if only_text_parts(content) else cell_text(content)
 
 
 def _message(turn):
