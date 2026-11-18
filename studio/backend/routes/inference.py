@@ -3580,6 +3580,7 @@ from core.inference.anthropic_compat import (
     cached_prompt_tokens,
     anthropic_messages_to_openai,
     anthropic_reference_block_text,
+    warm_anthropic_pdf_documents,
     fold_tool_results_into_user,
     anthropic_schema_client_tool_kind,
     anthropic_tools_to_openai,
@@ -45451,6 +45452,7 @@ async def anthropic_count_tokens(
             status_code = 400,
             detail = "Token counting is not available for a Connection model.",
         )
+    await asyncio.to_thread(warm_anthropic_pdf_documents, payload.messages)
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
@@ -46109,6 +46111,7 @@ async def anthropic_messages(
     """
     _mark_claude_code_thinking(payload, request)
     _admit_tool_access(payload)
+    await asyncio.to_thread(warm_anthropic_pdf_documents, payload.messages)
     connection = _connection_model_ref(payload.model)
     if connection is not None:
         return await _anthropic_messages_via_connection(
