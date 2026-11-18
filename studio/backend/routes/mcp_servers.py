@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from integrations import editors
+from integrations import unreal as unreal_tools
 from integrations.blender import service as blender
 from models.mcp_servers import (
     BlenderSettings,
@@ -18,6 +19,8 @@ from models.mcp_servers import (
     EditorSetup,
     EditorTest,
     McpBuiltinResponse,
+    UnrealToolsInstall,
+    UnrealToolsInstallResult,
 )
 
 from auth.authentication import (
@@ -356,6 +359,26 @@ async def test_editor(
     if row and editors.settings_for(builtin_id, row) == settings:
         on_tools = lambda tools: cache_tools(row["id"], tools)
     return await editors.probe(builtin_id, settings, on_tools = on_tools)
+
+
+@router.post("/builtins/unreal/install-tools", response_model = UnrealToolsInstallResult)
+def install_unreal_tools(
+    payload: UnrealToolsInstall,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    # The editor runs what lands in Content/Python, so this follows the editor-tools gate.
+    _require_managed_access(via_api_key, no_credential, executes = True)
+    try:
+        files = unreal_tools.install(payload.project_path)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400, detail = f"Could not write to the project: {exc}"
+        ) from exc
+    return UnrealToolsInstallResult(files = files)
 
 
 @router.put("/builtins/{editor}", response_model = McpBuiltinResponse)
