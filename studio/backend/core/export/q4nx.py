@@ -173,8 +173,7 @@ def require_npu_geometry(gguf_path: str) -> None:
     arch = (general.get("general.architecture") or "").lower()
     from core.inference.npu_compat import runnable_shapes
 
-    # None until FastFlowLM is installed. The architecture alone is not enough: the converter
-    # applies the 35B-A3B config to any qwen35moe.
+    # None until FastFlowLM is installed. Shapes, not architectures: any qwen35moe gets the 35B-A3B config.
     runnable = runnable_shapes()
     # Omni is matched by name in the converter and has no published catalog config.
     names = (general.get(k, "").lower() for k in ("general.basename", "general.name"))

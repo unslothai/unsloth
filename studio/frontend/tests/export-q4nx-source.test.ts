@@ -365,7 +365,6 @@ test("Qwen3 14B is refused before any download; LFM3 1.7B is shown as running, n
   assert.equal(q4nxArchFit("qwen35moe", "acme/Qwen3.5-122B-A10B-GGUF", FLM).tag, "convertOnly");
   assert.equal(q4nxArchFit("llama", "meta/Llama-3.3-70B-GGUF", FLM).tag, "convertOnly");
   assert.equal(q4nxArchFit("qwen35moe", "unsloth/Qwen3.6-35B-A3B-GGUF", FLM).tag, "convertRuns");
-  // The hand-kept architecture and size tables are gone: the server's table decides.
   const source = readFileSync(new URL("../src/features/export/lib/q4nx-source.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /Q4NX_ARCHITECTURES|Q4NX_SIZES/);
 });

@@ -172,7 +172,7 @@ async def npu_status(current_subject: str = Depends(get_current_subject)):
 @router.get("/compat", dependencies = [Depends(_require_installation_owner)])
 async def npu_compat():
     """What the installed FastFlowLM runs and the Q4NX converter converts, per architecture and
-    shape. Never starts the runtime; installs the pinned converter source if it is missing."""
+    shape. Never starts the runtime; on a supported NPU, installs the pinned converter source if missing."""
     from core.inference.npu_compat import current
     return await asyncio.to_thread(current)
 

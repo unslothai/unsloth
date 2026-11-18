@@ -265,16 +265,14 @@ def converter_support(
         logger.warning("Could not read the Q4NX converter's architectures: %s", exc)
         return None
 
-    # Each architecture goes to one converter (converter_for_architecture); it matches
-    # general.architecture exactly first, then general.basename by prefix.
+    # converter_for_architecture matches general.architecture exactly, then general.basename by prefix.
     def routed(names: dict[str, list[str]], converter: str) -> set[str]:
         aliases = {a.lower() for row in names.values() for a in row}
         return {a for a in aliases if installer.converter_for_architecture(a) == converter}
 
     q4nx_aliases = routed(q4nx_names, "q4nx")
     architectures = q4nx_aliases | routed(q4k_names, "q4k")
-    # A prefix that is itself an architecture is the misroute case (Qwen2-VL and Qwen3-MoE
-    # basenames fall to the dense converters), so only name-only aliases count by name.
+    # A prefix that is an architecture misroutes (Qwen2-VL / Qwen3-MoE to dense), so only name-only aliases count.
     basenames = q4nx_aliases - set(_GGUF_ARCH.values())
     if qwen35:
         architectures.add("qwen35")
