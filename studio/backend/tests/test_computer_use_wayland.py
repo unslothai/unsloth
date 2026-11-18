@@ -478,3 +478,51 @@ def test_a_tool_run_shoots_and_clicks_through_the_portal_asking_each_time(
         state.reset()
         host_policy._reset_loopback_default_state()
         backend.close()
+
+
+def test_a_user_stop_mid_chain_does_not_reopen_sharing_for_the_last_screenshot(
+    bus, tmp_path, monkeypatch
+):
+    from core.inference import computer_use
+    from core.inference.computer_use import policy, screen
+    from state import computer_use as state
+    from utils import host_policy
+
+    host_policy._reset_loopback_default_state()
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    backend = _backend(tmp_path)
+    monkeypatch.setattr(backends, "_backend", backend)
+    monkeypatch.setattr(
+        policy,
+        "settings",
+        lambda: {"enabled": True, "coordinates": "auto", "allowed_apps": [], "blocked_apps": []},
+    )
+    monkeypatch.setattr(screen, "_SETTLE_FIRST_S", 0.0)
+    monkeypatch.setattr(screen, "_SETTLE_STEP_S", 0.0)
+    state.reset()
+    try:
+        computer_use.execute_computer_tool({"action": "screenshot"}, session_id = "w", approved = True)
+        opened = WaylandBackend.displays
+
+        def stop_after_start(self):
+            shown = opened(self)
+            bus.close_session()
+            time.sleep(0.2)
+            return shown
+
+        monkeypatch.setattr(WaylandBackend, "displays", stop_after_start)
+        result = computer_use.execute_computer_tool(
+            {
+                "action": "wait",
+                "seconds": 0,
+                "then": [{"action": "left_click", "x": 10, "y": 10}],
+            },
+            session_id = "w",
+            approved = True,
+        )
+        assert "Do not try again" in str(result)
+        assert [name for name, _ in bus.calls].count("CreateSession") == 1
+    finally:
+        state.reset()
+        host_policy._reset_loopback_default_state()
+        backend.close()

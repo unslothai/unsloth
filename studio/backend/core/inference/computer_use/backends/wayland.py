@@ -87,6 +87,8 @@ class WaylandBackend(LinuxBackend):
         self._pointer: Optional[tuple[float, float]] = None
         self._timer: Optional[threading.Timer] = None
         self._primed = False
+        # Set by a user stop; only the next run's displays() lifts it, not this run's last screenshot.
+        self._held = False
         self._last_use = 0.0
         self._problem: Optional[str] = None
         self._version = 0
@@ -179,6 +181,8 @@ class WaylandBackend(LinuxBackend):
                 pass
         session, self._session = self._session, None
         stopped = session is not None and session.closed
+        if stopped:
+            self._held = True
         if stopped and self._token_file is not None:
             try:
                 self._token_file.unlink(missing_ok = True)
@@ -205,6 +209,7 @@ class WaylandBackend(LinuxBackend):
 
     def displays(self) -> list[Display]:
         with self._lock:
+            self._held = False
             self._started()
             return [display for display, _stream in self._displays]
 
@@ -216,6 +221,8 @@ class WaylandBackend(LinuxBackend):
 
     def capture(self, display: Display) -> Any:
         with self._lock:
+            if self._held:
+                raise BackendError(_USER_STOPPED)
             self._started()
             stream = next(
                 (stream for shown, stream in self._displays if shown.index == display.index),
