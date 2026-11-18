@@ -982,6 +982,8 @@ _EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
 _IMAGE_TEXT_EXTS = frozenset(".png .jpg .jpeg .webp .gif .bmp .tif .tiff".split())
 # A letter page at OCR_DPI, what PDF OCR already sends the vision model.
 _IMAGE_MAX_PIXELS = int(8.5 * 11 * config.OCR_DPI**2)
+# A 48 MP phone photo fits (as mcp_images caps at 40 MP); its decode is the one full-size buffer.
+_IMAGE_DECODE_MAX_PIXELS = 50_000_000
 
 
 def _image_png(path: str) -> bytes:
@@ -991,16 +993,18 @@ def _image_png(path: str) -> bytes:
     from PIL import Image, ImageOps
 
     with Image.open(path) as opened:
+        width, height = opened.size
+        # Header only so far: refuse before any full-size decode (a small PNG can be 12k x 12k).
+        if width * height > _IMAGE_DECODE_MAX_PIXELS:
+            raise ValueError(f"the image is too large ({width} x {height} pixels)")
+        scale = min(1.0, (_IMAGE_MAX_PIXELS / (width * height)) ** 0.5)
+        size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        # Shrunk first, so every copy below is at most the page budget.
+        opened.thumbnail(size, Image.Resampling.LANCZOS)
         rgba = ImageOps.exif_transpose(opened).convert("RGBA")
     # On white, as PyMuPDF renders it: dark text on a transparent PNG must not turn black on black.
     image = Image.new("RGB", rgba.size, "white")
     image.paste(rgba, mask = rgba.getchannel("A"))
-    scale = (_IMAGE_MAX_PIXELS / (image.width * image.height)) ** 0.5
-    if scale < 1:
-        image = image.resize(
-            (max(1, int(image.width * scale)), max(1, int(image.height * scale))),
-            Image.Resampling.LANCZOS,
-        )
     out = io.BytesIO()
     # Tagged at OCR_DPI so Tesseract renders it 1:1.
     image.save(out, "PNG", dpi = (config.OCR_DPI, config.OCR_DPI))

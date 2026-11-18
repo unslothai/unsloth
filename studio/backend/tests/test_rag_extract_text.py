@@ -183,3 +183,39 @@ def test_tesseract_reads_the_image_at_its_own_pixels(rag_home, monkeypatch):
     assert rag_routes.extract_text(_upload("sign.jpg", data), subject = "owner")["text"] == "Hallo"
     assert rendered == [(40, 30)]
     assert _uploads_left() == []
+
+
+def test_an_oversized_image_is_refused_before_it_is_decoded(rag_home, monkeypatch):
+    from PIL import Image
+
+    from core.rag import captioner
+
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: {1: "never"})
+    data = _image("PNG", (40, 30))
+    loads = []
+    real_load = Image.Image.load
+    monkeypatch.setattr(
+        Image.Image, "load", lambda self: loads.append(self.size) or real_load(self)
+    )
+    monkeypatch.setattr(rag_routes, "_IMAGE_DECODE_MAX_PIXELS", 40 * 30 - 1)
+    with pytest.raises(HTTPException) as exc:
+        rag_routes.extract_text(_upload("poster.png", data), subject = "owner")
+    assert exc.value.status_code == 422 and "too large" in exc.value.detail
+    assert loads == []
+    assert _uploads_left() == []
+
+
+def test_an_upright_photo_stays_upright_after_shrinking(rag_home, monkeypatch):
+    from PIL import Image
+
+    from core.rag import captioner
+
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotated 90 degrees: shown portrait
+    out = io.BytesIO()
+    Image.new("RGB", (4000, 3000), "white").save(out, "JPEG", exif = exif)
+    seen = []
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: seen.append(pngs[1]) or {1: "ok"})
+    rag_routes.extract_text(_upload("phone.jpg", out.getvalue()), subject = "owner")
+    width, height = Image.open(io.BytesIO(seen[0])).size
+    assert height > width and width * height <= rag_routes._IMAGE_MAX_PIXELS
