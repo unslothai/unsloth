@@ -34,7 +34,6 @@ from core.inference.openai_responses_shared import (
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from core.inference.http_stream import aiter_sse_lines
-from core.inference.cloud_compaction import SUMMARY_BLOCK_HEADER
 from models.providers import (
     normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
@@ -727,20 +726,6 @@ _ANTHROPIC_FAST_MODE_PREFIXES = (
 
 def _anthropic_supports_compaction(model: str) -> bool:
     return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
-
-
-def _with_summary_notice(block: dict[str, Any]) -> dict[str, Any]:
-    """Added on replay: custom compaction instructions make Haiku/Opus 5.5 return no summary."""
-    content = block.get("content")
-    if (
-        block.get("type") != "compaction"
-        or block.get("encrypted_content")
-        or not isinstance(content, str)
-        or not content
-        or content.startswith(SUMMARY_BLOCK_HEADER)
-    ):
-        return block
-    return {**block, "content": SUMMARY_BLOCK_HEADER + content}
 
 
 def compacts_server_side(
@@ -2769,7 +2754,7 @@ class ExternalProviderClient:
                 # preserve Unsloth input_document support when translating to Anthropic blocks.
                 anthropic_parts: list[dict[str, Any]] = (
                     [
-                        _with_summary_notice(block)
+                        block
                         for block in native_content
                         if (
                             block.get("type") != "text"
@@ -2800,7 +2785,7 @@ class ExternalProviderClient:
                             encrypted = part.get("encrypted_content")
                             if isinstance(encrypted, str) and encrypted:
                                 compaction["encrypted_content"] = encrypted
-                            anthropic_parts.append(_with_summary_notice(compaction))
+                            anthropic_parts.append(compaction)
                             compaction_replayed = True
                     elif part.get("type") == "image_url":
                         url = part.get("image_url", {}).get("url", "")
