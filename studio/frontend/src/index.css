@@ -5443,28 +5443,39 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	);
 }
 
-/* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
+/* Code blocks scroll sideways on the body in chat and on the block elsewhere; either bar shows only
+   while the block is hovered or focused. Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
 @supports selector(::-webkit-scrollbar) {
-	.aui-thread-root [data-streamdown="code-block-body"] {
+	:is([data-streamdown="code-block"], [data-streamdown="code-block-body"]) {
 		scrollbar-width: auto;
 		scrollbar-color: auto;
 	}
 }
 
-.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar {
+:is([data-streamdown="code-block"], [data-streamdown="code-block-body"])::-webkit-scrollbar {
 	height: 6px;
 }
 
-.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+:is([data-streamdown="code-block"], [data-streamdown="code-block-body"])::-webkit-scrollbar-thumb:horizontal {
 	background: transparent;
 }
 
-.aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+[data-streamdown="code-block"]:is(:hover, :focus-within)::-webkit-scrollbar-thumb:horizontal,
+[data-streamdown="code-block"]:is(:hover, :focus-within) [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
-.dark .aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+.dark [data-streamdown="code-block"]:is(:hover, :focus-within)::-webkit-scrollbar-thumb:horizontal,
+.dark [data-streamdown="code-block"]:is(:hover, :focus-within) [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
 	background: oklch(0.72 0 0 / 0.4);
+}
+
+/* Firefox has no per-axis thumb, so the whole bar waits for hover there. */
+@supports not selector(::-webkit-scrollbar) {
+	[data-streamdown="code-block"]:not(:hover, :focus-within),
+	[data-streamdown="code-block"]:not(:hover, :focus-within) [data-streamdown="code-block-body"] {
+		scrollbar-color: transparent transparent;
+	}
 }
 
 /* Classic, not overlay: a wide chat table shows it scrolls before it is touched. */
