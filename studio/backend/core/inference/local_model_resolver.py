@@ -735,6 +735,17 @@ def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             return None
         # No quants: an Ollama tag names one file, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, raw_id, ())
+    if (getattr(info, "source", None), getattr(info, "model_format", None)) == (
+        "ollama",
+        "safetensors",
+    ):
+        # An MLX tag's row names the checkpoint its load builds, which need not exist yet.
+        from hub.services.models.ollama import ollama_mlx_ref_for_path
+        try:
+            ref = isinstance(raw_id, str) and ollama_mlx_ref_for_path(raw_id)
+        except (OSError, ValueError):
+            ref = None
+        return _LocalGgufEntry(loader_id, raw_id, (), is_gguf = False) if ref else None
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
 

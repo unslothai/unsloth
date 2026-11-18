@@ -3,11 +3,11 @@
 
 """Ollama tags in its MLX format (one safetensors blob per tensor) as standard MLX checkpoints.
 
-A load materializes a directory beside the tag's other links: unchanged blobs are symlinked, blobs
-whose quantization companions carry Ollama's names are APFS clones with the safetensors header
-renamed in place, and the smallest tensors are packed into one real shard, because mlx-lm sets a
-2048 open-file soft limit and MLX keeps every safetensors file open. Each build is keyed by the
-manifest; the tag is identified by a stable path through an ``mlx`` link switched to the current build."""
+A load materializes a directory beside the tag's other links: tensor blobs are APFS clones, with
+the safetensors header renamed in place where Ollama names the quantization companions, and the
+smallest tensors are packed into one real shard, because mlx-lm sets a 2048 open-file soft limit
+and MLX keeps every safetensors file open. Each build is keyed by the manifest;
+the tag is identified by a stable path through an ``mlx`` link switched to the current build."""
 
 from __future__ import annotations
 
@@ -332,11 +332,11 @@ def _write_tensors(
         for name in _write_packed_shard(directory / shard_names[0], packed):
             weight_map[name] = shard_names[0]
     for shard, (_, blob, size, header, renamed, _) in zip(shard_names[1:], tensors[packed_count:]):
-        target = directory / shard
+        # A clone even when unchanged: a retained build must survive Ollama reclaiming the blob.
         if list(renamed) == [key for key in header if key != "__metadata__"]:
-            target.symlink_to(blob)
+            _clonefile(blob, directory / shard)
         else:
-            _write_cloned_with_header(blob, target, size, renamed)
+            _write_cloned_with_header(blob, directory / shard, size, renamed)
         weight_map.update(dict.fromkeys(renamed, shard))
     for *_, item_quant in tensors:
         quant.update(item_quant)

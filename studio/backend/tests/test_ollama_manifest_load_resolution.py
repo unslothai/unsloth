@@ -801,7 +801,7 @@ def _write_ollama_mlx_store(
             {f"{embed}.weight": u32(512, 640), f"{embed}.weight.scale": u8(512, 80)},
             {"quant_type": "mxfp8", "group_size": "32"},
         ),
-        # Over the threshold and unchanged: a symlink to the blob.
+        # Over the threshold and unchanged: a clone of the blob.
         "model.language_model.norm.weight": (
             {"model.language_model.norm.weight": rng.random(600_000).astype(np.float16)},
             None,
@@ -920,6 +920,17 @@ def test_an_mlx_tag_lists_as_a_chat_only_safetensors_row(mlx_store, monkeypatch)
     assert ollama.scan_ollama_dir(root) == []
 
 
+def test_an_unloaded_mlx_tag_resolves_for_the_api(mlx_store):
+    from core.inference import local_model_resolver as resolver
+    from hub.services.models import ollama
+
+    (row,) = ollama.scan_ollama_dir(mlx_store[0])
+    entry = resolver._local_servable_entry(row.model_id, row)
+    assert (entry.load_path, entry.is_gguf) == (row.id, False)
+    assert resolver.local_servable_model(row) == (False, ())
+    assert resolver._local_servable_entry(row.model_id, row.model_copy(update = {"id": "/x"})) is None
+
+
 def test_an_mlx_tag_the_checkpoint_cannot_serve_as_pulled_is_not_listed(tmp_path, monkeypatch):
     from hub.services.models import ollama, ollama_mlx
 
@@ -989,7 +1000,7 @@ def test_an_mlx_tag_materializes_as_a_standard_mlx_checkpoint(mlx_store):
     assert (
         weight_map[f"{down}.scales"] == weight_map[f"{gate_up}.scales"]
     )  # both small: one packed shard
-    assert (checkpoint / weight_map["model.language_model.norm.weight"]).is_symlink()
+    assert not (checkpoint / weight_map["model.language_model.norm.weight"]).is_symlink()
     assert not (
         checkpoint / weight_map[f"{embed}.scales"]
     ).is_symlink()  # renamed in a clone, never in the blob
@@ -1029,6 +1040,14 @@ def test_an_mlx_tag_materializes_as_a_standard_mlx_checkpoint(mlx_store):
     assert ollama.materialize_ollama_mlx_ref(ref) == str(checkpoint)
     assert not first.exists() and second.exists()
     assert os.path.realpath(checkpoint) not in (str(first), str(second))
+    # The build kept for a resident model still reads once Ollama reclaims a blob it shared.
+    norm = "model.language_model.norm.weight"
+    layers = json.loads(tag_file.read_text())["layers"]
+    digest = next(layer["digest"] for layer in layers if layer["name"] == norm)
+    (root / "blobs" / digest.replace(":", "-")).unlink()
+    kept = second / checkpoint.name
+    shard = json.loads((kept / "model.safetensors.index.json").read_text())["weight_map"][norm]
+    assert np.array_equal(load_file(str(kept / shard))[norm], tensors[norm][0][norm])
 
 
 @_APFS
