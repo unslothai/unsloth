@@ -11,6 +11,7 @@ import hashlib
 import importlib
 import ipaddress
 import json
+import ssl
 import mimetypes
 import os
 import re
@@ -2548,16 +2549,23 @@ UNREACHABLE_ADVICE = "It is probably not running. Tell the user to start it; wai
 
 
 def server_unreachable(exc: BaseException) -> bool:
-    """A refused or unanswered connection anywhere in the cause chain (httpx is vendored, so match by type name)."""
-    seen = 0
+    """A refused or unanswered connection anywhere in the cause chain (httpx is vendored, so match by type name).
+    A TLS failure is not one: httpx raises ConnectError for an untrusted certificate too, but the server answered."""
+    chain, seen = [], 0
     while exc is not None and seen < 10:
+        chain.append(exc)
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    if any(
+        isinstance(item, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(item) for item in chain
+    ):
+        return False
+    for exc in chain:
         if type(exc).__name__ in (
             "ConnectError",
             "ConnectionRefusedError",
         ) or "All connection attempts failed" in str(exc):
             return True
-        exc = exc.__cause__ or exc.__context__
-        seen += 1
     return False
 
 

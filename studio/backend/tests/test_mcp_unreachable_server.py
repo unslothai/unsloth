@@ -60,3 +60,57 @@ def test_other_failures_keep_their_message():
             raise RuntimeError("outer") from inner
     except RuntimeError as outer:
         assert mcp_client.server_unreachable(outer)
+
+
+def test_an_untrusted_certificate_is_not_reported_as_a_closed_server(tmp_path):
+    """httpx raises ConnectError for a TLS verification failure too; that server is up, so keep the real cause."""
+    import datetime
+    import http.server
+    import ssl
+    import threading
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes = 1))
+        .not_valid_after(now + datetime.timedelta(days = 1))
+        .sign(key, hashes.SHA256())
+    )
+    cert_path, key_path = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    server.socket = context.wrap_socket(server.socket, server_side = True)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        url = f"https://127.0.0.1:{server.server_address[1]}/mcp"
+        result = mcp_client.call_tool_sync(url, None, "list_toolsets", {}, timeout = 20)
+    finally:
+        server.shutdown()
+    assert result.startswith("Error: MCP tool 'list_toolsets' failed: ")
+    assert mcp_client.UNREACHABLE_SERVER not in result
+
+    wrapped = RuntimeError("Client failed to connect")
+    wrapped.__cause__ = ssl.SSLCertVerificationError(
+        1, "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate"
+    )
+    assert not mcp_client.server_unreachable(wrapped)
