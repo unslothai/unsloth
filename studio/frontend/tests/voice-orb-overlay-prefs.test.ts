@@ -9,8 +9,6 @@ import {
   readVoiceOrbOverlayPrefs,
 } from "../src/features/settings/stores/voice-orb-overlay-prefs.ts";
 
-import { readSrc } from "./helpers/kit.ts";
-
 test("the decision arcs and caption are hidden by default", () => {
   assert.deepEqual(DEFAULT_VOICE_ORB_OVERLAY_PREFS, {
     showVoiceArcs: false,
@@ -30,14 +28,4 @@ test("each toggle persists on its own", () => {
     showVoiceArcs: true,
     showVoiceCaption: false,
   });
-});
-
-test("the voice settings store starts from the defaults and restores saved values", () => {
-  const store = readSrc("features/settings/stores/voice-settings-store.ts");
-  assert.match(store, /\.\.\.DEFAULT_VOICE_ORB_OVERLAY_PREFS,/);
-  assert.match(store, /\.\.\.readVoiceOrbOverlayPrefs\(saved\),/);
-  const orb = readSrc("components/assistant-ui/voice-orb.tsx");
-  assert.match(orb, /showOverlay && showArcs && <VoiceDecisionRing \/>/);
-  // The decision chip still needs its setting; the heard caption shares the slot when the chip is off.
-  assert.match(orb, /chip: \(showOverlay && showCaption && hasDecision\) \|\| showHeard/);
 });

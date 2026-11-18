@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -32,18 +31,4 @@ test("a transcript ending on a question mark reads as a finished turn", async ()
   for (const text of ["What I want is", "Is it?  And then", "Thanks.", ""]) {
     assert.ok(!readsAsQuestion(text), text);
   }
-});
-
-test("the loop ends such a turn after the same wait as one that sounded finished, never over a reply", () => {
-  const loop = readFileSync(
-    new URL(
-      "../src/features/chat/adapters/studio-voice-loop-adapter.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(
-    loop,
-    /if \(!bargedIn && questionKey === key && sinceVoice >= TURN_END_AFTER_MS\) \{[\s\S]{0,200}soundedFinished = true;\s*void finalize\(\);/,
-  );
 });

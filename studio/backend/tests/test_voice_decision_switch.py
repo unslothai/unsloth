@@ -304,25 +304,22 @@ def test_a_loading_decision_checkpoint_answers_503(monkeypatch):
     assert r.status_code == 500
 
 
-def test_decision_voice_raises_unavailable_while_loading():
+def test_decision_voice_raises_unavailable_while_loading(checkpoints):
     from core.systemone import laya_runtime
 
-    def decide(checkpoint, state, question):
+    def loading(checkpoint, state, question):
         raise laya_runtime.Unavailable(503, "model_loading", "laya-ft:v4 is loading", 5)
 
-    voice = vd.DecisionVoice.__new__(vd.DecisionVoice)
-    voice.checkpoint, voice._decide = object(), decide
     with pytest.raises(vd.DecisionUnavailable) as err:
-        voice.judge("hi")
+        vd.DecisionVoice("laya-ft:v4", decide = loading).judge("hi")
     assert err.value.retry_after == 5 and isinstance(err.value, RuntimeError)
     assert err.value.loading is True
 
     def busy(checkpoint, state, question):
         raise laya_runtime.Unavailable(409, "gpu_busy", "Unload the resident chat model first.", 1)
 
-    voice._decide = busy
     with pytest.raises(vd.DecisionUnavailable) as err:
-        voice.judge("hi")
+        vd.DecisionVoice("laya-ft:v4", decide = busy).judge("hi")
     assert err.value.loading is False
 
 
@@ -349,21 +346,57 @@ def test_a_question_for_a_model_that_did_not_load_says_why(monkeypatch, tmp_path
 
 
 def test_retiring_a_voice_skips_one_a_request_holds(monkeypatch):
-    from core.inference import model_slots
+    from core.inference import audio_cpp_models, model_slots
+    from models.inference import LoadRequest
     from routes import inference
+    from utils import multi_model_settings
 
-    busy = SimpleNamespace(voice = True, request = SimpleNamespace(), refs = 1, generations = set())
-    idle = SimpleNamespace(voice = True, request = SimpleNamespace(), refs = 0, generations = set())
-    monkeypatch.setattr(model_slots, "slots", [busy, idle])
-    monkeypatch.setattr(model_slots, "visible", lambda: [busy, idle])
-    dropped = []
+    def kept_voice(refs):
+        return model_slots.ExtraSlot(
+            SimpleNamespace(is_loaded = False, is_active = False),
+            SimpleNamespace(active_model_name = None),
+            "owner",
+            request = LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True),
+            refs = refs,
+            voice = True,
+        )
+
+    held, idle = kept_voice(refs = 1), kept_voice(refs = 0)
+    dropped, reached = [], []
+
+    def stop_before_the_new_slot(*args, **kwargs):
+        reached.append(True)
+        raise RuntimeError("stop before the new slot starts")
+
+    monkeypatch.setattr(model_slots, "slots", [held, idle])
     monkeypatch.setattr(model_slots, "drop", dropped.append)
-    monkeypatch.setattr(inference, "_voice_task", lambda request: "tts")
-    monkeypatch.setattr(inference, "_kept_slot_reports", lambda slot: [])
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "resolve",
+        lambda path, *a, **k: SimpleNamespace(task = "tts", unsupported = None)
+        if path.startswith("audio-cpp/")
+        else None,
+    )
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: True)
+    monkeypatch.setattr(
+        inference, "get_inference_backend", lambda: SimpleNamespace(active_model_name = "org/Chat")
+    )
+    monkeypatch.setattr(inference, "LlamaCppBackend", stop_before_the_new_slot)
 
-    inference._retire_other_voices(SimpleNamespace())
+    from auth.authentication import get_current_subject
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    for router in (inference.router, inference.studio_router):
+        app.include_router(router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    TestClient(app, raise_server_exceptions = False).post(
+        "/api/inference/load", json = {"model_path": "audio-cpp/Other-TTS", "voice": True}
+    )
+    assert reached == [True]
     assert dropped == [idle]
-    assert model_slots.slots == [busy]
+    assert model_slots.slots == [held]
 
 
 def test_a_symlinked_child_outside_the_folder_is_not_listed(monkeypatch, tmp_path):
@@ -501,11 +534,33 @@ def test_a_d1_in_a_custom_folder_keeps_the_mlx_backend(monkeypatch, tmp_path):
     assert found == [("my-clef", "clef", "pytorch"), ("my-d1", "clef", "mlx")]
 
 
-def test_the_decision_switch_takes_the_models_lock_off_the_event_loop():
-    import inspect
+def test_the_decision_switch_takes_the_models_lock_off_the_event_loop(checkpoints, monkeypatch):
+    import asyncio
 
+    from core.inference import voice_models as vm
+    from core.systemone import catalog, laya_runtime
     from routes import inference
 
-    source = inspect.getsource(inference.voice_decision_put)
-    assert "await asyncio.to_thread(models.switch_decision)" in source
-    assert "\n    models.switch_decision()" not in source
+    where = []
+
+    def switch_decision():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            where.append("worker thread")
+        else:
+            where.append("event loop")
+
+    fake = SimpleNamespace(
+        switch_decision = switch_decision,
+        decision_state = lambda: {"state": "loading", "error": None},
+        warm_decision = lambda: None,
+    )
+    monkeypatch.setattr(vm, "get_voice_models", lambda: fake)
+    monkeypatch.setattr(catalog, "fine_tunes", lambda: [])
+    monkeypatch.setattr(laya_runtime, "select", lambda *a, **k: None)
+    put = _voice_client([inference.studio_router]).put(
+        "/api/inference/voice/decision", json = {"name": "laya-ft:v3"}
+    )
+    assert put.status_code == 200
+    assert where == ["worker thread"]

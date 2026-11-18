@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { normalizeForSpeech } from "../src/features/chat/voice/speech-normalize.ts";
@@ -66,16 +65,6 @@ for (const form of FAILING_FORMS) {
     assert.equal(normalizeForSpeech(form.input, form.locale), form.spoken);
   });
 }
-
-test("the player rewrites only the request text, and only with the switch on", () => {
-  const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
-  assert.match(
-    player,
-    /const spoken = speechNormalize \? normalizeForSpeech\(sentence, language\) : sentence;[\s\S]{0,600}?generateStudioTtsClip\(spoken, signal,/,
-  );
-  // The default dictation language is "auto", which keys no rules: the app's language stands in.
-  assert.match(player, /const language = dictationLanguage === "auto" \? getLocale\(\) : dictationLanguage;/);
-});
 
 test("a few cents read as cents, and the pronoun I after Mark stays a word", () => {
   assert.equal(normalizeForSpeech("It costs $1.01.", "en"), "It costs one dollar and one cent.");

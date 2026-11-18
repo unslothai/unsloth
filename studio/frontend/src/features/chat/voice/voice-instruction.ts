@@ -26,11 +26,6 @@ export const CONVERSATION_INSTRUCTION =
   "\n" +
   "These limits apply to your final spoken reply, not to any thinking before it.";
 
-export function withVoiceInstruction(systemPrompt: string): string {
-  const base = systemPrompt.trimEnd();
-  return base ? `${base}\n\n${VOICE_INSTRUCTION}` : VOICE_INSTRUCTION;
-}
-
 export type ReplyInstructionChoice = "conversation" | "spoken" | "voice" | "custom" | "none";
 
 /** The chat instructions with the chosen spoken-reply text last; "custom" sends `custom`, blank sends nothing. */

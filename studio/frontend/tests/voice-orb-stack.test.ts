@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -13,12 +12,6 @@ import {
   ORB_STATUS_HEIGHT,
   orbStackLayout,
 } from "../src/features/chat/voice/orb-stack-layout.ts";
-import { pendingApproval } from "../src/features/chat/voice/orb-widget.ts";
-
-const orb = readFileSync(
-  new URL("../src/components/assistant-ui/voice-orb.tsx", import.meta.url),
-  "utf-8",
-);
 
 test("every combination of arcs and chip keeps the same gap down the whole stack", () => {
   for (const arcs of [true, false]) {
@@ -56,44 +49,4 @@ test("arcs off pulls the stack up under the ball; the chip hidden pulls the card
     orbStackLayout({ arcs: true, chip: true, card: false }).card,
     null,
   );
-});
-
-test("the stack glides to its place rather than jumping, and the ball's room never changes", () => {
-  assert.match(orb, /transition: "transform 150ms ease-out"/);
-  assert.match(
-    orb,
-    /height: ORB_STATUS_HEIGHT \+ ORB_STACK_GAP \+ ORB_CHIP_HEIGHT/,
-  );
-});
-
-test("the approval card shows while a voiced call waits and goes once it is answered", () => {
-  const voiced = { autoAllowKey: "s:A" };
-  assert.deepEqual(pendingApproval({ a: voiced, b: voiced }, "A", () => false), { id: "a", more: 1 });
-  assert.equal(pendingApproval({}, "A", () => false), null);
-  assert.match(orb, /pendingApproval\(confirmations, voiceThreadId, \(id\) => describeToolCall\(id\) !== null\)/);
-  assert.match(orb, /card: showOverlay && approval !== null/);
-  assert.match(
-    orb,
-    /<OrbApprovalCard key=\{approval\.id\} id=\{approval\.id\} more=\{approval\.more\} \/>/,
-  );
-});
-
-test("the card is one wrapping row with no expand toggle", () => {
-  const card = readFileSync(
-    new URL("../src/components/assistant-ui/orb-approval-card.tsx", import.meta.url),
-    "utf-8",
-  );
-  assert.doesNotMatch(card, /aria-expanded|ChevronDownIcon/);
-  assert.match(card, /flex-wrap items-center/);
-  assert.match(card, /36rem/);
-});
-
-test("the column lifts to keep the card 24 px above the composer, measured from the layout", () => {
-  assert.match(orb, /const COMPOSER_CLEARANCE = 24;/);
-  assert.match(orb, /querySelector\("\.aui-composer-root"\)/);
-  assert.match(
-    orb,
-    /composer\.getBoundingClientRect\(\)\.top - COMPOSER_CLEARANCE - cardBottom/,
-  );
-  assert.match(orb, /new ResizeObserver/);
 });

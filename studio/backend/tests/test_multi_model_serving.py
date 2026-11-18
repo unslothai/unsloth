@@ -298,10 +298,24 @@ def test_only_voice_models_may_load_as_the_voice(monkeypatch):
     assert refused.value.status_code == 400 and not picked
 
 
-def test_a_voice_load_never_replaces_the_chat_model():
-    source = inspect.getsource(inf.load_model_gated)
-    refuse = source.index("if request.voice:")
-    assert refuse < source.index("await asyncio.to_thread(_unload_primary)")
+def test_a_voice_load_never_replaces_the_chat_model(backends, monkeypatch):
+    import core.inference.audio_cpp_models as audio_cpp_models
+
+    primary, _ = backends
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "resolve",
+        lambda path, *a, **k: SimpleNamespace(task = "tts", unsupported = None)
+        if path.startswith("audio-cpp/")
+        else None,
+    )
+    _gated_load_fakes(monkeypatch, short_fits = [1])
+    request = LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert refused.value.status_code == 409
+    assert (primary.model_identifier, primary.is_active) == ("org/A-GGUF", True)
+
 
 
 def test_a_kept_model_with_no_gpu_layers_does_not_hold_the_gpu(backends):

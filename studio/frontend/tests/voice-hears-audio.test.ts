@@ -10,7 +10,6 @@ import {
   voiceHearsAudio,
   wantsSpokenReply,
 } from "../src/features/chat/voice/voice-models.ts";
-import { readSrc } from "./helpers/kit.ts";
 
 const state = (
   model: { id: string; hasAudioInput?: boolean },
@@ -83,52 +82,3 @@ test("speech comes back from the model only where it speaks and is the picked vo
     false,
   );
 });
-
-test("the loop keeps and sends the turn's speech through the hearing gate, not the speaking one", () => {
-  const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
-  assert.match(loop, /transcript &&\s*epoch === heldEpoch &&\s*voiceHearsAudio\(rt, ports\.settings\(\)\.micTarget\)\s*\) \{\s*turnAudio\.add/);
-  // An emptied edit drops its speech before this turn's is kept.
-  assert.match(loop, /onCleared: \(\) => turnAudio\.clear\(\)/);
-  assert.match(loop, /let editing = !heldEdit\.autoSend\(\);[\s\S]{0,400}turnAudio\.add\(analysis\.samples, sampleRate\)/);
-  const engine = readSrc("features/chat/voice/voice-engine.tsx");
-  assert.match(engine, /const turnAudio =\s*!visual &&\s*!toolsOn &&\s*!\(attachedAudio && \(speaksWithChatModel\(\) \|\| rt\.loadedIsMlx === true\)\) &&\s*voiceHearsAudio\(/);
-  assert.doesNotMatch(engine, /const turnAudio = speaksWithChatModel\(\)/);
-  // The text TTS is skipped only for a reply the chat model speaks itself.
-  assert.match(engine, /spokenRunRef\.current =\s*speaksWithChatModel\(\) && lastUserTurnHasAudio/);
-});
-
-test("the request asks for speech only through wantsSpokenReply", () => {
-  const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, /\.\.\.\(wantsSpokenReply\(\{[\s\S]{0,300}\}\)\s*\? \{ modalities: \["text", "audio"\] \}/);
-  assert.doesNotMatch(adapter, /activeModel\?\.speaks && turnAudioBase64/);
-});
-
-test("the gates name no model family", () => {
-  const models = readSrc("features/chat/voice/voice-models.ts");
-  for (const fn of ["export function voiceHearsAudio", "export function wantsSpokenReply"]) {
-    const body = models.slice(models.indexOf(fn), models.indexOf("\n}\n", models.indexOf(fn)));
-    assert.doesNotMatch(body, /lfm|gemma|qwen|omni|liquid/i, fn);
-  }
-});
-
-test("speech of a turn cleared while STT ran never reaches the next turn", () => {
-  const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
-  const add = loop.indexOf("turnAudio.add(analysis.samples, sampleRate)");
-  const guard = loop.lastIndexOf("if (", add);
-  assert.match(loop.slice(guard, add), /epoch === heldEpoch/);
-});
-
-
-test("a turn whose audio attaches slowly re-arms the run once it lands", () => {
-  const engine = readSrc("features/chat/voice/voice-engine.tsx");
-  assert.match(
-    engine,
-    /\.then\(\(\) => \{\s*if \(voiceModeRef\.current !== "active" \|\| voiceNotesEpoch\(\) !== turn\) return;\s*send\(\);[\s\S]{0,200}if \(!voiceCoalesceTimerRef\.current\)\s*voiceCoalesceTimerRef\.current = setTimeout\(\(\) => fireCoalescedRun\(0\), VOICE_COALESCE_MS\);/,
-  );
-});
-
-test("a turn with an image or video attached goes as its transcript, not with the mic audio", () => {
-  const engine = readSrc("features/chat/voice/voice-engine.tsx");
-  assert.match(engine, /attachments\.some\(\(a\) => a\.type === "image" \|\| \/\^\(image\|video\)\\\/\/\.test\(a\.contentType \?\? ""\)\)/);
-});
-

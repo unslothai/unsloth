@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -52,19 +51,4 @@ test("it shows while the turn is answered, not while the next one is heard", () 
   ] as const) {
     assert.ok(!showsHeardCaption(state), String(state));
   }
-});
-
-test("the orb gives the caption the chip's slot, and the decision chip keeps it when on", () => {
-  const orb = readFileSync(
-    new URL("../src/components/assistant-ui/voice-orb.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    orb,
-    /chip: \(showOverlay && showCaption && hasDecision\) \|\| showHeard,/,
-  );
-  assert.match(
-    orb,
-    /const showHeard = showOverlay && !\(showCaption && hasDecision\) && showsHeardCaption\(orbState\)/,
-  );
 });

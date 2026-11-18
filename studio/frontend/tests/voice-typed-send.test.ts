@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { isTypedVoiceSubmit } from "../src/features/chat/voice/typed-send.ts";
@@ -10,9 +9,6 @@ import {
   registerVoiceTypedSubmit,
   requestVoiceTypedSubmit,
 } from "../src/features/chat/voice/voice-loop-bridge.ts";
-
-const SRC = new URL("../src/", import.meta.url);
-const read = (relative: string) => readFileSync(new URL(relative, SRC), "utf8");
 
 function composer(state: { paused: boolean; held?: string; parked?: string }) {
   const sent: string[] = [];
@@ -64,19 +60,4 @@ test("Enter on only what voice put in the box still ends the spoken turn", () =>
 test("an unmounted loop leaves the old end-the-turn behaviour", () => {
   registerVoiceTypedSubmit(null);
   assert.equal(requestVoiceTypedSubmit("typed"), false);
-});
-
-test("the composer asks the loop to send typed text before ending dictation", () => {
-  const src = read("components/assistant-ui/thread.tsx");
-  const branch = src.slice(src.indexOf("if (voiceEngaged && isDictating) {"));
-  const typed = branch.indexOf("requestVoiceTypedSubmit(composerText)");
-  const stop = branch.indexOf("aui.composer().stopDictation()");
-  assert.ok(typed > 0 && typed < stop);
-});
-
-test("the engine registers the typed send, cancels the session and skips the interject model", () => {
-  const src = read("features/chat/voice/voice-engine.tsx");
-  assert.match(src, /registerVoiceTypedSubmit\(\(box\) =>/);
-  assert.match(src, /cancelVoiceSession\(\);\s*submitTranscript\(box, true\)/);
-  assert.match(src, /if \(!typed && thread\.getState\(\)\.isRunning && \(latestAssistantIsReasoning\(\) \|\| replyNotStarted\(\)\)\)/);
 });

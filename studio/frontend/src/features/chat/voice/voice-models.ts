@@ -11,7 +11,6 @@ import {
 } from "../../audio/audio-cpp-catalog.ts";
 import type { MicTarget } from "../../settings/stores/voice-settings-store.ts";
 import { micSendsAudioToModel } from "../utils/mic-target.ts";
-import { SPOKEN_REPLY_INSTRUCTIONS } from "./voice-instruction.ts";
 
 export const VOICE_DEFAULT_TTS_MODEL = `${AUDIO_CPP_REPO}/Kokoro-82M-GGUF`;
 export const VOICE_DEFAULT_STT_MODEL = "audiocpp-parakeet-tdt-0.6b-v3";
@@ -88,15 +87,6 @@ export function reasoningForTurn(input: {
   voiceThinking: boolean;
 }): boolean {
   return input.enabled && (!input.voiceModeOn || input.voiceThinking);
-}
-
-// A reply written for the page (lists, headings, a full survey of options) takes a minute to read aloud.
-export { SPOKEN_REPLY_INSTRUCTIONS };
-
-/** The chat instructions for a turn: while voice mode is running they end with how to answer aloud. */
-export function withSpokenReplyInstructions(instructions: string, voiceModeOn: boolean): string {
-  if (!voiceModeOn) return instructions;
-  return instructions ? `${instructions}\n\n${SPOKEN_REPLY_INSTRUCTIONS}` : SPOKEN_REPLY_INSTRUCTIONS;
 }
 
 /**

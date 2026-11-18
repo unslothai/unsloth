@@ -5,7 +5,6 @@
 // rest of that sentence, and never loses or repeats a splitter sentence while doing it.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import * as speechText from "../src/features/chat/voice/speech-text.ts";
@@ -140,11 +139,4 @@ test("only the first sentence is ever cut early", () => {
   queueSentences(q, ["Hello there."], "And now a second sentence that is long, with a comma", true);
   assert.deepEqual(q.sentences.map((e) => e.text), ["Hello there."]);
   assert.equal(q.head, null);
-});
-
-test("the setting is read once per stream, and the final read never cuts", () => {
-  const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
-  assert.match(player, /clause: useVoiceSettingsStore\.getState\(\)\.clauseFirstChunk,/);
-  assert.match(player, /queueSentences\(st, settled, partial, st\.clause && !st\.final\)/);
-  assert.doesNotMatch(player, /\bextra\b/);
 });

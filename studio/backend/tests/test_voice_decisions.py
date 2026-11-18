@@ -115,14 +115,53 @@ def test_voice_models_routes_through_the_checkpoint(monkeypatch, tmp_path):
 
 
 def test_unset_env_keeps_the_v1_loaders(monkeypatch, tmp_path):
+    import sys
+
+    import numpy as np
+
     from core.inference import voice_models as vm
 
     monkeypatch.delenv(vd.ENV_CHECKPOINT, raising = False)
+    judge = tmp_path / "judge" / "models" / vm.JUDGE_ONNX
+    (judge / "onnx").mkdir(parents = True)
+    (judge / "onnx" / "model_int8.onnx").write_bytes(b"")
+    (judge / "tokenizer.json").write_text("{}")
+
+    class _Tokenizer:
+        def __init__(self, path):
+            pass
+
+        def enable_truncation(self, n, direction = "right"):
+            pass
+
+        def encode(self, text):
+            return SimpleNamespace(ids = [1, 2, 3], attention_mask = [1, 1, 1])
+
+    class _Session:
+        def __init__(self, path, so, providers):
+            pass
+
+        def get_inputs(self):
+            return [SimpleNamespace(name = "input_ids"), SimpleNamespace(name = "attention_mask")]
+
+        def run(self, outputs, feed):
+            return [np.array([[0.0, 2.0]], dtype = np.float32)]
+
+    monkeypatch.setitem(
+        sys.modules, "tokenizers", SimpleNamespace(Tokenizer = SimpleNamespace(from_file = _Tokenizer))
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            SessionOptions = lambda: SimpleNamespace(intra_op_num_threads = 0),
+            InferenceSession = _Session,
+        ),
+    )
     models = vm.VoiceModels(root = tmp_path)
-    assert (
-        models.available("judge") is False
-    )  # nothing under tmp_path, and no checkpoint configured
-    assert "decision" not in models._models
+    assert models.available("judge") is True
+    assert models.backend("judge") == "onnx"
+    assert models.judge("are you done") == pytest.approx(0.8808, abs = 1e-4)
 
 
 def test_a_non_owner_first_call_resolves_the_installation_wide_pick(monkeypatch, tmp_path):

@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -14,9 +13,6 @@ import {
   subscribeVoiceRequested,
   voiceRunToStop,
 } from "../src/features/chat/voice/voice-loop-bridge.ts";
-
-const SRC = new URL("../src/", import.meta.url);
-const read = (relative: string) => readFileSync(new URL(relative, SRC), "utf8");
 
 // Runs first: the requested flag is module state that only ever turns on.
 test("the loop is not requested until Voice is clicked, then stays requested", () => {
@@ -51,29 +47,6 @@ test("a click with the loop registered toggles at once and is not replayed later
   registerVoiceToggle(() => toggled++);
   assert.equal(toggled, 1);
   registerVoiceToggle(null);
-});
-
-test("the voice chunk is rendered only once Voice is requested", () => {
-  const thread = read("components/assistant-ui/thread.tsx");
-  for (const name of ["VoiceOrb", "VoiceEngine", "VoiceMuteButton", "VoiceControlButton"]) {
-    const at = thread.indexOf(`<${name} />`);
-    assert.ok(at > 0, name);
-    const gate = thread.lastIndexOf("{voiceRequested && ", at);
-    assert.ok(gate > 0 && at - gate < 160, `${name} is gated on voiceRequested`);
-  }
-  // The overlay mounts only in the pane with the composer, never in each Compare pane.
-  const orb = thread.indexOf("<VoiceOrb />");
-  assert.ok(orb - thread.lastIndexOf("{voiceRequested && !hideComposer && (", orb) < 160);
-});
-
-test("the loop's mic plays nothing back and starts its context", () => {
-  const adapter = read("features/chat/adapters/studio-voice-loop-adapter.ts");
-  assert.doesNotMatch(adapter, /processor\.connect\(audioCtx\.destination\)/);
-  assert.match(adapter, /sink\.gain\.value = 0;/);
-  assert.match(adapter, /processor\.connect\(sink\);\s*sink\.connect\(audioCtx\.destination\);/);
-  assert.ok(
-    adapter.indexOf("await audioCtx.resume();") < adapter.indexOf("createScriptProcessor("),
-  );
 });
 
 test("a thread switch stops only the run the loop was voicing, and only while it runs", () => {

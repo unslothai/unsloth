@@ -5,10 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createClipSpeculation,
-  SPECULATE_AFTER_MS,
   utteranceSpan,
 } from "../src/features/chat/voice/clip-speculation.ts";
-import { readSrc } from "./helpers/kit.ts";
 
 const frames = (pattern: string) => [...pattern].map((c) => c === "v");
 const quiet = (pattern: string) => [...pattern].map((c) => c !== "_");
@@ -47,18 +45,4 @@ test("the same clip is analysed once; another clip cancels the stale analysis", 
   spec.start("e", analyse("e"));
   spec.clear();
   assert.deepEqual(cancelled, ["a", "b", "e"]);
-});
-
-test("the loop analyses the clip during the silence hang and finalize reuses it", () => {
-  const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
-  const hang = Number(/const SILENCE_HANG_MS = (\d+);/.exec(loop)?.[1]);
-  assert.ok(SPECULATE_AFTER_MS < hang);
-  // Sooner still when the end of the turn is being asked about: an early end needs the transcript.
-  assert.match(
-    loop,
-    /sinceVoice >= \(askTurn \? TURN_ASK_AFTER_MS : SPECULATE_AFTER_MS\)\) \{\s*const span = utteranceSpan\(.*?\);\s*if \(span\) \{\s*const key = clipKey\(span\);\s*const analysis = early\.start\(key,/,
-  );
-  const finalize = loop.slice(loop.indexOf("const finalize = async () => {"));
-  assert.match(finalize.slice(0, 2000), /const ready = early\.take\(key\);\s*const analysis = ready \?\? analyseClip\(span\);/);
-  assert.match(loop, /cancel: \(\) => \{\s*teardown\(\);\s*early\.clear\(\);/);
 });

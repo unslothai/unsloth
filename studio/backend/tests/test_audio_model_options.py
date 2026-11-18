@@ -70,7 +70,7 @@ def test_a_model_not_yet_downloaded_reads_its_spec_from_the_hub(client, calls):
     omni = "audio-cpp/audio.cpp-gguf/OmniVoice-GGUF"
     res = client.get(URL, params = {"model": omni})
     assert res.status_code == 200
-    assert calls == [(omni, False), (omni, True)]
+    assert res.json() == {"model": omni, "audio_family": "kokoro_tts", "audio_options": OPTIONS}
 
 
 def test_an_unknown_or_unsupported_model_is_404(client, calls, monkeypatch):

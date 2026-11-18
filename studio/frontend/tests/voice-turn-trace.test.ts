@@ -5,7 +5,6 @@
 // turn.* marks, so a latency baseline can be read off the trace.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -17,11 +16,6 @@ import {
   settleVoiceTurn,
 } from "../src/features/chat/voice/voice-loop-bridge.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
-
-const src = (path: string) => readFileSync(new URL(`../src/features/chat/${path}`, import.meta.url), "utf8");
-const adapter = src("adapters/studio-voice-loop-adapter.ts");
-const engine = src("voice/voice-engine.tsx");
-const player = src("hooks/use-tts-player.ts");
 
 test.beforeEach(() => {
   endVoiceTurns();
@@ -73,67 +67,6 @@ test("settling another turn's id leaves the live one", () => {
   settleVoiceTurn("stale");
   settleVoiceTurn(null);
   assert.equal(liveVoiceTurn(), "live");
-});
-
-test("a continuation keeps the id of the fragment it joins", () => {
-  assert.match(adapter, /turnId \?\?= heldTurn\?\.turnId \?\? newTurnId\(\);/);
-  // Held, the fragment remembers it; flushed alone, it is sent under it.
-  assert.match(adapter, /heldTurn = \{\s*text: transcript,\s*at: heldTurn\?\.at \?\? performance\.now\(\),\s*turnId,\s*\};/);
-  assert.match(adapter, /const heldId = heldTurn\.turnId \?\? undefined;[\s\S]*?submitLater\(text, \{ turnId: heldId \}\)/);
-  // Both ways speech starts open the turn: plain speech and a committed barge-in.
-  assert.match(adapter, /const markSpeechStarted = \(\) => \{\s*heardSpeech = true;\s*startTurn\(\);/);
-  assert.equal(adapter.match(/markSpeechStarted\(\);/g)?.length, 2);
-});
-
-test("the adapter marks each stage of a spoken turn", () => {
-  for (const mark of ["turn.speechEnd", "turn.vadDone", "turn.transcript", "turn.judgeDone", "turn.confirmed"]) {
-    assert.ok(adapter.includes(`voiceTrace("${mark}", { turnId`), mark);
-  }
-  assert.match(adapter, /voiceTrace\("turn\.confirmed", \{ turnId, early: soundedFinished \}\);\s*submitLater\(transcript, \{ turnId: turnId \?\? undefined, confirmedEarly: soundedFinished \}\);/);
-});
-
-test("the bridge's submit reaches the engine as a spoken send, never a typed one", () => {
-  assert.match(engine, /registerVoiceSubmit\(\(text, meta\) => \{\s*submitTranscript\(text, false, meta\);/);
-  assert.match(engine, /if \(typed\) endTurns\("typed"\);\s*else if \(text\) noteVoiceTurn\(meta\?\.turnId\);/);
-});
-
-test("the chat request is marked where a run starts, not where a message is only appended", () => {
-  assert.match(engine, /markChatSent\(\);\s*composer\.send\(\);/);
-  assert.match(engine, /markChatSent\(\);\s*t\.startRun\(\{ parentId: last\.id \}\);/);
-  assert.doesNotMatch(engine, /markChatSent\(\);\s*composer\.send\(\{ startRun: false \}\)/);
-  assert.match(engine, /beginStreamRef\.current\(\{ turnId: liveVoiceTurn\(\) \?\? undefined \}\)/);
-});
-
-test("every way a turn ends without audio is recorded with its reason", () => {
-  const reasons = new Set([
-    ...[...engine.matchAll(/endTurns\("(\w+)"/g)].map((m) => m[1]),
-    ...[...(engine + player).matchAll(/"turn\.end", \{ turnId: [^,]+, reason: "(\w+)" \}/g)].map((m) => m[1]),
-  ]);
-  assert.deepEqual([...reasons].sort(), ["barged", "cancelled", "noTts", "superseded", "typed"]);
-  // A run that never starts lets its utterance's id go, so the next utterance is traced as its own turn.
-  assert.equal(engine.match(/dropUnsentTurn\(\);/g)?.length, 3);
-  // A cut reply ends only its own turn: the utterance that cut it is the next one.
-  assert.match(engine, /endTurns\("barged", true\)/);
-  for (const stop of ["const turnOff = useCallback", "const threadReset = useCallback", "engine.stopSpeaking"]) {
-    const at = engine.indexOf(stop);
-    assert.ok(at >= 0, stop);
-    assert.ok(engine.slice(at, at + 600).includes('endTurns("cancelled")'), stop);
-  }
-});
-
-test("the first token is marked once per turn, with the poll's resolution", () => {
-  // Sampled by the 150 ms stream poll: it can be up to that late, which the event says.
-  assert.match(engine, /if \(live && text && _firstTokenTurn !== live\) \{\s*_firstTokenTurn = live;\s*voiceTrace\("turn\.firstToken", \{ turnId: live, approxMs: 150 \}\);/);
-});
-
-test("the player marks the first chunk, each request and response, and the first audible sample", () => {
-  for (const mark of ["turn.firstChunk", "turn.ttsSent", "turn.ttsReceived", "turn.firstAudible"]) {
-    assert.ok(player.includes(`"${mark}"`), mark);
-  }
-  // Reply clips and the chat model's own clips end the turn; asides do not.
-  assert.equal(player.match(/markAudible\(st, schedule\(/g)?.length, 1);
-  assert.match(player, /const start = schedule\(buffer, text, entries\);[\s\S]{0,200}markAudible\(st, start\);/);
-  assert.doesNotMatch(player, /tts\.aside", \{ text: said, cached \}\);\s*markAudible/);
 });
 
 type Player = {

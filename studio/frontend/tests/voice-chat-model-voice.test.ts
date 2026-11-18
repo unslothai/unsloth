@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { joinWavBase64, pcmWavBase64 } from "../src/features/chat/utils/wav-chunks.ts";
@@ -172,17 +171,4 @@ test("the speaker resets only when crossing to or from the chat model's voice", 
   assert.equal(speakerCarriesOver(VOICE_CHAT_MODEL_VOICE, "audiocpp-kokoro"), false);
   assert.equal(speakerCarriesOver("audiocpp-kokoro", "audiocpp-other"), true);
   assert.equal(speakerCarriesOver(VOICE_CHAT_MODEL_VOICE, VOICE_CHAT_MODEL_VOICE), true);
-});
-
-test("the reply's player WAV is joined once the stream ends, never swapped mid-play", () => {
-  const adapter = readFileSync(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url), "utf8");
-  assert.match(adapter, /if \(Boolean\(chunk\.choices\?\.\[0\]\?\.finish_reason\) && joinSpokenPart\(\)\) \{/);
-  assert.doesNotMatch(adapter, /spokenCount & \(spokenCount - 1\)/);
-  assert.ok((adapter.match(/joinSpokenPart\(\);/g) ?? []).length >= 2);
-});
-
-test("the chat model's voice names the selected chat model, kept slot or primary", () => {
-  const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
-  assert.match(player, /const model = isChatModelVoice\(selectedVoiceModelId\) \? params\.checkpoint : selectedVoiceModelId;/);
-  assert.match(player, /generateStudioTtsClip\(spoken, signal, \{\s*model,/);
 });

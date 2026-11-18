@@ -304,12 +304,18 @@ def test_runtime_bias_rules():
 
 def test_hand_feature_layout_is_fixed():
     f = vm.hand_features("write a poem", "no wait", 1.0)
-    assert len(f) == 21 + len(vm._CUE_WORDS)
+    assert len(f) == 21 + 34
     assert f[9] == 1.0 and f[13] == 1.0 and f[17] == 1.0
 
 
-def test_interject_unpickler_maps_the_training_class():
-    assert vm._InterjectUnpickler.find_class(None, "train_tfidf", "Model") is vm._InterjectTfidf
+def test_a_model_pickled_as_train_tfidf_loads_for_interject(tmp_path, monkeypatch):
+    pytest.importorskip("sklearn")
+    monkeypatch.delenv("UNSLOTH_VOICE_DECISION_CHECKPOINT", raising = False)
+    _write_trained_interject(tmp_path / "interject")
+    models = vm.VoiceModels(tmp_path)
+    assert models.available("interject") is True
+    verdict = models.interject("write a poem about the sea", "no wait make it about mountains")
+    assert verdict["action"] == "restart"
 
 
 def _write_trained_interject(root: Path) -> None:
@@ -425,9 +431,10 @@ class _FakeSession:
 class _FakeTokenizer:
     def __init__(self, path):
         self.max = None
+        self.direction = "right"
 
-    def enable_truncation(self, n):
-        self.max = n
+    def enable_truncation(self, n, direction = "right"):
+        self.max, self.direction = n, direction
 
     def encode(self, text):
         words, ids, offsets, pos = text.split(), [], [], 0
@@ -436,7 +443,9 @@ class _FakeTokenizer:
             ids.append(len(ids) + 5)
             offsets.append((a, a + len(w)))
             pos = a + len(w)
-        ids, offsets = ids[: self.max], offsets[: self.max]
+        if self.max is not None:
+            keep = slice(-self.max, None) if self.direction == "left" else slice(None, self.max)
+            ids, offsets = ids[keep], offsets[keep]
         return type("E", (), {"ids": ids, "attention_mask": [1] * len(ids), "offsets": offsets})()
 
 
@@ -628,17 +637,98 @@ def test_voice_pickles_refuse_classes_that_open_files(tmp_path, module, name):
     assert target.read_text(encoding = "utf-8") == "keep me"
 
 
-def test_the_turn_judges_keep_the_end_of_a_long_transcript():
-    import inspect
+class _TailSession:
+    """Stands in for the judge's onnxruntime session: class 1 only when the window fed in holds token 104, the transcript's last word."""
 
-    from core.inference import voice_models
+    def get_inputs(self):
+        return [type("I", (), {"name": "input_ids"})(), type("I", (), {"name": "attention_mask"})()]
 
-    assert 'enable_truncation(JUDGE_MAX_LENGTH, direction = "left")' in inspect.getsource(
-        voice_models._OnnxJudge
-    )
-    torch_judge = next(
-        c
-        for c in vars(voice_models).values()
-        if inspect.isclass(c) and getattr(c, "backend", None) == "modernbert"
-    )
-    assert 'self.tok.truncation_side = "left"' in inspect.getsource(torch_judge)
+    def run(self, _outputs, feed):
+        import numpy as np
+
+        ends = 104 in feed["input_ids"][0]
+        return [np.array([[0.0, 2.0 if ends else -2.0]], dtype = np.float32)]
+
+
+class _HFTokenizer:
+    """transformers-style: called on a batch, cut on the side truncation_side names (right by default)."""
+
+    truncation_side = "right"
+
+    def __call__(self, texts, truncation, max_length, return_tensors):
+        import numpy as np
+
+        tok = _FakeTokenizer(None)
+        if truncation:
+            tok.enable_truncation(max_length, direction = self.truncation_side)
+        ids = tok.encode(texts[0]).ids
+        return {
+            "input_ids": np.array([ids], dtype = np.int64),
+            "attention_mask": np.ones((1, len(ids)), dtype = np.int64),
+        }
+
+
+class _HFModel:
+    def eval(self):
+        return self
+
+    def __call__(self, input_ids, attention_mask):
+        import numpy as np
+
+        logits = np.array([[0.0, 2.0 if 104 in input_ids[0] else -2.0]], dtype = np.float32)
+        return type("Out", (), {"logits": type("L", (), {"float": lambda s: logits})()})()
+
+
+@pytest.mark.parametrize("backend", ["onnx", "modernbert"])
+def test_the_turn_judges_keep_the_end_of_a_long_transcript(tmp_path, monkeypatch, backend):
+    import contextlib
+    import sys
+    import types
+
+    import numpy as np
+
+    # 100 words are tokens 5..104: a 64-token window that keeps the end of the transcript holds token 104.
+    text = " ".join(f"w{i}" for i in range(100))
+    monkeypatch.delenv("UNSLOTH_VOICE_DECISION_CHECKPOINT", raising = False)
+    if backend == "onnx":
+        weights = tmp_path / "judge" / "models" / "modernbert_full"
+        (weights / "onnx").mkdir(parents = True)
+        (weights / "onnx" / "model_int8.onnx").write_bytes(b"")
+        (weights / "tokenizer.json").write_text("{}")
+        monkeypatch.setitem(
+            sys.modules,
+            "tokenizers",
+            types.SimpleNamespace(Tokenizer = types.SimpleNamespace(from_file = _FakeTokenizer)),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "onnxruntime",
+            types.SimpleNamespace(
+                SessionOptions = lambda: types.SimpleNamespace(intra_op_num_threads = 0),
+                InferenceSession = lambda path, so, providers: _TailSession(),
+            ),
+        )
+    else:
+        (tmp_path / "judge" / "models" / "modernbert_base").mkdir(parents = True)
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            types.SimpleNamespace(
+                set_num_threads = lambda n: None,
+                no_grad = contextlib.nullcontext,
+                softmax = lambda x, dim: np.exp(x) / np.exp(x).sum(axis = dim, keepdims = True),
+            ),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "transformers",
+            types.SimpleNamespace(
+                AutoTokenizer = types.SimpleNamespace(from_pretrained = lambda d: _HFTokenizer()),
+                AutoModelForSequenceClassification = types.SimpleNamespace(
+                    from_pretrained = lambda d, attn_implementation: _HFModel()
+                ),
+            ),
+        )
+    models = vm.VoiceModels(tmp_path)
+    assert models.backend("judge") == backend
+    assert models.judge(text) == pytest.approx(0.8808, abs = 1e-4)

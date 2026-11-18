@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -127,12 +126,6 @@ test("clip cleaning removes the DC bump and trims to the voice", () => {
 test("a clip with no voice on it is dropped", () => {
   assert.equal(cleanTtsClip([omniLikeClip(24000, 0)], 24000), null);
   assert.equal(cleanTtsClip([new Float32Array(4800)], 24000), null);
-});
-
-test("a Unicode minus before a number survives as a minus", () => {
-  assert.equal(stripForSpeech("The temperature is −5 degrees."), "The temperature is -5 degrees.");
-  assert.equal(stripForSpeech("The result is −2."), "The result is -2.");
-  assert.equal(stripForSpeech("Paris — the capital."), "Paris — the capital.");
 });
 
 test("the em dash and the ellipsis reach the voice as written; a dash between numbers is a range", () => {

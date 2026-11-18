@@ -4,7 +4,6 @@
 // Phase 4: when a heard cut is taken, where it is read, how it is saved and undone.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { modelVisibleMessage, withHeardCut } from "../src/features/chat/api/mcp-image.ts";
@@ -15,34 +14,12 @@ import {
 } from "../src/features/chat/voice/voice-loop-bridge.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-const src = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
-const engine = src("../src/features/chat/voice/voice-engine.tsx");
-const adapter = src("../src/features/chat/api/chat-adapter.ts");
-
 const REPLY = "Paris is the capital. It sits on the Seine.";
 const message = (metadata?: unknown) => ({
   id: "a1",
   role: "assistant",
   metadata,
   content: [{ type: "text", text: REPLY }],
-});
-
-test("the snapshot is taken before the pause stops the clock", () => {
-  const handler = engine.slice(engine.indexOf("registerVoiceBargeIn(() => {"));
-  const snap = handler.indexOf("heardSnapshotRef.current = takeHeardSnapshot();");
-  const pause = handler.indexOf("pausePlayback();");
-  assert.ok(snap > 0 && snap < pause);
-  // A false interruption drops it; a confirmed one records the cut before the turn is sent.
-  assert.match(engine, /registerVoiceBargeAbort\(\(\) => \{[\s\S]*?heardSnapshotRef\.current = null;[\s\S]*?resumePlayback\(\);/);
-  // The cut is recorded where the barge-in takes effect, so an ignored or queued one cuts nothing.
-  assert.match(engine, /registerVoiceSubmit\(\(text, meta\) => \{\s*submitTranscript\(text, false, meta\);/);
-  assert.match(
-    engine,
-    /if \(cutRun \|\| isSpeakingRef\.current \|\| isPlayingRef\.current\) heardCutRecorderRef\.current\(\);\s*else heardSnapshotRef\.current = null;/,
-  );
-  assert.match(engine, /heardSnapshotRef\.current = null;\s*\/\/ Nothing cut the reply the barge-in held[^\n]*\n\s*resumePlayback\(\);/);
-  // Only the reply still at the tail: a snapshot from an earlier reply never cuts it later.
-  assert.match(engine, /if \(!msg \|\| msg\.id !== snap\.messageId\) return;/);
 });
 
 test("the next request is cut from memory while the old run is still cancelling", () => {
@@ -63,15 +40,6 @@ test("the next request is cut from memory while the old run is still cancelling"
 test("a playback-only barge-in is cut too: nothing depends on a run being cancelled", () => {
   const done = { ...message({ custom: { voiceHeard: { offset: 0, at: 1 } } }), status: { type: "complete" } };
   assert.equal(withHeardCut(done).content[0].text, "");
-  // Recorded from the snapshot alone; only a finished reply heard to its end is skipped.
-  assert.match(engine, /if \(!cut \|\| \(settled && cut\.offset >= text\.trimEnd\(\)\.length\)\) return;/);
-});
-
-test("every request path reads the cut, pruning included, so the token count matches the send", () => {
-  assert.match(adapter, /function toOpenAIMessages\([\s\S]*?\{\s*message = modelVisibleMessage\(message\);/);
-  assert.match(adapter, /isAbandonedAssistantTurn\(withHeardCut\(message\), includeReasoningContent\)/);
-  // The count and the send both prune, then serialize through toOpenAIMessages.
-  assert.equal(adapter.match(/pruneOutboundHistory\(messages, /g)?.length, 2);
 });
 
 type Store = typeof import("../src/features/chat/utils/update-thread-message.ts");
@@ -139,36 +107,6 @@ test("a protected row rolls back and is not retried", async () => {
   );
   assert.deepEqual(t.custom(), { kept: 1 });
   assert.equal(saves.length, 1);
-  // The engine traces the refusal and keeps the cut in memory; only another failure is tried again.
-  const save = engine.slice(engine.indexOf("const saveHeardCut"), engine.indexOf("const recordHeardCut"));
-  const onError = save.slice(save.indexOf("(error: unknown) =>"), save.lastIndexOf("    tick();"));
-  assert.match(onError, /voice\.heardSaveRefused/);
-  assert.match(onError, /if \(!refused\) later\(/);
-  assert.doesNotMatch(onError, /clearPendingHeardCut/);
-});
-
-test("a cut whose thread is not on screen waits for it instead of being dropped", () => {
-  const save = engine.slice(engine.indexOf("const saveHeardCut"), engine.indexOf("const recordHeardCut"));
-  assert.match(save, /if \(!thread\.getState\(\)\.messages\.some\(\(m\) => m\.id === messageId\)\) \{\s*later\(\d+\);\s*return;/);
-  // Every wait counts against one budget, so a deleted reply stops trying.
-  assert.match(save, /waited \+= ms;\s*if \(waited <= HEARD_SAVE_PATIENCE_MS\) setTimeout\(tick, ms\);\s*else \{[^}]*?voiceTrace\("voice\.heardSaveGaveUp", \{ messageId \}\);\s*done\(\);/);
-  assert.doesNotMatch(save, /setTimeout\(tick, 500\)/);
-});
-
-test("one save loop runs per reply, and a cut taken while it saved goes next", () => {
-  const save = engine.slice(engine.indexOf("const saveHeardCut"), engine.indexOf("const recordHeardCut"));
-  assert.match(save, /if \(_heardSaving\.has\(messageId\)\) return;\s*_heardSaving\.add\(messageId\);/);
-  // Every way the loop ends lets the next barge-in start one.
-  assert.match(save, /if \(!cut\) \{\s*done\(\);\s*return;/);
-  assert.match(save, /if \(pendingHeardCut\(messageId\) !== cut\) return tick\(\);\s*clearPendingHeardCut\(messageId\);\s*done\(\);/);
-  assert.match(save, /if \(!refused\) later\([^\n]*\);\s*else done\(\);/);
-});
-
-test("a barge-in dropped by a Stop or reset gives the paused reply back", () => {
-  const adapterSrc = src("../src/features/chat/adapters/studio-voice-loop-adapter.ts");
-  const drops = [...adapterSrc.matchAll(/voiceTrace\("stt\.drop", \{ transcript, why: "cleared" \}\);([\s\S]*?)finish\("stopped"\);/g)];
-  assert.equal(drops.length, 2);
-  for (const [, between] of drops) assert.match(between, /if \(bargedIn\) requestVoiceBargeAbort\(\);/);
 });
 
 test("a failed save keeps an edit made while it was in flight", async () => {
@@ -232,6 +170,41 @@ test("editing a cut reply drops its cut, saved and pending", async () => {
   setPendingHeardCut("a1", { offset: 5 });
   await mod.updateThreadMessage({ thread: t, messageId: "a1", remoteId: "th", newText: "Rome is the capital.", isIncognito: false });
   assert.deepEqual(pendingHeardCut("a1"), { offset: 5 });
+  clearPendingHeardCut("a1");
+});
+
+test("a reply edit that fails to save gives back the cut that pointed into its old text", async () => {
+  const { mod } = storeWith(async () => {
+    throw new Error("offline");
+  });
+  let data = {
+    headId: "a1",
+    messages: [
+      {
+        parentId: "u1",
+        message: {
+          id: "a1",
+          role: "assistant",
+          content: [{ type: "text", text: REPLY }],
+          metadata: { custom: { voiceHeard: { offset: 21, at: 1 } } },
+        },
+      },
+    ],
+  };
+  const t = { export: () => data as never, import: (next: unknown) => { data = next as typeof data; } };
+  setPendingHeardCut("a1", { offset: 21 });
+  const error = console.error;
+  console.error = () => {};
+  try {
+    await assert.rejects(
+      mod.updateThreadMessage({ thread: t, messageId: "a1", remoteId: "th", newText: "Rome is the capital.", isIncognito: false }),
+      /offline/,
+    );
+  } finally {
+    console.error = error;
+  }
+  assert.equal((data.messages[0].message.content[0] as { text: string }).text, REPLY);
+  assert.deepEqual(pendingHeardCut("a1"), { offset: 21 });
   clearPendingHeardCut("a1");
 });
 

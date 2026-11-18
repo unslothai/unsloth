@@ -153,13 +153,3 @@ test("the approval aside still yields to speech that is really audible", () => {
   assert.equal(asideBlocked(r.ledger, { patient: true, replySynth: false }), true);
   assert.equal(r.ledger.size, 1);
 });
-
-test("the player routes stand-ins, pauses and patient asides through the ledger", async () => {
-  const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
-  assert.match(src, /asideBlocked\(clipsRef\.current, \{ patient, replySynth: realSynthRef\.current \}\)/);
-  assert.match(src, /play\(asides\(\)\.get\(standIn\)!, true, standIn\)/);
-  assert.match(src, /heldRef\.current \|\| \(pausedRef\.current && !patient\)/);
-  assert.equal((src.match(/setIsPlaying\(true\)/g) ?? []).length, 1);
-  assert.match(src, /onBusy: \(\) => setIsPlaying\(true\)/);
-});

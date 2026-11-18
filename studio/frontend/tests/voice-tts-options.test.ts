@@ -4,8 +4,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
-
 const { changedOptionCount, voiceModeOptionGroups, voiceModeRequestOptions } = await import(
   "../src/features/chat/voice/voice-tts-options.ts"
 );
@@ -79,35 +77,4 @@ test("what voice mode sends drops the options it owns and sends nothing when not
 test("only values away from the default count as changed", () => {
   assert.equal(changedOptionCount(OMNIVOICE, { guidance_scale: 2, denoise: false, speed: 1.5 }), 2);
   assert.equal(changedOptionCount(OMNIVOICE, undefined), 0);
-});
-
-test("voice mode sends the saved options with every sentence, and the picked speaker wins the voice", () => {
-  const adapter = readSrc("features/chat/adapters/studio-speech-synthesis-adapter.ts");
-  assert.match(adapter, /\.\.\.options\?\.audioOptions,\s*\.\.\.\(options\?\.speaker \? \{ voice: options\.speaker \} : \{\}\)/);
-  assert.match(adapter, /\.\.\.ttsAudioOptions\(options\),/);
-  const player = readSrc("features/chat/hooks/use-tts-player.ts");
-  assert.match(player, /audioOptions: voiceModeTtsOptions\(selectedVoiceModelId\),/);
-  // A filler cached at the old speed must not play after a change.
-  const key = player.slice(player.indexOf("function currentVoiceKey"), player.indexOf("const ASIDE_MAX_LATE_MS"));
-  assert.match(key, /voiceModeTtsOptions\(selectedVoiceModelId\)/);
-  // The chat model's own voice takes no speech-model options.
-  assert.match(player, /if \(!modelId \|\| isChatModelVoice\(modelId\)\) return undefined;/);
-});
-
-test("the voice and its options are read before the model loads, from the studio route", () => {
-  const selector = readSrc("components/assistant-ui/voice-model-selector.tsx");
-  assert.match(selector, /const spec = useVoiceModelSpec\(modelId, loaded\);/);
-  assert.doesNotMatch(selector, /useBuiltinSpeakers\(loaded \?/);
-  assert.match(selector, /<VoiceSoundControls/);
-  const hook = readSrc("features/chat/voice/use-voice-model-spec.ts");
-  assert.match(hook, /\/api\/inference\/audio\/model-options\?model=/);
-  const settings = readSrc("features/settings/components/voice-mode-switches.tsx");
-  assert.match(settings, /<SpeakingVoiceRow \/>/);
-  assert.match(settings, /<VoiceSoundControls/);
-});
-
-test("saved options are sanitized on load and kept apart from the Audio page's", () => {
-  const store = readSrc("features/settings/stores/voice-settings-store.ts");
-  assert.match(store, /voiceTtsOptions: normalizeVoiceTtsOptions\(saved\?\.voiceTtsOptions\),/);
-  assert.doesNotMatch(readSrc("features/chat/voice/voice-tts-options.ts"), /saveAudioOptionValues|readAudioOptionValues/);
 });

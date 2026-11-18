@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -108,12 +106,6 @@ test("a streamed reply never queues a sentence the finished text splits differen
       assert.deepEqual(complete, final.slice(0, complete.length), `${reply} @ ${i}`);
     }
   }
-});
-
-test("the paused player does not resume itself when the next clip is scheduled", () => {
-  const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
-  const schedule = player.slice(player.indexOf("const schedule = useCallback("));
-  assert.match(schedule.slice(0, 600), /if \(ctx\.state !== "running" && !pausedRef\.current[^)]*\)\s*void ctx\.resume\(\)/);
 });
 
 test("inline code reads as a person says it", () => {

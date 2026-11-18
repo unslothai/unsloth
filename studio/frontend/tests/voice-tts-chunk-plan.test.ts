@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -117,11 +115,6 @@ test("a clause head is followed by the comma pause; a sentence is not", () => {
   for (const text of ["The capital is Canberra.", "Really?", "Wait!", "1,000", "Done", ""]) {
     assert.equal(pauseAfterChunk(text), 0, text);
   }
-});
-
-test("the player adds the pause after the clip it just scheduled", () => {
-  const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
-  assert.match(player, /const start = schedule\(buffer, text, entries\);\s*\/\/[^\n]*\n\s*if \(start !== null\) playHeadRef\.current \+= pauseAfterChunk\(text\) \/ 1000;/);
 });
 
 test("the comma inside a date is not a clause cut", () => {

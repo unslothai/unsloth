@@ -6,9 +6,8 @@ import test from "node:test";
 
 import { createHeldEdit } from "../src/features/chat/voice/held-edit.ts";
 
-function loop() {
-  let box = "";
-  const sent: string[] = [];
+test("a claimed fragment is not auto-sent until the user sends it", () => {
+  let box = "could you tell me just like";
   const events: string[] = [];
   const captions: boolean[] = [];
   const edit = createHeldEdit({
@@ -16,108 +15,24 @@ function loop() {
     onChange: (owned) => captions.push(owned),
     trace: (event) => events.push(event),
   });
-  let held: string | null = null;
-  let timer: (() => void) | null = null;
-  const send = (text: string) => {
-    sent.push(text);
-    box = "";
-  };
-  return {
-    edit,
-    sent,
-    events,
-    captions,
-    get box() {
-      return box;
-    },
-    hear(text: string, judgedUnfinished: boolean) {
-      if (!edit.autoSend()) {
-        box = box ? `${box} ${text}` : text;
-        return;
-      }
-      const turn = held ? `${held} ${text}` : text;
-      if (judgedUnfinished) {
-        held = turn;
-        box = turn;
-        timer = () => {
-          timer = null;
-          if (held === null) return;
-          const t = held;
-          held = null;
-          send(t);
-        };
-        return;
-      }
-      held = null;
-      timer = null;
-      send(turn);
-    },
-    click() {
-      if (held !== null && edit.claim(held)) held = null;
-    },
-    fireTimer() {
-      timer?.();
-    },
-    type(text: string) {
-      box = text;
-    },
-    pressEnter() {
-      const t = box;
-      send(t);
-      edit.sent();
-    },
-  };
-}
-
-test("an unclicked hold still sends itself when the timer fires", () => {
-  const l = loop();
-  l.hear("could you tell me just like", true);
-  l.fireTimer();
-  assert.deepEqual(l.sent, ["could you tell me just like"]);
-});
-
-test("a click during the hold stops the timer sending; Enter sends; the next turn auto-sends", () => {
-  const l = loop();
-  l.hear("could you tell me just like", true);
-  l.click();
-  assert.equal(l.edit.owned, true);
-  l.fireTimer();
-  assert.deepEqual(l.sent, []);
-  assert.equal(l.box, "could you tell me just like");
-
-  l.hear("the weather", false);
-  assert.deepEqual(l.sent, []);
-  assert.equal(l.box, "could you tell me just like the weather");
-
-  l.type("could you tell me the weather in Paris");
-  l.pressEnter();
-  assert.deepEqual(l.sent, ["could you tell me the weather in Paris"]);
-  assert.equal(l.edit.owned, false);
-
-  l.hear("thanks", false);
-  assert.deepEqual(l.sent, ["could you tell me the weather in Paris", "thanks"]);
-  assert.deepEqual(l.events, ["hold.userEdit", "hold.userEditEnd"]);
-  assert.deepEqual(l.captions, [true, false]);
-});
-
-test("clearing the box hands the turn back to the loop", () => {
-  const l = loop();
-  l.hear("so what about", true);
-  l.click();
-  l.type("");
-  l.hear("never mind, hello", false);
-  assert.deepEqual(l.sent, ["never mind, hello"]);
-  assert.equal(l.edit.owned, false);
+  assert.equal(edit.claim(box), true);
+  assert.equal(edit.autoSend(), false);
+  box = "could you tell me the weather in Paris";
+  assert.equal(edit.autoSend(), false);
+  edit.sent();
+  assert.equal(edit.owned, false);
+  assert.equal(edit.autoSend(), true);
+  assert.deepEqual(events, ["hold.userEdit", "hold.userEditEnd"]);
+  assert.deepEqual(captions, [true, false]);
 });
 
 test("a click with nothing held changes nothing", () => {
-  const l = loop();
-  l.click();
-  assert.equal(l.edit.owned, false);
-  assert.equal(l.edit.claim("   "), false);
-  l.hear("hello", false);
-  assert.deepEqual(l.sent, ["hello"]);
-  assert.deepEqual(l.events, []);
+  const events: string[] = [];
+  const edit = createHeldEdit({ readBox: () => "", trace: (event) => events.push(event) });
+  assert.equal(edit.claim("   "), false);
+  assert.equal(edit.owned, false);
+  assert.equal(edit.autoSend(), true);
+  assert.deepEqual(events, []);
 });
 
 test("a second click while editing is not a second claim", () => {
@@ -128,7 +43,7 @@ test("a second click while editing is not a second claim", () => {
   assert.equal(edit.owned, false);
 });
 
-test("an emptied edit reports itself once, a sent one does not", () => {
+test("an emptied edit hands the turn back and reports itself once, a sent one does not", () => {
   let box = "draft";
   let cleared = 0;
   const edit = createHeldEdit({ readBox: () => box, onCleared: () => (cleared += 1) });
@@ -136,6 +51,7 @@ test("an emptied edit reports itself once, a sent one does not", () => {
   assert.equal(edit.autoSend(), false);
   box = "";
   assert.equal(edit.autoSend(), true);
+  assert.equal(edit.owned, false);
   assert.equal(edit.autoSend(), true);
   assert.equal(cleared, 1);
   box = "again";

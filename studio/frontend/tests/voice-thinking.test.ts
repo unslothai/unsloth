@@ -5,13 +5,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  SPOKEN_REPLY_INSTRUCTIONS,
   VOICE_CHAT_MODEL_VOICE,
   VOICE_DEFAULT_TTS_MODEL,
   cutAbortsSpeechRequest,
   reasoningForTurn,
-  withSpokenReplyInstructions,
-} from "../src/features/chat/voice/voice-models.ts";
+  } from "../src/features/chat/voice/voice-models.ts";
 
 test("a voice turn thinks only when voice mode was asked to", () => {
   const typed = { voiceModeOn: false, voiceThinking: false };
@@ -25,19 +23,6 @@ test("a voice turn thinks only when voice mode was asked to", () => {
   assert.equal(reasoningForTurn({ enabled: true, voiceThinking: true, ...spoken }), true);
   // The voice switch never turns thinking on for a chat that has it off.
   assert.equal(reasoningForTurn({ enabled: false, voiceThinking: true, ...spoken }), false);
-});
-
-test("a turn sent in voice mode is told to answer the way it will be heard", () => {
-  // Typed chat is sent exactly what it was.
-  assert.equal(withSpokenReplyInstructions("Be kind.", false), "Be kind.");
-  assert.equal(withSpokenReplyInstructions("", false), "");
-  // The user's own instructions come first, so theirs are read before how to say it.
-  assert.equal(
-    withSpokenReplyInstructions("Be kind.", true),
-    `Be kind.\n\n${SPOKEN_REPLY_INSTRUCTIONS}`,
-  );
-  assert.equal(withSpokenReplyInstructions("", true), SPOKEN_REPLY_INSTRUCTIONS);
-  assert.match(SPOKEN_REPLY_INSTRUCTIONS, /read aloud/);
 });
 
 test("cutting a reply leaves an audio.cpp sentence to finish", () => {

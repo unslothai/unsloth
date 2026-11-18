@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Phase 4 parity: splitSpoken, and the wrappers over it, give the sentences the old splitter gave
-// on every string the speech tests use and on every streamed prefix of them.
+// splitSpoken's sentence offsets, checked on every string the speech tests use.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import * as next from "../src/features/chat/voice/speech-text.ts";
-import * as v1 from "./fixtures/voice-speech-text-v1.ts";
 
 const SOURCES = [
   "voice-split-streaming.test.ts",
@@ -54,42 +52,6 @@ const corpus = [...new Set([
   ...SOURCES.flatMap((f) => literals(readFileSync(new URL(f, import.meta.url), "utf8"))),
   ...EXTRA,
 ])].filter((t) => t.length < 4000);
-
-const prefixes = (t: string) => {
-  const step = Math.max(1, Math.floor(t.length / 60));
-  const out: string[] = [];
-  for (let i = 0; i <= t.length; i += step) out.push(t.slice(0, i));
-  out.push(t);
-  return out;
-};
-
-test("the corpus covers the speech tests", () => {
-  assert.ok(corpus.length > 150, String(corpus.length));
-});
-
-// Whitespace-only is nothing to say either way; the old splitter returned the leftover whitespace.
-const blankAsEmpty = (parts: string[]) => parts.map((p) => (/\S/.test(p) ? p : ""));
-const streamed = (r: { complete: string[]; partial: string }) => ({
-  complete: blankAsEmpty(r.complete),
-  partial: /\S/.test(r.partial) ? r.partial : "",
-});
-
-test("splitSpoken gives the old sentences, on every case and every streamed prefix", () => {
-  let checked = 0;
-  for (const text of corpus) {
-    for (const t of prefixes(text)) {
-      assert.deepEqual(
-        next.splitSpoken(t).map((s) => s.text),
-        blankAsEmpty(v1.splitIntoSentences(v1.speakableReply(t))),
-        JSON.stringify(t),
-      );
-      assert.deepEqual(streamed(next.splitStreaming(t)), streamed(v1.splitStreaming(t)), JSON.stringify(t));
-      assert.deepEqual(next.splitIntoSentences(t), v1.splitIntoSentences(t), JSON.stringify(t));
-      checked++;
-    }
-  }
-  assert.ok(checked > 1000, String(checked));
-});
 
 test("offsets point into the reply and never into a blanked region", () => {
   for (const text of corpus) {

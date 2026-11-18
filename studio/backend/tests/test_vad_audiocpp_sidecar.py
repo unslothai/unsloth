@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -168,20 +167,47 @@ def test_only_vad_models_resolve(monkeypatch):
         vad.resolve_vad_model("not a model id at all!!")
 
 
-def test_a_download_drops_the_cached_miss_so_the_next_load_sees_it(monkeypatch):
-    """The load route downloads on a miss and loads again at once; that load must not reuse the miss."""
-    entry = SimpleNamespace(id = PULSEVAD)
-    monkeypatch.setattr(vad, "resolve_vad_model", lambda *a, **k: entry)
-    from core.inference import audio_cpp_backend
+def test_a_load_right_after_a_download_finds_the_model_it_fetched(monkeypatch, tmp_path):
+    """A load straight after a download must find the model the download fetched."""
+    from core.inference import audio_cpp_backend, stt_sidecar
+    from utils import hf_cache_settings
 
+    hub = [acm.RepoFile("PulseVAD-GGUF/pulsevad.gguf", 1024)]
+    # What the local cache lists: nothing until a download has fetched the repo.
+    cache = []
+
+    def list_files(repo_id, folder = "", hf_token = None, *, network = True):
+        return (list(hub), True) if network else (list(cache), False)
+
+    def download_missing(entry, hf_token):
+        cache[:] = hub
+        return True
+
+    launched = []
+
+    def start(model, path, force_cpu = False, max_threads = None):
+        launched.append((model.id, path, force_cpu))
+        return SimpleNamespace(process = SimpleNamespace(poll = lambda: None), stop = lambda: None)
+
+    acm.forget()
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(tmp_path))
+    monkeypatch.setattr(acm, "list_files", list_files)
+    # No header read over the network: the family comes from the file names.
+    monkeypatch.setattr(acm, "read_remote_header", lambda *a, **k: None)
     monkeypatch.setattr(
-        audio_cpp_backend.AudioCppBackend, "_download_missing", staticmethod(lambda *a: True)
+        audio_cpp_backend.AudioCppBackend, "_download_missing", staticmethod(download_missing)
     )
-    miss = (PULSEVAD.lower(), "", False, "", (), "")
-    monkeypatch.setitem(acm._resolve_cache, miss, (time.monotonic(), None))
+    monkeypatch.setattr(clip.audio_cpp_files, "materialize", lambda e: "pulsevad.gguf")
+    monkeypatch.setattr(clip.AudioCppServer, "start", staticmethod(start))
+    monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
+    sidecar = vad.AudioCppVadSidecar()
 
-    assert vad.AudioCppVadSidecar().download(PULSEVAD) == PULSEVAD
-    assert miss not in acm._resolve_cache
+    with pytest.raises(clip.ClipModelNotDownloadedError):
+        sidecar.load(PULSEVAD)
+    assert sidecar.download(PULSEVAD) == PULSEVAD
+    assert sidecar.load(PULSEVAD) == PULSEVAD
+    assert sidecar.loaded_model == PULSEVAD
+    assert launched == [(PULSEVAD, "pulsevad.gguf", False)]
 
 
 def test_the_detector_runs_on_the_cpu_while_training_holds_the_gpu(monkeypatch, tmp_path):
@@ -241,48 +267,68 @@ def test_training_admission_frees_a_gpu_placed_detector(monkeypatch, on_cpu):
 
 
 def test_a_detect_keeps_the_server_it_loaded_until_the_run_ends(monkeypatch):
+    """An unload asked for during a clip waits for the clip to finish before it stops the server."""
     import io
     import threading
     import wave
 
-    sidecar = vad.AudioCppVadSidecar()
-    held_during_load = []
+    from core.inference import stt_sidecar
 
-    def lock_free_elsewhere() -> bool:
-        box = []
-        probe = threading.Thread(target = lambda: box.append(sidecar._lock.acquire(blocking = False)))
-        probe.start()
-        probe.join()
-        if box[0]:
-            sidecar._lock.release()
-        return box[0]
+    monkeypatch.setattr(
+        vad,
+        "resolve_vad_model",
+        lambda *a, **k: SimpleNamespace(id = "pulsevad", display_name = "PulseVAD"),
+    )
+    monkeypatch.setattr(clip.audio_cpp_files, "materialize", lambda e: "pulsevad.gguf")
+    monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
+    monkeypatch.delenv("UNSLOTH_VAD_DEBUG_DIR", raising = False)
+    in_run = threading.Event()
+    answer = threading.Event()
+    stopped = []
 
     class Server:
         model_id = "pulsevad"
-        process = type("P", (), {"poll": lambda self: None})()
+        process = SimpleNamespace(poll = lambda: None)
 
         def post_json(self, path, body, timeout):
-            held_during_load.append(not lock_free_elsewhere())
+            in_run.set()
+            answer.wait(10)
             return 200, b'{"segments": [], "sample_rate": 16000}'
 
-    def load(model):
-        held_during_load.append(not lock_free_elsewhere())
-        sidecar._server = Server()
-        return "pulsevad"
+        def stop(self):
+            stopped.append(True)
 
-    monkeypatch.setattr(sidecar, "load", load)
-    monkeypatch.setattr(vad, "_debug_dump", lambda *a: None)
+    monkeypatch.setattr(clip.AudioCppServer, "start", staticmethod(lambda *a, **k: Server()))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(16000)
         w.writeframes(b"\x00\x00" * 1600)
-    result = sidecar.detect(buf.getvalue(), "pulsevad")
-    assert result["model"] == "pulsevad"
-    # The bars travel with the answer, so the browser needs no table of detectors.
-    assert result["bars"] == {"utterance_ms": 300.0, "barge_ms": 200.0}
-    assert held_during_load == [True, True]
+    sidecar = vad.AudioCppVadSidecar()
+    detected, unloaded = [], []
+    clip_thread = threading.Thread(
+        target = lambda: detected.append(sidecar.detect(buf.getvalue(), "pulsevad"))
+    )
+    unload_thread = None
+    clip_thread.start()
+    try:
+        assert in_run.wait(10)
+        unload_thread = threading.Thread(target = lambda: unloaded.append(sidecar.unload()))
+        unload_thread.start()
+        unload_thread.join(timeout = 0.5)
+        # The unload is still waiting behind the clip, so the server has not been stopped.
+        assert unload_thread.is_alive()
+        assert stopped == []
+    finally:
+        answer.set()
+        clip_thread.join(10)
+        if unload_thread is not None:
+            unload_thread.join(10)
+    assert detected[0]["model"] == "pulsevad"
+    assert detected[0]["bars"] == {"utterance_ms": 300.0, "barge_ms": 200.0}
+    assert unloaded == [True]
+    assert stopped == [True]
 
 
 def test_a_download_resolves_the_repo_with_the_callers_token(monkeypatch):

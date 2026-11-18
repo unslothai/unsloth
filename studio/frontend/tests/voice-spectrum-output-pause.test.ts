@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -75,14 +74,4 @@ test("voice off stops the output clock and the next clip restarts it", () => {
   assert.equal(made.filter((n) => n.kind === "clock").length, 2);
   pauseOutputSpectrum();
   pauseOutputSpectrum();
-});
-
-test("turning voice off pauses the output tap", () => {
-  const engine = readFileSync(
-    new URL("../src/features/chat/voice/voice-engine.tsx", import.meta.url),
-    "utf8",
-  );
-  const turnOff = engine.slice(engine.indexOf("const turnOff = useCallback"));
-  const end = turnOff.indexOf("}, [");
-  assert.ok(turnOff.slice(0, end).includes("pauseOutputSpectrum();"));
 });
