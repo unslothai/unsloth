@@ -124,8 +124,11 @@ import {
 import {
   decodeSegment,
   markdownSandboxImageSrc,
+  markdownSandboxVideoSrc,
   sandboxFileForHref,
   sandboxSessionIdFor,
+  sandboxVideoFileForSrc,
+  sandboxVideoType,
   sandboxSessionInSrc,
 } from "./sandbox-files";
 import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
@@ -221,7 +224,7 @@ const STREAMDOWN_IMMEDIATE_UPDATES = {
  * Registering `img` replaces Streamdown's renderer wholesale, so its behaviour is restated here. A sandbox
  * image src carries no auth header and would 401, so it goes through an authed fetch to an object URL.
  */
-const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) {
+const MarkdownStillImage = memo(function MarkdownStillImage(props: ComponentProps<"img">) {
   // `node` is Streamdown's ExtraProps; it must not reach the DOM.
   const {
     src,
@@ -352,6 +355,71 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   );
 });
 
+// Sandbox files are served as octet-stream, so the blob is retyped before the player sees it.
+function SandboxVideo({ url, label }: { url: string; label: string }) {
+  const { ref, state } = useSandboxImage<HTMLSpanElement>(url);
+  const blob = state.status === "loaded" ? state.blob : null;
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (!blob) return;
+    const typed = URL.createObjectURL(new Blob([blob], { type: sandboxVideoType(url.split(/[?#]/)[0]) }));
+    setSrc(typed);
+    return () => {
+      URL.revokeObjectURL(typed);
+      setSrc(null);
+    };
+  }, [blob, url]);
+  return (
+    <span ref={ref} data-streamdown="video-wrapper" className="my-4 block max-w-full">
+      {state.status === "failed" ? (
+        <span className="text-xs text-muted-foreground">Video not available</span>
+      ) : src ? (
+        <video
+          src={src}
+          controls={true}
+          loop={true}
+          playsInline={true}
+          preload="metadata"
+          aria-label={label || "Video"}
+          className="block h-auto max-h-[min(70dvh,620px)] max-w-full rounded-lg"
+        />
+      ) : (
+        <span
+          role="status"
+          aria-busy="true"
+          aria-label="Loading video…"
+          className="block aspect-video w-full max-w-xl rounded-lg bg-muted/20"
+        />
+      )}
+    </span>
+  );
+}
+
+function useSandboxScope() {
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  return { threadId: remoteId ?? activeThreadId ?? undefined, projectId };
+}
+
+const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) {
+  const scope = useSandboxScope();
+  const video = props.src ? markdownSandboxVideoSrc(props.src, scope) : null;
+  return video ? <SandboxVideo url={video} label={props.alt ?? ""} /> : <MarkdownStillImage {...props} />;
+});
+
+function SandboxVideoLink({ href, children }: { href: string; children: ReactNode }) {
+  const video = markdownSandboxVideoSrc(href, useSandboxScope());
+  return video ? (
+    <>
+      <SandboxVideo url={video} label={typeof children === "string" ? children : ""} />
+      {children}
+    </>
+  ) : (
+    <>{children}</>
+  );
+}
+
 const LINK_CLASS =
   "text-foreground underline underline-offset-2 decoration-foreground/40 hover:decoration-foreground transition-colors cursor-pointer";
 
@@ -360,10 +428,15 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
   const file = href ? sandboxFileForHref(href) : null;
   // Only file links subscribe to the chat's scope; links re-render per streamed token.
   if (href && file !== null) {
-    return (
+    const link = (
       <SandboxFileLink href={href} file={file} dom={dom}>
         {children}
       </SandboxFileLink>
+    );
+    return sandboxVideoFileForSrc(href) !== null ? (
+      <SandboxVideoLink href={href}>{link}</SandboxVideoLink>
+    ) : (
+      link
     );
   }
   const backend = href ? protectedBackendPath(href) : null;
