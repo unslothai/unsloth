@@ -696,7 +696,6 @@ function GgufContextLengthSetting({
   return (
     <div className="space-y-1">
       {stacked ? (
-        // Label and value on one row, the slider full width under them, as Max Seq Length.
         <div className="space-y-2">
           <div className="config-row flex min-h-8 items-center">
             {label}
