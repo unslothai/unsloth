@@ -952,8 +952,7 @@ _NAME_SEPARATORS = "-_. /"
 
 
 def _distinct_name_tails(variants: list[GgufVariantInfo]) -> dict[int, str]:
-    """Each file's name past the prefix all of them share, so a dropdown that truncates the end still
-    tells ``Model-HIGH.gguf`` from ``Model-LOW.gguf``. Empty when nothing is shared or a tail is empty."""
+    """Each name past the shared prefix (``HIGH`` in ``Model-HIGH.gguf``); empty when none is shared."""
     stems = [variant.filename.replace("\\", "/").rsplit(".", 1)[0] for variant in variants]
     shared = os.path.commonprefix(stems)
     cut = max(shared.rfind(sep) for sep in _NAME_SEPARATORS) + 1
@@ -976,7 +975,6 @@ def _apply_gguf_display_labels(
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
     ambiguous = len(unknown_variants) > 1
-    # Custom folders only: Hub repos and HF caches keep their full filenames.
     unknown_tails = _distinct_name_tails(unknown_variants) if ambiguous and name_tails else {}
 
     # The bpw modifier reads perfectly well on its own, so a key that is only the token plus its bpw suffix is NOT path-qualified and needs no scope label.

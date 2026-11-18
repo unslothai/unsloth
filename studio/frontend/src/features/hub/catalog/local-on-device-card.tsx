@@ -314,7 +314,6 @@ export function LocalOnDeviceCard({
   const localGgufPath = path.trim();
   const needsVariantSelection =
     isGguf && requiresVariant && !localGgufPath.toLowerCase().endsWith(".gguf");
-  // HF cache rows keep their own variant pill; only folder builds take the standard dropdown.
   const folderVariants = needsVariantSelection && source !== "hf_cache";
   const currentVariantState = useGgufVariantFetchState({
     repoId: modelId,
@@ -520,7 +519,6 @@ export function LocalOnDeviceCard({
               folderVariants ? "gap-1" : "pl-3",
             )}
           >
-            {/* Same trigger and rows as GgufDownloadCard, so a folder's builds read like a repo's quants. */}
             {folderVariants ? (
               <Popover
                 open={runPending ? false : variantOpen}
