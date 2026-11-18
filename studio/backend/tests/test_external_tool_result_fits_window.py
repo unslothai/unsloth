@@ -178,14 +178,14 @@ def test_parallel_results_share_the_served_window():
     assert estimate_messages_tokens_conservative(messages) < 4096
 
 
-def _usage(prompt_tokens):
-    usage = {"prompt_tokens": prompt_tokens, "completion_tokens": 40}
+def _usage(prompt_tokens, completion_tokens = 40):
+    usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
     return "data: " + json.dumps({"choices": [], "usage": usage})
 
 
-def _counted_call_turn(prompt_tokens):
+def _counted_call_turn(prompt_tokens, completion_tokens = 40):
     turn = _call_turn("c1")
-    return [*turn[:-1], _usage(prompt_tokens), _DONE]
+    return [*turn[:-1], _usage(prompt_tokens, completion_tokens), _DONE]
 
 
 def _tool_heavy_history(exchanges = 20):
@@ -219,10 +219,13 @@ def test_a_long_thread_the_server_counted_keeps_a_short_result_whole(monkeypatch
 
 
 def test_a_counted_prompt_near_the_window_still_trims_the_result():
-    messages = _forwarded([_counted_call_turn(7_000), _ANSWER_TURN], served_window = _serves(8192))
+    # A long reasoning turn: its output stays in the next prompt, so it is counted too.
+    messages = _forwarded(
+        [_counted_call_turn(5_000, 2_500), _ANSWER_TURN], served_window = _serves(8192)
+    )
 
     (result,) = _results(messages)
-    assert 7_040 + len(result) < 8192
+    assert 7_500 + len(result) < 8192
 
 
 def test_a_long_thread_the_server_did_not_count_is_priced_at_the_worst_case(monkeypatch):
@@ -380,14 +383,18 @@ def test_a_custom_server_that_reports_no_window_is_not_asked(monkeypatch):
     assert "stream_options" not in _custom_request_body(monkeypatch, None)
 
 
-def test_the_window_is_read_before_the_first_turn():
-    transport = FakeTransport([_ANSWER_TURN])
+def test_the_window_is_read_before_every_turn(monkeypatch):
+    transport = FakeTransport([_call_turn("c1"), _ANSWER_TURN])
+    searches = []
     reads = []
+    monkeypatch.setattr(tools, "_web_search", lambda *a, **k: searches.append(1) or "ok")
 
     async def _read():
-        reads.append(len(transport.requests))
+        reads.append((len(transport.requests), len(searches)))
         return 8192
 
     _forwarded(transport, served_window = _read)
 
-    assert reads[0] == 0
+    # A read after the tool ran, before the next request, keeps a custom server's usage option across a slow tool.
+    assert reads[0] == (0, 0)
+    assert (1, 1) in reads

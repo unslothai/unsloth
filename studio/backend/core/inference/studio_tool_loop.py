@@ -1657,14 +1657,14 @@ async def _stream_with_studio_tools(
     # Headroom for no-op, nudge and final-answer passes; unlimited keeps its own budget, not a smaller cap, or productive runs get cut short.
     max_provider_turns = max(1, remaining) + 2 * MAX_ACT_REPROMPTS + 4
 
-    if run.served_window is not None:
-        # Before the first turn: a custom server is asked for usage only once its window is known.
-        await run.served_window()
     while not cancel_event.is_set():
         if provider_turns >= max_provider_turns:
             # Caps requests for unrunnable tools (disabled or budget gone) so the conversation stays bounded.
             break
         provider_turns += 1
+        if run.served_window is not None:
+            # Every turn: a custom server is asked for usage only while its window is cached, and a slow tool can outlast the cache.
+            await run.served_window()
         turn = _Turn(round = provider_turns)
         # Clear stale timings even if this turn sends no usage chunk.
         last_timings = None
