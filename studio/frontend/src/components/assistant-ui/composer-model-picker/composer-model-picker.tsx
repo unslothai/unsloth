@@ -587,11 +587,10 @@ function rowOrg(row: Pick<Row, "kind" | "id">): Maker | null {
   if (!parts) {
     return null;
   }
-  // The logo map names few orgs by owner, so `google/gemma-*` falls back to its owner's id.
+  // The owner's own org first (`google/gemma-*` is Google), then the logo map's owners and re-uploads.
   return (
-    resolveOwnerProviderLogo(parts.owner, parts.name) ??
     MAKER_BY_ID.get(ownerOrgId(parts.owner)) ??
-    null
+    resolveOwnerProviderLogo(parts.owner, parts.name)
   );
 }
 
