@@ -203,11 +203,17 @@ def test_headless_ui_panels_are_named_by_their_tab_in_order():
             '<div><div role="tabpanel" id="p1">pnpm add x</div></div></div>',
             [],
         ),
+        # order needs no ids, as in Docusaurus, whose tabs and panels have none
         (
             '<div><div role="tablist"><button role="tab" id="a">npm</button>'
             '<button role="tab" id="b">pnpm</button></div>'
             '<div><div role="tabpanel">npm i x</div><div role="tabpanel" id="p1">pnpm add x</div></div></div>',
-            ["**pnpm**"],
+            ["**npm**", "**pnpm**"],
+        ),
+        (
+            '<div><ul role="tablist"><li role="tab" aria-selected="true">npm<li role="tab">Yarn</ul>'
+            '<div><div role="tabpanel">npm i x</div><div role="tabpanel" hidden>yarn add x</div></div></div>',
+            ["**npm**", "**Yarn**"],
         ),
         # one panel several tabs control takes the selected tab's name, and none without one
         (
