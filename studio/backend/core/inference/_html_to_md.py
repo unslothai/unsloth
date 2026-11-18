@@ -883,14 +883,12 @@ class _TabLabelScan(HTMLParser):
         self._parts: list[str] = []
         self._list_at = -1  # _open index of the tablist being read
         self._list_tabs: list[str | None] = []
-        self._list_explicit = (
-            False  # a tab names its panel by aria-controls, so order is not trusted
-        )
-        self._closed_list: tuple[int, list[str | None]] | None = (
-            None  # until its next sibling opens
-        )
-        # (_open index of the panels' wrapper, its tab ids, its panels' ids so far), innermost last
-        self._groups: list[tuple[int, list[str | None], list[str | None]]] = []
+        # a tab names its panel by aria-controls, so order is not trusted
+        self._list_explicit = False
+        # a closed tablist, until its next sibling opens
+        self._closed_list: tuple[int, list[str | None]] | None = None
+        # (_open index of the panels' wrapper, its tab ids, (id, has aria-labelledby) of each panel), innermost last
+        self._groups: list[tuple[int, list[str | None], list[tuple[str | None, bool]]]] = []
 
     def _finish_tab(self) -> None:
         # capped here too, so joining many long labels per panel stays linear
@@ -935,9 +933,13 @@ class _TabLabelScan(HTMLParser):
             if tag not in _VOID_TAGS:
                 self._groups.append((len(self._open), self._closed_list[1], []))
             self._closed_list = None
-        if tag in _VOID_TAGS:
-            return
         attr_dict = dict(attrs)
+        if tag in _VOID_TAGS:
+            # a void tab or panel has no text, but still takes its slot and controls its panels
+            if self._take_slot(attr_dict, len(self._open) - 1):
+                self._start_tab(attr_dict, len(self._open))
+                self._finish_tab()
+            return
         self._open_at.setdefault(tag, []).append(len(self._open))
         self._open.append(tag)
         if self._muted_at < 0 and (tag in _TAB_LABEL_SKIP or _is_hidden_element(attr_dict)):
@@ -946,27 +948,36 @@ class _TabLabelScan(HTMLParser):
             self._list_at = len(self._open) - 1
             self._list_tabs = []
             self._list_explicit = False
-        if self._tab_at < 0 and _has_role(attr_dict, "tab"):
+        if self._take_slot(attr_dict, len(self._open) - 2):
+            self._start_tab(attr_dict, len(self._open) - 1)
+
+    def _start_tab(self, attr_dict: dict, at: int) -> None:
+        self._tab_at = at
+        self._tab_id = attr_dict.get("id") or ""
+        self._tab_controls = attr_dict.get("aria-controls") or ""
+        self._tab_selected = (attr_dict.get("aria-selected") or "").strip().lower() == "true"
+
+    def _take_slot(self, attr_dict: dict, parent: int) -> bool:
+        """Count a tab in the open tablist, or a panel in the innermost group's wrapper; True for a tab to read."""
+        if self._tab_at >= 0:
+            return False
+        if _has_role(attr_dict, "tab"):
             if self._list_at >= 0:
                 # an id-less tab still takes its slot, or every panel after it would shift
                 self._list_tabs.append(attr_dict.get("id"))
                 self._list_explicit |= bool((attr_dict.get("aria-controls") or "").strip())
-            self._tab_at = len(self._open) - 1
-            self._tab_id = attr_dict.get("id") or ""
-            self._tab_controls = attr_dict.get("aria-controls") or ""
-            self._tab_selected = (attr_dict.get("aria-selected") or "").strip().lower() == "true"
-        if (
-            self._groups
-            and self._groups[-1][0] == len(self._open) - 2
-            and _has_role(attr_dict, "tabpanel")
-        ):
-            self._groups[-1][2].append(attr_dict.get("id"))
+            return True
+        if self._groups and self._groups[-1][0] == parent and _has_role(attr_dict, "tabpanel"):
+            linked = bool((attr_dict.get("aria-labelledby") or "").strip())
+            self._groups[-1][2].append((attr_dict.get("id"), linked))
+        return False
 
     def _finish_group(self) -> None:
-        _, tab_ids, panel_ids = self._groups.pop()
-        # order only pairs when every tab has its panel; a missing one would shift every label after it
-        if len(panel_ids) == len(tab_ids):
-            for tab_id, panel_id in zip(tab_ids, panel_ids):
+        _, tab_ids, panels = self._groups.pop()
+        # order only pairs when every tab has its panel, else every label after a gap shifts, and when no
+        # panel names its tab, which order could contradict
+        if len(panels) == len(tab_ids) and not any(linked for _, linked in panels):
+            for tab_id, (panel_id, _) in zip(tab_ids, panels):
                 label = tab_id and self.labels.get(tab_id)
                 if label and panel_id:
                     self._order_labels.setdefault(panel_id, label)

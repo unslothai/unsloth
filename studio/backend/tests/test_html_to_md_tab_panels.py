@@ -252,6 +252,21 @@ def test_headless_ui_panels_are_named_by_their_tab_in_order():
             '<div role="tabpanel" id="p1" aria-labelledby="a">npm i x</div></div></div>',
             ["**npm**"],
         ),
+        # nor does an unlinked panel whose sibling's aria-labelledby contradicts order
+        (
+            '<div><div role="tablist"><button role="tab" id="a">npm</button>'
+            '<button role="tab" id="b">pnpm</button></div>'
+            '<div><div role="tabpanel" id="p0" aria-labelledby="b">pnpm add x</div>'
+            '<div role="tabpanel" id="p1">npm i x</div></div></div>',
+            ["**pnpm**"],
+        ),
+        # a void tab still takes its slot and keeps its aria-controls
+        (
+            '<div><div role="tablist"><input type="button" role="tab" id="a" value="npm" aria-controls="p0">'
+            '<button role="tab" id="b">pnpm</button></div>'
+            '<div><div role="tabpanel" id="p0">npm i x</div></div></div>',
+            [],
+        ),
         # a panel id reused by a later tab leaves that tab's own label intact
         (
             '<div><div role="tablist"><button role="tab" id="t0">npm</button></div>'
