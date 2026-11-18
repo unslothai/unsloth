@@ -109,7 +109,11 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _persist_upload_stream(
-    source, filename: str, *, empty_detail: str, extra_exts: frozenset[str] = frozenset()
+    source,
+    filename: str,
+    *,
+    empty_detail: str,
+    extra_exts: frozenset[str] = frozenset(),
 ) -> tuple[str, str, str]:
     """Returns the content hash so ingestion does not need a second full read of the file."""
     ext = os.path.splitext(filename)[1].lower()
@@ -149,7 +153,9 @@ def _persist_upload_stream(
     return stored_path, filename, digest.hexdigest()
 
 
-def _save_upload(file: UploadFile, extra_exts: frozenset[str] = frozenset()) -> tuple[str, str, str]:
+def _save_upload(
+    file: UploadFile, extra_exts: frozenset[str] = frozenset()
+) -> tuple[str, str, str]:
     """Persist a browser upload; returns (stored_path, filename, content_hash)."""
     filename = _sanitize_filename(file.filename or "document")
     return _persist_upload_stream(
@@ -997,7 +1003,9 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         try:
             text = _image_text(stored_path)
         except Exception as exc:
-            raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
+            raise HTTPException(
+                status_code = 422, detail = f"{filename} could not be read: {exc}"
+            ) from exc
         finally:
             _remove_stored_upload(stored_path)
         if not text.strip():
