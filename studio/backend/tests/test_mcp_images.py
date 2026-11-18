@@ -2870,3 +2870,36 @@ def test_a_plain_non_raster_does_not_shift_the_replay_cut():
 
     assert mcp_images.replay_image_total(history) == 8
     assert _urls(promote_history(history, vision = True)) == _urls(conversation)
+
+
+def test_a_leading_svg_does_not_cost_a_raster_its_replay_slot():
+    svg = {"data": base64.b64encode(b"<svg/>").decode(), "mimeType": "image/svg+xml"}
+    history = [{"role": "user", "content": "go"}]
+    conversation = [{"role": "user", "content": "go"}]
+    owned: list = []
+    for r, images in enumerate(
+        (
+            [svg] + [_distinct_image(i) for i in range(4)],
+            [_distinct_image(10 + i) for i in range(8)],
+        )
+    ):
+        call = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"c{r}",
+                    "type": "function",
+                    "function": {"name": "mcp__s__x", "arguments": "{}"},
+                }
+            ],
+        }
+        history += [
+            call,
+            {"role": "tool", "tool_call_id": f"c{r}", "content": _envelope("r", *images)},
+        ]
+        conversation += [call, {"role": "tool", "tool_call_id": f"c{r}", "content": "r"}]
+        mcp_images.append_image_turn(conversation, [images], per_result = True, owned = owned)
+    history += [{"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+
+    assert _urls(promote_history(history, vision = True)) == _urls(conversation)

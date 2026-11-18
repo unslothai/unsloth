@@ -268,13 +268,21 @@ def eligible_replay_images(
             images = _mcp_images_at(position)
             if images is None:
                 continue
-            take = min(len(images), allowance)
+            take = counted = min(len(images), allowance)
+            if not local and take > 0:
+                # The loop's decoder skips a plain non-raster, so it costs no allowance here either.
+                take = counted = 0
+                for image in images:
+                    if counted >= allowance:
+                        break
+                    take += 1
+                    counted += not _sniffed_undecodable(image)
             if take <= 0:
                 eligible[position] = 0
                 continue
             eligible[position] = take
-            allowance -= take
-            taken += take
+            allowance -= counted
+            taken += counted
         charged = min(taken, room)
         budget = max(0, budget - charged)
         spare -= taken - charged
