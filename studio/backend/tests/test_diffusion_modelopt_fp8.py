@@ -566,6 +566,29 @@ def test_runtime_choice_follows_the_card(monkeypatch):
     assert mo.modelopt_runtime(None) == mo.RUNTIME_DEQUANT
 
 
+@pytest.mark.parametrize(
+    "version, hip, rocm",
+    [("2.9.0+cu130", None, False), ("2.9.0+rocm7.1", "7.1.0", True), ("2.9.0+rocm7.1", None, True)],
+)
+def test_rocm_builds_never_probe_the_fp8_gemm(monkeypatch, version, hip, rocm):
+    """ROCm, including the AMD SDK / Radeon wheels that leave ``torch.version.hip`` unset, stays off the CUDA fp8
+    GEMM (weight-only fp8 there); a CUDA build probes the card."""
+    import types
+
+    probed: list = []
+    monkeypatch.delenv(mo.GEMM_ENV, raising = False)
+    monkeypatch.setattr(mo, "_GEMM_PROBE", {})
+    monkeypatch.setattr(
+        mo, "_probe_gemms", lambda index: probed.append(index) or {"static": True, "dynamic": True}
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch, "__version__", version)
+    monkeypatch.setattr(torch.version, "hip", hip)
+    target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, torch_device = "cuda:0")
+    assert mo.fp8_gemm_runs(target) is (not rocm)
+    assert probed == ([] if rocm else [0])
+
+
 def test_the_gemm_switch_turns_every_fp8_gemm_off(monkeypatch):
     monkeypatch.setenv(mo.GEMM_ENV, "0")
     assert mo.fp8_gemm_runs(None) is False and mo.fp8_gemm_runs(None, act = "dynamic") is False

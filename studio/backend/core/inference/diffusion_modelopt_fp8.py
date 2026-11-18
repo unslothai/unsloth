@@ -388,7 +388,9 @@ def fp8_gemm_runs(
             return False
         if getattr(target, "device", "cuda") != "cuda" or not torch.cuda.is_available():
             return False
-        if getattr(torch.version, "hip", None):
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
             return False
         dev = torch.device(device or getattr(target, "torch_device", None) or "cuda")
         index = dev.index if dev.index is not None else torch.cuda.current_device()
