@@ -480,7 +480,6 @@ _KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
 MINIMAX_H3_IMAGE_FAMILY_NAME = "minimax-h3-image"
 ANIMA_FAMILY_NAME = "anima"
-# Defaults key of Anima-Turbo, which ships as a single file in the base's repo.
 ANIMA_TURBO_KEY = "anima-turbo"
 # MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
 _MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
@@ -2360,10 +2359,7 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image", 25, 3.0),
     # Lumina Image 2.0 card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the loader passes itself).
     ("lumina", 50, 4.0),
-    # HunyuanImage 2.1 distilled (MeanFlow, guidance embedded, no CFG branch): Tencent's reference runs it at 8 steps,
-    # guidance 3.25, shift 4 (tencent/HunyuanImage-2.1 README; diffusers' HunyuanImagePipeline default 3.25). The
-    # spellings: the diffusers repo, Tencent's dit/hunyuanimage2.1-distilled*.safetensors, the hunyuanimage2.1_distilled_*
-    # repackaged files.
+    # HunyuanImage 2.1 distilled: 8 steps, guidance 3.25 (tencent/HunyuanImage-2.1 README).
     ("hunyuanimage-2.1-distilled", 8, 3.25),
     ("hunyuanimage2.1-distilled", 8, 3.25),
     # Listed though older than the 0.35 baseline: an unconstrained diffusers install can satisfy the pin, and a later floor is the wrong remedy
@@ -2386,13 +2382,11 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
-    # Anima-Turbo (circlestone-labs/Anima split_files/diffusion_models/anima-turbo-v1.*.safetensors), distilled: the
-    # card says CFG 1 and 8-12 steps. Before the base repo key; an Anima load also puts it first (anima_turbo_named).
+    # Anima-Turbo card: CFG 1, 8-12 steps. Must precede the base repo key.
     (ANIMA_TURBO_KEY, 10, 1.0),
     # Keyed by base repo: a bare "anima" would match Animagine XL (SDXL) files first.
     ("circlestone-labs/anima", 30, 4.0),
-    # Chroma1-Flash (lodestones/Chroma1-Flash, CFG baked in): the publisher's recipe is heun 8 steps at CFG 1. Studio
-    # samples flow models with Euler, so 16 steps keeps heun's 15 denoiser evaluations. Before the HD key.
+    # Chroma1-Flash: publisher's heun 8 steps CFG 1; 16 Euler steps match heun's 15 evaluations.
     ("chroma1-hd-flash", 16, 1.0),
     ("chroma1-flash", 16, 1.0),
     ("chroma-flash", 16, 1.0),
@@ -2496,8 +2490,7 @@ def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, 
 
 
 def anima_turbo_named(*identifiers: Optional[str]) -> bool:
-    """Whether an Anima load's file or repo names the Turbo distillation (``anima-turbo-v1.1.safetensors``,
-    ``Anima-1.0-Turbo``); only asked of Anima loads, whose base repo key would otherwise give Turbo the base recipe."""
+    """Only asked of Anima loads, whose base repo key would otherwise give Turbo the base recipe."""
     return any("turbo" in model_identity(i).lower() for i in identifiers if i)
 
 

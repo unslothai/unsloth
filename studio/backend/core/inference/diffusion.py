@@ -2144,9 +2144,8 @@ _NATIVE_ONLY_FIRST_BUILD = {
 
 
 def _family_default_ids(fam: Any, *names: Optional[str]) -> tuple:
-    """Ids ahead of the file / repo names (``names``) in the defaults lookup: FLUX.3's file names cannot tell its
-    variants apart, and a bare "anima" matches Animagine XL files while a local folder never names Anima's base repo
-    (Anima-Turbo, a file in that repo, goes first)."""
+    """Ids ahead of the file / repo names in the defaults lookup: FLUX.3's file names cannot tell its variants apart,
+    and a bare "anima" matches Animagine XL files while a local folder never names Anima's base repo."""
     if is_flux3_family(fam):
         return (fam.name,)
     if is_anima_family(fam):
