@@ -248,30 +248,31 @@ def test_trainer_scope_hooks(monkeypatch):
     Trainer = transformers_trainer.Trainer
     assert getattr(Trainer.train, "_unsloth_dq_scope", False)
     assert getattr(Trainer.evaluate, "_unsloth_dq_scope", False)
-    callback = scope[0]()
+    handler = transformers_trainer.CallbackHandler([], None, None, None, None)
+    assert getattr(handler.add_callback, "_unsloth_dq_scope", False)
+    handler.add_callback(scope[0])
+    callback = handler.callbacks[-1]
+    assert callback.handler() is handler
     monkeypatch.setattr(dc, "_ACTIVE", 0)
     callback.on_train_begin(None, None, SimpleNamespace())
+    assert dc._ACTIVE == 1  # only known callbacks
+    # A user callback may allocate anything between optimizer steps: auto mode stays off for this run.
+    UserCallback = type(
+        "UserCallback", (transformers_trainer.TrainerCallback,), {"__module__": "__main__"}
+    )
+    handler.add_callback(UserCallback)
+    callback.on_train_begin(None, None, SimpleNamespace())
+    assert dc._ACTIVE == 0 and dc.STATS["user_callbacks_off"] == 1
+    monkeypatch.setattr(dc, "_MODE", float(GiB))  # an explicit GiB cap opts in anyway
+    callback.on_train_begin(None, None, SimpleNamespace())
     assert dc._ACTIVE == 1
+    monkeypatch.setattr(dc, "_MODE", "auto")
     _admit_at_safe_point(monkeypatch, rows = 64)
     callback.on_step_end(None, None, SimpleNamespace(should_evaluate = True))  # evaluation comes next
     assert dc.cached_count() == 0 and dc._BUDGET == {}
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
     callback.on_train_end(None, None, SimpleNamespace())
     assert dc._ACTIVE == 0
-
-
-def test_auto_holds_weights_for_one_step_only(monkeypatch):
-    # Between optimizer steps (callbacks, evaluation, saving, user code) auto mode holds nothing.
-    W, absmax = _admit_at_safe_point(monkeypatch, rows = 64)
-    dc._on_optimizer_step(None, (), {})
-    assert dc.cached_count() == 0 and dc._BUDGET[None] > 0 and dc.STATS["step_drops"] == 1
-    calls = []
-    dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, 64)  # the next step admits again
-    assert calls == [True] and dc.cached_count() == 1
-    # An explicit GiB cap keeps its weights across steps.
-    monkeypatch.setattr(dc, "_MODE", float(GiB))
-    dc._on_optimizer_step(None, (), {})
-    assert dc.cached_count() == 1
 
 
 def test_admission_keeps_the_transient_reserve(monkeypatch):

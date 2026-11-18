@@ -8,17 +8,19 @@ Under Unsloth gradient checkpointing a frozen NF4 linear is dequantized three ti
 of as many weights as fit in otherwise idle VRAM is exact and removes those decodes.
 
 UNSLOTH_NF4_DEQUANT_CACHE:
-  auto (default) / 1   on, sized from free memory at every optimizer step (below), holding weights for one
-                       optimizer step at a time; off while vLLM is loaded, several ranks share a GPU or
-                       another process uses it.
+  auto (default) / 1   on, sized from free memory at every optimizer step (below), only inside a Trainer.train()
+                       whose callbacks all come from transformers / TRL / PEFT / accelerate / Unsloth; off while
+                       vLLM is loaded, several ranks share a GPU or another process uses it.
   0 / off              off: every call site runs its original code.
-  <float>              on, at most that many GiB per device, kept across optimizer steps (also with vLLM
-                       loaded or another process on the GPU).
+  <float>              on, at most that many GiB per device (also with vLLM loaded, another process on the GPU
+                       or user callbacks).
 Budget (the zoo moe_expert_cache design), measured at the safe point after each optimizer step, when the
 step's activations are freed: room = free + reserved-unused - 2 * transient - margin, with transient the
 largest step peak above the resident memory seen so far and margin max(1 GiB, 5% of the card). Free memory is
 also capped by torch.cuda.set_per_process_memory_fraction. Nothing is cached before the first optimizer step, and
 nothing outside transformers' Trainer.train(), so inference, evaluation-only runs and custom loops are untouched.
+Between optimizer steps only the trainer's own code and its callbacks run: auto mode requires every callback to
+come from a known library (user callbacks may allocate anything there), and drops the cache before evaluation.
 Safety: the budget only covers steps no larger than those already measured, so the cache is dropped (until the
 next safe point) when it is needed for anything else:
   * a matmul with more rows (tokens) than any measured before the last safe point (a longer batch, a larger
@@ -317,16 +319,6 @@ def _on_optimizer_step(optimizer, args, kwargs):
             transient = max(_TRANSIENT.get(index, 0), peak - allocated)
             _TRANSIENT[index] = transient
             held = _cached_bytes(index)
-            if _MODE == "auto" and held:
-                # Auto keeps weights for one optimizer step only: callbacks, evaluation, saving and any other
-                # code between steps see the memory the base code leaves free. The next step's first
-                # micro-batch decodes and admits again; its other passes and micro-batches hit.
-                _evict(index, 0, "step_drops")
-                measured = _usable(index)
-                if measured is None:
-                    continue
-                usable, total, _ = measured
-                held = 0
             room = usable - int(TRANSIENT_SLACK * transient) - _margin(total)
             budget = max(held + room, 0)
             if _MODE != "auto":
@@ -704,16 +696,43 @@ def _end_train():
     clear_dequant_cache(release = True)
 
 
+_KNOWN_CALLBACK_PACKAGES = frozenset(
+    ("transformers", "trl", "peft", "accelerate", "unsloth", "unsloth_zoo")
+)
+
+
+def _user_callbacks(callbacks):
+    """Callbacks defined outside the libraries whose between-step code is known not to allocate GPU memory
+    (their generation goes through for_inference, their evaluation through Trainer.evaluate)."""
+    return [
+        c for c in callbacks if type(c).__module__.split(".")[0] not in _KNOWN_CALLBACK_PACKAGES
+    ]
+
+
 def _make_callback():
     from transformers.trainer_callback import TrainerCallback
     class UnslothDequantCacheScope(TrainerCallback):
+        handler = None  # weak reference to the CallbackHandler holding this instance
+
         def on_train_begin(self, args, state, control, **kwargs):
             global _ACTIVE
-            _ACTIVE = 1
+            handler = self.handler() if self.handler is not None else None
+            if handler is None:
+                _ACTIVE = 0  # cannot see the other callbacks
+            elif _MODE == "auto" and _user_callbacks(handler.callbacks):
+                # A user callback runs between optimizer steps and may allocate anything there.
+                _ACTIVE = 0
+                STATS["user_callbacks_off"] += 1
+            else:
+                _ACTIVE = 1
 
         def on_step_end(self, args, state, control, **kwargs):
             if control.should_evaluate:
                 clear_dequant_cache()  # evaluation follows this step: no budget until the next safe point
+
+        def on_epoch_end(self, args, state, control, **kwargs):
+            if control.should_evaluate:
+                clear_dequant_cache()
 
         def on_train_end(self, args, state, control, **kwargs):
             _end_train()
@@ -728,12 +747,29 @@ def install_trainer_scope():
         return False
     import functools
 
+    import weakref
+    from transformers.trainer_callback import CallbackHandler
+
     Trainer = T.Trainer
     callbacks = getattr(T, "DEFAULT_CALLBACKS", None)
     if isinstance(callbacks, list) and not any(
         getattr(c, "__name__", "") == "UnslothDequantCacheScope" for c in callbacks
     ):
         callbacks.append(_make_callback())
+
+    add_callback = CallbackHandler.add_callback
+    if not getattr(add_callback, "_unsloth_dq_scope", False):
+
+        @functools.wraps(add_callback)
+        def scoped_add_callback(self, callback):
+            out = add_callback(self, callback)
+            for cb in self.callbacks:
+                if type(cb).__name__ == "UnslothDequantCacheScope" and cb.handler is None:
+                    cb.handler = weakref.ref(self)
+            return out
+
+        scoped_add_callback._unsloth_dq_scope = True
+        CallbackHandler.add_callback = scoped_add_callback
 
     train = Trainer.train
     if not getattr(train, "_unsloth_dq_scope", False):
