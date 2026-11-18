@@ -454,6 +454,39 @@ def test_rolling_ignores_a_checkpoint_saved_before_the_switch(
     assert len(switched) == len(fresh) and switched[:-1] == fresh[:-1]
 
 
+@pytest.mark.parametrize("mode", ["rolling", "checkpoint"])
+def test_an_overflow_retry_keeps_the_reply_cap_the_window_allows(mode):
+    class Refused(_SummarisingHandler):
+        overflow_chars = 14_000
+
+    _, _, chats = _bodies(
+        Refused,
+        messages = _long_chat(),
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 12_000,
+        context_window = 16_384,
+        max_tokens = 16_000,
+        compaction_mode = mode,
+    )
+    caps = [body.get("max_tokens") or body.get("max_completion_tokens") for body in chats]
+    assert len(caps) == 2 and caps[0] < 16_000 and caps[1] <= caps[0]
+
+
+def test_checkpoint_mode_resets_under_a_rolling_process_default(
+    rag_home, rag_conn, stub_embeddings, monkeypatch
+):
+    from core.inference import checkpoint
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+    thread = "thread-checkpoint-over-rolling-env"
+    chat = _recall_chat(thread)
+    chunks, _, _ = _bodies(
+        _SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER, **_EVICT
+    )
+    [truncation] = _truncations(chunks)
+    assert truncation.get("checkpoint") is True
+
+
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError

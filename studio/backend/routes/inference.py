@@ -30788,13 +30788,15 @@ async def _proxy_to_external_provider(
                 )
             )
     _evicting_fit = managed is not None or _evict_only
-    # Rolling also refuses a checkpoint this thread saved under another mode.
+    # The mode names its context policy, over the process default and a checkpoint saved under the other mode.
     _evicting_payload = (
-        payload.model_copy(update = {"context_policy": "rolling"}) if _rolling_only else payload
+        payload.model_copy(update = {"context_policy": payload.compaction_mode})
+        if _evict_only
+        else payload
     )
     if _evict_only and _fit_active and not (payload.compaction_threshold and _rolling):
         # /compact or its epoch, auto-compact off or the error policy: nothing past it is evicted.
-        _evicting_payload = payload.model_copy(
+        _evicting_payload = _evicting_payload.model_copy(
             update = {
                 "compaction_threshold": payload.context_window or _EXTERNAL_COMPACTION_THRESHOLD_MAX
             }
@@ -30880,11 +30882,11 @@ async def _proxy_to_external_provider(
         if _evict_only and force == "overflow":
             # Half the refused prompt, kept for the loop's later passes so they stay under it.
             refused = _last_fit if _last_fit is not None else messages
+            # The window stays: the fit clamps the reply cap against it.
             bound = {
                 "compaction_threshold": max(
                     1, _external_token_counter(payload, tools)(refused) // 2
                 ),
-                "context_window": None,
             }
             _evicting_payload = _evicting_payload.model_copy(update = bound)
             _first_payload = _first_payload.model_copy(update = bound)
