@@ -162,8 +162,7 @@ def test_policies_with_their_own_kept_set_score_the_full_vocabulary(monkeypatch,
 
 
 def test_refusals_do_not_claim_the_variable_was_set(monkeypatch):
-    # The zoo's automatic kept set (truncated vLLM rollouts feeding the IS correction) fires refusals with the
-    # variable unset: never say "ignoring ...=1", and name both ways the kept set is turned on.
+    # The zoo's automatic kept set fires refusals with the variable unset: never claim "=1" was set.
     monkeypatch.delenv("UNSLOTH_GRPO_TRUNCATED_SUPPORT", raising = False)
     _, messages = _bind(monkeypatch, _trainer(beta = 0.04))
     refuse = _refuse_helper(monkeypatch, _SUPPORT)
