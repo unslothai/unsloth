@@ -1613,7 +1613,7 @@ export const it = {
       modeInterval: "Ogni 3 secondi",
       modeManual: "Manuale",
       refreshNow: "Aggiorna ora",
-      privacyNote: "In questa vista le credenziali sono mascherate. Nel file su disco non lo sono.",
+      privacyNote: "Questa vista maschera i formati di credenziali conosciuti. Prima di condividere il log, verifica se contiene segreti, percorsi di file o testo privato. Il file su disco contiene il log originale.",
       copyVisible: "Copia il log visibile",
       empty: "Non è stato ancora registrato nulla.",
       disabled: "La registrazione su file è disattivata (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
