@@ -397,3 +397,144 @@ def test_every_fp16_family_has_an_island_table_and_a_spec():
     for fam in dtc.DIT_FP16_TRAIN_FAMILIES:
         assert fam in dit._SPECS
         assert f16.FP16_FP32_MODULES.get(fam), fam
+
+
+class Params4bit(torch.nn.Parameter):
+    """Stands in for bitsandbytes' Params4bit (matched by class name and quant_state)."""
+
+    def __new__(cls, data):
+        p = super().__new__(cls, data, requires_grad = False)
+        p.quant_state = type("QS", (), {"shape": data.shape})()
+        return p
+
+
+class _Nf4Linear(Linear4bit):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.weight = Params4bit(self.weight.data)
+        self.calls = []
+
+    def forward(self, x):
+        self.calls.append("orig")
+        return torch.nn.functional.linear(
+            x.to(self.compute_dtype), self.weight.to(self.compute_dtype)
+        ).to(x.dtype)
+
+
+# Matched by class name, like bitsandbytes' own.
+_Nf4Linear.__name__ = "Linear4bit"
+
+
+class _FakeDequant:
+    """Records the dtype each nf4 linear asks the dequant cache for."""
+
+    def __init__(self):
+        self.layers = 0
+        self.asked = {}
+
+    def get(self, base, dtype):
+        self.asked[id(base)] = dtype
+        return base.weight.detach().to(dtype)
+
+
+class _FastToy(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(8, 8)
+        self.proj_out = torch.nn.Linear(8, 8)
+        self.embed = torch.nn.Module()
+        self.embed.fc = _Nf4Linear(8, 8, bias = False)
+        self.head = _Nf4Linear(8, 8, bias = False)
+
+    def forward(self, x):
+        x = self.lin(x + self.embed(x))
+        return self.head(self.proj_out(x))
+
+
+def _fast_toy(monkeypatch):
+    from peft import LoraConfig, inject_adapter_in_model
+
+    from core.training import diffusion_dit_fp16 as f16
+
+    torch.manual_seed(0)
+    m = _FastToy()
+    m.embed.forward = lambda x: m.embed.fc(x)
+    m = inject_adapter_in_model(
+        LoraConfig(
+            r = 2, lora_alpha = 2, target_modules = ["lin", "proj_out"], init_lora_weights = "gaussian"
+        ),
+        m,
+    )
+    for name in ("lin", "proj_out"):
+        torch.nn.init.normal_(getattr(m, name).lora_B["default"].weight)
+    f16.prepare_fp16_base(m)
+    monkeypatch.setitem(f16.FP16_FP32_MODULES, "toy", (r"^proj_out$", r"^embed$", r"^head$"))
+    assert f16.install_fp32_islands(m, "toy", "cpu") == ["proj_out", "embed", "head"]
+    return m
+
+
+def test_fast_lora_leaves_fp32_islands_in_fp32(monkeypatch):
+    """Fast LoRA and the dequant cache install after the islands: a patched island root would run under fp16 autocast."""
+    from core.training import diffusion_lora_fast as fl
+
+    m = _fast_toy(monkeypatch)
+    seen = {}
+    for name in ("lin", "proj_out"):
+        mod = getattr(m, name)
+        mod.lora_A["default"].register_forward_pre_hook(
+            lambda _m, args, name = name: seen.__setitem__(
+                name, (args[0].dtype, torch.is_autocast_enabled("cpu"))
+            )
+        )
+    cache = _FakeDequant()
+    calls = fl.STATS["calls"]
+    # proj_out is an island and a LoRA layer: skipped; lin: patched.
+    assert fl.install_fast_lora(m, cache) == 1
+    assert (
+        "_unsloth_orig_forward" not in m.proj_out.__dict__
+        and "_unsloth_orig_forward" in m.lin.__dict__
+    )
+    # head is an island and a bare nf4 linear: skipped; embed.fc sits inside an island: cached.
+    assert "_unsloth_orig_forward" not in m.head.__dict__ and cache.layers == 1
+    out = []
+    m.proj_out.register_forward_hook(lambda _m, _a, o: out.append(o.dtype))
+    with torch.autocast("cpu", dtype = torch.float16):
+        y = m(torch.randn(3, 8))
+    # The patched layer took the fast path in fp16; the island's LoRA branch saw fp32 with autocast off.
+    assert fl.STATS["calls"] == calls + 1
+    assert seen["proj_out"] == (torch.float32, False) and out == [torch.float32]
+    # The island's nf4 linear dequantises in fp32 (its compute dtype), the island root runs its own forward.
+    assert cache.asked == {id(m.embed.fc): torch.float32} and m.head.calls == ["orig"]
+    assert y.dtype is torch.float32 and torch.isfinite(y).all()
+    y.sum().backward()
+    assert all(
+        p.grad is not None and p.grad.dtype is torch.float32
+        for p in m.parameters()
+        if p.requires_grad
+    )
+    # Uninstall restores the patched layers and keeps the islands.
+    fl.uninstall_fast_lora(m)
+    assert m.proj_out._unsloth_fp32_island and "forward" in m.proj_out.__dict__
+    assert "forward" not in m.lin.__dict__
+
+
+def test_fast_lora_matches_peft_under_fp16_autocast(monkeypatch):
+    """Off the islands, the cast-once path gives PEFT's fp16 forward and fp32 master grads."""
+    from core.training import diffusion_lora_fast as fl
+
+    ref = _fast_toy(monkeypatch)
+    fast = _fast_toy(monkeypatch)
+    fast.load_state_dict(ref.state_dict())
+    fl.install_fast_lora(fast)
+    x = torch.randn(3, 8)
+    ys = []
+    for m in (ref, fast):
+        with torch.autocast("cpu", dtype = torch.float16):
+            y = m(x)
+        (y.float().square().mean() * 1024.0).backward()
+        ys.append(y)
+    assert torch.equal(ys[0], ys[1])
+    for (n, a), b in zip(ref.named_parameters(), fast.parameters()):
+        if a.requires_grad:
+            assert b.grad.dtype is torch.float32
+            torch.testing.assert_close(a.grad, b.grad, rtol = 1e-3, atol = 1e-5, msg = n)

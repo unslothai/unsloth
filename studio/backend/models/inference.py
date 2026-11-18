@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import re
 import time
 import uuid
@@ -3297,7 +3298,7 @@ class ChatCompletionRequest(BaseModel):
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
-        25,
+        DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         ge = 0,
         description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
     )
@@ -3476,6 +3477,19 @@ class ChatCompletionRequest(BaseModel):
             'after" setting rather than the default. Anthropic and OpenAI server-side '
             "compaction then use it as given instead of capping it at 200k: it is still "
             "raised to the provider's floor and never exceeds context_window."
+        ),
+    )
+    compaction_mode: Optional[Literal["summary", "rolling", "checkpoint"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] How a cloud connection that does not compact server-side "
+            "compacts once compaction_threshold is passed, and on compact_context. "
+            "'summary' (the default) asks the same model to summarise the older turns. "
+            "'rolling' and 'checkpoint' make no summary call and drop whole oldest turns "
+            "into the thread's archive, where search_conversation and inline recall find "
+            "them: 'rolling' drops just enough on each request, 'checkpoint' resets to the "
+            "latest turn as a local model does, and only it honours compact_context. "
+            "Ignored by local engines and by Anthropic and OpenAI server-side compaction."
         ),
     )
     context_window: Optional[int] = Field(
