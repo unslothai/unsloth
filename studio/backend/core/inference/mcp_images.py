@@ -23,8 +23,7 @@ DETACHED_IMAGE_TURN_TEXT = "Images returned by earlier tool calls in this conver
 
 MAX_MODEL_IMAGES = 4
 MAX_TOTAL_MODEL_IMAGES = 8
-# Past the cap, drop the oldest pictures this many at a time, so the prompt stays append-only
-# (KV cache warm) between drops instead of shifting on every new screenshot (#18231).
+# Past the cap, drop this many oldest at once so the prompt stays append-only between drops (#18231).
 IMAGE_TRIM_STEP = 4
 # Safetensors and MLX allow one image per message; GGUF is exempt.
 LOCAL_MAX_IMAGES_PER_TURN = 1
@@ -42,13 +41,12 @@ def stepped_keep(
     limit: int,
     step: int = IMAGE_TRIM_STEP,
 ) -> int:
-    """How many of the newest count pictures survive. A function of count alone, so the tool loop
-    (trimming as it goes) and a later replay (trimming the whole history) keep the same ones."""
+    """Newest pictures kept; a function of count alone, so the tool loop and a later replay agree."""
     if limit <= 0:
         return 0
     if count <= limit:
         return count
-    # A limit under the step slides one at a time; 1 still divides the frontend's step.
+    # Too small to batch: slide one at a time.
     step = step if limit >= step else 1
     return count - -(-(count - limit) // step) * step
 
@@ -141,8 +139,7 @@ def probably_decodable(image: Any) -> bool:
 
 
 def _sniffed_undecodable(image: Any) -> bool:
-    """Only a header that plainly is not a raster; an unreadable header is left to the decoder.
-    Mirrors sniffedUndecodable in studio/frontend/src/features/chat/api/mcp-images.ts."""
+    """Header plainly not a raster; an unreadable one is left to the decoder. Mirrors sniffedUndecodable."""
     data = image.get("data") if isinstance(image, dict) else None
     if not isinstance(data, str):
         return False
@@ -259,8 +256,7 @@ def eligible_replay_images(
         # Newest first within the batch, the order the local decoder tries them.
         batch = [position for position in range(index, start - 1, -1)]
         index = start - 1
-        # Data-URL replay trims oldest first afterwards, so admit a result's whole window: a head cut
-        # here would leave the wrong pictures once that trim drops the oldest.
+        # Whole windows: the oldest-first trim afterwards must find each result's tail.
         room = per_result if not local and budget > 0 else min(budget, per_result)
         allowance = room + spare
         taken = 0
@@ -270,7 +266,7 @@ def eligible_replay_images(
                 continue
             take = counted = min(len(images), allowance)
             if not local and take > 0:
-                # The loop's decoder skips a plain non-raster, so it costs no allowance here either.
+                # The loop's decoder skips a plain non-raster, so it costs no allowance.
                 take = counted = 0
                 for image in images:
                     if counted >= allowance:
@@ -290,9 +286,8 @@ def eligible_replay_images(
 
 
 def replay_image_total(messages: Sequence[dict], parsed: "dict | None" = None) -> int:
-    """Pictures a replay could promote with no cap, counted as the tool loop admits them (per
-    result quota, bounded MIME, no plain non-raster, at most the cap per parallel batch); parsed
-    collects each result's images for eligible_replay_images."""
+    """Pictures counted as the tool loop admits them (per result quota, at most the cap per parallel
+    batch); parsed collects each result's images for eligible_replay_images."""
     call_names = resolve_tool_names(messages)
     total = 0
     batch = 0
@@ -964,8 +959,7 @@ def _promote(
         else (len(_all_image_url_parts(messages)) if vision and reserve_for_caller else 0)
     )
     parsed: dict = {}
-    # The final trim steps from the whole history's count, so a follow-up keeps what the tool loop
-    # last sent. Admission keeps the full budget: the loop trims oldest first, keeping result tails.
+    # Only the final trim is stepped (from the whole history's count); admission keeps the full budget.
     _total = replay_image_total(messages, parsed) if vision and not local else 0
     eligible = (
         eligible_replay_images(

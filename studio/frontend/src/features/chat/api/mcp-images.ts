@@ -67,7 +67,7 @@ export function isImageToolName(name: unknown): boolean {
   return typeof name === "string" && (name === "view_image" || name === "computer" || name.startsWith("mcp__"));
 }
 
-/** Mirrors stepped_keep in mcp_images.py: pictures drop a step at a time so the prompt stays append-only. */
+/** Mirrors stepped_keep in mcp_images.py. */
 export function steppedKeep(count: number, limit: number, step = MCP_IMAGE_TRIM_STEP): number {
   if (limit <= 0) return 0;
   if (count <= limit) return count;
@@ -158,16 +158,13 @@ function withReturned(images: readonly McpImage[], keep: McpImage[]): McpImage[]
 }
 
 /**
- * The data-URL path. The backend steps its cut off the count it receives (per result quota, the cap
- * per parallel turn), so this sends exactly the pictures its tool loop last showed (#18231): what the
- * loop admitted per turn, then the newest stepped count of those. A spare rides only where the
- * backend's recount and admission ignore it.
+ * Data-URL path: sends exactly what the backend's tool loop last showed, since the backend steps its
+ * cut off this count (#18231). A spare rides only where its recount and admission ignore it.
  */
 function planSteppedBound(
   batches: readonly (readonly (readonly McpImage[])[])[],
   exchanges: readonly (readonly (readonly McpImage[])[])[],
 ): McpImage[][][] {
-  // What the backend's loop could admit: bounded MIME and not plainly a non-raster.
   const bounded = (images: readonly McpImage[]) =>
     images.filter(
       (image) => image.mimeType.length <= MAX_MCP_IMAGE_MIME_CHARS && !sniffedUndecodable(image),
