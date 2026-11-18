@@ -448,3 +448,83 @@ def test_a_pin_failure_after_detaching_a_prefetch_streamer_rebuilds_the_old_spli
         assert torch.equal(want, _image(pipe))
     finally:
         pipe.release()
+
+
+def test_the_pageable_last_resort_pads_the_int8_rows_again(h3i, speed, monkeypatch):
+    """Both pinned rebuilds fail after an existing pinned streamer was detached: the pageable fallback swaps
+    parameters, so the int8 GEMM takes torchao's stock path, which needs the row pads the GEMM install removed."""
+    import torch
+
+    pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    from core.inference import diffusion_offload_prefetch as op
+    from core.inference.diffusion_transformer_quant import _make_quant_config
+
+    torch.manual_seed(0)
+
+    def block():
+        b = torch.nn.Module()
+        b.attn = torch.nn.Module()
+        b.attn.to_q = torch.nn.Linear(256, 64, bias = False)
+        b.ff = torch.nn.Module()
+        b.ff.net = torch.nn.Sequential(
+            torch.nn.Linear(256, 64, bias = False)
+        )  # not a quantized suffix
+        return b.to(torch.bfloat16)
+
+    blocks = torch.nn.ModuleList([block(), block()])
+    quantize_(
+        blocks, _make_quant_config("int8"), filter_fn = lambda m, fqn: fqn.endswith("attn.to_q")
+    )
+    transformer = types.SimpleNamespace(transformer_blocks = blocks)
+    if not h3i.restore_row_pads(transformer):
+        pytest.skip("this torchao gives no per-row int8 Linears")
+    # what the int8 GEMM install leaves: the pads it serves itself are unwrapped
+    for b in blocks:
+        b.attn.to_q = b.attn.to_q.inner
+    x = torch.randn(1, 37, 256, dtype = torch.bfloat16)
+    with torch.no_grad():
+        want = blocks[1].attn.to_q(x)
+
+    monkeypatch.setattr(
+        op, "_list_stream_refusal", lambda device: None
+    )  # gets to the pin, fails there on CPU
+    old = op.PrefetchedListStreamer()
+    old._unsloth_role, old._unsloth_resident = "transformer", 1
+    plan = h3i.H3ImagePlan(
+        placement = h3i.PLACE_STREAM,
+        dit_gb = 1.0,
+        te_gb = 1.0,
+        vae_gb = 1.0,
+        vram_gb = 8.0,
+        host_gb = None,
+        dit_resident_blocks = 1,
+        working_gb = 2.0,
+        slack_gb = 0.0,
+        block_gb = 0.4,
+        layout = h3i.LAYOUT_TODAY,
+    )
+    pipe = types.SimpleNamespace(
+        _unsloth_h3_plan = plan,
+        _unsloth_h3_streamers = [old],
+        transformer = transformer,
+        _device = lambda: torch.device("cpu"),
+    )
+    setattr(pipe, speed.LEVERS_ATTR, ("h3_int8_gemm_streamed",))
+    assert not h3i.demote_dit_blocks(pipe, 0, "pin failure")
+    new = pipe._unsloth_h3_streamers[0]
+    assert (
+        isinstance(new, h3i.ModuleListStreamer) and new._unsloth_resident == 1 and new.streamed == 1
+    )
+    assert plan.dit_resident_blocks == 1
+    for b in blocks:
+        assert type(b.attn.to_q).__name__ == "H3ImageRowPad"
+        assert type(b.attn.to_q.inner).__name__ != "H3ImageRowPad"  # wrapped once
+        assert type(b.ff.net[0]).__name__ == "Linear"  # only the quantized suffixes
+    seen = []
+    blocks[1].attn.to_q.inner.register_forward_pre_hook(lambda m, a: seen.append(a[0].shape[0]))
+    with torch.no_grad():
+        got = blocks[1].attn.to_q(x)
+    assert seen == [64] and torch.equal(got, want)
+    assert h3i.restore_row_pads(transformer) == 0  # idempotent

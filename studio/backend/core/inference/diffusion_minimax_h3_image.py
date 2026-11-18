@@ -3168,6 +3168,27 @@ def wrap_row_multiple(module: Any, names: Sequence[str]) -> int:
     return wrapped
 
 
+def restore_row_pads(transformer: Any) -> int:
+    """Wrap every per-row int8 Linear of the DiT blocks in the row pad again (the speed levers unwrap the ones the
+    fused int8 GEMM serves, which pads by itself); wrapped or absent names are left alone. Returns the count."""
+    count = 0
+    for block in getattr(transformer, "transformer_blocks", None) or ():
+        names = []
+        for fqn in tuple(QUANT_LINEAR_SUFFIXES) + ("attn.to_qkv",):
+            parent_name, _, leaf = fqn.rpartition(".")
+            try:
+                parent = block.get_submodule(parent_name) if parent_name else block
+            except AttributeError:
+                continue
+            child = parent._modules.get(leaf)
+            if child is None or type(child).__name__ == "H3ImageRowPad":
+                continue
+            names.append(fqn)
+        if names:
+            count += wrap_row_multiple(block, names)
+    return count
+
+
 def _auto_scheme_by_fit(
     vram_gb: Optional[float],
     width: int,
@@ -4521,12 +4542,15 @@ def demote_dit_blocks(
             keep = resident
             new = _pinned(resident)
             if new is None:
-                # last resort, never a pipe without hooks: pageable over the earlier split (the int8 GEMM sees
-                # swapped parameters and takes the stock path per call)
+                # last resort, never a pipe without hooks: pageable over the earlier split. Its swapped parameters
+                # send the int8 GEMM to torchao's stock path, which needs the row pads the GEMM install removed
+                # (cuBLASLt refuses most packed row counts and torchao then falls back to an fp32 matmul).
+                padded = restore_row_pads(transformer) if gemm else 0
                 logger.warning(
                     "diffusion.minimax_h3_image: the pinned DiT streamer could not be rebuilt: %d resident "
-                    "blocks, the rest stream from pageable memory",
+                    "blocks, the rest stream from pageable memory (%d int8 Linears padded again)",
                     resident,
+                    padded,
                 )
                 new = ModuleListStreamer(blocks, device, resident)
         if new is None:
