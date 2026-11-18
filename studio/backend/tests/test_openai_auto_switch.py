@@ -445,6 +445,34 @@ def test_a_blank_alias_field_without_a_saved_setting_reloads_with_the_loader_def
     ]
 
 
+def test_a_blank_alias_context_without_a_saved_setting_reloads_with_the_automatic_context(
+    monkeypatch,
+):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    kv_only = {**_FAST, "load_settings": {"kv_cache_dtype": "q4_0"}}
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    assert [(c.max_seq_length, c.cache_type_kv) for c in rec.calls] == [(4096, "q4_0"), (0, "q4_0")]
+
+
+def test_an_idle_unloaded_model_restored_for_an_alias_does_not_replay_the_last_alias_settings(
+    monkeypatch,
+):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.is_loaded = False
+    rec.backend.last_load_intent = None
+    launch = {"max_seq_length": 4096, "cache_type_kv": "q4_0", "speculative_type": "off"}
+    kw.stash_for_reload(("unsloth/a-gguf", None, "unsloth/a-gguf"), {"kwargs": launch})
+    try:
+        _run_alias_hook(monkeypatch, alias = {**_FAST, "load_settings": {"max_seq_length": 4096}})
+    finally:
+        kw.note_model_unloaded()
+    assert [(c.max_seq_length, c.cache_type_kv, c.speculative_type) for c in rec.calls] == [
+        (4096, None, None)
+    ]
+
+
 def test_models_listing_marks_only_the_alias_whose_load_settings_are_running(monkeypatch):
     rec = _loaded_with_other_settings(monkeypatch, enabled = True)
     rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent("unsloth/a-gguf", n_ctx = 8192)

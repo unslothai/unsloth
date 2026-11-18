@@ -10329,6 +10329,14 @@ def _request_alias(fastapi_request) -> Optional[dict[str, Any]]:
     return alias if alias and alias.get("load_settings") else None
 
 
+_ALIAS_DEFAULTED_FIELDS = (
+    "max_seq_length",
+    "max_seq_length_auto_derived",
+    "cache_type_kv",
+    "speculative_type",
+)
+
+
 def _launched_with(backend, settings: dict[str, Any]) -> bool:
     from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
 
@@ -10355,6 +10363,7 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
     saved = model_override_load_kwargs(saved, is_gguf = True)
     # Fields neither saved nor set load the loader defaults, as a cold load would.
     wanted = {
+        "max_seq_length": 0,
         "kv_cache_dtype": "f16",
         "speculative_type": None
         if _extra_args_set_spec_type(saved.get("llama_extra_args"))
@@ -12536,6 +12545,7 @@ async def _maybe_auto_switch_model(
                             target_id, override_id, variant
                         )
                         alias = _request_alias(fastapi_request)
+                        alias_settings = None
                         if alias is not None and resolved is not None and target_is_gguf:
                             alias_settings = alias["load_settings"]
                             override = {**override, **alias_settings}
@@ -12575,7 +12585,12 @@ async def _maybe_auto_switch_model(
                             override, is_gguf = target_is_gguf
                         )
                         if stashed_intent is not None and target_is_gguf:
-                            load_kwargs.update(_replay_load_kwargs(stashed_intent, override_kwargs))
+                            replay = _replay_load_kwargs(stashed_intent, override_kwargs)
+                            if alias_settings is not None:
+                                # Unset alias fields load the defaults _launched_with expects, not the last launch's.
+                                for name in _ALIAS_DEFAULTED_FIELDS:
+                                    replay.pop(name, None)
+                            load_kwargs.update(replay)
                         load_kwargs.update(override_kwargs)
                         if caller_hf_token:
                             load_kwargs["hf_token"] = caller_hf_token
