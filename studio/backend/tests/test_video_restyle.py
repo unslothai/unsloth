@@ -197,22 +197,34 @@ def _frames(n):
 
 
 @pytest.mark.parametrize(
-    "platform, paravirtual, args",
+    "platform, paravirtual, marker, args",
     [
-        ("darwin", False, ["--backend", "vae=cpu"]),
-        ("darwin", True, []),
-        ("linux", False, []),
-        ("win32", False, []),
+        ("darwin", False, None, ["--backend", "vae=cpu"]),
+        ("darwin", False, b"cosmos3: latent frame", ["--backend", "vae=cpu"]),
+        ("darwin", False, vr._METAL_IM2COL_3D_MARKER, []),
+        ("darwin", True, None, []),
+        ("linux", False, None, []),
+        ("win32", False, None, []),
     ],
 )
-def test_server_args_put_the_vae_on_the_cpu_only_on_metal(monkeypatch, platform, paravirtual, args):
+def test_server_args_put_the_vae_on_the_cpu_only_without_metal_im2col_3d(
+    tmp_path, monkeypatch, platform, paravirtual, marker, args
+):
     monkeypatch.setattr("core.inference.sd_cpp_args.metal_is_paravirtual", lambda: paravirtual)
-    assert vr.server_args(platform) == args
+    binary = tmp_path / "sd-server"
+    binary.write_bytes(b"sd-server")
+    if marker is not None:
+        # The Metal kernels are embedded in the library next to sd-server, not in the binary itself.
+        (tmp_path / "libstable-diffusion.dylib").write_bytes(b"\0" * 64 + marker + b"\0")
+    # A cached answer for one marker must not answer the other.
+    vr.binary_supports_cosmos3(str(binary))
+    assert vr.server_args(str(binary), platform) == args
 
 
 def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
     server = _FakeServer(b"AVI")
-    monkeypatch.setattr(vr, "server_args", lambda: ["--host-flag"])
+    server.binary = "/opt/sd/sd-server"
+    monkeypatch.setattr(vr, "server_args", lambda binary: ["--host-flag", binary])
     runner = vr.RestyleRunner(server_factory = lambda _model: server)
     monkeypatch.setattr(
         "core.inference.video_minimax_h3.transcode_video_to_mp4",
@@ -230,7 +242,7 @@ def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
     assert (state["step"], state["total"]) == (2, 2)
     assert state["eta_seconds"] is None  # cleared once decoding starts
     assert state["video"] == {"id": "v1"}
-    assert server.extra_args == ["--host-flag"]
+    assert server.extra_args == ["--host-flag", "/opt/sd/sd-server"]
     payload = server.payloads[0]
     assert payload["video_frames"] == 5 and len(payload["control_frames"]) == 5
     control = Image.open(io.BytesIO(base64.b64decode(payload["control_frames"][0])))

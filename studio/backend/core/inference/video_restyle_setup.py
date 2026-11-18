@@ -145,10 +145,10 @@ def hardware_plan(
             return {
                 "weights": None,
                 "vram_gib": None,
-                "refusal": "Restyle on a Mac needs Apple Silicon.",
+                "refusal": "Restyle on a Mac needs Apple Silicon and a native (arm64) Unsloth install.",
             }
-        # The working set (~3/4 of RAM) bounds the whole footprint, Metal DiT plus the CPU-side VAE: measured at
-        # 121 frames on an M3 Max as 29.2 + 11.1 GiB in bf16, the same total as the CUDA peak.
+        # The working set (2/3 to 3/4 of RAM) bounds the whole footprint, measured at 121 frames in bf16 on an M3 Max:
+        # 29.2 GiB on Metal + 11.1 GiB for a CPU-side VAE, or 41.4 GiB all on Metal with an IM2COL_3D build.
         return _sized_plan(
             int(working_set) / _GIB,
             "Restyle needs at least {need} GB of GPU memory; this Mac's GPU can use {have} GB.",
