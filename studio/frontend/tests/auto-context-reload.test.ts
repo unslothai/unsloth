@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A same-model GGUF reload on Auto asks the server to fit the context again, whatever preset is
-// active. Resending the resident window made the backend treat it as a typed context, so a reload
-// after a KV cache, vision or GPU change kept the old window under any preset but a pristine Default.
+// The backend reads any positive max_seq_length as typed, so a resent resident window was never re-fitted.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -84,7 +82,6 @@ test("no load path hands the resolver the resident window or the preset source",
 });
 
 test("Manual with fixed layers still keeps the resident context on a same-model reload", () => {
-  // --fit off would launch at the native context otherwise; that path pins it explicitly.
   assert.match(RUNTIME, /loadCustomContextLength = loadContextLength;/);
 });
 
@@ -92,7 +89,6 @@ test("an inherited Manual mode with fixed layers prices the context Reload keeps
   const { fixedLayerContextPin, resolveEstimateContext } = await import(
     "../src/features/model-picker/model-config/estimate-context.ts"
   );
-  // The config page's estimate: the fixed-layer pin first, then the Auto GGUF rule.
   const estimate = (
     config: { gpuMemoryMode?: "auto" | "manual"; gpuLayers: number; customContextLength: number | null },
     standingGpuMemoryMode: "auto" | "manual",
@@ -111,17 +107,13 @@ test("an inherited Manual mode with fixed layers prices the context Reload keeps
       true,
     );
   const RESIDENT = 32768;
-  // 20 fixed layers, no per-model mode, Auto context: the standing Manual preference applies,
-  // performLoad keeps the resident 32,768, and the estimate must price the same number.
+  // No per-model mode: performLoad applies the standing Manual preference and keeps the resident context.
   assert.equal(estimate({ gpuLayers: 20, customContextLength: null }, "manual", RESIDENT), RESIDENT);
   assert.equal(estimate({ gpuMemoryMode: "manual", gpuLayers: 20, customContextLength: null }, "auto", RESIDENT), RESIDENT);
-  // A per-model Auto overrides a standing Manual, and Auto layers are fit by llama.cpp: both send 0.
   assert.equal(estimate({ gpuMemoryMode: "auto", gpuLayers: 20, customContextLength: null }, "manual", RESIDENT), 0);
   assert.equal(estimate({ gpuLayers: -1, customContextLength: null }, "manual", RESIDENT), 0);
-  // A typed context wins, and a model that is not resident has nothing to keep.
   assert.equal(estimate({ gpuLayers: 20, customContextLength: 16384 }, "manual", RESIDENT), 16384);
   assert.equal(estimate({ gpuLayers: 20, customContextLength: null }, "manual", null), 0);
-  // Both fixed-layer checks on the page take the standing preference, as the load does.
   assert.equal(
     CONFIG_PAGE.match(/standingGpuMemoryMode: gpuMemoryModeFallback,/g)?.length,
     2,

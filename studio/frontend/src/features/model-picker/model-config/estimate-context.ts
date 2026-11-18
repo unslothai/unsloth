@@ -15,9 +15,8 @@ export function resolveEstimateContext(
   return customContextLength ?? activeLoadedContext ?? 0;
 }
 
-/** The resident context a same-model reload keeps under Manual memory with fixed layers, or null:
- *  performLoad pins it there because `--fit off` would otherwise launch at the native context.
- *  An unset per-model mode is the standing preference, not Auto, as it is for the load. */
+/** The resident context performLoad keeps under Manual fixed layers (`--fit off` would launch at
+ *  native), or null. An unset per-model mode is the standing preference, as in the load. */
 export function fixedLayerContextPin({
   isGguf,
   gpuMemoryMode,

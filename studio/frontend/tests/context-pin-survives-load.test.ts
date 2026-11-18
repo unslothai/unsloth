@@ -195,12 +195,9 @@ test("a poll landing mid-load cannot plant the outgoing model's context", () => 
 });
 
 test("Auto on a same-model reload asks the server to size the context again", () => {
-  // Resending the resident size made the backend read it as a typed context, so a reload after a
-  // KV cache, vision or GPU change kept the old window, and only a pristine Default re-fitted it.
   const pin = pinAfterLoad(null);
   assert.equal(pin, null, "Auto turned into a pin");
   assert.equal(sentNCtx(pin), 0);
-  // A context the user sets is still sent as is.
   assert.equal(sentNCtx(16384), 16384);
   assert.deepEqual(
     resolveCtxPinSeed({
