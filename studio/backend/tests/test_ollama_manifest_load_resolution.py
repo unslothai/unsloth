@@ -1039,6 +1039,9 @@ def test_an_mlx_load_builds_the_checkpoint_it_names_and_advertises_the_tag(mlx_s
 
     root = mlx_store[0]
     row_id = ollama.scan_ollama_dir(root)[0].id
+    # A lease is verified only after this runs, so a leased request builds nothing.
+    leased = LoadRequest(model_path = row_id, native_path_lease = "unverified")
+    assert _as_ollama_mlx_request(leased) is leased and not Path(row_id).exists()
     resolved = _as_ollama_mlx_request(LoadRequest(model_path = row_id))
     assert resolved.model_path == row_id and resolved._advertised_id == "ollama/gemma4:e4b-mlx"
     assert (Path(row_id) / "config.json").is_file()
@@ -1056,3 +1059,14 @@ def test_an_mlx_load_builds_the_checkpoint_it_names_and_advertises_the_tag(mlx_s
     assert ollama.ollama_mlx_ref_for_path(str(elsewhere)) is None
     copied = shutil.copytree(row_id, root.parent / "copy" / "gemma4-e4b-mlx", symlinks = True)
     assert _as_ollama_mlx_request(LoadRequest(model_path = str(copied)))._advertised_id is None
+
+
+def test_an_mlx_tag_builds_only_after_the_access_check():
+    import inspect
+
+    from routes import inference
+
+    for route in (inference._load_model_impl, inference.validate_model):
+        source = inspect.getsource(route)
+        assert source.index("require_model_access") < source.index("_as_ollama_mlx_request")
+    assert "_as_ollama_mlx_request" not in inspect.getsource(inference.load_model_gated)
