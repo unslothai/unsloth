@@ -9,8 +9,8 @@ strips with a one-row halo, so no normalised activation exists at full size. Res
 blocks into the front half of their input). The nearest-2x upsample writes its rows straight into the padded strip
 and its conv bias is carried into the next block. Same math as the fused decode. NVIDIA CUDA only; eager only.
 
-Every decode on cards measured no slower (``strip_caps``: T4, A100, L4, RTX PRO 6000); elsewhere only decodes the
-fused path would not fit. ``UNSLOTH_FLUX_VAE_STRIPS``: ``0`` off, ``1`` every decode on any NVIDIA card;
+Every decode on cards measured no slower (``strip_caps``: T4, A100, L4, RTX PRO 6000); elsewhere FLUX.2 takes only
+the decodes the fused path would not fit, and the AutoencoderKL family none (the tile planner's whole-map strips). ``UNSLOTH_FLUX_VAE_STRIPS``: ``0`` off, ``1`` every decode on any NVIDIA card;
 ``UNSLOTH_VAE_KL_STRIPS`` the same for the AutoencoderKL family alone.
 
 ``full_map_decode`` runs the same strip decode where the VAE would otherwise tile (speed mode off, no Triton, ROCm,
@@ -36,7 +36,7 @@ FULL_MAP_ENV = "UNSLOTH_FLUX_VAE_FULL_MAP"
 # ``0`` keeps the torch copy + conv-with-bias + copy.
 STRIP_UPSAMPLE_ENV = "UNSLOTH_VAE_STRIP_UPSAMPLE"
 # Strip decode for AutoencoderKL-structured VAEs (FLUX.1, Kontext, Z-Image, HiDream, Lumina-2, Chroma, SDXL) on the
-# default path, matched by structure (``kl_strip_candidate``). ``1`` every decode, ``0`` off; unset: the FLUX.2 policy.
+# default path, matched by structure (``kl_strip_candidate``). ``1`` every decode, ``0`` off; unset: the measured cards.
 KL_STRIPS_ENV = "UNSLOTH_VAE_KL_STRIPS"
 STRIP_VAES = frozenset({"AutoencoderKLFlux2"})
 # Elements of the larger of a strip's input and output (None: by card). sm80+ (L4 / A100) decode fastest at 2^24
@@ -77,7 +77,7 @@ def strips_forced() -> bool:
 
 # (major, minor) compute capabilities where every strip decode measured within A/A noise of the fused one or faster:
 # with the upsample written into the strip and its bias carried (``CARRY_CAPS``: FLUX.1 / SDXL / FLUX.2 decoders at
-# 1024 and 2048 px, 3.7-6.8% faster than the fused decode on T4, A100, L4 and RTX PRO 6000), else the older upsample
+# 1024 and 2048 px, 3.5-7.4% faster than the fused decode on T4, A100, L4 and RTX PRO 6000), else the older upsample
 # (``ALWAYS_CAPS``: A100 3% slower). Other cards (H100, B200) take strips only for decodes the fused path would not fit.
 ALWAYS_CAPS = frozenset({(7, 5), (8, 9)})
 CARRY_CAPS = frozenset({(7, 5), (8, 0), (8, 9), (12, 0)})
@@ -115,8 +115,9 @@ def _kl_setting() -> Optional[bool]:
 
 
 def kl_always_on(device: Any) -> bool:
-    """Every AutoencoderKL decode on this card takes the strip path (else only the ones the fused decode would not
-    fit): ``UNSLOTH_VAE_KL_STRIPS``, else ``UNSLOTH_FLUX_VAE_STRIPS=1``, else the measured cards."""
+    """Every AutoencoderKL decode on this card takes the strip path (else none: a decode the fused path would not fit
+    reaches the whole-map strips through the tile planner): ``UNSLOTH_VAE_KL_STRIPS``, else
+    ``UNSLOTH_FLUX_VAE_STRIPS=1``, else the measured cards."""
     setting = _kl_setting()
     if setting is not None:
         return setting
