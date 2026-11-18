@@ -4,6 +4,7 @@
 """Computer use: call dialects, picture-to-desktop mapping, whole calls on the drawn desktop."""
 
 import asyncio
+import inspect
 import math
 import threading
 import time
@@ -341,13 +342,15 @@ def test_only_a_local_engine_sizes_the_screenshots(desktop, monkeypatch):
     payload = routes.ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
     payload.enabled_tools, payload.thread_id = ["computer"], SESSION
     engine = types.SimpleNamespace(context_length = 32768, image_tokens = GEMMA)
-    for local in (engine, None):
+    for local, encoder in ((engine, ""), (None, None)):
         offer = routes._select_request_tools(
-            payload, tools_on = True, supports_vision = True, engine = local, mcp_allowed = False
-        )
+            payload, tools_on = True, supports_vision = True, engine = local, encoder = encoder,
+            mcp_allowed = False,
+        )  # fmt: skip
         assert asyncio.run(offer)[0]["function"]["name"] == "computer"
         session = state.session(state.session_key(SESSION))
         assert (session.budget and session.budget.size(2560, 1440)) == (local and (2112, 1200))
+        assert session.coordinates == ("grid" if local else "pixels")
 
 
 def test_each_capture_takes_its_display_shape_and_zoom_maps_by_desktop(desktop, monkeypatch):
@@ -781,6 +784,32 @@ def test_the_coordinate_rule_follows_the_models_family(model, mode):
     assert policy.coordinate_mode(model) == mode
     rule = computer_use.computer_tool(mode)["function"]["description"]
     assert ("0 to 1000" in rule) == (mode == "grid")
+
+
+def test_a_local_model_gets_the_grid_unless_its_encoder_answers_in_pixels(desktop):
+    for model, encoder, mode in (
+        ("Nemotron-3.5-Bolt-74B-IQ2_XXS.gguf", "nemotron_v2_vl", "grid"), ("my-finetune", "", "grid"),
+        ("Qwen2.5-VL-7B-Instruct-GGUF", "qwen2.5vl_merger", "pixels"), ("ft", "qwen2_5_vl", "pixels"),
+        ("UI-TARS-7B-SFT", "qwen2_vl", "grid"), ("claude-sonnet-4-5", None, "pixels"),
+    ):  # fmt: skip
+        assert policy.coordinate_mode(model, encoder) == mode
+    desktop.chosen["coordinates"] = "pixels"
+    assert policy.coordinate_mode("my-finetune", "") == "pixels"
+
+
+def test_the_local_encoder_is_the_checkpoint_the_worker_loaded(tmp_path):
+    from core.inference import worker
+    from core.inference.orchestrator import _mirrored_model_entry
+    from routes.inference import _loaded_model_type
+
+    assert '_loaded_model_type(_entry.get("model"))' in inspect.getsource(worker._handle_load)
+    loaded = types.SimpleNamespace(
+        config = {}, _config = types.SimpleNamespace(model_type = "qwen2_5_vl")
+    )
+    entry = _mirrored_model_entry({"model_type": worker._loaded_model_type(loaded)}, "org/adapter")
+    assert _loaded_model_type("org/adapter", entry) == "qwen2_5_vl"
+    (tmp_path / "config.json").write_text('{"model_type": "qwen2_5_vl"}')
+    assert _loaded_model_type(str(tmp_path)) == "qwen2_5_vl"
 
 
 def test_zoom_enlarges_without_moving_the_frame(desktop):

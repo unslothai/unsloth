@@ -409,6 +409,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
     return {
         "is_vision": model_info.get("is_vision", False),
         "is_lora": model_info.get("is_lora", False),
+        "model_type": model_info.get("model_type"),
         "is_mlx": model_info.get("is_mlx", False),
         "loaded_auto_map": model_info.get("loaded_auto_map"),
         "display_name": model_info.get("display_name", model_name),

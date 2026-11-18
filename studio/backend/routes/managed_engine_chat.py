@@ -261,6 +261,9 @@ async def managed_tool_chat(
             mcp_allowed = mcp_on,
             supports_vision = bool(info.get("is_vision")),
             ui_events = ui_events,
+            encoder = await asyncio.to_thread(
+                api._loaded_model_type, backend.active_model_name, info
+            ),
         )
         if tools_on or mcp_on
         else []
