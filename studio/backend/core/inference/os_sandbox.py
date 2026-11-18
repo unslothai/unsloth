@@ -785,10 +785,9 @@ def _tree_fingerprint(folder: str) -> "tuple | None":
                     if is_dir:
                         pending.append(entry.path)
                     elif not linked:
-                        # lstat, not entry.stat: DirEntry reports st_nlink 0 on Windows.
-                        # Extended namespace: a plain file named `nul` otherwise reads as the NUL device.
+                        # Not entry.stat (st_nlink 0 on Windows); extended path, or a file named `nul` is the device.
                         info = os.lstat(_entry_path(entry.path))
-                        # A socket, FIFO or device is a channel to the host that a read-only bind keeps open.
+                        # A socket, FIFO or device stays a host channel under a read-only bind.
                         if not stat.S_ISREG(info.st_mode):
                             return None
                         nlink = info.st_nlink
@@ -821,11 +820,11 @@ def _holds_a_nested_credential(folder: str) -> bool:
         name.casefold() in names
         # Separator-unified: the gate's patterns spell `.config/gh` with `/` inside.
         or _references_sensitive_path(path.replace("\\", "/"))
-        # What the gate still asks for under a silent root, spelled as the gate folds it (`Auth/` on Windows).
+        # What the gate still asks for under a silent root, folded as the gate folds it.
         or _credential_under_silent_root(_normalized_fs_text(path))
         # A link or junction out of the folder reads its target unchecked.
         or (target is not None and not _is_within(target, folder))
-        # A second name can alias a credential anywhere on the volume, as in the workdir scan.
+        # A second name can alias a credential anywhere on the volume.
         or (nlink is not None and nlink > 1)
         for path, name, target, nlink in rows
     )

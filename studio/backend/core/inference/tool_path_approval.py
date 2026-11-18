@@ -346,8 +346,7 @@ def _trusted_tool_folder_roots() -> "tuple[str, ...]":
     return _trusted_roots_built.roots
 
 
-# The trusted roots behind the allowlist this thread is building, so a swap for a link need not wait
-# out the TTL. Per thread: a concurrent build for another caller must not overwrite the snapshot.
+# Trusted roots of the allowlist this thread builds (a swap for a link must not wait out the TTL); per thread so a concurrent build cannot overwrite it.
 _trusted_roots_built = threading.local()
 
 
