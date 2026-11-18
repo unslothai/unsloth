@@ -22,6 +22,7 @@ import {
   useNpuDisplayName,
   useNpuStatus,
 } from "@/features/npu";
+import { isMobileViewport, useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { snapInlinePadding } from "@/lib/snap-padding";
@@ -38,7 +39,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type KeyboardEvent,
+  type PointerEvent,
   type ReactNode,
+  type RefObject,
   useEffect,
   useMemo,
   useLayoutEffect,
@@ -161,6 +164,7 @@ function ModelSelectorTrigger({
   onEject,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
+  onPointerDown,
 }: {
   currentModel?: ModelOption;
   isLoaded: boolean;
@@ -169,6 +173,7 @@ function ModelSelectorTrigger({
   dataTour?: string;
   onEject?: () => void;
   placeholder?: string;
+  onPointerDown?: (event: PointerEvent<HTMLButtonElement>) => void;
 }) {
   const triggerTitle = currentModel?.name ?? placeholder;
   const subtitle = currentModel?.description;
@@ -177,6 +182,7 @@ function ModelSelectorTrigger({
       <button
         type="button"
         data-tour={dataTour}
+        onPointerDown={onPointerDown}
         className={cn(
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
@@ -309,6 +315,7 @@ const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
 
 function ModelSelectorContent({
   open,
+  openedByTouch,
   models,
   additionalOnDeviceModels,
   loadedModelIdOverride,
@@ -332,6 +339,7 @@ function ModelSelectorContent({
   onLinkedPick,
 }: {
   open: boolean;
+  openedByTouch?: RefObject<boolean>;
   models: ModelOption[];
   additionalOnDeviceModels?: ModelOption[];
   loadedModelIdOverride?: string;
@@ -370,6 +378,7 @@ function ModelSelectorContent({
   const showMachineSwitch =
     !!linkedPicker && isOwner && machines.instances.length > 0;
   const linkedInstance = showMachineSwitch ? machines.instance : null;
+  const smallScreen = useIsMobile();
   const hasSelection = Boolean(value);
   const hasExternal = externalModels.length > 0;
   const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
@@ -561,6 +570,7 @@ function ModelSelectorContent({
       align="start"
       alignOffset={10}
       dropdownGlow="picker"
+      collisionPadding={smallScreen ? 8 : undefined}
       ref={surfaceRef}
       // Read by the model list, which sets its right inset against the panel's own.
       data-external={hasExternal || undefined}
@@ -570,6 +580,12 @@ function ModelSelectorContent({
           : undefined
       }
       onKeyDown={handlePickerEntryKeyDown}
+      onOpenAutoFocus={(event) => {
+        if (openedByTouch?.current) {
+          openedByTouch.current = false;
+          event.preventDefault();
+        }
+      }}
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
         visibleConfigTarget
@@ -718,6 +734,7 @@ export function ModelSelector({
   } | null>(null);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
+  const openedByTouch = useRef(false);
   const navigate = useNavigate();
   const t = useT();
   const [uncontrolled, setUncontrolled] = useState("");
@@ -870,9 +887,14 @@ export function ModelSelector({
         dataTour={triggerDataTour}
         onEject={onEject ? () => handleEject() : undefined}
         placeholder={placeholder}
+        onPointerDown={(event) => {
+          openedByTouch.current =
+            !open && event.pointerType === "touch" && isMobileViewport();
+        }}
       />
       <ModelSelectorContent
         open={open}
+        openedByTouch={openedByTouch}
         models={models}
         additionalOnDeviceModels={additionalOnDeviceModels}
         loadedModelIdOverride={loadedModelIdOverride}
