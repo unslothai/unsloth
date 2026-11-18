@@ -5,6 +5,7 @@
 Inference API routes for model loading and text generation.
 """
 
+import copy
 import math
 import os
 import shutil
@@ -30907,8 +30908,9 @@ async def _proxy_to_external_provider(
                 _evicting_payload = unbounded.model_copy(update = bound)
                 _first_payload = first_unbounded.model_copy(update = bound)
                 _checkpoint_pass.clear()
+                # A copy per probe: the fit shortens oversized attachments in place.
                 fitted, truncation, fallback_max_tokens = await _managed_context_fitter(
-                    messages, tools
+                    copy.deepcopy(messages), tools
                 )
                 if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
                     break

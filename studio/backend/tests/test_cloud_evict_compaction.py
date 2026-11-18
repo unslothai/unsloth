@@ -569,6 +569,32 @@ def test_an_overflow_dominated_by_the_latest_turn_drops_the_older_turns(mode):
     assert len(chats) == 2 and [m["role"] for m in chats[1]["messages"]] == ["system", "user"]
 
 
+@pytest.mark.parametrize("mode", ["rolling", "checkpoint"])
+def test_an_overflow_retry_keeps_a_whole_attachment_when_dropping_turns_fits(mode):
+    from test_oversized_attachment_fit import FILE, note
+
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0 " + "word " * 600},
+        {"role": "assistant", "content": "a0 " + "word " * 600},
+        {"role": "user", "content": note() + FILE},
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 200_000,
+        compaction_mode = mode,
+    )
+    assert not [c for c in chunks if "error" in c]
+    assert len(chats) == 2 and "line 2000:" in json.dumps(chats[1]["messages"])
+    assert [m["role"] for m in chats[1]["messages"]] == ["system", "user"]
+
+
 def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     from models.providers import ProviderCreate, ProviderUpdate
     from pydantic import ValidationError
