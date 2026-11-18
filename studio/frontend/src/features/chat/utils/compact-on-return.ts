@@ -3,11 +3,12 @@
 
 /**
  * Coming back to a large cloud thread after the provider's prompt cache has lapsed means the
- * whole history is read again at full price. The composer then offers to summarize it first.
+ * whole history is read again at full price. The composer then suggests summarizing it first;
+ * nothing is queued unless the user asks.
  */
 
 /** Below this a re-read is cheap and a summary loses more than it saves. */
-export const COMPACT_ON_RETURN_MIN_TOKENS = 50_000;
+export const COMPACT_ON_RETURN_MIN_TOKENS = 100_000;
 
 const MINUTE_MS = 60_000;
 

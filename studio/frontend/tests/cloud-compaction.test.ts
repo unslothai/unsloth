@@ -197,7 +197,7 @@ test("the Compact chip is offered only for a large cloud thread left past the ca
   };
   assert.equal(shouldOfferCompactOnReturn(base), true);
   assert.equal(shouldOfferCompactOnReturn({ ...base, nowMs: 4 * minute }), false);
-  assert.equal(shouldOfferCompactOnReturn({ ...base, threadTokens: 49_999 }), false);
+  assert.equal(shouldOfferCompactOnReturn({ ...base, threadTokens: COMPACT_ON_RETURN_MIN_TOKENS - 1 }), false);
   assert.equal(shouldOfferCompactOnReturn({ ...base, threadTokens: null }), false);
   assert.equal(shouldOfferCompactOnReturn({ ...base, isCloudModel: false }), false);
   assert.equal(shouldOfferCompactOnReturn({ ...base, lastReplyAtMs: null }), false);
@@ -211,10 +211,9 @@ test("the Compact chip is offered only for a large cloud thread left past the ca
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /<CompactOnReturnChip \/>\s*<ComposerPrimitive\.Send asChild=\{true\}>/);
   const chip = readSrc("components/assistant-ui/compact-on-return-chip.tsx");
-  // It rides the /compact request, and a click withdraws it for that message.
-  assert.match(chip, /store\.request\(threadId\)/);
-  assert.match(chip, /setKeptFor\(offerKey\);\s*store\.clear\(threadId\);/);
-  // Auto-compaction off: the offer is shown but never queued on its own.
-  assert.match(chip, /const autoCompactEnabled = useChatRuntimeStore\(\(s\) => s\.autoCompactEnabled\);/);
-  assert.match(chip, /if \(eligible && !kept && autoCompactEnabled && offeredRef\.current !== offerKey\)/);
+  // Only a suggestion: a click queues the /compact request and a second click withdraws it.
+  assert.match(chip, /queuedForRef\.current = threadId;\s*store\.request\(threadId\);/);
+  assert.match(chip, /queuedForRef\.current = null;\s*store\.clear\(threadId\);/);
+  assert.equal(chip.match(/store\.request\(/g)?.length, 1);
+  assert.doesNotMatch(chip, /autoCompactEnabled|"Keep"/);
 });
