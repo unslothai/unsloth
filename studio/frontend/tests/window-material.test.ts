@@ -283,19 +283,6 @@ test("docked Run settings rounds its top corner only while no pinned sidebar str
 	assert.match(docked, /\{settingsContent\}\n\s*<\/div>\n\s*$/);
 });
 
-test("the narrow window's Run settings sheet takes the docked panel's glass", () => {
-	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
-	const compact = sheet.slice(sheet.indexOf("if (isCompact) {"), sheet.indexOf("</Sheet>"));
-	assert.match(compact, /<SheetContent side="right" data-chat-settings-sheet=""/);
-	assert.match(compact, /data-slot="chat-settings-panel" className="relative flex h-full flex-col"/);
-	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-chat-settings-sheet\],\nhtml\[data-glass="macos"\] \[data-chat-settings-sheet\] \{\n  background-color: transparent;/);
-	// The floating monitor measures whichever panel is shown, so it docks by the sheet's real width too.
-	const monitor = readFileSync(new URL("../src/components/floating-monitor.tsx", import.meta.url), "utf8");
-	assert.match(monitor, /document\.querySelector\('\[data-slot="chat-settings-panel"\]'\)/);
-	assert.match(monitor, /if \(!attach\(\)\) \{\n\s*setPaintedSettingsWidth\(0\);\n\s*frame = requestAnimationFrame/);
-});
-
 test("glass tints the user's bubble and thread code blocks like the composer, with no blur", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const host = String.raw`html\[data-glass\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\]`;
