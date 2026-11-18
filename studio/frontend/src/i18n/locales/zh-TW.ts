@@ -926,6 +926,7 @@ export const zhTW = {
   chatMenu: {
     more: "聊天選項",
     copy: "複製",
+    addScheduledTask: "新增排程任務…",
     compact: "壓縮對話",
     compactQueued: "已要求在下一則訊息時壓縮",
     compactEmpty: "目前還沒有可壓縮的內容",
@@ -5053,6 +5054,7 @@ export const zhTW = {
       intervalHours: "間隔（小時）",
       hourlyNote: "首次執行會在儲存後經過一個間隔開始。變更間隔或繼續執行會重新開始等待。",
       createTitle: "排程任務",
+      repliesInChat: "每次執行都會在「{title}」中回覆。",
       editTitle: "編輯排程任務",
       name: "名稱",
       namePlaceholder: "名稱（選填）",

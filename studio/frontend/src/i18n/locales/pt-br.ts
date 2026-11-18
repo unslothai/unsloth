@@ -879,6 +879,7 @@ export const ptBR = {
   chatMenu: {
     more: "Opções do chat",
     copy: "Copiar",
+    addScheduledTask: "Adicionar tarefa agendada…",
     compact: "Compactar conversa",
     compactQueued: "A compactação foi solicitada para a próxima mensagem",
     compactEmpty: "Ainda não há nada para compactar",
@@ -5008,6 +5009,7 @@ export const ptBR = {
       intervalHours: "Intervalo (horas)",
       hourlyNote: "A primeira execução ocorre um intervalo após salvar. Alterar o intervalo ou retomar reinicia a espera.",
       createTitle: "Agendar uma tarefa",
+      repliesInChat: "Cada execução responde em “{title}”.",
       editTitle: "Editar tarefa agendada",
       name: "Nome",
       namePlaceholder: "Nome (opcional)",

@@ -883,6 +883,7 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
+    addScheduledTask: "Add scheduled task…",
     compact: "Compact conversation",
     compactQueued: "Compaction requested for the next message",
     compactEmpty: "Nothing to compact yet",
@@ -5009,6 +5010,7 @@ export const en = {
       intervalHours: "Interval (hours)",
       hourlyNote: "The first run is one interval after saving. Changing the interval or resuming restarts the wait.",
       createTitle: "Schedule a task",
+      repliesInChat: "Each run replies in “{title}”.",
       editTitle: "Edit scheduled task",
       name: "Name",
       // Left blank, the name is taken from the first line of the instructions.

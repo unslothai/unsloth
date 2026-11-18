@@ -975,6 +975,7 @@ export const id = {
   chatMenu: {
     more: "Opsi chat",
     copy: "Salin",
+    addScheduledTask: "Tambahkan tugas terjadwal…",
     compact: "Padatkan percakapan",
     compactQueued: "Pemadatan diminta untuk pesan berikutnya",
     compactEmpty: "Belum ada yang dapat dipadatkan",
@@ -5324,6 +5325,7 @@ export const id = {
       intervalHours: "Interval (jam)",
       hourlyNote: "Eksekusi pertama dimulai satu interval setelah disimpan. Mengubah interval atau melanjutkan akan memulai ulang waktu tunggu.",
       createTitle: "Jadwalkan tugas",
+      repliesInChat: "Setiap eksekusi membalas di “{title}”.",
       editTitle: "Edit tugas terjadwal",
       name: "Nama",
       namePlaceholder: "Nama (opsional)",

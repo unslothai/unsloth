@@ -983,6 +983,7 @@ export const pl = {
   chatMenu: {
     more: "Opcje czatu",
     copy: "Kopiuj",
+    addScheduledTask: "Dodaj zaplanowane zadanie…",
     compact: "Kompaktuj rozmowę",
     compactQueued: "Zażądano kompaktowania przy następnej wiadomości",
     compactEmpty: "Nie ma jeszcze czego kompaktować",
@@ -5372,6 +5373,7 @@ export const pl = {
       intervalHours: "Odstęp (godziny)",
       hourlyNote: "Pierwsze uruchomienie nastąpi jeden odstęp po zapisaniu. Zmiana odstępu lub wznowienie rozpoczyna oczekiwanie od nowa.",
       createTitle: "Zaplanuj zadanie",
+      repliesInChat: "Każde uruchomienie odpowiada w „{title}”.",
       editTitle: "Edytuj zaplanowane zadanie",
       name: "Nazwa",
       namePlaceholder: "Nazwa (opcjonalnie)",

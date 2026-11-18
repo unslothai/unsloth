@@ -977,6 +977,7 @@ export const vi = {
   chatMenu: {
     more: "Tùy chọn cuộc trò chuyện",
     copy: "Sao chép",
+    addScheduledTask: "Thêm tác vụ đã lên lịch…",
     compact: "Thu gọn cuộc trò chuyện",
     compactQueued: "Sẽ thu gọn ở tin nhắn tiếp theo",
     compactEmpty: "Chưa có gì để thu gọn",
@@ -5318,6 +5319,7 @@ export const vi = {
       intervalHours: "Khoảng cách (giờ)",
       hourlyNote: "Lần chạy đầu tiên diễn ra sau một khoảng cách kể từ khi lưu. Thay đổi khoảng cách hoặc tiếp tục sẽ bắt đầu lại thời gian chờ.",
       createTitle: "Lên lịch tác vụ",
+      repliesInChat: "Mỗi lần chạy sẽ trả lời trong “{title}”.",
       editTitle: "Sửa tác vụ theo lịch",
       name: "Tên",
       namePlaceholder: "Tên (không bắt buộc)",
