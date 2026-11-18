@@ -1420,14 +1420,34 @@ export function TranslatePage() {
   const [confirmDownload, setConfirmDownload] = useState<
     (typeof DEDICATED_TRANSLATE_MODELS)[number] | null
   >(null);
-  const startTranslate = () => {
-    if (
-      dedicated &&
-      downloaded[dedicated.id] === false &&
-      !readyModels.includes(modelKey)
-    ) {
-      setConfirmDownload(dedicated);
+  const checkingDownload = useRef(false);
+  // Clicked before the page's check answered: ask it now rather than download unasked.
+  const onDiskNow = async (
+    model: (typeof DEDICATED_TRANSLATE_MODELS)[number],
+  ): Promise<boolean | null> => {
+    const known = downloaded[model.id];
+    if (known !== undefined) {
+      return known;
+    }
+    const onDisk = await translateModelDownloaded(model);
+    if (onDisk !== null) {
+      setDownloaded((prev) => ({ ...prev, [model.id]: onDisk }));
+    }
+    return onDisk;
+  };
+  const startTranslate = async () => {
+    if (checkingDownload.current) {
       return;
+    }
+    if (dedicated && !readyModels.includes(modelKey)) {
+      checkingDownload.current = true;
+      const onDisk = await onDiskNow(dedicated).finally(() => {
+        checkingDownload.current = false;
+      });
+      if (onDisk === false) {
+        setConfirmDownload(dedicated);
+        return;
+      }
     }
     void translate();
   };
@@ -1518,7 +1538,7 @@ export function TranslatePage() {
                       !busy
                     ) {
                       event.preventDefault();
-                      startTranslate();
+                      void startTranslate();
                     }
                   }}
                   maxLength={TRANSLATE_SOURCE_MAX_CHARS}
@@ -1609,7 +1629,7 @@ export function TranslatePage() {
                   className={cn(ACTION_BUTTON, busy ? STOP_BUTTON : GO_BUTTON)}
                   variant={busy ? "outline" : "primary"}
                   disabled={!busy && !canTranslate}
-                  onClick={busy ? stop : startTranslate}
+                  onClick={busy ? stop : () => void startTranslate()}
                   aria-keyshortcuts="Control+Enter Meta+Enter"
                   title={
                     busy
