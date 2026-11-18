@@ -155,6 +155,7 @@ _HISTORY_CHARS = 48_000
 def _target_chat(task: dict) -> Optional[dict]:
     """The chat this task posts into, or None for a chat per run (also when that chat is gone)."""
     from storage import studio_db
+
     thread_id = task.get("threadId")
     if not thread_id:
         return None
@@ -192,6 +193,7 @@ def _message_text(message: dict) -> str:
 def _chat_history(task: dict) -> list[dict]:
     """The target chat's text turns, alternating and opening on the user as chat templates expect."""
     from storage import studio_db
+
     thread = _target_chat(task)
     if thread is None:
         return []

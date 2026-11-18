@@ -162,6 +162,7 @@ def _existing_project(project_id: Optional[str]) -> Optional[str]:
 
 def _existing_chat(thread_id: Optional[str]) -> Optional[str]:
     from storage import studio_db
+
     if thread_id is None:
         return None
     thread = studio_db.get_chat_thread(thread_id)
