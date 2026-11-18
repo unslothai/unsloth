@@ -36,6 +36,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.datastructures import UploadFile
 
+from auth.policy import require_owner
 from auth.authentication import (
     authenticated_via_api_key,
     get_current_subject,
@@ -88,6 +89,26 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 openai_router = APIRouter()
+
+
+@router.get("/video/pytorch-install", dependencies = [Depends(get_current_subject)])
+async def video_pytorch_install_status():
+    from utils import video_pytorch_install
+
+    return video_pytorch_install.status()
+
+
+@router.post(
+    "/video/pytorch-install",
+    dependencies = [Depends(get_current_subject), Depends(require_owner)],
+)
+async def install_video_pytorch():
+    from utils import video_pytorch_install
+
+    try:
+        return await asyncio.to_thread(video_pytorch_install.start)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
 def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True):

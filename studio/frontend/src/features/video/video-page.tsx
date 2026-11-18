@@ -62,6 +62,7 @@ import {
 } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
+import { PytorchInstallButton } from "./pytorch-install-button";
 import { VideoRestylePanel } from "./restyle-panel";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
@@ -1264,6 +1265,9 @@ export function VideoPage({
           {hardware.videoUnsupportedMessage ??
             "Video generation is not supported on this machine."}
         </p>
+        {hardware.videoUnsupportedReason === "pytorch_not_installed" && (
+          <PytorchInstallButton />
+        )}
       </VideoGate>
     );
   }
