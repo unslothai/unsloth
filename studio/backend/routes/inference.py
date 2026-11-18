@@ -10321,7 +10321,6 @@ def load_alongside_for_request(scope) -> None:
 
 
 def _request_alias(fastapi_request) -> Optional[dict[str, Any]]:
-    """The alias this request named, when it carries load settings."""
     from utils.model_aliases import ALIAS_SCOPE_KEY
 
     scope = getattr(fastapi_request, "scope", None)
@@ -10449,9 +10448,7 @@ def _ignored_alias_load_settings(
 async def _refuse_ignored_alias_load_settings(
     request: Request, _subject: str = Depends(get_current_subject)
 ) -> None:
-    """Load settings only apply when a local GGUF model generates text. Refuse the alias where
-    they would be ignored: embeddings, a Connection target, a non-GGUF model, a request sent to a
-    provider. _refuse_alias_on_other_resident checks the model that ends up answering."""
+    """Refuse an alias whose load settings this request would ignore (non-GGUF, embeddings)."""
     alias = _request_alias(request)
     if alias is None:
         return
@@ -10472,7 +10469,6 @@ async def _refuse_ignored_alias_load_settings(
 
 
 def _refuse_alias_on_other_resident(fastapi_request) -> None:
-    """After the switch: the model that will answer is one load settings cannot reach."""
     alias = _request_alias(fastapi_request)
     if alias is None:
         return

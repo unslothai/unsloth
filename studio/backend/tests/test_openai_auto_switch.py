@@ -572,7 +572,6 @@ def test_an_alias_with_load_settings_is_refused_for_a_non_gguf_model(monkeypatch
     "path, alias",
     [
         ("/v1/chat/completions", _FAST),
-        # A plain alias is served everywhere, as before.
         ("/v1/embeddings", {"name": "plain", "model": "unsloth/a-gguf"}),
         ("/v1/chat/completions", {"name": "plain", "model": "external::provider::gpt"}),
     ],
@@ -594,7 +593,6 @@ def _alias_refusal_code(excinfo):
         # A Transformers, MLX or NPU model the name check read as a GGUF.
         (False, False, "org/transformers-model", True),
         (True, False, None, False),
-        # Nothing loaded: the route reports that itself.
         (False, False, None, False),
     ],
 )
