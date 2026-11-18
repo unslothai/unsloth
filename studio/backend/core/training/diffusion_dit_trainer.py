@@ -284,10 +284,14 @@ def _empty_device_cache(device) -> None:
 
 
 def _encoders_to_device(pipe, device) -> None:
-    """A QLoRA load leaves text encoders on CPU, so move them; a 4-bit encoder already placed is skipped."""
+    """A QLoRA load leaves text encoders on CPU, so move them; a 4-bit encoder already placed is skipped. Encoders
+    that do not fit in free VRAM stream their layers through the card instead (diffusion_te_stream)."""
+    from core.training.diffusion_te_stream import STREAMER_ATTR, place_text_encoders
+
+    place_text_encoders(pipe, device)
     for attr in ("text_encoder", "text_encoder_2", "text_encoder_3"):
         enc = getattr(pipe, attr, None)
-        if enc is None:
+        if enc is None or getattr(enc, STREAMER_ATTR, None) is not None:
             continue
         try:
             enc.to(device)
@@ -2752,6 +2756,41 @@ def _nf4_compile_supported() -> bool:
         return False
 
 
+def _guard_vae_attention(vae) -> int:
+    """ROCm: route the VAE's single-head attention the way inference does (diffusion_vae_attn_chunked), so a head no
+    fused kernel computes correctly runs exact math. Without it Windows ROCm encoded the training latents through a
+    kernel that returns garbage for head dim 512. Returns the number of modules patched; never raises."""
+    try:
+        from core.inference.diffusion_vae_attn_chunked import install
+        return install(vae)
+    except Exception:  # noqa: BLE001 -- stock attention on any failure
+        return 0
+
+
+def _compile_toolchain_missing() -> Optional[str]:
+    """Why torch.compile cannot build its kernels here, else None. Windows ROCm only: inductor resolves its host C++
+    compiler (``CXX``, else ``cl``) when a compiled training graph carries a CPU kernel, and a stock Windows install has
+    none, so the first training step raised "Compiler: cl is not found" past dynamo's suppress_errors and the run died
+    (gfx1151 Windows 11, FLUX.2 klein and FLUX.3 Klein bf16; ``auto`` picks bf16 there). Asks torch's own lookup.
+    Windows CUDA is left alone: unmeasured there, and a gate must not turn off a compile that may have been running."""
+    import sys
+
+    if sys.platform != "win32" or not torch_is_rocm():
+        return None
+    try:
+        from torch._inductor.cpp_builder import get_cpp_compiler
+    except Exception:  # noqa: BLE001 -- no inductor to ask: leave the decision to the compile itself
+        return None
+    try:
+        get_cpp_compiler()
+    except Exception as exc:  # noqa: BLE001 -- torch raises RuntimeError("Compiler: cl is not found.")
+        return (
+            f"torch.compile is off for this run: it needs a C++ compiler on Windows ({str(exc).strip()}). "
+            "Training continues eager; install Visual Studio Build Tools (C++ workload) to enable it."
+        )
+    return None
+
+
 def _maybe_compile_transformer(
     transformer,
     cfg,
@@ -2775,6 +2814,10 @@ def _maybe_compile_transformer(
                     f"enable compile for the speedup."
                 ),
             )
+        return False
+    missing = _compile_toolchain_missing()
+    if missing:
+        _emit(on_event, "warning", message = missing)
         return False
     import torch
 
@@ -3050,6 +3093,7 @@ def _train_dit(
         with isolated_sampling(device, False):
             with report_model_load_progress(on_event):
                 pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
+            _guard_vae_attention(vae)
             encoded = _encode_prompts_cached(spec, pipe, sample_texts, device, pcache)
         sample_embeds = dict(zip(sample_texts, encoded))
         _free_text_encoders(pipe)
@@ -3070,6 +3114,7 @@ def _train_dit(
             torch.xpu.empty_cache()
         if vae is not None:
             vae.to(device)
+            _guard_vae_attention(vae)
 
         # The cache keeps the posterior affine parameters, so per-step sampling noise is preserved.
         if use_cache:
@@ -3580,6 +3625,9 @@ def _make_optimizer(
 
 def _free_text_encoders(pipe) -> None:
     """Frees conditioning modules once embeddings are precomputed, so they do not sit in VRAM."""
+    from core.training.diffusion_te_stream import release_text_encoders
+
+    release_text_encoders(pipe)
     # A modular facade (FLUX.3) keeps the encoder alive in its block graph's pipeline; drop it (rebuilds on use).
     if getattr(pipe, "_modular", None) is not None:
         pipe._modular = None

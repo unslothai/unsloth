@@ -146,6 +146,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
       {!config?.is_enabled && <p className="text-sm leading-relaxed text-muted-foreground">
         Unsloth downloads and sets up MCP on first use. Internet is needed once; the Blender add-on is installed separately.
       </p>}
+      {config?.installed === false && !config.is_enabled && <p className="text-xs leading-relaxed text-muted-foreground">Blender was not found on this computer. Install it, or set its path in Advanced settings.</p>}
       {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom Blender server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
       {config && !config.is_enabled && (
         <div className="flex items-start gap-3">

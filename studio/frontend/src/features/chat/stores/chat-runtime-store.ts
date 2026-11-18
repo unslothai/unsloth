@@ -60,6 +60,8 @@ import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
+  type RecommendedSamplingKey,
+  RECOMMENDED_SAMPLING_KEYS,
   getPresetOwnedParams,
   getPresetSource,
 } from "../presets/preset-policy";
@@ -178,6 +180,10 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE = 50;
+export const UNLIMITED_TOOL_CALLS = 9999;
+// The slider value from before MCP lifted it to Max, so turning MCP off can put it back.
+const MAX_TOOL_CALLS_BEFORE_MCP_KEY = "unsloth_max_tool_calls_before_mcp";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
@@ -2512,6 +2518,9 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
+  /** Under `modified`, the recommended keys held over a model's recommendation: the ones the user
+   *  moved on Default, every key on a custom preset. Empty for any other source. */
+  presetEditedKeys: RecommendedSamplingKey[];
   models: ChatModelRow[];
   loras: ChatLoraSummary[];
   loraInventorySettled: boolean;
@@ -2795,7 +2804,13 @@ type ChatRuntimeStore = {
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
-  setActivePresetSource: (source: ChatPresetSource) => void;
+  /** `editedKey`: the recommended key a hand edit moved, added to the held keys. */
+  setActivePresetSource: (
+    source: ChatPresetSource,
+    editedKey?: RecommendedSamplingKey,
+  ) => void;
+  /** Stops holding keys just set back to the model's recommendation. */
+  releasePresetEditedKeys: (keys: readonly string[]) => void;
   setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   setThreadRunning: (
@@ -3331,6 +3346,35 @@ function persistPresetDefaults(params: InferenceParams): void {
   }
 }
 
+/** An edited custom preset keeps every recommended key, as the preset did. */
+function heldPresetEditedKeys(
+  activePreset: string,
+  source: ChatPresetSource,
+  editedKeys: readonly RecommendedSamplingKey[],
+): RecommendedSamplingKey[] {
+  if (source !== "modified") return [];
+  if (getPresetSource(activePreset) === "custom") {
+    return [...RECOMMENDED_SAMPLING_KEYS];
+  }
+  return [...new Set(editedKeys)];
+}
+
+function keptKeysMap(
+  keys: readonly RecommendedSamplingKey[],
+  kept: boolean,
+): Partial<Record<RecommendedSamplingKey, boolean>> {
+  return Object.fromEntries(keys.map((key) => [key, kept]));
+}
+
+// Only this edit's key, so a key another tab cleared or kept is left alone; leaving `modified` clears all.
+function presetEditedKeysPatch(
+  source: ChatPresetSource,
+  editedKey: RecommendedSamplingKey | undefined,
+): Partial<Record<RecommendedSamplingKey, boolean>> {
+  if (source !== "modified") return keptKeysMap(RECOMMENDED_SAMPLING_KEYS, false);
+  return keptKeysMap(editedKey ? [editedKey] : [], true);
+}
+
 /** A model reaching the screen under a custom preset shows that preset's values, so its later edits
  *  file only themselves; reaching it under Default or the user's own edits ends that. */
 function notePresetOnLoad(
@@ -3443,13 +3487,13 @@ function getHydratedPresetState(
 ): Partial<
   Pick<
     ChatRuntimeStore,
-    "customPresets" | "activePreset" | "activePresetSource"
+    "customPresets" | "activePreset" | "activePresetSource" | "presetEditedKeys"
   >
 > {
   const nextState: Partial<
     Pick<
       ChatRuntimeStore,
-      "customPresets" | "activePreset" | "activePresetSource"
+      "customPresets" | "activePreset" | "activePresetSource" | "presetEditedKeys"
     >
   > = {};
   if (customPresetsMutationVersion === versions.customPresets) {
@@ -3458,11 +3502,23 @@ function getHydratedPresetState(
   if (activePresetMutationVersion === versions.activePreset) {
     nextState.activePreset = settings.activePreset ?? state.activePreset;
   }
-  if (activePresetSourceMutationVersion === versions.activePresetSource) {
-    const activePreset = nextState.activePreset ?? state.activePreset;
-    nextState.activePresetSource =
-      settings.activePresetSource ?? getPresetSource(activePreset);
-  }
+  const activePreset = nextState.activePreset ?? state.activePreset;
+  const savedSource = settings.activePresetSource ?? getPresetSource(activePreset);
+  const sourceEditedLocally =
+    activePresetSourceMutationVersion !== versions.activePresetSource;
+  if (!sourceEditedLocally) nextState.activePresetSource = savedSource;
+  const savedKeys = heldPresetEditedKeys(
+    activePreset,
+    savedSource,
+    RECOMMENDED_SAMPLING_KEYS.filter((key) => settings.presetEditedKeys?.[key]),
+  );
+  // An edit made before hydration adds to the saved keys rather than replacing them.
+  nextState.presetEditedKeys = sourceEditedLocally
+    ? heldPresetEditedKeys(activePreset, state.activePresetSource, [
+        ...savedKeys,
+        ...state.presetEditedKeys,
+      ])
+    : savedKeys;
   // A model resident before hydration loaded under the placeholder source, so restoring a custom
   // preset here is its load under that preset.
   notePresetOnLoad(
@@ -3789,6 +3845,50 @@ function getHydratedSettingsState(
     nextState.params = { ...capped, maxTokens: cap };
   }
   return nextState;
+}
+
+function readCapBeforeMcp(): number | null {
+  const saved = Number.parseInt(
+    readStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY) ?? "",
+    10,
+  );
+  return Number.isInteger(saved) && saved >= 0 ? saved : null;
+}
+
+let capBeforeMcp: number | null = readCapBeforeMcp();
+
+function saveCapBeforeMcp(value: number | null): void {
+  capBeforeMcp = value;
+  writeStorageValue(
+    MAX_TOOL_CALLS_BEFORE_MCP_KEY,
+    value === null ? "" : String(value),
+  );
+}
+
+// MCP chains run long: MCP on lifts the cap to Max, MCP off restores the saved value unless the user
+// set one since. A store listener, so chat switches and settings hydrated after a reload reconcile too.
+function reconcileMcpToolCallCap(
+  state: ChatRuntimeStore,
+  previous: ChatRuntimeStore,
+): void {
+  // Before hydration the cap is the built-in default, not the user's: neither save nor restore it.
+  if (!state.settingsHydrated) return;
+  const current = state.maxToolCallsPerMessage;
+  let next: number;
+  if (state.mcpEnabledForChat) {
+    const turnedOn =
+      !previous.mcpEnabledForChat || !previous.settingsHydrated;
+    if (!turnedOn || current >= UNLIMITED_TOOL_CALLS) return;
+    saveCapBeforeMcp(current);
+    next = UNLIMITED_TOOL_CALLS;
+  } else {
+    if (capBeforeMcp === null) return;
+    next = capBeforeMcp;
+    saveCapBeforeMcp(null);
+    if (current < UNLIMITED_TOOL_CALLS) return;
+  }
+  setScalarSettingVersion("maxToolCallsPerMessage", next, current);
+  useChatRuntimeStore.setState({ maxToolCallsPerMessage: next });
 }
 
 function setScalarSettingVersion<K extends ScalarSettingKey>(
@@ -4341,6 +4441,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   customPresets: [],
   activePreset: "Default",
   activePresetSource: getPresetSource("Default"),
+  presetEditedKeys: [],
   models: [],
   loras: [],
   loraInventorySettled: false,
@@ -4448,7 +4549,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   deduplicateToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
   keepRunningWhenTabClosed: DEFAULT_KEEP_RUNNING_WHEN_TAB_CLOSED,
-  maxToolCallsPerMessage: 25,
+  maxToolCallsPerMessage: DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
   toolCallTimeout: 5,
   kvCacheDtype: null,
   mlxKvQuant: null,
@@ -4851,9 +4952,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }
   },
   setCustomPresets: (customPresets) =>
-    set(() => {
+    set((state) => {
       customPresetsMutationVersion += 1;
-      saveSettingsPatch({ customPresets });
+      // Only the changed names: another window may have saved presets this list never saw.
+      const names = new Set(customPresets.map((preset) => preset.name));
+      const editCustomPresets: Record<string, Preset | null> = {};
+      for (const preset of state.customPresets) {
+        if (!names.has(preset.name)) editCustomPresets[preset.name] = null;
+      }
+      for (const preset of customPresets) {
+        if (!state.customPresets.includes(preset)) {
+          editCustomPresets[preset.name] = preset;
+        }
+      }
+      if (hasKeys(editCustomPresets)) saveSettingsPatch({ editCustomPresets });
       return { customPresets };
     }),
   setActivePreset: (activePreset) =>
@@ -4862,15 +4974,26 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveSettingsPatch({ activePreset });
       return { activePreset };
     }),
-  setActivePresetSource: (activePresetSource) => {
+  setActivePresetSource: (activePresetSource, editedKey) => {
     let returnedToBuiltInDefault = false;
     set((state) => {
       returnedToBuiltInDefault =
         activePresetSource === "builtin-default" &&
         state.activePresetSource !== "builtin-default";
       activePresetSourceMutationVersion += 1;
-      saveSettingsPatch({ activePresetSource });
-      return { activePresetSource };
+      const presetEditedKeys = heldPresetEditedKeys(
+        state.activePreset,
+        activePresetSource,
+        [
+          ...state.presetEditedKeys,
+          ...(editedKey ? [editedKey] : []),
+        ],
+      );
+      saveSettingsPatch({
+        activePresetSource,
+        presetEditedKeys: presetEditedKeysPatch(activePresetSource, editedKey),
+      });
+      return { activePresetSource, presetEditedKeys };
     });
     if (returnedToBuiltInDefault) {
       // Defer a microtask so the final slider edit lands before the migration inspects it.
@@ -4879,6 +5002,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
     }
   },
+  releasePresetEditedKeys: (keys) =>
+    set((state) => {
+      if (getPresetSource(state.activePreset) === "custom") return state;
+      const released = state.presetEditedKeys.filter((key) => keys.includes(key));
+      if (released.length === 0) return state;
+      saveSettingsPatch({ presetEditedKeys: keptKeysMap(released, false) });
+      return {
+        presetEditedKeys: state.presetEditedKeys.filter(
+          (key) => !keys.includes(key),
+        ),
+      };
+    }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras, loraInventorySettled: true }),
   setThreadRunning: (threadId, running, options) =>
@@ -6300,6 +6435,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
+      // A value the user picks, Max included, is theirs: turning MCP off must not replace it.
+      saveCapBeforeMcp(null);
       setScalarSettingVersion(
         "maxToolCallsPerMessage",
         maxToolCallsPerMessage,
@@ -6400,8 +6537,12 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
 }
 
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
+const unsubscribeMcpToolCallCap = useChatRuntimeStore.subscribe(
+  reconcileMcpToolCallCap,
+);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);
+  import.meta.hot.dispose(unsubscribeMcpToolCallCap);
   import.meta.hot.dispose(() => {
     window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
     window.removeEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);

@@ -811,6 +811,9 @@ def fake_runtime(monkeypatch):
     torch.backends = types.SimpleNamespace(mps = None)
     torch.inference_mode = lambda: contextlib.nullcontext()
     torch.no_grad = lambda: contextlib.nullcontext()
+    # Loading an adapter snapshots the requires_grad flags of the pipe's nn.Module components (#18081); the fake
+    # components are not modules, so there is nothing to snapshot.
+    torch.nn = types.SimpleNamespace(Module = type("Module", (), {}))
 
     diffusers = types.ModuleType("diffusers")
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
@@ -1093,7 +1096,14 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod,
         "apply_attention_backend",
-        lambda pipe, backend, logger = None, target = None, requested = None, speed_active = True: backend,
+        lambda pipe,
+        backend,
+        logger = None,
+        target = None,
+        requested = None,
+        speed_active = True,
+        speed_unset_only = False,
+        int8_policy = None: backend,
     )
     monkeypatch.setattr(
         dmod,
@@ -1388,7 +1398,14 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
     monkeypatch.setattr(
         dmod,
         "apply_attention_backend",
-        lambda pipe, backend, logger = None, target = None, requested = None, speed_active = True: backend,
+        lambda pipe,
+        backend,
+        logger = None,
+        target = None,
+        requested = None,
+        speed_active = True,
+        speed_unset_only = False,
+        int8_policy = None: backend,
     )
 
     def fake_select(
@@ -4331,7 +4348,8 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
 
     monkeypatch.setattr(dmod, "quantize_text_encoders", _quantize)
     monkeypatch.setattr(dmod, "refine_memory_plan_for_components", _refine)
-    _load_m(backend, tmp_path, memory_mode = "low_vram")
+    # The legacy flag is the whole-module request now that low_vram streams.
+    _load_m(backend, tmp_path, cpu_offload = True)
     assert seen == {"quantized": True, "refined": True}
 
 

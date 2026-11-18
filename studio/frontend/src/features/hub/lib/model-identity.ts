@@ -189,6 +189,8 @@ export function residentModelIdMatches(
 
 const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
 const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
+// An MLX tag's checkpoint: <links>/<tag hash>/mlx/<name>, mlx linking to the current build.
+const OLLAMA_MLX_CHECKPOINT_RE = /[\\/][0-9a-f]{10}[\\/]mlx[\\/][^\\/]+[\\/]?$/;
 
 /** The resolver refuses to index a materialized link, so settings must not mirror onto it. */
 export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
@@ -206,6 +208,19 @@ export function isOllamaModelId(modelId: string | null | undefined): boolean {
     Boolean(modelId?.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) ||
     isOllamaLinkPath(modelId)
   );
+}
+
+/** An Ollama tag in its MLX format: a checkpoint directory, never a single .gguf file. */
+export function isOllamaMlxModelId(modelId: string | null | undefined): boolean {
+  if (!modelId) {
+    return false;
+  }
+  return isOllamaLinkPath(modelId) && OLLAMA_MLX_CHECKPOINT_RE.test(modelId);
+}
+
+/** A materialized .gguf link, which the resolver never indexes; an MLX tag's checkpoint it does. */
+export function isMaterializedOllamaLink(modelId: string | null | undefined): boolean {
+  return isOllamaLinkPath(modelId) && !isOllamaMlxModelId(modelId);
 }
 
 // Bare file names come from lease-backed loads whose host path /status withholds.

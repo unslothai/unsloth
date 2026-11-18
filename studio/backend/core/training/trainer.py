@@ -100,6 +100,7 @@ from utils.datasets.pretokenized import (
 )
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
+    EVAL_SPLITS,
     dataset_files_in_dir,
     ensure_dir,
     resolve_dataset_path,
@@ -183,6 +184,16 @@ def _embedding_module_path(model, name: str):
     if module is None:
         return None
     return next((path for path, m in model.named_modules() if m is module and path), None)
+
+
+def _block_swap_engaged(trainer) -> Any:
+    """The run's offload_layers as the fork veto reads it. "auto" offloads nothing when the model fits, so it
+    counts only once a swapper is attached; a fixed count stands as asked."""
+    layers = getattr(trainer, "_offload_layers", 0)
+    if layers != "auto":
+        return layers
+    swapper = getattr(getattr(trainer, "model", None), "_unsloth_block_swap", None)
+    return layers if swapper is not None else 0
 
 
 def _tokenizer_blocks_map_workers(tokenizer) -> bool:
@@ -3144,14 +3155,14 @@ class UnslothTrainer:
         return load_saved_dataset(UnslothTrainer._resolve_local_path(file_paths[0]))
 
     @staticmethod
-    def _resolve_local_files(file_paths: list) -> list[str]:
+    def _resolve_local_files(file_paths: list, splits: tuple[str, ...] = ("train",)) -> list[str]:
         """Resolve a list of local dataset paths to concrete file paths."""
         all_files: list[str] = []
         for dataset_file in file_paths:
             file_path_obj = UnslothTrainer._resolve_local_path(dataset_file)
 
             if file_path_obj.is_dir():
-                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj, splits))
             else:
                 all_files.append(str(file_path_obj))
         return all_files
@@ -3322,7 +3333,7 @@ class UnslothTrainer:
                     eval_all_files = (
                         []
                         if eval_saved is not None
-                        else self._resolve_local_files(local_eval_datasets)
+                        else self._resolve_local_files(local_eval_datasets, EVAL_SPLITS)
                     )
                     if eval_saved is not None:
                         eval_dataset = eval_saved
@@ -4174,6 +4185,9 @@ class UnslothTrainer:
                 max_steps = config_args.get("max_steps"),
                 grad_accum = config_args.get("gradient_accumulation_steps", 1),
                 resolved_max_steps_epochs = resolved_epochs,
+                offload_layers = _block_swap_engaged(self),
+                # The reading the dataset_num_proc veto used, so both fork sites agree.
+                host_memory = getattr(self, "_fork_host_memory", None),
             )
         except Exception as exc:  # noqa: BLE001 - a gating failure must not fail a run
             logger.warning(f"Online tokenization gating failed, using eager path: {exc}")
@@ -4697,6 +4711,17 @@ class UnslothTrainer:
                 f"[DEBUG] learning_rate from training_args: {lr_value} (type: {type(lr_value).__name__})\n"
             )
 
+            from utils.datasets.online_tokenization import (
+                host_memory_fork_veto,
+                host_memory_snapshot,
+            )
+
+            # A tokenizer pool forked off a trainer this size can OOM the host; UNSLOTH_DATASET_NUM_PROC still wins.
+            # One reading per run, shared with the online tokenization gate.
+            self._fork_host_memory = host_memory_snapshot()
+            fork_veto = host_memory_fork_veto(_block_swap_engaged(self), self._fork_host_memory)
+            if fork_veto:
+                logger.info(f"Tokenizing in process: {fork_veto}\n")
             config_args = {
                 "per_device_train_batch_size": training_args.get("batch_size", 2),
                 "gradient_accumulation_steps": training_args.get("gradient_accumulation_steps", 4),
@@ -4719,6 +4744,7 @@ class UnslothTrainer:
                         or self.is_audio_vlm
                         or self._cuda_audio_used
                         or _tokenizer_blocks_map_workers(self.tokenizer)
+                        or fork_veto
                     )
                     else None,
                     serial_as_none = False,

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Linux on X11 through XTEST and Pillow's screen grab; Wayland sessions are reported unsupported."""
+"""Linux on X11 through XTEST and Pillow's screen grab; Wayland sessions use wayland.py."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from .base import Backend, BackendError, Display, FrontWindow
 
@@ -43,11 +43,14 @@ _APP_DIRS = (
 )
 
 
-def _session_problem() -> Optional[str]:
-    wayland = os.environ.get("WAYLAND_DISPLAY") or (
+def wayland_session() -> bool:
+    return bool(os.environ.get("WAYLAND_DISPLAY")) or (
         os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
     )
-    if wayland:
+
+
+def _session_problem() -> Optional[str]:
+    if wayland_session():
         return (
             "This is a Wayland session, where an application can't see or control other windows. "
             "Sign in with an X11 (Xorg) session to use computer use."
@@ -529,23 +532,30 @@ class LinuxBackend(Backend):
                     return found
         return 0
 
+    def _shown(self, root: int) -> Iterator[tuple[int, tuple[int, int, int, int]]]:
+        """Call with the lock held. The top-level windows on screen, topmost first."""
+        for window in reversed(self._children(root)):
+            attributes = _WindowAttributes()
+            if not self._x11.XGetWindowAttributes(self._display, window, ctypes.byref(attributes)):
+                continue
+            if attributes.map_state != _IS_VIEWABLE or attributes.window_class != _INPUT_OUTPUT:
+                continue
+            yield window, (attributes.x, attributes.y, attributes.width, attributes.height)
+
+    def window_stack(self) -> Optional[list[tuple[Any, tuple[float, float, float, float]]]]:
+        if self._problem:
+            return None
+        with self._lock:
+            return list(self._shown(self._x11.XDefaultRootWindow(self._display)))
+
     def window_at(self, x: float, y: float) -> Optional[FrontWindow]:
         """The topmost window under this point. A menu or tooltip is charged to the app in front."""
         if self._problem:
             return None
         with self._lock:
             root = self._x11.XDefaultRootWindow(self._display)
-            for window in reversed(self._children(root)):
-                attributes = _WindowAttributes()
-                if not self._x11.XGetWindowAttributes(
-                    self._display, window, ctypes.byref(attributes)
-                ):
-                    continue
-                if attributes.map_state != _IS_VIEWABLE or attributes.window_class != _INPUT_OUTPUT:
-                    continue
-                inside_x = attributes.x <= x < attributes.x + attributes.width
-                inside_y = attributes.y <= y < attributes.y + attributes.height
-                if not (inside_x and inside_y):
+            for window, (left, top, width, height) in self._shown(root):
+                if not (left <= x < left + width and top <= y < top + height):
                     continue
                 client = self._client(window)
                 if client:

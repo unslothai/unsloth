@@ -39,6 +39,9 @@ Deliberately narrow, so a finding is always worth acting on:
     the FIRST binding of the name and two of them are ordinary merge damage.
   - Assignments are ALL_CAPS only, and `X = frozenset(X)` style self-transforms are exempt.
     A lowercase module-level name being rebound is common enough to be noise.
+  - A DECORATED `def _` binds nothing: `@torch.library.register_fake(...) def _(...)` and
+    `@singledispatch` `@f.register def _(...)` hand the function to the decorator and never
+    read the name back, so neither copy is dead. An undecorated `def _` twice is still a finding.
   - Imports are keyed on the name they BIND, with one carve-out: an IMPLICIT binding takes
     whatever its source is called, so two of them from different sources are the ordinary
     `import urllib.parse` / `import urllib.request` and `from a import x` / `from b import x`
@@ -178,6 +181,8 @@ def _defined_names(node, overloads):
     """[(name, kind)] bound by a direct child of a module/class body."""
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         if _is_overload_def(node, overloads):
+            return []
+        if node.name == "_" and node.decorator_list:
             return []
         # ONE ACCESSOR OF EACH KIND IS LEGITIMATE; A SECOND OF THE SAME KIND IS NOT. Discarding every accessor meant a getter followed by two copies of the same `@value.setter` scanned clean, with the later setter silently replacing the earlier one, exactly the merge damage this gate is for. Keying on the KIND keeps the getter and the setter apart while making two setters collide.
         kind = _accessor_kind(node)
@@ -486,6 +491,12 @@ _SELF_TEST_CASES = [
         "    def go():\n        return 2\n",
     ),
     (0, "try:\n    import json\nexcept ImportError:\n    import json\n"),
+    (
+        0,
+        "import torch\n\n\n@torch.library.register_fake('m::a')\ndef _(x):\n    return x\n\n\n"
+        "@torch.library.register_fake('m::b')\ndef _(x):\n    return x\n",
+    ),
+    (1, "def _(x):\n    return x\n\n\ndef _(x):\n    return 2\n"),
     (1, "try:\n    import json\n    import json\nexcept ImportError:\n    pass\n"),
 ]
 

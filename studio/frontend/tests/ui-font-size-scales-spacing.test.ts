@@ -160,13 +160,17 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
   );
 });
 
-test("the composer's one-row clamp is one row at any size", () => {
+test("the composer's two-row floor is two rows at any size", () => {
   // The editor box wins over the input's min-height, so the clamps and the JS floor move together.
   const clamps = CSS.match(/calc\(40px \* var\(--ui-space-scale, 1\)\)/g) ?? [];
-  assert.equal(clamps.length, 3, "a 40px composer clamp is still fixed");
-  const thread = readSrc("components/assistant-ui/thread.tsx");
-  assert.match(thread, /const oneRowHeight = Math\.round\(40 \* uiSpaceScale\);/);
-  assert.doesNotMatch(thread, /Math\.max\(40, editorHeight\)/);
+  assert.equal(clamps.length, 1, "a 40px composer clamp is still fixed");
+  const frames = CSS.match(/calc\(64px \* var\(--ui-space-scale, 1\)\)/g) ?? [];
+  assert.equal(frames.length, 2, "the editor frame fallback is not two rows");
+  for (const file of ["components/assistant-ui/thread.tsx", "features/chat/shared-composer.tsx"]) {
+    const src = readSrc(file);
+    assert.match(src, /\(16 \+ 24 \* COMPOSER_MIN_ROWS\) \* uiSpaceScale/, file);
+    assert.doesNotMatch(src, /Math\.max\(40, editorHeight\)/, file);
+  }
 });
 
 test("overlays that scale cannot outgrow the screen", () => {

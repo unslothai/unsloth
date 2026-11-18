@@ -10,7 +10,8 @@ rank, the head only on the last's (a tied pair where either end lives). Every ot
 zero-stride placeholder, so a model larger than one GPU can be split. apply_pipeline_parallel must use the
 same split (checked); a forward before it is refused. Weight-derived trainable tensors sync only from ranks
 that read the weight; weight-reading LoRA inits (PiSSA, OLoRA, MiCA, LoftQ, CorDA, LoRA-GA) skip placeholders
-and calibration-forward inits are refused. 16-bit checkpoints only.
+and calibration-forward inits are refused. 16-bit and pre-quantized bitsandbytes 4-bit checkpoints (a 4-bit
+weight another rank owns is a storage-free Params4bit with its real QuantState shape).
 
     mesh = init_device_mesh("cuda", (pp,), mesh_dim_names = ("pp",))
     with pipeline_sharded_loading(mesh["pp"], schedule = "1f1b"):
@@ -36,8 +37,8 @@ _MARK = "_unsloth_pp_preload"
 _GUARDS = "_unsloth_pp_preload_guards"
 _PLACEHOLDER = "_unsloth_pp_placeholder"
 _QUANTIZED_HINT = (
-    "4-bit / 8-bit QLoRA loads the full quantized model and is split by apply_pipeline_parallel: drop "
-    "pipeline_sharded_loading for it, or pass load_in_4bit = False."
+    "Quantizing on load (load_in_4bit / 8-bit of a 16-bit checkpoint) loads the full model and is split by "
+    "apply_pipeline_parallel: drop pipeline_sharded_loading for it, or load a pre-quantized bnb-4bit checkpoint."
 )
 
 
@@ -134,13 +135,19 @@ def _split_for(model, mesh, schedule, config):
     v = resolve_stages_per_rank(spec, config.stages_per_rank)
     pp, rank = mesh.size(), mesh.get_local_rank()
     parts = _find_parts(model)
+    if parts.ple is not None:
+        raise ValueError(
+            "Unsloth: pipeline_sharded_loading does not split per-layer input tables (Gemma 4 E2B / E4B) yet; load "
+            "the whole model, then apply_pipeline_parallel."
+        )
     # The structural refusals (MoE, MLA, ...) before anything is read. Every weight of a fresh load is
     # trainable until get_peft_model freezes it: those refusals run again at apply_pipeline_parallel.
+    # at_load: a VLM's text-only decision waits for the split (Trainer / UNSLOTH_PP_TEXT_ONLY); towers load whole.
     flags = [(p, p.requires_grad) for p in model.parameters()]
     for p, _ in flags:
         p.requires_grad_(False)
     try:
-        _refuse_unsupported(model, parts, allow_moe = False)
+        _refuse_unsupported(model, parts, at_load = True, allow_moe = False)
     finally:
         for p, flag in flags:
             p.requires_grad_(flag)
@@ -173,7 +180,12 @@ def _materialize(model, name, kwargs, mesh, plan, device):
     def read_local(old, reader, key):
         if id(old) not in skip:
             return None
-        new = _placeholder_param(old, device)
+        module = reader.quant.module(old) if reader.quant is not None else None
+        if module is not None:
+            new = reader.quant.placeholder(key, module, device)
+            setattr(new, _PLACEHOLDER, True)
+        else:
+            new = _placeholder_param(old, device)
         placeholders.append(new)
         return new
 
@@ -286,13 +298,26 @@ def pipeline_sharded_loading(
 ):
     """Every transformers `from_pretrained` inside reads only this rank's pipeline stages (see the module
     docstring). Pass apply_pipeline_parallel the same pp_mesh, schedule and config afterwards."""
+    with _pipeline_loading(pp_mesh, schedule, config) as live:
+        yield live
+
+
+@contextlib.contextmanager
+def _pipeline_loading(
+    pp_mesh,
+    schedule,
+    config,
+    auto = False,
+):
+    """pipeline_sharded_loading; `auto`: only checkpoints larger than the GPU (UNSLOTH_PP_SIZE), `pp_mesh` then
+    a callable returning it (read at the first from_pretrained)."""
     from .pp_schedules import schedule_spec
     from .tp_native import _sharded_from_pretrained
 
     schedule_spec(schedule)  # refuse an unknown schedule before loading anything
     if pp_mesh is None:
         pp_mesh = _default_load_mesh()
-    if pp_mesh.ndim != 1:
+    if not callable(pp_mesh) and pp_mesh.ndim != 1:
         raise ValueError("Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).")
     state = {
         "mesh": pp_mesh,
@@ -302,6 +327,7 @@ def pipeline_sharded_loading(
         "quantized_hint": _QUANTIZED_HINT,
         "prequantized_hint": _QUANTIZED_HINT,
         "mesh_hint": "Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).",
+        "auto": auto,
     }
     with _sharded_from_pretrained(state) as live:
         yield live

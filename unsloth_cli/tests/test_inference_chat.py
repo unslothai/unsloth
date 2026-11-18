@@ -2277,13 +2277,13 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
-    # 0 is the "no context requested" sentinel.
+    # None: an untyped context, so the server can keep a resident model's.
     assert loads == [
         (
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 0,
+                "max_seq_length": None,
                 "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
@@ -2336,7 +2336,7 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 0,
+                "max_seq_length": None,
                 "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",

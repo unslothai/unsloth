@@ -1404,6 +1404,22 @@ def _auto_hybrid_device_ok(module) -> bool:
     return torch.version.hip is None and weight is not None and weight.device.type == "cuda"
 
 
+def _hybrid_opt_in_device(modules) -> Optional[str]:
+    for module in modules:
+        if _auto_hybrid_device_ok(module):
+            continue
+        if torch.version.hip is not None:
+            return "ROCm"
+        weight = next(module.parameters(), None)
+        return weight.device.type if weight is not None else "this device"
+    return None
+
+
+def hybrid_packing_opt_in_device(model) -> Optional[str]:
+    """Device a hybrid model packs on through UNSLOTH_EXPERIMENTAL_HYBRID_PACKING=1 alone, else None."""
+    return getattr(model, "_unsloth_hybrid_opt_in_device", None)
+
+
 def _probe_target(modules):
     for module in modules:
         if _stateful_mixer_kind(module) != "gated_delta":
@@ -1763,6 +1779,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         model._unsloth_varlen_forward_wrapped = True
 
     _wrap_generate_clears_varlen(model, hybrid_modules)
+    model._unsloth_hybrid_opt_in_device = (
+        None if torch_varlen_only else _hybrid_opt_in_device(hybrid_modules)
+    )
     HYBRID_PACKING_STATS["patched"] += 1
     return True
 
@@ -1959,6 +1978,10 @@ def get_packed_info_from_kwargs(
             host = tuple(lengths.tolist())
 
     max_seqlen = max(host)
+    # Compiled callers (Ulysses attention in a compiled block) read this eager cache entry: the document
+    # count changes every packed batch, so without the mark each new count recompiled them.
+    torch._dynamo.maybe_mark_dynamic(lengths, 0)
+    torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
     result = (lengths, cu_seqlens, max_seqlen)
     # Meta shapes carry symbolic host scalars without allocating device memory.
     row_shape = torch.empty((sum(host), max_seqlen), device = "meta")

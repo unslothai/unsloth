@@ -25,13 +25,12 @@ import {
   Cancel01Icon,
   InformationCircleIcon,
   PlusSignIcon,
-  Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 const ICON_BUTTON =
-  "grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground";
+  "grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-8";
 
 function Hint({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -53,9 +52,6 @@ export function useCustomFolders({
 }): { actions: ReactNode; body: ReactNode } {
   const { folders } = useScanFolders(enabled);
   const [recommended, setRecommended] = useState<string[]>([]);
-  const [typing, setTyping] = useState(false);
-  const [path, setPath] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const isOwner = useIsAccountOwner();
@@ -78,17 +74,14 @@ export function useCustomFolders({
   }, [enabled]);
 
   const add = useCallback(
-    async (raw: string, fromBrowser: boolean) => {
+    async (raw: string) => {
       const trimmed = raw.trim();
       if (!trimmed || busy) {
         return;
       }
-      setError(null);
       setBusy(true);
       try {
         const { folder, alreadyAdded } = await addScanFolderToStore(trimmed);
-        setPath("");
-        setTyping(false);
         if (alreadyAdded) {
           toast.info("Already in your folders", {
             description: folderDisplayName(folder.path),
@@ -96,11 +89,9 @@ export function useCustomFolders({
         }
         onFoldersChange?.();
       } catch (e) {
-        const message = e instanceof Error ? e.message : "Failed to add folder";
-        setError(message);
-        if (fromBrowser) {
-          toast.error("Couldn't add folder", { description: message });
-        }
+        toast.error("Couldn't add folder", {
+          description: e instanceof Error ? e.message : "Failed to add folder",
+        });
       } finally {
         setBusy(false);
       }
@@ -113,7 +104,7 @@ export function useCustomFolders({
     if (picked === undefined) {
       setBrowsing(true);
     } else if (picked) {
-      void add(picked, true);
+      void add(picked);
     }
   }, [add, isOwner]);
 
@@ -145,42 +136,21 @@ export function useCustomFolders({
   );
 
   const actions = (
-    <>
-      <Hint label={typing ? "Cancel" : "Add by typing a path"}>
-        <button
-          type="button"
-          aria-label={
-            typing ? "Cancel adding folder" : "Add scan folder by path"
-          }
-          onClick={() => {
-            setTyping((open) => !open);
-            setPath("");
-            setError(null);
-          }}
-          className={ICON_BUTTON}
-        >
-          <HugeiconsIcon
-            icon={typing ? Cancel01Icon : PlusSignIcon}
-            strokeWidth={1.75}
-            className="size-3"
-          />
-        </button>
-      </Hint>
-      <Hint label="Browse folders on the server">
-        <button
-          type="button"
-          aria-label="Browse for a folder on the server"
-          onClick={() => void browse()}
-          className={ICON_BUTTON}
-        >
-          <HugeiconsIcon
-            icon={Search01Icon}
-            strokeWidth={1.75}
-            className="size-3"
-          />
-        </button>
-      </Hint>
-    </>
+    <Hint label="Add a folder to scan for models">
+      <button
+        type="button"
+        aria-label="Add a custom folder"
+        onClick={() => void browse()}
+        disabled={busy}
+        className={cn(ICON_BUTTON, "disabled:opacity-40")}
+      >
+        <HugeiconsIcon
+          icon={PlusSignIcon}
+          strokeWidth={1.75}
+          className="size-3"
+        />
+      </button>
+    </Hint>
   );
 
   const registered = new Set(folders.map((f) => f.path));
@@ -192,7 +162,7 @@ export function useCustomFolders({
         return (
           <div
             key={folder.id}
-            className="group/folder flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full pr-[calc(6px*var(--ui-space-scale,1))] pl-3 hover:bg-sidebar-accent"
+            className="group/folder flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 max-md:h-9 items-center gap-2 rounded-full pr-[calc(6px*var(--ui-space-scale,1))] pl-3 hover:bg-sidebar-accent"
           >
             <HugeiconsIcon
               icon={Folder02Icon}
@@ -225,7 +195,7 @@ export function useCustomFolders({
                 aria-label={`Remove folder ${folder.path}`}
                 className={cn(
                   ICON_BUTTON,
-                  "opacity-0 group-hover/folder:opacity-100 focus-visible:opacity-100",
+                  "opacity-0 group-hover/folder:opacity-100 focus-visible:opacity-100 max-md:opacity-100",
                 )}
               >
                 <HugeiconsIcon
@@ -244,7 +214,7 @@ export function useCustomFolders({
             <Hint key={p} label={`Add ${p}`}>
               <button
                 type="button"
-                onClick={() => void add(p, true)}
+                onClick={() => void add(p)}
                 disabled={busy}
                 className="flex h-[calc(24px*var(--ui-space-scale,1))] max-w-full items-center gap-1 rounded-full border border-dashed border-border px-2.5 font-mono text-ui-11 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground disabled:opacity-40"
               >
@@ -259,60 +229,27 @@ export function useCustomFolders({
           ))}
         </div>
       ) : null}
-      {typing ? (
-        <div className="flex flex-col gap-1 px-1 py-1">
-          <div className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center gap-2 rounded-full bg-sidebar-accent pr-1 pl-3">
-            <HugeiconsIcon
-              icon={Folder02Icon}
-              strokeWidth={1.75}
-              className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
-            />
-            <input
-              value={path}
-              onChange={(event) => {
-                setPath(event.target.value);
-                setError(null);
-              }}
-              onKeyDown={(event) => {
-                // The list's arrow and Enter handling must not take the typed path.
-                event.stopPropagation();
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void add(path, false);
-                } else if (event.key === "Escape") {
-                  event.preventDefault();
-                  setTyping(false);
-                  setPath("");
-                  setError(null);
-                }
-              }}
-              placeholder="/path/to/models"
-              aria-label="Folder path"
-              disabled={busy}
-              // biome-ignore lint/a11y/noAutofocus: opened by the user to type a path.
-              autoFocus={true}
-              className="h-full min-w-0 flex-1 bg-transparent font-mono text-ui-12 text-foreground outline-none placeholder:text-muted-foreground"
-            />
-            <button
-              type="button"
-              onClick={() => void add(path, false)}
-              disabled={busy || !path.trim()}
-              className="h-[calc(24px*var(--ui-space-scale,1))] shrink-0 rounded-full px-2.5 text-ui-12 font-medium text-foreground transition-colors hover:bg-background disabled:opacity-40"
-            >
-              Add
-            </button>
-          </div>
-          {error ? (
-            <p className="px-3 text-ui-12 text-destructive">{error}</p>
-          ) : null}
-        </div>
+      {folders.length === 0 ? (
+        <button
+          type="button"
+          onClick={() => void browse()}
+          disabled={busy}
+          className="mx-1 flex h-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full border border-dashed border-border pl-3 text-left text-ui-12 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground disabled:opacity-40"
+        >
+          <HugeiconsIcon
+            icon={PlusSignIcon}
+            strokeWidth={1.75}
+            className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0"
+          />
+          Add a folder to scan for models
+        </button>
       ) : null}
       <FolderBrowser
         open={browsing}
         onOpenChange={setBrowsing}
-        initialPath={path.trim() || undefined}
+        acceptUnbrowsable={true}
         onSelect={(picked) => {
-          void add(picked, true);
+          void add(picked);
         }}
       />
     </div>

@@ -3,12 +3,15 @@
 
 // Landing straight on /hub is the only entry point where nothing else applies inference status.
 
+import { isTranslationHeldSlot } from "../../../lib/translation-models.ts";
 import { ggufVariantsMatch, modelIdsMatch } from "./model-identity.ts";
 
 export interface ResidentAdoptionState {
   checkpoint: string | null;
   checkpointIsExternal: boolean;
   activeGgufVariant: string | null;
+  /** Null once evicted, undefined when not yet known. */
+  residentCheckpoint: string | null | undefined;
   modelLoading: boolean;
   /** From `/openai-auto-switch`; `/status` says nothing about it. */
   idleUnloadArmed: boolean;
@@ -25,6 +28,8 @@ export interface ResidentStatusFacts {
 export interface ResidentAdoptionActions {
   setCheckpoint: (checkpointId: string, ggufVariant: string | null) => void;
   clearCheckpoint?: () => void;
+  /** Keeps the pick but marks it no longer loaded. */
+  markEvicted?: () => void;
   /** Receives store values from before `setCheckpoint`, to tell hydration from steady state. */
   applyStatus: (previous: {
     checkpoint: string | null;
@@ -44,6 +49,15 @@ export function adoptResidentModelStatus(
   }
   // A load applies its own status when it settles and owns the store meanwhile.
   if (state.modelLoading) {
+    return false;
+  }
+  // Chat's rule for a slot Translate took: a pick that was loaded is stale, one never loaded loads on send.
+  if (isTranslationHeldSlot(checkpointId, state.checkpoint)) {
+    if (state.checkpoint && state.residentCheckpoint) {
+      actions.clearCheckpoint?.();
+      return true;
+    }
+    actions.markEvicted?.();
     return false;
   }
   if (!checkpointId) {

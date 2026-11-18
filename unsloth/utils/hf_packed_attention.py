@@ -173,13 +173,92 @@ def _torch_varlen(device):
         _TORCH_VARLEN.append(fn)
         _TORCH_VARLEN_GQA[:] = [native_gqa]
     fn = _TORCH_VARLEN[0]
-    if fn is None or torch.version.hip is not None:
+    if fn is None:
         return None
     ok = _TORCH_VARLEN_DEVICES.get(device.index)
     if ok is None:
-        ok = torch.cuda.get_device_capability(device)[0] >= 8
+        if torch.version.hip is not None:
+            ok = _hip_varlen_matches(device, None)
+        else:
+            ok = torch.cuda.get_device_capability(device)[0] >= 8
         _TORCH_VARLEN_DEVICES[device.index] = ok
     return fn if ok else None
+
+
+_HIP_WINDOW_OK = {}
+_HIP_CHECK_LENGTHS = (5, 37, 22)
+_HIP_CHECK_WINDOW = 8
+
+
+def _document_reference(query, key, value, lengths, scale, window):
+    """fp32 causal (windowed) attention inside each document: (1, H, T, D) -> (1, T, H, D)."""
+    groups = query.shape[1] // key.shape[1]
+    key, value = key.repeat_interleave(groups, 1), value.repeat_interleave(groups, 1)
+    outs, start = [], 0
+    for length in lengths:
+        rows = slice(start, start + length)
+        scores = (query[:, :, rows] @ key[:, :, rows].transpose(-1, -2)) * scale
+        index = torch.arange(length, device = query.device)
+        allowed = index[None, :] <= index[:, None]
+        if window is not None:
+            allowed &= index[None, :] > index[:, None] - window
+        outs.append(scores.masked_fill(~allowed, float("-inf")).softmax(-1) @ value[:, :, rows])
+        start += length
+    return torch.cat(outs, dim = 2).transpose(1, 2)
+
+
+def _hip_varlen_matches(device, window) -> bool:
+    """ROCm: torch's flash varlen runs only once a GQA forward and backward over three documents matches
+    a per-document fp32 reference through both entry points (eager varlen_attn, aten op in graphs)."""
+    fn = _TORCH_VARLEN[0]
+    if fn is None:
+        return False
+    with torch.inference_mode(False), torch.enable_grad(), _no_saved_tensor_hooks():
+        try:
+            generator = torch.Generator().manual_seed(0)
+            total, longest = sum(_HIP_CHECK_LENGTHS), max(_HIP_CHECK_LENGTHS)
+            cu_seqlens = torch.tensor(
+                [0, *torch.tensor(_HIP_CHECK_LENGTHS).cumsum(0).tolist()],
+                dtype = torch.int32,
+                device = device,
+            )
+            for head_dim in (128, 256):
+                q, k, v = (
+                    torch.randn(1, heads, total, head_dim, generator = generator)
+                    .to(device, torch.bfloat16)
+                    .requires_grad_()
+                    for heads in (4, 2, 2)
+                )
+                grad = torch.randn(1, total, 4, head_dim, generator = generator).to(
+                    device, torch.bfloat16
+                )
+                scale = head_dim**-0.5
+                ref_inputs = [x.detach().float().requires_grad_() for x in (q, k, v)]
+                ref = _document_reference(*ref_inputs, _HIP_CHECK_LENGTHS, scale, window)
+                wants = (ref, *torch.autograd.grad(ref, ref_inputs, grad.float()))
+                for run in (_call_torch_varlen, None):
+                    if run is None:
+                        out = _flash_varlen(q, k, v, cu_seqlens, longest, scale, window)
+                    else:
+                        out = run(fn, q, k, v, cu_seqlens, longest, scale, window)
+                    gots = (out, *torch.autograd.grad(out, (q, k, v), grad))
+                    for got, want in zip(gots, wants):
+                        error = (got.float() - want).abs().max()
+                        if not torch.isfinite(got).all() or error > 0.02 * want.abs().max() + 1e-3:
+                            return False
+            return True
+        except Exception:
+            return False
+
+
+def _hip_window_ok(device, window) -> bool:
+    """Sliding windows on ROCm need their own match (flash-attn's ROCm backend lists them as work in progress)."""
+    if window is None or torch.version.hip is None:
+        return True
+    ok = _HIP_WINDOW_OK.get(device.index)
+    if ok is None:
+        ok = _HIP_WINDOW_OK[device.index] = _hip_varlen_matches(device, _HIP_CHECK_WINDOW)
+    return ok
 
 
 _EFFICIENT_ENV = "UNSLOTH_HF_PACKED_EFFICIENT"
@@ -552,7 +631,10 @@ def _sdpa_packed_varlen(
         ):
             # Host inputs were prepared eagerly (block_varlen_kwargs); the kernel call traces.
             scale = query.shape[-1] ** -0.5 if scaling is None else scaling
-            return _flash_varlen(query, key, value, *block_varlen, scale, window), None
+            cu_seqlens, max_seqlen = block_varlen
+            if isinstance(max_seqlen, torch.Tensor):
+                max_seqlen = max_seqlen.shape[0]
+            return _flash_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window), None
         if query.shape[-1] > 256 and _large_head_takes(query, key, value, dropout, window, kwargs):
             scale = query.shape[-1] ** -0.5 if scaling is None else scaling
             return _large_head_varlen(query, key, value, block_varlen[0], scale), None
@@ -608,6 +690,8 @@ def _sdpa_packed_varlen(
             efficient = large_head or _efficient_varlen_takes(query, window)
         elif not _sdpa_requested(query, key):
             torch_varlen = _torch_varlen(query.device)
+            if torch_varlen is not None and not _hip_window_ok(query.device, window):
+                torch_varlen = None
             # An FA4 / FA3 impl behind torch's flash op lacks some shapes (sm100: hd 136-248, hd256 + window).
             refused = torch_varlen is not None and not flash_impl_allows(
                 head_dim, window, query.device
@@ -876,7 +960,11 @@ def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, w
             device = torch.device("cuda", device_index)
             torch_varlen = _torch_varlen(device)
             # Hardware and build only: the sdpa policy can change, block_varlen_kwargs checks it each step.
-            if torch_varlen is None or not flash_impl_allows(head_dim, window, device):
+            if (
+                torch_varlen is None
+                or not _hip_window_ok(device, window)
+                or not flash_impl_allows(head_dim, window, device)
+            ):
                 return False
             query = torch.zeros(1, n_heads, 16, head_dim, device = device, dtype = dtype)
             key = torch.zeros(1, n_kv_heads, 16, head_dim, device = device, dtype = dtype)
@@ -893,11 +981,11 @@ _varlen_in_graph = _constant_probe(_varlen_in_graph_eager)
 
 
 def block_varlen_kwargs(layer, hidden_states, kwargs):
-    """Eager, before _block_compile runs a compiled decoder block: (cu_seqlens, max_seqlen) for its
-    packed row, so attention runs torch's varlen op inside the graph. Building them there needs a host
-    read of the longest segment and the mask check a host sync, which is why the traced wrapper used to
-    fall back to SDPA over the dense mask. None keeps that path; _LEAVE_BLOCK runs the eager
-    wrapper."""
+    """Eager, before _block_compile runs a compiled decoder block: (cu_seqlens, max_seqlen carrier, a
+    tensor as long as the longest document) for its packed row, so attention runs torch's varlen op
+    inside the graph. Building them there needs a host read of the longest segment and the mask check a
+    host sync, which is why the traced wrapper used to fall back to SDPA over the dense mask. None keeps
+    that path; _LEAVE_BLOCK runs the eager wrapper."""
     seq_lengths, mask = kwargs.get("packed_seq_lengths"), kwargs.get("attention_mask")
     attention = getattr(layer, "self_attn", None)
     # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
@@ -981,7 +1069,11 @@ def _block_varlen_prepare(
     if getattr(config, "_attn_implementation", None) != "sdpa":
         return None
     window = _sliding_window(attention, kwargs)
-    if window is _NO_WINDOW or _torch_varlen(hidden_states.device) is None:
+    if (
+        window is _NO_WINDOW
+        or _torch_varlen(hidden_states.device) is None
+        or not _hip_window_ok(hidden_states.device, window)
+    ):
         return None
     from .attention_dispatch import _VARLEN_INT32_GUARD_DISABLED, _varlen_backward_overflows_int32
     from .packing import get_packed_info_from_kwargs
@@ -1019,8 +1111,13 @@ def _block_varlen_prepare(
     _, cu_seqlens, max_seqlen = seq_info
     # The segment count changes every step: one graph for all of them.
     torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+    # The longest document as a dynamic tensor length (prepare_packed_block's carrier): a Python int
+    # was guarded on, so every new longest document recompiled the block. 2+: a length of 1 would
+    # specialise; an upper bound is still exact for varlen.
+    carrier = torch.empty(max(int(max_seqlen), 2), dtype = torch.uint8, device = hidden_states.device)
+    torch._dynamo.maybe_mark_dynamic(carrier, 0)
     HF_PACKED_ATTENTION_STATS["compiled"] += 1
-    return cu_seqlens, int(max_seqlen)
+    return cu_seqlens, carrier
 
 
 def enable_hf_packed_attention() -> bool:
