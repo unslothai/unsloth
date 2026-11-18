@@ -192,6 +192,14 @@ def test_dataset_missing_file_uses_hub_loader(monkeypatch):
     assert dataset.mapped
 
 
+@pytest.mark.parametrize("relative", [False, True])
+def test_explicit_missing_local_path_reports_file_not_found(tmp_path, monkeypatch, relative):
+    monkeypatch.chdir(tmp_path)
+    path = "./missing-corpus.txt" if relative else str(tmp_path / "missing-corpus.txt")
+    with pytest.raises(FileNotFoundError):
+        _run_cli(monkeypatch, dataset = path)
+
+
 def test_raw_text_file_flag_still_honours_chunk_size(tmp_path, monkeypatch):
     path = tmp_path / "corpus.txt"
     path.write_text(" ".join(f"w{i}" for i in range(100)), encoding = "utf-8")
