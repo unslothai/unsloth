@@ -1448,7 +1448,10 @@ def test_a_failed_last_used_model_in_another_cache_is_still_named_and_kept():
     assert _loaded_paths(out) == [big, small]
     assert [e for e in out["events"] if e["kind"] == "recordLastLocal"] == []
     [warning] = _toasts(out, "toast.warning")
-    assert "did not load: Failed to load model" in warning["description"]
+    assert warning["msg"] == "Loaded unsloth/gemma-4-E2B-it-GGUF (UD-Q4_K_XL)"
+    assert warning["description"].startswith(
+        "Your last used model unsloth/gemma-4-26B-A4B-it-GGUF (UD-Q4_K_XL) did not load: Failed to load model"
+    )
 
 
 def test_without_a_last_used_model_a_fallback_is_recorded_as_before():
