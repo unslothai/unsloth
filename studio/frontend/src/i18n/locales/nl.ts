@@ -3430,6 +3430,9 @@ export const nl = {
         showMemoryBar: "VRAM-gebruiksbalk",
         showMemoryBarDescription:
           "Geschat VRAM tonen voor modelgewichten, context en speculatieve decodering.",
+        pickerOrgs: "Organisaties kiezen",
+        pickerOrgsDescription:
+          "Kies welke organisaties een filter krijgen in de modelkiezer, in plaats van de organisaties die hij op basis van je modellen voorstelt.",
         fitOnDeviceOnly: "Alleen modellen tonen die passen",
         fitOnDeviceOnlyDescription:
           "Modellen die te groot zijn voor het GPU-geheugen en RAM van dit apparaat verbergen in de modelkiezer en de Hub. Gedownloade modellen blijven zichtbaar.",

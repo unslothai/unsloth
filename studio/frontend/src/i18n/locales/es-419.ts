@@ -3434,6 +3434,9 @@ export const es419 = {
         showMemoryBar: "Barra de uso de VRAM",
         showMemoryBarDescription:
           "Muestra la VRAM estimada para los pesos del modelo, el contexto y la decodificación especulativa.",
+        pickerOrgs: "Elegir organizaciones",
+        pickerOrgsDescription:
+          "Elige qué organizaciones tienen un filtro en el selector de modelos, en lugar de las que sugiere a partir de tus modelos.",
         fitOnDeviceOnly: "Mostrar solo modelos que caben",
         fitOnDeviceOnlyDescription:
           "Oculta en el selector de modelos y en el Hub los modelos demasiado grandes para la memoria de GPU y la RAM de este dispositivo. Los modelos descargados siguen visibles.",

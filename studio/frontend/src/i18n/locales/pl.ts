@@ -3425,6 +3425,9 @@ export const pl = {
         showMemoryBar: "Pasek użycia VRAM",
         showMemoryBarDescription:
           "Pokazuj szacowaną VRAM dla wag modelu, kontekstu i dekodowania spekulatywnego.",
+        pickerOrgs: "Wybierz organizacje",
+        pickerOrgsDescription:
+          "Wybierz, które organizacje mają filtr w selektorze modeli, zamiast tych, które proponuje na podstawie Twoich modeli.",
         fitOnDeviceOnly: "Pokazuj tylko mieszczące się modele",
         fitOnDeviceOnlyDescription:
           "Ukrywaj w wyborze modelu i centrum modele zbyt duże dla pamięci GPU i RAM tego urządzenia. Pobrane modele pozostają widoczne.",

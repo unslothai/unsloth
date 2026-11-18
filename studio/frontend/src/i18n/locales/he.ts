@@ -3224,6 +3224,9 @@ export const he = {
         showMemoryBar: "הצג סרגל שימוש ב-VRAM",
         showMemoryBarDescription:
           "הצג את ה-VRAM המוערך עבור משקולות המודל, ההקשר ופענוח ספקולטיבי.",
+        pickerOrgs: "בחירת ארגונים",
+        pickerOrgsDescription:
+          "בחרו לאילו ארגונים יהיה מסנן בבורר המודלים, במקום אלה שהוא מציע לפי המודלים שלכם.",
         fitOnDeviceOnly: "הצג רק מודלים שמתאימים",
         fitOnDeviceOnlyDescription:
           "הסתר בבורר המודלים וב-Hub מודלים גדולים מדי לזיכרון ה-GPU וה-RAM של מכשיר זה. מודלים שהורדו נשארים גלויים.",
