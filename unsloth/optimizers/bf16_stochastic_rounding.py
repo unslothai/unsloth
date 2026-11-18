@@ -215,6 +215,13 @@ def _reseed(optimizer, p, seed):
 
 
 class _Float32Step:
+    """Step a float32 copy of one bfloat16 weight, then round it back into the weight in place.
+
+    The weight's .data is never swapped: changing its dtype resets the weight's AccumulateGrad node, and
+    DDP's allreduce hooks live on that node, so DDP would silently stop syncing that gradient from the
+    next backward. The optimizer steps the copy under the weight's own state (moved to the copy's key for
+    the call), and only the copy is float32."""
+
     def __init__(
         self,
         optimizer,
@@ -229,22 +236,26 @@ class _Float32Step:
 
     def __enter__(self):
         p = self.p
-        self.data, self.grad = p.data, p.grad
-        p.grad = None
-        p.data = self.data.float()
-        p.grad = self.grad.float()
-        return p
+        copy = torch.nn.Parameter(p.detach().float())
+        copy.grad = p.grad.float()
+        state = self.optimizer.state
+        if p in state:
+            state[copy] = state.pop(p)
+        self.copy = copy
+        return copy
 
     def __exit__(self, *exc):
-        p = self.p
-        stepped = p.data
-        p.grad = None
-        p.data = self.data
+        p, copy = self.p, self.copy
+        self.copy = None
+        state = self.optimizer.state
+        if copy in state:
+            state[p] = state.pop(copy)
         if exc[0] is None:
+            stepped = copy.detach()
             if self.triton_round:
                 try:
                     seed = _seed_for(self.optimizer, p, self.seed, _step_of(self.optimizer, p))
-                    _round_cuda_(self.data, stepped, seed)
+                    _round_cuda_(p.detach(), stepped, seed)
                     _count(self.optimizer, "_unsloth_sr_triton_rounds")
                 except torch.cuda.OutOfMemoryError:
                     raise
@@ -256,8 +267,9 @@ class _Float32Step:
                     )
                     self.triton_round = False
             if not self.triton_round:
-                stochastic_round_to_bf16_(self.data, stepped, _reseed(self.optimizer, p, self.seed))
-        p.grad = self.grad
+                stochastic_round_to_bf16_(
+                    p.detach(), stepped, _reseed(self.optimizer, p, self.seed)
+                )
         return False
 
 
@@ -294,9 +306,10 @@ def _wrap_bitsandbytes(optimizer, tracked, seed):
     def update_step(self, group, p, gindex, pindex):
         if id(p) not in tracked or p.grad is None or p.dtype != torch.bfloat16:
             return original(group, p, gindex, pindex)
-        # bitsandbytes keeps its own 8-bit state and writes p in place: step a float32 copy, round it in one pass.
-        with _Float32Step(self, p, seed, triton_round = True):
-            return original(group, p, gindex, pindex)
+        # bitsandbytes keeps its own 8-bit state and needs p and its gradient in one dtype: step a float32
+        # copy under p's state, round it back into p in one pass.
+        with _Float32Step(self, p, seed, triton_round = True) as copy:
+            return original(group, copy, gindex, pindex)
 
     optimizer.update_step = types.MethodType(update_step, optimizer)
 
@@ -310,22 +323,45 @@ def _step_hooks(optimizer):
 
 def _wrap_torch(optimizer, tracked, seed):
     original = optimizer.step
+    # The class step without torch's hook dispatch: hooks run once around `update`, with the real weights.
+    cls_step = type(optimizer).step
+    unhooked = (
+        getattr(cls_step, "__wrapped__", None) if getattr(cls_step, "hooked", False) else None
+    )
+    if unhooked is None or getattr(original, "__func__", None) is not cls_step:
+        unhooked = None
 
-    def one_pass(self, closure = None):
-        """The one-pass update of self.param_groups' single group, run inside torch's step hook dispatch (the
-        class step's, so state offload and gradient hooks see it). Returns the weights left to the float32 route."""
+    def update(self, closure = None):
+        """Step self.param_groups' single group of tracked weights inside torch's step hook dispatch (so state
+        offload, gradient and DP hooks see the real weights): the one-pass kernel where it applies, else a float32
+        copy per weight, rounded back in place."""
         if closure is not None:  # e.g. state offload's restore, swapped in by its pre hook
             with torch.enable_grad():
                 closure()
         (group,) = self.param_groups
         params = [p for p in group["params"] if p.grad is not None]  # pre hooks may drop gradients
-        fused = [p for p in params if _fused_param(self, p)]
-        left = {id(p) for p in _fused_adamw_step(self, group, fused, seed)} if fused else set()
-        done = {id(p) for p in fused if id(p) not in left}
-        return [p for p in params if id(p) not in done]
+        if params and _fused_group(self, group):
+            fused = [p for p in params if _fused_param(self, p)]
+            left = {id(p) for p in _fused_adamw_step(self, group, fused, seed)} if fused else set()
+            done = {id(p) for p in fused if id(p) not in left}
+            params = [p for p in params if id(p) not in done]
+        try:
+            for p in params:
+                state = self.state.get(p)
+                if state:
+                    _upcast_state(state, p)
+                with _Float32Step(self, p, seed) as copy:
+                    self.param_groups = [dict(group, params = [copy])]
+                    if unhooked is not None:
+                        unhooked(self)
+                    else:
+                        original()
+                _store_state(self, self.state[p], p, seed)
+        finally:
+            self.param_groups = [group]
 
     profile_hook_step = getattr(torch.optim.Optimizer, "profile_hook_step", None)
-    hooked = profile_hook_step(one_pass) if profile_hook_step is not None else one_pass
+    hooked = profile_hook_step(update) if profile_hook_step is not None else update
 
     # A bound method: torch's LR scheduler wraps `optimizer.step.__func__`.
     @torch.no_grad()
@@ -344,23 +380,12 @@ def _wrap_torch(optimizer, tracked, seed):
                     original()
                 for p in mine:  # indices in parameter order, whichever route steps them
                     _index(self, p)
-                if mine and _fused_group(self, group):
-                    # Step hooks fire as for the float32 route: per weight when the optimizer has its own
-                    # (state offload, idle experts, DP sync), else once for the group.
-                    batches = [[p] for p in mine] if _step_hooks(self) else [mine]
-                    left = []
-                    for batch in batches:
-                        self.param_groups = [dict(group, params = batch)]
-                        left += hooked(self, None)
-                    mine = left
-                for p in mine:
-                    self.param_groups = [dict(group, params = [p])]
-                    state = self.state.get(p)
-                    if state:
-                        _upcast_state(state, p)
-                    with _Float32Step(self, p, seed):
-                        original()
-                    _store_state(self, self.state[p], p, seed)
+                # Step hooks fire per weight when the optimizer has its own (state offload, idle experts,
+                # DP sync), as torch's per-weight steps did before; else once for the group.
+                batches = [[p] for p in mine] if _step_hooks(self) else ([mine] if mine else [])
+                for batch in batches:
+                    self.param_groups = [dict(group, params = batch)]
+                    hooked(self, None)
         finally:
             self.param_groups = groups
         return loss
