@@ -1,48 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read and write a pre-quantized checkpoint as ``.safetensors`` instead of a ``torch.save`` pickle.
-
-torchao's weight subclasses (``Float8Tensor``, ``Int8Tensor``, ``NVFP4Tensor``, ...) are wrapper
-tensors: several plain tensors plus reconstruction metadata behind one logical weight. safetensors
-stores flat tensors only, which is why every pre-quant artifact Unsloth has published so far is a
-pickle. torchao >= 0.16 closes that gap with ``flatten_tensor_state_dict`` /
-``unflatten_tensor_state_dict``, the same pair ``transformers`` and ``diffusers`` use for their own
-torchao checkpoints, so the subclass is split into ``<fqn>._weight_qdata`` / ``._weight_scale`` and a
-JSON description of how to put it back.
-
-Why bother, given the pickle is already read under ``weights_only`` plus a constructor allowlist:
-
-- That allowlist is a real gate, not a formality. ``restricted_prequant_load_supported`` returns
-  False when torch cannot express it or when torchao does not ship a scheme's constructors, and the
-  callers in ``video.py`` then refuse the checkpoint outright and fall back to dense. A safetensors
-  artifact has no constructors to allowlist, so that whole failure mode does not apply to it.
-- A pickle has to be parsed before anything about it is known. A safetensors header is a JSON blob at
-  the front of the file, so the scheme / base model / filter checks run off a few KB, before a single
-  weight byte is read, and a mismatched artifact costs a header read rather than a full parse.
-- mmap, lazy per-tensor reads, the Hub's file viewer and cross-framework reads all come for free.
-
-**On-disk layout.** Tensors are exactly what ``flatten_tensor_state_dict`` produces. The header is
-torchao's own metadata (``tensor_names`` plus one JSON entry per weight, which is what makes the file
-readable by anything that understands torchao checkpoints) with two namespaced keys added:
-
-    "unsloth_format"   -> the same format tag the pickle carries in ckpt["format"]
-    "unsloth_metadata" -> JSON of the same dict the pickle carries in ckpt["metadata"]
-
-``is_metadata_torchao`` walks ``tensor_names`` only, so the extra keys do not disturb it.
-
-**Writing needs a newer torchao than reading does.** Only the new-style subclasses can be flattened,
-and through torchao 0.17 the int8 config still produces the legacy
-``LinearActivationQuantizedTensor`` over an ``AffineQuantizedTensor``; 0.18 produces ``Int8Tensor``,
-which flattens. Both versions RECONSTRUCT an ``Int8Tensor`` file happily, so this binds the machine
-that builds an artifact, never the one that loads it. fp8 has been flattenable since 0.16.
-
-**No new format tag.** The tags (``..._v1``, the rotated ``..._v2``) describe what the WEIGHTS mean,
-and that is unchanged by the container; a rotated safetensors artifact is still ``_v2`` and still
-refused by a build that cannot rotate. Old builds are kept away from these files by the FILENAME,
-not the tag: they resolve ``<Model>-<SCHEME>.pt`` and know nothing of a ``.safetensors`` sibling, so
-a repo can host both and each build reads the one it understands.
-"""
+"""Safetensors pre-quants with no new format tag; old builds ignore the sibling and read the .pt by
+filename; int8 write needs torchao >= 0.18, reading works on older"""
 
 from __future__ import annotations
 
@@ -126,6 +86,39 @@ def safetensors_prequant_supported() -> bool:
     return True
 
 
+# Torchao subclasses for schemes added to its safetensors allowlist after the 0.16 floor (0.16 lists
+# neither, 0.17 lists both); fp8 and int8 are in every release at the floor.
+_SCHEME_SUBCLASS = {"nvfp4": "NVFP4Tensor", "mxfp8": "MXTensor"}
+
+
+def _torchao_safetensors_subclasses() -> Optional[frozenset]:
+    """Subclass names this torchao's safetensors unflatten can rebuild; None when it cannot be read."""
+    try:
+        from torchao.prototype.safetensors import safetensors_utils
+    except Exception:  # noqa: BLE001 - module moved or absent: the feature import elsewhere decides
+        return None
+    names = getattr(safetensors_utils, "ALLOWED_TENSORS_SUBCLASSES", None)
+    if not isinstance(names, (list, tuple, set, frozenset)):
+        return None
+    return frozenset(str(n) for n in names)
+
+
+def safetensors_scheme_supported(scheme: Optional[str] = None) -> bool:
+    """Whether this install can rebuild a ``scheme`` safetensors pre-quant checkpoint.
+
+    torchao 0.16 ships the flatten helpers but cannot unflatten ``NVFP4Tensor`` / ``MXTensor``
+    ("Unsupported tensor type"), so answering the scheme-free question would pick the twin over a
+    loadable ``.pt`` and then fail the read. An unreadable allowlist keeps the scheme-free answer.
+    """
+    if not safetensors_prequant_supported():
+        return False
+    wanted = _SCHEME_SUBCLASS.get((scheme or "").strip().lower())
+    if wanted is None:
+        return True
+    names = _torchao_safetensors_subclasses()
+    return names is None or wanted in names
+
+
 def plain_safetensors_supported() -> bool:
     """The layerwise-cast encoder format stores plain tensors, without torchao subclasses."""
     try:
@@ -135,15 +128,28 @@ def plain_safetensors_supported() -> bool:
     return True
 
 
+def _unviewed(tensor: Any) -> Any:
+    """``tensor`` as a base-less alias of the same storage (no copy). safetensors hands back views of one whole-file
+    mapping; a view keeps that base alive through ``.data =`` (which is how a streamed buffer is re-pointed at its
+    pinned copy), so one buffer would keep the full file mapped for the life of the model."""
+    if getattr(tensor, "_base", None) is None or type(tensor).__name__ != "Tensor":
+        return tensor
+    import torch
+
+    out = torch.empty(0, dtype = tensor.dtype, device = tensor.device)
+    return out.set_(
+        tensor.untyped_storage(), tensor.storage_offset(), tensor.size(), tensor.stride()
+    )
+
+
 def load_plain_prequant_safetensors(
     path: str,
     *,
     device: str = "cpu",
     skip_names: Iterable[str] = (),
 ) -> dict:
-    """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors.
-
-    ``skip_names`` are validated but never read."""
+    """Reads plain-tensor prequant file without torchao; refuses subclass metadata and unlisted
+    tensors; skip_names are validated but never read."""
     from safetensors import safe_open
 
     with safe_open(path, framework = "pt", device = device) as handle:
@@ -175,9 +181,11 @@ def load_plain_prequant_safetensors(
             if json.loads(raw.get(name) or "null") != {"_type": "Tensor"}:
                 raise ValueError(f"{path} requires a tensor-subclass reader for {name!r}")
         skip = frozenset(skip_names)
-        state_dict = {name: handle.get_tensor(name) for name in names if name not in skip}
+        state_dict = {
+            name: _unviewed(handle.get_tensor(name)) for name in names if name not in skip
+        }
         state_dict.update(
-            (key[len(UNSLOTH_ROOT_PREFIX) :], handle.get_tensor(key)) for key in roots
+            (key[len(UNSLOTH_ROOT_PREFIX) :], _unviewed(handle.get_tensor(key))) for key in roots
         )
     return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
 

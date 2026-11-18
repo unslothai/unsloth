@@ -181,7 +181,11 @@ def _has_remaining_main_gguf(target_repo) -> bool:
     )
 
 
-def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, list[str]]:
+def _remove_empty_variant_dirs(
+    target_repos: list,
+    variant: str,
+    protected_revisions: frozenset[str] = frozenset(),
+) -> tuple[int, list[str]]:
     """remove empty variant folders and return their count plus non-concurrent failures."""
     # qualified keys own only their exact folder because token-only folders can be another build.
     qualified = (
@@ -205,6 +209,8 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
         except OSError:
             continue
         for snap in snap_dirs:
+            if snap.name in protected_revisions:
+                continue
             try:
                 subs = list(snap.iterdir())
             except OSError:
@@ -374,7 +380,7 @@ def _umbrella_variant_scope(target_repo, variant: str) -> tuple[frozenset[str], 
     )
     own: set[str] = set()
     protected: set[str] = set()
-    for candidate in model.variants:
+    for candidate in model.cache_variants:
         files = {f.path for f in candidate.files}
         if candidate.primary and gguf_variant_key(candidate.primary).lower() == variant.lower():
             own |= files if not sibling_active else {candidate.primary}
@@ -429,15 +435,19 @@ def _delete_gguf_variant_from_repos(
 
         companion_matches: list[tuple[Path, Optional[Path], str]] = []
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
+            from core.inference.engram_tables import engram_table_precision
             companion_matches = _repo_file_matches(
                 target_repo,
-                # no main GGUF remains, so its companions cannot be launched.
-                lambda name: _is_gguf_filename(name)
-                and (
-                    _is_mmproj_filename(name)
-                    or _is_reclaimable_drafter_path(name)
-                    or _is_imatrix_filename(name)
-                ),
+                # no main GGUF remains, so its companions and Engram tables cannot be launched.
+                lambda name: (
+                    _is_gguf_filename(name)
+                    and (
+                        _is_mmproj_filename(name)
+                        or _is_reclaimable_drafter_path(name)
+                        or _is_imatrix_filename(name)
+                    )
+                )
+                or engram_table_precision(name) is not None,
             )
             for snap, _blob, name in companion_matches:
                 try:
@@ -508,11 +518,18 @@ def _delete_gguf_variant_from_repos(
     if cleanup_variant is None:
         incomplete_result = gguf_variants.VariantIncompleteDeleteResult(deleted = 0, unresolved = False)
     else:
+        # A --ple download's partial standalone table: its hash is in the job's manifest only.
+        from core.inference.engram_tables import engram_table_precision
+        table_hashes = {
+            expected.sha256
+            for expected in (manifest.expected_files if manifest is not None else ())
+            if expected.sha256 and engram_table_precision(expected.path) and not sibling_active
+        }
         incomplete_result = gguf_variants.delete_variant_incomplete_blobs_result(
             repo_id,
             cleanup_variant,
             hf_token,
-            extra_hashes = frozenset(completed_hashes),
+            extra_hashes = frozenset(completed_hashes | table_hashes),
             companions = not sibling_active,
             root = root,
         )
@@ -577,8 +594,13 @@ def reclaim_replaced_gguf_variant(
     hf_token: Optional[str] = None,
     *,
     hub_cache: Optional[str | Path] = None,
+    protected_revisions: frozenset[str] = frozenset(),
 ) -> dict:
-    """Prune stale main-GGUF files for a variant after a replacement verified. Intentionally narrower than user-driven delete: it removes only same-variant main files whose local blob hash is not in *keep_main_hashes*, then unlinks their blobs only if no remaining snapshot references them. Shared companions and sibling variants are left intact."""
+    """Prune stale main-GGUF files for a variant after a replacement verified. Intentionally narrower than user-driven delete: it removes only same-variant main files whose local blob hash is not in *keep_main_hashes*, then unlinks their blobs only if no remaining snapshot references them. Shared companions and sibling variants are left intact.
+
+    A publication-protocol caller holds its lock throughout this call and passes
+    the published and in-flight commits as ``protected_revisions``.
+    """
     if not keep_main_hashes:
         logger.info(
             "Skipping stale GGUF reclaim for %s [%s]: current main hashes unresolved",
@@ -675,6 +697,14 @@ def reclaim_replaced_gguf_variant(
             if _main_key(match[0], main_keys) == variant_key
         ]
         for snap, blob, name in matches:
+            if repo_dir is None:
+                continue
+            try:
+                commit = snap.relative_to(repo_dir / "snapshots").parts[0]
+            except (ValueError, IndexError):
+                continue
+            if commit in protected_revisions:
+                continue
             # prune confirmed stale blobs only; non-symlink snapshot files lack identifiable hashes.
             blob_hash = (
                 _blob_hash_from_path(blob)
@@ -718,8 +748,12 @@ def reclaim_replaced_gguf_variant(
     removed_dirs = 0
     dir_failures: list[str] = []
     if target_repos:
-        removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
-        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+        removed_dirs, dir_failures = _remove_empty_variant_dirs(
+            target_repos, variant, protected_revisions
+        )
+        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(
+            target_repos, protected_revisions
+        )
         removed_dirs += removed_snap_dirs
         dir_failures.extend(snap_dir_failures)
         failures.extend(dir_failures)
@@ -1077,16 +1111,25 @@ async def delete_cached_model_response(
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     guard_id = (await asyncio.to_thread(folder_row_for_download, repo_id, variant) or (repo_id,))[0]
+    # A base listed from its artifact mirror's copy deletes that copy, so guard both identities.
+    mirror_id = (
+        await asyncio.to_thread(cache_inventory.artifact_mirror_delete_id, repo_id, cache_path)
+        if variant is None
+        else None
+    )
+    guard_ids = (guard_id, mirror_id) if mirror_id else (guard_id,)
 
     # Fail closed with 503 rather than unlink weights under a running process.
     def _load_state_blocks_delete() -> Optional[str]:
-        if _llama_cpp_blocks_delete(guard_id, variant) or (
-            _inference_backend_blocks_delete(guard_id)
-        ):
-            return "Unload the model before deleting"
-        if _audio_cpp_blocks_delete(guard_id):
-            return "Unload the audio model before deleting"
-        return _diffusion_blocks_delete(guard_id) or _video_blocks_delete(guard_id)
+        for gid in guard_ids:
+            if _llama_cpp_blocks_delete(gid, variant) or _inference_backend_blocks_delete(gid):
+                return "Unload the model before deleting"
+            if _audio_cpp_blocks_delete(gid):
+                return "Unload the audio model before deleting"
+            blocked = _diffusion_blocks_delete(gid) or _video_blocks_delete(gid)
+            if blocked:
+                return blocked
+        return None
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
@@ -1103,13 +1146,23 @@ async def delete_cached_model_response(
         )
 
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
-    if not downloads.registry.begin_delete(repo_key, variant):
-        detail = (
-            f"Cancel the {variant} download before deleting it."
-            if variant is not None
-            else "Cancel the active downloads before deleting."
+    reserved_keys = [repo_key]
+    if mirror_id:
+        reserved_keys.append(
+            await asyncio.to_thread(resolve_cached_repo_id_case, mirror_id, repo_type = "model")
         )
-        raise HTTPException(status_code = 400, detail = detail)
+    reserved: list[str] = []
+    for key in reserved_keys:
+        if not downloads.registry.begin_delete(key, variant):
+            for held in reserved:
+                downloads.registry.end_delete(held, variant)
+            detail = (
+                f"Cancel the {variant} download before deleting it."
+                if variant is not None
+                else "Cancel the active downloads before deleting."
+            )
+            raise HTTPException(status_code = 400, detail = detail)
+        reserved.append(key)
     try:
         # recheck after reserving the scope so a concurrent load claim is visible.
         try:
@@ -1140,7 +1193,7 @@ async def delete_cached_model_response(
                 )
         result = await asyncio.to_thread(
             _delete_cached_model_blocking,
-            repo_id,
+            mirror_id or repo_id,
             variant,
             hf_token,
             cache_path,
@@ -1160,9 +1213,10 @@ async def delete_cached_model_response(
         from core.inference.audio_cpp_models import forget
 
         forget()
-        return result
+        return {**result, "repo_id": repo_id} if mirror_id else result
     finally:
-        downloads.registry.end_delete(repo_key, variant)
+        for key in reserved:
+            downloads.registry.end_delete(key, variant)
         cache_inventory.invalidate_hf_cache_scans()
 
 
@@ -1227,9 +1281,8 @@ def _delete_cached_model_blocking(
         from hub.utils import companion_assets
 
         try:
-            copies = companion_cleanup._repos_by_id(cache_inventory.all_hf_cache_scans()).get(
-                repo_id.strip().lower(), []
-            )
+            scans = cache_inventory.all_hf_cache_scans()
+            copies = companion_cleanup._repos_by_id(scans).get(repo_id.strip().lower(), [])
             # check only this root; a full copy elsewhere must not block deleting this orphan row.
             if cache_path:
                 wanted = Path(cache_path)
@@ -1241,7 +1294,7 @@ def _delete_cached_model_blocking(
                 if not copies:
                     # An empty match means the target root is not in this scan, and concluding "orphan" from copies we did not look at is the fail-open this precondition prevents; raising lands in the 503.
                     raise RuntimeError(f"cache root not present in the scan: {cache_path}")
-            still_orphan = not any(companion_assets.repo_holds_denoiser(repo) for repo in copies)
+            still_orphan = not any(companion_assets.repo_is_install(repo, scans) for repo in copies)
         except Exception as e:
             logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")
             raise HTTPException(

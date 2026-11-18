@@ -209,6 +209,7 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         "dtype_from_config": lambda config: "bfloat16",
         "_get_dtype": lambda dtype: dtype,
         "_get_inference_mode_context_manager": lambda model: nullcontext(),
+        "_lora_fold_generate": lambda model, args, kwargs: nullcontext(),
         "_unsloth_generate_accepts_kwarg": lambda model, name: False,
         "NUM_LOGITS_TO_KEEP": {architecture: None},
         "DEVICE_TYPE_TORCH": "cuda",
@@ -295,6 +296,7 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
         "dtype_from_config": lambda config: "bfloat16",
         "_get_dtype": lambda dtype: dtype,
         "_get_inference_mode_context_manager": lambda model: nullcontext(),
+        "_lora_fold_generate": lambda model, args, kwargs: nullcontext(),
         "_unsloth_generate_accepts_kwarg": lambda model, name: False,
         "NUM_LOGITS_TO_KEEP": {"Qwen3VLForConditionalGeneration": None},
         "DEVICE_TYPE_TORCH": "cuda",
@@ -344,6 +346,13 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
     fast_generate(Model(), input_ids = input_ids, past_key_values = cache)
     assert "cache_implementation" not in captured
     assert captured["past_key_values"] is cache
+
+    # LFM3's custom generate lists cache_implementation as unsupported and raises on any value (#16054).
+    class CustomGenerateModel(Model):
+        _generation_fields_unsupported = {"cache_implementation": None}
+
+    fast_generate(CustomGenerateModel(), input_ids = input_ids)
+    assert "cache_implementation" not in captured
 
 
 if __name__ == "__main__":

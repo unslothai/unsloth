@@ -20,25 +20,23 @@ import {
 } from "@/components/ui/tooltip";
 import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
 import { resumesThought } from "@/features/model-picker";
+import { isNpuModelId } from "@/features/npu";
 import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
+  Clock01Icon,
   CollapseIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Folder02Icon,
-  FolderExportIcon,
   LayerIcon,
-  MoreHorizontalIcon,
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
@@ -46,16 +44,26 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { ForkIcon } from "@/lib/fork-icon";
-import { type ReactNode, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  Suspense,
+  lazy,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ActiveChatMenu,
   useActiveChatMenuStore,
 } from "../stores/active-chat-menu-store";
 import { requestThreadCompaction } from "../stores/compact-request-store";
+import { isExternalModelId } from "../external-providers";
 import {
   liveThreadBranch,
   liveThreadRunning,
@@ -72,7 +80,12 @@ import {
   getSidebarItemThreadIds,
   regenerateChatTitleWithToast,
 } from "./chat-row-menu";
-import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
+import {
+  chatFolderSessionId,
+  OpenChatFolderItem,
+  UploadToChatFolderItem,
+} from "./open-chat-folder-item";
+import { ExportFormatItems } from "./export-format-items";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -83,6 +96,13 @@ export const CHAT_MENU_TRIGGER =
 export const CHAT_MENU = MENU;
 const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
+
+// Lazy: the scheduled tasks module loads with /tasks.
+const TaskDialog = lazy(() =>
+  import("@/features/scheduled-tasks/task-dialog").then((m) => ({
+    default: m.TaskDialog,
+  })),
+);
 
 function Shortcut({ id }: { id: ShortcutId }) {
   const label = useShortcutLabel(id);
@@ -162,7 +182,13 @@ function TemporaryChatButton({
   );
 }
 
-function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
+function ChatMenuItems({
+  menu,
+  onAddScheduledTask,
+}: {
+  menu: ActiveChatMenu;
+  onAddScheduledTask: () => void;
+}) {
   const t = useT();
   const preStreamRunActive = useSyncExternalStore(
     subscribePreStreamRunReservations,
@@ -190,13 +216,14 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       toast.info(t("chatMenu.compactEmpty"));
       return;
     }
-    if (!runtime.supportsTools || !resumesThought({
+    // A cloud connection summarizes, which needs neither tools nor a resumable local model.
+    if (!isExternalModelId(runtime.params.checkpoint) && (!runtime.supportsTools || !(resumesThought({
       loadedIsGguf: runtime.loadedIsGguf,
       loadedIsMlx: runtime.loadedIsMlx,
       activeGgufVariant: runtime.activeGgufVariant,
       activeNativePathToken: runtime.activeNativePathToken,
       checkpoint: runtime.params.checkpoint,
-    })) {
+    }) || isNpuModelId(runtime.params.checkpoint)))) {
       toast.info(t("chatMenu.compactUnsupported"));
       return;
     }
@@ -233,6 +260,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.menu.regenerateTitle")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}
         onSelect={menu.togglePin}
@@ -289,6 +317,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.chats.menu.fork")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="gap-2.5">
           <HugeiconsIcon
@@ -315,7 +344,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
               {menu.projects.map((entry) => (
                 <Item
                   key={entry.id}
-                  icon={Folder02Icon}
+                  icon={ProjectIcon}
                   onSelect={() => menu.moveToProject(entry.id)}
                 >
                   {entry.name}
@@ -387,30 +416,35 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
           {t("common.export")}
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className={cn(MENU, "w-48")}>
-          {chatExportOptions().map(({ label: name, format }) => (
-            <DropdownMenuItem
-              key={format}
-              onSelect={() => void exportAs(format)}
-            >
-              {name}
-            </DropdownMenuItem>
-          ))}
+          <ExportFormatItems
+            options={chatExportOptions().map(({ label, format }) => ({
+              key: format,
+              label,
+            }))}
+            onSelect={(format) => void exportAs(format)}
+            subContentClassName={cn(MENU, "w-48")}
+          />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
+      <DropdownMenuSeparator className="mx-3" />
+      <Item icon={Clock01Icon} onSelect={onAddScheduledTask}>
+        {t("chatMenu.addScheduledTask")}
+      </Item>
+      {/* Only with the folder items, or it doubles the next separator. */}
+      {chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null}
       <OpenChatFolderItem item={menu.item} />
       <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
-      <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
+      <Item icon={ArchiveIcon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}
       </Item>
-      <Item icon={Delete02Icon} onSelect={menu.remove} destructive={true}>
+      <Item icon={TrashIcon} onSelect={menu.remove} destructive={true}>
         {t("common.delete")}
       </Item>
     </>
   );
 }
 
-/** A saved chat's menu, or the temporary toggle on a new chat. Saved chats cannot turn temporary. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,
@@ -418,47 +452,68 @@ export function ChatHeaderMenu({
   temporary: boolean;
   onToggleTemporary: () => void;
 }) {
-  const t = useT();
   const menu = useActiveChatMenuStore((state) => state.menu);
-  const label = t("chatMenu.more");
-  if (temporary || !menu) {
-    return (
-      <TemporaryChatButton temporary={temporary} onToggle={onToggleTemporary} />
-    );
+  if (!temporary && menu) {
+    return null;
   }
   return (
-    <DropdownMenu>
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <DropdownMenuTrigger asChild={true}>
-            <button
-              type="button"
-              aria-label={label}
-              className={CHAT_MENU_TRIGGER}
-            >
-              <HugeiconsIcon
-                icon={MoreHorizontalIcon}
-                strokeWidth={1.75}
-                className="size-icon"
-              />
-            </button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent
-          side="bottom"
+    <TemporaryChatButton temporary={temporary} onToggle={onToggleTemporary} />
+  );
+}
+
+/** `threadId` guards against a menu left from the previous chat. */
+export function ChatTitleMenu({
+  threadId,
+  fallback,
+}: {
+  threadId: string | null | undefined;
+  fallback?: ReactNode;
+}) {
+  const t = useT();
+  const menu = useActiveChatMenuStore((state) => state.menu);
+  const [taskProject, setTaskProject] = useState<string | null | undefined>();
+  if (!menu || !threadId || menu.item.id !== threadId) {
+    return fallback ?? null;
+  }
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            aria-label={`${t("chatMenu.more")}: ${menu.item.title}`}
+            className="chat-title-trigger mr-[calc(6px*var(--ui-space-scale,1))] ml-[calc(6px*var(--ui-space-scale,1))] flex h-[var(--studio-chat-control-height,34px)] min-w-0 max-w-[min(28rem,45vw)] shrink cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 text-ui-13p5 font-medium text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover"
+          >
+            <span className="min-w-0 truncate">{menu.item.title}</span>
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={1.75}
+              className="size-3.5 shrink-0 text-muted-foreground"
+            />
+          </button>
+        </DropdownMenuTrigger>
+        {/* ml-0: align with the title's hover box. */}
+        <DropdownMenuContent
+          align="start"
           sideOffset={6}
-          className="tooltip-compact"
+          className={cn(MENU, "w-64 data-[align=start]:ml-0")}
         >
-          {label}
-        </TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent
-        align="end"
-        sideOffset={6}
-        className={cn(MENU, "w-64")}
-      >
-        <ChatMenuItems menu={menu} />
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <ChatMenuItems
+            menu={menu}
+            onAddScheduledTask={() => setTaskProject(menu.project?.id ?? null)}
+          />
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {taskProject !== undefined && (
+        <Suspense fallback={null}>
+          <TaskDialog
+            task={null}
+            initialProjectId={taskProject}
+            chat={{ id: menu.item.id, title: menu.item.title }}
+            onClose={() => setTaskProject(undefined)}
+          />
+        </Suspense>
+      )}
+    </>
   );
 }

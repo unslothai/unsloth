@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useIsAccountOwner } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
+import { npuEngineVersions, useNpuStatus } from "@/features/npu";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   type ComponentOffer,
@@ -18,7 +19,7 @@ import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
 type EngineRow = {
-  key: "llama" | "whisper" | "audio";
+  key: "llama" | "whisper" | "audio" | "mlx" | "fastflowlm" | "lemonade";
   labelKey: TranslationKey;
   installed: string | null;
   offer: ComponentOffer | null;
@@ -34,6 +35,24 @@ export function EngineVersionsSection() {
   });
   const [checking, setChecking] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
+  const [npuStatus] = useNpuStatus();
+  const npu = npuEngineVersions(npuStatus);
+  const npuRows: EngineRow[] = npu
+    ? [
+        {
+          key: "fastflowlm",
+          labelKey: "settings.about.fastflowlmVersion",
+          installed: npu.fastflowlm,
+          offer: null,
+        },
+        {
+          key: "lemonade",
+          labelKey: "settings.about.lemonadeVersion",
+          installed: npu.lemonade,
+          offer: null,
+        },
+      ]
+    : [];
 
   // The binary's own build string names the variant the release tag leaves out.
   const rows: EngineRow[] = [
@@ -55,10 +74,19 @@ export function EngineVersionsSection() {
       installed: hw.audioCpp ?? status?.audio?.installed_tag ?? null,
       offer: status?.audio ?? null,
     },
+    {
+      key: "mlx",
+      labelKey: "settings.about.mlxVersion",
+      installed: hw.mlx,
+      offer: null,
+    },
+    ...npuRows,
   ];
-  // whisper.cpp only reports once the backend knows about it; an empty row would read as missing.
+  // whisper.cpp only reports once the backend knows it, MLX only where installed; an empty row reads as missing.
   const visibleRows = rows.filter(
-    (row) => row.key !== "whisper" || row.offer != null,
+    (row) =>
+      (row.key !== "whisper" || row.offer != null) &&
+      (row.key !== "mlx" || row.installed != null),
   );
   const job = status?.job;
   const offered = status != null && llamaUpdateOffered(status);

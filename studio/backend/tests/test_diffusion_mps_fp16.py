@@ -326,24 +326,39 @@ class NativeWeightOnlyLinear(nn.Module):
         return nn.functional.linear(x.float(), w).to(x.dtype)
 
 
+def _studio_fp8(lin):
+    """Studio's own fp8 weight-only Linear, recording its activation dtypes like the int8 stand-in above."""
+    from core.inference.diffusion_native_quant import native_linear_class
+
+    cls = native_linear_class()
+
+    def forward(self, x):
+        self.seen.append(x.dtype)
+        return cls.forward(self, x)
+
+    layer = type("NativeWeightOnlyLinear", (cls,), {"forward": forward})(lin, "fp8")
+    layer.seen = []
+    return layer
+
+
 @needs_fp16
-def test_int8_weight_only_layers_keep_storage_and_get_fp16_activations():
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_weight_only_layers_keep_storage_and_get_fp16_activations(scheme):
     model = _model()
     q = []
+    make = NativeWeightOnlyLinear if scheme == "int8" else _studio_fp8
+    codes, scales = (torch.int8, torch.float32) if scheme == "int8" else (torch.uint8, torch.int32)
     for blk in (*model.layers, *model.noise_refiner, *model.context_refiner):
         for parent, names in (
             (blk.attention, ("to_q", "to_k", "to_v")),
             (blk.feed_forward, ("w1", "w2", "w3")),
         ):
             for n in names:
-                layer = NativeWeightOnlyLinear(getattr(parent, n))
+                layer = make(getattr(parent, n))
                 setattr(parent, n, layer)
                 q.append(layer)
     assert mf.install_mps_fp16(model, MPS_BF16) > 0
-    assert all(
-        layer.weight_q.dtype is torch.int8 and layer.weight_scale.dtype is torch.float32
-        for layer in q
-    )
+    assert all(layer.weight_q.dtype is codes and layer.weight_scale.dtype is scales for layer in q)
     out = _run(model, torch.bfloat16)
     assert torch.isfinite(out).all()
     assert q[0].seen and all(d is torch.float16 for layer in q for d in layer.seen)

@@ -101,6 +101,22 @@ def test_truncation_drops_middle_keeps_anchors():
     assert new[-2] == msgs[-2]
 
 
+def test_truncation_keeps_roles_alternating_at_the_cut():
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u0"},
+        {"role": "assistant", "content": "A" * 20000},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+    ]
+    new, dropped = _truncate_middle_messages(messages, 0.5)
+    assert dropped == 1
+    assert [m["role"] for m in new] == ["system", "user", "assistant", "user"]
+    assert new[1]["content"] == "u0\n\nu1"
+    assert messages[1]["content"] == "u0"
+
+
 def test_truncation_never_orphans_tool_results():
     msgs = _conversation()
     new, dropped = _truncate_middle_messages(msgs, keep_ratio = 0.4)
@@ -850,8 +866,7 @@ def test_tool_loop_context_truncation_accumulates_dropped_messages():
 
 
 def test_apply_overflow_truncation_clips_giant_protected_tool_results():
-    """One giant burst (few turn-groups, all protected) must still shrink:
-    stage 2 clips oversized tool contents instead of giving up."""
+    """Even one giant protected burst must shrink: stage 2 clips oversized tool contents."""
     msgs = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "task"},
@@ -1267,9 +1282,7 @@ def _instruction(text = None):
 
 
 def _filler_turns(count, chars = 800):
-    """Short user nudges with long agent replies, which is the shape that produces the
-    defect: the user types "keep going", the agent writes a page, and the newest USER
-    group -- the only one the window protects -- is the nudge."""
+    """Short nudges after long agent replies leave the protected newest user group as a nudge."""
     nudges = ["continue", "keep going", "yes", "ok", "go on", "proceed"]
     out = []
     for index in range(count):
@@ -1307,8 +1320,7 @@ def test_a_governing_instruction_survives_filler_turns():
 
 
 def test_a_pinned_instruction_cannot_starve_the_window():
-    """The single enormous instruction is the thing that could starve the window, so it
-    is the thing the ceiling excludes -- not partially, at all."""
+    """An enormous pinned instruction could starve the window, so the ceiling drops it whole."""
     from core.inference import instruction_pin
 
     big = [_instruction("Please " + "consider this requirement carefully. " * 95) for _ in range(3)]

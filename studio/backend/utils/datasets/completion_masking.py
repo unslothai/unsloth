@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Completion-only masking policy shared by the CUDA and MLX training paths.
-
-Decides how train_on_responses_only is applied for a model: explicit dataset
-markers when requested, otherwise chat template auto-detection with manual
-TEMPLATE_TO_RESPONSES_MAPPER markers as the fallback. gpt-oss included: its
-quantized checkpoints ship a different chat template, so only detection from
-the actual template is reliable.
-"""
+"""Completion-only masking for CUDA and MLX: explicit dataset markers if requested, else template
+detection with manual markers as fallback; gpt-oss must use detection, not markers"""
 
 from .iterable import is_streaming_dataset
 from .model_mappings import (
@@ -27,6 +21,43 @@ def lookup_manual_markers(model_name):
     if markers:
         return template, markers["instruction"], markers["response"]
     return template, None, None
+
+
+def count_truncated_drops(rows, kept_rows, max_length):
+    """Rows masking dropped (rows minus kept_rows) that had been truncated at max_length."""
+    from collections import Counter
+
+    kept = Counter(map(tuple, kept_rows))
+    cut = 0
+    for row in rows:
+        key = tuple(row)
+        if kept[key]:
+            kept[key] -= 1
+        elif len(row) >= max_length:
+            cut += 1
+    return cut
+
+
+def truncated_drop_cause(cut, dropped, max_length):
+    """Error text when dropped rows reached the context length, or None when none did."""
+    if not cut:
+        return None
+    # Reaching the cap suggests truncation but does not prove it, so the template advice stays as the fallback.
+    cause = (
+        f"{cut} of them reach the context length ({max_length} tokens), so truncation most likely "
+        f"cut off their response: raise the context length or shorten those rows."
+    )
+    if dropped > cut:
+        cause += (
+            f" For the other {dropped - cut}, this model's response template was not found, so "
+            f"'Train on completions' should be turned off for this dataset."
+        )
+    else:
+        cause += (
+            " If they are not that long, this model's response template was not found, so "
+            "'Train on completions' should be turned off for this dataset."
+        )
+    return cause
 
 
 def _mask_tool_responses(trainer, start_id, end_id, turn_id):

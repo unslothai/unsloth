@@ -1,33 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resumable checkpoints for diffusion (image / future video) LoRA training.
-
-A diffusion run used to write exactly one thing, the deployable adapter, at the very end, so a stop
-at step 11 left the AdamW moments, the LR-schedule position, the RNG streams and the step counter to
-die with the subprocess: restarting the same configuration began again at step 1. This module is the
-single writer and the single reader of the state that makes a run continuable.
-
-Layout, under the run's own ``output_dir`` (so the resumed run keeps writing into the same folder
-the adapter is published from): ``<output_dir>/pytorch_lora_weights.safetensors`` is the deployable
-adapter (unchanged), and each ``checkpoint-<N>/`` holds ``trainer_state.json`` (manifest +
-completion marker), ``adapter_model.safetensors`` (peft-format LoRA tensors),
-``ema_adapter.safetensors`` (the EMA shadow, when ema_decay > 0), ``optimizer.pt``, ``scheduler.pt``
-and ``rng_state.pt`` (torch CPU + per-device CUDA RNG states).
-
-``trainer_state.json`` is written LAST inside a hidden staging directory, and the whole staging
-directory is then promoted with a single ``os.replace``. A process killed at any point leaves either
-the previous checkpoint or a ``.tmp-checkpoint-*`` directory that no scanner ever matches, never a
-half-written ``checkpoint-<N>`` that looks valid.
-
-Identity: every bundle records the training identity it belongs to (family, base repo + revision,
-dataset fingerprint, LoRA targets/rank/alpha, precision). ``preflight_resume`` compares that against
-the incoming request and refuses a mismatch with a user-facing reason, so the start route can reject
-BEFORE it evicts the resident GPU model.
-
-``kind`` ("image" today) is carried in both the manifest and the identity so a future video trainer
-can write and validate its own bundles through this same code without a format change.
-"""
+"""Resumable diffusion LoRA checkpoints, promoted atomically; preflight_resume refuses an identity
+mismatch BEFORE the start route evicts the resident GPU model"""
 
 from __future__ import annotations
 
@@ -39,8 +14,10 @@ import os
 import random
 import re
 import shutil
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Iterable
@@ -95,8 +72,7 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("random_flip", "random flipping"),
     # Buckets change canvases and batch order; a pre-field manifest trained square (_LEGACY_IDENTITY_DEFAULTS).
     ("bucketing", "aspect ratio buckets"),
-    # TF32 versus strict fp32 continues the trajectory at a different numeric precision, and off is the documented
-    # strict-reproducibility mode.
+    # TF32 changes numerics mid-trajectory; off is the strict-reproducibility mode.
     ("enable_tf32", "TF32 matmuls"),
     # Batch, accumulation and clip norm all change the trajectory the restored moments were produced on.
     ("train_batch_size", "batch size"),
@@ -142,8 +118,6 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
 )
 # Bundle side only: an incoming None is the route's unresolved pre-trainer identity ("cannot tell").
 _LEGACY_IDENTITY_DEFAULTS: dict[str, str] = {"bucketing": "off"}
-# What source_revision() returns when it cannot resolve a revision offline.
-_UNRESOLVED_REVISION = "unresolved"
 
 
 def _revision_is_comparable(value: Any) -> bool:
@@ -366,8 +340,7 @@ def _flow_shift_key(value: Any, family: str = "") -> str:
 
 
 def _snr_gamma_key(value: Any) -> str:
-    """min-SNR as a comparable token. None DISABLES the weighting, so it gets its own value rather
-    than the unknown the optional-field rule skips."""
+    """Comparable min-SNR token; None disables weighting, so it is a value, not an unknown."""
     number = _optional_float(value)
     return "off" if number is None else f"{number}"
 
@@ -967,9 +940,7 @@ def _recover_orphaned_slots(
 
 
 def _recover_orphaned_slot(root: Path, entry: Path) -> bool:
-    """True when ``entry`` is a stale bundle that must not be swept up: either it was handed back to
-    its empty slot, or the hand-back failed and leaving it on disk beats deleting the only copy
-    of the run's last resumable state."""
+    """Stale bundles to leave alone: already handed back, or a failed hand-back is kept as the only copy."""
     match = _STALE_SLOT.match(entry.name[len(_STAGING_PREFIX) :])
     if match is None:
         return False
@@ -1304,15 +1275,69 @@ _UNRESUMABLE_STATUS = {
 }
 
 
+# Listing-only memo of passing _assert_loadable verdicts, keyed on the stat of every state file.
+# Files touched within the settle window are not kept: a coarse mtime can hide a same-size rewrite.
+_LOADABLE_PASSES: "OrderedDict[str, tuple]" = OrderedDict()
+_LOADABLE_PASSES_MAX = 512
+_LOADABLE_SETTLE_NS = 2_000_000_000
+_LOADABLE_PASSES_LOCK = threading.Lock()
+
+
+def _loadable_key(path: Path, manifest: dict[str, Any]) -> Optional[tuple]:
+    """Identity of every file _assert_loadable reads, or None when one cannot be stat'ed."""
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        return None
+    entries = []
+    try:
+        for role in sorted(files, key = str):
+            name = files[role]
+            if not isinstance(name, str) or not name or Path(name).name != name:
+                return None
+            st = os.stat(path / name)
+            entries.append(
+                (str(role), name, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            )
+    except (OSError, TypeError):
+        return None
+    return tuple(entries)
+
+
+def _assert_loadable_cached(path: Path, manifest: dict[str, Any]) -> bool:
+    cache_id = str(path)
+    key = _loadable_key(path, manifest)
+    if key is not None:
+        with _LOADABLE_PASSES_LOCK:
+            if _LOADABLE_PASSES.get(cache_id) == key:
+                _LOADABLE_PASSES.move_to_end(cache_id)
+                return True
+    try:
+        _assert_loadable(path, manifest)
+    except ResumeError:
+        # Never kept: a refusal can be transient (MemoryError, EMFILE).
+        return False
+    now = time.time_ns()
+    if (
+        key is not None
+        and all(now - max(entry[5], entry[6]) > _LOADABLE_SETTLE_NS for entry in key)
+        and _loadable_key(path, manifest) == key
+    ):
+        with _LOADABLE_PASSES_LOCK:
+            _LOADABLE_PASSES[cache_id] = key
+            _LOADABLE_PASSES.move_to_end(cache_id)
+            while len(_LOADABLE_PASSES) > _LOADABLE_PASSES_MAX:
+                _LOADABLE_PASSES.popitem(last = False)
+    return True
+
+
 def _fully_loadable(path: Path, manifest: dict[str, Any]) -> bool:
     """Header scan is not enough; the required state and a real torch.load must also succeed."""
     try:
         _assert_required_state(path, manifest)
         _assert_optimizer_buildable(path, manifest)
-        _assert_loadable(path, manifest)
     except ResumeError:
         return False
-    return True
+    return _assert_loadable_cached(path, manifest)
 
 
 def _source_checkpoint_bundle(
@@ -1500,20 +1525,8 @@ def _join_clauses(items: list[str]) -> str:
 
 
 def _assert_optimizer_buildable(path: Path, manifest: dict[str, Any]) -> None:
-    """Refuse moments this host provably cannot build an optimizer for, BEFORE teardown.
-
-    Bundles from older builds carry bitsandbytes AdamW8bit moments, which the trainers can only
-    restore into AdamW8bit. Without bitsandbytes the child's own check fires after the route has
-    evicted the resident inference models and loaded a multi-GB base, for a run that is guaranteed
-    to terminate without training.
-
-    Deliberately one-directional, and deliberately import-free. ``find_spec`` answers "is
-    bitsandbytes installed" without creating a CUDA context in the Unsloth process, but it cannot
-    tell an installed-and-broken wheel (which the trainer catches and falls back from) from a
-    working one. So only the case that cannot be wrong is refused here: 8-bit moments with no
-    bitsandbytes to load them, or with the fp32 override forcing torch AdamW. The other direction
-    stays with the child, where the real optimizer object exists.
-    """
+    """Refuse only provably unbuildable AdamW8bit moments (no bitsandbytes, or fp32 override),
+    before teardown; import-free, so no CUDA context; other cases left to the child."""
     saved = manifest.get("optimizer_class")
     if not isinstance(saved, str) or "bitsandbytes" not in saved:
         return
@@ -1632,8 +1645,7 @@ def preflight_resume(
 
 
 def _terminal(error: ResumeError) -> ResumeError:
-    """Mark a refusal as final: it describes the REQUEST, not a damaged bundle, so the directory
-    scan must not walk past it to an older checkpoint."""
+    """Final refusal of the request, not a damaged bundle: the scan must not walk past it."""
     error.terminal = True  # type: ignore[attr-defined]
     return error
 

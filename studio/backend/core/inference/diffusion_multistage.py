@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Family-agnostic helpers for a render that calls its pipeline more than once per request (a multi-stage recipe:
-LTX-2.5's half-size stage, latent upsample, full-size stage). Each helper keys on what the pipeline object carries
-(its offload hook list, its denoiser, its ``encode_prompt``), never on a family name, so any multi-stage render can wrap
-its calls in them.
-
-``encode_once``: every stage encodes the same prompt; the later stages take the first one's device tensors.
-``hold_denoiser_between_calls``: under model CPU offload a pipeline call ends by offloading every component, so the
-next stage would upload the whole denoiser again; hold it when the work in between still fits beside it.
-"""
+"""Multi-stage render helpers keyed on pipeline attributes: encode once, hold denoiser under offload."""
 
 from __future__ import annotations
 
@@ -36,9 +28,8 @@ def _denoisers(pipe: Any) -> list:
 
 
 def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool:
-    """Whether the denoiser a call onloaded can stay while ``companions`` (the modules that run before it is needed
-    again) are onloaded beside it: free memory plus the allocator's idle cache (minus CUDA graph pools) covers them
-    with a margin."""
+    """Whether the denoiser can stay beside the companions: free memory plus idle allocator cache
+    (minus CUDA graph pools) covers them with a margin."""
     try:
         import torch
 
@@ -104,11 +95,9 @@ def hold_denoiser_between_calls(
 
 @contextlib.contextmanager
 def encode_once(runner: Any):
-    """For the span of one request: identical keyword-only ``encode_prompt`` calls (what the diffusers pipelines make)
-    after the first get a device copy of the first one's outputs (taken right after it, so its in-place edits never
-    reach them) instead of encoding or uploading again. Later calls share that copy: diffusers' pipelines build new
-    tensors from it (cat / repeat) and never write it. Calls with tensors or positional arguments pass through.
-    Restores the attribute it found."""
+    """Per request, identical keyword-only encode_prompt calls reuse a device copy of the first call
+    outputs, taken right after it so its in-place edits never reach them; tensor or positional
+    calls pass through."""
     encode = getattr(runner, "encode_prompt", None)
     if not callable(encode):
         yield

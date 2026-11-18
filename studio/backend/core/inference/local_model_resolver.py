@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolve an OpenAI-request ``model`` string to a downloaded local model.
-
-Used by the opt-in auto-switch path. Two kinds of local model qualify: a GGUF
-(served by llama.cpp, with a quant that is actually on disk) and a non-GGUF
-checkpoint such as safetensors or MLX weights (served by the inference
-orchestrator). The match is conservative either way: only names that map to
-something already downloaded are eligible, so an arbitrary OpenAI model string
-still falls through to the loaded model (drop-in compat) and no surprise
-multi-GB download is ever triggered. The local-model scan is cached for a few
-seconds since auto-switch consults it per request.
-"""
+"""Maps an OpenAI model string to a downloaded GGUF or non-GGUF model; unknown names fall through to
+the loaded model; never triggers a download."""
 
 from __future__ import annotations
 
@@ -22,6 +13,7 @@ from typing import Optional
 
 from core.inference.model_ids import public_model_id
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 from utils.account_context import (
     AccountContext,
     account_thread,
@@ -628,19 +620,39 @@ def _weights_are_servable(load_dir) -> bool:
     return not (load_dir / "modules.json").is_file()
 
 
-def _config_is_servable_here(load_dir, config: dict) -> bool:
+def _config_is_servable_here(approval_ids, load_dir, config: dict) -> bool:
     """Only the approval boundary and category are decided here; remote code is read as data only."""
+    return _remote_code_is_servable(approval_ids, load_dir, config) and _is_generative_chat_config(
+        load_dir, config
+    )
+
+
+def _remote_code_is_servable(
+    approval_ids,
+    load_dir,
+    config: dict,
+    read = None,
+) -> bool:
+    """*read* maps a sibling config's name to its JSON, for a checkpoint not yet on disk."""
+    from utils.security.remote_code_approvals import approved_local_fingerprint
     from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
 
-    # trust_remote_code needs an approval fingerprint a switch has not got; read as data only.
+    auto_map = False
     for name in REMOTE_CODE_CONFIG_FILES:
-        candidate = config if name == "config.json" else _read_json(load_dir / name)
+        if name == "config.json":
+            candidate = config
+        else:
+            candidate = read(name) if read is not None else _read_json(load_dir / name)
         if not isinstance(candidate, dict):
             continue
         # model_file runs repo code and bypasses trust_remote_code (MLX loaders exec_module it).
-        if candidate.get("auto_map") or candidate.get("model_file"):
+        if candidate.get("model_file"):
             return False
-    return _is_generative_chat_config(load_dir, config)
+        auto_map = auto_map or bool(candidate.get("auto_map"))
+    # A switch can only pass on an approval the account already gave for exactly this code.
+    return not auto_map or approved_local_fingerprint(
+        current_account().username, approval_ids, str(load_dir)
+    )
 
 
 def _host_can_serve_minimax_music3() -> bool:
@@ -709,7 +721,11 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         if not _weights_are_servable(load_dir):
             return None
         config = _read_json(load_dir / "config.json")
-        if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
+        # Listing passes the raw id, the index the alias: both must see a path-keyed approval.
+        approval_ids = (loader_id, getattr(info, "id", None), path, str(load_dir))
+        if not isinstance(config, dict) or not _config_is_servable_here(
+            approval_ids, load_dir, config
+        ):
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
@@ -732,6 +748,27 @@ def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             return None
         # No quants: an Ollama tag names one file, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, raw_id, ())
+    if (getattr(info, "source", None), getattr(info, "model_format", None)) == (
+        "ollama",
+        "safetensors",
+    ):
+        # An MLX tag's row names the checkpoint its load builds, which need not exist yet.
+        from pathlib import Path
+
+        from hub.services.models.ollama import ollama_mlx_json_reader, ollama_mlx_ref_for_path
+
+        try:
+            ref = isinstance(raw_id, str) and ollama_mlx_ref_for_path(raw_id)
+            read = ref and ollama_mlx_json_reader(ref)
+        except (OSError, ValueError):
+            ref = None
+        # Read from the manifest: the checkpoint may not be built yet.
+        config = read("config.json") if ref else None
+        if not isinstance(config, dict) or not _remote_code_is_servable(
+            (loader_id, raw_id, getattr(info, "path", None)), Path(raw_id), config, read
+        ):
+            return None
+        return _LocalGgufEntry(loader_id, raw_id, (), is_gguf = False)
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
 
@@ -780,6 +817,7 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
+@in_scan_memo
 def _build_index() -> dict[str, _LocalGgufEntry]:
     """Scans the model picker's roots; Ollama manifests are read only, since load materializes the .gguf."""
     # Lazy import: routes.models imports core.inference.
@@ -1020,6 +1058,9 @@ def index_generation() -> int:
 def invalidate_index(*, additions_only: bool = False) -> None:
     """Additions-only keeps known hits served during rebuild; any other invalidation revokes trust."""
     global _scan, _warm_pending, _generation
+    if not additions_only:
+        from hub.utils import partial_verdict_cache
+        partial_verdict_cache.invalidate()
     with _lock:
         now = time.monotonic()
         _generation += 1

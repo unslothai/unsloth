@@ -1,30 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in model auto-switch for the image and video generation APIs.
-
-The chat twin lives in ``local_model_resolver`` + ``routes.inference``: a ``/v1`` request
-naming a downloaded GGUF loads it before serving. Media had no equivalent, so
-``POST /v1/images/generations`` answered 503 unless someone had already picked a model on the
-Images page, and ``model`` was documented as informational. This resolves that name against
-the downloaded image/video models, drains what the backend is doing, and runs the load the
-picker would run.
-
-Off by default (``media_api_auto_switch_model``), so existing clients see no change.
-
-Only downloaded models resolve, and an unknown name is refused rather than answered by
-whatever is resident. Nothing here starts a download: the media equivalent of the chat
-auto-download setting would let one API key spend tens of GB, which is its own decision.
-
-Both waits are bounded, because Unsloth's secure-mode tunnel caps an origin response near 100
-seconds. Exceeding a bound leaves the work running and asks the caller to retry, the contract
-``begin_load`` already gives the UI.
-
-This module is the orchestration. The pieces it drives live next to it: ``media_model_index``
-resolves a name and recognises the resident model, ``media_locality`` proves a pick is already
-downloaded, ``media_switch_backends`` waits out work a switch would interrupt,
-``media_switch_locks`` serializes switches, and ``media_switch_errors`` holds the refusals.
-"""
+"""Opt-in media auto-switch (media_api_auto_switch_model); never downloads; refuses unknown names;
+waits are bounded near the ~100 s tunnel cap, and exceeding one leaves work running and asks
+retry."""
 
 from __future__ import annotations
 
@@ -133,10 +112,8 @@ def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
 
 
 def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
-    """A downloaded retired FLUX.3 full copy as the load will read it: the pick of the base it copies, which
-    ``DiffusionLoadRequest`` redirects it to. So locality is proven for the files that load fetches (the -FP8 mirror's),
-    not the copy's snapshot, and the resident match compares the id the status publishes. A copy complete on disk stays
-    itself, as the load route keeps it (``retired_copy_loads_from_disk``)."""
+    """A retired FLUX.3 full copy loads as its base; locality is proven for the files that load
+    fetches (the FP8 mirror files), not the copy's snapshot; a complete on-disk copy stays itself"""
     from core.inference.diffusion_families import (
         retired_copy_loads_from_disk,
         retired_full_copy_base,
@@ -313,9 +290,8 @@ async def _gated_start_load(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     try:
-        # Under Always a chat load's GPUs aren't known yet, so it overlaps every card: refuse now
-        # (retryable) instead of queueing on chat's gate behind it. Off and fit keep the wait, and
-        # so does a CPU chat load (no GPU claim) or one on known GPUs (the arbiter checks overlap).
+        # Under Always, a chat load's GPUs are unknown: refuse now (retryable) rather than queue
+        # behind it.
         if (
             takes_the_gpu
             and gpu_residency.chat_load_in_flight()
@@ -349,6 +325,12 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
             ):
                 raise busy(kind, openai_errors)
+            # Again under the gates: a chat model can have loaded since the precheck.
+            from core.inference.ensure_model import ensure_media_load
+
+            await asyncio.to_thread(
+                functools.partial(ensure_media_load, owner, kind, name, openai_errors = openai_errors)
+            )
             # Ranked once: the check below and the load it starts both use this card.
             planned = media_locality.pin_planned_gpu_ordinal(
                 await bounded(
@@ -393,7 +375,8 @@ async def _gated_start_load(
                             openai_errors = openai_errors,
                             code = "multi_model_always",
                         )
-                        refusal.headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
+                        # The arbiter's code header names the kind it would unload.
+                        refusal.headers = dict(exc.headers or MULTI_MODEL_REFUSAL_HEADERS)
                         raise refusal from exc
                     raise
             return False
@@ -467,6 +450,13 @@ async def maybe_auto_switch_media_model(
     # re-read: the index build can run for the whole budget, and an idle unload can land in it
     if satisfied_by(await asyncio.to_thread(backend_for(owner).status), name, pick):
         return
+
+    from core.inference.ensure_model import ensure_media_load
+
+    # Before before_switch and the locks: a refused switch must not touch anything.
+    await asyncio.to_thread(
+        functools.partial(ensure_media_load, owner, kind, name, openai_errors = openai_errors)
+    )
 
     if before_switch is not None:
         await bounded(

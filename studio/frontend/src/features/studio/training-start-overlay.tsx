@@ -36,6 +36,7 @@ import {
 } from "@/features/studio/download-state";
 import {
   classifyPreparation,
+  hasTrainingLoopStarted,
   parsePreparationProgress,
   shouldShowPreparationStatus,
   type PreparationProgress,
@@ -322,8 +323,16 @@ export function TrainingStartOverlay({
     startFromResume && /^download/i.test(message)
       ? t("studio.trainingStart.resumingTraining")
       : message || t("studio.trainingStart.startingTraining");
-  const rawModelDownload = useModelDownloadProgress(modelName, hfToken);
-  const rawDatasetDownload = useDatasetDownloadProgress(datasetName, hfToken);
+  // Resources are loaded once the loop runs; the cache scan's file subset would fake a download.
+  const trainingLoopStarted = hasTrainingLoopStarted(message);
+  const rawModelDownload = useModelDownloadProgress(
+    trainingLoopStarted ? null : modelName,
+    hfToken,
+  );
+  const rawDatasetDownload = useDatasetDownloadProgress(
+    trainingLoopStarted ? null : datasetName,
+    hfToken,
+  );
   const modelDownload = coerceCachedStateReady(rawModelDownload);
   const datasetDownload = coerceCachedStateReady(rawDatasetDownload);
   // The raw message: a resumed run rewrites statuses to "resuming training".
@@ -331,6 +340,7 @@ export function TrainingStartOverlay({
     phase,
     currentStep,
     isStarting,
+    message,
   )
     ? parsePreparationProgress(message, t("studio.trainingStart.preparing"))
     : null;
@@ -419,19 +429,21 @@ export function TrainingStartOverlay({
           <AnimatedSpan className="my-2">
             <pre className="whitespace-pre text-muted-foreground inline-block">{`==((====))==\n   \\\\   /|\nO^O/ \\_/ \\\n\\        /\n "-____-"`}</pre>
           </AnimatedSpan>
-          <TypingAnimation duration={44}>
-            {t("studio.trainingStart.preparingResources")}
-          </TypingAnimation>
-          <TypingAnimation duration={44}>
-            {t("studio.trainingStart.gettingReady")}
-          </TypingAnimation>
+          {/* Direct children: Terminal sequences by child and a Fragment never reports done. */}
+          {!trainingLoopStarted && (
+            <TypingAnimation duration={44}>
+              {t("studio.trainingStart.preparingResources")}
+            </TypingAnimation>
+          )}
+          {!trainingLoopStarted && (
+            <TypingAnimation duration={44}>
+              {t("studio.trainingStart.gettingReady")}
+            </TypingAnimation>
+          )}
           <AnimatedSpan className="mt-2 text-muted-foreground">
-            {t("studio.trainingStart.waitingForFirstStep", {
-              message: displayMessage,
-              step: currentStep,
-            })}
+            &gt; {displayMessage}
           </AnimatedSpan>
-          {datasetStreaming ? (
+          {!trainingLoopStarted && (datasetStreaming ? (
             <>
               <AnimatedSpan className="mt-3 text-muted-foreground">
                 {t("studio.trainingStart.datasetStreaming")}
@@ -457,8 +469,8 @@ export function TrainingStartOverlay({
                 preparation={datasetPreparation}
               />
             </AnimatedSpan>
-          ) : null}
-          {resourceRowHasContent(modelDownload, modelPreparation) ? (
+          ) : null)}
+          {!trainingLoopStarted && resourceRowHasContent(modelDownload, modelPreparation) ? (
             <AnimatedSpan className="mt-3">
               <ResourceRow
                 label={t("studio.trainingStart.modelWeights")}

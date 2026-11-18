@@ -38,7 +38,7 @@ export function TrainSubNav({
     <TabsList
       unstyled={true}
       data-tour="studio-subnav"
-      className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-3 pb-px text-ui-13 tracking-nav sm:gap-6"
+      className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-3 text-ui-13 tracking-nav sm:gap-6"
     >
       {items.map((item) => {
         const active = value === item.value;
@@ -50,7 +50,8 @@ export function TrainSubNav({
             indicatorClassName="hidden"
             className={cn(
               "relative h-9 flex-none select-none rounded-none border-0 px-0 py-0 text-ui-13 transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-              "after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:rounded-full after:bg-foreground after:transition-opacity",
+              // TabsTrigger's bottom-[-5px] dropped the bar below the row's border.
+              "after:pointer-events-none after:absolute after:inset-x-0 group-data-[orientation=horizontal]/tabs:after:-bottom-px after:h-[2px] after:rounded-full after:bg-foreground after:transition-opacity",
               active
                 ? "font-semibold text-foreground after:opacity-100"
                 : "text-muted-foreground hover:text-foreground after:opacity-0",

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withTimeFormat } from "@/lib/time-format";
 import { ActionBarMorePrimitive, useAuiState } from "@assistant-ui/react";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -55,7 +56,10 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
         {date
-          ? `${date.toLocaleString(locale, { dateStyle: "full", timeStyle: "short" })} · See response details`
+          ? `${date.toLocaleString(
+              locale,
+              withTimeFormat({ dateStyle: "full", timeStyle: "short" }, locale),
+            )} · See response details`
           : "See response details"}
       </TooltipContent>
     </Tooltip>

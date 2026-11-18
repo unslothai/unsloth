@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pin / archive / manual-order flags for the image and video galleries.
-
-Library state, NOT part of a generation recipe: a PNG's text chunk and a clip's sidecar
-describe how the media was made, while "I pinned this" describes how the user files it. So
-flags live in their own ``.flags.json`` beside the media rather than in the recipe, and a
-record missing from the store simply has no flags.
-
-One store per gallery directory, keyed by the same id the gallery uses (the file stem):
-
-    {"version": 1, "items": {"<id>": {"pinned_at": 1712345678.0, "archived": true}}}
-
-A dragged item also stores ``order_at``, a sort key on the mtime scale used in place of its mtime.
-Only moved items get one, and new media still lands first.
-
-The filename is skipped by the galleries' ``*.png`` / ``*.mp4`` globs, so a store sitting in
-the directory is invisible to listing. Every read fails safe: a corrupt, hand-edited or
-unreadable store degrades to "no flags", never to an error, because losing a pin is a far
-better outcome than a gallery that will not list.
-"""
+"""Pin/archive/order flags in .flags.json beside media, not the recipe; corrupt store means no flags"""
 
 from __future__ import annotations
 
@@ -198,9 +180,8 @@ def _entry(items: dict[str, Any], item_id: str) -> dict[str, Any]:
 
 
 def read(directory: Path) -> dict[str, dict[str, Any]]:
-    """Every id's flags for one gallery, read once so a listing pass can sort without
-    re-opening the store per file. Fail-safe: an untrusted store reads as no flags, because a
-    lost pin beats a gallery that will not list. Use ``read_trusted`` before destructive work."""
+    """Untrusted stores read as no flags: a lost pin beats an unlisted gallery; deletes need
+    read_trusted."""
     with _lock:
         items = _load(directory)[0].get("items", {})
     return {k: v for k, v in items.items() if isinstance(v, dict)}
@@ -369,9 +350,8 @@ def forget_locked(directory: Path, item_ids) -> None:
 
 
 def _between(high: Optional[float], low: Optional[float], *, top: float) -> Optional[float]:
-    """A key between ``high`` and ``low`` (descending), or None if both are None.
-
-    ``top`` is used at the head of the group, so new media created later still sorts first."""
+    """Key between high and low (descending), or None if both are None; top is used at the group
+    head so newer media sorts first."""
     if high is not None and low is not None:
         mid = (high + low) / 2
         # Out of float precision: tie with the upper neighbour.

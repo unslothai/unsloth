@@ -29,11 +29,33 @@ class _Kernel:
     _calls = 0
     _last = ()
 
+    # TRL 1.15's signature: the patch reads it (a ``bias`` argument, an ``outputs`` tuple) before it adapts the kernel.
+    @staticmethod
+    def forward(
+        ctx,
+        hidden,
+        weight,
+        bias,
+        targets,
+        temperature,
+        chunk_size,
+        final_logit_softcapping = None,
+        logit_scale = 1.0,
+        outputs = ("entropy", "log_sum_sq_probs", "mean_logits", "is_top1"),
+    ):
+        raise AssertionError("not reached")
+
     @classmethod
     def apply(cls, *args):
         cls._calls += 1
         cls._last = args
         return ("trl",) * 5
+
+
+class _OpaqueKernel(_Kernel):
+    """unsloth_zoo's CPU dispatch: callable through ``apply``, but no readable ``forward``."""
+
+    forward = None
 
 
 def _reference(hidden, weight, bias, targets, temperature, softcap, logit_scale):
@@ -240,6 +262,18 @@ def test_adapter_honours_the_kill_switch_after_install(monkeypatch):
         hidden, weight, bias, targets, 1.0, 4096, None, 1.0, ("log_probs",)
     )
     assert _Kernel._calls == before + 1 and got[0] == "trl"
+
+
+def test_patch_leaves_a_kernel_without_a_readable_forward_alone(monkeypatch):
+    """With no signature to read, the adapter cannot tell how many outputs TRL unpacks (5 vs 6 on TRL >= 1.17)."""
+    utils = types.ModuleType("trl.trainer.utils")
+    utils._ChunkedLogProbFunction = _OpaqueKernel
+    monkeypatch.setitem(sys.modules, "trl.trainer.utils", utils)
+    trainer = sys.modules.get("trl.trainer")
+    if trainer is not None:
+        monkeypatch.setattr(trainer, "utils", utils, raising = False)
+    unsloth_rl.patch_trl_fused_lm_head_kernel()
+    assert utils._ChunkedLogProbFunction is _OpaqueKernel
 
 
 def test_patch_respects_the_kill_switch(monkeypatch):
@@ -455,7 +489,10 @@ def test_adapter_bounds_its_logits_buffer_by_chunk_size(trainable_head, grad, mo
     sizes.clear()
     with torch.set_grad_enabled(grad):
         adapter.apply(hidden, weight, None, targets, 1.0, 32768, None, 1.0, ("entropy",))
-    assert kwargs[-1]["max_rows_per_chunk"] is None and max(sizes) == n * v * 4
+    # One [N, V] buffer; zoo may pad its row stride (unslothai/unsloth-zoo#2190 pads to 16 for Triton).
+    pad = getattr(fused_linear, "_FWD_PAD", 1)
+    assert kwargs[-1]["max_rows_per_chunk"] is None
+    assert max(sizes) == n * (-(-v // pad) * pad) * 4, (sizes, n, v, pad)
 
 
 @pytest.mark.parametrize("grad", [False, True])

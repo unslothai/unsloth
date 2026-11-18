@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Startup self-heal for the pinned Diffusers main build, or the pinned release while
-diffusers-main.txt is commented out.
-
-Older installers can miss the pinned build during an update. Repair before importing the app:
-the build also upgrades huggingface_hub, which would otherwise mix new files with cached modules.
-Opt out with UNSLOTH_DISABLE_DIFFUSERS_AUTOREPAIR=1.
-"""
+"""Startup repair of pinned Diffusers before import; UNSLOTH_DISABLE_DIFFUSERS_AUTOREPAIR=1 opts out."""
 
 from __future__ import annotations
 

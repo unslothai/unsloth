@@ -8,6 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The deps pass can replace this file while bash reads the old one (_setup_rerun_if_replaced).
 _SETUP_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 _SETUP_SELF_SUM=$(cksum < "$_SETUP_SELF" 2>/dev/null || true)
+# Node is provisioned before the dependency pass can install a newer pin.
+_SETUP_NODE_PINS="$SCRIPT_DIR/node_prebuilt_pins.json"
+_SETUP_NODE_PINS_SUM=$(cksum 2>/dev/null < "$_SETUP_NODE_PINS" || true)
 _SETUP_ARGV=("$@")
 _SETUP_START_PWD=$PWD
 # Bash caches PATH entries across cd, so anchor relative entries before the first directory change.
@@ -1996,8 +1999,15 @@ _packaged_frontend_available() {
 _install_oxc_runtime() {
 # Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
 # Node, so do not run npm install against an unsuitable/absent system Node.
-if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null \
+    && [ -f "$_OXC_DIR/package-lock.json" ] && [ -f "$_OXC_DIR/install-stamp.mjs" ] \
+    && node "$_OXC_DIR/install-stamp.mjs" check >/dev/null 2>&1; then
+    verbose_substep "oxc validator runtime up to date"
+    cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
     cd "$_OXC_DIR"
+    # Gone before npm touches the tree, so an interrupted install is never trusted.
+    rm -f "$_OXC_DIR/node_modules/.unsloth-install-stamp.json" 2>/dev/null || :
     _OXC_INSTALL_LOG=$(mktemp)
     _CAPTURE_LOG="$_OXC_INSTALL_LOG"
     # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
@@ -2016,6 +2026,7 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
         setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
     fi
     rm -f "$_OXC_INSTALL_LOG"
+    [ "$_NPM_INSTALL" != ci ] || node "$_OXC_DIR/install-stamp.mjs" write >/dev/null 2>&1 || :
     cd "$SCRIPT_DIR"
 elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     # No npm on PATH: skip rather than abort; the backend Node resolver degrades
@@ -2063,6 +2074,11 @@ decide_node_source() {
     _dns_node="${1#v}"
     _dns_npm="$2"
     _dns_skip="$3"
+    # A managed Node inherited on PATH still needs the pin check on every setup.
+    if [ "${4:-0}" = 1 ] && [ "$_dns_skip" != 1 ]; then
+        echo bundled
+        return 0
+    fi
     case "$_dns_node" in ''|*[!0-9.]*) _dns_node='' ;; esac
     case "$_dns_npm"  in ''|*[!0-9.]*) _dns_npm=''  ;; esac
     if [ -n "$_dns_node" ] && [ -n "$_dns_npm" ]; then
@@ -2122,7 +2138,16 @@ if [ -n "$_SYS_NODE_VER" ]; then
     _probe_system_node_tool npm
     _SYS_NPM_VER="$_PROBED_VER"
 fi
-NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}")"
+# Only installer metadata marks a PATH Node managed (wherever NODE_DIR is); a bare path match may be a user's link.
+_NODE_ON_PATH_IS_MANAGED=0
+_node_on_path="$(command -v node || true)"
+if [ -n "$_node_on_path" ]; then
+    _node_on_path_root="$(cd "$(dirname "$_node_on_path")/.." 2>/dev/null && pwd -P)" || _node_on_path_root=""
+    if [ -n "$_node_on_path_root" ] && [ -f "$_node_on_path_root/UNSLOTH_NODE_PREBUILT_INFO.json" ]; then
+        _NODE_ON_PATH_IS_MANAGED=1
+    fi
+fi
+NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}" "$_NODE_ON_PATH_IS_MANAGED")"
 _FRONTEND_SKIP=false
 
 if [ "$NODE_SOURCE" = system ]; then
@@ -2391,14 +2416,15 @@ _setup_rerun_if_replaced() {
     if [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ] || [ -z "$_SETUP_SELF_SUM" ]; then
         return 0
     fi
-    local _now
+    local _now _now_pins
     _now=$(cksum < "$_SETUP_SELF" 2>/dev/null) || return 0
-    if [ -z "$_now" ] || [ "$_now" = "$_SETUP_SELF_SUM" ]; then
+    _now_pins=$(cksum 2>/dev/null < "$_SETUP_NODE_PINS" || true)
+    if [ -z "$_now" ] || { [ "$_now" = "$_SETUP_SELF_SUM" ] && [ "$_now_pins" = "$_SETUP_NODE_PINS_SUM" ]; }; then
         return 0
     fi
     # exec keeps this PID, so the watcher would not stop a build the new script then repeats.
     _frontend_bg_join
-    step "setup" "the update replaced this setup script; finishing with the new version"
+    step "setup" "the update changed setup or its Node pin; finishing with the new version"
     export UNSLOTH_SETUP_RERUN=1
     unset UNSLOTH_STUDIO_FULL_DEPS
     cd "$_SETUP_START_PWD" 2>/dev/null || :
@@ -3261,6 +3287,7 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
 }
 
 _SKIP_PYTHON_DEPS=false
+_SETUP_VENV_CHANGED=false
 _SKIP_VERSION_CHECK=false
 # Set here so an exported value from the caller cannot reach it.
 _OFFLINE_FAST_PATH=false
@@ -3380,6 +3407,8 @@ fi
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
     _setup_rerun_if_replaced
+    # After the handoff: a replaced copy precompiles on UNSLOTH_SETUP_RERUN, this one on the flag.
+    _SETUP_VENV_CHANGED=true
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
@@ -3564,15 +3593,15 @@ elif [ -d "$STUDIO_HOME/.venv_t5" ]; then
     _NEED_T5_510=true
 fi
 _sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
-_sidecar_current "$VENV_T5_550_DIR" "5.5.0" || _NEED_T5_550=true
-_sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
+_sidecar_current "$VENV_T5_550_DIR" "5.5.4" || _NEED_T5_550=true
+_sidecar_current "$VENV_T5_510_DIR" "5.13.1" || _NEED_T5_510=true
 # Sidecar rebuilds reach the network; defer under offline keep. Deferred tiers are not reported current.
 _DEFER_T5_530=false
 _DEFER_T5_550=false
 _DEFER_T5_510=false
 # The pip fallback does not read UV_OFFLINE.
 if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
-    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
+    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.13.1"; do
         # Not `set --`: at top-level scope that overwrites the script's own "$@".
         _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
         if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
@@ -3584,7 +3613,7 @@ if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
     unset _ofp _ofp_key _ofp_ver
 fi
 if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
-    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
+    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.13.1"; do
         _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
         if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
             substep "transformers $_ofp_ver sidecar is stale but UV_OFFLINE is set -- left for the next online update"
@@ -3604,20 +3633,20 @@ else
     _sidecar_top_up_tiktoken "$VENV_T5_530_DIR" "5.3"
 fi
 if [ "$_NEED_T5_550" = true ]; then
-    _install_sidecar "$VENV_T5_550_DIR" "5.5.0" "5.5"
+    _install_sidecar "$VENV_T5_550_DIR" "5.5.4" "5.5"
 elif [ "$_DEFER_T5_550" = true ]; then
-    step "transformers" "5.5.0 sidecar stale -- left for the next online update"
+    step "transformers" "5.5.4 sidecar stale -- left for the next online update"
 else
-    step "transformers" "5.5.0 sidecar current"
+    step "transformers" "5.5.4 sidecar current"
     _sidecar_top_up_tiktoken "$VENV_T5_550_DIR" "5.5"
 fi
 if [ "$_NEED_T5_510" = true ]; then
-    _install_sidecar "$VENV_T5_510_DIR" "5.10.2" "5.10"
+    _install_sidecar "$VENV_T5_510_DIR" "5.13.1" "5.13"
 elif [ "$_DEFER_T5_510" = true ]; then
-    step "transformers" "5.10.2 sidecar stale -- left for the next online update"
+    step "transformers" "5.13.1 sidecar stale -- left for the next online update"
 else
-    step "transformers" "5.10.2 sidecar current"
-    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.10"
+    step "transformers" "5.13.1 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.13"
 fi
 fi
 
@@ -3771,18 +3800,19 @@ _setup_supported_gfx_from_name() {
     _sup_gfx_in="$1"
     _sup_gfx_out=""
     case "$_sup_gfx_in" in
-        *9070*|*9080*|*"R9700"*)                                                                       _sup_gfx_out="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
-        *9060*)                                                                                        _sup_gfx_out="gfx1200" ;;  # RDNA 4 (Navi 44)
+        *9070*|*9080*|*"R9700"*|*"R9600D"*)                                                                       _sup_gfx_out="gfx1201" ;;  # RDNA 4 (Navi 48: RX 9070 / 9080, Radeon AI PRO R9700)
+        *9060*|*"RX 9050"*)                                                                                        _sup_gfx_out="gfx1200" ;;  # RDNA 4 (Navi 44)
         *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _sup_gfx_out="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _sup_gfx_out="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _sup_gfx_out="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
-        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _sup_gfx_out="gfx1102" ;;  # RDNA 3 (Navi 33)
+        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"Z2 Extreme"*) _sup_gfx_out="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*) _sup_gfx_out="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"RX 7400"*|*"RX 7300"*|*"PRO W7400"*|*"Pro W7400"*|*"Steam Machine"*)                              _sup_gfx_out="gfx1102" ;;  # RDNA 3 (Navi 33)
         *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _sup_gfx_out="gfx1101" ;;  # RDNA 3 (Navi 32)
         *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _sup_gfx_out="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
-        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-        *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
-        *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
-        *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
+        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+        *"RX 6750 GRE 10"*|*"RX 6800S"*|*"RX 6700S"*|*"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*) _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
+        *"RX 6850"*|*"RX 6800M"*|*"RX 6750"*|*"RX 6700"*)                                _sup_gfx_out="gfx1031" ;;  # RDNA 2 (Navi 22)
+        *"RX 6950"*|*"RX 6900"*|*"RX 6800"*|*"PRO W6800"*|*"PRO W6900"*|*"PRO V620"*|*"Pro V620"*)                 _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
+        *"6550S"*|*"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
     esac
     [ -n "$_sup_gfx_out" ] || return 1
     printf '%s\n' "$_sup_gfx_out"
@@ -3946,9 +3976,8 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
-        # Krackan Point 2 names overlap the table's gfx1152 patterns (install.sh tests them first).
-        # amd-smi names only the first device, so a covered lspci peer (the same rule as
-        # _setup_unsupported_gfx_any) keeps the table's answer, as before.
+        # amd-smi names only the first device: a covered lspci peer decides the arch, as in
+        # _setup_unsupported_gfx_any and install.sh; a lone Krackan Point 2 is gfx1153.
         _setup_k2_name_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'
         if printf '%s\n' "$_setup_mkt" | grep -Eqi "$_setup_k2_name_ere"; then
             _setup_k2_peer=""
@@ -3959,14 +3988,14 @@ elif [ "$_setup_amd_detected" = true ]; then
                     if _setup_k2_peer_gfx=$(_setup_supported_gfx_from_name "$_setup_k2_ln" 2>/dev/null); then
                         # The APU's own line can carry the Krackan die name it shares with gfx1152 (install.sh skips it too).
                         [ "$_setup_k2_peer_gfx" = gfx1152 ] && continue
-                        _setup_k2_peer=1
+                        _setup_k2_peer=$_setup_k2_peer_gfx
                         break
                     fi
                 done <<EOF
 $(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
 EOF
             fi
-            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153
+            if [ -n "$_setup_k2_peer" ]; then _setup_gfx=$_setup_k2_peer; else _setup_gfx=gfx1153; fi
         fi
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
@@ -5201,6 +5230,7 @@ else
             fi
             # Best-effort: the target exists only on llama.cpp trees carrying the diffusion example.
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+            run_quiet_no_exit "build llama-bench" cmake --build "$_BUILD_TMP/build" --config Release --target llama-bench -j"$NCPU" || true
         fi
 
         # Opt-in smoke test (CUDA JIT stalls); runs before the install swap.
@@ -5230,6 +5260,7 @@ else
                         if [ "$BUILD_OK" = true ]; then
                             run_quiet_no_exit "build llama-quantize (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
                             run_quiet_no_exit "build diffusion visual server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+                            run_quiet_no_exit "build llama-bench (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-bench -j"$NCPU" || true
                         fi
                     else
                         BUILD_OK=false
@@ -5465,6 +5496,24 @@ _print_llama_gpu_notes() {
 }
 
 _frontend_bg_join
+
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
+_setup_bytecode_opted_out() {
+    local _sbo _sbo_out=0
+    for _sbo in "${UV_COMPILE_BYTECODE:-}" "${UNSLOTH_STUDIO_COMPILE_BYTECODE:-}"; do
+        case "$(printf '%s' "$_sbo" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+            0|false|no|off) return 0 ;;
+            1|true|yes|on) _sbo_out=1 ;;
+        esac
+    done
+    return "$_sbo_out"
+}
+if { [ "${_SETUP_VENV_CHANGED:-false}" = true ] || [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ]; } \
+    && [ "${_COLAB_NO_VENV:-false}" != true ] && [ -x "$VENV_DIR/bin/python" ] \
+    && [ -f "$SCRIPT_DIR/precompile_bytecode.py" ] && ! _setup_bytecode_opted_out; then
+    step "python" "precompiling bytecode..."
+    "$VENV_DIR/bin/python" -I "$SCRIPT_DIR/precompile_bytecode.py" </dev/null || true
+fi
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then

@@ -164,7 +164,11 @@ def test_wan_default_flow_shift_stays_the_models_own_schedule(tmp_path):
     assert cfg.flow_shift is None
 
 
-def test_a_video_run_publishes_no_adapter_into_the_image_lora_catalog(tmp_path, monkeypatch):
+def test_a_video_run_publishes_its_adapter_for_the_video_load(tmp_path, monkeypatch):
+    # The Video load's ``loras`` resolve through loras/diffusion; the sidecar family gates it to Wan.
+    import json
+    from pathlib import Path
+
     catalog = tmp_path / "loras" / "diffusion"
     catalog.mkdir(parents = True)
     monkeypatch.setattr("core.inference.diffusion_lora.loras_dir", lambda: catalog)
@@ -172,8 +176,10 @@ def test_a_video_run_publishes_no_adapter_into_the_image_lora_catalog(tmp_path, 
     adapter.parent.mkdir(parents = True, exist_ok = True)
     adapter.write_bytes(b"adapter-bytes")
     cfg = _cfg(tmp_path, resolution = 704).normalized()
-    assert _publish_to_lora_catalog(str(adapter), cfg) is None
-    assert list(catalog.iterdir()) == []
+    published = _publish_to_lora_catalog(str(adapter), cfg)
+    assert published is not None and Path(published).parent == catalog
+    sidecar = json.loads(Path(published).with_suffix(".json").read_text(encoding = "utf-8"))
+    assert sidecar["families"] == ["wan2.2-ti2v-5b"]
 
 
 def test_family_train_infos_offers_wan(dit_train_host):
@@ -438,8 +444,7 @@ def test_saved_lora_has_diffusers_keys_and_loads_through_wanpipeline(tmp_path):
 
 
 def test_collate_copies_only_the_trimmed_rows_and_pads_on_the_device(monkeypatch):
-    """The pad to 512 must happen AFTER the move: padding on the host is a 4 MB pageable copy plus a multi-threaded
-    host fill + cat every step."""
+    """Pad to 512 after the move; padding on the host is a 4 MB pageable copy every step."""
     seen = []
     real_to = torch.Tensor.to
 

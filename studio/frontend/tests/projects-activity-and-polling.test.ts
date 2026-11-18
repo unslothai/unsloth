@@ -19,7 +19,7 @@ test("project recency is chat activity, everywhere a recent list is drawn", () =
     /return Math\.max\(project\.lastActivityAt \?\? 0, project\.updatedAt\);/,
   );
   assert.match(PAGE, /projectActivityAt\(b\) - projectActivityAt\(a\)/);
-  assert.match(PAGE, /formatUpdated\(projectActivityAt\(project\)\)/);
+  assert.match(PAGE, /formatUpdated\(projectActivityAt\(project\), t, locale\)/);
   assert.ok(!PAGE.includes("b.updatedAt - a.updatedAt : "), "the page still sorts by edit time");
   assert.match(THREAD, /sortProjectsByActivity\(projects\)\.slice\(0, 3\)/);
 });

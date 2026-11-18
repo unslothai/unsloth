@@ -3,6 +3,7 @@
 
 import type { LocalModelInfo } from "@/features/hub";
 import type { LoraModelOption } from "@/features/model-picker";
+import { isDiffusionTask } from "@/features/model-picker/components/model-selector/model-capabilities";
 
 /** Same set as `PICKER_LOCAL_SOURCES`. Ollama ids are resolved to a `.gguf` link by /load. */
 const CHAT_LOCAL_SOURCES: ReadonlySet<LocalModelInfo["source"]> = new Set([
@@ -38,20 +39,29 @@ export function chatLocalModelOptions(
   const options: LoraModelOption[] = [];
   const seen = new Set<string>();
   for (const model of rows) {
-    if (!CHAT_LOCAL_SOURCES.has(model.source) || seen.has(model.id)) {
+    // Image and video checkpoints belong to Images / Video.
+    if (
+      !CHAT_LOCAL_SOURCES.has(model.source) ||
+      seen.has(model.id) ||
+      isDiffusionTask(model.task)
+    ) {
       continue;
     }
     seen.add(model.id);
+    // An Ollama tag is one GGUF file unless it is in Ollama's MLX format.
     const isDirectGguf =
-      model.source === "ollama" || model.path.toLowerCase().endsWith(".gguf");
+      (model.source === "ollama" && model.model_format !== "safetensors") ||
+      model.path.toLowerCase().endsWith(".gguf");
     options.push({
       id: model.id,
       name: model.display_name,
       baseModel: baseModelLabel(model.source),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
-      isGguf: isDirectGguf ? true : undefined,
+      // A GGUF directory needs no `gguf` in its name: the scan's format says so.
+      isGguf: isDirectGguf || model.model_format === "gguf" ? true : undefined,
       isDirectGguf: isDirectGguf ? true : undefined,
+      audioType: model.audio_type ?? undefined,
     });
   }
   return options;

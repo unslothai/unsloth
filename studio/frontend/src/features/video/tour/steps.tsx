@@ -1,9 +1,37 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { buildImagesTourSteps } from "@/features/images/tour/steps";
 import type { TourStep } from "@/features/tour";
 
-export const videoTourSteps: TourStep[] = [
+const modeStep: TourStep = {
+  id: "mode",
+  target: "video-mode",
+  title: "Create or Train",
+  body: (
+    <>
+      Create generates videos. Train fine-tunes a diffusion LoRA with the same
+      trainer as Images, and finished image LoRAs load in Images.
+    </>
+  ),
+};
+
+export function buildVideoTourSteps({
+  pageMode,
+}: {
+  pageMode: "create" | "train";
+}): TourStep[] {
+  return pageMode === "train"
+    ? [
+        modeStep,
+        ...buildImagesTourSteps({ pageMode: "train" }).filter(
+          (step) => step.id !== "mode",
+        ),
+      ]
+    : [modeStep, ...createSteps];
+}
+
+const createSteps: TourStep[] = [
   {
     id: "model",
     target: "video-model",

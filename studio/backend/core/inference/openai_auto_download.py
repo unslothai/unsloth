@@ -1,27 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in: fetch a GGUF a /v1 request names but this server doesn't have.
-
-Auto-switch only loads models already on disk. With
-``openai_api_auto_download_model`` on, a miss that looks like a real Hub repo is
-fetched in the background and the request is told to retry rather than held
-open: a quant is routinely tens of GB, far longer than any client (or the
-Cloudflare edge on ``--secure``) will wait, and the inference lifecycle gate must
-not be held meanwhile. The resident model keeps serving, and the retry that lands
-after the download goes through the ordinary auto-switch path.
-
-Admission is deliberately narrow, since a request only needs an API key:
-- ``namespace/name`` only, and only when the Hub confirms GGUF weights. A
-  namespace is not evidence of intent (LiteLLM and OpenRouter address every
-  provider that way), so ``gpt-4`` and ``anthropic/claude-3.5-sonnet`` alike
-  fall through to the resident model as before.
-- GGUF only, decided from the remote file list, not the repo name: GGUF runs
-  under llama.cpp, which never imports repo Python.
-- ``auto_map`` is refused, so ``trust_remote_code`` is only ever granted
-  deliberately in the UI, never by an API call.
-- One download at a time, so a key holder cannot fan out fetches.
-"""
+"""Opt-in background fetch of a missing GGUF (namespace/name, Hub-confirmed); request told to retry,
+one download at a time; auto_map refused, so trust_remote_code is never granted by an API call"""
 
 from __future__ import annotations
 
@@ -158,8 +139,7 @@ def looks_like_quant(variant: Optional[str]) -> bool:
 
 
 def _hub_token(hf_token: Optional[str]):
-    """The caller's token, or an explicit False. None makes huggingface_hub fall
-    back to a cached login (here the server owner's); only False is anonymous."""
+    """Caller's token, or False for anonymous; None would use the server owner's cached login."""
     return hf_token or False
 
 
@@ -306,8 +286,7 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
 
 
 def _remaining_bytes(repo_id: str, plan, expected_bytes: int) -> int:
-    """Bytes still to fetch: a resumed quant or a companion shared with another
-    quant is already on disk, and charging for it can 507 a download that fits."""
+    """Skips bytes already on disk (resumed or shared companion); charging them can 507 a fit."""
     try:
         from hub.utils.download_registry import existing_blob_bytes
 
@@ -322,8 +301,7 @@ def _remaining_bytes(repo_id: str, plan, expected_bytes: int) -> int:
 
 
 def _enough_disk(need_bytes: int) -> tuple[bool, int]:
-    """(fits, free_bytes). Fail-open on an unreadable cache root: the download
-    worker runs its own preflight, this only adds the reserve margin."""
+    """Fails open on an unreadable cache root; the download worker runs its own preflight."""
     try:
         from hub.utils.hf_cache_state import hf_cache_root
 
@@ -379,8 +357,7 @@ def _release(active: Optional[_Active]) -> None:
 
 
 async def _watch(active: _Active, hf_token: Optional[str]) -> None:
-    """Poll a dispatched job so the monitor row resolves and the resolver cache
-    is dropped the moment the weights land."""
+    """Polls the job so the monitor row resolves and the resolver cache drops as weights land."""
     from core.inference import api_monitor as monitor_module
 
     api_monitor = monitor_module.api_monitor
@@ -822,13 +799,7 @@ def _match_variant(
     variants: dict[str, int],
     repo_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Resolve the requested quant against what the repo actually has.
-
-    An explicit quant matches case-insensitively and must exist: never quietly
-    substitute another, unlike the loader's low-disk fallback. A bare repo id, or a
-    tag that names no quant (":latest", ":8b"), uses the same preference order as a
-    manual load, matching what the local resolver does with the same tag.
-    """
+    """Explicit quant matches case-insensitively, never substituted; bare repo ids use manual-load order."""
     if wanted:
         # Exact match first: generic names like llama-13b are valid keys but not quant-shaped, and defaulting past one fetches the wrong model
         lowered = {name.lower(): name for name in variants}

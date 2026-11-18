@@ -200,6 +200,8 @@ def _run_doctor(
     p2p_disable = None,
 ):
     monkeypatch.setitem(sys.modules, "torch", torch)
+    # These tests cover the CUDA path, so keep the doctor off the MLX path.
+    monkeypatch.setattr(doctor_mod, "mlx_backend_active", lambda: False)
     monkeypatch.setattr(doctor_mod, "_load_pynvml", lambda: None)
     monkeypatch.setattr(doctor_mod, "driver_version", lambda pynvml = None: "550.1")
     monkeypatch.setattr(doctor_mod, "p2p_copy_probe", lambda t, n: {(0, 1): "ok", (1, 0): "ok"})
@@ -379,6 +381,8 @@ def test_doctor_reports_a_torch_that_fails_to_load(monkeypatch):
 
     monkeypatch.delitem(sys.modules, "torch", raising = False)
     monkeypatch.setattr(builtins, "__import__", broken)
+    # This test is about the CUDA path's torch import, so keep the doctor off the MLX path.
+    monkeypatch.setattr(doctor_mod, "mlx_backend_active", lambda: False)
     cli = typer.Typer()
     cli.command()(doctor_mod.doctor)
     result = CliRunner().invoke(cli, ["--gpus"])

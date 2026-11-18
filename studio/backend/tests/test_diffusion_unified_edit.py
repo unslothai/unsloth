@@ -142,6 +142,20 @@ def test_edit_only_and_reference_families_keep_their_contracts():
         assert c["multi_image_edit"] is False and c["max_condition_images"] == 10
 
 
+def test_qwen_image_21_edits_default_to_the_2k_output_level():
+    from core.inference.diffusion import _family_workflows
+
+    for repo in ("Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"):
+        fam = detect_family(repo)
+        c = cond.conditioning_capabilities(fam, _family_workflows(fam))
+        assert c["edit_output_resolution"] == 2048 <= c["max_output_side"]
+    flux2 = detect_family("black-forest-labs/FLUX.2-klein-4B")
+    assert (
+        cond.conditioning_capabilities(flux2, ["txt2img", "reference"])["edit_output_resolution"]
+        is None
+    )
+
+
 def test_reference_edit_runs_the_reference_call_at_the_requested_size(fake_runtime, tmp_path):
     import dataclasses
 
@@ -234,7 +248,7 @@ def test_unified_edit_registers_the_requested_shape_not_the_source(backend21):
     src = Image.new("RGBA", (96, 64))
     assert _compile_shape_dims("edit", src, 1024, 768, fam) == (1024, 768)
     kontext = detect_family("black-forest-labs/FLUX.1-Kontext-dev")
-    assert _compile_shape_dims("edit", src, 1024, 768, kontext) == (96, 64)
+    assert _compile_shape_dims("edit", src, 1024, 768, kontext) == (1248, 832)
 
 
 @pytest.mark.parametrize("extras,ok", [(0, True), (3, True), (9, True), (10, False)])

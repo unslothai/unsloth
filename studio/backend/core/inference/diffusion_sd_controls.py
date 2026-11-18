@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SDXL generation controls (diffusers engine): A1111 prompt weighting, CLIP skip, CFG rescale, variation seeds.
-
-CLIP skip uses A1111 numbering: A1111 N = diffusers N - 1 on SD 1.x and N - 2 on SDXL (diffusers already reads
-the penultimate layer there; matches webui-forge minimal_clip_skip). On SDXL it moves CLIP-L and OpenCLIP-G
-together, as ComfyUI's CLIPSetLastLayer (sdxl_clip.SDXLClipModel.set_clip_options) and Forge's
-StableDiffusionXL.set_clip_skip do. Variation seeds follow webui modules/rng.py;
-the base noise is still drawn by prepare_latents, so the generator advances exactly as before.
-"""
+"""A1111 CLIP skip N = diffusers N-1 on SD 1.x, N-2 on SDXL; variation seeds follow webui rng; base
+noise still drawn in prepare_latents, so generator advances as before"""
 
 from __future__ import annotations
 
@@ -172,10 +166,8 @@ def _clip_skip_engaged(controls: SdControls, family: Any) -> bool:
 def weighting_engaged(
     controls: Optional[SdControls], family: Any, pipe: Any, texts: Sequence[Optional[str]]
 ) -> bool:
-    """Whether this call encodes its prompts here instead of in the pipeline.
-
-    Engaged by weight syntax, a prompt past 75 tokens or a CLIP skip past the model's layer; otherwise the
-    pipeline encodes, bit-identically."""
+    """Encodes here for weight syntax, prompts past 75 tokens, or a CLIP skip past the model layer;
+    else the pipeline encodes, bit-identically."""
     if not supports_sd_controls(family, pipe):
         return False
     controls = controls or SdControls()

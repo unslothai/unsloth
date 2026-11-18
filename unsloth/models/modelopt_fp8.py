@@ -10,12 +10,7 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Load NVIDIA ModelOpt FP8 checkpoints through transformers' fp8 quantizer.
-
-ModelOpt per-tensor FP8 equals transformers' static fp8 format except for scale names
-(``weight_scale`` / ``input_scale`` vs ``weight_scale_inv`` / ``activation_scale``), so the
-config block is rewritten to ``quant_method: fp8`` and the scales renamed via ``key_mapping``.
-"""
+"""ModelOpt FP8 checkpoints load via transformers' fp8 quantizer; scale names remapped by key_mapping."""
 
 import fnmatch
 import functools
@@ -289,7 +284,9 @@ def attach_hf_quant_config(
         model_type = getattr(config, "model_type", None),
         architectures = getattr(config, "architectures", None),
     )
-    if modelopt_fp8_plan(probe) is None:
+    from .modelopt_nvfp4 import modelopt_nvfp4_plan
+
+    if modelopt_fp8_plan(probe) is None and modelopt_nvfp4_plan(probe) is None:
         return False
     try:
         config.quantization_config = quant
@@ -333,9 +330,11 @@ def _remembered_mapping(config) -> Optional[dict]:
 
 
 def modelopt_rewritten(config) -> bool:
+    # ModelOpt NVFP4 is rewritten to compressed-tensors: the load must also be handed this config.
     return (
         hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
         or _remembered_mapping(config) is not None
+        or bool(getattr(config, "_unsloth_modelopt_nvfp4", False))
     )
 
 

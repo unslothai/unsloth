@@ -18,6 +18,7 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
 MODELS = (
     "trl-internal-testing/tiny-LlamaForCausalLM-3.2",
     "trl-internal-testing/tiny-Qwen3ForCausalLM",
+    "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder",
 )
 PROMPTS = [
     "Once upon a time there was",
@@ -138,6 +139,26 @@ def test_graph_decode_is_bitwise_eager(name, load_in_4bit, bsz, monkeypatch):
 
 
 @cuda
+@pytest.mark.parametrize("bsz", [1, 4])
+def test_qwen2_sliding_window_graph_decode_is_bitwise_eager(bsz, monkeypatch):
+    """Past the sliding window, replay attends over the same trailing window as eager."""
+    model, tok = _load(MODELS[2], False)
+    for module in model.modules():
+        config = getattr(module, "config", None)
+        if config is not None and hasattr(config, "sliding_window"):
+            config.sliding_window = 16
+    enc = tok(PROMPTS[:bsz], return_tensors = "pt", padding = True).to("cuda")
+    eager = _generate(model, tok, enc, False, monkeypatch)
+    before = G.stats(_causal(model)).get("replays", 0)
+    graph = _generate(model, tok, enc, True, monkeypatch)
+    stats = G.stats(_causal(model))
+    assert stats["disabled"] is None, stats
+    assert stats["replays"] - before == 40 - 2
+    assert torch.equal(eager[0], graph[0])
+    assert torch.equal(eager[1], graph[1])
+
+
+@cuda
 def test_returned_cache_is_not_overwritten(monkeypatch):
     """A cache handed back by generate(return_dict_in_generate=True) keeps its values through a
     later generate(): the persistent buffers it views are released to the caller."""
@@ -192,8 +213,9 @@ def test_shift_labels_decode_loss(monkeypatch):
 @pytest.mark.parametrize("stale_control", [False, True])
 def test_lora_change_between_generations_recaptures(name, stale_control, monkeypatch):
     """GRPO: an optimizer step, then an in-place adapter edit, then a disabled adapter between
-    decode runs. stale_control pins the fingerprint, so the old graphs replay: proves the check is
-    what keeps the graph path on the live adapter."""
+    decode runs. stale_control re-makes the decode casts (new addresses, as before they were refreshed
+    in place) and pins the fingerprint, so the old graphs replay their old casts: proves the in-place
+    refresh / fingerprint is what keeps the graph path on the live adapter."""
     model, tok = _load(name, False, lora = True)
     enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
     ids = enc.input_ids
@@ -202,7 +224,10 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
     if stale_control:
         pinned = G._state(_causal(model)).fingerprint
         monkeypatch.setattr(G, "_fingerprint", lambda *a: pinned)
+        monkeypatch.setattr(kernel_utils, "_refresh_lora_cast", lambda *a: False)
     params = [p for n, p in model.named_parameters() if "lora_" in n and p.requires_grad]
+    # for_training() frees the graphs; keep them here, so the fingerprint alone must catch the edits.
+    monkeypatch.setattr(G, "release_for_training", lambda model: None)
     FastLanguageModel.for_training(model)
     opt = torch.optim.SGD(params, lr = 1.0)
     for p in params:
@@ -228,6 +253,55 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
             _manual_loop(model, ids, False, monkeypatch),
             _manual_loop(model, ids, True, monkeypatch),
         )
+
+
+@cuda
+@pytest.mark.gpu
+@pytest.mark.parametrize("stale, keep", [(False, "1"), (True, "1"), (False, "auto")])
+def test_kept_graphs_replay_updated_adapters_after_optimizer_steps(stale, keep, monkeypatch):
+    """RL loop (decode, LoRA train step, decode, ...) with the graphs kept through training: no capture after
+    the first round, and every round's graph decode is bit for bit the eager decode of the updated adapters.
+    Freed cuBLAS workspaces (Inductor CUDA graph trees in training) re-capture the next round.
+    stale: the decode casts are re-made (new addresses) behind a pinned fingerprint, so the kept graphs read
+    the old cast copies; the comparison must catch it. auto: the KV caches on CUDA virtual memory sleep through
+    training (their pages go back), so the graphs are kept from the first round as well."""
+    from unsloth.models import _decode_vmm as V
+
+    monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", keep)
+    if keep == "auto" and not V.available(torch.device("cuda", torch.cuda.current_device())):
+        pytest.skip("CUDA virtual memory management")
+    sleeps = V.SLEEPS
+    model, tok = _load(MODELS[1], False, lora = True)
+    ids = tok(PROMPTS[:2], return_tensors = "pt", padding = True).input_ids.to("cuda")
+    causal = _causal(model)
+    params = [p for n, p in model.named_parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(params, lr = 1e-2, fused = True)
+    captures = []
+    for r in range(3):
+        FastLanguageModel.for_inference(model)
+        eager = _manual_loop(model, ids, False, monkeypatch)
+        before = G.stats(causal).get("captures", 0)
+        graph = _manual_loop(model, ids, True, monkeypatch)
+        captures.append(G.stats(causal)["captures"] - before)
+        if stale and r > 0:
+            assert not torch.equal(eager, graph)
+            return
+        assert torch.equal(eager, graph), r
+        if stale and r == 0:
+            pinned = G._state(causal).fingerprint
+            monkeypatch.setattr(G, "_fingerprint", lambda *a: pinned)
+            monkeypatch.setattr(kernel_utils, "_refresh_lora_cast", lambda *a: False)
+        FastLanguageModel.for_training(model)
+        loss = model(input_ids = ids, labels = ids).loss
+        loss.backward()
+        opt.step()
+        opt.zero_grad(set_to_none = True)
+        if r == 1:
+            torch._C._cuda_clearCublasWorkspaces()
+    assert not stale
+    assert captures == [1, 0, 1], captures
+    if keep == "auto":
+        assert V.SLEEPS > sleeps
 
 
 @cuda
@@ -316,6 +390,58 @@ def test_release_drops_graphs_and_buffers(monkeypatch):
         _generate(model, tok, enc, False, monkeypatch)[1],
         _generate(model, tok, enc, True, monkeypatch)[1],
     )
+
+
+@cuda
+def test_ineligible_generation_frees_graphs_and_recovers(monkeypatch):
+    """Compare mode: a generation the graphs cannot serve (here a DoRA adapter, faked) frees the
+    captured steps, and the next eligible generation is graphed again instead of eager for good."""
+    model, tok = _load(MODELS[0], False, lora = True)
+    enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
+    causal = _causal(model)
+    eager = _generate(model, tok, enc, False, monkeypatch)
+    # _plain returns no cache, so generate() keeps the captured steps (a returned one releases them).
+    monkeypatch.setattr(G, "ENABLED", True)
+    _plain(model, tok, enc)
+    assert G.stats(causal)["graphs"] >= 1
+    plain = kernel_utils._has_active_dora_adapter
+    monkeypatch.setattr(kernel_utils, "_has_active_dora_adapter", lambda proj: True)
+    replays = G.stats(causal)["replays"]
+    _plain(model, tok, enc)
+    stats = G.stats(causal)
+    assert stats["graphs"] == 0 and stats["replays"] == replays, stats
+    assert stats["disabled"] is None, stats
+    monkeypatch.setattr(kernel_utils, "_has_active_dora_adapter", plain)
+    graph = _generate(model, tok, enc, True, monkeypatch)
+    assert G.stats(causal)["replays"] > replays
+    assert torch.equal(graph[1], eager[1])
+
+
+@cuda
+def test_failed_capture_joins_the_side_stream(monkeypatch):
+    """A capture that fails in its warmup still makes the caller's stream wait for the side stream
+    before the eager fallback runs."""
+    model, tok = _load(MODELS[0], False)
+    enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
+    joins = []
+    wait = torch.cuda.Stream.wait_stream
+
+    def spy(self, other):
+        joins.append((self, other))
+        return wait(self, other)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected warmup failure")
+
+    monkeypatch.setattr(torch.cuda.Stream, "wait_stream", spy)
+    monkeypatch.setattr(G, "_run_step", fail)
+    eager = _generate(model, tok, enc, False, monkeypatch)
+    graph = _generate(model, tok, enc, True, monkeypatch)
+    side = G._state(_causal(model)).stream
+    assert side is not None and any(
+        other is side and self is not side for self, other in joins
+    ), joins
+    assert torch.equal(eager[1], graph[1])
 
 
 @cuda

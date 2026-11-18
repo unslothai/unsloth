@@ -214,9 +214,10 @@ def test_a_tool_loop_refit_recalls_for_the_users_turn_not_a_loop_reprompt(
         thread_id,
         *,
         branch_messages = None,
+        query_messages = None,
         **kwargs,
     ):
-        seen.append(tools_mod._last_user_text(branch_messages or conversation))
+        seen.append(tools_mod._last_user_text(query_messages or branch_messages or conversation))
         return None
 
     monkeypatch.setattr(tools_mod, "build_conversation_recall", spy)
@@ -270,3 +271,39 @@ def test_no_compaction_nudge_when_tool_calls_are_disabled(monkeypatch):
 
     system = " ".join(str(m.get("content")) for m in sent["messages"] if m.get("role") == "system")
     assert "call search_conversation" not in system
+
+
+def test_a_tool_result_this_turn_evicted_is_recalled_for_the_users_question(archive_ready):
+    """The recall filters on the loop's turns and queries the client's, so the model keeps what it
+    found this turn after a fit evicts it (#16187)."""
+    finding = "The ZEBRA-4471 valve opens at 37 bar"
+    request = _chat()[:3] + [
+        {"role": "user", "content": "What pressure does the ZEBRA-4471 valve open at?"}
+    ]
+    _persist(THREAD, request)
+    loop = list(request)
+    for index in range(6):
+        call_id = f"c{index}"
+        loop.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": f'{{"query": "v{index}"}}'},
+                    }
+                ],
+            }
+        )
+        found = f"{finding}. " if index == 0 else ""
+        loop.append({"role": "tool", "tool_call_id": call_id, "content": found + _FILLER})
+    loop.append({"role": "user", "content": "You have used all available tool calls. Answer now."})
+
+    fitted, truncation, _ = ri._fit_external_context(
+        loop, _payload(THREAD), branch = request, tool_loop = True
+    )
+
+    assert truncation["recalled_chunks"] > 0
+    assert finding in str(fitted)

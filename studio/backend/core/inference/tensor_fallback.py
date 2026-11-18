@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tensor-parallel -> layer-split auto-fallback for GGUF loads.
-
-Kept in its own module (no FastAPI / httpx deps) so the orchestration can be
-unit-tested with a fake loader, without a GPU or a running llama-server.
-"""
+"""Tensor-parallel to layer-split fallback for GGUF loads; kept free of FastAPI/httpx for unit tests."""
 
 from __future__ import annotations
 

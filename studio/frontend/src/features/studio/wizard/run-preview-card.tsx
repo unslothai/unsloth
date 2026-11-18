@@ -150,7 +150,7 @@ function ResourceNoticeList({
   }
   return (
     <section className="flex flex-col gap-2">
-      <p className="text-ui-10p5 font-medium uppercase tracking-[0.05em] text-muted-foreground/60">
+      <p className="text-ui-11 font-medium tracking-nav text-muted-foreground">
         {t("studio.preview.files")}
       </p>
       {notices.map((notice) => (
@@ -245,7 +245,7 @@ function PreviewResource({
   return (
     <div className="flex flex-col gap-1">
       {owner && (
-        <p className="font-mono text-ui-10p5 uppercase tracking-[0.04em] text-muted-foreground/70">
+        <p className="font-mono text-ui-10p5 text-muted-foreground/70">
           {owner}
         </p>
       )}

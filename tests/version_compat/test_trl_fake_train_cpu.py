@@ -274,9 +274,8 @@ def test_dpo_trains_on_cpu(tmp_path):
 
     from trl.trainer import dpo_trainer
 
-    # TRL 1.15 scores DPO through its fused LM head, a Triton kernel with no CPU path, so
-    # plain TRL cannot train DPO on a CPU either. Only skip when that is what the installed
-    # TRL does, so an older TRL still has to train here.
+    # TRL 1.15 scores DPO through a fused LM head (a Triton kernel with no CPU path); skip only when
+    # the installed TRL does this, so older TRL still trains here.
     if "fused_lm_head=True" in inspect.getsource(dpo_trainer):
         pytest.skip("this TRL computes DPO log-probs with a Triton GPU kernel only")
     model, tok = _load_plain()
@@ -488,3 +487,58 @@ def test_sft_applies_trl_router_aux_loss_coef(tmp_path):
     assert (
         abs(applied - 0.05) < 1e-4
     ), f"applied aux coefficient {applied}, expected SFTConfig's 0.05"
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink",
+        "trl-internal-testing/tiny-Gemma3ForConditionalGeneration",
+    ],
+)
+def test_gkd_trains_text_only_with_a_multimodal_processor(tmp_path, repo):
+    """Multimodal checkpoints (Qwen3.5 / 3.6, Gemma 3) load with a processor; GKD is text only and takes its tokenizer."""
+    from datasets import Dataset
+    from transformers import AutoModelForCausalLM, AutoProcessor
+
+    try:
+        from trl.experimental.gkd import GKDConfig, GKDTrainer
+    except ImportError:
+        from trl import GKDConfig, GKDTrainer
+    assert GKDTrainer.__name__ == "UnslothGKDTrainer", "GKD patch did not apply"
+    try:
+        processor = AutoProcessor.from_pretrained(repo)
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_pretrained(repo).to(torch.float32)
+        teacher = AutoModelForCausalLM.from_pretrained(repo).to(torch.float32)
+    except (OSError, ValueError, KeyError) as e:
+        pytest.skip(f"{repo} not loadable here: {str(e)[:150]}")
+    assert not hasattr(processor, "pad_token_id")
+    model.for_training = lambda *a, **k: model.train()
+    messages = [
+        [
+            {"role": "user", "content": "Hi there"},
+            {"role": "assistant", "content": "Hello friend."},
+        ],
+        [{"role": "user", "content": "2 + 2?"}, {"role": "assistant", "content": "It is 4."}],
+    ]
+    ds = Dataset.from_list([{"messages": m} for m in messages])
+    cfg = GKDConfig(
+        output_dir = str(tmp_path / "ci_gkd"),
+        per_device_train_batch_size = 2,
+        max_steps = 1,
+        max_length = 64,
+        lmbda = 0.0,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        fp16 = False,
+        bf16 = False,
+        optim = "adamw_torch",
+    )
+    trainer = GKDTrainer(
+        model = model, teacher_model = teacher, args = cfg, train_dataset = ds, processing_class = processor
+    )
+    assert trainer.processing_class is processor.tokenizer
+    assert trainer.generation_config.pad_token_id == processor.tokenizer.pad_token_id
+    assert torch.isfinite(torch.tensor(trainer.train().training_loss))

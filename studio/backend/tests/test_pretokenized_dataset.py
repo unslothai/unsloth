@@ -282,8 +282,7 @@ def test_prepare_still_checks_assistant_masks_without_completion_only_loss():
 
 
 def test_prepare_keeps_hidden_columns_hidden():
-    # A labels column hidden by set_format(columns = ...) is not the user's labels, and the
-    # truncation restores the format so it stays hidden.
+    # Hidden labels are not the user's labels, and truncation must keep them hidden.
     ds = Dataset.from_dict({"input_ids": [[1, 2, 3, 4, 5, 6]], "labels": [[1, 2, 3, 4, 5, 6]]})
     ds.set_format(columns = ["input_ids"], output_all_columns = False)
     assert not has_custom_labels(ds)

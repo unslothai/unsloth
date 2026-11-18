@@ -19,7 +19,7 @@ test("the Skills pill follows the Skills switch, in both composers", () => {
 
 test("one list of every runnable skill under the Skills title, then Manage skills", () => {
   assert.match(PILL, /<DropdownMenuLabel>\{t\("skills\.title"\)\}<\/DropdownMenuLabel>/);
-  assert.doesNotMatch(PILL, /source !== "bundled"|Settings02Icon/);
+  assert.doesNotMatch(PILL, /source !== "bundled"|Settings01Icon/);
   assert.match(PILL, /<DropdownMenuSeparator \/>\s*<DropdownMenuItem/);
 });
 

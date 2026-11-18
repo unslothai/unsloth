@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AUTOMATIC1111 prompt weighting for the CLIP-conditioned (SD 1.x / SDXL) diffusers pipelines.
-
-Follows stable-diffusion-webui (commit 82a973c) prompt_parser / sd_hijack_clip / sd_emphasis, rewritten not copied.
-Layer selection is diffusers' own, so at weight 1 a single-chunk prompt matches the pipeline bit for bit.
-"""
+"""AUTOMATIC1111 prompt weighting for CLIP SD/SDXL pipelines; single-chunk weight 1 matches diffusers."""
 
 from __future__ import annotations
 

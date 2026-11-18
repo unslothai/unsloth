@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
 from core.inference.memory_contract import (
@@ -195,6 +196,7 @@ from hub.utils.host_paths import (
     resolve_host_path_reference,
     scrub_paths,
 )
+from hub.utils.mlx_variants import looks_like_mlx_repo
 from utils.utils import anonymous_and_offline
 
 
@@ -245,7 +247,7 @@ try:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -279,7 +281,7 @@ except ImportError:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -304,6 +306,7 @@ from models import (
 from models.models import (
     BrowseEntry,
     BrowseFoldersResponse,
+    BrowsePlace,
     ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
@@ -317,7 +320,7 @@ from models.responses import (
     VisionCheckResponse,
     EmbeddingCheckResponse,
 )
-from utils.paths.path_utils import is_appledouble_metadata
+from utils.paths.path_utils import is_appledouble_metadata, is_network_or_device_path
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -533,7 +536,7 @@ def _scan_models_dir(
                 )
 
     # Several loose checkpoints: one row per file (the folder rescue below needs exactly one).
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from hub.utils.comfy_models import loose_diffusion_checkpoints
 
     sole = resolve_local_single_file(str(models_dir)) if not (found or loose_files) else None
@@ -615,10 +618,7 @@ def _scan_hf_cache(
             if variant_states is not None
             else None
         )
-        partial = hf_cache_scan.is_snapshot_partial(
-            "model", model_id, repo_dir, variant_state = variant_state
-        )
-        partial = partial or hf_cache_scan.is_gguf_repo_partial(
+        partial = hf_cache_scan.repo_listing_partial(
             model_id, repo_dir, variant_state = variant_state
         )
 
@@ -912,6 +912,7 @@ def _with_comfy_compat_rows(
     return existing + found
 
 
+@in_scan_memo
 def collect_local_models(
     models_root: Path,
     *,
@@ -979,7 +980,10 @@ def collect_local_models(
         except OSError:
             continue
     try:
-        from hub.utils import download_manifest
+        from hub.utils import download_manifest, partial_verdict_cache
+
+        # Taken before the index reads the Hub state, so a write in between misses next time.
+        partial_verdict_cache.scan_token()
         variant_states = download_manifest.build_variant_state_index(
             state_repositories,
             active_hub_cache = hf_cache_dir,
@@ -1201,6 +1205,7 @@ def _compat_inventory_path_identity(path: object) -> str:
         return os.path.normcase(raw)
 
 
+@in_scan_memo
 async def _shared_compat_local_inventory_scan(
     models_root: Path, sources: Optional[_CompatLocalInventorySources] = None
 ) -> List[LocalModelInfo]:
@@ -1428,6 +1433,8 @@ async def remove_scan_folder_endpoint(
 
 def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
     """Any weight file counts, but an empty Ollama or LM Studio scaffold does not."""
+    from hub.services.models import ollama_mlx
+
     # Resolve the model layer blob: a failed pull can leave a manifest with no blob.
     visited = 0
     manifests = directory / "manifests"
@@ -1453,7 +1460,11 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                 for layer in layers:
                     if not isinstance(layer, dict):
                         continue
-                    if layer.get("mediaType") != "application/vnd.ollama.image.model":
+                    media_type = layer.get("mediaType")
+                    # MLX-format tags count only where Studio can load them.
+                    if media_type != "application/vnd.ollama.image.model" and not (
+                        media_type == ollama_mlx.TENSOR_MEDIA_TYPE and ollama_mlx.mlx_host()
+                    ):
                         continue
                     digest = layer.get("digest", "")
                     if (
@@ -1553,6 +1564,7 @@ async def get_recommended_folders(current_subject: str = Depends(get_current_sub
 _BROWSE_MODEL_HINT_PROBE = 64
 # Hard cap on subdirectory entries so browsing ``/usr/lib`` can't stat-storm the process.
 _BROWSE_ENTRY_CAP = 2000
+_BROWSE_VISIT_CAP = 50_000
 
 
 def _count_model_files(directory: Path, cap: int = 200) -> int:
@@ -1784,10 +1796,14 @@ def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str
 
 
 def _match_browse_child(current: Path, name: str) -> Optional[Path]:
+    folded = name.casefold()
+    loose: list[Path] = []
     try:
         for child in current.iterdir():
             if child.name == name:
                 return child
+            if child.name.casefold() == folded:
+                loose.append(child)
     except PermissionError:
         raise HTTPException(
             status_code = 403,
@@ -1799,7 +1815,7 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
             status_code = 500,
             detail = f"Could not read {os.path.basename(str(current))}",
         ) from exc
-    return None
+    return loose[0] if len(loose) == 1 else None
 
 
 def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
@@ -1821,6 +1837,16 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
             continue
         seen_roots.add(key)
         resolved_roots.append(resolved)
+
+    if not any(_browse_relative_parts(requested_path, root) is not None for root in resolved_roots):
+        # Spelled through a symlinked root (moved install, linked $HOME): matches only once resolved.
+        if not is_network_or_device_path(requested_path):
+            try:
+                real = os.path.realpath(requested_path)
+            except (OSError, ValueError):
+                real = requested_path
+            if not is_network_or_device_path(real):
+                requested_path = real
 
     for root in resolved_roots:
         parts = _browse_relative_parts(requested_path, root)
@@ -1853,9 +1879,8 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                 raise HTTPException(
                     status_code = 403,
                     detail = (
-                        "Path is not in the browseable allowlist. Register it via "
-                        "POST /api/models/scan-folders first, or pick a directory "
-                        "under your home folder."
+                        "That folder is outside the places Unsloth can browse. Pick one under "
+                        "your home folder, or add it as a custom model folder first."
                     ),
                 )
             if contains_sensitive_path_component(str(resolved_child)):
@@ -1891,11 +1916,47 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
     raise HTTPException(
         status_code = 403,
         detail = (
-            "Path is not in the browseable allowlist. Register it via "
-            "POST /api/models/scan-folders first, or pick a directory "
-            "under your home folder."
+            "That folder is outside the places Unsloth can browse. Pick one under "
+            "your home folder, or add it as a custom model folder first."
         ),
     )
+
+
+def _browse_scope(path: Optional[str]):
+    from utils.paths import external_media
+    from utils.paths.storage_roots import workspace_root
+
+    managed = account_access.managed_account()
+    if managed:
+        path = account_access.private_directory(path or str(workspace_root()), "")
+    media_roots = (
+        []
+        if managed
+        else [
+            *external_media.linux_external_mount_roots(),
+            *external_media.macos_volume_roots(),
+        ]
+    )
+    drive_roots = [] if managed else external_media.windows_drive_roots()
+    allowed_roots = (
+        [workspace_root().resolve()]
+        if managed
+        else _build_browse_allowlist(media_roots, drive_roots)
+    )
+    return path, managed, media_roots, drive_roots, allowed_roots
+
+
+def _resolve_logged_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
+    try:
+        return _resolve_browse_target(path, allowed_roots)
+    except HTTPException:
+        if path is not None and path.strip():
+            logger.warning(
+                "browse-folders: rejected path %r (normalized=%s)",
+                path,
+                _normalize_browse_request_path(path),
+            )
+        raise
 
 
 # Sync def so FastAPI threadpools it: a dead mapped drive would stall the loop.
@@ -1916,6 +1977,10 @@ def browse_folders(
         description = "Include entries whose name starts with a dot",
     ),
     current_subject: str = Depends(get_current_subject),
+    model_hints: bool = Query(
+        True,
+        description = "Probe each folder for model files. Pickers that do not show the hint turn it off.",
+    ),
 ):
     """List immediate subdirectories of *path* for the Custom Folders picker.
 
@@ -1928,52 +1993,21 @@ def browse_folders(
     so traversal can't escape. Sorting: model-bearing dirs, then plain,
     then hidden (if ``show_hidden=true``).
     """
-    from utils.paths.storage_roots import workspace_root
-
-    managed = account_access.managed_account()
-    if managed:
-        path = account_access.private_directory(path or str(workspace_root()), "")
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
-    from utils.paths import external_media
     from storage.studio_db import (
         contains_sensitive_path_component,
         is_denied_system_path,
         list_scan_folders,
     )
 
-    # A managed account browses its workspace only; no media/drive roots or chips outside it.
-    media_roots = (
-        []
-        if managed
-        else [
-            *external_media.linux_external_mount_roots(),
-            *external_media.macos_volume_roots(),
-        ]
-    )
-    drive_roots = [] if managed else external_media.windows_drive_roots()
-    allowed_roots = (
-        [workspace_root().resolve()]
-        if managed
-        else _build_browse_allowlist(media_roots, drive_roots)
-    )
+    path, managed, media_roots, drive_roots, allowed_roots = _browse_scope(path)
+    target = _resolve_logged_browse_target(path, allowed_roots)
 
-    try:
-        target = _resolve_browse_target(path, allowed_roots)
-    except HTTPException:
-        requested_path = _normalize_browse_request_path(path)
-        if path is not None and path.strip():
-            logger.warning(
-                "browse-folders: rejected path %r (normalized=%s)",
-                path,
-                requested_path,
-            )
-        raise
-
-    entries: list[BrowseEntry] = []
+    names: list[str] = []
     truncated = False
     visited = 0
     try:
-        it = target.iterdir()
+        it = os.scandir(target)
     except PermissionError:
         raise HTTPException(
             status_code = 403,
@@ -1987,45 +2021,52 @@ def browse_folders(
         )
 
     try:
-        for child in it:
-            # Bound by visits, not appends, so dirs full of files still hit the cap.
-            visited += 1
-            if visited > _BROWSE_ENTRY_CAP:
-                truncated = True
-                break
-            try:
-                if not child.is_dir():
+        with it:
+            for child in it:
+                visited += 1
+                if visited > _BROWSE_VISIT_CAP:
+                    truncated = True
+                    break
+                try:
+                    if not child.is_dir():
+                        continue
+                except OSError:
                     continue
-            except OSError:
-                continue
-            name = child.name
-            is_hidden = name.startswith(".")
-            if is_hidden and not show_hidden:
-                continue
-            if contains_sensitive_path_component(name):
-                continue
-            # Hide denied system dirs (Windows, /etc); resolve first so symlinks into them are hidden
-            try:
-                resolved_child = os.path.realpath(str(child))
-            except (OSError, ValueError):
-                resolved_child = str(child)
-            if is_denied_system_path(resolved_child):
-                continue
-            entries.append(
-                BrowseEntry(
-                    name = name,
-                    has_models = _looks_like_model_dir(child),
-                    hidden = is_hidden,
-                )
-            )
+                name = child.name
+                if name.startswith(".") and not show_hidden:
+                    continue
+                if contains_sensitive_path_component(name):
+                    continue
+                try:
+                    resolved_child = os.path.realpath(child.path)
+                except (OSError, ValueError):
+                    resolved_child = child.path
+                if is_denied_system_path(resolved_child):
+                    continue
+                names.append(name)
     except PermissionError as exc:
         logger.debug(
             "browse-folders: permission denied during enumeration of %s: %s",
             target,
             exc,
         )
+        truncated = True
     except OSError as exc:
         logger.warning("browse-folders: partial enumeration of %s: %s", target, exc)
+        truncated = True
+
+    names.sort(key = str.lower)
+    if len(names) > _BROWSE_ENTRY_CAP:
+        truncated = True
+        del names[_BROWSE_ENTRY_CAP:]
+    entries = [
+        BrowseEntry(
+            name = name,
+            has_models = bool(model_hints) and _looks_like_model_dir(target / name),
+            hidden = name.startswith("."),
+        )
+        for name in names
+    ]
 
     # Model-bearing first, then plain, then hidden; case-insensitive within each bucket.
     def _sort_key(e: BrowseEntry) -> tuple[int, str]:
@@ -2041,10 +2082,14 @@ def browse_folders(
     else:
         parent = str(target.parent)
 
-    suggestions: list[str] = []
+    places: list[BrowsePlace] = []
     seen_sug: set[str] = set()
 
-    def _add_sug(p: Optional[Path]) -> None:
+    def _add_sug(
+        p: Optional[Path],
+        label: Optional[str] = None,
+        kind: str = "models",
+    ) -> None:
         if p is None:
             return
         try:
@@ -2058,19 +2103,24 @@ def browse_folders(
             return
         if _safe_is_dir(resolved):
             seen_sug.add(resolved)
-            suggestions.append(resolved)
+            trimmed = resolved.rstrip("\\/")
+            name = os.path.basename(trimmed) or ("Computer" if resolved == os.sep else resolved)
+            if name.lower() in ("models", "hub"):
+                name = f"{os.path.basename(os.path.dirname(trimmed)).lstrip('.')}/{name}"
+            places.append(BrowsePlace(path = resolved, label = label or name, kind = kind))
 
     if managed:
         for root in allowed_roots:
-            _add_sug(root)
+            _add_sug(root, "Workspace", "home")
     else:
-        _add_sug(Path.home())
-        for p in media_roots:
-            _add_sug(p)
-        for p in drive_roots:
-            _add_sug(p)
+        home = Path.home()
+        _add_sug(home, "Home", "home")
+        for name in ("Desktop", "Documents", "Downloads"):
+            _add_sug(home / name, kind = "user")
+        for p in (*media_roots, *drive_roots):
+            _add_sug(p, p.name or None, "drive")
         try:
-            _add_sug(hf_default_cache_dir())
+            _add_sug(hf_default_cache_dir(), "Hugging Face cache")
         except Exception:
             pass
         try:
@@ -2088,29 +2138,88 @@ def browse_folders(
         current = str(target),
         parent = parent,
         entries = entries,
-        suggestions = suggestions,
+        suggestions = [place.path for place in places],
+        places = places,
         truncated = truncated,
-        model_files_here = _count_model_files(target),
+        model_files_here = _count_model_files(target) if model_hints else 0,
     )
 
 
-def _looks_like_mlx_repo(model_id: str) -> bool:
-    """Name heuristic for unloaded models (mirrors the -GGUF suffix check);
-    tokenized so MLX only matches as a whole name segment."""
-    if model_id.lower().startswith("mlx-community/"):
-        return True
-    tail = model_id.split("/")[-1]
-    return "MLX" in _re.split(r"[-_.]", tail.upper())
+class BrowseFolderCreate(BaseModel):
+    parent: str
+    name: str
+
+
+_NEW_FOLDER_NAME_RE = _re.compile(r'\A[^<>:"/\\|?*\x00-\x1f]{1,255}\Z')
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{n}" for n in range(1, 10)}
+    | {f"lpt{n}" for n in range(1, 10)}
+)
+
+
+def _valid_new_folder_name(name: str) -> bool:
+    if name in (".", "..") or name != name.strip() or name.endswith("."):
+        return False
+    if name.split(".", 1)[0].lower() in _WINDOWS_DEVICE_NAMES:
+        return False
+    return bool(_NEW_FOLDER_NAME_RE.match(name))
+
+
+@router.post("/browse-folders", response_model = BrowseFoldersResponse)
+def create_browse_folder(
+    payload: BrowseFolderCreate, current_subject: str = Depends(get_current_subject)
+):
+    """Create one empty folder inside a browseable directory, for the picker's New folder button."""
+    from storage.studio_db import contains_sensitive_path_component
+    from utils.account_context import via_api_key_context
+    from utils.paths import exports_root, outputs_root, studio_root
+    from utils.paths.path_utils import is_path_within
+
+    # The picker is the only caller: an API key has no folder dialog to create one from.
+    if via_api_key_context():
+        raise HTTPException(status_code = 403, detail = "Folders are created from the Unsloth UI.")
+    name = payload.name
+    if not _valid_new_folder_name(name) or contains_sensitive_path_component(name):
+        raise HTTPException(status_code = 400, detail = "That folder name cannot be used.")
+    parent, managed, _media, _drives, allowed_roots = _browse_scope(payload.parent)
+    target = _resolve_logged_browse_target(parent, allowed_roots)
+    created = target / name
+    if not managed:
+        inside_studio = is_path_within(created, studio_root())
+        saves_here = any(is_path_within(created, root) for root in (outputs_root(), exports_root()))
+        if inside_studio and not saves_here:
+            raise HTTPException(
+                status_code = 403,
+                detail = "Folders cannot be created inside Unsloth's own data folder.",
+            )
+    try:
+        os.mkdir(created)
+    except FileExistsError:
+        raise HTTPException(status_code = 409, detail = f"{name} already exists.") from None
+    except PermissionError:
+        raise HTTPException(
+            status_code = 403, detail = f"Permission denied creating a folder in {target.name}"
+        ) from None
+    except OSError as exc:
+        logger.warning("browse-folders: could not create %s: %s", created, exc)
+        raise HTTPException(status_code = 500, detail = f"Could not create {name}") from exc
+    return browse_folders(str(created), name.startswith("."), current_subject, False)
 
 
 @router.get("/list")
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        # Off-loop: building the singleton calls get_device(), which would freeze on the torch import.
-        inference_backend = await asyncio.to_thread(get_inference_backend)
+        from core.inference.defaults import get_default_models
 
-        default_models = inference_backend.default_models
+        # Chat reads this on first paint: listing suggestions must not construct the runtime or probe hardware.
+        inference_backend = peek_inference_backend()
+        default_models = await asyncio.to_thread(
+            lambda: inference_backend.default_models
+            if inference_backend is not None
+            else get_default_models(detect_hardware = False)
+        )
         if account_access.managed_account():
             default_models = [
                 m
@@ -2153,6 +2262,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     is_vision = llama_backend.is_vision,
                     is_audio = getattr(llama_backend, "_is_audio", False),
                     audio_type = getattr(llama_backend, "_audio_type", None),
+                    has_audio_input = bool(getattr(llama_backend, "_has_audio_input", False)),
                 )
             ]
 
@@ -2160,7 +2270,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         hide_resident = account_access.resident_hidden(
             "chat", getattr(inference_backend, "active_model_name", None)
         )
-        if not hide_resident:
+        if not hide_resident and inference_backend is not None:
             loaded_models += _orchestrator_models(inference_backend)
 
         llama_backend = get_llama_cpp_backend()
@@ -2184,7 +2294,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     id = model_id,
                     name = display_model_name(model_id),
                     is_gguf = model_id.upper().endswith("-GGUF"),
-                    is_mlx = _looks_like_mlx_repo(model_id),
+                    is_mlx = looks_like_mlx_repo(model_id),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)
@@ -2509,6 +2619,15 @@ async def get_model_config(
                 is_decision, layout = True, "llm"
                 config_dict = load_llm_decision_defaults()
 
+            from utils.models.training_defaults import model_training_recommendations
+
+            config_dict = model_training_recommendations(
+                config_dict,
+                is_vision = is_vision,
+                is_audio = audio_type is not None,
+                is_embedding = is_embedding,
+                is_decision = is_decision,
+            )
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
@@ -2750,7 +2869,7 @@ async def scan_model_remote_code(
             _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[_target], *_subdirs)))
             consent_load_subdirs[_target] = _subdirs
         # Record repos our scan first pulls in, computed before preflight, so decline purges only those.
-        from utils.security.remote_code_scan import external_auto_map_repos
+        from utils.security.remote_code_scan import external_auto_map_repos, shared_config_reads
 
         scan_created_repos: list = []
         _seen_created: set = set()
@@ -2771,34 +2890,41 @@ async def scan_model_remote_code(
                 pass
 
         external_refs: list = []
-        for _target in security_targets:
-            # Use the pre-base-resolution snapshot for the primary (see above).
-            _mark_scan_created(
-                _target,
-                preexisting = _primary_preexisting if _target == primary_cache_target else None,
-            )
-            for _ext in external_auto_map_repos(
-                _target,
-                hf_token,
-                load_subdirs = consent_load_subdirs[_target],
-            ):
-                # Found after authorization: refuse like the base, else its cached Python leaks as source snippets
-                if not is_local_path(_ext) and cached_read_refused(
-                    hf_token, repo_id = _ext, is_cached = lambda e = _ext: _repo_maybe_cached(e)
+        # One advisory scan: its passes share each config read; the load-time gates re-read fresh.
+        with shared_config_reads():
+            for _target in security_targets:
+                # Use the pre-base-resolution snapshot for the primary (see above).
+                _mark_scan_created(
+                    _target,
+                    preexisting = _primary_preexisting if _target == primary_cache_target else None,
+                )
+                for _ext in external_auto_map_repos(
+                    _target,
+                    hf_token,
+                    load_subdirs = consent_load_subdirs[_target],
                 ):
-                    raise HTTPException(
-                        status_code = 404,
-                        detail = _UNAUTHORIZED_CACHED_MODEL,
-                    )
-                external_refs.append(_ext)
-                _mark_scan_created(_ext)
-        decision = preflight_remote_code_consent_for_targets(
-            security_targets,
-            hf_token = hf_token,
-            subject = current_subject,
-            load_subdirs_by_target = consent_load_subdirs,
-        )
+                    # Found after authorization: refuse like the base, else its cached Python leaks as source snippets
+                    if not is_local_path(_ext) and cached_read_refused(
+                        hf_token, repo_id = _ext, is_cached = lambda e = _ext: _repo_maybe_cached(e)
+                    ):
+                        raise HTTPException(
+                            status_code = 404,
+                            detail = _UNAUTHORIZED_CACHED_MODEL,
+                        )
+                    external_refs.append(_ext)
+                    _mark_scan_created(_ext)
+            decision = preflight_remote_code_consent_for_targets(
+                security_targets,
+                hf_token = hf_token,
+                subject = current_subject,
+                load_subdirs_by_target = consent_load_subdirs,
+            )
         payload = decision.response_payload()
+        blocks = (
+            [(payload.get("block_cause"), payload.get("model_name"))]
+            if payload.get("block_cause")
+            else []
+        )
         payload["model_name"] = exact_snapshot_repo_id if exact_snapshot_path else model_name
         payload["requires_trust_remote_code"] = decision.has_remote_code
         # Prior approval lets the dialog be skipped; the scan still ran, so this is a real match.
@@ -2829,6 +2955,8 @@ async def scan_model_remote_code(
             )
             security_blocked = security_blocked or _sec.blocked
             unsafe_files.extend(_sec.unsafe_files)
+            if _sec.blocked:
+                blocks.append((_sec.block_cause, _sec.model_name))
         payload["unsafe_files"] = unsafe_files
         payload["security_blocked"] = security_blocked
         if security_blocked:
@@ -2836,6 +2964,16 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
+        from utils.hub_settings import active_source_label
+        from utils.security.file_security import NOT_ON_SOURCE, strongest_block
+
+        block_cause, block_target = strongest_block(blocks)
+        payload["block_cause"] = block_cause
+        # A repo the source lacks declares nothing, but the load still stops at the dialog.
+        if block_cause:
+            payload["requires_trust_remote_code"] = True
+        payload["block_source"] = active_source_label()
+        payload["block_target"] = block_target if block_cause == NOT_ON_SOURCE else None
         # The findings quote paths inside the model directory.
         from hub.utils.host_paths import restore_inventory_handles
 
@@ -4634,6 +4772,7 @@ async def get_gguf_variants(
                         download_size_bytes = int(
                             getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                         ),
+                        estimated_resident_gb = getattr(v, "estimated_resident_gb", None),
                         lookup_table_bytes = int(getattr(v, "lookup_table_bytes", 0) or 0),
                         pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
                         pending_drafter_size_bytes = int(
@@ -4643,6 +4782,8 @@ async def get_gguf_variants(
                         update_available = bool(getattr(v, "update_available", False)),
                         partial = bool(getattr(v, "partial", False)),
                         cleanable = bool(getattr(v, "cleanable", False)),
+                        engram_precision = getattr(v, "engram_precision", None),
+                        engram_ready = list(getattr(v, "engram_ready", None) or ()),
                     )
                     for v in response.variants
                 ],
@@ -4654,6 +4795,10 @@ async def get_gguf_variants(
                 loadable_variants = getattr(response, "loadable_variants", None),
                 loadable = getattr(response, "loadable", None),
                 variant_format = getattr(response, "variant_format", None),
+                engram_tables = [
+                    table.model_dump() for table in getattr(response, "engram_tables", None) or ()
+                ],
+                engram_supported = getattr(response, "engram_supported", None),
             ),
             via_api_key = via_api_key,
         )
@@ -4672,6 +4817,9 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    engram_precision: str = Query(
+        "", max_length = 32, description = "Standalone Engram table the load fetches, if any"
+    ),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -4684,6 +4832,7 @@ async def get_gguf_download_progress(
             variant = variant,
             expected_bytes = expected_bytes,
             hf_token = hf_token,
+            engram_precision = engram_precision.strip(),
         ),
         via_api_key = via_api_key,
     )
@@ -5052,6 +5201,7 @@ async def list_cached_gguf(
         return {"cached": []}
 
 
+@in_scan_memo
 def cached_gguf_rows(cache_scans = None) -> list[dict]:
     if cache_scans is None:
         cache_scans = _all_hf_cache_scans()
@@ -5283,6 +5433,7 @@ def _repo_hosts_artifacts(repo_id: str) -> bool:
         return False
 
 
+@in_scan_memo
 def cached_model_rows(cache_scans = None) -> list[dict]:
     _WEIGHT_EXTENSIONS = _NON_GGUF_WEIGHT_EXTENSIONS
     if cache_scans is None:
@@ -5610,7 +5761,10 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
+        # Reads every checkpoint's trainer_state.json: keep it off the event loop.
+        raw_models = await asyncio.to_thread(
+            scan_checkpoints, outputs_dir = resolved_outputs_dir, include_decision = True
+        )
 
         models = [
             ModelCheckpoints(

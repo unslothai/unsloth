@@ -35,6 +35,7 @@ function chatApi(body: Record<string, unknown>) {
         new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
         {},
       ),
+      "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
       "@/features/auth": {
         authFetch: async () => ({
           status: 200,
@@ -50,6 +51,7 @@ function chatApi(body: Record<string, unknown>) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": {
         showLoadWarning: (warning: string | null | undefined) => shown.push(warning),
       },

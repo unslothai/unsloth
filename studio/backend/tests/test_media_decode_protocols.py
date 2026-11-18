@@ -122,9 +122,13 @@ def test_chat_video_ffmpeg_and_ffprobe_get_a_file_only_whitelist(monkeypatch):
         ):
             self.returncode, self.stdout, self.stderr = returncode, stdout, b""
 
-    def run(argv, _timeout):
+    def run(
+        argv,
+        _timeout,
+        env = None,
+    ):
         calls.append(list(argv))
-        if Path(argv[0]).name == "ffprobe":
+        if Path(argv[0]).stem == "ffprobe":
             geometry = {
                 "streams": [{"width": 4000, "height": 4000, "avg_frame_rate": "10/1"}],
                 "format": {"duration": "5.0"},
@@ -138,7 +142,7 @@ def test_chat_video_ffmpeg_and_ffprobe_get_a_file_only_whitelist(monkeypatch):
     clip = base64.b64encode(b"not really a video").decode("ascii")
     assert llama_video_input.shrink_video_for_llama(clip, 1 << 20) == clip
 
-    assert [Path(argv[0]).name for argv in calls] == ["ffprobe", "ffmpeg"]
+    assert [Path(argv[0]).stem for argv in calls] == ["ffprobe", "ffmpeg"]
     for argv in calls:
         i = argv.index("-protocol_whitelist")
         assert argv[i + 1] == "file"

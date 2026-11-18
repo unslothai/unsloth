@@ -92,8 +92,7 @@ def _label_tokens(text: str) -> set[str]:
 
 
 def split_label_matches(text: str, split: str) -> bool:
-    """Match a split name against a file path's tokens, expanding split aliases
-    (validation/valid/val, eval) so cached and remote selection agree."""
+    """Split aliases (validation/valid/val, eval) expand so cache and remote selection agree."""
     normalized = split.strip().lower()
     if not normalized:
         return False
@@ -521,6 +520,8 @@ def load_cached_hf_dataset(
     if token:
         kwargs["token"] = token
     if stream_limited_snapshot:
+        from utils.datasets.iterable import take_rows
+
         kwargs["streaming"] = True
         with tempfile.TemporaryDirectory(prefix = "unsloth-dataset-slice-") as cache_dir:
             kwargs["cache_dir"] = cache_dir
@@ -542,7 +543,7 @@ def load_cached_hf_dataset(
                         {name: SplitInfo(name = name) for name in available_splits}
                     )
             split_identity = getattr(stream, "split", None)
-            rows = list(stream.take(row_limit))
+            rows = take_rows(stream, row_limit)
             del stream, streams
         from datasets import Dataset
 

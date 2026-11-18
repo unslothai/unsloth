@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lifetime count of the Xet "download is running" notice.
-
-It lived in localStorage, which is per-origin, and an Unsloth origin is not stable:
-run.py falls back past port 8888 when Jupyter has it, and Colab and the tunnel differ
-again. Each new origin handed out a fresh three, so the notice never stopped.
-"""
+"""Lifetime Xet notice count; localStorage was per-origin and origins change (port fallback, Colab,
+tunnel), so each origin reset it; the notice never stopped."""
 
 from __future__ import annotations
 

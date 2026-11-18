@@ -14,6 +14,7 @@ import {
   publicModelId,
 } from "./model-identity";
 import { isExternalModelId } from "@/features/chat/external-providers";
+import type { LoadModelRequest } from "@/features/chat/types/api";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
   DRAFTER_MODEL_SPEC_TYPES,
@@ -35,9 +36,15 @@ export interface PerModelConfig {
   kvCacheDtype: string | null;
   mlxKvQuant?: MlxKvQuant | null;
   mlxInt8Prefill?: boolean;
+  mlxAnePrefill?: boolean;
+  mlxFastVerify?: boolean;
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlxPleOffload?: MlxOffload;
   mlxExpertOffload?: MlxOffload;
+  /** AMD NPU only, sent to FastFlowLM as flm_args; null leaves its default. */
+  npuPowerMode?: NpuPowerMode | null;
+  npuPrefillChunkLen?: number | null;
+  npuImgPreResize?: number | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** Draft-context KV dtype, independent of kvCacheDtype. Optional so older blobs parse. */
@@ -57,6 +64,8 @@ export interface PerModelConfig {
   cacheRam?: number | null;
   tensorParallel: boolean;
   disableVision: boolean;
+  /** GGUF only: precision of the repo's standalone Engram table to load, or null for the quant's own. */
+  engramPrecision?: string | null;
   chatTemplateOverride: string | null;
   /** Appended after Unsloth's flags. `undefined`: never read, so a save keeps the server's (CLI-set)
     flags; `null`: cleared, sent as `[]`; a list: launch with it. */
@@ -84,8 +93,13 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   kvCacheDtype: null,
   mlxKvQuant: null,
   mlxInt8Prefill: false,
+  mlxAnePrefill: false,
+  mlxFastVerify: false,
   mlxPleOffload: null,
   mlxExpertOffload: null,
+  npuPowerMode: null,
+  npuPrefillChunkLen: null,
+  npuImgPreResize: null,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
@@ -100,6 +114,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   cacheRam: null,
   tensorParallel: false,
   disableVision: false,
+  engramPrecision: null,
   chatTemplateOverride: null,
 };
 
@@ -198,7 +213,7 @@ export function presetLoadSettingNames(
   chatOnlyReason?: string | null,
 ): string {
   if (isGguf) {
-    return "context length, KV cache dtype, speculative decoding, GPU layers";
+    return "context window, KV cache dtype, speculative decoding, GPU layers";
   }
   return isServedByMlx(isGguf, deviceType, chatOnlyReason)
     ? "max seq length, KV cache dtype"
@@ -241,8 +256,10 @@ export function resumesThought(x: {
 export function loadedContextFields(resp: {
   is_gguf?: boolean;
   is_mlx?: boolean;
+  is_npu?: boolean;
   context_length?: number | null;
   native_context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
   context_unbounded_when_batched?: boolean;
@@ -257,6 +274,7 @@ export function loadedContextFields(resp: {
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
+  loadedNpuContextFit: number | null;
   loadedContextBudget: number | null;
 } {
   if (!resp) {
@@ -269,13 +287,20 @@ export function loadedContextFields(resp: {
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
+      loadedNpuContextFit: null,
       loadedContextBudget: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
   // Unknown, not a default: omitted when reading the window failed.
   const loaded = resp.context_length ?? null;
-  if (!isGguf && !resp.is_mlx && resp.native_context_length == null) {
+  // The NPU reports the ctx_size it loaded even when Lemonade gives no model limit.
+  if (
+    !isGguf &&
+    !resp.is_mlx &&
+    !resp.is_npu &&
+    resp.native_context_length == null
+  ) {
     return {
       loadedContextLength: null,
       maxContextLength: null,
@@ -285,6 +310,7 @@ export function loadedContextFields(resp: {
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
+      loadedNpuContextFit: null,
       loadedContextBudget: null,
     };
   }
@@ -302,6 +328,7 @@ export function loadedContextFields(resp: {
       ? false
       : (resp.context_unbounded_when_batched ?? false),
     loadedParallelSlots: resp.parallel_slots ?? null,
+    loadedNpuContextFit: resp.is_npu ? (resp.npu_context_fit ?? null) : null,
     loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
@@ -371,6 +398,44 @@ export function normalizeMlxOffload(value: unknown): MlxOffload {
     : null;
 }
 
+// Mirrors core/inference/npu_flm_args.py, itself Lemonade's flm_args allow-list. Default is null.
+export const NPU_POWER_MODES = ["powersaver", "balanced", "performance", "turbo"] as const;
+export type NpuPowerMode = (typeof NPU_POWER_MODES)[number];
+export const NPU_IMG_PRE_RESIZE_MAX = 4;
+
+export function normalizeNpuPowerMode(value: unknown): NpuPowerMode | null {
+  return (NPU_POWER_MODES as readonly unknown[]).includes(value)
+    ? (value as NpuPowerMode)
+    : null;
+}
+
+function wholeNumberIn(value: unknown, min: number, max: number): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
+    ? value
+    : null;
+}
+
+export function normalizeNpuPrefillChunkLen(value: unknown): number | null {
+  return wholeNumberIn(value, 1, MAX_SEQ_LENGTH_MAX);
+}
+
+export function normalizeNpuImgPreResize(value: unknown): number | null {
+  return wholeNumberIn(value, 0, NPU_IMG_PRE_RESIZE_MAX);
+}
+
+export function npuLoadFields(
+  config: Pick<PerModelConfig, "npuPowerMode" | "npuPrefillChunkLen" | "npuImgPreResize">,
+): Pick<LoadModelRequest, "npu_power_mode" | "npu_prefill_chunk_len" | "npu_img_pre_resize"> {
+  const powerMode = normalizeNpuPowerMode(config.npuPowerMode);
+  const prefillChunkLen = normalizeNpuPrefillChunkLen(config.npuPrefillChunkLen);
+  const imgPreResize = normalizeNpuImgPreResize(config.npuImgPreResize);
+  return {
+    ...(powerMode != null && { npu_power_mode: powerMode }),
+    ...(prefillChunkLen != null && { npu_prefill_chunk_len: prefillChunkLen }),
+    ...(imgPreResize != null && { npu_img_pre_resize: imgPreResize }),
+  };
+}
+
 // llama-server's --load-mode enum in --help order. "auto" is the default: the UI shows it, storage keeps null and
 // the backend emits no flag. Never sent verbatim; builds like b10360 reject "auto" as a value.
 export const LOAD_MODES = [
@@ -383,6 +448,26 @@ export const LOAD_MODES = [
 ] as const;
 export const LOAD_MODE_DEFAULT = "auto";
 const VALID_LOAD_MODES = new Set<string>(LOAD_MODES);
+
+// Mirrors LoadRequest.engram_precision; the label is the repo's, matched case-insensitively.
+const ENGRAM_PRECISION_PATTERN = /^[A-Za-z0-9_]{1,32}$/;
+
+/** A stored Engram table precision, or null for the table the quant ships with. */
+export function normalizeEngramPrecision(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const precision = value.trim();
+  return ENGRAM_PRECISION_PATTERN.test(precision) ? precision : null;
+}
+
+/** Engram precisions compare like the backend: case-insensitively, blank as null. */
+export function sameEngramPrecision(a: unknown, b: unknown): boolean {
+  return (
+    (normalizeEngramPrecision(a)?.toUpperCase() ?? null) ===
+    (normalizeEngramPrecision(b)?.toUpperCase() ?? null)
+  );
+}
 
 // 0 disables; the ceiling is a sanity bound, not an upstream one.
 export const CTX_CHECKPOINTS_MIN = 0;
@@ -407,9 +492,13 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair. v8 is skipped: nightly builds stamped it for the reverted custom
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair, v13 mlxAnePrefill, v14 mlxFastVerify, v15 engramPrecision, v16 the NPU trio. v8 is skipped: nightly builds stamped it for the reverted custom
 // llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 12;
+const STORAGE_SCHEMA_VERSION = 16;
+const PRE_NPU_FLM_SCHEMA_VERSION = 15;
+const PRE_ENGRAM_SCHEMA_VERSION = 14;
+const PRE_MLX_FAST_VERIFY_SCHEMA_VERSION = 13;
+const PRE_MLX_ANE_PREFILL_SCHEMA_VERSION = 12;
 const PRE_MLX_OFFLOAD_SCHEMA_VERSION = 11;
 const PRE_MLX_DRAFTER_SCHEMA_VERSION = 10;
 const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;
@@ -457,8 +546,13 @@ const STORED_CONFIG_FIELDS = new Set([
   "kvCacheDtype",
   "mlxKvQuant",
   "mlxInt8Prefill",
+  "mlxAnePrefill",
+  "mlxFastVerify",
   "mlxPleOffload",
   "mlxExpertOffload",
+  "npuPowerMode",
+  "npuPrefillChunkLen",
+  "npuImgPreResize",
   "loadIn4bit",
   "speculativeType",
   "specDraftNMax",
@@ -474,6 +568,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "cacheRam",
   "tensorParallel",
   "disableVision",
+  "engramPrecision",
   "chatTemplateOverride",
   "llamaExtraArgs",
   "gpuMemoryMode",
@@ -526,6 +621,9 @@ function normalizeGpuFields(partial: RawConfig): {
     partial.nCpuMoe >= 0
   ) {
     out.nCpuMoe = Math.trunc(partial.nCpuMoe);
+  }
+  if (out.gpuLayers === 0) {
+    out.nCpuMoe = 0;
   }
   if (partial.selectedGpuIds === null) {
     out.selectedGpuIds = null;
@@ -656,12 +754,21 @@ export function savedContextPin(config: {
 }
 
 /** Leaves the pin in exactly one field, since picker and API auto-switch prefer different ones. */
-export function contextPinPatch(value: number, isMlx: boolean): Partial<PerModelConfig> {
+export function contextPinPatch(
+  value: number,
+  isMlx: boolean,
+  npuPrefillChunkLen?: number | null,
+): Partial<PerModelConfig> {
   // Bounded but not rounded to the control's step.
   const pin = boundContextPin(value) ?? MAX_SEQ_LENGTH_MIN;
-  return isMlx
+  const patch: Partial<PerModelConfig> = isMlx
     ? { customContextLength: pin, maxSeqLength: null }
     : { customContextLength: null, maxSeqLength: pin };
+  // The NPU load clamps the chunk to the context; a saved one past it would never match the load.
+  if (npuPrefillChunkLen != null && npuPrefillChunkLen > pin) {
+    patch.npuPrefillChunkLen = pin;
+  }
+  return patch;
 }
 
 function boundContextPin(value: unknown): number | null {
@@ -1081,8 +1188,13 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
     mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
     mlxInt8Prefill: partial.mlxInt8Prefill === true,
+    mlxAnePrefill: partial.mlxAnePrefill === true,
+    mlxFastVerify: partial.mlxFastVerify === true,
     mlxPleOffload: normalizeMlxOffload(partial.mlxPleOffload),
     mlxExpertOffload: normalizeMlxOffload(partial.mlxExpertOffload),
+    npuPowerMode: normalizeNpuPowerMode(partial.npuPowerMode),
+    npuPrefillChunkLen: normalizeNpuPrefillChunkLen(partial.npuPrefillChunkLen),
+    npuImgPreResize: normalizeNpuImgPreResize(partial.npuImgPreResize),
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -1132,6 +1244,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.disableVision === "boolean"
         ? partial.disableVision
         : DEFAULT_PER_MODEL_CONFIG.disableVision,
+    engramPrecision: normalizeEngramPrecision(partial.engramPrecision),
     chatTemplateOverride:
       typeof partial.chatTemplateOverride === "string" &&
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
@@ -1167,8 +1280,24 @@ function storedSchemaVersion(normalized: PerModelConfig): number {
   const mode = normalized.speculativeType;
   // A kept Auto and the MLX-only modes are values an older client folds back to unset.
   const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
-  if (normalized.mlxPleOffload != null || normalized.mlxExpertOffload != null) {
+  if (
+    normalized.npuPowerMode != null ||
+    normalized.npuPrefillChunkLen != null ||
+    normalized.npuImgPreResize != null
+  ) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.engramPrecision != null) {
+    return PRE_NPU_FLM_SCHEMA_VERSION;
+  }
+  if (normalized.mlxFastVerify) {
+    return PRE_ENGRAM_SCHEMA_VERSION;
+  }
+  if (normalized.mlxAnePrefill) {
+    return PRE_MLX_FAST_VERIFY_SCHEMA_VERSION;
+  }
+  if (normalized.mlxPleOffload != null || normalized.mlxExpertOffload != null) {
+    return PRE_MLX_ANE_PREFILL_SCHEMA_VERSION;
   }
   if (normalized.specDraftModel != null || mlxMode) {
     return PRE_MLX_OFFLOAD_SCHEMA_VERSION;
@@ -1361,8 +1490,13 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
     !config.mlxInt8Prefill &&
+    !config.mlxAnePrefill &&
+    !config.mlxFastVerify &&
     config.mlxPleOffload == null &&
     config.mlxExpertOffload == null &&
+    config.npuPowerMode == null &&
+    config.npuPrefillChunkLen == null &&
+    config.npuImgPreResize == null &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&
@@ -1381,6 +1515,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     Boolean(config.disableVision) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.disableVision) &&
+    normalizeEngramPrecision(config.engramPrecision) === null &&
     (config.chatTemplateOverride ?? null) === null &&
     // Or an Extra Arguments-only change reads as default and is deleted.
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
@@ -1431,7 +1566,13 @@ export function savePerModelConfig(
   if (!enforceStorageBudget(map, new Set([key]), evictedKeys)) {
     return false;
   }
+  // Stamp first: a forget's cleanup in another tab between the two writes then keeps
+  // an identical re-save instead of reading it as the record it snapshotted.
+  const previousStamps = stampWrite(key, map);
   const written = writeMap(map);
+  if (!written) {
+    restoreStamps(previousStamps);
+  }
   if (written && evicted) {
     for (const evictedKey of evictedKeys) {
       const id = modelIdFromStorageKey(evictedKey);
@@ -1476,8 +1617,21 @@ export function listPerModelConfigs(): {
 export function deletePerModelConfig(
   modelId: string,
   ggufVariant?: string | null,
+  /** Keep the record under `storageKey` if it was saved after `since`. */
+  unchanged?: { storageKey: string; since: PerModelConfigSnapshot },
 ): boolean {
   const map = readMap();
+  // Checked against the map this delete writes back, records then stamps, so the only
+  // window left is the store's own synchronous read-modify-write.
+  if (
+    unchanged &&
+    perModelConfigChangedSince(unchanged.storageKey, unchanged.since, {
+      records: map,
+      stamps: readStamps(),
+    })
+  ) {
+    return true;
+  }
   if (hasFutureConfigForModelVariant(map, modelId, ggufVariant)) {
     return false;
   }
@@ -1490,10 +1644,14 @@ export function deletePerModelConfig(
 /** Matched, not split: a colon is legal in a path, and two records can spell one key. */
 function findModelOverrideKeyOwners(
   overrideKey: string,
-): { modelId: string; ggufVariant: string | null }[] {
+): { modelId: string; ggufVariant: string | null; storageKey: string }[] {
   const key = overrideKey.trim();
   const foldedKey = normalizeModelIdentity(key);
-  const owners: { modelId: string; ggufVariant: string | null }[] = [];
+  const owners: {
+    modelId: string;
+    ggufVariant: string | null;
+    storageKey: string;
+  }[] = [];
   for (const storageKey of Object.keys(readMap())) {
     const modelId = modelIdFromStorageKey(storageKey);
     if (!modelId) {
@@ -1505,7 +1663,7 @@ function findModelOverrideKeyOwners(
     );
     if (!variant) {
       if (foldedKey === normalizeModelIdentity(modelId)) {
-        owners.push({ modelId, ggufVariant: null });
+        owners.push({ modelId, ggufVariant: null, storageKey });
       }
       continue;
     }
@@ -1517,27 +1675,110 @@ function findModelOverrideKeyOwners(
       normalizeModelIdentity(key.slice(0, cut)) ===
         normalizeModelIdentity(modelId)
     ) {
-      owners.push({ modelId, ggufVariant: variant });
+      owners.push({ modelId, ggufVariant: variant, storageKey });
     }
   }
   return owners;
 }
 
+// A unique mark per save, beside the records, so another tab's identical re-save still reads as new.
+const WRITE_STAMPS_KEY = "unsloth_model_config_stamps";
+
+function readStamps(): Record<string, string> {
+  if (!canUseStorage()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WRITE_STAMPS_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function stampWrite(key: string, map: StoredMap): string | null {
+  let previous: string | null = null;
+  try {
+    previous = canUseStorage() ? localStorage.getItem(WRITE_STAMPS_KEY) : null;
+  } catch {
+    // Unreadable storage: the record write fails next and there is nothing to restore.
+  }
+  const stamps: Record<string, string> = {};
+  for (const [k, v] of Object.entries(readStamps())) {
+    if (k in map) {
+      stamps[k] = v;
+    }
+  }
+  stamps[key] = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  try {
+    localStorage.setItem(WRITE_STAMPS_KEY, JSON.stringify(stamps));
+  } catch {
+    // Best-effort: without it a forget's cleanup falls back to comparing contents.
+  }
+  return previous;
+}
+
+function restoreStamps(previous: string | null): void {
+  try {
+    if (previous === null) {
+      localStorage.removeItem(WRITE_STAMPS_KEY);
+    } else {
+      localStorage.setItem(WRITE_STAMPS_KEY, previous);
+    }
+  } catch {
+    // Best-effort, as in stampWrite.
+  }
+}
+
+export type PerModelConfigSnapshot = {
+  readonly records: Readonly<Record<string, unknown>>;
+  readonly stamps: Readonly<Record<string, string>>;
+};
+
+// A save writes its stamp before its record. The baseline reads stamps first and the
+// re-read records first, so a save landing between two reads always shows as a change.
+export function perModelConfigSnapshot(): PerModelConfigSnapshot {
+  const stamps = readStamps();
+  return { records: readMapRaw(), stamps };
+}
+
+function currentPerModelConfigSnapshot(): PerModelConfigSnapshot {
+  const records = readMapRaw();
+  return { records, stamps: readStamps() };
+}
+
 export function modelOverrideKeyOwners(
   overrideKeys: readonly string[],
-): { modelId: string; ggufVariant: string | null }[] {
+): { modelId: string; ggufVariant: string | null; storageKey: string }[] {
   return overrideKeys.flatMap(findModelOverrideKeyOwners);
 }
 
+/** True when the record under ``storageKey`` was written after ``since`` (in any tab). */
+export function perModelConfigChangedSince(
+  storageKey: string,
+  since: PerModelConfigSnapshot,
+  current: PerModelConfigSnapshot = currentPerModelConfigSnapshot(),
+): boolean {
+  return (
+    current.stamps[storageKey] !== since.stamps[storageKey] ||
+    JSON.stringify(current.records[storageKey]) !==
+      JSON.stringify(since.records[storageKey])
+  );
+}
+
+/** Delete the records the server keys name; false when one was left behind. With
+ *  `unchangedSince`, a record written after that snapshot is kept. */
 export function deletePerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
+  unchangedSince?: PerModelConfigSnapshot,
 ): boolean {
   let deleted = true;
-  for (const overrideKey of overrideKeys) {
-    for (const owner of findModelOverrideKeyOwners(overrideKey)) {
-      if (!deletePerModelConfig(owner.modelId, owner.ggufVariant)) {
-        deleted = false;
-      }
+  for (const owner of modelOverrideKeyOwners(overrideKeys)) {
+    const unchanged = unchangedSince
+      ? { storageKey: owner.storageKey, since: unchangedSince }
+      : undefined;
+    if (!deletePerModelConfig(owner.modelId, owner.ggufVariant, unchanged)) {
+      deleted = false;
     }
   }
   return deleted;

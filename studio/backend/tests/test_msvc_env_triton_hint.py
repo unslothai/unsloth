@@ -27,6 +27,25 @@ from core import _msvc_env
 def test_spec_follows_the_resident_torch(monkeypatch, torch_version, spec):
     monkeypatch.setattr(platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(importlib.metadata, "version", lambda name: torch_version)
+    monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: False)
+    assert _msvc_env._triton_windows_spec() == spec
+
+
+@pytest.mark.parametrize(
+    "torch_version, spec",
+    [
+        ("2.11.0+rocm7.14.0", "triton-windows>=3.8,<3.9"),
+        ("2.12.0+rocm7.14.0", "triton-windows>=3.8,<3.9"),
+        ("2.12.1+rocm7.14.0", "triton-windows>=3.8,<3.9"),
+        ("2.13.0+rocm7.14.0", "triton-windows>=3.7,<3.8"),
+        ("2.10.0+rocm7.2", "triton-windows<3.7"),
+    ],
+)
+def test_rocm_torch_gets_the_setup_pairing(monkeypatch, torch_version, spec):
+    # setup.ps1 pairs ROCm torch 2.11 / 2.12 with triton-windows 3.8; the hint must not name the NVIDIA range.
+    monkeypatch.setattr(platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: torch_version)
+    monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: True)
     assert _msvc_env._triton_windows_spec() == spec
 
 

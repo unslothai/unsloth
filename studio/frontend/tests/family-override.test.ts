@@ -102,6 +102,15 @@ test("a pinned cache snapshot loads by path, plans by its Hub id, and stages onl
     diffusionStagingEntries(plan, "MiniMaxAI/MiniMax-H3", {}).map((e) => [e.repoId, e.checkpoint]),
     [["MiniMaxAI/MiniMax-H3", true], ["external/quant", false]],
   );
+
+  const withDenoiser = [
+    { ...entry("MiniMaxAI/MiniMax-H3", true), hosted_denoiser: false },
+    { ...entry("unsloth/fp8", true), hosted_denoiser: true },
+  ];
+  assert.deepEqual(
+    diffusionStagingEntries(withDenoiser, pinned.repoId, { displayRepoId: pinned.displayRepoId }).map((e) => [e.repoId, e.checkpoint]),
+    [["unsloth/fp8", true]],
+  );
 });
 
 for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {

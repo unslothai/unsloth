@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from core.training.account_jobs import account_path, managed_account
 import base64
 import binascii
+import functools
 import json
 import os
 import re
@@ -17,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from anyio import CapacityLimiter, to_process, to_thread
+from anyio import CancelScope, CapacityLimiter, Lock as _AnyioLock, to_process, to_thread
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
 from auth.authentication import allow_ambient_hf_token
@@ -118,9 +121,7 @@ def _normalize_optional_text(value: str | None) -> str | None:
 
 
 def _list_hf_repo_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
-    """Every file in the repo: the reader globs over all of them, not just the
-    ones a builder can load, so a pattern is judged against the whole listing.
-    """
+    """Lists every repo file, not just loadable ones, so globs are judged against the whole listing."""
     try:
         from huggingface_hub import HfApi
         from huggingface_hub.utils import HfHubHTTPError
@@ -131,11 +132,6 @@ def _list_hf_repo_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
         return api.list_repo_files(dataset_name, repo_type = "dataset", token = token)
     except (HfHubHTTPError, OSError, ValueError):
         return []
-
-
-def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
-    repo_files = _list_hf_repo_files(dataset_name = dataset_name, token = token)
-    return [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
 
 
 def _list_hf_dataset_configs(*, dataset_name: str, token: HfTokenArg) -> list[dict[str, Any]]:
@@ -307,26 +303,26 @@ def _class_end(pattern: str, start: int) -> int:
     return closing if closing > start else -1
 
 
-def _ignored_by_the_loader(path: str, pattern: str) -> bool:
-    """Loader drops names in data_files.FILES_TO_IGNORE from globs unless the pattern is that file
-    itself."""
-    name = PurePosixPath(path).name
-    return name in _IGNORED_DATA_FILENAMES and PurePosixPath(pattern).name != name
+def _posix_tail(path: str) -> list[str]:
+    """PurePosixPath(path).parts without the root: split on "/", empty and "." parts dropped."""
+    return [part for part in path.split("/") if part and part != "."]
 
 
-def _hidden_to_the_loader(path: str, pattern: str) -> bool:
-    """Loader skips hidden parts anywhere and dunder parts only in parents unless the pattern names them; data/__train.json is read."""
-    for prefix, parts in ((".", "parts"), ("__", "parent_parts")):
-        in_path = _marked_parts(path, prefix, parts)
-        in_pattern = _marked_parts(pattern, prefix, parts)
-        if len(in_path) != len(in_pattern):
-            return True
-    return False
+def _name_parts(path: str) -> tuple[str, str]:
+    """Path(path).suffix and .stem; by hand only for plain relative ASCII names, which every pathlib flavour and version reads alike."""
+    if path.isascii() and not path.startswith("/") and "\\" not in path and ":" not in path:
+        name = path[path.rfind("/") + 1 :]
+        dot = name.rfind(".")
+        if name[:1] not in ("", ".") and dot < len(name) - 1:
+            return (name[dot:], name[:dot]) if dot > 0 else ("", name)
+    parsed = Path(path)
+    return parsed.suffix, parsed.stem
 
 
 def _marked_parts(path: str, prefix: str, which: str) -> list[str]:
-    parsed = PurePosixPath(path)
-    parts = parsed.parts if which == "parts" else parsed.parent.parts
+    parts = _posix_tail(path)
+    if which != "parts":
+        parts = parts[:-1]
     return [part for part in parts if part.startswith(prefix) and set(part) != {"."}]
 
 
@@ -338,18 +334,42 @@ def _files_under_patterns(
 ) -> list[str]:
     """Card globs obey loader skip rules; module-written patterns are judged on what they plainly match."""
     matchers = [(pattern, _glob_to_regex(pattern)) for pattern in patterns]
-    return [
-        f
-        for f in data_files
-        if any(
-            m.match(f)
-            and not (
-                as_the_loader_would
-                and (_hidden_to_the_loader(f, p) or _ignored_by_the_loader(f, p))
-            )
-            for p, m in matchers
-        )
-    ]
+    if not as_the_loader_would:
+        return [f for f in data_files if any(m.match(f) for _, m in matchers)]
+    rules = [(m, _loader_path_facts(p)) for p, m in matchers]
+    kept = []
+    for f in data_files:
+        facts = None
+        for m, pattern_facts in rules:
+            if not m.match(f):
+                continue
+            if facts is None:
+                facts = _loader_path_facts(f)
+            if not _skipped_by_the_loader(facts, pattern_facts):
+                kept.append(f)
+                break
+    return kept
+
+
+def _loader_path_facts(path: str) -> tuple[int, int, str]:
+    """Hidden parts anywhere, dunder parts in parents, and the name."""
+    return (
+        len(_marked_parts(path, ".", "parts")),
+        len(_marked_parts(path, "__", "parent_parts")),
+        (_posix_tail(path) or [""])[-1],
+    )
+
+
+def _skipped_by_the_loader(
+    path_facts: tuple[int, int, str], pattern_facts: tuple[int, int, str]
+) -> bool:
+    """Loader skips hidden parts anywhere and dunder parts only in parents unless the pattern names them
+    (data/__train.json is read), and drops names in data_files.FILES_TO_IGNORE from globs unless the pattern is that
+    file itself."""
+    if path_facts[:2] != pattern_facts[:2]:
+        return True
+    name = path_facts[2]
+    return name in _IGNORED_DATA_FILENAMES and pattern_facts[2] != name
 
 
 def _common_parent(paths: list[str]) -> str:
@@ -364,7 +384,12 @@ def _common_parent(paths: list[str]) -> str:
 
 def _label_in_name(name: str, label: str) -> bool:
     """Match the label in place, not by tokens, so sample-10BT survives; digits count as separators: train1 is train, training is not."""
-    return re.search(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})", name) is not None
+    return _label_matcher(label).search(name) is not None
+
+
+@functools.lru_cache(maxsize = 256)
+def _label_matcher(label: str) -> re.Pattern[str]:
+    return re.compile(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})")
 
 
 def _split_folder(lowered_path: str, labels: tuple[str, ...]) -> bool:
@@ -399,7 +424,7 @@ def _split_rank(path: str, split_lower: str) -> int:
     if _split_folder(lowered, labels):
         return 0
     # Only the final extension comes off: questions.train.parquet keeps its split.
-    stem = Path(lowered).stem
+    stem = _name_parts(lowered)[1]
     if any(_label_in_name(stem, label) for label in labels):
         return 1
     return 2
@@ -416,7 +441,7 @@ def _in_subset(data_files: list[str], subset: str | None, split_lower: str) -> l
     ]
     if in_folder:
         return in_folder
-    named = [f for f in data_files if _label_in_name(Path(f.lower()).stem, subset_lower)]
+    named = [f for f in data_files if _label_in_name(_name_parts(f.lower())[1], subset_lower)]
     if any(_split_rank(f, split_lower) <= 1 for f in named):
         return named
     if any(_split_rank(f, split_lower) <= 1 for f in data_files):
@@ -465,8 +490,7 @@ def _candidate_patterns(stem: str, suffix: str, split_lower: str) -> list[str]:
         at = stem_lower.find(label)
         if at >= 0:
             candidates.append(f"*{stem[at : at + len(label)]}*{suffix}")
-    # Last and narrowest: the whole name, which keeps train-main off
-    # train-socratic.
+    # Last and narrowest: the whole name, which keeps train-main off train-socratic.
     candidates.append(f"{stem}*{suffix}")
     return list(dict.fromkeys(candidates))
 
@@ -525,7 +549,7 @@ def _builder_exts(suffix: str) -> tuple[str, ...]:
 
 def _of_suffix(paths: list[str], suffix: str) -> list[str]:
     group = _builder_exts(suffix)
-    return [p for p in paths if Path(p).suffix.lower() in group]
+    return [p for p in paths if _name_parts(p)[0].lower() in group]
 
 
 def _extension_glob(paths: list[str], suffix: str, repo_files: list[str]) -> str:
@@ -1125,7 +1149,8 @@ def inspect_seed_dataset(
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
     """Extract text from an uploaded file by extension, to markdown where possible."""
     if ext in {".txt", ".md"}:
-        raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
+        from core.rag import parsers
+        raw = "\n\n".join(page.text for page in parsers.parse(str(file_path)))
     elif ext == ".pdf":
         from core.rag import config, pdf_ocr
         raw = pdf_ocr.extract_text(str(file_path), config.OCR_SCANNED, config.OCR_MAX_PAGES)
@@ -1180,6 +1205,26 @@ async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
     return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
 
 
+# One upload per block between its budget check and its raw write: the scan, read and write await threads.
+_BLOCK_UPLOAD_LOCKS: dict[str, _AnyioLock] = {}
+
+
+async def _write_to_completion(write_fn, *args) -> None:
+    """A threaded write that, if cancelled, still waits for the thread so cleanup cannot race it."""
+    write = asyncio.ensure_future(to_thread.run_sync(write_fn, *args))
+    try:
+        await asyncio.shield(write)
+    except BaseException:
+        # Neither a repeated task cancel nor an AnyIO cancel scope may run cleanup before the thread ends.
+        with CancelScope(shield = True):
+            while not write.done():
+                try:
+                    await asyncio.wait([write])
+                except asyncio.CancelledError:
+                    continue
+        raise
+
+
 def _get_block_total_size(block_dir: Path) -> int:
     """Sum raw upload sizes for the whole block from server-owned files."""
     if not block_dir.exists():
@@ -1193,7 +1238,11 @@ def _get_block_total_size(block_dir: Path) -> int:
         # remove_unstructured_file keys on the name up to the first dot.
         if is_appledouble_metadata(f):
             continue
-        total += f.stat().st_size
+        # Runs in a worker thread now, so a delete on the loop can remove a file mid-scan.
+        try:
+            total += f.stat().st_size
+        except FileNotFoundError:
+            continue
     return total
 
 
@@ -1254,22 +1303,16 @@ def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
     return grant.canonical_path.name, content
 
 
-@router.post("/seed/upload-unstructured-file")
-async def upload_unstructured_file(
-    file: UploadFile | None = FastAPIFile(None),
-    block_id: str = Form(...),
-    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
-) -> UnstructuredFileUploadResponse:
-    _validate_safe_id(block_id, "block_id")
-
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+async def _store_unstructured_raw(file, block_dir: Path, native_path_lease):
     # Reads 0 for a block with no dir yet, without creating it, so an upload about to be refused leaves no directory behind.
-    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
+    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - await to_thread.run_sync(
+        _get_block_total_size, block_dir
+    )
 
     # Tauri drops arrive as a signed path; isinstance since an unfilled Form param is truthy.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
-        original_filename, content = _read_native_drop(lease, budget)
+        original_filename, content = await to_thread.run_sync(_read_native_drop, lease, budget)
     elif file is not None and hasattr(file, "read"):
         original_filename = file.filename or "upload"
         # Before the read: a rejected 500 MB upload must not be pulled into memory first.
@@ -1297,12 +1340,40 @@ async def upload_unstructured_file(
 
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"
-    raw_path.write_bytes(content)
+    try:
+        await _write_to_completion(raw_path.write_bytes, content)
+    except BaseException:
+        raw_path.unlink(missing_ok = True)
+        raise
+    return original_filename, content, raw_path, file_id
+
+
+@router.post("/seed/upload-unstructured-file")
+async def upload_unstructured_file(
+    file: UploadFile | None = FastAPIFile(None),
+    block_id: str = Form(...),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+) -> UnstructuredFileUploadResponse:
+    _validate_safe_id(block_id, "block_id")
+
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    lock = _BLOCK_UPLOAD_LOCKS.setdefault(block_id, _AnyioLock())
+    try:
+        async with lock:
+            original_filename, content, raw_path, file_id = await _store_unstructured_raw(
+                file, block_dir, native_path_lease
+            )
+    finally:
+        if not lock.locked() and not lock.statistics().tasks_waiting:
+            _BLOCK_UPLOAD_LOCKS.pop(block_id, None)
+    ext = Path(original_filename).suffix.lower()
+    size_bytes = len(content)
 
     extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:
         extracted_text = await _extract_text_from_file_async(raw_path, ext)
-        if not extracted_text or not extracted_text.strip():
+        # isspace() == (not strip()) on a non-empty str, without copying a 500 MB text on the event loop.
+        if not extracted_text or extracted_text.isspace():
             raw_path.unlink(missing_ok = True)
             return UnstructuredFileUploadResponse(
                 file_id = file_id,
@@ -1311,7 +1382,9 @@ async def upload_unstructured_file(
                 status = "error",
                 error = "No extractable text found in file",
             )
-        extracted_path.write_text(extracted_text, encoding = "utf-8")
+        await _write_to_completion(
+            functools.partial(extracted_path.write_text, extracted_text, encoding = "utf-8")
+        )
     except ImportError as e:
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)

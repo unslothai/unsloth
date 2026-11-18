@@ -12,6 +12,8 @@ import sys
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Iterator, Optional
 
+from utils.scan_memo import memoized
+
 
 EXIT_CANCELLED = 130
 
@@ -292,6 +294,12 @@ def snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
 
 def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
     """Newest immediate child of ``repo_dir/snapshots``, or None. mtime is the signal huggingface_hub's from_pretrained resolves to; ties fall to ``snapshot_selection_key`` so every caller names the same directory."""
+    return memoized(
+        ("latest_snapshot_dir", os.fspath(repo_dir)), lambda: _latest_snapshot_dir(repo_dir)
+    )
+
+
+def _latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
     snapshots_dir = repo_dir / "snapshots"
     try:
         if not snapshots_dir.is_dir():

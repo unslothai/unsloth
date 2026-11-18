@@ -3,8 +3,6 @@
 
 /** Notifies runtimes of Data tab deletions; otherwise a later sync writes the attachment back. */
 
-import forge from "node-forge";
-
 export type ChatAttachmentDeletedEvent = {
   messageId: string;
   attachmentId: string;
@@ -87,11 +85,20 @@ export async function chatContentPartAttachmentIdFromSignature(
     }
   }
   if (hex === null) {
+    const { default: forge } = await import("node-forge");
     const digest = forge.md.sha256.create();
     digest.update(signature, "utf8");
     hex = digest.digest().toHex();
   }
   return `${CONTENT_PART_ID_PREFIX}${hex}`;
+}
+
+/** Call before deleting: loads the hasher an open chat needs to drop this id, so a failed chunk load aborts the delete. */
+export async function prepareChatAttachmentDeletion(
+  attachmentId: string,
+): Promise<void> {
+  if (!attachmentId.startsWith(CONTENT_PART_ID_PREFIX)) return;
+  await chatContentPartAttachmentIdFromSignature("");
 }
 
 type Listener = (event: ChatAttachmentDeletedEvent) => void | Promise<void>;

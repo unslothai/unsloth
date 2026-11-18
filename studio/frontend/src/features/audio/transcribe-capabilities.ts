@@ -9,6 +9,8 @@ export interface SttCapabilities {
   /** on_request: only when asked (Qwen3-ASR with its aligner); always: every run has them. */
   timestamps: "on_request" | "always" | "unsupported";
   speakers: boolean;
+  /** Whether a speaker accent hint reaches the model; missing from an older backend. */
+  accent_hint?: boolean;
   aligner: {
     downloaded: boolean;
     size_bytes: number;
@@ -16,6 +18,8 @@ export interface SttCapabilities {
     variant?: string;
   } | null;
   cpu_only: boolean;
+  /** The longest audio this model takes; missing from an older backend. */
+  max_seconds?: number | null;
 }
 
 export interface TranscribeSwitch {
@@ -26,14 +30,57 @@ export interface TranscribeSwitch {
   always?: boolean;
 }
 
+export interface TranscribeAccent {
+  disabled: boolean;
+  hint: string;
+}
+
 export interface TranscribeSwitches {
   timestamps: TranscribeSwitch;
   speakers: TranscribeSwitch;
+  accent: TranscribeAccent;
   notice: string | null;
-  request: { timestamps: boolean; speakers: boolean };
+  request: { timestamps: boolean; speakers: boolean; speakerAccent: string };
+  sourceHint: string;
+}
+
+const ACCENT_HINT =
+  "Describe how the speaker sounds. The transcript stays in the spoken language, and the hint may not always help.";
+
+const ACCENT_UNSUPPORTED =
+  "This model cannot use an accent hint, so none is sent. Qwen3-ASR (llama.cpp) and non-Whisper connections can use one.";
+
+function accentFor(
+  supported: boolean,
+  speakerAccent: string,
+): { accent: TranscribeAccent; speakerAccent: string } {
+  if (!supported)
+    return {
+      accent: { disabled: true, hint: ACCENT_UNSUPPORTED },
+      speakerAccent: "",
+    };
+  return {
+    accent: { disabled: false, hint: ACCENT_HINT },
+    speakerAccent: speakerAccent.trim().replace(/\s+/g, " ").slice(0, 200),
+  };
 }
 
 export const SPEAKERS_MODEL_NAME = "MOSS-Transcribe-Diarize";
+
+function lengthWords(seconds: number): string {
+  if (seconds >= 3600 && seconds % 3600 === 0) {
+    const hours = seconds / 3600;
+    return hours === 1 ? "1 hour" : `${hours} hours`;
+  }
+  return `${Math.floor(seconds / 60)} minutes`;
+}
+
+/** The source card's hint; without a model's limit it keeps the 30 minutes every engine takes. */
+export function transcribeSourceHint(maxSeconds?: number | null): string {
+  if (maxSeconds == null)
+    return "Up to 30 minutes. Drop a file, record, or reuse a clip.";
+  return `Up to ${lengthWords(maxSeconds)} with this model. Drop a file, record, or reuse a clip.`;
+}
 
 /** The aligner download a timestamped run needs first, staged like any other quant so it shows in
  *  the Downloads panel; null when the run can start now. */
@@ -108,10 +155,15 @@ export function connectionTranscribeModels(
 const OPENAI_UNTIMED_MODEL = /^gpt-(?:[\w.]+-)*transcribe(?:-[\w-]+)?$/i;
 
 export function connectionTranscribeSwitches(
-  prefs: { timestamps: boolean },
+  prefs: { timestamps: boolean; speakerAccent?: string },
   model: string,
 ): TranscribeSwitches {
   const untimed = OPENAI_UNTIMED_MODEL.test(model);
+  // Mirrors connection_takes_accent_hint in stt_capabilities.py.
+  const { accent, speakerAccent } = accentFor(
+    !/diarize|whisper/i.test(model),
+    prefs.speakerAccent ?? "",
+  );
   return {
     timestamps: untimed
       ? {
@@ -129,14 +181,20 @@ export function connectionTranscribeSwitches(
       disabled: true,
       hint: "A connection returns no speaker labels.",
     },
+    accent,
     notice: null,
-    request: { timestamps: !untimed && prefs.timestamps, speakers: false },
+    request: {
+      timestamps: !untimed && prefs.timestamps,
+      speakers: false,
+      speakerAccent,
+    },
+    sourceHint: transcribeSourceHint(null),
   };
 }
 
 export function transcribeSwitches(
   caps: SttCapabilities | null,
-  prefs: { timestamps: boolean; speakers: boolean },
+  prefs: { timestamps: boolean; speakers: boolean; speakerAccent?: string },
   state: { loading: boolean; hasModel: boolean },
 ): TranscribeSwitches {
   if (!caps) {
@@ -149,8 +207,10 @@ export function transcribeSwitches(
     return {
       timestamps: off,
       speakers: off,
+      accent: { disabled: true, hint },
       notice: null,
-      request: { timestamps: false, speakers: false },
+      request: { timestamps: false, speakers: false, speakerAccent: "" },
+      sourceHint: transcribeSourceHint(null),
     };
   }
 
@@ -191,9 +251,14 @@ export function transcribeSwitches(
         hint: `Only ${SPEAKERS_MODEL_NAME} and VibeVoice-ASR can tell speakers apart.`,
         suggestSpeakersModel: true,
       };
+  const { accent, speakerAccent } = accentFor(
+    caps.accent_hint === true,
+    prefs.speakerAccent ?? "",
+  );
   const request = {
     timestamps: onRequest && prefs.timestamps,
     speakers: speakers.checked,
+    speakerAccent,
   };
   const aligner = !request.timestamps
     ? null
@@ -205,5 +270,12 @@ export function transcribeSwitches(
     : aligner
       ? `${aligner} Runs on the CPU.`
       : "This model runs on the CPU.";
-  return { timestamps, speakers, notice, request };
+  return {
+    timestamps,
+    speakers,
+    accent,
+    notice,
+    request,
+    sourceHint: transcribeSourceHint(caps.max_seconds),
+  };
 }

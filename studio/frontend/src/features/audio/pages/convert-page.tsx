@@ -21,7 +21,7 @@ import { type AudioGalleryClip, fetchAudioBlob } from "../api";
 import { audioModelLabel } from "../audio-workspace-utils";
 import { sourceFileUrl } from "../audio-run-request";
 import { ABCompare } from "../components/convert-ab-compare";
-import { Field } from "../components/field";
+import { Field, FieldLabel, FieldTag } from "../components/field";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
@@ -122,7 +122,7 @@ function ConvertInputs({
       </div>
 
       {caps && caps.modes.length > 1 ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <span className="text-ui-13 font-medium text-foreground">
             The recording is
           </span>
@@ -145,9 +145,9 @@ function ConvertInputs({
       ) : null}
 
       {pitchSupport.show ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           {pitchSupport.auto ? (
-            <label
+            <FieldLabel
               htmlFor="convert-pitch-auto"
               className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
             >
@@ -158,12 +158,12 @@ function ConvertInputs({
                 disabled={disabled}
                 onCheckedChange={store.setPitchAuto}
               />
-            </label>
+            </FieldLabel>
           ) : null}
           {pitchSupport.auto &&
           convert.pitchAuto &&
           !pitchSupport.shiftWithAuto ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               Turn off to set the pitch shift yourself.
             </p>
           ) : (
@@ -206,22 +206,22 @@ function SourceTextField({
     convert.sourceStatus.phase !== "uploading";
   if (convert.style !== "target") return null;
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <div className="flex items-center justify-between gap-2">
-        <label
+        <FieldLabel
           htmlFor={CONVERT_SOURCE_TEXT_FIELD_ID}
           className="text-ui-13 font-medium text-foreground"
         >
           What's said in the recording
-          <span className="ml-1.5 font-normal text-muted-foreground">
+          <FieldTag>
             Required
-          </span>
-        </label>
+          </FieldTag>
+        </FieldLabel>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-auto px-2 py-1 text-ui-11p5"
+          className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
           disabled={!sourceUsable || transcriber.transcribing || disabled}
           onClick={() => void transcriber.transcribe(source)}
         >
@@ -251,7 +251,7 @@ function SourceTextField({
           </Button>
         </p>
       ) : (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           Taking the target's style rebuilds the delivery from these words.
         </p>
       )}
@@ -322,7 +322,7 @@ export function ConvertFooter({
       ? (convert.switchNotice?.before ?? null)
       : null;
   return (
-    <div className="flex w-full max-w-sm flex-col items-center gap-1.5">
+    <div className="flex w-full flex-col items-center gap-1.5">
       <TtsFooter
         {...props}
         prompt="convert"
@@ -332,7 +332,7 @@ export function ConvertFooter({
         handleGenerate={convert.handleGenerate}
       />
       {notice ? (
-        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-center text-ui-12 leading-normal text-muted-foreground">
           {notice}
         </p>
       ) : null}

@@ -44,11 +44,9 @@ function hasCompactUnit(locale: Locale, value: number): boolean {
 /** One decimal below 100 of a unit; zero digits above it also avoids "1000K". */
 export function formatCompactNumber(value: number, locale: Locale): string {
   if (!Number.isFinite(value)) return "0";
-  // Below the locale's first compact unit there is no unit to be a fraction OF, and these
-  // are whole things: averageTokensPerChat is the one fractional caller, and "12.5 tokens"
-  // reads as false precision where the pre-localization code said 13. Asked of Intl (is there
-  // a `compact` part?) rather than a hardcoded 1000, because the first unit is per-locale:
-  // en and hi compact at 1K, ja and de not until 万 and Mio.
+  // Below a locale's first compact unit values stay whole (12.5 tokens reads as false precision;
+  // averageTokensPerChat is the one fractional caller); compaction is asked of Intl, not hardcoded
+  // at 1000, since en and hi compact at 1K while ja and de wait for 万 and Mio.
   if (!hasCompactUnit(locale, value))
     return compactFormatter(locale, 0).format(value);
   return compactInteger(locale, value) < 100
@@ -220,6 +218,106 @@ const PROFILE_COUNT_TEMPLATES = {
       other: "{value} הודעות",
     },
     step: { one: "צעד אחד", two: "{value} צעדים", other: "{value} צעדים" },
+  },
+  "zh-TW": {
+    token: { other: "{value} 個 token" },
+    message: { other: "{value} 則訊息" },
+    step: { other: "{value} 步" },
+  },
+  "es-419": {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} mensaje", other: "{value} mensajes" },
+    step: { one: "{value} paso", other: "{value} pasos" },
+  },
+  id: {
+    token: { other: "{value} token" },
+    message: { other: "{value} pesan" },
+    step: { other: "{value} langkah" },
+  },
+  vi: {
+    token: { other: "{value} token" },
+    message: { other: "{value} tin nhắn" },
+    step: { other: "{value} bước" },
+  },
+  tr: {
+    token: { other: "{value} token" },
+    message: { other: "{value} mesaj" },
+    step: { other: "{value} adım" },
+  },
+  pl: {
+    token: {
+      one: "{value} token",
+      few: "{value} tokeny",
+      many: "{value} tokenów",
+      other: "{value} tokena",
+    },
+    message: {
+      one: "{value} wiadomość",
+      few: "{value} wiadomości",
+      many: "{value} wiadomości",
+      other: "{value} wiadomości",
+    },
+    step: {
+      one: "{value} krok",
+      few: "{value} kroki",
+      many: "{value} kroków",
+      other: "{value} kroku",
+    },
+  },
+  uk: {
+    token: {
+      one: "{value} токен",
+      few: "{value} токени",
+      many: "{value} токенів",
+      other: "{value} токена",
+    },
+    message: {
+      one: "{value} повідомлення",
+      few: "{value} повідомлення",
+      many: "{value} повідомлень",
+      other: "{value} повідомлення",
+    },
+    step: {
+      one: "{value} крок",
+      few: "{value} кроки",
+      many: "{value} кроків",
+      other: "{value} кроку",
+    },
+  },
+  th: {
+    token: { other: "{value} โทเค็น" },
+    message: { other: "{value} ข้อความ" },
+    step: { other: "{value} สเต็ป" },
+  },
+  fa: {
+    token: { other: "{value} توکن" },
+    message: { other: "{value} پیام" },
+    step: { other: "{value} گام" },
+  },
+  cs: {
+    token: {
+      one: "{value} token",
+      few: "{value} tokeny",
+      many: "{value} tokenu",
+      other: "{value} tokenů",
+    },
+    message: {
+      one: "{value} zpráva",
+      few: "{value} zprávy",
+      many: "{value} zprávy",
+      other: "{value} zpráv",
+    },
+    step: {
+      one: "{value} krok",
+      few: "{value} kroky",
+      many: "{value} kroku",
+      other: "{value} kroků",
+    },
+  },
+  nl: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} bericht", other: "{value} berichten" },
+    step: { one: "{value} stap", other: "{value} stappen" },
   },
 } satisfies Record<Locale, Record<LexicalProfileCountUnit, CountTemplate>>;
 
@@ -413,9 +511,8 @@ export function activitySummaryForMode(
 export type WeekChartPoint = { week: string; tokens: number };
 
 /**
- * One chart point per visible week, keyed by its first shown day. Weekly
- * series carry the week total on every day and cumulative ones only grow, so
- * the week's largest value is its total or its end-of-week running total.
+ * One point per visible week, keyed by its first shown day; the week's largest value is its total
+ * for weekly series or its end-of-week running total for cumulative ones.
  */
 export function weekChartPoints(
   grid: Array<Array<{ day: { date: string } | null; value: number }>>,

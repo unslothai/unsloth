@@ -425,7 +425,7 @@ def test_chunked_dx_does_not_overflow_in_a_16bit_chunk_product():
     assert torch.equal(y, torch.zeros_like(y))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_chunked_dx_stays_inside_its_own_budget(monkeypatch):
     """Each dX chunk row holds its 16-bit decode and the fp32 copy the fp32 product reads."""
     import unsloth  # noqa: F401

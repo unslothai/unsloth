@@ -5,10 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-# Mirror the frontend's chat-template contract (per-model-config.ts) at the API boundary:
-# MaxBodyMiddleware only caps the whole request body, not this field. Community templates
-# reach ~230 KB (#14841); the frontend keeps overrides in a 1 MiB per-model storage budget,
-# so this stays well under it even after JSON escaping.
+# Mirror the frontend chat-template cap here, since MaxBodyMiddleware caps only the whole body;
+# templates reach ~230 KB (issue 14841), under the 1 MiB frontend budget.
 MAX_CHAT_TEMPLATE_BYTES = 512 * 1024
 
 

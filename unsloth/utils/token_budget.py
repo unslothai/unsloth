@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in token-aware SFT micro-batches, off unless their env var is set.
-
-UNSLOTH_TOKEN_BALANCE=1 spreads each optimizer step's rows over data-parallel ranks and
-accumulation slots with equal token counts; every step keeps its rows, so num_items_in_batch
-is unchanged. UNSLOTH_TOKEN_BUDGET=<tokens> runs a larger micro-batch as several passes over
-whole sequences, each divided by the same num_items_in_batch, so they sum to the unsplit loss.
-"""
+"""Opt-in token-aware SFT micro-batches: UNSLOTH_TOKEN_BALANCE=1 keeps num_items_in_batch unchanged;
+UNSLOTH_TOKEN_BUDGET passes sum to the unsplit loss."""
 
 from __future__ import annotations
 
@@ -283,11 +278,8 @@ def _splittable_keys(batch):
 
 
 def split_batch_by_token_budget(batch, budget):
-    """Split a collated text batch into sub-batches of at most `budget` tokens, else return `[batch]`.
-
-    Padding-free batches ([1, T] with sequence boundaries) split between whole sequences; padded
-    batches ([B, L]) split by rows. Anything else (vision tensors, unknown shapes) is not split.
-    """
+    """Splits a batch to at most budget tokens: padding-free [1, T] batches between whole sequences,
+    padded [B, L] by rows; other shapes are never split."""
     if not isinstance(batch, Mapping) or budget is None or budget <= 0:
         return [batch]
     input_ids = batch.get("input_ids")
@@ -428,8 +420,7 @@ def _padded_batches(trainer):
 def _balance_dataloader(trainer, dataloader):
     if _exactness_blocker(trainer) is not None:
         return False
-    # A padded micro-batch costs rows x its longest row: equal token sums put a long row in every
-    # micro-batch, which adds padding without lowering the peak.
+    # Padded cost is rows x longest row: equal token sums add padding but not lower the peak.
     if _padded_batches(trainer):
         return False
     # accelerate's DataLoaderDispatcher deals successive inner batches to ranks behind a plain BatchSampler.
@@ -603,9 +594,8 @@ def _metric_lengths(trainer):
 
 
 def _global_chunk_weights(trainer, chunks, accelerator):
-    """Per-key chunk weights. With several processes TRL gathers each chunk's sums across ranks, so the
-    weight is the chunk's token count summed over ranks. Older TRL (attention style) averages per-rank
-    entropy ratios, which cannot be refolded, so entropy is left unfolded there."""
+    """Multi-process weights sum token counts over ranks; older attention-style TRL averages
+    per-rank entropy ratios, which cannot be refolded, so entropy stays unfolded."""
     weights = {
         key: [count(trainer, chunk) for chunk in chunks] for key, count in _RATIO_METRICS.items()
     }

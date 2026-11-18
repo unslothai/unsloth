@@ -1,24 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bitsandbytes 8-bit (and 32-bit) Adam / AdamW under native FSDP2, stepped on the local shards.
-
-bitsandbytes' kernels take plain tensors, and native FSDP2 parameters are DTensors. Each DTensor
-parameter's local shard is an ordinary tensor sharing the parameter's storage, and its gradient's local
-shard is the matching ordinary tensor, so bitsandbytes can step the shard in place. The optimizer
-keeps the DTensor parameters in its param_groups and its state keyed by them (the LR scheduler, the
-Trainer, gradient clipping, GradScaler and torch.distributed.checkpoint all see the same objects); only
-init_state / update_step hand bitsandbytes the local shards.
-
-The 8-bit state is quantized per 256-element block of each LOCAL shard, so it is not bitwise equal to
-one GPU, where the blocks run over the whole tensor. Which parameters get 8-bit state follows one GPU:
-bitsandbytes' `min_8bit_size` rule is applied to the full parameter size, not the shard size.
-
-state_dict() returns the state dequantized to float32, wrapped as DTensors laid out like each parameter,
-so the collective full-state save (get_optimizer_state_dict(full_state_dict = True)) gathers a
-world-size-independent checkpoint. load_state_dict() re-quantizes it: the inverse is exact when the
-blocks are unchanged (same world size), so a resume restores the same 8-bit state.
-"""
+"""bnb 8-bit (and 32-bit) Adam/AdamW on FSDP2: DTensor params stay in param_groups, only local
+shards go to bnb; 8-bit blocks per local shard, not bitwise 1-GPU; state_dict is world-size
+independent."""
 
 import contextlib
 import functools
@@ -67,9 +52,7 @@ def _bnb_base_classes():
 
 
 def supports_local_shards(optimizer_or_cls):
-    """bitsandbytes Adam / AdamW (8-bit blockwise, paged or not, or 32-bit): Optimizer2State with
-    optimizer_name 'adam' (AdEMAMix keeps two first moments in one state and is not covered). The class
-    check alone when given a class."""
+    """bnb Adam/AdamW on Optimizer2State with optimizer_name 'adam'; AdEMAMix is not covered."""
     base = _bnb_base_classes()
     if base is None:
         return False
@@ -92,10 +75,7 @@ def supports_local_shards(optimizer_or_cls):
 
 
 def _plain_bnb_class(cls, base):
-    """Only bitsandbytes' own Adam / AdamW / PagedAdam(W) classes: every class above Optimizer2State
-    comes from bitsandbytes and none replaces step / init_state / update_step. A subclass elsewhere
-    (Unsloth's QGaLoreAdamW8bit: optimizer_name 'adam', its own step() projecting whole 2-D weights)
-    cannot be stepped shard by shard."""
+    """Only plain bnb Adam/AdamW/PagedAdam classes; subclasses like QGaLoreAdamW8bit cannot step shards."""
 
     def unwrapped(fn):
         while hasattr(fn, "__wrapped__"):
@@ -152,9 +132,7 @@ def _local_grad(grad, DTensor):
     return grad
 
 
-# Blocks per pass when (de)quantizing a checkpointed state: 16384 blocks = 4M elements, so the
-# temporaries (a float table and int64 indices per candidate scale) stay a few hundred MB however large
-# the shard is. Every block is independent, so the result does not depend on the chunking.
+# Blocks per pass bound the temporaries; blocks are independent, so chunking never changes results.
 _CHUNK_BLOCKS = 16384
 
 
@@ -164,8 +142,7 @@ def _dequantize(
     device,
     chunk_blocks = None,
 ):
-    """float32 copy of state `key` on `device`, built chunk by chunk into the one output tensor. Paged
-    state reports the CPU device (unified memory)."""
+    """float32 copy of a state key, built chunk by chunk; paged state reports the CPU device."""
     value = raw[key]
     if value.dtype != torch.uint8:
         return value.to(device = device, dtype = torch.float32)
@@ -186,8 +163,7 @@ def _dequantize(
 
 
 def _nearest_codes(padded, sorted_code, scale):
-    """Per block: index into sorted_code of the nearest code * scale for each element, and the block's
-    total absolute reconstruction error."""
+    """Per block: nearest sorted_code index for each element, and total reconstruction error."""
     table = sorted_code.unsqueeze(0) * scale.unsqueeze(1)  # (blocks, 256), ascending per row
     hi = torch.searchsorted(table, padded.contiguous()).clamp_(max = table.shape[1] - 1)
     lo = (hi - 1).clamp_(min = 0)
@@ -204,13 +180,9 @@ def _quantize_into(
     out_absmax,
     chunk_blocks = None,
 ):
-    """bitsandbytes' blockwise quantization of `values` (float32) into `out_codes` (uint8, same shape)
-    and `out_absmax` (one float32 per 256 elements), inverting a dequantization exactly. bitsandbytes
-    scales a block by its largest magnitude A, and the signed map has no -1.0: when that element is
-    negative it is stored as min_code * A. The scale is therefore the largest positive value, or the
-    largest |negative| / |min code| (with its float32 neighbours, since that division can round), and
-    each element maps to the nearest code * scale; per block the candidate with the smallest
-    reconstruction error wins (zero for the original scale). Runs `chunk_blocks` blocks at a time."""
+    """bnb blockwise quant of float32 values into uint8 codes (same shape) and one float32 absmax
+    per 256 elements; scale is the largest positive or largest |negative| / |min code| (bnb map
+    has no -1.0); least error wins"""
     device = out_codes.device
     code = code.to(device = device, dtype = torch.float32)
     flat = values.reshape(-1)
@@ -355,9 +327,8 @@ class _LocalShardMixin:
         return keys
 
     def _export_aux(self, p, raw, keys, out):
-        """Each rank's history vectors for a DTensor parameter, as one Shard(0) DTensor of shape
-        (world * n,) over the parameter's mesh, so the full checkpoint holds every rank's vector and a
-        same-world-size resume gets its own back; a replicated parameter's vector is plain."""
+        """Each rank history vector as one Shard(0) DTensor of shape (world * n,) over the parameter
+        mesh (plain if replicated), so a same-world-size resume gets its own vector back"""
         DTensor = _dtensor_class()
         local = _local(p, DTensor)
         for key in keys:
@@ -621,11 +592,7 @@ def rename_optimizer_state_for(optimizer, full_state):
 
 
 def _align_param_group_keys(optimizer, full_state):
-    """Saved param groups from the other optimizer carry its own hyperparameter keys (torch AdamW's
-    amsgrad / foreach / ..., bitsandbytes' alpha / t_alpha / ...), which torch's state dict loaders
-    refuse. Keep the keys both optimizers have (lr, betas, eps, weight_decay: the saved values), drop
-    the saved-only ones and take this optimizer's own value for the rest. Only called for a
-    checkpoint of the other optimizer (its state keys were renamed)."""
+    """Keeps shared group keys, drops saved-only ones (torch refuses them); live values fill the rest."""
     saved_groups = full_state.get("param_groups")
     live_groups = getattr(optimizer, "param_groups", None)
     if not isinstance(saved_groups, list) or not live_groups:

@@ -39,9 +39,10 @@ if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated
 
 function Get-Process { param($Id, $ErrorAction) throw "no such process" }
 $realWmiRows = ${function:Get-StudioWmiProcessImageRows}
-Check "a WMI query that never returns is abandoned at the deadline" (
-    (Measure-Command { $rows = @(& $realWmiRows -Query { Start-Sleep -Seconds 60 } -TimeoutSeconds 2) }).TotalSeconds -lt 20 -and
-    $rows.Count -eq 0)
+# Windows PowerShell 5.1 starts each job in a new powershell.exe; 45 s still separates this from a 60 s wait.
+$wmiSeconds = (Measure-Command { $rows = @(& $realWmiRows -Query { Start-Sleep -Seconds 60 } -TimeoutSeconds 2) }).TotalSeconds
+Check ("a WMI query that never returns is abandoned at the deadline ({0:N1} s)" -f $wmiSeconds) ($wmiSeconds -lt 45)
+Check "the abandoned WMI query yields no rows" ($rows.Count -eq 0)
 Check "control: a WMI query that answers returns its rows" (
     @(& $realWmiRows -Query { [pscustomobject]@{ ProcessId = 9; ExecutablePath = "C:\x.exe" } }).ExecutablePath -eq "C:\x.exe")
 function Get-StudioWmiProcessImageRows { return @() }

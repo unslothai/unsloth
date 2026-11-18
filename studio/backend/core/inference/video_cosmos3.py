@@ -1,18 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cosmos3 (nvidia/Cosmos3-Nano, nvidia/Cosmos3-Edge) on diffusers' ``Cosmos3OmniPipeline``.
-
-The guardrail (``cosmos_guardrail``) is built whenever ``model_index.json`` enables it and raises ``ImportError``
-without the package, so Studio refuses the load up front; ``UNSLOTH_COSMOS3_SAFETY_CHECKER=0`` opts out.
-"""
+"""Cosmos3 pipeline. The Cosmos guardrail safety checker is off by default; UNSLOTH_COSMOS3_SAFETY_CHECKER=1 turns it on."""
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import functools
+import importlib
 import importlib.util
 import json
 import os
+import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -24,6 +26,12 @@ SAFETY_CHECKER_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
 # Passed as None to from_pretrained: Studio renders video only.
 NONE_COMPONENTS = ("sound_tokenizer",)
 GUARDRAIL_PACKAGE = "cosmos_guardrail"
+GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
+_GUARDRAIL_STEPS = (
+    f"accept its licence at https://huggingface.co/{GUARDRAIL_REPO}, add that account's Hugging Face token in "
+    f"Settings, and load again. Or unset {SAFETY_CHECKER_ENV} (the checker is off by default) to load without it."
+)
+_CHECKER_ON = f"The Cosmos safety checker is on ({SAFETY_CHECKER_ENV}=1)"
 # Fallback when the index is not on disk yet (validation is network-free).
 _BASE_SAFETY_CHECKER = {
     "nvidia/cosmos3-nano": True,
@@ -39,8 +47,11 @@ def is_cosmos3_listing(names: Iterable[str]) -> bool:
     )
 
 
-def safety_checker_opted_out() -> bool:
-    return os.environ.get(SAFETY_CHECKER_ENV, "").strip().lower() in ("0", "false", "no", "off")
+def safety_checker_requested() -> bool:
+    """Whether the Cosmos guardrail runs. Off by default for every Cosmos3 checkpoint (OpenMDW 1.1 has no guardrail
+    clause; the model cards run it, so this departs from them by choice); UNSLOTH_COSMOS3_SAFETY_CHECKER=1 turns it
+    on, and the guardrail package, its gated weights and their access check then apply as before."""
+    return os.environ.get(SAFETY_CHECKER_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def guardrail_installed() -> bool:
@@ -103,31 +114,218 @@ def load_request_refusal(
     return None
 
 
-def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[str]:
-    """Why this load cannot start, or None: the checkpoint enables the guardrail and the package is missing."""
-    if safety_checker_opted_out() or guardrail_installed():
+def guardrail_refusal(repo_id: str) -> Optional[str]:
+    """Why this load cannot start, or None: the safety checker was turned on and its package is missing."""
+    if not safety_checker_requested() or guardrail_installed():
         return None
-    if not checkpoint_enables_safety_checker(repo_id, index):
-        return None
+    from .cosmos_guardrail_install import manual_install_command
+
     return (
-        f"'{repo_id}' runs NVIDIA's Cosmos guardrail (its model_index.json does not turn enable_safety_checker off, and "
-        f"the pipeline's default is on), which needs the cosmos_guardrail package: pip install cosmos-guardrail into "
-        f"Studio's Python environment, restart Studio, and retry. To run without it, set {SAFETY_CHECKER_ENV}=0; the "
-        f"model card's terms and safe use stay your responsibility."
+        f"{_CHECKER_ON} for '{repo_id}', and it needs NVIDIA's gated Cosmos guardrail. Install it with Install "
+        f"guardrail on the Video page or run `{manual_install_command()}`, then {_GUARDRAIL_STEPS}"
     )
 
 
-def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any]:
-    """``from_pretrained`` kwargs: no sound tokenizer; guardrail off only on the explicit opt-out."""
-    kwargs: dict[str, Any] = dict.fromkeys(NONE_COMPONENTS)
-    if safety_checker_opted_out():
-        kwargs["enable_safety_checker"] = False
-        if checkpoint_enables_safety_checker(repo_id, index):
-            logger.warning(
-                "video.cosmos3: %s=0, so '%s' loads without the Cosmos guardrail its checkpoint runs by default",
-                SAFETY_CHECKER_ENV,
-                repo_id,
+def refresh_guardrail_import() -> bool:
+    """Point an already-imported Diffusers at a guardrail installed after it was imported, so no restart is needed.
+
+    Diffusers reads ``cosmos_guardrail``'s presence once at import, and a Cosmos pipeline module imported before the
+    install keeps a stub ``CosmosSafetyChecker`` that raises; the pipeline also gates its checks on that class."""
+    importlib.invalidate_caches()
+    if not guardrail_installed():
+        return False
+    utils = sys.modules.get("diffusers.utils.import_utils")
+    stale_flag = utils is not None and not getattr(utils, "_cosmos_guardrail_available", True)
+    stale = [
+        module
+        for name, module in list(sys.modules.items())
+        if name.startswith("diffusers.pipelines.cosmos.")
+        and module is not None
+        and str(getattr(getattr(module, "CosmosSafetyChecker", None), "__module__", "")).startswith(
+            "diffusers."
+        )
+    ]
+    if not stale_flag and not stale:
+        return True
+    real = getattr(importlib.import_module(GUARDRAIL_PACKAGE), "CosmosSafetyChecker", None)
+    if real is None:
+        return False
+    if stale_flag:
+        try:
+            from importlib.metadata import version
+            utils._cosmos_guardrail_version = version("cosmos-guardrail")
+        except Exception:  # noqa: BLE001
+            pass
+        utils._cosmos_guardrail_available = True
+    for module in stale:
+        module.CosmosSafetyChecker = real
+    return True
+
+
+# Small files the guardrail fetches on its first build (blocklist/*, face_blur_filter/*); all of them gated.
+GUARDRAIL_PROBE_FILES = ("blocklist/custom/branding", "face_blur_filter/Resnet50_Final.pth")
+_PROBE_TIMEOUT_S = 10.0
+# A granted probe is remembered per token, so the route's check and the load's own one send one request.
+_PROBE_OK_TTL_S = 60.0
+_probe_ok: dict[str, float] = {}
+_probe_lock = threading.Lock()
+
+
+def _guardrail_cached() -> bool:
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001
+        return False
+    for name in GUARDRAIL_PROBE_FILES:
+        try:
+            if not isinstance(try_to_load_from_cache(GUARDRAIL_REPO, name), str):
+                return False
+        except Exception:  # noqa: BLE001 -- an unreadable cache is a miss
+            return False
+    return True
+
+
+def _hub_offline() -> bool:
+    try:
+        from huggingface_hub import constants
+        if getattr(constants, "HF_HUB_OFFLINE", False):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _probe_key(token: Any) -> str:
+    import hashlib
+    return hashlib.sha256(repr(token).encode("utf-8")).hexdigest()
+
+
+def guardrail_access_preflight(
+    repo_id: str,
+    hf_token: Any = None,
+    *,
+    local_files_only: bool = False,
+) -> Optional[str]:
+    """Refusal for a load whose guardrail weights this token cannot fetch, checked before any model download.
+
+    Only when the safety checker was turned on and its package is present. One metadata request on a small gated
+    guardrail file with the load's token (None = the ambient login). Only a 401 / 403 refuses: a cached guardrail,
+    offline mode and network errors all let the load go on as before."""
+    if not safety_checker_requested() or not guardrail_installed():
+        return None
+    if local_files_only or _hub_offline() or _guardrail_cached():
+        return None
+    if isinstance(hf_token, str):
+        hf_token = hf_token.strip() or None
+    key = _probe_key(hf_token)
+    now = time.monotonic()
+    with _probe_lock:
+        if _probe_ok.get(key, 0.0) > now:
+            return None
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        get_hf_file_metadata(
+            hf_hub_url(GUARDRAIL_REPO, GUARDRAIL_PROBE_FILES[0]),
+            token = hf_token,
+            timeout = _PROBE_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 -- only an access refusal stops the load
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        gated = any(cls.__name__ == "GatedRepoError" for cls in type(exc).__mro__)
+        if gated or status in (401, 403):
+            logger.warning("video.cosmos3: guardrail access refused before the download: %s", exc)
+            return (
+                f"{_CHECKER_ON} for '{repo_id}', and it needs NVIDIA's gated Cosmos guardrail, but this Hugging Face "
+                f"token has no access: {_GUARDRAIL_STEPS}"
             )
+        logger.info(
+            "video.cosmos3: guardrail access check skipped (%s: %s)", type(exc).__name__, exc
+        )
+        return None
+    with _probe_lock:
+        _probe_ok[key] = now + _PROBE_OK_TTL_S
+    return None
+
+
+def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
+    """The load error for a gated-repo refusal of the guardrail's own weights, else None."""
+    from .diffusion import _HUB_REPO_RE, _gated_in_chain
+
+    gated = _gated_in_chain(exc)
+    found = _HUB_REPO_RE.search(str(gated)) if gated is not None else None
+    if found is None or found.group(1).rstrip(".").lower() != GUARDRAIL_REPO.lower():
+        return None
+    return f"{_CHECKER_ON} for '{repo_id}', and it needs NVIDIA's gated Cosmos guardrail: {_GUARDRAIL_STEPS}"
+
+
+_UNSET = object()
+_load_hub_token: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "cosmos3_guardrail_token", default = _UNSET
+)
+_wrap_lock = threading.Lock()
+
+
+def _token_bound(download: Any) -> Any:
+    @functools.wraps(download)
+    def snapshot_download(*args: Any, **kwargs: Any) -> Any:
+        token = _load_hub_token.get()
+        if token is not _UNSET:
+            kwargs.setdefault("token", token)
+        return download(*args, **kwargs)
+
+    snapshot_download._unsloth_load_token = True
+    return snapshot_download
+
+
+@contextlib.contextmanager
+def guardrail_hub_token(token: Any):
+    """cosmos_guardrail downloads without a token argument; a permanent wrapper sends this load's token from a
+    context variable, so overlapping loads never share one. None keeps the ambient login."""
+    if isinstance(token, str):
+        token = token.strip() or None
+    module = None
+    if token is not None:
+        try:
+            # Written out (GUARDRAIL_PACKAGE twice) so the risky-loader lint sees a fixed module.
+            module = importlib.import_module("cosmos_guardrail.cosmos_guardrail")
+            with _wrap_lock:
+                if not getattr(module.snapshot_download, "_unsloth_load_token", False):
+                    module.snapshot_download = _token_bound(module.snapshot_download)
+        except (ImportError, AttributeError):
+            module = None
+    if module is None:
+        yield
+        return
+    reset = _load_hub_token.set(token)
+    try:
+        yield
+    finally:
+        _load_hub_token.reset(reset)
+
+
+def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any]:
+    """``from_pretrained`` kwargs: no sound tokenizer; the safety checker set explicitly, off unless requested."""
+    kwargs: dict[str, Any] = dict.fromkeys(NONE_COMPONENTS)
+    if safety_checker_requested():
+        try:
+            refresh_guardrail_import()
+        except Exception as exc:  # noqa: BLE001 -- the pipeline's own import error names the package
+            logger.info("video.cosmos3: could not refresh the guardrail import: %s", exc)
+        kwargs["enable_safety_checker"] = True
+        logger.info(
+            "video.cosmos3: the Cosmos guardrail safety checker is on for '%s' (%s=1)",
+            repo_id,
+            SAFETY_CHECKER_ENV,
+        )
+        return kwargs
+    kwargs["enable_safety_checker"] = False
+    card = " (its model card runs it)" if checkpoint_enables_safety_checker(repo_id, index) else ""
+    logger.info(
+        "video.cosmos3: the Cosmos guardrail safety checker is off for '%s'%s; set %s=1 to turn it on",
+        repo_id,
+        card,
+        SAFETY_CHECKER_ENV,
+    )
     return kwargs
 
 
@@ -213,3 +411,102 @@ def seam_safe_tile_strides(pipe: Any, height: int, width: int):
         for (tile_key, stride_key), (tile, stride) in zip(keys, old):
             setattr(vae, tile_key, tile)
             setattr(vae, stride_key, stride)
+
+
+# Same caps as a MiniMax-H3 reference video and a keyframe image: 15 s of source, 4096 px a side.
+CONTINUATION_MAX_SECONDS = 15.0
+CONTINUATION_MAX_SIDE = 4096
+
+
+def _upright(image: Any, frame: Any) -> Any:
+    # PyAV's rotation is counterclockwise degrees, the same sense as PIL's rotate (matches ffmpeg autorotate).
+    rotation = int(getattr(frame, "rotation", 0) or 0) % 360
+    return image.rotate(rotation, expand = True) if rotation else image
+
+
+def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) -> list:
+    """Frames land on that clock by whole-frame drop and duplicate, picked by presentation time so a variable-frame-rate
+    clip keeps even spacing; a clip already at ``fps`` passes through unchanged."""
+    import collections
+    import math
+
+    import av
+
+    from .video_minimax_h3 import _open_reference_media
+
+    picked: Any = [] if keep == "first" else collections.deque(maxlen = count)
+    try:
+        container = _open_reference_media(av, blob)
+    except av.error.FFmpegError as exc:
+        raise ValueError("That clip could not be read as a video.") from exc
+    with container:
+        if not container.streams.video:
+            raise ValueError("That clip carries no video track.")
+        stream = container.streams.video[0]
+        source_fps = float(stream.average_rate or stream.guessed_rate or fps)
+        if source_fps <= 0:
+            source_fps = float(fps)
+        max_source_frames = math.floor(CONTINUATION_MAX_SECONDS * source_fps + 1e-6)
+        next_target = 0
+        decoded = 0
+        held: Any = None
+        origin: Optional[float] = None
+
+        def _take(frame: Any, until: float) -> None:
+            nonlocal next_target
+            while next_target / fps < until - 1e-6:
+                if keep != "first" or len(picked) < count:
+                    picked.append(frame)
+                next_target += 1
+
+        try:
+            for index, frame in enumerate(container.decode(video = 0)):
+                decoded = index + 1
+                stamp = frame.time if frame.time is not None else index / source_fps
+                if origin is None:
+                    origin = stamp
+                # Count and timestamps both: a VFR clip's average rate can understate a long gap.
+                if (
+                    decoded > max_source_frames
+                    or stamp - origin + 1 / source_fps > CONTINUATION_MAX_SECONDS + 1e-6
+                ):
+                    raise ValueError(
+                        f"The clip to continue runs longer than {CONTINUATION_MAX_SECONDS:g} seconds. Trim it first."
+                    )
+                if max(frame.width, frame.height) > CONTINUATION_MAX_SIDE:
+                    raise ValueError(
+                        f"The clip to continue is {frame.width}x{frame.height}; the limit is "
+                        f"{CONTINUATION_MAX_SIDE} px a side."
+                    )
+                # "first" still decodes to the end, so both ends are held to the same limits.
+                if held is not None:
+                    _take(held, max(stamp - origin, 0.0))
+                held = frame
+            if held is not None:
+                # The last frame lasts one nominal frame, as the clip's duration counts it.
+                _take(held, max(stamp - origin, 0.0) + 1 / source_fps)
+        except av.error.FFmpegError as exc:
+            raise ValueError("That clip could not be decoded.") from exc
+        frames = [
+            _upright(frame.to_image().convert("RGB"), frame) for frame in list(picked)[:count]
+        ]
+    if len(frames) < count:
+        raise ValueError(
+            f"This clip has {len(frames)} frames at {fps} fps, and continuing it needs at least {count}. "
+            "Use a longer clip."
+        )
+    return frames
+
+
+def fit_continuation_frames(frames: list, width: int, height: int) -> list:
+    """The pipeline resizes onto the canvas itself, so a clip already at the canvas aspect passes through untouched."""
+    if not frames:
+        return frames
+    src_w, src_h = frames[0].size
+    crop_w = min(src_w, round(src_h * width / height))
+    crop_h = min(src_h, round(src_w * height / width))
+    if (crop_w, crop_h) == (src_w, src_h):
+        return frames
+    left, top = (src_w - crop_w) // 2, (src_h - crop_h) // 2
+    box = (left, top, left + crop_w, top + crop_h)
+    return [frame.crop(box) for frame in frames]

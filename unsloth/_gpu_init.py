@@ -29,6 +29,7 @@ from .import_fixes import (
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
     fix_torchao_pytree_register_constant,
+    disable_torchao_if_torch_too_old,
     propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
     check_transformers_dependency_versions,
@@ -93,6 +94,8 @@ from ._torchao_nodist import fix_torchao_without_torch_distributed
 
 fix_torchao_without_torch_distributed()
 del fix_torchao_without_torch_distributed
+# After the torchao shims, before transformers imports torchao: a torchao too new for this torch reads as absent.
+disable_torchao_if_torch_too_old()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
@@ -121,6 +124,7 @@ del patch_torch_missing_attribute_error
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del fix_torchao_pytree_register_constant
+del disable_torchao_if_torch_too_old
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
@@ -228,7 +232,27 @@ try:
         from .distributed_debug import keep_debug_nccl_env
         _restore_nccl_debug = keep_debug_nccl_env()
         del keep_debug_nccl_env
+    from .parallel_env import (
+        ALLOCATOR_ENV as _ALLOCATOR_ENV,
+        apply_late_allocator_env,
+        cuda_started,
+    )
+
+    _allocator_env_before = {k: os.environ.get(k) for k in _ALLOCATOR_ENV}
+    # Zoo exports its allocator settings before its own import starts CUDA, so only a process whose CUDA was
+    # already running (a torchrun rank > 0 binds its device at import) missed them.
+    _cuda_started_before = cuda_started()
     import unsloth_zoo
+
+    if _cuda_started_before:
+        apply_late_allocator_env(_allocator_env_before)
+    del (
+        _ALLOCATOR_ENV,
+        _allocator_env_before,
+        _cuda_started_before,
+        apply_late_allocator_env,
+        cuda_started,
+    )
 
     if _restore_nccl_debug is not None:
         _restore_nccl_debug()
@@ -270,9 +294,13 @@ except Exception:
 # TORCHINDUCTOR_COMPILE_THREADS.
 if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     try:
-        torch._inductor.config.compile_threads = 1
+        from unsloth_zoo.torch_config import set_torch_config
+        set_torch_config(torch._inductor.config, "compile_threads", 1)
     except Exception:
-        pass
+        try:
+            torch._inductor.config.compile_threads = 1
+        except Exception:
+            pass
     os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
 
     def _force_single_compile_worker_in_zoo():
@@ -330,11 +358,13 @@ del _reraise_device_type_error_with_gpu_hint, _nvidia_smi_gpu_name
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
     fix_transformers5_legacy_config_types,
+    fix_transformers_config_commit_hash,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_bnb_prequantized_save,
     fix_transformers_fully_masked_rows,
     fix_transformers_flash_attention_mrope_packed_sequence,
+    fix_transformers_flash_attention_mrope_packed_rows,
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_tokenizer_config_vocab_file_override,
@@ -344,6 +374,7 @@ from .import_fixes import (
     fix_transformers_rope_scaling_drops_theta,
     fix_transformers_fp8_modulelist_experts,
     fix_transformers_fp8_unscaled_checkpoint_linears,
+    fix_transformers_quantizer_unquantized_converters,
     fix_transformers_validate_rope_ignore_keys,
     fix_transformers5_remote_code_legacy_defaults,
     fix_transformers_config_only_remote_code,
@@ -361,10 +392,14 @@ from .import_fixes import (
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
     fix_cudnn_sdpa_d256_masked_backward,
+    fix_cudnn_sdpa_backward_grad_layout,
+    fix_cudnn_sdpa_known_bad_shapes,
     fix_rocm_windows_fused_sdpa,
+    fix_rocm_windows_wide_head_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
+    fix_flex_attention_eager_saved_tensor_hooks,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
@@ -394,11 +429,14 @@ from .import_fixes import (
 )
 
 fix_transformers5_legacy_config_types()
+# transformers >= 5.18 no longer stamps config._commit_hash; Unsloth pins loads and probes to it.
+fix_transformers_config_commit_hash()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 # Probe-gated: no-op unless SDPA gets a query row that attends to nothing; runs before model imports so plain generate is covered.
 fix_transformers_fully_masked_rows()
 fix_transformers_flash_attention_mrope_packed_sequence()
+fix_transformers_flash_attention_mrope_packed_rows()
 fix_transformers_chunked_mask_block_sequence_ids()
 fix_transformers_flex_mask_graph_breaks()
 # CVE-2026-4372 / 5241 / 9856 and the tokenizer_config.json vocab path traversal, no-ops once
@@ -424,6 +462,7 @@ del check_transformers_prequantized_vlm_quant_state
 fix_transformers_rope_scaling_drops_theta()
 fix_transformers_fp8_modulelist_experts()
 fix_transformers_fp8_unscaled_checkpoint_linears()
+fix_transformers_quantizer_unquantized_converters()
 fix_transformers_validate_rope_ignore_keys()
 fix_transformers5_remote_code_legacy_defaults()
 fix_transformers_config_only_remote_code()
@@ -450,13 +489,20 @@ fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_cudnn_sdpa_d256_masked_backward()
+fix_cudnn_sdpa_backward_grad_layout()
+# torch 2.11 - 2.14 cuDNN SDPA bugs fixed by cuDNN 9.26 / torch 2.15 (pytorch#193893, #196678).
+fix_cudnn_sdpa_known_bad_shapes()
 # Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
 fix_rocm_windows_fused_sdpa()
+# Windows ROCm only: fused SDPA miscomputes heads wider than 256 (Gemma 4 global layers) there.
+fix_rocm_windows_wide_head_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
 fix_inductor_reduction_readback_race()
+# Eager flex_attention inside a non-reentrant checkpoint (DDP) restarted the layer's recompute mid forward.
+fix_flex_attention_eager_saved_tensor_hooks()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
@@ -493,6 +539,7 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers5_legacy_config_types
+del fix_transformers_config_commit_hash
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
 del fix_transformers_tokenizer_config_vocab_file_override
@@ -500,6 +547,7 @@ del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
 del fix_transformers_fp8_unscaled_checkpoint_linears
+del fix_transformers_quantizer_unquantized_converters
 del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none
@@ -517,7 +565,10 @@ del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
 del fix_cudnn_sdpa_d256_masked_backward
+del fix_cudnn_sdpa_backward_grad_layout
+del fix_cudnn_sdpa_known_bad_shapes
 del fix_rocm_windows_fused_sdpa
+del fix_rocm_windows_wide_head_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del fix_inductor_reduction_readback_race
@@ -774,16 +825,28 @@ del patch_bitsandbytes_optimizer_step_sync
 
 
 def _define_kernels_against_triton_stub():
-    """Unsloth's kernel modules define @triton.jit kernels at import. With no Triton package, a triton import made
-    by an unsloth.* module resolves to unsloth_zoo's triton stub (calling a kernel raises); every other importer
-    still sees no Triton, so no library mistakes the stub for a real one. Returns the undo callable."""
     try:
         from unsloth_zoo.stubs import triton_stub
     except ImportError:
         return None
     import builtins
+    import threading
+    import types
 
     real_import = builtins.__import__
+    lock = threading.Lock()
+
+    def _stub_module(name):
+        # Unknown attributes of a stub module are no-ops, not submodules, so create missing ones explicitly.
+        module = triton_stub
+        with lock:
+            for i, part in enumerate(name.split(".")[1:], start = 2):
+                child = vars(module).get(part)
+                if not isinstance(child, types.ModuleType):
+                    child = triton_stub._make_module(".".join(name.split(".")[:i]))
+                    setattr(module, part, child)
+                module = child
+        return module
 
     def _import(
         name,
@@ -799,18 +862,8 @@ def _define_kernels_against_triton_stub():
             or importer.split(".")[0] != "unsloth"
         ):
             return real_import(name, globals, locals, fromlist, level)
-        meta_path, modules = list(sys.meta_path), set(sys.modules)
-        triton_stub.inject_into_sys_modules()
-        try:
-            return real_import(name, globals, locals, fromlist, level)
-        finally:
-            sys.meta_path[:] = meta_path
-            for key in [
-                k
-                for k in sys.modules
-                if (k == "triton" or k.startswith("triton.")) and k not in modules
-            ]:
-                del sys.modules[key]
+        module = _stub_module(name)
+        return module if fromlist else triton_stub
 
     builtins.__import__ = _import
 

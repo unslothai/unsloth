@@ -14,6 +14,9 @@ from typing import Any, Optional
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
+from core.inference import model_identity
+from studio_mcp.problems import caller_tools
+from studio_mcp.surface import render
 from studio_mcp import loading
 from studio_mcp import placement as place
 from studio_mcp.caller import Caller
@@ -104,7 +107,7 @@ def _worst(states: list[str]) -> str:
 
 def _looks_local(model: str) -> bool:
     # A host path, or the ref: handle a checkpoint or export load sends.
-    return model.startswith(("/", "\\", ".", "ref:")) or ":" in model[:3]
+    return model_identity.is_local(model)
 
 
 def _split(model: str, variant: Optional[str]) -> tuple[str, Optional[str]]:
@@ -179,8 +182,11 @@ async def _plan_parts(
         raise tool_error(plan["incompatible_reason"])
     if plan.get("plan_failed"):
         raise ToolError(
-            f"Unsloth Studio could not list the files {model} needs, so it can't download them ahead of time. "
-            "Call load_model, which downloads while it loads."
+            render(
+                f"Unsloth Studio could not list the files {model} needs, so it can't download them ahead of time. "
+                "<<load_model: Call load_model, which downloads while it loads. | Loading it downloads it.>>",
+                caller_tools(),
+            )
         )
     entries = [as_dict(e) for e in plan.get("entries") or []]
     return [
@@ -420,8 +426,12 @@ async def wait_for_managed(
         left = None if deadline is None else deadline - time.monotonic()
         if left is not None and left <= 0:
             raise ToolError(
-                f"Unsloth Studio is still downloading {model}. "
-                f'Follow it with get_job(kind="download", id="{format_id(keys)}"), then call load_model again.'
+                render(
+                    f"Unsloth Studio is still downloading {model}. "
+                    f'Follow it with get_job(kind="download", id="{format_id(keys)}")'
+                    "<<load_model: , then call load_model again>>.",
+                    caller_tools(),
+                )
             )
         if ctx is not None:
             follow = f'get_job(kind="download", id="{format_id(keys)}")'

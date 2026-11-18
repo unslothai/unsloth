@@ -86,7 +86,8 @@ def test_the_hosted_filename_comes_from_an_unsloth_repo():
 
 def test_every_hosted_scheme_is_a_valid_text_encoder_quant_request():
     from core.inference.diffusion_precision import normalize_te_quant
-    for scheme in H3_TE_QUANT_FILES:
+    from core.inference.video_minimax_h3_te import H3_TE_AUTO_ONLY_SCHEMES
+    for scheme in set(H3_TE_QUANT_FILES) - H3_TE_AUTO_ONLY_SCHEMES:
         assert normalize_te_quant(scheme) == scheme
 
 
@@ -194,9 +195,8 @@ def test_an_unpinned_floor_is_the_largest_component_not_the_sum():
 
 
 def test_a_pinned_denoiser_makes_the_floor_additive():
-    """The pre-quantized denoiser is pinned out of the offload rotation, so it is resident
-    alongside whatever else is running. Treating that as a max under-states the floor by the whole
-    denoiser, which is the direction that lets a doomed generation start."""
+    """A pinned pre-quantized denoiser stays resident beside everything else, so the floor is
+    additive; a max would understate it by the whole denoiser and let a doomed run start."""
     pinned = h3_diffusers_vram_base_gb(transformer_gb = 20.3, transformer_pinned = True)
     assert pinned == pytest.approx(20.3 + 66.7 + 2.6, abs = 0.001)
     assert pinned > h3_diffusers_vram_base_gb(transformer_gb = 20.3)
@@ -280,9 +280,7 @@ def test_an_unset_request_on_a_derivative_still_keeps_its_own_encoder():
 
 
 def test_only_the_base_the_artifact_was_cut_from_gets_the_hosted_conditioner():
-    """A derivative can keep the Qwen3-VL architecture and change the conditioner weights. The
-    strict load cannot tell -- every name and shape still matches -- so gate on the base instead,
-    exactly as the pre-quantized denoiser does through its baked base_model_id."""
+    """A derivative can change the conditioner unseen by a strict load, so gate on the base_model_id."""
     assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", "/models/MiniMax-H3") == "int8"
     for other in ("someone/MiniMax-H3-anime", "someone/MiniMax-H3-v2", "MiniMaxAI/MiniMax-H2"):
         assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", other) is None
@@ -360,9 +358,7 @@ def test_the_conditioner_never_comes_from_the_comfy_repack(monkeypatch):
 
 
 def test_the_conditioner_repo_is_protected_while_the_load_is_in_flight(monkeypatch):
-    """The artifact comes from a THIRD repo. Without it in ``asset_repos`` the delete-cached guard
-    would let it go while the fetch (or the base pull that no longer carries a dense encoder) is
-    still running."""
+    """The artifact's repo must be in asset_repos, or the delete-cached guard can free it mid-load."""
     from core.inference import video as video_mod
 
     backend = VideoBackend()
@@ -408,9 +404,7 @@ def test_the_conditioner_repo_is_not_claimed_by_a_load_that_does_not_want_it(mon
 
 
 def test_the_encoder_config_is_read_from_the_pinned_cache_not_the_default_one(monkeypatch):
-    """Unsloth runs on a configured cache root. An AutoConfig call that ignores it resolves against
-    huggingface_hub's import-time default, which re-downloads into a root Unsloth does not read and
-    simply fails on an offline host that has already staged the model."""
+    """AutoConfig must read the pinned cache root, since the hub default re-downloads and fails offline."""
     import sys
 
     import core.inference.video_minimax_h3_te as te_mod
@@ -473,8 +467,7 @@ def test_the_dense_encoder_is_dropped_from_the_base_pull_but_its_config_is_kept(
 
 
 def test_a_declined_request_reads_as_a_fallback_not_as_never_asked():
-    """The record has to keep the REQUEST on the left. Erasing it to None makes a refused fp8
-    request indistinguishable from a load nobody asked to quantize."""
+    """Keep the requested precision; None makes a refused fp8 request look like no request."""
     from core.inference.diffusion_auto_policy import build_resolved_record
 
     record = build_resolved_record(
@@ -494,9 +487,7 @@ def test_a_declined_request_reads_as_a_fallback_not_as_never_asked():
 
 
 def test_the_index_names_the_conditioner_a_pipeline_would_have_loaded():
-    """A repo-id comparison cannot tell a derivative stored as .../MiniMax-H3 from the real one.
-    The pipeline's own modular index can: it records where each component comes from, and a
-    derivative that retrained the conditioner ships it under its own id."""
+    """Repo ids cannot tell a derivative from the real one; the modular index records each source."""
 
     def _pipe(source):
         spec = types.SimpleNamespace(pretrained_model_name_or_path = source)
@@ -565,9 +556,7 @@ def test_a_known_mirror_is_still_the_same_conditioner():
 
 
 def test_a_hosted_conditioner_is_not_judged_by_the_generic_precision_gate(monkeypatch):
-    """The gate rewrites int8 -> fp8 (H3 has no keep-bf16 schedule) and then asks for fp8 tensor
-    cores. This loader uses neither: INT8 storage, a Hadamard rotation, an ordinary F.linear. Left
-    to the generic path, a CPU H3 int8 load comes back as a 409 for hardware nothing needs."""
+    """The generic gate wants fp8 cores that this int8 H3 loader never uses, so a CPU load must not 409."""
     from core.inference.video import assert_video_precision_available
 
     fam = detect_video_family(H3_BASE)
@@ -630,9 +619,7 @@ def test_an_explicit_encoder_request_that_engages_nothing_is_refused(monkeypatch
 
 
 def test_the_staging_skip_reads_the_same_index_the_seed_will(tmp_path):
-    """The plan compares repo NAMES, which is right for a plan and wrong for dropping a
-    derivative's dense encoder: the seed would then decline and leave load_components to fetch
-    62 GB inline. The staging resolver reads the base's own index first."""
+    """Repo names miss a derivative's dense encoder, so the staging skip reads the base's own index."""
     import json
 
     backend = VideoBackend()
@@ -681,3 +668,64 @@ def test_a_projection_left_dense_is_refused_not_budgeted():
     assert _dense_names(nn.ModuleList([_Layer(False), _Layer(False)])) == []
     assert _dense_names(nn.ModuleList([_Layer(False), _Layer(True)])) == ["1.self_attn.q_proj"]
     assert not isinstance(quantized_cls(8, 8, False, 256), nn.Linear)
+
+
+def _pin_world(monkeypatch, budget_bytes):
+    from core.inference import video_minimax_h3_te as te
+
+    sizes = {}
+    monkeypatch.setattr(te, "_module_payload_bytes", lambda m: sizes[id(m)])
+    monkeypatch.setattr(te, "_host_payload_bytes", lambda m: sizes[id(m)])
+    monkeypatch.setattr(
+        te, "h3_te_pin_allowed", lambda payload = 0, device = None: payload <= budget_bytes
+    )
+    return te, sizes
+
+
+@pytest.mark.parametrize(
+    "budget,te_gb,dit_gb,expected",
+    [
+        (60, 27, 20, None),
+        (40, 27, 20, False),
+        (20, 27, 20, None),
+        (15, 10, 20, False),
+    ],
+)
+def test_conditioner_pin_yields_to_a_streamed_denoiser(
+    monkeypatch, budget, te_gb, dit_gb, expected
+):
+    te, sizes = _pin_world(monkeypatch, budget * 10**9)
+    enc, dit = object(), object()
+    sizes[id(enc)], sizes[id(dit)] = te_gb * 10**9, dit_gb * 10**9
+    assert te.h3_te_pin_yields(enc, dit) is expected
+
+
+def test_conditioner_pin_yield_needs_a_streamed_denoiser_and_has_a_kill_switch(monkeypatch):
+    te, sizes = _pin_world(monkeypatch, 40 * 10**9)
+    enc, dit = object(), object()
+    sizes[id(enc)], sizes[id(dit)] = 27 * 10**9, 20 * 10**9
+    assert te.h3_te_pin_yields(enc, None) is None
+    monkeypatch.setenv(te.H3_TE_PIN_YIELD_ENV, "0")
+    assert te.h3_te_pin_yields(enc, dit) is None
+
+
+def test_h3_placement_sizes_the_stream_before_it_pins_the_conditioner():
+    import inspect
+
+    from core.inference.video import VideoBackend
+
+    src = inspect.getsource(VideoBackend)
+    call = src.index("pin = h3_te_pin_yields(")
+    assert call - src.rindex("_h3_placement_tier(", 0, call) < 1500
+
+
+def test_streamed_denoiser_is_priced_at_its_int8_payload():
+    import torch
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference import video_minimax_h3_te as te
+
+    lin = torch.nn.Linear(256, 512, bias = False).to(torch.bfloat16)
+    quantize_(lin, Int8DynamicActivationInt8WeightConfig())
+    payload = te._host_payload_bytes(lin)
+    assert 512 * 256 <= payload < 512 * 256 * 2

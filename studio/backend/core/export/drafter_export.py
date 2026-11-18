@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Carry a drafter trained with the fine-tune (core/training/drafter.py) into merged and GGUF exports.
-
-The MTP head needs no copying: the export reload re-attaches `mtp_head.safetensors` and the merged / GGUF
-savers stitch it. An EAGLE-3 drafter is a separate model, copied next to the export. Each export gets a
-`drafter.json` saying how to serve the pair; Studio's llama-server launcher reads it beside a GGUF.
-"""
+"""EAGLE-3 drafters copied beside exports; MTP heads re-attach on reload; drafter.json for serving."""
 
 from __future__ import annotations
 
@@ -223,9 +218,7 @@ def package_gguf(
     revision = None,
     local_files_only = False,
 ) -> tuple[Optional[dict], list[str]]:
-    """(drafter info, extra files written into gguf_dir). The MTP head is already inside each GGUF; an
-    EAGLE-3 drafter is converted beside them against the merged target (the converter reads its config
-    and tokenizer). Raises when the drafter cannot be converted: a pair missing its drafter is incomplete."""
+    """The MTP head is in each GGUF; an EAGLE-3 drafter converts against the merged target, or raises."""
     manifest = training_manifest(checkpoint_dir, token, revision, local_files_only)
     engines = _engines(manifest) if manifest else {}
     if manifest is None or not engines["llama_cpp"]:
@@ -283,9 +276,8 @@ def package_lora(
     revision = None,
     local_files_only = False,
 ) -> Optional[dict]:
-    """Carry the training manifest with a LoRA export that kept the trained MTP head beside it, so a
-    later merge / GGUF of that adapter still marks the head as trained (Studio's MTP launch policy).
-    `head_saved` overrides the sidecar check (a Hub push saves the adapter elsewhere)."""
+    """Carries the manifest with a LoRA export that kept the MTP head, so merges still mark it
+    trained; head_saved overrides the sidecar check (a Hub push saves elsewhere)."""
     manifest = training_manifest(checkpoint_dir, token, revision, local_files_only)
     if head_saved is None:
         head_saved = os.path.isfile(os.path.join(adapter_dir, "mtp_head.safetensors"))

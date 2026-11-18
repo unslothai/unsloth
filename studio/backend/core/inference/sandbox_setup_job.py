@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""One-click OS sandbox setup from Unsloth: install bubblewrap on Linux, install and prepare MXC on Windows.
-
-Nothing from a request reaches the command line: the operation name picks a constant plan.
-"""
+"""Installs bubblewrap or MXC; request input never reaches the command line, only a fixed plan."""
 
 from __future__ import annotations
 

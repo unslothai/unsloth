@@ -9,6 +9,12 @@ const EJECT_STUB = new URL("./loaded-models-eject-stub.ts", import.meta.url)
   .href;
 const STUBS = new Map([
   ["@/features/chat", EJECT_STUB],
+  ["@/features/chat/api/chat-api", EJECT_STUB],
+  ["@/features/chat/external-providers", EJECT_STUB],
+  ["@/features/chat/lib/apply-inference-status-to-store", EJECT_STUB],
+  ["@/features/chat/stores/chat-runtime-store", EJECT_STUB],
+  ["@/features/chat/utils/confirm-stop-running-chats", EJECT_STUB],
+  ["@/features/chat/utils/prompt-queue-boundary", EJECT_STUB],
   ["@/features/images/api", EJECT_STUB],
   ["@/features/video/api", EJECT_STUB],
   ["@/features/settings/api/embedding-model", EJECT_STUB],

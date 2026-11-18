@@ -31,6 +31,7 @@ __all__ = [
     "get_flash_adamw_cls_and_kwargs",
 ]
 
+import contextlib
 import os
 import sys
 
@@ -149,14 +150,11 @@ def _get_flash_adamw_class():
                 )
             super().__init__(params, *args, master_weight_bits = master_weight_bits, **kwargs)
 
-        # flashoptim stores unquantized moments in the param dtype, so an fp16 variance
-        # (grad**2 * (1 - beta2)) underflows to 0 for small grads and the update becomes
-        # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales.
-        # Checked per group after flashoptim fills its defaults (so positional and per-group
-        # quantize both count), for groups added at construction and by add_param_group later.
+        # Unquantized fp16 variance underflows to 0 for small grads; quantize=True stores it as sqrt
+        # with per-group scales; checked per group after flashoptim fills its defaults, including
+        # add_param_group groups.
         def _group_quantizes(self, group):
-            # flashoptim resolves a group without the key (a vanilla AdamW state dict) to the
-            # optimizer-wide setting.
+            # A group without `quantize` takes the optimizer-wide setting, like flashoptim.
             return group.get("quantize", getattr(self, "_quantize", True))
 
         def add_param_group(self, param_group):
@@ -177,9 +175,15 @@ def _get_flash_adamw_class():
             _widen_variance(self.state[p].get("exp_avg_sq"))
 
         def _load_state_for_param(self, param, opt_state, hparams):
-            state = super()._load_state_for_param(param, opt_state, hparams)
+            with _on_param_device(param):
+                state = super()._load_state_for_param(param, opt_state, hparams)
             _widen_variance(state.get("exp_avg_sq"))
             return state
+
+        def _state_dict_for_param(self, param_number, *args, **kwargs):
+            idx_to_param = kwargs.get("idx_to_param", args[2] if len(args) > 2 else {})
+            with _on_param_device(idx_to_param.get(param_number)):
+                return super()._state_dict_for_param(param_number, *args, **kwargs)
 
         def load_state_dict(self, state_dict):
             # torch.optim casts floating state to the param dtype: restore the fp32 variance.
@@ -232,10 +236,18 @@ def _get_flash_adamw_class():
                     )
                 if group is not None and not self._group_quantizes(group):
                     _refuse_unquantized_fp16()
-            return super().step_param(p, group)
+            with _on_param_device(p):
+                return super().step_param(p, group)
 
     _FLASH_ADAMW_CLASS = UnslothFlashAdamW
     return _FLASH_ADAMW_CLASS
+
+
+def _on_param_device(p):
+    # Triton launches on the current device, not p.device; device_map splits need it switched.
+    if p is not None and p.is_cuda:
+        return torch.cuda.device(p.device)
+    return contextlib.nullcontext()
 
 
 def _variance_update(var, grad, beta2):
@@ -247,7 +259,14 @@ def _variance_update(var, grad, beta2):
         import triton.language as tl
 
         @triton.jit
-        def kernel(var_ptr, grad_ptr, out_ptr, n, beta2, BLOCK: tl.constexpr):
+        def kernel(
+            var_ptr,
+            grad_ptr,
+            out_ptr,
+            n,
+            beta2,
+            BLOCK: tl.constexpr,  # elements per program
+        ):
             offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
             mask = offsets < n
             v = tl.load(var_ptr + offsets, mask = mask)

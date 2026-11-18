@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Structured logging configuration via structlog.
-
-Environment-specific formats (JSON for prod, console for dev), ISO timestamps, context-var
-integration, log-level filtering, and logger caching.
-"""
+"""Structlog config: JSON logs in prod, console in dev, ISO timestamps, context vars, level filter."""
 
 import logging
 import os
@@ -43,9 +39,7 @@ _MAX_ERROR_CHARS = 2048
 
 
 def _truncate_middle(text: str, limit: int, tail: int) -> str:
-    """Keep the head and the tail of `text`, saying how much was dropped. The head holds the raising
-    frame and the tail the exception type and message. `tail` is clamped so a cap smaller than the
-    tail cannot make the head negative and hand back the whole string."""
+    """Clamp tail to limit // 4 so a small cap cannot make head negative and return the whole text."""
     if limit <= 0 or len(text) <= limit:
         return text
     tail = max(1, min(tail, limit // 4))
@@ -107,20 +101,9 @@ _BIDI_CONTROLS = frozenset("؜‎‏‪‫‬‭‮⁦⁧⁨⁩")
 
 
 def _escape_unprintable(text: str) -> str:
-    """Spell as ``\\uXXXX`` what a terminal would ACT on or stdout cannot encode, leaving ordinary
-    non-ASCII text readable. The JSON renderer used to cover all three for free:
-
-    * **Lone surrogates**, reachable through a request body, raise ``UnicodeEncodeError`` on a UTF-8
-      stdout, which inside an exception handler loses the traceback AND replaces the original
-      exception with the encoding error.
-    * **Terminal controls**: raw ESC lets request-derived text rewrite what the reader sees, and a
-      backspace run can rub out the prefix record forgery depends on.
-    * **Bidi controls** need no terminal, since any UAX #9 viewer reorders the line: a measured
-      "rejected upload" message DISPLAYS with its path reversed. Escaped, not stripped, so the
-      record still says one was there.
-
-    Tab is kept: it shifts alignment but cannot move the cursor back or erase.
-    """
+    """Escape lone surrogates (UnicodeEncodeError on UTF-8 stdout loses the traceback), terminal
+    controls (ESC rewrites output; backspace erases the prefix forgery depends on) and bidi
+    controls; keep tab."""
     out = []
     for ch in text:
         code = ord(ch)
@@ -289,6 +272,9 @@ def _redirect_every_bar_output() -> None:
 
         def _quiet_init(self, *args, **kwargs):
             kwargs.setdefault("file", _NullStream())
+            # disable=None means TTY detection; our stream is not a TTY but the UI needs counts.
+            if kwargs.get("disable") is None:
+                kwargs["disable"] = False
             original_init(self, *args, **kwargs)
 
         bar_cls.__init__ = _quiet_init
@@ -307,12 +293,19 @@ def keep_progress_bars_countable() -> None:
         return
     _redirect_every_bar_output()
     allow_progress_bars()
+    # Hub may already be imported: undo its cached copy of OUR default, never an operator opt-out.
+    for name in ("huggingface_hub.constants", "huggingface_hub.utils.tqdm"):
+        module = sys.modules.get(name)
+        if module is not None and getattr(module, "HF_HUB_DISABLE_PROGRESS_BARS", None) is True:
+            module.HF_HUB_DISABLE_PROGRESS_BARS = None
+    bars = sys.modules.get("huggingface_hub.utils.tqdm")
+    enable = getattr(bars, "enable_progress_bars", None)
+    if callable(enable):
+        enable()
 
 
 def quiet_bar_kwargs() -> dict:
-    """tqdm kwargs that keep a bar counting but stop it writing to the log. For Unsloth's own explicit
-    bars (the dataset conversion loops), which no library switch reaches. Empty when the operator
-    asked to keep bars, so nothing changes."""
+    """tqdm kwargs keep bars counting but off the log, for Unsloth's own bars no library switch reaches."""
     value = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
     if value is None or not _env_is_true(value):
         return {}

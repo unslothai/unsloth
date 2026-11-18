@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toastError, toastSuccess } from "@/shared/toast";
@@ -250,6 +251,7 @@ export function useRecipePersistence({
   const saveTone: SaveTone =
     !isDirty && Boolean(lastSavedAt) ? "success" : "error";
   const savedAtLabel = formatSavedLabel(lastSavedAt);
+  useTimeFormat();
 
   useEffect(() => {
     setInitialRecipeReady(false);

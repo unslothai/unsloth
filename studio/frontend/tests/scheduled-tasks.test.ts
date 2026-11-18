@@ -63,6 +63,7 @@ function plain(summary: ScheduleSummary): ScheduleSummary {
 test("a new task runs every day at 09:00, and a one-time one starts tomorrow", () => {
   assert.deepEqual(defaultScheduleForm(new Date(2026, 9, 14, 16, 30)), {
     repeat: "daily",
+    hours: 1,
     time: "09:00",
     date: "2026-10-15",
     days: [3],
@@ -75,6 +76,10 @@ test("the form round-trips every kind of schedule", () => {
   const now = new Date(2026, 9, 14);
   const schedules: TaskSchedule[] = [
     { kind: "once", at: "2026-10-15T09:30" },
+    { kind: "hourly", hours: 1 },
+    { kind: "hourly", hours: 2 },
+    { kind: "hourly", hours: 5 },
+    { kind: "hourly", hours: 24 },
     { kind: "daily", time: "07:00" },
     { kind: "weekly", time: "18:00", days: [1, 2, 3, 4, 5] },
     { kind: "weekly", time: "18:00", days: [2, 6] },
@@ -107,6 +112,42 @@ test("an incomplete form cannot be saved", () => {
   assert.equal(scheduleFormComplete({ ...form, repeat: "weekly", days: [] }), false);
   assert.equal(scheduleFormComplete({ ...form, repeat: "monthly", dayOfMonth: 32 }), false);
   assert.equal(scheduleFormComplete({ ...form, days: [], date: "" }), true);
+});
+
+test("hourly intervals accept whole hours from 1 to 24 independently of calendar fields", () => {
+  const form = { ...defaultScheduleForm(new Date(2026, 9, 14)), repeat: "hourly" as const, time: "", date: "" };
+  for (const hours of [1, 2, 5, 24]) {
+    assert.equal(scheduleFormComplete({ ...form, hours }), true);
+    assert.deepEqual(scheduleFromForm({ ...form, hours }), { kind: "hourly", hours });
+  }
+  for (const hours of [0, -1, 1.5, 25, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(scheduleFormComplete({ ...form, hours }), false);
+  }
+});
+
+test("editing an hourly interval preserves its cadence unless the hour count changes", () => {
+  const hourly: TaskSchedule = { kind: "hourly", hours: 2 };
+  const form = formFromSchedule(hourly, new Date(2026, 9, 14));
+  assert.ok(sameSchedule(hourly, scheduleFromForm(form)));
+  assert.ok(!sameSchedule(hourly, scheduleFromForm({ ...form, hours: 3 })));
+  assert.ok(!sameSchedule(hourly, { kind: "daily", time: "09:00" }));
+  assert.ok(!sameSchedule({ kind: "daily", time: "09:00" }, hourly));
+  assert.ok(!sameSchedule({ kind: "hourly", hours: 24 }, { kind: "daily", time: "09:00" }));
+});
+
+test("hourly summaries distinguish one hour from custom intervals without a wall-clock time", () => {
+  assert.deepEqual(summarizeSchedule({ kind: "hourly", hours: 1 }, "en-US"), {
+    key: "hourly", values: {},
+  });
+  assert.deepEqual(summarizeRepeats({ kind: "hourly", hours: 1 }, "en-US"), { key: "hourly" });
+  for (const hours of [2, 5, 24]) {
+    assert.deepEqual(summarizeSchedule({ kind: "hourly", hours }, "en-US"), {
+      key: "everyHours", values: { hours },
+    });
+    assert.deepEqual(summarizeRepeats({ kind: "hourly", hours }, "en-US"), {
+      key: "everyHours", hours,
+    });
+  }
 });
 
 test("schedules compare by what they mean", () => {

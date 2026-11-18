@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { FolderClosedIcon } from "@/lib/folder-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
@@ -133,6 +134,7 @@ function Row({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   return (
     <div
       className={cn(
@@ -258,7 +260,7 @@ export function LibraryList({
             onOpen={() => actions.openFolder(folder.id)}
             tile={
               <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60">
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-5" />
+                <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.5} className="size-5" />
               </div>
             }
             name={

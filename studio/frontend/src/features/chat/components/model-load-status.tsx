@@ -6,6 +6,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+export const MODEL_LOAD_TOAST_CLASSNAMES = {
+  toast: "chat-model-load-toast items-center gap-2.5",
+  content: "gap-0.5 flex-1 min-w-0",
+  title: "leading-5",
+  description: "mt-0 w-full",
+};
+
 type ModelLoadDescriptionProps = {
   title?: string | null;
   message?: string | null;
@@ -83,6 +90,30 @@ export function ModelLoadDescription({
           <p className="pt-1 text-xs leading-relaxed text-muted-foreground">{message}</p>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/** One line for headers too narrow for the inline bar; it takes only the space its siblings leave. */
+export function ModelLoadCompactStatus({
+  label,
+  title,
+  progressPercent,
+}: {
+  label: string;
+  title: string;
+  progressPercent?: number | null;
+}) {
+  return (
+    <div
+      className="flex min-w-0 grow basis-0 items-center gap-1.5 text-xs text-muted-foreground"
+      title={title}
+    >
+      <Spinner className="size-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
+      {typeof progressPercent === "number" ? (
+        <span className="shrink-0 tabular-nums">{Math.round(clampProgress(progressPercent))}%</span>
+      ) : null}
     </div>
   );
 }

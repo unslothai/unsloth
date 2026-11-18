@@ -12,6 +12,7 @@ import {
   UPDATE_NOTES_SURFACE_CLASS,
 } from "@/components/update/update-notes-layout";
 import { useLlamaUpdateChangelog } from "@/hooks/use-llama-update-changelog";
+import { useT } from "@/i18n";
 import { openLink } from "@/lib/open-link";
 import type { MouseEvent, ReactElement, ReactNode } from "react";
 
@@ -47,6 +48,7 @@ export function LlamaUpdateChangelogPanel({
   installedTag: string;
   latestTag: string;
 }): ReactElement {
+  const t = useT();
   const { state, changelog, retry } = useLlamaUpdateChangelog({
     enabled: true,
     installedTag,
@@ -62,7 +64,7 @@ export function LlamaUpdateChangelogPanel({
       className={UPDATE_NOTES_LINK_CLASS}
       data-testid="llama-update-release-link"
     >
-      Open release
+      {t("updateNotes.openRelease")}
     </a>
   ) : null;
 
@@ -74,13 +76,13 @@ export function LlamaUpdateChangelogPanel({
     >
       <div className={UPDATE_NOTES_SURFACE_CLASS}>
         {state === "loading" || state === "idle" ? (
-          <Message>Loading new changes...</Message>
+          <Message>{t("updateNotes.loadingChanges")}</Message>
         ) : state === "unavailable" ? (
           // Definitive, so no Retry: re-asking GitHub cannot change the answer.
           <Message>
             {changelog?.error === "notes_not_comparable"
-              ? "This install tracks a custom llama.cpp repository, so its changes cannot be compared."
-              : "This build predates itemised release notes, so its changes cannot be compared."}
+              ? t("updateNotes.customLlamaRepo")
+              : t("updateNotes.noItemisedNotes")}
           </Message>
         ) : state === "error" ? (
           <Message
@@ -91,17 +93,20 @@ export function LlamaUpdateChangelogPanel({
                 className={`shrink-0 text-ui-11 ${LINK_CLASS}`}
                 data-testid="llama-update-changelog-retry"
               >
-                Retry
+                {t("updateNotes.retry")}
               </button>
             }
           >
-            Could not compare these releases.
+            {t("updateNotes.compareFailed")}
           </Message>
         ) : changelog && changelog.changes.length > 0 ? (
           <ul
             // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
             tabIndex={0}
-            aria-label={`New llama.cpp changes from ${installedTag} to ${latestTag}`}
+            aria-label={t("updateNotes.llamaChangesLabel", {
+              from: installedTag,
+              to: latestTag,
+            })}
             className={`${UPDATE_NOTES_EXPANDED_SCROLL_CLASS} space-y-1`}
             data-testid="llama-update-changelog-list"
           >
@@ -143,13 +148,15 @@ export function LlamaUpdateChangelogPanel({
             ))}
             {changelog.truncated ? (
               <li className="pl-3 text-ui-10 text-muted-foreground/70">
-                Showing {changelog.changes.length} of {changelog.totalChanges}{" "}
-                changes
+                {t("updateNotes.showingChanges", {
+                  shown: changelog.changes.length,
+                  total: changelog.totalChanges,
+                })}
               </li>
             ) : null}
           </ul>
         ) : (
-          <Message>No new carried changes are listed for this build.</Message>
+          <Message>{t("updateNotes.noCarriedChanges")}</Message>
         )}
       </div>
       {/* Also shown when the diff failed: the release page is the only way left to see changes. */}

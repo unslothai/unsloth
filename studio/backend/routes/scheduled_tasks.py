@@ -12,8 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
-from core.scheduled_tasks.schedule import InvalidSchedule, Schedule
-from core.scheduled_tasks.scheduler import next_run_for
+from core.scheduled_tasks.schedule import InvalidSchedule, Schedule, next_run_after, parse_schedule
 from storage import scheduled_tasks_db as db
 
 router = APIRouter()
@@ -39,8 +38,9 @@ ReasoningEffort = Literal[
     "off", "lowest", "highest", "minimal", "low", "medium", "high", "xhigh", "max"
 ]
 ProjectId = Annotated[str, Field(max_length = 128), AfterValidator(_not_blank)]
+ThreadId = Annotated[str, Field(max_length = 128), AfterValidator(_not_blank)]
 # Fields an update may set back to null, unlike the rest, where null means unchanged.
-_CLEARABLE = ("model", "reasoningEffort", "projectId")
+_CLEARABLE = ("model", "reasoningEffort", "projectId", "threadId")
 
 
 class ScheduledTaskCreate(BaseModel):
@@ -58,6 +58,8 @@ class ScheduledTaskCreate(BaseModel):
     allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[ProjectId] = None
+    webSearch: bool = False
+    threadId: Optional[ThreadId] = None
 
 
 class ScheduledTaskUpdate(BaseModel):
@@ -75,6 +77,8 @@ class ScheduledTaskUpdate(BaseModel):
     allowModelLoad: Optional[bool] = None
     archiveSuccessful: Optional[bool] = None
     projectId: Optional[ProjectId] = None
+    webSearch: Optional[bool] = None
+    threadId: Optional[ThreadId] = None
 
 
 class RunNowRequest(BaseModel):
@@ -119,6 +123,8 @@ class ScheduledTask(BaseModel):
     allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[str] = None
+    webSearch: bool = False
+    threadId: Optional[str] = None
     status: Literal["active", "paused", "completed"]
     nextRunAt: Optional[int] = None
     createdAt: int
@@ -154,9 +160,21 @@ def _existing_project(project_id: Optional[str]) -> Optional[str]:
     return project_id
 
 
+def _existing_chat(thread_id: Optional[str]) -> Optional[str]:
+    from storage import studio_db
+
+    if thread_id is None:
+        return None
+    thread = studio_db.get_chat_thread(thread_id)
+    if thread is None or thread.get("pairId"):
+        raise HTTPException(status_code = 400, detail = "Chat not found")
+    return thread_id
+
+
 def _next_run(task: dict, now: int) -> Optional[int]:
     try:
-        following = next_run_for(task, now)
+        # Creation, a timing change, or resume starts a fresh hourly interval from now.
+        following = next_run_after(parse_schedule(task["schedule"]), task["timezone"], now)
     except InvalidSchedule as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     if following is None and task["enabled"]:
@@ -208,6 +226,8 @@ def create_scheduled_task(
         "allowModelLoad": payload.allowModelLoad,
         "archiveSuccessful": payload.archiveSuccessful,
         "projectId": _existing_project(payload.projectId),
+        "webSearch": payload.webSearch,
+        "threadId": _existing_chat(payload.threadId),
         "createdAt": now,
         "updatedAt": now,
     }
@@ -226,7 +246,7 @@ def create_scheduled_task(
 # Declared ahead of /{task_id} so "runs" is never read as a task id.
 @router.get("/runs", response_model = ScheduledTaskActivity)
 def scheduled_task_activity(
-    since: Optional[int] = Query(default = None, ge = 0),
+    since: Optional[int] = Query(default = None, ge = 0, le = 2**63 - 1),
     current_subject: str = Depends(get_current_subject),
 ):
     """Runs finished since ``since`` (ms), for a client that notifies when results arrive."""
@@ -256,6 +276,8 @@ def update_scheduled_task(
     )
     if changes.get("projectId") is not None:
         _existing_project(changes["projectId"])
+    if changes.get("threadId") is not None:
+        _existing_chat(changes["threadId"])
     now = db.now_ms()
     # Only on schedule, time zone or enabled changes: a rename or resent value keeps an overdue run due.
     updated = db.update_task(task_id, changes, lambda task: _next_run(task, now))

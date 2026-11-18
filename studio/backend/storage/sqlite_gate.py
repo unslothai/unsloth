@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One process-wide gate around every Studio SQLite connection open and close.
-
-SQLite 3.51.0-3.51.1 deadlocks when one thread's WAL close (unixIsSharingShmNode) races another
-thread's open or close of the same file: they take the VFS and inode mutexes in opposite order
-(fixed in 3.51.2, #10022). The VFS mutex is process-wide, so one wedged file hangs every database
-(#9008): studio.db, auth.db and rag.db all open through here. Gating only close() still deadlocks.
-"""
+"""Serializes every open and close: SQLite 3.51.0-3.51.1 deadlocks when a WAL close races another open"""
 
 from __future__ import annotations
 
@@ -37,25 +31,21 @@ class GatedConnection(sqlite3.Connection):
 
 
 def connect(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
-    """sqlite3.connect with opens and closes serialized process-wide."""
+    """sqlite3.connect with opens and closes serialized process-wide. A ``factory`` must subclass
+    GatedConnection so its close stays gated."""
+    kwargs.setdefault("factory", GatedConnection)
     with _CONNECTION_GATE:
-        return sqlite3.connect(str(database), factory = GatedConnection, **kwargs)
+        return sqlite3.connect(str(database), **kwargs)
 
 
 def is_busy_error(exc: sqlite3.OperationalError) -> bool:
-    """Is this the writer lock being held elsewhere, rather than a real fault? sqlite reports it as
-    plain OperationalError, so the message is the only signal."""
+    """Writer lock held elsewhere, not a fault; the message is the only signal."""
     message = str(exc).lower()
     return "locked" in message or "busy" in message
 
 
 def apply_wal_synchronous(conn: sqlite3.Connection) -> None:
-    """synchronous=NORMAL, only while the file is really in WAL mode (per connection).
-
-    FULL fsyncs every commit under the writer lock (one busy-disk commit blocked 37s); NORMAL is
-    sqlite's recommended WAL pairing, durable across app crashes. journal_mode=WAL silently declines
-    on filesystems without shared memory, and NORMAL on a rollback journal drops the fsync that
-    keeps it consistent, so this reads the mode in force and those installs keep FULL."""
+    """Use synchronous=NORMAL only if WAL is really in force; journal_mode=WAL can silently decline."""
     try:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     except (sqlite3.Error, TypeError, IndexError):

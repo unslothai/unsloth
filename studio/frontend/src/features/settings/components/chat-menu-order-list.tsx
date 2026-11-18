@@ -5,7 +5,7 @@ import { Switch } from "@/components/ui/switch";
 import { type PlusMenuItemId, keepSavedSlot, usePlusMenuPrefsStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import {
-  AttachmentIcon,
+  Attachment01Icon,
   CodeIcon,
   DragDropVerticalIcon,
   InternetIcon,
@@ -156,7 +156,7 @@ export function ChatMenuOrderList({
       className="flex flex-col rounded-lg border border-border/70 p-1"
     >
       <FixedRow
-        icon={AttachmentIcon}
+        icon={Attachment01Icon}
         label={t("settings.chat.menu.addFiles")}
       />
       <FixedRow icon={InternetIcon} label={t("settings.chat.menu.webSearch")} />

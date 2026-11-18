@@ -943,8 +943,7 @@ _REDRAW = "\r  |=========>          | {}/{} - 21.50s/it\x1b[K"
 
 
 def test_split_progress_records_treats_erase_as_a_terminator():
-    """The redraw is complete the moment sd-cli flushes it, even though its own newline never
-    comes and the NEXT redraw's carriage return has not arrived yet."""
+    """Redraw is complete once sd-cli flushes it, with no newline or next carriage return yet."""
     records, rest = eng.split_progress_records(_REDRAW.format(7, 30))
     assert records == ["", "  |=========>          | 7/30 - 21.50s/it\x1b[K"]
     assert rest == ""
@@ -967,9 +966,7 @@ def test_strip_ansi_removes_the_erase_sequence():
 
 
 class _ChunkStream:
-    """A text stream over a pipe: ``.buffer.read1`` returns whatever the child has flushed,
-    exactly like a real subprocess pipe, and iteration would block until a newline. Counts reads
-    so a test can prove WHEN a record was delivered, not merely that it arrived eventually."""
+    """Stream whose buffer.read1 returns what was flushed; counts reads to prove when a record arrived."""
 
     class _Raw:
         def __init__(self, chunks, owner):

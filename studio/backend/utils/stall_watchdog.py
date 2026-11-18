@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dump every thread's stack from inside the backend while its event loop is stalled (#9712).
-
-Two capture paths. Loop stuck with the GIL free: the watchdog thread counts consecutive slow
-no-op probes and dumps from Python. GIL held: no Python thread runs, so each beat re-arms
-``faulthandler.dump_traceback_later`` as a dead man's switch; its C timer thread dumps without
-the GIL. Off unless UNSLOTH_STUDIO_STALL_WATCHDOG=1. Dumps go to the stderr fd (below run.py's
-tee). Assumes it is the only user of faulthandler's process-global delayed-dump timer.
-"""
+"""Stack dump on backend stall, opt-in via UNSLOTH_STUDIO_STALL_WATCHDOG=1; uses faulthandler's
+process-global dump timer, so it must be the only user of that timer."""
 
 from __future__ import annotations
 
@@ -36,16 +30,19 @@ DEAD_MAN_TIMEOUT_S = 8.0
 DUMP_COOLDOWN_S = 600.0
 
 
-def stand_down_for_the_warm() -> bool:
-    """True from process start until the warm is over: a switch armed before the warm's
-    GIL-holding ``import torch`` cannot be disarmed and would dump a known stall."""
+def stand_down_for_the_warm(*, warm_expected: bool = True) -> bool:
+    """Suppress an expected or active warm; a cold launch has no warm to wait for.
+
+    A switch armed before a selected warm's GIL-holding ``import torch`` cannot be
+    disarmed and would dump a known stall. Capture warm_expected for the lifespan.
+    """
     from utils.torch_warmup import DISABLE_ENV_VAR as _WARM_DISABLED
     from utils.torch_warmup import warm_status
 
     status = warm_status()
     if status["started"]:
         return bool(status["alive"] and not status["finished"])
-    return os.environ.get(_WARM_DISABLED) != "1"
+    return warm_expected and os.environ.get(_WARM_DISABLED) != "1"
 
 
 async def _noop() -> None:

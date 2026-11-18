@@ -355,15 +355,14 @@ test("the picker trigger resolves a dropped connected model before naming it", (
   assert.ok(memo, "currentModel not found in model-selector.tsx");
   assert.match(
     memo,
-    /missingExternalModel\(\s*selected,\s*externalModels,\s*externalConnections,?\s*\)/,
-    "the fallback must consult the connections as well as the enabled options",
+    /missingExternalModel\(\s*selected,\s*externalModels,?\s*\)/,
+    "the fallback must consult the enabled options",
   );
   assert.match(memo, /picker\.modelDroppedByProvider/);
   assert.match(memo, /picker\.modelDropped\b/);
   assert.match(memo, /picker\.modelDisabledByProvider/);
   assert.match(memo, /picker\.modelDisabled\b/);
   assert.match(memo, /\[[^\]]*\bexternalModels\b[^\]]*\]\s*\)?\s*$/);
-  assert.match(memo, /\[[^\]]*\bexternalConnections\b[^\]]*\]\s*\)?\s*$/);
 });
 
 test("the chat page feeds the picker the connections behind the options", () => {
@@ -371,9 +370,12 @@ test("the chat page feeds the picker the connections behind the options", () => 
   assert.match(page, /availableModels: provider\.availableModels/);
   assert.ok(
     (page.match(/externalConnections=\{externalConnections\}/g) ?? []).length >=
-      5,
+      4,
     "externalConnections must reach the picker on both the chat and compare paths",
   );
+  // Compare panes hand them to the composer picker through its source.
+  const header = page.slice(page.indexOf("function GeneralCompareHeader"));
+  assert.match(header, /onValueChange\([\s\S]*?setSelectorOpen\(false\);[\s\S]*?externalConnections,/);
 });
 
 test("the compare and audio toasts use the external-aware labels", () => {

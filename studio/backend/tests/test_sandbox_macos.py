@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -237,13 +238,138 @@ def test_process_substitution_descriptors_are_readable(profile):
     assert '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))' in profile
 
 
-def test_pip_gets_a_writable_target_inside_the_workdir():
+def test_pip_gets_a_writable_prefix_inside_the_workdir():
     env = backend._sandbox_environment(
         {"PATH": "/usr/bin", "PYTHONPATH": "/shim"}, _WORKDIR, _PRIVATE_TMP
     )
     packages = f"{_WORKDIR}/{backend.SESSION_PACKAGES_RELPATH}"
-    assert env["PIP_TARGET"] == packages
-    assert env["PYTHONPATH"].split(os.pathsep) == ["/shim", packages]
+    assert env["PIP_PREFIX"] == packages
+    assert "PIP_TARGET" not in env
+    pythonpath = env["PYTHONPATH"].split(os.pathsep)
+    assert pythonpath[0] == "/shim"
+    assert pythonpath[-1] == packages
+    assert all(entry.startswith(packages) for entry in pythonpath[1:])
+
+
+def _console_script_wheel(directory: Path, name: str) -> None:
+    info = f"{name}-1.0.dist-info"
+    files = {
+        f"shared/{name}.py": "def main():\n    print('ok')\n",
+        f"{info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n",
+        f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{info}/entry_points.txt": f"[console_scripts]\n{name} = shared.{name}:main\n",
+    }
+    with zipfile.ZipFile(directory / f"{name}-1.0-py3-none-any.whl", "w") as wheel:
+        for path, text in files.items():
+            wheel.writestr(path, text)
+        wheel.writestr(
+            f"{info}/RECORD", "".join(f"{path},,\n" for path in [*files, f"{info}/RECORD"])
+        )
+
+
+def test_a_second_pip_install_keeps_its_commands_and_namespace_modules(tmp_path):
+    if subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output = True).returncode:
+        pytest.skip(
+            reason = "pip is not installed in this interpreter, so there is no install to run"
+        )
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    for name in ("alpha", "beta"):
+        _console_script_wheel(wheels, name)
+    workdir = tmp_path / "session"
+    private_tmp = tmp_path / "tmp"
+    workdir.mkdir()
+    private_tmp.mkdir()
+    env = backend._sandbox_environment(
+        {"PATH": os.environ["PATH"], "PIP_DISABLE_PIP_VERSION_CHECK": "1"},
+        str(workdir),
+        str(private_tmp),
+    )
+    for name in ("alpha", "beta"):
+        installed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheels),
+                name,
+            ],
+            env = env,
+            capture_output = True,
+            text = True,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+
+    bin_dir = workdir / backend.SESSION_PACKAGES_RELPATH / "bin"
+    assert (bin_dir / "alpha").exists()
+    assert (bin_dir / "beta").exists()
+    imported = subprocess.run(
+        [sys.executable, "-c", "import shared.alpha, shared.beta"],
+        env = env,
+        capture_output = True,
+        text = True,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_reinstalling_another_version_leaves_one_version_installed(tmp_path):
+    if subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output = True).returncode:
+        pytest.skip(
+            reason = "pip is not installed in this interpreter, so there is no install to run"
+        )
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    for version in ("1.0", "2.0"):
+        info = f"vpkg-{version}.dist-info"
+        files = {
+            "vpkg.py": f"VERSION = {version!r}\n",
+            f"{info}/METADATA": f"Metadata-Version: 2.1\nName: vpkg\nVersion: {version}\n",
+            f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        }
+        with zipfile.ZipFile(wheels / f"vpkg-{version}-py3-none-any.whl", "w") as wheel:
+            for path, text in files.items():
+                wheel.writestr(path, text)
+            wheel.writestr(
+                f"{info}/RECORD", "".join(f"{p},,\n" for p in [*files, f"{info}/RECORD"])
+            )
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    shim = Path(backend.__file__).with_name("sandbox_site")
+    env = backend._sandbox_environment(
+        {
+            "PATH": os.environ["PATH"],
+            "PYTHONPATH": str(shim),
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        },
+        str(workdir),
+        str(tmp_path),
+    )
+    probe = "import vpkg, importlib.metadata as m; print(vpkg.VERSION, m.version('vpkg'))"
+    for version in ("1.0", "2.0", "1.0"):
+        installed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheels),
+                f"vpkg=={version}",
+            ],
+            env = env,
+            capture_output = True,
+            text = True,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+        seen = subprocess.run(
+            [sys.executable, "-c", probe], env = env, capture_output = True, text = True
+        )
+        assert seen.stdout.split() == [version, version], seen.stdout + seen.stderr
+    assert len(list(workdir.glob(f"{backend.SESSION_PACKAGES_RELPATH}/**/vpkg-*.dist-info"))) == 1
 
 
 def test_openmp_can_write_its_registration_segment(profile):

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep-newest-N retention for the per-session log directories.
-
-The server session log has capped itself since it was added; the llama-server and
-diffusion-server subprocess logs beside it never did, so they accumulated one file per
-model load for the life of the install (319 files going back two months on the machine
-this was found on). One helper so a fourth log directory cannot quietly opt out again.
-"""
+"""Keep-newest-N pruning for all per-session log directories, so a new one cannot quietly opt out."""
 
 from __future__ import annotations
 

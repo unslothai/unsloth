@@ -31,12 +31,13 @@ import {
   Position,
   useUpdateNodeInternals,
 } from "@xyflow/react";
-import { type ReactElement, memo, useEffect, useMemo } from "react";
+import { type ReactElement, memo, useEffect } from "react";
 import {
   MAX_NODE_WIDTH,
   MAX_NOTE_NODE_WIDTH,
   MIN_NODE_WIDTH,
 } from "../constants";
+import { useLocalProviderNames } from "../hooks/use-local-provider-names";
 import { useNodeConnectionStatus } from "../hooks/use-node-connection-status";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type {
@@ -363,16 +364,7 @@ function RecipeGraphNodeBase({
   const config = useRecipeStudioStore((state) => state.configs[id]);
   const openConfig = useRecipeStudioStore((state) => state.openConfig);
   const updateConfig = useRecipeStudioStore((state) => state.updateConfig);
-  const allConfigs = useRecipeStudioStore((state) => state.configs);
-  const localProviderNames = useMemo(() => {
-    const names = new Set<string>();
-    for (const cfg of Object.values(allConfigs)) {
-      if (cfg.kind === "model_provider" && cfg.is_local === true) {
-        names.add(cfg.name);
-      }
-    }
-    return names;
-  }, [allConfigs]);
+  const localProviderNames = useLocalProviderNames();
   const llmAuxVisible = useRecipeStudioStore(
     (state) => state.llmAuxVisibility[id] ?? false,
   );

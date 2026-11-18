@@ -26,17 +26,15 @@ import { toast } from "@/lib/toast";
 import {
   Cancel01Icon,
   FlimSlateIcon,
-  Delete02Icon,
   Download01Icon,
-  Folder01Icon,
-  FolderExportIcon,
-  Image02Icon,
+  ImageIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon, FolderClosedIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -81,9 +79,9 @@ import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore } from "./store";
 import {
   SORT_STATES,
+  activityBeforeVisit,
   compareBySort,
   includedBySettings,
-  lastActivity,
   nextSort,
   sortParam,
   useLibrarySettingsStore,
@@ -107,8 +105,8 @@ type EmptyCopy = [icon: typeof Folder01Icon, title: TranslationKey, description:
 const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
   suggested: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
   favorites: [StarPointedIcon, "library.empty.favoritesTitle", "library.empty.favoritesDescription"],
-  folders: [Folder01Icon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
-  images: [Image02Icon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
+  folders: [FolderClosedIcon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
+  images: [ImageIcon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
   videos: [FlimSlateIcon, "library.empty.videosTitle", "library.empty.videosDescription"],
   audio: [AiSpeechIcon, "library.empty.audioTitle", "library.empty.audioDescription"],
   models: [TestTubeOutlineIcon, "library.empty.modelsTitle", "library.empty.modelsDescription"],
@@ -117,6 +115,7 @@ const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
 };
 
 const EMPTY_LINKS = {
+  images: ["/images", "library.empty.generateImage"],
   videos: ["/video", "library.empty.generateVideo"],
   audio: ["/audio", "library.empty.generateAudio"],
   models: ["/studio", "library.empty.trainModel"],
@@ -201,15 +200,38 @@ export function LibraryPage() {
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
+  return <LibraryVisit key={visit} search={search} />;
+}
+
+type HoldOpenedAt = (id: string, openedAt: number | null) => void;
+
+// Until the Library is left, Suggested ranks opened items by their earlier openedAt.
+function LibraryVisit({ search }: { search: LibrarySearch }) {
+  const [openedBefore, setOpenedBefore] = useState<ReadonlyMap<string, number | null>>(new Map());
+  const holdOpenedAt = useCallback<HoldOpenedAt>(
+    (id, openedAt) =>
+      setOpenedBefore((held) => (held.has(id) ? held : new Map(held).set(id, openedAt))),
+    [],
+  );
   return (
     <LibraryView
-      key={`${visit}:${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
+      key={`${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
       search={search}
+      openedBefore={openedBefore}
+      holdOpenedAt={holdOpenedAt}
     />
   );
 }
 
-function LibraryView({ search }: { search: LibrarySearch }) {
+function LibraryView({
+  search,
+  openedBefore,
+  holdOpenedAt,
+}: {
+  search: LibrarySearch;
+  openedBefore: ReadonlyMap<string, number | null>;
+  holdOpenedAt: HoldOpenedAt;
+}) {
   const t = useT();
   const navigate = useNavigate();
   const { items: allItems, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder, markOpened } =
@@ -348,12 +370,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       (item) => nameMatches(item.name, needle) && matchesFilters(item, filters, !kindFilter),
     );
     if (tab === "suggested" && !folderId) {
-      const byActivity = [...pool].sort((a, b) => lastActivity(b) - lastActivity(a));
+      const activity = (item: LibraryItem) => activityBeforeVisit(item, openedBefore);
+      const byActivity = [...pool].sort((a, b) => activity(b) - activity(a));
       pool = needle || filtersActive(filters) ? byActivity : byActivity.slice(0, settings.suggestedLimit);
       if (sort.key === "modified") return sort.desc ? pool : pool.reverse();
     }
     return [...pool].sort(compareBySort(sort));
-  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort]);
+  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort, openedBefore]);
 
   // Only grid cards can pause a clip: stop it once its card is gone or the list view replaces them.
   useEffect(() => {
@@ -396,8 +419,11 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
   const previewId = previewItem?.id ?? null;
   useEffect(() => {
-    if (previewId) markOpened(previewId);
-  }, [previewId, markOpened]);
+    if (!previewId) return;
+    const opened = useLibraryStore.getState().items.find((item) => item.id === previewId);
+    holdOpenedAt(previewId, opened?.openedAt ?? null);
+    markOpened(previewId);
+  }, [previewId, markOpened, holdOpenedAt]);
 
   const router = useRouter();
   const pushedPreview = useRef<string | null>(null);
@@ -815,7 +841,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     if (tab === "folders") {
       return (
         <Button
-          variant="dark"
+          variant="muted"
           className="rounded-full"
           onClick={() => setNameDialog({ mode: "create", parentId: null })}
         >
@@ -825,11 +851,20 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     if (!(tab in EMPTY_LINKS)) return uploadButton;
     const [to, label] = EMPTY_LINKS[tab as keyof typeof EMPTY_LINKS];
-    return (
+    const generate = (
       <Button variant="muted" className="rounded-full" onClick={() => void navigate({ to })}>
         {t(label)}
       </Button>
     );
+    if (tab === "images" || tab === "videos") {
+      return (
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {uploadButton}
+          {generate}
+        </div>
+      );
+    }
+    return generate;
   }
 
   function renderFavorites() {
@@ -1124,7 +1159,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                 "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
               )}
             >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
               {t("common.delete")}
             </button>
             <DropdownMenu>
@@ -1150,7 +1185,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                     </DropdownMenuItem>
                     {bulkDestinations().map((folder) => (
                       <DropdownMenuItem key={folder.id} onSelect={() => bulkMove(folder.id)}>
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.75} className="size-icon" />
                         <span className="truncate">{folder.name}</span>
                       </DropdownMenuItem>
                     ))}

@@ -20,7 +20,8 @@ cache file can import it behind a try/except without pulling in torch.
 Three outcomes per unrecognised argument: TRL documented a rename and the new
 name exists, so the value is moved across; TRL removed the field, so it is
 dropped and reported by name with TRL's advice; anything else is dropped with
-a warning.
+a warning, except a newer-TRL field whose value is the installed TRL's behaviour
+(`SFTConfig(loss_type = "nll")` on TRL < 0.23.0), which is dropped quietly.
 
 That last case means `GRPOConfig(learnign_rate = 3e-4)` now warns instead of
 raising `TypeError`. The trade is accepted: a typo is still surfaced loudly,
@@ -36,6 +37,7 @@ __all__ = [
     "filter_config_init_kwargs",
     "TRANSFORMERS_CONFIG_RENAMES",
     "TRANSFORMERS_REMOVED_FIELD_ADVICE",
+    "TRL_ADDED_FIELDS",
     "TRL_CONFIG_RENAMES",
     "TRL_REMOVED_FIELD_ADVICE",
 ]
@@ -71,6 +73,17 @@ TRL_REMOVED_FIELD_ADVICE = {
     "use_logits_to_keep": "the DPO trainer no longer uses this setting",
     "padding_value": "this value is no longer configurable",
 }
+
+
+# (config, field) -> (first TRL with the field, values an older TRL already behaves as).
+TRL_ADDED_FIELDS = {
+    ("SFTConfig", "loss_type"): ("0.23.0", ("nll",)),
+}
+
+
+def _added_field(config_class, key):
+    config_name = getattr(config_class, "__name__", None)
+    return TRL_ADDED_FIELDS.get((config_name, key))
 
 
 # transformers 5 removals (MIGRATION_GUIDE_V5.md; its `warmup_step` is a typo for warmup_steps).
@@ -120,11 +133,7 @@ _ACCEPTED_CACHE = {}
 
 
 def _accepted_parameters(config_class):
-    """Names `config_class.__init__` accepts, and whether it takes `**kwargs`.
-
-    A config with its own `**kwargs` may forward anywhere, so it is reported as
-    accepting everything and the caller forwards unfiltered.
-    """
+    """Names `config_class.__init__` accepts; a `**kwargs` config is reported as accepting everything."""
     try:
         cached = _ACCEPTED_CACHE.get(config_class)
     except TypeError:  # unhashable, so uncacheable; fall through and recompute
@@ -229,14 +238,7 @@ def _is_untouched(
 
 
 def rename_value_is_unset(config_class, renamed, value):
-    """True if `value` carries no information and must not overwrite `renamed`.
-
-    The legacy spellings are `Optional` and default to `None` (`per_gpu_*_batch_size`
-    in transformers 4.x), so a wrapper mirroring an old signature forwards `None`
-    for an argument nobody set. Writing that onto a target whose own default is a
-    number replaces a working value with one the trainer cannot do arithmetic on.
-    A target that defaults to `None` itself loses nothing, so it still migrates.
-    """
+    """True if `value` is an unset None that must not overwrite `renamed`'s non-None default."""
     if value is not None:
         return False
     default = _field_default(config_class, renamed)
@@ -258,10 +260,9 @@ def removal_source(key):
 
 
 def classify_config_kwarg(config_class, key):
-    """Verdict on `key`: accepted / rename / retired / unknown, or opaque when the
-    config declares nothing to judge by. A trailing `**kwargs` is deliberately not
-    acceptance: the generated `Unsloth<X>Config.__init__` has one, so trusting it
-    would put every retired field back to being swallowed."""
+    """Verdict on key: accepted, rename, retired, unknown or opaque; a trailing **kwargs is not
+    acceptance, since generated Unsloth configs have one and trusting it would swallow retired
+    fields."""
     accepted, takes_var_keyword = _accepted_parameters(config_class)
     if key in accepted:
         return "accepted", key
@@ -288,16 +289,7 @@ def filter_config_init_kwargs(
     notify = None,
     mirrored_from = None,
 ):
-    """Return `kwargs` reduced to what `config_class.__init__` will accept.
-
-    Renames are applied where TRL or transformers documented one; everything else
-    the config rejects is dropped. Each decision is reported through `notify`
-    (`print` by default, which shows up reliably in a notebook).
-
-    `mirrored_from` is the generated config class whose `__init__` built `kwargs`.
-    It is what tells an untouched mirrored parameter apart from a real one, so
-    omitting it only costs a rename that loses to its own target's default.
-    """
+    """Reduces kwargs to what `config_class.__init__` accepts, applying documented renames."""
     if not kwargs:
         return kwargs
 
@@ -350,10 +342,20 @@ def filter_config_init_kwargs(
                 )
             continue
 
+        added = _added_field(config_class, key) if verdict == "unknown" else None
         if verdict == "retired":
             notify(
                 f"Unsloth: `{key}` is not supported by the installed "
                 f"{removal_source(key)}'s {config_name} and will be IGNORED - {detail}."
+            )
+        elif added is not None:
+            version, noop_values = added
+            if isinstance(value, str) and value in noop_values:
+                continue
+            notify(
+                f"Unsloth: `{key}` needs TRL >= {version} for {config_name}, and "
+                f"the installed TRL is older, so `{key} = {value!r}` will be IGNORED. "
+                f"Upgrade TRL to use it."
             )
         else:
             notify(

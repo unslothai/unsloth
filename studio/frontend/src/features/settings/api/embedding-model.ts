@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { bumpInventoryVersion } from "@/features/hub";
+import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
 // Leaf module, not the barrel: tests stub the barrel down to the cache bump.
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";

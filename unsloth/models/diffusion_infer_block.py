@@ -10,12 +10,7 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Block diffusion decoding (SDAR, LLaDA2) with an exact prefix KV cache.
-
-Attention is block-causal, so a committed block's keys and values never change: they are computed once, and each
-denoising step forwards only the active block, and a finished block is committed in the same forward as the next
-block's first step, so the forward count matches the recompute sampler. Token selection runs on the device; the
-host syncs once per step (has the block finished early) and once per block (EOS)."""
+"""Block diffusion decoding (SDAR, LLaDA2) with exact prefix KV cache; committed KV computed once."""
 
 import math
 import sys

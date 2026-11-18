@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""On-disk contract for a decision fine-tune's GGUF export, shared by the exporter and the Decision API.
-
-An export lives in ``<run folder>/gguf/``: ``model-<QUANT>.gguf``, an optional ``mmproj-<QUANT>.gguf``
-and ``export.json``::
-
-    {"format": "unsloth-decision-gguf", "version": 1, "layout": "clef" | "laya",
-     "quantizations": ["Q8_0", ...],
-     "files": {"Q8_0": {"model": "model-Q8_0.gguf", "mmproj": "mmproj-Q8_0.gguf" | null}},
-     "source_fingerprint": fingerprint(run folder, layout)}
-
-The fingerprint covers what the served probabilities depend on, so retraining or recalibrating the
-folder makes an older export stale.
-"""
+"""GGUF export contract: export.json maps quants to files; retrain or recalibrate makes it stale."""
 
 from __future__ import annotations
 

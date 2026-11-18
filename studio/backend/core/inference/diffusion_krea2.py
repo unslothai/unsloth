@@ -1,27 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Krea 2 pipeline loader: assembles ``Krea2Pipeline`` from per-component loads.
-
-Why not ``from_pretrained``: the ``krea/Krea-2-Turbo`` repo was exported with transformers 5.2 and
-two configs use 5.x-only conventions 4.x can't parse:
-
-- ``tokenizer_config.json`` declares slow ``Qwen2Tokenizer`` but ships only ``tokenizer.json``.
-  4.x's slow class needs vocab.json/merges.txt (absent), and its fast class trips over
-  ``extra_special_tokens`` stored as a LIST. Loading the fast class with ``extra_special_tokens={}``
-  is id-identical (every token is already an added special token, and the pipeline templates prompts
-  manually).
-- ``text_encoder/config.json`` keeps rope under ``rope_parameters`` (5.x); 4.x reads
-  ``rope_scaling`` + ``rope_theta`` and crashes. The values are copied verbatim and equal 4.x's
-  Qwen3-VL defaults, so the rotary embedding is numerically identical.
-
-``from_pretrained`` also type-checks a passed ``tokenizer`` against the SLOW class, so the pipeline
-is built through its constructor, forwarding the ``is_distilled`` / ``text_encoder_select_layers`` /
-``patch_size`` init config (Turbo's mu=1.15 shift rides on ``is_distilled``).
-
-Both workarounds self-disable on transformers 5.x (the plain tokenizer load succeeds, rope_scaling
-parses non-None).
-"""
+"""Krea2Pipeline built through its constructor, forwarding is_distilled, text_encoder_select_layers
+and patch_size (Turbo shift rides on is_distilled); both workarounds self-disable on transformers
+5.x."""
 
 from __future__ import annotations
 
@@ -165,6 +147,7 @@ def load_krea2_pipeline(
     text_encoder = None,
     local_files_only: bool = False,
     check_cancelled: Optional[Callable[[], None]] = None,
+    vae = None,
 ):
     """local_files_only raises rather than fetching a component after the resident pipeline was evicted."""
     check_cancelled = check_cancelled or (lambda: None)
@@ -210,15 +193,16 @@ def load_krea2_pipeline(
         cache_dir = cache_dir,
     )
     check_cancelled()
-    vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
-        repo_id,
-        subfolder = "vae",
-        torch_dtype = dtype,
-        token = token,
-        local_files_only = local_files_only,
-        cache_dir = cache_dir,
-    )
-    check_cancelled()
+    if vae is None:
+        vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
+            repo_id,
+            subfolder = "vae",
+            torch_dtype = dtype,
+            token = token,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+        check_cancelled()
     if transformer is None and with_transformer:
         transformer = diffusers.Krea2Transformer2DModel.from_pretrained(
             repo_id,

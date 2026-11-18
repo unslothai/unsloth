@@ -49,6 +49,7 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
         {},
       ),
+      "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
       "@/features/auth": {
         authFetch: async (url: string, init?: RequestInit) => {
           requests.push({ url, init });
@@ -65,6 +66,7 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
       "../lib/load-request": {},
       "./generation-length.ts": {},
@@ -75,7 +77,9 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         dismissCarveoutAdviceForModel: () => {},
         showCarveoutAdvice: () => {},
       },
-      "@/features/hub/lib/abort-signals": {},
+      "@/features/hub/lib/abort-signals": {
+        disposableTimeoutSignal: () => ({ signal: new AbortController().signal, dispose: () => {} }),
+      },
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },
       "@/features/hub/lib/network": { isHuggingFaceOffline: () => false },
       "@/features/native-intents/api": { consumeNativePathToken: () => undefined },
@@ -179,4 +183,10 @@ test("the manual-edit query parameter is still sent", async () => {
   const { module, requests } = harness(jsonResponse(200, message));
   await module.saveChatMessage(message, { allowGenerationEdit: true });
   assert.match(requests[0].url, /allowGenerationEdit=true/);
+});
+
+test("the save is bounded, so a wedged request cannot stall the autosave chain", async () => {
+  const { module, requests } = harness(jsonResponse(200, message));
+  await module.saveChatMessage(message);
+  assert.ok(requests[0].init?.signal instanceof AbortSignal);
 });

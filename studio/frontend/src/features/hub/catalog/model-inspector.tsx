@@ -36,8 +36,8 @@ import {
   LayersLogoIcon,
   LibrariesIcon,
   LicenseIcon,
-  PackageIcon,
   LinkSquare02Icon,
+  PackageIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
@@ -53,6 +53,7 @@ import {
   isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
+import { hasMlxCardTag, isMlxId } from "../lib/format-filters";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -71,7 +72,7 @@ import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
 
-function ViewRepositoryButton({
+export function ViewRepositoryButton({
   repoId,
   isDataset,
 }: {
@@ -127,7 +128,7 @@ function ViewRepositoryButton({
   );
 }
 
-function CopyRepoButton({ repoId }: { repoId: string }) {
+export function CopyRepoButton({ repoId }: { repoId: string }) {
   const { copied, copy } = useCopyFeedback();
 
   const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -159,7 +160,7 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
   );
 }
 
-function StatRow({
+export function StatRow({
   label,
   value,
   icon,
@@ -189,11 +190,11 @@ function StatRow({
   );
 }
 
-function StatGrid({ children }: { children: React.ReactNode }) {
+export function StatGrid({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-wrap items-center gap-1.5">{children}</div>;
 }
 
-function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
+export function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
   return <div className="max-w-[calc(680px*var(--ui-space-scale,1))] pt-3">{children}</div>;
 }
 
@@ -225,7 +226,7 @@ function StatusChip({
   );
 }
 
-function BaseModelSearchChip({
+export function BaseModelSearchChip({
   baseModel,
   searchTerm,
   onSearchHub,
@@ -423,7 +424,9 @@ export type ModelInspectorRuntime = {
   } | null;
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
+  unifiedLoadBudgetGb?: number | null;
 };
 
 export type ModelInspectorActions = {
@@ -463,7 +466,9 @@ export const ModelInspector = memo(function ModelInspector({
     vramInfo,
     gpuGb,
     gpuCount,
+    audioCppCardGb,
     systemRamGb,
+    unifiedLoadBudgetGb,
   } = runtime;
   const {
     onInventoryChange,
@@ -602,9 +607,7 @@ export const ModelInspector = memo(function ModelInspector({
       : undefined;
   // A precision folder downloads as it loads, so it need not be on device.
   const isMlx =
-    !model.isGguf &&
-    (model.libraryName?.toLowerCase() === "mlx" ||
-      Boolean(model.tags?.some((tag) => tag.toLowerCase() === "mlx")));
+    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
   const precisionRunAction =
     isMlx &&
     onRun &&
@@ -722,7 +725,7 @@ export const ModelInspector = memo(function ModelInspector({
               modelId={model.id}
               displayName={model.title}
               repoId={model.hubRepoId}
-              sourceLabel={model.sourceLabel}
+              sourceLabel={model.owner === model.sourceLabel ? "" : model.sourceLabel}
               source={model.localSource ?? "custom"}
               path={model.path ?? model.displayId}
               isGguf={model.isGguf}
@@ -739,6 +742,7 @@ export const ModelInspector = memo(function ModelInspector({
               isLoading={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
@@ -769,7 +773,11 @@ export const ModelInspector = memo(function ModelInspector({
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
+              unifiedLoadBudgetGb={
+                runsOnMediaRuntime ? null : unifiedLoadBudgetGb
+              }
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onRun={runAction}
@@ -777,6 +785,9 @@ export const ModelInspector = memo(function ModelInspector({
               onChange={onInventoryChange}
               isMlx={isMlx}
               onRunPrecision={precisionRunAction}
+              onRunCheckpoint={mediaPage === "images" && onRun && model.hubRepoId
+                ? (checkpointFilename) => onRun({ checkpointFilename }, "images")
+                : undefined}
             />
           )}
         </InspectorDownloadSlot>

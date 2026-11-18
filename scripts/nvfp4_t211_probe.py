@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""torch>=2.11 NVFP4 probe. Three parts:
-
-  A. diagnostics  -- torch/torchao versions, cpp-extension load state, device.
-  B. GEMM micro   -- isolated per-linear forward latency (bf16 / fp8 / nvfp4-cutlass /
-                     nvfp4-triton) at Z-Image-like shapes, to measure raw FP4
-                     tensor-core throughput free of pipeline overhead.
-  C. end-to-end   -- real dense Z-Image transformer, latency + LPIPS + PSNR + VRAM,
-                     reference = dense bf16 eager.
-
-Run on one CUDA (Blackwell) GPU. This is the experiment that decides whether NVFP4
-becomes a genuine speedup once torch>=2.11 + torchao's CUTLASS FP4 GEMM is present."""
+"""Decides whether NVFP4 is a real speedup on torch>=2.11 (Blackwell; GEMM and end-to-end Z-Image)."""
 
 from __future__ import annotations
 

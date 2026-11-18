@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  Archive03Icon,
+  ArchiveIcon,
   ArchiveRestoreIcon,
-  Delete02Icon,
   Download01Icon,
   MoreVerticalIcon,
   PinIcon,
@@ -23,7 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
 
@@ -92,6 +91,7 @@ export function GalleryItemMenu({
         <Button
           size={overlay || row ? "icon-xs" : "icon-sm"}
           variant="ghost"
+          title="More"
           aria-label={`More actions for this ${noun}`}
           className={cn(
             // Circular hover, no border: focus returning on close would draw one. Keyboard focus tints instead.
@@ -140,12 +140,12 @@ export function GalleryItemMenu({
         ) : null}
         {project.submenu}
         <DropdownMenuItem onClick={onToggleArchive}>
-          <HugeiconsIcon icon={archived ? ArchiveRestoreIcon : Archive03Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={archived ? ArchiveRestoreIcon : ArchiveIcon} strokeWidth={1.75} className="size-icon" />
           {archived ? "Restore from archive" : "Archive"}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onClick={onDelete}>
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
           Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -191,6 +191,7 @@ export function GalleryPinBadge({
       <TooltipTrigger asChild={true}>
         <button
           type="button"
+          title="Unpin"
           aria-label={`Unpin this ${noun}`}
           onClick={onUnpin}
           className={cn(

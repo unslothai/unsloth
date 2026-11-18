@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 
 import { ModelLoadDescription } from "@/features/chat";
+import { MODEL_LOAD_TOAST_CLASSNAMES } from "@/features/chat/components/model-load-status";
 import { formatBytes, type StagedDownloadProgress } from "@/features/hub";
 import {
   createPickToast,
@@ -11,13 +12,6 @@ import {
   type PickToastPhase,
   type PickToastProgress,
 } from "@/lib/diffusion-pick-toast";
-
-const PICK_TOAST_CLASSNAMES = {
-  toast: "chat-model-load-toast items-center gap-2.5",
-  content: "gap-0.5 flex-1 min-w-0",
-  title: "leading-5",
-  description: "mt-0 w-full",
-};
 
 function describePick(phase: PickToastPhase, progress: PickToastProgress | null, modelName?: string) {
   if (phase === "downloading") {
@@ -70,7 +64,7 @@ function describePick(phase: PickToastPhase, progress: PickToastProgress | null,
 
 export function useDiffusionPickToast(): PickToast {
   const [pickToast] = useState(() =>
-    createPickToast({ describe: describePick, classNames: PICK_TOAST_CLASSNAMES }),
+    createPickToast({ describe: describePick, classNames: MODEL_LOAD_TOAST_CLASSNAMES }),
   );
   useEffect(() => () => pickToast.dismissAll(), [pickToast]);
   return pickToast;

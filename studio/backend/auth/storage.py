@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite storage for auth data (user credentials + JWT secret)."""
-
 import contextlib
 from contextlib import contextmanager
 
@@ -192,9 +190,8 @@ class CredentialRotated(Exception):
 
 
 def credential_generation(jwt_secret: str) -> str:
-    """Marker for the credential version a refresh token was issued under. Every password change
-    rotates ``jwt_secret``, so a token stamped with the previous one is rejected even if it was
-    inserted after the revoking DELETE."""
+    """Credential version a refresh token was issued under; a password change rotates jwt_secret, so
+    the old stamp is rejected even if inserted after the revoking DELETE."""
     return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
 
 
@@ -338,6 +335,13 @@ def get_connection(*, check_same_thread: bool = True) -> sqlite3.Connection:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc).lower():
                 raise
+    if "access" not in api_key_columns:
+        # NULL is full access, so rows predating the column keep what they had.
+        try:
+            conn.execute("ALTER TABLE api_keys ADD COLUMN access TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS app_secrets (
@@ -385,6 +389,8 @@ _ACCOUNT_COLUMNS = (
     ("account_jwt_secret", "TEXT"),
     # JSON list of repo ids / ``org/*`` patterns; NULL = every model (#11650).
     ("model_allowlist", "TEXT"),
+    # Owner's extra sign-in name; NULL = "unsloth" only.
+    ("login_alias", "TEXT"),
 )
 
 
@@ -487,7 +493,7 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
         raise
 
 
-_ACCOUNT_API_KEY_COLUMNS = "username, key_prefix, key_hash, name, created_at, expires_at, is_active, is_internal, account_id"
+_ACCOUNT_API_KEY_COLUMNS = "username, key_prefix, key_hash, name, created_at, expires_at, is_active, is_internal, account_id, access"
 
 
 _account_keys_synced: set[str] = set()
@@ -527,6 +533,14 @@ def _ensure_account_api_keys(conn: sqlite3.Connection, existing: set) -> None:
         );
         """
     )
+    # Mirrors api_keys.access, or a key restored from this copy comes back as full access.
+    # Index 1 is the column name; callers pass connections with and without a Row factory.
+    if "access" not in {row[1] for row in conn.execute("PRAGMA table_info(account_api_keys)")}:
+        try:
+            conn.execute("ALTER TABLE account_api_keys ADD COLUMN access TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     conn.execute(
         f"""INSERT INTO account_api_keys ({_ACCOUNT_API_KEY_COLUMNS})
             SELECT {_ACCOUNT_API_KEY_COLUMNS} FROM api_keys k
@@ -718,6 +732,7 @@ def _public_account(row) -> dict:
             if "model_allowlist" in row.keys()
             else None
         ),
+        "login_alias": row["login_alias"] if "login_alias" in row.keys() else None,
     }
 
 
@@ -774,6 +789,13 @@ def issue_account_setup_code(
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 if username is not None:
+                    owner = conn.execute(
+                        "SELECT must_change_password FROM auth_user WHERE role = 'owner'"
+                    ).fetchone()
+                    if owner is not None and owner["must_change_password"]:
+                        raise ValueError("Set the owner's password before adding an account.")
+                    if _login_alias_taken(conn, username):
+                        raise sqlite3.IntegrityError("Username is unavailable")
                     account_id = uuid.uuid4().hex
                     legacy_salt, legacy_hash, legacy_secret = _legacy_dummies()
                     conn.execute(
@@ -809,6 +831,56 @@ def issue_account_setup_code(
         finally:
             conn.close()
     return {"account": account, "setup_code": code, "setup_code_expires_at": expires_at}
+
+
+def _login_alias_taken(conn: sqlite3.Connection, name: str) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM auth_user WHERE login_alias = ?", (name,)).fetchone()
+        is not None
+    )
+
+
+def resolve_login_username(username: str) -> str:
+    if username == DEFAULT_ADMIN_USERNAME:
+        return username
+    conn = get_connection()
+    try:
+        # A real username always wins, should one ever collide with the alias.
+        row = conn.execute(
+            "SELECT username FROM auth_user WHERE login_alias = ? AND role = 'owner' "
+            "AND NOT EXISTS (SELECT 1 FROM auth_user WHERE username = ?)",
+            (username, username),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row["username"] if row else username
+
+
+def set_owner_login_alias(alias: Optional[str]) -> Optional[str]:
+    """None, blank or "unsloth" clears it."""
+    alias = (alias or "").strip()
+    alias = (
+        None
+        if alias.casefold() in ("", DEFAULT_ADMIN_USERNAME)
+        else validate_account_username(alias)
+    )
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            # Same write lock as account creation, so neither can take a name the other just took.
+            if (
+                alias is not None
+                and conn.execute("SELECT 1 FROM auth_user WHERE username = ?", (alias,)).fetchone()
+            ):
+                raise sqlite3.IntegrityError("Username is unavailable")
+            conn.execute(
+                "UPDATE auth_user SET login_alias = ? WHERE username = ?",
+                (alias, DEFAULT_ADMIN_USERNAME),
+            )
+    finally:
+        conn.close()
+    return alias
 
 
 def authenticate_account_login(
@@ -927,6 +999,40 @@ def set_account_model_allowlist(account_id: str, allowlist: Optional[list[str]])
                     "UPDATE auth_user SET model_allowlist = ? WHERE account_id = ?",
                     (None if allowlist is None else json.dumps(allowlist), account_id),
                 )
+                result = _public_account(_managed_account(conn, account_id))
+        finally:
+            conn.close()
+    return result
+
+
+def rename_account(account_id: str, username: str) -> dict:
+    """Data keys on account_id, so nothing moves; sessions are revoked, API keys follow the account."""
+    from auth.policy import account_mutation
+
+    username = validate_account_username(username)
+    with account_mutation():
+        conn = get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = _managed_account(conn, account_id)
+                old = row["username"]
+                if old != username:
+                    if _login_alias_taken(conn, username):
+                        raise sqlite3.IntegrityError("Username is unavailable")
+                    conn.execute(
+                        "UPDATE auth_user SET username = ?, account_jwt_secret = ? WHERE account_id = ?",
+                        (username, secrets.token_urlsafe(64), account_id),
+                    )
+                    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (old,))
+                    conn.execute(
+                        "UPDATE api_keys SET username = ? WHERE username = ? AND account_id = ?",
+                        (username, old, account_id),
+                    )
+                    conn.execute(
+                        "UPDATE account_api_keys SET username = ? WHERE account_id = ?",
+                        (username, account_id),
+                    )
                 result = _public_account(_managed_account(conn, account_id))
         finally:
             conn.close()
@@ -1225,8 +1331,7 @@ def create_initial_user(
     *,
     must_change_password: bool = False,
 ) -> None:
-    """Create the initial admin user in the database. Raises sqlite3.IntegrityError if username already
-    exists."""
+    """Creates the first admin; raises sqlite3.IntegrityError if the username exists."""
     from .hashing import hash_password
     from utils.account_context import OWNER_ACCOUNT_ID, ROLE_OWNER, ROLE_USER
     import uuid
@@ -1278,8 +1383,7 @@ def create_initial_user(
 
 
 def delete_user(username: str) -> None:
-    """Delete a user from the database, for rollback when user creation fails partway through
-    bootstrap."""
+    """Delete a user, to roll back a failed bootstrap user creation."""
     conn = get_connection()
     try:
         conn.execute("DELETE FROM auth_user WHERE username = ?", (username,))
@@ -1532,9 +1636,7 @@ class RotatedRefresh(NamedTuple):
 def rotate_refresh_token(
     token: str, new_token: str, new_expires_at: str
 ) -> Optional[RotatedRefresh]:
-    """Consume ``token`` and store ``new_token`` in its place, in one transaction. If anything fails
-    before the commit, including a busy auth.db, the old token is still valid, so a retry can
-    succeed instead of logging the user out. None means the old token was invalid or expired."""
+    """Swap tokens in one transaction: on failure, including a busy auth.db, the old token stays valid."""
     from utils.account_context import ROLE_OWNER
 
     now = datetime.now(timezone.utc).isoformat()
@@ -1619,8 +1721,7 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
 
 
 def revoke_user_refresh_tokens(username: str, *, account_id: Optional[str] = None) -> None:
-    """Revoke a user's refresh tokens. ``account_id`` pins the username-keyed table to the
-    immutable identity, so a recreated namesake keeps its sessions."""
+    """Revoke refresh tokens by immutable account_id, so recreated namesakes keep sessions."""
     conn = get_connection()
     try:
         with conn:
@@ -1701,6 +1802,8 @@ def clear_desktop_secret() -> None:
 
 
 API_KEY_PREFIX = "sk-unsloth-"
+API_KEY_ACCESS_FULL = "full"
+API_KEY_ACCESS_INFERENCE = "inference"
 
 # Name sets authority: Deep Research keys reach the saved connection, data-recipe keys only local /v1.
 DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
@@ -1709,6 +1812,9 @@ DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 UNSLOTH_START_API_KEY_NAME = "Coding agents (unsloth start)"
 # Authority follows this mint stamp, not the name: older Studios let any caller pick the name.
 UNSLOTH_START_API_KEY_PURPOSE = "unsloth_start"
+STUDIO_CHAT_TOOLS_KEY_NAME = "Unsloth Studio chat tools"
+# The same key minted for a chat an API key started: it never gets the owner's load-beside pass.
+STUDIO_CHAT_TOOLS_API_KEY_NAME = "Unsloth Studio chat tools (API)"
 
 
 def create_api_key(
@@ -1719,8 +1825,12 @@ def create_api_key(
     expect_gen: Optional[str] = None,
     account_id: Optional[str] = None,
     purpose: Optional[str] = None,
+    access: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """``expect_gen`` fences the insert so a password reset cannot mint a key that outlives it."""
+    if access not in (None, API_KEY_ACCESS_FULL, API_KEY_ACCESS_INFERENCE):
+        raise ValueError(f"unknown API key access {access!r}")
+    access = None if access == API_KEY_ACCESS_FULL else access
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
     key_hash = _fenced_hash(_pbkdf2_api_key(raw_key), username)
     key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
@@ -1728,6 +1838,13 @@ def create_api_key(
 
     conn = get_connection()
     try:
+        if account_id is not None:
+            # A long-lived caller (a research run) may hold a name from before a rename.
+            row = conn.execute(
+                "SELECT username FROM auth_user WHERE account_id = ?", (account_id,)
+            ).fetchone()
+            if row is not None:
+                username = row["username"]
         if expect_gen is not None:
             conn.execute("BEGIN IMMEDIATE")
             if _current_generation(conn, username) != expect_gen:
@@ -1738,8 +1855,8 @@ def create_api_key(
             account_id = _managed_account_id(conn, username)
         conn.execute(
             """
-            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal, account_id, purpose)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal, account_id, purpose, access)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 username,
@@ -1751,6 +1868,7 @@ def create_api_key(
                 1 if internal else 0,
                 account_id,
                 purpose,
+                access,
             ),
         )
         if account_id is not None:
@@ -1779,7 +1897,7 @@ def list_api_keys(
         cur = conn.execute(
             f"""
             SELECT id, username, key_prefix, name, created_at, last_used_at,
-                   expires_at, is_active, is_internal, purpose
+                   expires_at, is_active, is_internal, purpose, access
             FROM api_keys
             WHERE {scope}{internal}
             ORDER BY created_at DESC
@@ -1835,6 +1953,39 @@ def revoke_api_key(
         conn.close()
 
 
+def set_api_key_access(
+    username: str,
+    key_id: int,
+    access: str,
+    account_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Change a user key's access; the updated row, or None when no active user key matched."""
+    if access not in (API_KEY_ACCESS_FULL, API_KEY_ACCESS_INFERENCE):
+        raise ValueError(f"unknown API key access {access!r}")
+    stored = None if access == API_KEY_ACCESS_FULL else access
+    conn = get_connection()
+    try:
+        scope, params = _key_scope(username, account_id)
+        # Internal keys are never widened or narrowed from outside their workflow.
+        cursor = conn.execute(
+            f"UPDATE api_keys SET access = ? WHERE id = ? AND is_active = 1 AND is_internal = 0 AND {scope}",
+            (stored, key_id, *params),
+        )
+        if not cursor.rowcount:
+            conn.rollback()
+            return None
+        conn.execute(
+            "UPDATE account_api_keys SET access = ? "
+            "WHERE key_hash = (SELECT key_hash FROM api_keys WHERE id = ?)",
+            (stored, key_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM api_keys WHERE id = ?", (key_id,)).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
 def revoke_internal_api_key(key_id: int) -> bool:
     """Revoke an internal workflow-minted key without requiring a username. Used by the recipe runner
     to retire its key once the job terminates, shrinking the window a leaked key could be abused."""
@@ -1846,6 +1997,23 @@ def revoke_internal_api_key(key_id: int) -> bool:
         )
         if cursor.rowcount:
             _revoke_key_copy(conn, key_id)
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_internal_api_key(key_id: int) -> bool:
+    """Delete an internal key row and its account copy. For keys minted per call, which would
+    otherwise leave one inactive row behind for every call."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM account_api_keys "
+            "WHERE key_hash = (SELECT key_hash FROM api_keys WHERE id = ? AND is_internal = 1)",
+            (key_id,),
+        )
+        cursor = conn.execute("DELETE FROM api_keys WHERE id = ? AND is_internal = 1", (key_id,))
         conn.commit()
         return cursor.rowcount > 0
     finally:
@@ -1933,7 +2101,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
                 touch = False
         cur = conn.execute(
             f"""
-            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.expires_at,
+            SELECT k.id, k.username, k.name, k.purpose, k.access, k.is_active, k.is_internal, k.expires_at,
                    u.account_id, u.role, u.is_active AS account_active,
                    COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
             FROM api_keys k JOIN auth_user u ON u.username = k.username
@@ -1978,6 +2146,12 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "expires_at": row["expires_at"],
             "key_name": row["name"],
             "key_purpose": row["purpose"],
+            "key_internal": bool(row["is_internal"]),
+            # Anything but NULL or "full" is read as inference only, never as wider.
+            "key_access": API_KEY_ACCESS_FULL
+            if row["access"] in (None, API_KEY_ACCESS_FULL)
+            else API_KEY_ACCESS_INFERENCE,
+            "key_id": row["id"],
         }
         return record, secret
     finally:

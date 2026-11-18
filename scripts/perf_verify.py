@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GPU verification for the diffusion performance pass (Phase 7).
-
-Drives the real ``DiffusionBackend`` through several loads in one process and
-checks, at a fixed seed:
-
-  1. speed: ``default`` (compile + cudnn.benchmark + channels_last) vs ``off``
-     -- expect a large denoise speedup at high PSNR (near-lossless).
-  2. the TF32-leak fix: load ``max`` (flips global TF32 / cudnn.benchmark), unload,
-     then load ``off`` -- the ``off`` image must be byte-identical (PSNR inf) to a
-     fresh ``off`` baseline, proving the globals were restored on unload.
-  3. ``balanced`` is now bit-identical: with VAE tiling restricted to the low tiers,
-     streamed (group) offload should match the resident image (PSNR inf).
-
-Run on one CUDA GPU with the GGUF + base repo cached.
-"""
+"""Verifies TF32 leak fix (off after max is byte-identical), default speedup and balanced parity."""
 
 from __future__ import annotations
 

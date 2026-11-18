@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Which SDPA backends tolerate a dense bool attn_mask, and at what cost, at Hunyuan's real
-joint shape (B=1, H=16, N=50345, D=128, bf16)? Decides whether nulling the all-True mask is
-the real win on the PRODUCTION cuDNN path (not just the native math fallback)."""
+"""Checks whether nulling an all-True attn_mask helps SDPA on the production cuDNN path."""
 
 import time
 import torch
@@ -38,11 +36,7 @@ def timed(fn, iters = 20):
 
 
 def _identity(run, reference):
-    """Whether ``run``'s dense output is bitwise-identical to the default dispatch's.
-
-    "yes" on exactly one backend names the kernel the dispatcher selected. A backend that cannot
-    run the dense mask at all reports why instead, so the column never silently reads as a
-    mismatch when nothing ran."""
+    """Bitwise match to default dispatch; a backend that cannot run reports why, not a mismatch."""
     if reference is None:
         return "n/a"
     try:

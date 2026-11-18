@@ -304,6 +304,37 @@ test("extractHtmlAttachmentText keeps the line structure of the page", async () 
   );
 });
 
+test("extractHtmlAttachmentText keeps the ticked state of check boxes", async () => {
+  const input = (attrs: Record<string, string>) => ({
+    ...element("input"),
+    getAttribute: (name: string) => attrs[name] ?? null,
+    hasAttribute: (name: string) => name in attrs,
+  });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "ul",
+          element("li", input({ type: "checkbox", checked: "" }), textNode("Ship")),
+          element("li", input({ type: "checkbox" }), textNode("Docs")),
+        ),
+        element(
+          "p",
+          textNode("Smoker:"),
+          input({ type: "radio", checked: "" }),
+          textNode("Yes"),
+          input({ type: "radio" }),
+          textNode("No"),
+          input({ type: "text" }),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, "☒ Ship\n\n☐ Docs\n\nSmoker: ☒ Yes ☐ No");
+});
+
 test("extractHtmlAttachmentText keeps the indentation of preformatted code", async () => {
   const extracted = await withStubDom(
     () =>
@@ -2305,6 +2336,25 @@ test("Word-style output reads fields, tables and double-byte fonts", async () =>
   assert.equal(
     text,
     "你好 café—€😀{x}\nlink\nfirst second\tb\nafter\nmore テストソ П你",
+  );
+});
+
+test("RTF footnotes are kept as numbered notes after the text", async () => {
+  const text = await readRtf(
+    [
+      "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times;}}",
+      "\\pard The court held the clause void.{\\cs15\\super\\chftn}{\\footnote\\pard\\plain{\\cs15\\super\\chftn} See Smith v. Jones, ",
+      "512 U.S. 1 (1994).}\\par",
+      "Second paragraph.{\\super\\chftn{\\footnote{\\super\\chftn} Another note.}}\\par",
+      "Third.{\\super\\chftn}{\\*\\footnote\\chftn\\~\\plain\\pard Pandoc note.}",
+      "{\\header{\\footnote Header note.}}\\par",
+      "Empty.{\\super\\chftn}{\\footnote{\\super\\chftn}}\\par}",
+    ].join("\n"),
+  );
+  assert.equal(
+    text,
+    "The court held the clause void.[1]\nSecond paragraph.[2]\nThird.[3]\nEmpty.\n\n" +
+      "Footnotes\n[1] See Smith v. Jones, 512 U.S. 1 (1994).\n[2] Another note.\n[3] Pandoc note.",
   );
 });
 

@@ -5,6 +5,20 @@ import type { ReactNode, Ref } from "react";
 
 import { cn } from "@/lib/utils";
 
+function SectionHeading({ title, badge }: { title: string; badge?: ReactNode }) {
+  return (
+    <h2
+      className={cn(
+        "settings-heading text-base font-semibold font-heading",
+        badge && "flex items-center gap-2",
+      )}
+    >
+      {title}
+      {badge}
+    </h2>
+  );
+}
+
 export function SettingsSection({
   title,
   description,
@@ -12,11 +26,16 @@ export function SettingsSection({
   ref,
   hideHeading = false,
   action,
+  actionAlign,
   danger = false,
+  badge,
 }: {
   title: string;
+  badge?: ReactNode;
   /** Control shown beside the heading, e.g. Refresh. */
   action?: ReactNode;
+  /** Align an action’s top edge with the heading’s visible text. */
+  actionAlign?: "text";
   hideHeading?: boolean;
   /** Danger zone: a divider above the heading sets it apart from the sections before it. */
   danger?: boolean;
@@ -39,15 +58,18 @@ export function SettingsSection({
             <div
               className={cn(
                 "flex justify-between gap-3",
-                description ? "items-start" : "items-center",
+                description || actionAlign === "text" ? "items-start" : "items-center",
               )}
             >
-              <h2 className="settings-heading text-base font-semibold font-heading">
-                {title}
-              </h2>
-              {description ? (
+              <SectionHeading title={title} badge={badge} />
+              {description || actionAlign === "text" ? (
                 // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
-                <div className="mt-[calc(var(--text-base)*0.372)] shrink-0">
+                <div
+                  className={cn(
+                    "mt-[calc(var(--text-base)*0.372)]",
+                    actionAlign === "text" ? "min-w-0 flex-1" : "shrink-0",
+                  )}
+                >
                   {action}
                 </div>
               ) : (
@@ -55,9 +77,7 @@ export function SettingsSection({
               )}
             </div>
           ) : (
-            <h2 className="settings-heading text-base font-semibold font-heading">
-              {title}
-            </h2>
+            <SectionHeading title={title} badge={badge} />
           )}
           {description ? (
             <p className="text-xs text-muted-foreground leading-relaxed">

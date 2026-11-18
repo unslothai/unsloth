@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisted model-memory residency controls.
-
-``keep_resident``  -- weights never go back to system RAM while loaded: no idle
-auto-unload, and ``--mlock`` so the OS cannot page them out and re-fault them in.
-
-``no_ram_reserve`` -- avoids locked or reserved weight buffers. Uses DirectIO on
-supported Windows builds when full GPU offload is confirmed, otherwise keeps
-llama.cpp's default mmap path. Required CPU buffers can still use host RAM.
-
-Both on means "live in VRAM, keep no RAM copy, never idle-unload". ``--mlock`` is
-itself a full-model RAM reservation, so ``no_ram_reserve`` wins on that flag.
-"""
+"""keep_resident: weights never return to system RAM while loaded, no idle auto-unload, --mlock;
+no_ram_reserve avoids locked or reserved weight buffers; both on = VRAM only, and no_ram_reserve
+wins over --mlock."""
 
 from __future__ import annotations
 

@@ -1,31 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Throughput layout for native FSDP2 when the model fits on one GPU.
-
-Plain FSDP2 is slower than DDP for a model that fits on each GPU because it moves weights DDP never
-moves: every block's frozen LoRA base weights are all-gathered in forward and again for the backward
-(or gradient checkpointing) recompute, and full fine-tuning all-gathers each block twice per step.
-When the model fits, the layout here keeps:
-
-  * frozen parameters replicated (passed as ``ignored_params``): never gathered, never reduced, exactly
-    like DDP, and bitsandbytes 4-bit base weights stay plain ``Params4bit``;
-  * trainable parameters, their gradients and optimizer state sharded as usual;
-  * the gathered trainable weights resident from forward to backward (``reshard_after_forward=False``),
-    one all-gather per step instead of two;
-  * explicit next-block prefetch in forward and backward;
-  * when only small trainable params are left (LoRA adapters), a single root unit: one all-gather and
-    one reduce-scatter per step, no per-block hooks.
-
-Units holding no trainable parameter are not wrapped (no hooks, no empty collectives). Peak memory stays
-at or below DDP: frozen weights are what DDP holds, trainable weights are held once gathered plus one
-shard, and gradients plus optimizer state are sharded.
-
-Env overrides (read only when native FSDP2 is used): ``UNSLOTH_FSDP2_REPLICATE_FROZEN`` = auto | 1 | 0,
-``UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD`` = auto | 1 | 0, ``UNSLOTH_FSDP2_PREFETCH`` = 1 | 0,
-``UNSLOTH_FSDP2_FIT_FRACTION`` (default 0.4 of one device's memory), ``UNSLOTH_FSDP2_FREE_FIT_FRACTION``
-(default max(0.5, fit fraction / 0.8) of free + cached + resident model memory, read after process group init).
-"""
+"""Throughput FSDP2 layout for models fitting one GPU: frozen weights replicated, trainable sharded."""
 
 from dataclasses import dataclass, field
 from typing import Optional
@@ -69,8 +45,7 @@ def _param_bytes(params, dtype = None):
 
 
 def _device_bytes(device = None):
-    """Total memory of the GPU the model trains on; 0 for a CPU (or other non-CUDA) mesh, which plans
-    the per-block sharded layout as a CPU-only host does."""
+    """Total memory of the GPU; 0 for CPU or non-CUDA meshes, which plan the sharded layout."""
     if device is not None and torch.device(device).type != "cuda":
         return 0
     try:
@@ -173,9 +148,8 @@ def plan_fsdp2_layout(
     except ValueError:
         free_fraction = default_free_fraction
     model_bytes = layout.frozen_bytes + layout.trainable_bytes
-    # "Fits" = the whole model (what DDP keeps on every GPU) uses at most `fraction` of one device,
-    # leaving the rest for activations, gradients and optimizer state.
-    # CPU offload asks for memory, not speed: keep the plain sharded layout.
+    # Fits = the whole model uses at most a fraction of one device; CPU offload keeps the sharded
+    # layout.
     forced = os.environ.get("UNSLOTH_FSDP2_LAYOUT", "auto").strip().lower()
     if fits is None and forced in ("fit", "sharded"):
         fits = forced == "fit"
@@ -214,9 +188,7 @@ def plan_fsdp2_layout(
     layout.prefetch = (
         layout.fits and os.environ.get("UNSLOTH_FSDP2_PREFETCH", "1").strip().lower() not in _FALSE
     )
-    # With the frozen weights replicated, what is left to shard (LoRA adapters) is small: one root
-    # unit = one all-gather + one reduce-scatter per step instead of a hook pair and two collectives
-    # per block, and the per-block saving it gives up is a few MB.
+    # Small LoRA set as one root unit: one all-gather and reduce-scatter per step, not per block.
     units = os.environ.get("UNSLOTH_FSDP2_TRAINABLE_UNITS", "auto").strip().lower()
     small = layout.trainable_bytes <= min(1 << 30, 0.01 * layout.device_bytes)
     layout.root_only = (

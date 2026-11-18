@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Line four adds clock-stable linux:<boot_id>:<start_ticks>; keep the first three
-lines backward compatible and the Rust reader in process_identity.rs aligned.
-"""
+"""PID record line 4 is linux:<boot_id>:<start_ticks>; keep lines 1-3 compatible, Rust reader aligned."""
 
 from __future__ import annotations
 

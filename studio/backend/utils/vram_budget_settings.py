@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisted VRAM budget fraction: how much of each GPU a load may claim.
-
-The fit reserves a slice of every card the model and KV cache may not use, covering fragmentation, the per-device CUDA context and MoE routing. That slice was two hard-coded 0.97 constants in ``core.inference.llama_cpp`` (``_CTX_FIT_VRAM_FRACTION``, ``_GPU_PIN_VRAM_FRACTION``), so the only way to trade it for context was to edit the source.
-
-Raising the fraction hands the reserve back as context and the load can then OOM, which llama.cpp takes as a hard crash rather than a graceful degrade; lowering it pushes tight fits into CPU offload, which is what 0.90 did in #5106. Neither direction is free, so the default stays exactly where it was and an unset budget must resolve to ``VRAM_FRACTION_DEFAULT``.
-
-Precedence, matching ``openai_auto_switch_settings``: a stored value wins, the environment is a standalone startup default, the constant is the last resort.
-"""
+"""Persisted fraction of each GPU a load may claim; the rest is reserved for fragmentation, the CUDA
+context and MoE routing. Raising it risks llama.cpp OOM, lowering it pushes tight fits to CPU
+offload. Stored value beats the environment, which beats VRAM_FRACTION_DEFAULT."""
 
 from __future__ import annotations
 

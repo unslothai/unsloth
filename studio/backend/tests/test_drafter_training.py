@@ -95,8 +95,7 @@ def test_route_forwards_only_enabled_drafter():
 
 
 def test_drafter_phase_is_derived_before_finalizing():
-    """The SFT step counter sits at total during the drafter phase, which _is_finalizing reads as
-    finalizing; the drafter branch must win first."""
+    """Step sits at total during drafter, so the drafter branch must win before _is_finalizing."""
     src = _source("routes/training.py")
     fn = next(
         ast.get_source_segment(src, n)
@@ -1024,8 +1023,7 @@ def test_mtp_retraining_defaults_to_a_gentle_learning_rate():
 
 
 def test_wsl_guest_paths_are_read_from_the_host(tmp_path, monkeypatch):
-    """Windows vLLM runs in WSL on /mnt/<drive>/...: the manifest is read from the Windows path,
-    the drafter path handed to vLLM stays the guest's."""
+    """Manifest is read from the host path; the drafter path for WSL vLLM stays a guest path."""
     import json
 
     from core.inference import engine_adapters

@@ -39,17 +39,22 @@ export function TrainBaseSelector({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
+        {/* Matches Create's picker, so the name stays put across tabs. */}
         <button
           type="button"
           aria-label="Training base model"
-          className="unsloth-model-selector-trigger flex h-[calc(34px*var(--ui-space-scale,1))] min-w-0 max-w-[calc(320px*var(--ui-space-scale,1))] items-center gap-2 rounded-full pl-4 pr-2 text-sm transition-colors hover:bg-accent"
+          className="unsloth-model-selector-trigger flex h-[calc(34px*var(--ui-space-scale,1))] min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-[10px] pl-3 pr-1 transition-colors hover:bg-nav-surface-hover @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
         >
-          <span className="min-w-0 truncate font-medium">{label}</span>
-          {family && (
-            <span className="shrink-0 text-xs leading-none text-muted-foreground">
-              {family.label}
+          <span className="flex min-w-0 flex-1 items-baseline">
+            <span className="min-w-0 shrink-0 truncate whitespace-nowrap font-heading text-ui-14 font-medium leading-tight text-black dark:text-foreground @[68rem]:text-ui-16">
+              {label}
             </span>
-          )}
+            {family && (
+              <span className="min-w-0 shrink-[1000] truncate text-xs leading-tight text-muted-foreground before:inline-block before:w-2 before:content-['']">
+                {family.label}
+              </span>
+            )}
+          </span>
           <span className="-ml-1 flex size-4 shrink-0 items-center justify-center">
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}

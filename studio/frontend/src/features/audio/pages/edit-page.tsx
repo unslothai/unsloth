@@ -16,6 +16,7 @@ import {
   AudioHistoryProvider,
   AudioSourceInput,
 } from "../components/audio-source-input";
+import { FieldLabel, FieldTag } from "../components/field";
 import { TranscriptDiffEditor } from "../components/transcript-diff-editor";
 import { EDIT_COPY } from "../edit-policy";
 import {
@@ -84,24 +85,20 @@ function EditInputs({
         />
       </div>
 
-      <div className="grid gap-1.5" data-tour="audio-edit-transcript">
+      <div className="grid gap-2" data-tour="audio-edit-transcript">
         <div className="flex items-center justify-between gap-2">
-          <label
+          <FieldLabel
             htmlFor={EDIT_TRANSCRIPT_FIELD_ID}
             className="text-ui-13 font-medium text-foreground"
           >
             {EDIT_COPY.transcriptLabel}
-            {mode === "delivery" ? (
-              <span className="ml-1.5 font-normal text-muted-foreground">
-                Optional
-              </span>
-            ) : null}
-          </label>
+            {mode === "delivery" ? <FieldTag>Optional</FieldTag> : null}
+          </FieldLabel>
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="h-auto px-2 py-1 text-ui-11p5"
+            className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
             disabled={!sourceUsable || transcriber.transcribing || disabled}
             onClick={() => void transcriber.transcribe(source)}
           >
@@ -140,7 +137,7 @@ function EditInputs({
             </Button>
           </p>
         ) : (
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {EDIT_COPY.transcriptHint}
           </p>
         )}
@@ -216,13 +213,13 @@ function EditInputs({
             onChange={(pitchSteps) => setDelivery({ pitchSteps })}
             commitWhileDragging
           />
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {EDIT_COPY.pitchHint}
           </p>
         </div>
       ) : null}
       {adapter?.family === "vevo2" ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           {EDIT_COPY.vevo2SwitchNote}
         </p>
       ) : null}

@@ -263,8 +263,8 @@ export function UpdateStudioInstructions({
             {t("settings.about.update.title")}
           </p>
         ) : null}
-        {/* The check/update control and its explanation live in General, next
-            to the version rows, so there is exactly one place to update from. */}
+        {/* The check/update control lives in General, next to the version
+            rows, so there is exactly one place to update from. */}
         <UpdateDocsLinks />
       </div>
     );

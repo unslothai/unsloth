@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Web update status helpers for browser-served Unsloth Studio.
-
-Side-effect light: no network work at import time or from /api/health.
-The PyPI check is lazy, cached, and only for PyPI-managed installs.
-"""
+"""Update status for browser-served Studio: no network at import or from /api/health; the PyPI check
+is lazy, cached, and only for PyPI-managed installs."""
 
 from __future__ import annotations
 

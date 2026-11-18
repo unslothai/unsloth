@@ -20,18 +20,20 @@ def _write_gguf(
     *,
     arch: str | None,
     tensor_count: int = 1,
+    general_type: str | None = None,
 ) -> Path:
-    """Minimal GGUF header: magic, version, counts, then one optional
-    ``general.architecture`` string KV. The parser never reads the tensor data."""
+    """Minimal GGUF header: magic, version, counts, then optional ``general.architecture`` and
+    ``general.type`` string KVs. The parser never reads the tensor data."""
     body = b""
     kv_count = 0
-    if arch is not None:
-        key = b"general.architecture"
-        val = arch.encode()
+    for key, value in ((b"general.architecture", arch), (b"general.type", general_type)):
+        if value is None:
+            continue
+        val = value.encode()
         body += struct.pack("<Q", len(key)) + key
         body += struct.pack("<I", 8)
         body += struct.pack("<Q", len(val)) + val
-        kv_count = 1
+        kv_count += 1
     header = struct.pack("<II", GGUF_MAGIC, 3) + struct.pack("<QQ", tensor_count, kv_count)
     path.write_bytes(header + body)
     return path
@@ -56,6 +58,30 @@ def test_chat_arch_is_not_refused(tmp_path):
     assert backend._architecture == "llama"
     assert backend._gguf_header_parsed is True
     assert message is None
+
+
+def test_adapter_gguf_requires_its_base_model(tmp_path):
+    path = _write_gguf(tmp_path / "weights.gguf", arch = "deepseek41", general_type = "adapter")
+    message = LlamaCppBackend._non_chat_gguf_refusal_for_path(str(path), None)
+    assert message is not None
+    assert "LoRA adapter" in message
+    assert "base model" in message
+
+
+@pytest.mark.parametrize("general_type", [None, "model"])
+def test_merged_lora_model_is_allowed(tmp_path, general_type):
+    path = _write_gguf(tmp_path / "merged-LoRA.gguf", arch = "llama", general_type = general_type)
+    assert LlamaCppBackend._non_chat_gguf_refusal_for_path(str(path), None) is None
+
+
+def test_reading_a_model_clears_the_previous_adapter_type(tmp_path):
+    adapter = _write_gguf(tmp_path / "adapter.gguf", arch = "llama", general_type = "adapter")
+    model = _write_gguf(tmp_path / "model.gguf", arch = "llama")
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(adapter))
+    assert backend._non_chat_gguf_refusal(str(adapter)) is not None
+    backend._read_gguf_metadata(str(model))
+    assert backend._non_chat_gguf_refusal(str(model)) is None
 
 
 def test_image_arch_names_the_images_page(tmp_path):
@@ -245,8 +271,7 @@ def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
 
 
 def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
-    # The header says "wan" for an unpaired A14B expert and Wan 2.1 I2V alike: the refusal must consult
-    # family resolution, not the arch.
+    # Wan arch covers unpaired A14B and I2V alike; refuse via family resolution, not arch.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
@@ -333,9 +358,8 @@ def test_a_split_placeholder_media_gguf_is_still_refused(tmp_path):
 
 
 def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
-    # A family that resolves is not enough for the arch branches, nor here: routes.models
-    # drops an MoE the loader cannot assemble, so the Video page lists a Wan 2.2 A14B GGUF only
-    # when its name pairs the other expert.
+    # A resolving family is not enough: Video lists Wan 2.2 A14B only if its name pairs the other
+    # expert.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
@@ -354,6 +378,15 @@ def test_speech_arch_names_the_audio_page(tmp_path):
     _, message = _refusal(tmp_path, arch = "llama-csm", name = "sesame-csm-backbone.gguf")
     assert message is not None
     assert "Audio page" in message
+    assert "Images page" not in message
+
+
+def test_a_parakeet_cpp_gguf_is_refused_without_blaming_llama_cpp(tmp_path):
+    _, message = _refusal(tmp_path, arch = "parakeet", name = "parakeet-tdt-0.6b-q8_0.gguf")
+    assert message is not None
+    assert "parakeet" in message.lower()
+    assert "updating llama.cpp will not help" in message.lower()
+    assert "Parakeet-TDT-0.6B-v3-GGUF" in message
     assert "Images page" not in message
 
 

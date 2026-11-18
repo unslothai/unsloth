@@ -1,30 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Process-level server-side tool policy.
-
-Two slots, both set at startup and consulted by the inference route gates.
-
-The OVERRIDE (`set_tool_policy`) comes from an explicit `--enable-tools`/
-`--disable-tools` and beats the request:
-
-  None  -> no CLI override (default). Per-request `enable_tools` is honored.
-  True  -> CLI forced tools on for every request. Not on /v1/messages: that channel
-           cannot present a confirmation prompt, so it takes the on direction from the
-           request itself (see _anthropic_selects_server_tools).
-  False -> CLI forced tools off for every request, /v1/messages included.
-
-The DEFAULT (`set_tool_policy_default`) is what an omitted `enable_tools` falls
-back to. `unsloth studio run` installs True for every bind, `--secure` included,
-so a plain request to a tool-capable model can use tools. It is only a default:
-a request that says `enable_tools: false` (what the Unsloth UI sends with its tool
-pills off) turns them off, which the override deliberately would not.
-
-No other launcher installs it. `unsloth studio`, the desktop app and Colab leave
-it unset, so an omitted `enable_tools` still means no tools there, which is what
-paths like `n > 1`, `max_tool_calls_per_message: 0` and the pre-switch
-passthrough guard are built around.
-"""
+"""CLI override (--enable-tools/--disable-tools) beats the request, except True on /v1/messages
+where the request decides; default applies only when enable_tools is omitted, set only by unsloth
+studio run; other launchers leave it unset, so no tools"""
 
 import contextvars
 from contextlib import contextmanager
@@ -92,6 +71,11 @@ def normalize_tool_permissions(
 OS_SANDBOXED_TOOLS = frozenset({"python", "terminal"})
 
 
+def _is_computer_tool(name: str) -> bool:
+    from core.inference.computer_use import is_computer_tool
+    return is_computer_tool(name)
+
+
 SANDBOX_LEVELS = ("high", "low")
 
 
@@ -116,6 +100,9 @@ def off_mode_still_gates(
     session_id: Optional[str] = None,
 ) -> bool:
     """Whether "off" must still ask for this tool. Cached only; unknown counts as not isolated."""
+    # The desktop is outside every sandbox, so "off" keeps asking about what is risky there.
+    if _is_computer_tool(name):
+        return True
     if name not in OS_SANDBOXED_TOOLS:
         return False
     if runs_without_os_sandbox(name, sandbox_level):
@@ -157,6 +144,7 @@ def needs_tool_confirmation(
     never_needs = None,
     sandbox_level: Optional[str] = None,
     session_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> bool:
     if is_high_risk is None or never_needs is None:
         from core.inference import tools
@@ -164,6 +152,11 @@ def needs_tool_confirmation(
         never_needs = never_needs or tools.never_needs_approval
     if not confirm_tool_calls or bypass_permissions or never_needs(name):
         return False
+    if permission_mode in ("off", "auto") and _is_computer_tool(name):
+        from core.inference.computer_use import policy as computer_policy
+
+        # Per conversation: a project's chats share session_id, and each asks for itself.
+        return computer_policy.needs_confirmation(arguments, thread_id or session_id)
     if permission_mode == "off":
         return off_mode_still_gates(name, sandbox_level, session_id) and _classify(
             is_high_risk, name, arguments, sandbox_level
@@ -228,9 +221,7 @@ def get_tool_policy() -> Optional[bool]:
 
 
 def get_tool_policy_default() -> Optional[bool]:
-    """Fallback for a request that omits `enable_tools`; None unless `unsloth
-    studio run` installed one (every other launcher, embedder and library caller
-    keeps the omitted-is-off read)."""
+    """Fallback for an omitted `enable_tools`: None unless `unsloth studio run` installed one, else off."""
     if _force_disabled.get():
         return False
     return _tool_policy_default
@@ -239,6 +230,11 @@ def get_tool_policy_default() -> Optional[bool]:
 def conversation_recall_allowed() -> bool:
     """Recall reads only this thread's archive: `--disable-tools` keeps it, `tools_force_disabled` does not."""
     return not _force_disabled.get()
+
+
+def force_disable_tools_for_request() -> None:
+    """Hard-disable server-side tools for the rest of this request's context, as the account binding lasts."""
+    _force_disabled.set(True)
 
 
 @contextmanager

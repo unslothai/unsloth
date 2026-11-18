@@ -20,7 +20,20 @@ def _load_pinner():
 
 
 pin = _load_pinner()
-DECODER = "meta" if not torch.cuda.is_available() else "cuda"
+# "meta" cannot stand in for the accelerator: it means an unplaced parameter, which the pinner skips.
+# Without CUDA the decoder is tagged "cuda" and _Base.parameters reports the tag as its device.
+DECODER = "cuda"
+_REAL = torch.cuda.is_available()
+
+
+class _Placed:
+    """A parameter seen through a placement tag; only .device is read by the pinner."""
+
+    def __init__(self, param, device):
+        self._param, self.device = param, torch.device(device)
+
+    def __getattr__(self, name):
+        return getattr(self._param, name)
 
 
 class _Base(nn.Module):
@@ -30,12 +43,27 @@ class _Base(nn.Module):
     def device(self):
         return next(self.parameters()).device
 
+    def parameters(self, recurse = True):
+        for param in super().parameters(recurse):
+            tag = param.__dict__.get("_test_device")
+            yield param if tag is None else _Placed(param, tag)
+
+
+def _move(module, device):
+    if device == "cuda" and not _REAL:
+        for param in module.parameters():
+            param._test_device = device
+    else:
+        for param in module.parameters():
+            param.__dict__.pop("_test_device", None)
+        module.to(device)
+
 
 def _model(cls, decoder_device = DECODER):
     model = cls()
     model.embed_tokens = nn.Embedding(32, 8)
     model.layer = nn.Linear(8, 8, bias = False)
-    model.layer.to(decoder_device)
+    _move(model.layer, decoder_device)
     return model
 
 
@@ -73,7 +101,7 @@ def test_follows_a_later_move():
 
     model = _model(_M, decoder_device = "cpu")
     pin(model)
-    model.layer.to(DECODER)
+    _move(model.layer, DECODER)
     assert model.device.type == DECODER, model.device
 
 
@@ -98,6 +126,26 @@ def test_repeated_pin_is_idempotent():
     assert model.device.type == DECODER, model.device
 
 
+def test_an_unplaced_meta_parameter_is_never_reported():
+    # A meta parameter is one the loader has not placed yet; reporting it would send inputs to meta.
+    class _M(_Base):
+        pass
+
+    model = _M()
+    model.embed_tokens = nn.Embedding(32, 8)
+    model.pending = nn.Linear(8, 8, bias = False).to("meta")
+    model.layer = nn.Linear(8, 8, bias = False)
+    _move(model.layer, DECODER)
+    assert pin(model) is True
+    assert model.device.type == DECODER, model.device
+
+    only_meta = _M()
+    only_meta.embed_tokens = nn.Embedding(32, 8)
+    only_meta.pending = nn.Linear(8, 8, bias = False).to("meta")
+    pin(only_meta)
+    assert only_meta.device.type == "cpu", only_meta.device
+
+
 def test_class_without_device_property_is_left_alone():
     class _M(nn.Module):
         pass
@@ -118,6 +166,8 @@ if __name__ == "__main__":
     print("[PASS] no extra parameters or state_dict keys")
     test_repeated_pin_is_idempotent()
     print("[PASS] repeated pin is idempotent")
+    test_an_unplaced_meta_parameter_is_never_reported()
+    print("[PASS] an unplaced meta parameter is never reported")
     test_class_without_device_property_is_left_alone()
     print("[PASS] a class with no device property is left alone")
     print("OK: model.device reports the decoder device while the embedding is offloaded")

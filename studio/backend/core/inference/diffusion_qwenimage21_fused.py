@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 ConvRot int8: one rotation + one act quant per shared input (QKV, SwiGLU gate/value) in the compile.
-
-Rotation is on the shared input axis and int8 scales are per row, so fused outputs equal the separate rotated ones bit
-for bit. The fused QKV Linear: only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm86,
-sm90, sm100), resident only; there the rotation and the act quant run as one ``rotq_h16`` kernel on a card that passed
-``diffusion_convrot_quant.unlisted_device_ok``, else as the rotation GEMM + act quant. Where it swaps them, the
-patched helper routes Q / K / V through ``diffusion_int8_gemm.shared_rotq_linears`` (Inductor does not merge the
-opaque kernel); resident or streamed.
-Kill switch: ``UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0``.
-"""
+"""Fused ConvRot rotation and act quant per shared input, bit-identical to separate ops; fused QKV
+Linear only where diffusion_int8_gemm leaves rotated Linears on stock path, resident only; kill
+UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0"""
 
 from __future__ import annotations
 
@@ -52,10 +45,13 @@ def arch_ok(device: Any = None) -> bool:
             index = torch.cuda.current_device()
         else:
             index = dev.index if dev.index is not None else torch.cuda.current_device()
-        from .diffusion_int8_gemm import _gates, int8_gemm_mode
+        from .diffusion_int8_gemm import _gates, int8_gemm_mode, rotated_swapped
 
         if int8_gemm_mode() == "off":
             return True
+        swapped = rotated_swapped(index)
+        if swapped is not None:
+            return not swapped
         gemm, rotq = _gates(torch.cuda.get_device_capability(index))
         return not (gemm or rotq)
     except Exception:  # noqa: BLE001
@@ -96,6 +92,12 @@ def _qkv_intact(attn: Any) -> Any:
     lin, q, k, v = rec
     if attn.to_q is not q or attn.to_k is not k or attn.to_v is not v:
         return None
+    codes = lin.__dict__.get("_unsloth_q21_part_codes")
+    if codes is not None:
+        # Native int8 (diffusion_qwenimage21_dense_fused): never read ``.weight``, it dequantises.
+        if q.weight_q is not codes[0] or k.weight_q is not codes[1] or v.weight_q is not codes[2]:
+            return None
+        return lin
     if lin.weight.device != q.weight.device:
         return None  # a layer split moved the parts after the fusion; the stale fused copy is on another card
     return lin
@@ -113,7 +115,9 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
         attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
     ):
         fused = _qkv_intact(attn) if torch.compiler.is_compiling() else None
-        if fused is not None:
+        if fused is not None and "_unsloth_q21_part_codes" in fused.__dict__:
+            query, key, value = fused(hidden_states).chunk(3, dim = -1)
+        elif fused is not None:
             query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
         else:
             qkv = shared_rotq_linears(hidden_states, (attn.to_q, attn.to_k, attn.to_v))
@@ -246,10 +250,13 @@ def _swap_covers(index: int) -> bool:
 
         if not torch.cuda.is_available() or is_rocm_torch(torch):
             return False
-        from .diffusion_int8_gemm import _gates, int8_gemm_mode
+        from .diffusion_int8_gemm import _gates, int8_gemm_mode, rotated_swapped
 
         if int8_gemm_mode() == "off":
             return False
+        swapped = rotated_swapped(index)
+        if swapped is not None:
+            return swapped
         _, rotq = _gates(torch.cuda.get_device_capability(index))
         if not rotq:
             return False

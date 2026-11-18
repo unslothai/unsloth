@@ -196,6 +196,11 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   {
     providerType: "gemini",
+    prefixes: ["gemini-3.1-flash-lite-image"],
+    cap: 4096,
+  },
+  {
+    providerType: "gemini",
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
@@ -217,6 +222,52 @@ export function getExternalMaxOutputTokens(
       ? Math.min(documented, override ?? documented)
       : (override ?? EXTERNAL_MAX_OUTPUT_TOKENS);
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
+}
+
+// Unset, these stop at their window; Ollama context-shifts past it, a Custom gateway may default low.
+const SERVER_WINDOW_BOUNDED_PROVIDERS = new Set(["llama_cpp", "vllm"]);
+
+/** Max Tokens at the top of its range sends no limit here, as "Max" does on a local model. */
+export function externalMaxTokensUnboundedAtMax(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens?: number | null,
+): boolean {
+  return (
+    providerType != null &&
+    SERVER_WINDOW_BOUNDED_PROVIDERS.has(providerType) &&
+    normalizeProviderMaxOutputTokens(connectionMaxOutputTokens) == null &&
+    _documentedMaxOutputTokens(providerType, modelId) == null
+  );
+}
+
+/** Null means send no max_tokens. */
+export function externalRequestMaxTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens: number | null | undefined,
+  maxTokens: number,
+): number | null {
+  const cap = getExternalMaxOutputTokens(
+    providerType,
+    modelId,
+    connectionMaxOutputTokens,
+  );
+  if (
+    maxTokens >= cap &&
+    externalMaxTokensUnboundedAtMax(
+      providerType,
+      modelId,
+      connectionMaxOutputTokens,
+    )
+  ) {
+    return null;
+  }
+  // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
+  return Math.min(
+    Math.max(maxTokens, getExternalMinOutputTokens(providerType)),
+    cap,
+  );
 }
 
 /**
@@ -312,10 +363,11 @@ export function resolveExternalMaxTokensClamp(input: {
 function _inferProviderFromOpenrouterId(
   normalizedId: string,
 ): string | null {
-  if (normalizedId.startsWith("openai/")) return "openai";
-  if (normalizedId.startsWith("anthropic/")) return "anthropic";
-  if (normalizedId.startsWith("google/")) return "gemini";
-  if (normalizedId.startsWith("deepseek/")) return "deepseek";
+  const id = normalizedId.replace(/^~/, "");
+  if (id.startsWith("openai/")) return "openai";
+  if (id.startsWith("anthropic/")) return "anthropic";
+  if (id.startsWith("google/")) return "gemini";
+  if (id.startsWith("deepseek/")) return "deepseek";
   return null;
 }
 
@@ -346,14 +398,16 @@ export function providerSupportsBuiltinWebSearch(
   );
 }
 
+function isKimiK3(modelId: string | null | undefined): boolean {
+  return /^kimi-k3(?:$|[.-])/.test(modelId?.trim().toLowerCase() ?? "");
+}
+
 /** Search and Think stay exclusive on Kimi, except kimi-k3, which has no thinking off switch. */
 export function kimiSearchExcludesThinking(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean {
-  return (
-    providerType === "kimi" && modelId?.trim().toLowerCase() !== "kimi-k3"
-  );
+  return providerType === "kimi" && !isKimiK3(modelId);
 }
 
 /** Whether the provider exposes a server-side web_fetch tool emitting a document block.
@@ -547,7 +601,8 @@ export function externalStopWindow(
   providerType: string | null | undefined,
   baseUrl: string | null | undefined,
 ): number | null {
-  return providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl)
+  return (providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl)) ||
+    providerType === "vertex"
     ? Number.POSITIVE_INFINITY
     : null;
 }
@@ -559,7 +614,8 @@ function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
     m.startsWith("gemini-3-pro-image") ||
     m.startsWith("gemini-3.1-flash-image") ||
     m.startsWith("nano-banana-pro") ||
-    m.startsWith("nano-banana-2")
+    m.startsWith("nano-banana-2") ||
+    m.startsWith("gemini-nano-banana-2")
   );
 }
 
@@ -655,6 +711,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   qwen: OPENAI_COMPAT_BASE,
   zai: { ...OPENAI_COMPAT_BASE, presencePenalty: false },
+  // Fixed server-side; the backend omits them too.
+  minimax: {
+    temperature: false,
+    topP: false,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: false,
+  },
   huggingface: OPENAI_COMPAT_BASE,
   // OpenRouter silently drops unsupported params, so surface every knob.
   openrouter: ALL_SUPPORTED,
@@ -706,7 +771,7 @@ export function getProviderCapabilities(
     };
   }
   // kimi-k3 fixes presence_penalty too and the docs ask for it to be omitted.
-  if (providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3") {
+  if (providerType === "kimi" && isKimiK3(modelId)) {
     return { ...PROVIDER_CAPABILITIES.kimi, presencePenalty: false };
   }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
@@ -917,12 +982,26 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
   };
 }
 
+function resolveMiniMaxReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
+  if (modelId.startsWith("minimax-m3.1")) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    });
+  }
+  if (modelId === "minimax-m3") {
+    return withEnableThinkingStyle({ supportsReasoning: true, supportsReasoningOff: true });
+  }
+  return withEnableThinkingStyle();
+}
+
 function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
   // Kimi has a boolean thinking toggle, not an effort scale: k2.6 on by default and
   // toggleable, k2-thinking always on, k2.5 and others none.
   // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}. k3 always reasons
   // and takes reasoning_effort low|high|max instead.
-  if (modelId === "kimi-k3") {
+  if (isKimiK3(modelId)) {
     return {
       ...withReasoningEffortStyle({
         supportsReasoning: true,
@@ -1070,8 +1149,8 @@ export function effectiveExternalReasoningProviderType(
 // Thinking off sends "none".
 const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle; a catalogued effort
-// ladder still applies, since the template is the model's own. Ollama errors a thinking request at a
+// vLLM has no per-model reasoning signal on OpenAI-compat: known models resolve by name, and the
+// connection's toggle opts in one the catalog misses. Ollama errors a thinking request at a
 // model without the /api/tags "thinking" capability, so gate on it (#9649).
 function resolveProviderReasoning(
   normalizedProvider: string,
@@ -1079,8 +1158,9 @@ function resolveProviderReasoning(
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+    // A known model keeps its own rules (R1 cannot turn thinking off).
     const catalog = modelId ? catalogCapabilities("vllm", modelId.toLowerCase(), true) : null;
-    if (catalog && externalReasoningTakesEffort(catalog)) return catalog;
+    if (catalog?.supportsReasoning) return catalog;
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
@@ -1111,7 +1191,8 @@ const LOCAL_SERVER_WIRE: ReasoningWire = {
   off: "unified",
 };
 
-/** `levels: null` forwards the whole scale; `[]` means on/off only. */
+/** `levels: null` forwards the whole scale; `[]` means on/off only. NVIDIA NIM is absent: its per-model
+ * schemas share no reasoning field and reject unknown ones, so the backend sends none. */
 const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   openrouter: { levels: null, off: "unified" },
   openai: { levels: null, off: "none-level" },
@@ -1124,6 +1205,12 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   qwen: { levels: [], off: "unified" },
   qwencloud: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
+  xai: { levels: ["low", "medium", "high", "xhigh"], off: "unified" },
+  cohere: { levels: [], off: "unified" },
+  vercel: { levels: null, off: "unified" },
+  azure: { levels: ["minimal", "low", "medium", "high", "xhigh"], off: "none-level" },
+  bedrock: { levels: null, off: "unified" },
+  vertex: { levels: ["minimal", "low", "medium", "high", "xhigh", "max"], off: "unified" },
   ollama: { levels: null, off: "unified" },
   // A vLLM older than 0.21 400s on the wider levels; the backend then leaves them to the template default.
   vllm: { levels: null, off: "unified" },
@@ -1273,6 +1360,8 @@ export function getExternalReasoningCapabilities(
         ? table
         : (catalogCapabilities("mistral", normalizedModel) ?? table);
     }
+    case "minimax":
+      return resolveMiniMaxReasoningCapabilities(modelForMatching);
     case "gemini": {
       // Compat gateways drop native thinkingConfig, so hide the ladder.
       if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
@@ -1289,7 +1378,18 @@ export function getExternalReasoningCapabilities(
     case "qwen":
     case "qwencloud":
     case "huggingface":
+    case "xai":
+    case "cohere":
+    case "vercel":
+    case "azure":
+    case "bedrock":
       return catalogCapabilities(normalizedProvider, normalizedModel) ?? withEnableThinkingStyle();
+    case "vertex": {
+      const table = resolveGeminiReasoningCapabilities(modelForMatching);
+      return table.supportsReasoning
+        ? table
+        : (catalogCapabilities("vertex", normalizedModel) ?? table);
+    }
     case "vllm":
     case "llama_cpp":
       return catalogCapabilities(normalizedProvider, normalizedModel, true) ?? withEnableThinkingStyle();
@@ -1346,7 +1446,11 @@ export function providerModelReplaysReasoning(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean {
-  return providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3";
+  return (
+    providerType === "minimax" ||
+    providerType === "deepseek" ||
+    (providerType === "kimi" && isKimiK3(modelId))
+  );
 }
 
 /** Sent as a llama-server / vLLM template kwarg, so the model's template must still read it. */

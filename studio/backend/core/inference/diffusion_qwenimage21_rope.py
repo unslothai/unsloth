@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 RoPE in real arithmetic under ``torch.compile``, bit-identical to the complex form.
-
-Inductor cannot fuse complex multiply; ATen's fma placement differs per card (B200 vs A100), so
-``install`` probes the card and mirrors it via ``addcmul`` (one ``fma``). Kill switch:
-``UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0``.
-"""
+"""Real-arithmetic Qwen-Image-2.1 RoPE, bit-identical to the complex form (Inductor cannot fuse
+complex mul); kill UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0"""
 
 from __future__ import annotations
 

@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { AlertCircleIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { NpuCatalog } from "./use-npu-catalog";
 
@@ -26,7 +26,7 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
       {status.error || problems.length > 0 ? (
         <div className="flex gap-2 rounded-lg bg-destructive/10 p-2.5 text-destructive">
           <HugeiconsIcon
-            icon={AlertCircleIcon}
+            icon={Alert02Icon}
             className="mt-0.5 size-3.5 shrink-0"
           />
           <div className="flex flex-col gap-1">

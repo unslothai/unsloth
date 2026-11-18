@@ -8,7 +8,8 @@ import { isTauri } from "@/lib/api-base";
 import { MAX_FOLDER_FILES, openFolderPicker } from "@/lib/dropped-folders";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { FolderAddIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useRef } from "react";
 import {
@@ -35,6 +36,7 @@ import {
   useRagDocuments,
 } from "./use-rag-documents";
 import { useUploadQueue } from "./use-upload-queue";
+import { linkedFolderDocumentsSummary } from "./source-folder-copy";
 
 export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -52,10 +54,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     canRetry,
   } = useRagDocuments({ type: "project", projectId }, lister);
 
-  // Invalidate the sources probe before each mutation so a chat sent mid-upload
-  // cannot cache "no sources" for the probe's TTL, and announce after it, which
-  // is the half other instances and other tabs listen for. Announcing before
-  // would refetch and resurrect the row this panel has already dropped.
+  // Invalidate the sources probe before each mutation so a mid-upload chat cannot cache no sources
+  // for its TTL; announce after, since other tabs listen and a refetch before would resurrect a
+  // dropped row.
   const uploadNow = useCallback(
     (items: RagUploadItem[]) => {
       if (items.length === 0) return;
@@ -216,6 +217,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add sources
             </Button>
+            {addFolderButton}
           </div>
           <p className="text-ui-11 text-muted-foreground">
             {isTauri ? "Or drop files here" : "Or drop files or a folder here"}
@@ -230,7 +232,10 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           )}
         >
           <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground">
+            <p
+              className="text-sm text-muted-foreground"
+              title="Files added to this project, counting each file from a source folder. A folder that is still syncing adds its files as it reaches them."
+            >
               {documents.length === 1
                 ? "1 source"
                 : `${documents.length} sources`}
@@ -260,6 +265,11 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 <DocumentStatusChip
                   key={`folder:${folderId}`}
                   filename={`${name} · ${docs.length} file${docs.length === 1 ? "" : "s"}`}
+                  title={
+                    indexing > 0
+                      ? linkedFolderDocumentsSummary(name, docs.length, indexing).title
+                      : undefined
+                  }
                   status={indexing > 0 ? "running" : "completed"}
                   progress={
                     indexing > 0 ? (docs.length - indexing) / docs.length : null

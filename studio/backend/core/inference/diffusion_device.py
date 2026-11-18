@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Device + dtype policy for the local diffusion backend.
-
-torch imported lazily so this stays importable in a no-torch runtime. Unsloth's hardware layer
-reports product backends (CUDA, XPU, MLX, CPU); diffusers runs on PyTorch devices, so Apple
-Silicon maps to MPS and ROCm to ``cuda``. Centralises that mapping plus the per-backend dtype and
-the capability flags optimisation paths key off.
-"""
+"""Device/dtype policy: Apple Silicon maps to MPS and ROCm to cuda; torch imported lazily."""
 
 from __future__ import annotations
 
@@ -130,11 +124,9 @@ def install_vae_sync(
     *,
     logger: Any = None,
 ) -> bool:
-    """Synchronise Metal after every VAE decoder / encoder call (one per tile or latent frame).
-
-    Metal cannot reuse a buffer until the queued work holding it completes, so an unsynchronised
-    tile loop accumulates every call's intermediates; ``empty_cache`` cannot return them.
-    """
+    """Synchronise Metal after every VAE decoder or encoder call (one per tile or latent frame):
+    Metal cannot reuse a buffer until queued work holding it completes, and empty_cache cannot
+    return the intermediates."""
     if target.device != "mps":
         return False
     vae = getattr(pipe, "vae", None)
@@ -419,6 +411,9 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
         visible = hw.get_parent_visible_gpu_ids()
         if len(visible) < 2:
             return None
+        if hw._cuda_instance_ids_active():
+            # MIG instance ordinals are not nvidia-smi rows; keep card 0 explicit.
+            return 0
         if not hw._cuda_order_matches_smi():
             # No ranking (rows are not ordinals), but on cards that are not provably identical keep the
             # current card explicit, so a pooled thread left on another card cannot preflight against it.
@@ -494,11 +489,16 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
 def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     """(free, total) MiB of torch ordinal ``ordinal`` from nvidia-smi, so a card can be sized without a CUDA context
     on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
-    than nvidia-smi's, a mask naming no card, an integrated or MIG card, missing telemetry). Never raises."""
+    than nvidia-smi's, a mask naming no card, an integrated or MIG card, missing telemetry). An R570+ MIG instance
+    ordinal is sized from that instance's own slice row, or (None, None) when it was not read. Never raises."""
     try:
         from utils.hardware import hardware as hw
 
-        if hw.IS_ROCM or not hw._cuda_order_matches_smi():
+        if hw.IS_ROCM:
+            return None, None
+        if hw._cuda_instance_ids_active():
+            return hw._cuda_instance_free_total_mib(int(ordinal))
+        if not hw._cuda_order_matches_smi():
             return None, None
         visible = hw.get_parent_visible_gpu_ids()
         if not 0 <= int(ordinal) < len(visible):
@@ -520,6 +520,28 @@ def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     except Exception:  # noqa: BLE001 -- an unreadable card is simply not used
         pass
     return None, None
+
+
+def smi_util_pct(ordinal: int) -> Optional[float]:
+    """nvidia-smi utilization.gpu (percent) of torch ordinal ``ordinal``, without a CUDA context; None wherever
+    :func:`smi_free_total_mib` would not trust the rows. Never raises."""
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM or hw._cuda_instance_ids_active() or not hw._cuda_order_matches_smi():
+            return None
+        visible = hw.get_parent_visible_gpu_ids()
+        if not 0 <= int(ordinal) < len(visible):
+            return None
+        index = visible[int(ordinal)]
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        for device in (result or {}).get("devices", []):
+            if device.get("index") == index:
+                util = device.get("gpu_utilization_pct")
+                return None if util is None else float(util)
+    except Exception:  # noqa: BLE001 -- unknown utilisation: the memory test alone decides
+        pass
+    return None
 
 
 def auto_cuda_ranking_possible_cached() -> Optional[bool]:
@@ -732,6 +754,11 @@ def diffusion_device_target_from_torch_device(
             ordinal = int(index) if index.isdigit() else None,
         )
     if device == "xpu":
+        try:
+            import torch
+            xpu = getattr(torch, "xpu", None)
+        except Exception:
+            xpu = None
         return DiffusionDeviceTarget(
             device = "xpu",
             dtype = dtype,
@@ -740,6 +767,10 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = True,
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
+            # float64_device() (VAE tiling blend weights) comes through here, not _xpu_target.
+            supports_float64 = _xpu_has_fp64(xpu, int(index) if index.isdigit() else None)
+            if xpu is not None
+            else True,
         )
     if device == "mps":
         return DiffusionDeviceTarget(
@@ -808,6 +839,21 @@ def _cuda_or_rocm_target(
     )
 
 
+# Arc A-series has no fp64 ("Required aspect fp64"); 0 skips the probe.
+XPU_FP64_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
+
+
+def _xpu_has_fp64(xpu: Any, index: Optional[int] = None) -> bool:
+    """True when the probe is off or unanswerable."""
+    if (os.environ.get(XPU_FP64_PROBE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return True
+    try:
+        idx = xpu.current_device() if index is None else index
+        return bool(getattr(xpu.get_device_properties(idx), "has_fp64", True))
+    except Exception:
+        return True
+
+
 def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
     bf16_ok = False
     xpu = getattr(torch, "xpu", None)
@@ -823,6 +869,7 @@ def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
         supports_model_cpu_offload = True,
         supports_default_torch_compile = False,
         supports_pinned_transfer = False,
+        supports_float64 = _xpu_has_fp64(xpu) if xpu is not None else True,
     )
 
 
@@ -847,13 +894,10 @@ _MPS_CAP_OS_RESERVE_FRAC = 0.10
 def mps_high_watermark_ratio(
     recommended_bytes: Optional[int], total_ram_bytes: Optional[int]
 ) -> Optional[float]:
-    """The MPS high watermark ratio (a multiple of the recommended working set) that caps Metal allocations at
-    physical RAM minus an OS reserve, never below the working set Apple recommends. None when either reading is
-    missing (no cap: the caller keeps the unbounded allocator).
-
-    torch's own default is 1.7x the working set, which is above physical RAM on every Apple Silicon Mac (the working
-    set is ~2/3 to 3/4 of RAM), so past RAM it swaps instead of raising; 0.0 removes the limit entirely. A finite cap
-    turns that into an "MPS backend out of memory" RuntimeError that the batch backoff and VAE tile retry handle."""
+    """Ratio capping Metal allocations at RAM minus an OS reserve, never below the recommended
+    working set; None if a reading is missing. torch's 1.7x default exceeds RAM and swaps; 0.0
+    removes the limit; a finite cap raises an out-of-memory RuntimeError that batch backoff and
+    VAE tile retry handle."""
     try:
         recommended = int(recommended_bytes or 0)
         total = int(total_ram_bytes or 0)
@@ -947,6 +991,27 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
             supports_float64 = False,
         )
     return _cpu_target(torch)
+
+
+def apply_cpu_render_threads(device: Any) -> Optional[int]:
+    """Match torch CPU threads to sd.cpp's ``_default_threads``; per thread, so call from the render thread. An explicit
+    OMP_NUM_THREADS / MKL_NUM_THREADS (torch sizes its intra-op pool from them) is kept, as configure_cpu_threads does."""
+    if str(device).split(":")[0] != "cpu":
+        return None
+    if any(os.environ.get(name, "").strip() for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS")):
+        return None
+    try:
+        import torch
+
+        from .sd_cpp_backend import _default_threads
+
+        threads = int(_default_threads())
+        if threads > 0 and torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+            return threads
+    except Exception:  # noqa: BLE001 -- a thread count is an optimisation only
+        return None
+    return None
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:

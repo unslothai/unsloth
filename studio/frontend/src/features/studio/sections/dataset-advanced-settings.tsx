@@ -46,7 +46,6 @@ const DATASET_STREAMING_BLOCKER_KEYS: Record<
   embeddingModel: "studio.dataset.streaming.blockers.embeddingModel",
   imageDataset: "studio.dataset.streaming.blockers.imageDataset",
   audioDataset: "studio.dataset.streaming.blockers.audioDataset",
-  appleSilicon: "studio.dataset.streaming.blockers.appleSilicon",
 };
 
 export function DatasetAdvancedSettings({
@@ -98,7 +97,7 @@ export function DatasetAdvancedSettings({
               <div className="flex flex-col gap-2">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   {t("studio.dataset.targetFormat")}
-                  <Tooltip>
+                  <Tooltip disableHoverableContent={false}>
                     <TooltipTrigger asChild={true}>
                       <button
                         type="button"

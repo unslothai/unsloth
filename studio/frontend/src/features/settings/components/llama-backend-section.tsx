@@ -117,6 +117,7 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
           "settings.resources.llamaBackend.customPath.description",
         )}
         hint={t("settings.resources.llamaBackend.customPath.hint")}
+        wideControl={true}
         className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
         below={
           detail || settings?.source === "studio" ? (

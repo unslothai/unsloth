@@ -3,35 +3,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 # security-audit.yml's npm-scan-packages job depends on this path.
 
-"""scan_npm_packages.py -- npm-side content scanner.
-
-npm counterpart to scripts/scan_packages.py. Reads
-studio/frontend/package-lock.json, downloads each resolved tarball
-DIRECTLY from registry.npmjs.org (never via `npm install` -- no
-lifecycle scripts run), verifies the lockfile integrity hash, unpacks
-each into a sandboxed temp dir behind size/count/path-escape/symlink
-guards, and pattern-scans extracted contents for npm supply-chain
-attack signatures: malicious lifecycle scripts, C2 / exfil hosts,
-credential-stealing references, known IOC filenames, and obfuscation
-shapes.
-
-Safety stance (ingests attacker-controlled archives; assumes worst):
-  1. Downloads ONLY from registry.npmjs.org; other hosts refused.
-  2. Tarball download size-capped via Content-Length probe + chunked
-     read that aborts on overflow.
-  3. SHA-512 integrity verified against the lockfile entry BEFORE the
-     tarball is opened; mismatch aborts that package (no fallback).
-  4. tar extraction via `safe_extract`: rejects symlinks, absolute /
-     `..` paths, device files; enforces per-file, cumulative, and
-     member-count caps; streams (`r|gz`) so oversize is caught early.
-  5. NOTHING extracted is executed -- files are read as bytes and
-     grepped only.
-  6. Tempdir resolved and atexit-wiped on every termination path.
-  7. Stdlib only (a dep would be a supply-chain liability itself).
-
-Exit codes: 0 = no HIGH+ findings; 1 = HIGH/CRITICAL or pre-scan
-structural anomaly; 2 = internal error. Run in CI per-PR and nightly.
-"""
+"""Scans npm lockfile tarballs for IOCs without running them; downloads only from
+registry.npmjs.org; SHA-512 checked before opening, mismatch aborts; safe_extract guards; stdlib
+only; exit 1 on HIGH+."""
 
 from __future__ import annotations
 

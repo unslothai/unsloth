@@ -10,13 +10,8 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Load a block-FP8 checkpoint straight into bitsandbytes NF4 (``load_in_4bit = True``).
-
-The fp8 block is parked off the config so transformers runs a bnb 4bit load; each FP8 tensor is
-dequantized inside its weight converter right before bnb quantizes it, so only one converter's
-tensors are ever 16-bit and NF4 is bit-identical to loading the dequantized checkpoint. The
-checkpoint's ``modules_to_not_convert`` stay out of bitsandbytes.
-"""
+"""Block-FP8 checkpoint to bnb NF4 (load_in_4bit); each FP8 tensor dequantized just before
+quantizing (bit-identical); modules_to_not_convert stay out of bitsandbytes."""
 
 import contextvars
 import copy
@@ -262,11 +257,15 @@ def maybe_arm_fp8_to_nf4(
             )
         return False
     if str(quant.get("expert_dtype") or "").lower() in _PACKED_EXPERT_DTYPES:
-        # DeepSeek-V4-Flash: fp8 attention, packed FP4 experts. Not handled here.
+        # DeepSeek-V4 / V4.1 releases: fp8 linears, experts already packed to 4 bits. The release stays the frozen
+        # base (published formats are kept: FP4 -> NF4 would round the experts twice).
         if verbose and explicit_4bit_requested():
+            expert_dtype = str(quant.get("expert_dtype")).upper()
             print(
-                "Unsloth: this fp8 checkpoint packs its experts in FP4, which the fp8 -> 4bit load does "
-                "not handle. Loading it as it is."
+                f"Unsloth: this checkpoint already stores its experts in {expert_dtype} (4-bit) and its other "
+                "Linear layers in fp8. `load_in_4bit = True` keeps the release's own fp8 / "
+                f"{expert_dtype} formats and does not re-quantize the experts to NF4; LoRA trains on top of the "
+                "frozen base."
             )
         return False
     mode = os.environ.get(_ENV, "").strip().lower()
@@ -1032,9 +1031,10 @@ def install_fp8_to_nf4_quantizer() -> bool:
                     _keep_fp8_embeddings(model, plan["modules_to_convert"])
             return super()._process_model_before_weight_loading(model, **kwargs)
 
-        def update_weight_conversions(self, weight_conversions):
+        def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+            # transformers 5.21+ also passes the model.
             if self._unsloth_fp8_plan is None or _STATE is None:
-                return super().update_weight_conversions(weight_conversions)
+                return super().update_weight_conversions(weight_conversions, *args, **kwargs)
             model = self._unsloth_fp8_model
             self._unsloth_fp8_model = None
             # Here, not before loading: only now are the caller's key_mapping renamings known.
@@ -1087,7 +1087,7 @@ def install_fp8_to_nf4_quantizer() -> bool:
                 )
             )
             self._unsloth_fp8_rebuilt = rebuilt_from
-            return super().update_weight_conversions(updated)
+            return super().update_weight_conversions(updated, *args, **kwargs)
 
         def _process_model_after_weight_loading(self, model, **kwargs):
             global _STATE

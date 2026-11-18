@@ -15,6 +15,7 @@ from PIL import Image
 from core.inference.diffusion import (
     DiffusionBackend,
     _compile_shape_dims,
+    _kontext_render_size,
     _family_workflows,
     _is_trusted_diffusion_repo,
 )
@@ -235,7 +236,7 @@ def test_registered_shape_is_the_decomposition_canvas(size, expected):
     # 640 x 640 area at the input aspect on the 32 px grid, as the pipeline sizes it
     assert _compile_shape_dims("edit", src, 1024, 1024, fam) == expected
     kontext = detect_family("black-forest-labs/FLUX.1-Kontext-dev")
-    assert _compile_shape_dims("edit", src, 1024, 1024, kontext) == size
+    assert _compile_shape_dims("edit", src, 1024, 1024, kontext) == _kontext_render_size(size)
 
 
 def _saved(root, class_name):

@@ -1,26 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Freeze the setup-time heap for the duration of `Trainer.train()`.
-
-Libraries call `gc.collect()` several times inside `train()`. Each full collection walks every
-tracked object, and after loading a model, tokenizer, dataset and compiled code that heap is
-large: about 0.5 s per pass, 2 to 3 s per `train()` on a 0.6B / 1B LoRA run. `gc.freeze()` moves
-everything alive at train start into the permanent generation, so those passes only see objects
-created during training.
-
-The freeze must be undone when `train()` exits (normally, by exception or by KeyboardInterrupt):
-frozen objects are never collected, so a cyclic object dropped after training (the usual
-`del model; gc.collect()` in a notebook) would otherwise keep its memory forever.
-
-Rules:
-- Only the outermost `train()` freezes; nested calls (resume guards, per-instance wrappers) are
-  counted and do nothing.
-- If something is already frozen at entry, the caller owns the freeze: Python cannot unfreeze
-  only our objects, so we leave the heap alone and do not unfreeze on exit.
-- `gc.isenabled()` is never touched.
-- `UNSLOTH_GC_FREEZE=0` turns it off (read on each outermost entry).
-"""
+"""gc.freeze setup heap in outermost train() (nested calls no-op) and after its first step;
+unfreeze on exit unless caller already froze; UNSLOTH_GC_FREEZE=0 / UNSLOTH_GC_FREEZE_AFTER_STEP=0."""
 
 import functools
 import gc
@@ -30,6 +12,7 @@ import threading
 __all__ = [
     "unsloth_gc_train_scope",
     "patch_trainer_train_gc_scope",
+    "freeze_after_first_step",
 ]
 
 _lock = threading.Lock()
@@ -72,6 +55,39 @@ def _exit():
             gc.unfreeze()
 
 
+def _after_step_enabled():
+    value = os.environ.get("UNSLOTH_GC_FREEZE_AFTER_STEP", "1").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def freeze_after_first_step():
+    """Freeze compile state from step 1 so full collections stop rescanning it."""
+    with _lock:
+        if _depth < 1 or not _owns_freeze or not _after_step_enabled():
+            return False
+        gc.collect()
+        gc.freeze()
+        return True
+
+
+def _first_step_callback():
+    try:
+        from transformers import TrainerCallback
+    except Exception:
+        return None
+
+    class _FreezeAfterFirstStep(TrainerCallback):
+        def __init__(self):
+            self.done = False
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if not self.done:
+                self.done = True
+                freeze_after_first_step()
+
+    return _FreezeAfterFirstStep()
+
+
 class unsloth_gc_train_scope:
     """Context manager: `gc.collect(); gc.freeze()` on the outermost entry, `gc.unfreeze()` on exit."""
 
@@ -95,7 +111,19 @@ def patch_trainer_train_gc_scope(trainer_class):
     @functools.wraps(original_train)
     def train(self, *args, **kwargs):
         with unsloth_gc_train_scope():
-            return original_train(self, *args, **kwargs)
+            callback = None
+            if _depth == 1 and _owns_freeze and hasattr(self, "add_callback"):
+                callback = _first_step_callback()
+                if callback is not None:
+                    self.add_callback(callback)
+            try:
+                return original_train(self, *args, **kwargs)
+            finally:
+                if callback is not None:
+                    try:
+                        self.remove_callback(callback)
+                    except Exception:
+                        pass
 
     train._unsloth_gc_train_scope = True
     trainer_class.train = train

@@ -24,6 +24,13 @@ class DownloadModelRequest(BaseModel):
         None,
         description = "Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
     )
+    engram_precision: Optional[str] = Field(
+        None,
+        max_length = 32,
+        pattern = r"^[A-Za-z0-9_]*$",
+        description = "With gguf_variant: fetch the repo's standalone Engram table of this "
+        "precision in place of the quant's own table shard (see LoadRequest.engram_precision).",
+    )
     use_xet: bool = Field(
         True,
         description = "Legacy transport flag, superseded by transport_mode. Kept so an older "
@@ -125,6 +132,13 @@ class ActiveDownload(BaseModel):
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
     )
+    engram_precision: Optional[str] = Field(
+        None,
+        description = (
+            "The standalone Engram table this GGUF job fetches in place of the quant's own; "
+            "null when it fetches the quant's own"
+        ),
+    )
 
 
 class ActiveDownloadsResponse(BaseModel):
@@ -143,6 +157,8 @@ class TransportCapabilities(BaseModel):
     auto_reason: Optional[str] = None
     # False when huggingface_hub refetches interrupted files from zero; no transport can byte-resume, so the UI must not label one.
     partials_resumable: bool = True
+    # A download speed limit puts every download that fits under the HTTPS ceiling on HTTP.
+    speed_limited: bool = False
 
 
 class TransportStatusResponse(BaseModel):
@@ -152,6 +168,7 @@ class TransportStatusResponse(BaseModel):
 
 
 class DownloadProgressResponse(BaseModel):
+    progress_scope: Optional[Literal["active_files"]] = None
     downloaded_bytes: int
     # Finalized-blob bytes only, so a partial is not mistaken for finished.
     completed_bytes: int = 0

@@ -230,7 +230,7 @@ function SelectedOptionDescription({ name, detail }: { name: string; detail: str
 
 // Drops the edge-to-edge glyph to the label's cap line.
 const ROW_ICON_CLASS =
-  "me-1.5 mt-[calc(0.1875rem*var(--ui-font-scale,1))] size-[calc(20px*var(--ui-space-scale,1))]";
+  "me-1.5 mt-[calc(0.2rem*var(--ui-font-scale,1))] size-[calc(22px*var(--ui-space-scale,1))]";
 
 /** Per account, so every account sees it; the OS sandbox sections below are the owner's. */
 function PermissionsSection() {
@@ -258,7 +258,7 @@ function PermissionsSection() {
       {choice.options.map((option) => (
         <SettingsRow
           key={option.value}
-          icon={<option.icon className={ROW_ICON_CLASS} strokeWidth={1.75} />}
+          icon={<option.icon className={cn(ROW_ICON_CLASS, option.value === "ask" && "scale-[0.94]")} strokeWidth={1.75} />}
           iconAlign="top"
           label={t(`settings.general.permissions.names.${option.value}`)}
           description={t(`settings.general.permissions.details.${option.value}`)}

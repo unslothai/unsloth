@@ -213,6 +213,31 @@ test("composer attachment cards are keyed and scoped by attachment id", async ()
   assert.match(scopes, /aui\.composer\(\)\.attachment\(\{ id \}\)/);
 });
 
+test("a custom OpenAI-compatible connection is sent video like an image", async () => {
+  const base = {
+    checkpoint: "external::conn::vision-model",
+    modelLabel: "vision-model",
+    activeModel: undefined,
+    audio: false,
+    video: true,
+  };
+  assert.equal(
+    attachedMediaUnavailableReason({ ...base, externalTakesVideo: true }),
+    null,
+  );
+  assert.match(
+    attachedMediaUnavailableReason(base) ?? "",
+    /^vision-model cannot accept video\./,
+  );
+  const adapter = await readSrcAsync("features/chat/api/chat-adapter.ts");
+  const start = adapter.indexOf("model: externalSelection.modelId,");
+  const external = adapter.slice(
+    start,
+    adapter.indexOf("...externalReasoningFields,", start),
+  );
+  assert.match(external, /video_base64: findLatestUserVideoBase64\(currentTurnMessages\)/);
+});
+
 test("audio or video attached before a model loaded is checked when sent", () => {
   const listener = { hasAudioInput: true, hasVideoInput: false };
   const textOnly = { hasAudioInput: false, hasVideoInput: false };

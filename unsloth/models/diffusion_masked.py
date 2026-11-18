@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Absorbing-mask diffusion LMs over one bidirectional sequence: LLaDA, LLaDA-MoE, Dream, Nemotron-Labs-Diffusion.
-
-Each response token is replaced by [MASK] with probability p, the clean prompt stays visible, and the
-loss is cross-entropy at the masked positions weighted by 1 / p. The families differ only in the knobs
-below, each taken from that family's published training code.
-"""
+"""Absorbing-mask diffusion (LLaDA, LLaDA-MoE, Dream, Nemotron-Labs-Diffusion); masked CE, 1/p weight."""
 
 import functools
 from dataclasses import dataclass

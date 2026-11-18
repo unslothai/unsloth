@@ -14,10 +14,16 @@ if not torch.cuda.is_available() or torch.version.hip is not None:
 
 from unsloth.kernels import cross_entropy_loss as ce_mod
 
+_TORCH = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
+
 
 @pytest.mark.parametrize("vocab", [32768, 65537, 151936])
 @pytest.mark.parametrize("fullgraph", [False, True])
-def test_compiled_grads_match_the_fp64_reference(vocab, fullgraph):
+@pytest.mark.parametrize("dynamic", [None, True])
+def test_compiled_grads_match_the_fp64_reference(vocab, fullgraph, dynamic):
+    if dynamic and _TORCH < (2, 10):
+        # torch 2.6 Dynamo also rejects bool() of the symbolic softcap int; checked from 2.10 on.
+        pytest.skip("dynamic=True Triton cross entropy is checked on torch 2.10+")
     torch._dynamo.reset()
     generator = torch.Generator(device = "cuda").manual_seed(vocab)
     # sm75 (T4) has no bf16 Triton under torch.compile.
@@ -35,7 +41,9 @@ def test_compiled_grads_match_the_fp64_reference(vocab, fullgraph):
     )
     expected.backward()
     x = logits.clone().requires_grad_(True)
-    loss = torch.compile(ce_mod.fast_cross_entropy_loss, fullgraph = fullgraph)(x, labels)
+    # dynamic=True: the vocab size is symbolic, so the host-side chunk counts must trace (no divmod).
+    compiled = torch.compile(ce_mod.fast_cross_entropy_loss, fullgraph = fullgraph, dynamic = dynamic)
+    loss = compiled(x, labels)
     loss.backward()
     torch.testing.assert_close(loss.double(), expected.detach(), rtol = 1e-4, atol = 1e-4)
     rel = (x.grad.double() - reference.grad).norm() / reference.grad.norm()

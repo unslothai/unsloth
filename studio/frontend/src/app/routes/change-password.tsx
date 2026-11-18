@@ -4,6 +4,7 @@
 import { createRoute } from "@tanstack/react-router";
 import { lazy } from "react";
 import { requirePasswordChangeFlow } from "../auth-guards";
+import { queryParam } from "@/features/chat/chat-search";
 import { Route as rootRoute } from "./__root";
 
 const ChangePasswordPage = lazy(() =>
@@ -15,7 +16,8 @@ const ChangePasswordPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/change-password",
-  staticData: { title: "Change Password", isAuthFlow: true },
-  beforeLoad: () => requirePasswordChangeFlow(),
+  staticData: { titleKey: "routes.changePassword", isAuthFlow: true },
+  validateSearch: (search: Record<string, unknown>): { q?: string } => ({ q: queryParam(search) }),
+  beforeLoad: ({ search }) => requirePasswordChangeFlow(search.q),
   component: ChangePasswordPage,
 });

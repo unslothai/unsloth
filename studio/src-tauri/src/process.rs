@@ -49,6 +49,7 @@ fn apply_scrubbed_appimage_library_path(cmd: &mut Command) {
 pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_some() {
         apply_scrubbed_appimage_library_path(cmd);
+        restore_host_accessibility(cmd);
 
         if let Some(path) = appdir_entries_demoted("PATH") {
             cmd.env("PATH", path);
@@ -97,12 +98,26 @@ fn appdir_entries_demoted(name: &str) -> Option<std::ffi::OsString> {
     std::env::join_paths(host.into_iter().chain(bundled)).ok()
 }
 
+// Set by the AppRun when it, not the operator, turned the bundled atk-bridge off (#15260); host
+// programs get their bridge back, an operator's NO_AT_BRIDGE still reaches them.
+#[cfg(target_os = "linux")]
+const APPIMAGE_AT_BRIDGE_MARKER: &str = "UNSLOTH_APPIMAGE_NO_AT_BRIDGE";
+
+#[cfg(target_os = "linux")]
+fn restore_host_accessibility(cmd: &mut Command) {
+    if std::env::var_os(APPIMAGE_AT_BRIDGE_MARKER).is_some() {
+        cmd.env_remove("NO_AT_BRIDGE");
+    }
+    cmd.env_remove(APPIMAGE_AT_BRIDGE_MARKER);
+}
+
 #[cfg(target_os = "linux")]
 fn scrub_appimage_launcher_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_none() {
         return;
     }
     apply_scrubbed_appimage_library_path(cmd);
+    restore_host_accessibility(cmd);
     if let Some(path) = appdir_entries_demoted("PATH") {
         cmd.env("PATH", path);
     }
@@ -155,6 +170,7 @@ pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Res
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        restore_host_accessibility(cmd.as_std_mut());
         cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
         match scrub_appimage_library_path() {
             Some(library_path) => {
@@ -194,6 +210,56 @@ mod appimage_environment_tests {
     fn env_contains_name(env: &str, name: &str) -> bool {
         let prefix = format!("{name}=");
         env.lines().any(|line| line.starts_with(&prefix))
+    }
+
+    #[test]
+    fn children_get_back_the_atk_bridge_only_the_apprun_turned_off() {
+        let _guard = env_lock();
+        let old = ["APPIMAGE", "APPDIR", "NO_AT_BRIDGE", APPIMAGE_AT_BRIDGE_MARKER]
+            .map(|key| (key, std::env::var_os(key)));
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        let run = |cmd: &mut Command| {
+            String::from_utf8(cmd.output().expect("run child").stdout).unwrap()
+        };
+        let launches: [fn(&dyn Fn(&mut Command) -> String) -> String; 3] = [
+            |run| {
+                let mut cmd = Command::new("/usr/bin/env");
+                scrub_appimage_launcher_env(&mut cmd);
+                run(&mut cmd)
+            },
+            |run| {
+                let mut cmd = Command::new("/usr/bin/env");
+                scrub_appimage_python_env(&mut cmd);
+                run(&mut cmd)
+            },
+            |run| {
+                let mut cmd = tokio::process::Command::new("/usr/bin/env");
+                scrub_appimage_python_env_tokio(&mut cmd);
+                run(cmd.as_std_mut())
+            },
+        ];
+
+        std::env::set_var("NO_AT_BRIDGE", "1");
+        std::env::set_var(APPIMAGE_AT_BRIDGE_MARKER, "1");
+        for launch in launches {
+            let env = launch(&run);
+            assert!(!env_contains_name(&env, "NO_AT_BRIDGE"), "{env}");
+            assert!(!env_contains_name(&env, APPIMAGE_AT_BRIDGE_MARKER), "{env}");
+        }
+
+        std::env::remove_var(APPIMAGE_AT_BRIDGE_MARKER);
+        for launch in launches {
+            let env = launch(&run);
+            assert!(env.lines().any(|line| line == "NO_AT_BRIDGE=1"), "{env}");
+        }
+
+        for (key, value) in old {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 
     #[test]
@@ -3244,6 +3310,10 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
+    let port = crate::desktop_port::resolve_port(
+        port,
+        std::env::var_os(crate::desktop_port::PORT_ENV).as_deref(),
+    )?;
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // Checked on the spawn path: a webview remount can start a backend while the job is disarmed.
@@ -3529,9 +3599,9 @@ pub fn start_backend(
     Ok(generation)
 }
 
-async fn generic_backend_health_ok(port: u16) -> bool {
+async fn generic_backend_health_ok(port: u16, timeout: Duration) -> bool {
     let started = std::time::Instant::now();
-    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
+    let client = match crate::loopback_http::client(timeout) {
         Ok(client) => client,
         Err(error) => {
             warn!("Could not build backend validation client: {}", error);
@@ -3611,6 +3681,8 @@ async fn generic_backend_health_ok(port: u16) -> bool {
 
 /// Doubling backoff: each probe costs two requests against a busy backend.
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
+/// The health watchdog's per-request budget: warm-up right after TAURI_PORT can hold the GIL past 2s.
+pub(crate) const PORT_VALIDATION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
 async fn validate_candidate_port(
@@ -3650,16 +3722,24 @@ async fn validate_candidate_port(
             break false;
         }
         attempts += 1;
+        // Never past the deadline: the answer would be discarded anyway.
+        let budget = PORT_VALIDATION_PROBE_TIMEOUT
+            .min(deadline.saturating_duration_since(std::time::Instant::now()));
         let ok = if let Some(owner) = owner.clone() {
             matches!(
-                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
-                    .await,
+                crate::desktop_backend_owner::probe_owned_backend_state_with_timeout(
+                    owner,
+                    Some(port),
+                    false,
+                    budget,
+                )
+                .await,
                 crate::desktop_backend_owner::OwnedBackendProbe::Verified(
                     crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
                 ) if verified_port == port
             )
         } else {
-            generic_backend_health_ok(port).await
+            generic_backend_health_ok(port, budget).await
         };
         if ok {
             // A late success must not emit server-port after server-start-timeout.
@@ -3959,6 +4039,7 @@ fn read_output_stream<R: std::io::Read>(
     if !is_stderr {
         let mut exit_record: Option<(String, bool)> = None;
         let mut emit_crash = false;
+        let mut clean_exit = false;
         if let Ok(mut proc) = state.lock() {
             if proc.generation != generation {
                 return;
@@ -3972,7 +4053,8 @@ fn read_output_stream<R: std::io::Read>(
                 match exit_status_after_stdout_closed(child) {
                     Some(status) => {
                         info!("Backend stdout stream ended with status: {}", status);
-                        exit_record = Some((status, intentional));
+                        clean_exit = status.success();
+                        exit_record = Some((status.to_string(), intentional));
                         true
                     }
                     None => {
@@ -3993,6 +4075,7 @@ fn read_output_stream<R: std::io::Read>(
                 }
                 proc.port = None;
                 proc.diagnostics_session = None;
+                // Also on a clean exit: server-crashed is the window's only notice the backend is gone.
                 emit_crash = !intentional;
             }
         }
@@ -4002,22 +4085,36 @@ fn read_output_stream<R: std::io::Read>(
                 &backend_log.session_id,
                 Some(status),
                 intentional,
-                None,
+                unrequested_exit_reason(intentional, clean_exit),
             );
         }
         if emit_crash {
-            error!("Backend process stdout closed unexpectedly (crash detected)");
+            if clean_exit {
+                warn!(
+                    "Backend exited cleanly without a Desktop stop request \
+                     (e.g. `unsloth studio stop`); not a crash"
+                );
+            } else {
+                error!("Backend process stdout closed unexpectedly (crash detected)");
+            }
             let _ = app.emit("server-crashed", ());
         }
     }
 }
 
+/// `unsloth studio stop` cannot set `intentional_stop`; label its clean exit, not `process_exit`.
+fn unrequested_exit_reason(intentional: bool, clean_exit: bool) -> Option<String> {
+    (!intentional && clean_exit).then(|| "clean_exit".to_string())
+}
+
 /// Exit status of a child whose stdout closed, or None if still alive. Polls briefly since EOF can
 /// precede exit visibility; stdout EOF alone is not death (the backend may close stdout).
-fn exit_status_after_stdout_closed(child: &mut Box<dyn ChildWrapper + Send>) -> Option<String> {
+fn exit_status_after_stdout_closed(
+    child: &mut Box<dyn ChildWrapper + Send>,
+) -> Option<std::process::ExitStatus> {
     for attempt in 0..30 {
         match child.try_wait() {
-            Ok(Some(status)) => return Some(status.to_string()),
+            Ok(Some(status)) => return Some(status),
             Ok(None) => {
                 if attempt > 0 {
                     std::thread::sleep(Duration::from_millis(100));
@@ -4194,6 +4291,59 @@ fn stop_adopted_backend(
         "Adopted backend did not stop via exact-port HTTP shutdown; refusing PID fallback without verified port-to-PID binding"
             .to_string(),
     )
+}
+
+// An accepted shutdown first lets a training run save, within the backend's 120 s default budget.
+const ATTACHED_SHUTDOWN_WAIT: Duration = Duration::from_secs(130);
+
+pub fn stop_attached_backend(port: u16) -> Result<(), String> {
+    if !crate::desktop_backend_owner::port_is_listening_blocking(port, Duration::from_millis(150)) {
+        return Ok(());
+    }
+    if try_exact_port_http_shutdown(port, "Attached backend")
+        && wait_for_port_disconnect(port, ATTACHED_SHUTDOWN_WAIT)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "The Unsloth server on port {port} did not stop. Stop it from the terminal that started it, then try again."
+    ))
+}
+
+#[cfg(test)]
+mod attached_backend_stop_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn an_attached_port_with_nothing_on_it_is_already_stopped() {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert_eq!(stop_attached_backend(port), Ok(()));
+    }
+
+    #[test]
+    fn a_server_that_refuses_this_install_is_left_running() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = stream.read(&mut [0u8; 4096]);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+
+        assert!(stop_attached_backend(port).is_err());
+        assert!(crate::desktop_backend_owner::port_is_listening_blocking(
+            port,
+            Duration::from_millis(150)
+        ));
+    }
 }
 
 /// Graceful shutdown of owned backend handles.
@@ -5873,6 +6023,27 @@ mod managed_cli_working_dir_tests {
     }
 }
 
+#[cfg(test)]
+mod port_validation_budget_tests {
+    #[test]
+    fn port_validation_probes_use_the_validation_budget() {
+        let src = include_str!("process.rs").replace("\r\n", "\n");
+        let start = src
+            .find("async fn validate_candidate_port(")
+            .expect("validate_candidate_port moved; update this guard");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("could not find the function end")];
+        assert!(body.contains("PORT_VALIDATION_PROBE_TIMEOUT"));
+        assert!(body.contains("probe_owned_backend_state_with_timeout("));
+        assert!(body.contains("generic_backend_health_ok(port, budget)"));
+        assert!(!body.contains("probe_owned_backend_state(owner"));
+        assert!(
+            super::PORT_VALIDATION_PROBE_TIMEOUT >= std::time::Duration::from_secs(10),
+            "keep the validation budget at least the health watchdog's"
+        );
+    }
+}
+
 // Real processes: stdout can EOF before the exit is visible to try_wait.
 #[cfg(test)]
 #[cfg(unix)]
@@ -5894,7 +6065,24 @@ mod exit_status_after_stdout_closed_tests {
         let mut child = spawn(&["/bin/sh", "-c", "exit 3"]);
         let status = exit_status_after_stdout_closed(&mut child)
             .expect("a child that exited must be reported, not read as alive");
-        assert!(status.contains('3'), "expected the real exit code in {status:?}");
+        assert_eq!(
+            status.code(),
+            Some(3),
+            "expected the real exit code in {status:?}"
+        );
+        assert!(!status.success());
+    }
+
+    #[test]
+    fn a_clean_exit_is_success_and_a_signal_is_not() {
+        let mut clean = spawn(&["/bin/sh", "-c", "exit 0"]);
+        assert!(exit_status_after_stdout_closed(&mut clean)
+            .unwrap()
+            .success());
+        let mut signalled = spawn(&["/bin/sh", "-c", "kill -TERM $$"]);
+        assert!(!exit_status_after_stdout_closed(&mut signalled)
+            .unwrap()
+            .success());
     }
 
     #[test]
@@ -5921,6 +6109,22 @@ mod exit_status_after_stdout_closed_tests {
                 "child exiting after {delay_ms}ms was read as still alive"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod backend_exit_diagnostic_tests {
+    use super::unrequested_exit_reason;
+
+    #[test]
+    fn only_an_unrequested_clean_exit_is_labelled_clean_exit() {
+        assert_eq!(
+            unrequested_exit_reason(false, true).as_deref(),
+            Some("clean_exit")
+        );
+        assert_eq!(unrequested_exit_reason(false, false), None);
+        assert_eq!(unrequested_exit_reason(true, true), None);
+        assert_eq!(unrequested_exit_reason(true, false), None);
     }
 }
 

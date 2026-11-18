@@ -6,12 +6,11 @@ import {
   ArrowRight02Icon,
   ArrowTurnBackwardIcon,
   Cancel01Icon,
-  Delete02Icon,
   Download01Icon,
-  Folder01Icon,
-  Image02Icon,
+  ImageIcon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { type KeyboardEventHandler, type ReactNode, useRef, useState } from "react";
@@ -34,7 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { type MediaInset, type MediaZoom, MediaZoomStage } from "./media-zoom";
 import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
@@ -325,7 +324,7 @@ export function MediaViewer({
             {project.submenu}
             {actions.onDelete && (
               <DropdownMenuItem variant="destructive" onClick={actions.onDelete}>
-                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
                 {actions.deleteLabel ?? t("common.delete")}
               </DropdownMenuItem>
             )}
@@ -432,7 +431,7 @@ export function MediaViewer({
                 )}
                 title={typeof meta === "string" && meta ? `${title}\n${meta}` : title}
               >
-                <HugeiconsIcon icon={Image02Icon} strokeWidth={1.75} className="size-4.5 shrink-0" />
+                <HugeiconsIcon icon={ImageIcon} strokeWidth={1.75} className="size-4.5 shrink-0" />
                 <DialogTitle className="truncate text-sm font-medium">{title}</DialogTitle>
                 <DialogDescription className="sr-only">{meta}</DialogDescription>
               </div>

@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Free Cloudflare quick tunnel for Unsloth's 0.0.0.0 launches.
-
-The raw http://<ip>:<port> is often unreachable (https-vs-http, blocked ports, closed security groups); a
-cloudflared quick tunnel gives a free https://*.trycloudflare.com URL that works anywhere, with no account or
-domain. Best-effort throughout: any failure collapses to "no URL" and Unsloth keeps running. Stdlib only
-(back-end imports are lazy) so it is safe to import early.
-"""
+"""Cloudflared quick tunnel for 0.0.0.0 launches; best-effort, failure gives no URL and Unsloth
+keeps running; stdlib only, lazy backend imports, safe to import early."""
 
 from __future__ import annotations
 
@@ -86,8 +81,7 @@ def _lifetime_kwargs() -> dict:
 
 
 def _adopt_pid(pid: int) -> None:
-    """Record cloudflared so a force quit does not strand it (macOS has no
-    PDEATHSIG). Best-effort, like _lifetime_kwargs above."""
+    """Record cloudflared so a force quit cannot strand it (macOS has no PDEATHSIG); best-effort."""
     try:
         from utils.process_lifetime import adopt_pid
         adopt_pid(pid)
@@ -562,9 +556,8 @@ class CloudflareTunnel:
                 callback(self)
 
     def wait_for_ready(self, timeout: float = _READY_TIMEOUT) -> Optional[str]:
-        """Block until the tunnel is actually serving -- the URL has been minted *and* at least one edge connection
-        has registered -- or until timeout. Returns the URL only when ready, so callers never advertise a URL
-        that would return Cloudflare error 1033 (HTTP 530)."""
+        """Waits for the URL and an edge connection; returns it only when ready, to avoid Cloudflare
+        1033."""
         self._ready_event.wait(timeout)
         return self.url if self.ready else None
 

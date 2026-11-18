@@ -12,6 +12,8 @@ on:
       - 'studio/backend/requirements/diffusers-*.txt'
       - 'studio/backend/requirements/studio.txt'
       - 'studio/backend/tests/test_vae_tile_geometry.py'
+      - 'studio/backend/tests/test_diffusion_vae_tiling_general.py'
+      - 'studio/backend/tests/test_diffusion_vae_full_map.py'
       - 'studio/backend/tests/fixtures/vae_tile_configs.json'
       - 'studio/backend/tests/test_diffusion_autoopt_parity.py'
       - 'studio/backend/tests/fixtures/diffusion_autoopt_parity.json'
@@ -23,6 +25,8 @@ on:
       - 'studio/backend/requirements/diffusers-*.txt'
       - 'studio/backend/requirements/studio.txt'
       - 'studio/backend/tests/test_vae_tile_geometry.py'
+      - 'studio/backend/tests/test_diffusion_vae_tiling_general.py'
+      - 'studio/backend/tests/test_diffusion_vae_full_map.py'
       - 'studio/backend/tests/fixtures/vae_tile_configs.json'
       - 'studio/backend/tests/test_diffusion_autoopt_parity.py'
       - 'studio/backend/tests/fixtures/diffusion_autoopt_parity.json'
@@ -46,7 +50,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -66,6 +70,11 @@ jobs:
       - name: Seam guard
         working-directory: studio/backend
         run: python -m pytest tests/test_vae_tile_geometry.py -q -rxXs --tb=short --timeout=600
+
+      # The image-family coverage rule and the FLUX.2-class whole-map decode need diffusers too.
+      - name: Tiling rule coverage and whole-map decode
+        working-directory: studio/backend
+        run: python -m pytest tests/test_diffusion_vae_tiling_general.py tests/test_diffusion_vae_full_map.py -q -rxXs --tb=short --timeout=600
 
       # Backend CI has no diffusers, so the auto-optimizer parity fixture is checked here.
       - name: Diffusion auto-optimizer parity

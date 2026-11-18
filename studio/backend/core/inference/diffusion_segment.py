@@ -1,37 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text-prompted masks for the Images page: SAM 3 (Segment Anything with Concepts) turns "sofa, red lamp, pillow:2"
-into a white-on-black mask the inpaint and localized-edit painters load and keep editable.
-
-Behaviour follows ComfyUI's ``SAM3_Detect`` node and its "Image Segmentation (SAM3)" blueprint
-(comfy_extras/nodes_sam3.py, comfy/text_encoders/sam3_clip.py): comma-separated concepts, ``:N`` caps a concept's
-detections (default 1), the image is stretched to 1008x1008 with bilinear resampling, a detection is kept when its
-score > 0.5, the best ``N`` per concept are kept, and the union of their masks (mask logits upsampled bilinearly to
-the source size, > 0) is the result. Two departures: the score is sigmoid(logit) * sigmoid(presence), as in Meta's
-SAM 3 and transformers' post-processing (ComfyUI drops the presence term, and then a concept that is not in the
-picture, "elephant" in a living room, masks the sofa at 0.72; with it every absent concept scores below 0.02 and no
-present one changes), and ComfyUI's optional crop-and-refine pass through the tracker's SAM decoder is not run.
-
-Weights come from a small table of variants (SEGMENTER_VARIANTS). The default is SAM 3.1: Meta ships it only as an
-original-format multiplex checkpoint, so it is the SAM 3.1 detector converted with transformers' own SAM 3 converter
-into a BF16 ``Sam3Model`` repository (ungated, SAM License). The official transformers-format ``facebook/sam3``
-(gated: the license is accepted on Hugging Face) stays selectable with ``UNSLOTH_SAM3_VARIANT=sam3``, and is used
-when it is already downloaded and SAM 3.1 is not. ``UNSLOTH_SAM3_PATH`` points at any local transformers-format SAM 3
-directory instead.
-
-SAM 3.1 also ships pre-quantized detector files (FP8, INT8, INT8-ConvRot; diffusion_segment_quant). On a CUDA card
-``UNSLOTH_SAM3_PRECISION`` (auto / bf16 / fp8 / int8) picks one. auto runs bf16, which is faster, while the card has
-room for it, and only when it is short of memory loads a file that passed the accuracy gate (INT8, the ConvRot build
-unless ``UNSLOTH_SAM3_INT8_CONVROT=0``). The download fetches that one weights file with the configs and tokenizer,
-and bf16 when the file is not published; the CPU and Apple's MPS run bf16 weights (a quantized file that is the only
-one on disk is dequantized there).
-
-The model is auxiliary to the image model, like the FLUX.3 prompt upsampler: loaded on the first request, kept for
-a short keep-alive, unloaded right after a call when the accelerator is tight, and dropped whenever the GPU arbiter
-hands the GPU to a load, evicts the image model, or training starts. It runs on the CPU while training holds the GPU
-or when the accelerator has no room.
-"""
+"""Text-prompted SAM 3 masks like ComfyUI SAM3_Detect, score = sigmoid(logit) * sigmoid(presence);
+dropped when the GPU arbiter loads, evicts the image model or training starts; CPU while training"""
 
 from __future__ import annotations
 
@@ -156,7 +127,7 @@ ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
 # Seconds a host-RAM parked model is kept; 0 never parks.
 ENV_PARK_SECONDS = "UNSLOTH_SAM3_PARK_SECONDS"
 PARK_SECONDS = 600.0
-# "1" pins the parked copy (0.03 s unpark vs ~0.6 s); opt-in since pinning 1.7 GB took minutes on a loaded host.
+# Unset: registered host memory (torch's pinned allocator took minutes for 1.7 GB on a loaded host); "1" torch's, "0" pageable.
 ENV_PARK_PIN = "UNSLOTH_SAM3_PARK_PIN"
 
 # ── ComfyUI SAM3_Detect defaults ────────────────────────────────────────────────────────────────────────────────────
@@ -355,7 +326,14 @@ def _cached_snapshot(
     revision: Optional[str] = None,
 ) -> Optional[str]:
     """The snapshot directory holding every file of ``model_id`` (a variant's bf16 files, or a pre-quantized spec's
-    configs and file) at one revision (the pin first, then the recorded one, then any cached commit), else None."""
+    configs and file) at one revision (the pin first, then the recorded one, then any cached commit), else None.
+    Without *hub_cache* and *revision*, every cache find_in_hub_caches covers."""
+    if hub_cache is None and revision is None:
+        from core.inference.model_cache_search import find_in_hub_caches
+        return find_in_hub_caches(
+            SEGMENTER_SPECS[model_id].repo,
+            lambda root: _cached_snapshot(model_id, hub_cache = root),
+        )
     try:
         from huggingface_hub import hf_hub_download
 
@@ -410,8 +388,7 @@ def _broken(folder: Optional[str], artifact: SegmenterPrequant) -> bool:
 
 
 def _variant_snapshot(variant_id: str) -> Optional[str]:
-    """A cached snapshot of variant ``variant_id`` that Sam3Model can load: its bf16 files, else a pre-quantized file
-    with the configs and tokenizer."""
+    """Cached Sam3Model snapshot: bf16 files, else a pre-quantized file plus configs and tokenizer."""
     path = _cached_snapshot(variant_id)
     if path is not None:
         return path
@@ -450,8 +427,7 @@ def active_variant() -> SegmenterVariant:
 
 
 def model_dir() -> Optional[str]:
-    """The env override when set (a typo'd override is not silently replaced by the cache), else the active
-    variant's cached snapshot."""
+    """Env override if set, so a typo'd path is never replaced by the cache; else the active snapshot."""
     if (os.environ.get(ENV_PATH_OVERRIDE) or "").strip():
         return _override_dir()
     return _resolve_active()[1]
@@ -466,8 +442,7 @@ class _SegmenterSpec:
     revision: Optional[str] = None
     model_file: str = SEGMENTER_WEIGHTS_FILE
     mmproj_file: str = "config.json"
-    # Downloaded instead when a file of this spec is not on the Hub at its revision (a pre-quantized file not
-    # published yet): the variant's bf16 spec.
+    # Falls back to the bf16 spec when the prequant file is not on the Hub at that revision.
     fallback: Optional[str] = None
 
 
@@ -505,8 +480,7 @@ def _resolve_segmenter_id(model_id: Optional[str]) -> str:
 
 
 def describe_download_error(model_id: str, error: object) -> Optional[str]:
-    """A gated variant's refusal names the license to accept; anything else (and any ungated variant, which needs no
-    token) keeps the generic message."""
+    """Only a gated refusal names the license to accept; the rest keep the generic message."""
     try:
         variant = split_spec_id(model_id)[0]
     except KeyError:
@@ -700,9 +674,7 @@ def download_plan(
     *,
     memory_tight: Optional[bool] = None,
 ) -> dict:
-    """What a download of ``variant`` fetches on this host: the spec id, the precision it runs, why, and the bytes.
-    A pre-quantized file only when the variant publishes them (a pinned or "main" prequant revision) and the host
-    would run it; its spec falls back to bf16 when the file is not on the Hub yet."""
+    """Pre-quantized files only when published and runnable here; the spec falls back to bf16 if absent."""
     from core.inference.diffusion_segment_quant import PRECISION_BF16, resolve_precision
 
     offered = {}
@@ -1060,7 +1032,8 @@ def mask_to_png(mask: Any) -> bytes:
 
     array = (mask.to("cpu").numpy().astype("uint8")) * 255
     buffer = io.BytesIO()
-    Image.fromarray(array, mode = "L").save(buffer, format = "PNG", optimize = True)
+    # Every zlib level is lossless; optimize=True only buys a few KB for several times the encode time.
+    Image.fromarray(array, mode = "L").save(buffer, format = "PNG", compress_level = 1)
     return buffer.getvalue()
 
 
@@ -1086,8 +1059,13 @@ class _HostWeights:
 
     _ALIGN = 256
 
-    def __init__(self, pin: bool) -> None:
-        self.pin = pin
+    def __init__(
+        self,
+        pin: bool,
+        fast: bool = False,
+    ) -> None:
+        self.pin = pin or fast
+        self.fast = fast
         self.buffer: Any = None
         self.storage: Any = None
         self.total = 0
@@ -1140,7 +1118,14 @@ class _HostWeights:
             slots[key] = (storage, offset)
             offset += -(-storage.nbytes() // self._ALIGN) * self._ALIGN
         self.total = offset
-        self.buffer = torch.empty(self.total, dtype = torch.uint8, pin_memory = self.pin)
+        self.buffer = None
+        if self.fast:
+            from .diffusion_memory import registered_pinned_empty
+            self.buffer = registered_pinned_empty(self.total)
+            # No registered memory here: pageable, never torch's slow pinned allocator.
+            self.pin = self.buffer is not None
+        if self.buffer is None:
+            self.buffer = torch.empty(self.total, dtype = torch.uint8, pin_memory = self.pin)
         storages = [st for st, _off in slots.values()]
         if storages:
             torch._foreach_copy_(
@@ -1443,8 +1428,11 @@ class MaskSegmenter:
         model = self._model
         from .host_pinning import host_pinning_allowed
 
+        raw = (os.environ.get(ENV_PARK_PIN) or "").strip().lower()
+        allowed = host_pinning_allowed(device)
         host = self._host or _HostWeights(
-            pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1" and host_pinning_allowed()
+            pin = raw == "1" and allowed,
+            fast = raw not in ("0", "off", "false", "no", "1") and allowed,
         )
         try:
             host.park(model)
@@ -1898,8 +1886,7 @@ def release_segmenter(
     handover: bool = False,
     park: bool = False,
 ) -> bool:
-    """Drop the weights if they were ever loaded. Never creates the segmenter. ``handover`` / ``park``: see
-    MaskSegmenter.release."""
+    """Drops the weights if loaded; never creates the segmenter. See MaskSegmenter.release."""
     segmenter = _segmenter
     if segmenter is None:
         return False

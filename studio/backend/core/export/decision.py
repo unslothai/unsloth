@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF export of decision models (Clef, Laya) for the Export page.
-
-The server side (``decision_preview``) only reads files: the parent process must not import
-unsloth. The worker side (``run_decision_gguf_export``) calls unsloth.models.decision_gguf,
-whose ``gguf_eligibility`` is the authoritative gate.
-"""
+"""Decision-model GGUF export; server must not import unsloth; worker's gguf_eligibility is the gate."""
 
 import json
 from pathlib import Path

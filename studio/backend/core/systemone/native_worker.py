@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Decisions from a GGUF on a private loopback llama-server (``POST /v1/systemone``).
-
-Ported from wasimysaid's native worker in #12770. The server is Studio's own llama.cpp. Clef answers
-are rebuilt with the formatter the PyTorch path uses, so the public response does not depend on the
-backend (llama.cpp's own confidence is a normalised formula, PyTorch's the winning probability).
-GGUF-only models (Kev, lev, Nimble, OpenJev, Laya GGUFs) have no Studio reference, so llama.cpp's
-answer is the reference: checked, then passed through.
-"""
+"""Private loopback llama-server at POST /v1/systemone; Clef answers rebuilt with the PyTorch
+formatter so the public response does not depend on the backend; GGUF-only models are checked,
+then passed through"""
 
 from __future__ import annotations
 
@@ -21,7 +16,9 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable
 
@@ -62,6 +59,10 @@ class NativeIncapable(NativeError):
     """This llama-server build cannot serve decision models."""
 
 
+class NativeLoadError(NativeError):
+    """llama-server exited before it finished loading the model."""
+
+
 class NativeInputError(NativeError):
     """The server refused this request; the server itself is fine."""
 
@@ -79,10 +80,31 @@ class NativeContextOverflow(NativeInputError):
         )
 
 
+# A found binary, kept for one settings answer, which would otherwise search for it once per catalog entry.
+_FOUND_BINARY: ContextVar = ContextVar("systemone_found_binary", default = None)
+
+
+@contextmanager
+def reuse_found_binary() -> Iterator[None]:
+    token = _FOUND_BINARY.set([])
+    try:
+        yield
+    finally:
+        _FOUND_BINARY.reset(token)
+
+
 def resolve_binary() -> str | None:
+    found = _FOUND_BINARY.get()
+    if found:
+        return found[0]
     from core.inference.llama_cpp import LlamaCppBackend
+
     binary = LlamaCppBackend._find_llama_server_binary()
-    return (LlamaCppBackend._exec_path_for_launch(binary) or binary) if binary else None
+    binary = (LlamaCppBackend._exec_path_for_launch(binary) or binary) if binary else None
+    # Only a hit: a miss may log why, and each lookup still logs it.
+    if found is not None and binary is not None:
+        found.append(binary)
+    return binary
 
 
 def request_gap(questions: Mapping[str, Any]) -> str | None:
@@ -453,6 +475,7 @@ class NativeClefAgent:
         return {"Authorization": f"Bearer {self._key}"}
 
     def _wait_ready(self, cancelled: Callable[[], bool] | None) -> None:
+        from core.inference.llama_cpp import LlamaCppBackend
         from utils.process_lifetime import is_process_shutting_down
 
         deadline = time.monotonic() + LOAD_TIMEOUT_S
@@ -461,13 +484,15 @@ class NativeClefAgent:
                 raise NativeError("The llama.cpp decision server was stopped while it loaded.")
             if not self.is_alive():
                 tail = self._log_tail()
-                raise NativeError(
+                raise NativeLoadError(
                     f"llama.cpp exited while loading {self.alias} (code {self._process.returncode})"
                     + (f":\n{tail}" if tail else ".")
                 )
             try:
                 response = self._client.get(f"{self._base}/health", timeout = 2.0)
                 if response.status_code == 200:
+                    if not LlamaCppBackend._health_listener_is_ours(self._process, self.port):
+                        raise NativeError(f"Another process holds llama.cpp's port {self.port}.")
                     return
             except httpx.TransportError:
                 pass

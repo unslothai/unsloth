@@ -12,6 +12,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.utils import companion_assets, download_registry
 from hub.utils.gguf import gguf_variant_key
@@ -201,7 +202,9 @@ def _delete_impact_blocking(
         )
 
     # companions become reclaimable only when no runnable checkpoint survives
-    removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
+    removes_last_checkpoint = not any(
+        companion_assets.repo_is_install(repo, scans) for repo in surviving
+    )
     if variant:
         for repo_info in repos:
             if _remaining_main_gguf_variants(
@@ -281,9 +284,7 @@ def _folder_delete_impact_blocking(
 
 
 def _shared_folder_extra_bytes(repo_id: str, keys: list[str]) -> int:
-    """Bytes of the files several deleted variants of one folder share and no kept variant lists
-    (a voice embedding beside two quants). Each per-variant preview counts them as still needed by
-    the other, but deleting the variants in turn removes them with the last."""
+    """Bytes shared only by deleted variants of one folder; freed with the last variant deleted."""
     from core.inference.audio_cpp_models import resolve, snapshot_dirs
 
     model = resolve(repo_id, network = False)
@@ -302,7 +303,7 @@ def _shared_folder_extra_bytes(repo_id: str, keys: list[str]) -> int:
     deleting = {key.lower() for key in keys}
     listed: dict[str, int] = {}
     kept: set[str] = set()
-    for candidate in model.variants:
+    for candidate in model.cache_variants:
         files = {f.path for f in candidate.files}
         if candidate.primary and gguf_variant_key(candidate.primary).lower() in deleting:
             for path in files:
@@ -383,10 +384,8 @@ def _orphan_companions_blocking() -> dict:
         if required.get(base_key) or base_key in artifact_ggufs:
             continue
         repos = by_id[base_key]
-        # exclude user-installed copies with denoisers; companion fetches omit transformer/ and orphan rows are per root.
-        # An artifact mirror is judged by its root checkpoints only (an FP8 mirror's checkpoint is installed): a
-        # pipeline load of its id is refused, so with no GGUF left (checked above) transformer/ shards a GGUF speed
-        # load left are no installed checkpoint.
+        # Mirror judged by root checkpoints only (its pipeline load is refused), so with no GGUF
+        # left transformer/ shards from a GGUF speed load are no installed checkpoint
         folders = not cache_inventory._hosts_artifacts(base_key)
         repos = [r for r in repos if not _repo_holds_denoiser(r, folders = folders)]
         if not repos:
@@ -414,6 +413,7 @@ def _orphan_companions_blocking() -> dict:
     }
 
 
+@in_scan_memo
 async def orphan_companions_response() -> dict:
     """Cached companion bases that no installed model needs. Listing only; nothing is deleted."""
     return await asyncio.to_thread(_orphan_companions_blocking)

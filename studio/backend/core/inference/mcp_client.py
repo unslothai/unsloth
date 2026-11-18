@@ -22,8 +22,8 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager
-from functools import wraps
+from contextlib import aclosing, contextmanager
+from functools import partial, wraps
 from typing import Any, Optional, get_type_hints
 from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
@@ -51,6 +51,8 @@ OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
 _account_oauth_token_stores: dict[str, Any] = {}
+_oauth_refresh_locks: dict[Any, threading.Lock] = {}
+_oauth_refresh_locks_guard = threading.Lock()
 
 
 def _managed_mcp_restricted() -> bool:
@@ -63,9 +65,15 @@ def _account_key(value):
     return current_account_id(), value
 
 
-def _public_mcp_address(url: str) -> str:
+def _public_mcp_addresses(url: str) -> list[str]:
     from fastapi import HTTPException
+    from core.inference.providers import _metadata_address, _metadata_host, managed_private_url_hint
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
+    private_allowed = get_managed_private_provider_urls_allowed()
     detail = "Managed accounts may only use public-network HTTP MCP servers."
+    if not private_allowed:
+        detail += managed_private_url_hint()
     try:
         parsed = urlsplit(url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -75,6 +83,8 @@ def _public_mcp_address(url: str) -> str:
         host = parsed.hostname
         if "%" in host:
             raise ValueError("Scoped addresses are not public")
+        if _metadata_host(host):
+            raise ValueError("Cloud metadata address")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         addresses = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
         if not addresses:
@@ -82,9 +92,13 @@ def _public_mcp_address(url: str) -> str:
         for *_, sockaddr in addresses:
             address = ipaddress.ip_address(sockaddr[0])
             address = getattr(address, "ipv4_mapped", None) or address
+            if _metadata_address(str(address)):
+                raise ValueError("Cloud metadata address")
+            if private_allowed:
+                continue
             if not address.is_global or address.is_multicast or address.is_reserved:
                 raise ValueError("Non-public address")
-        return addresses[0][4][0]
+        return list(dict.fromkeys(sockaddr[0] for *_, sockaddr in addresses))
     except (OSError, ValueError, UnicodeError) as exc:
         raise HTTPException(status_code = 400, detail = detail) from exc
 
@@ -93,13 +107,15 @@ def validate_mcp_address(url: str) -> None:
     # Studio's own Decisions server is answered in process; with a local model no request leaves this machine.
     if not _managed_mcp_restricted() or (is_studio_decisions(url) and _local_decisions()):
         return
+    if is_studio_tools(url):
+        return
     if is_stdio(url):
         from fastapi import HTTPException
         raise HTTPException(
             status_code = 400,
             detail = "Only the installation owner may register local-command MCP servers.",
         )
-    _public_mcp_address(url)
+    _public_mcp_addresses(url)
 
 
 def _public_http_client_factory(**kwargs):
@@ -115,18 +131,24 @@ def _public_http_client_factory(**kwargs):
             self.transports = {}
 
         async def handle_async_request(self, request):
-            address = await asyncio.to_thread(_public_mcp_address, str(request.url))
+            addresses = await asyncio.to_thread(_public_mcp_addresses, str(request.url))
             origin = (request.url.scheme, request.url.host, request.url.port)
             if origin not in self.transports:
                 self.transports[origin] = http.AsyncHTTPTransport(trust_env = False)
-            pinned = http.Request(
-                method = request.method,
-                url = request.url.copy_with(host = address),
-                headers = request.headers,
-                stream = request.stream,
-                extensions = {**request.extensions, "sni_hostname": request.url.host},
-            )
-            return await self.transports[origin].handle_async_request(pinned)
+            # localhost answers ::1 first while most local servers bind 127.0.0.1 only.
+            for index, address in enumerate(addresses):
+                pinned = http.Request(
+                    method = request.method,
+                    url = request.url.copy_with(host = address),
+                    headers = request.headers,
+                    stream = request.stream,
+                    extensions = {**request.extensions, "sni_hostname": request.url.host},
+                )
+                try:
+                    return await self.transports[origin].handle_async_request(pinned)
+                except (http.ConnectError, http.ConnectTimeout):
+                    if index == len(addresses) - 1:
+                        raise
 
         async def aclose(self):
             for transport in self.transports.values():
@@ -140,14 +162,33 @@ def _public_http_client_factory(**kwargs):
     return client_type(**kwargs)
 
 
-def _tool_http_client_factory(**kwargs):
+def _is_loopback_url(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _tool_http_client_factory(*, loopback: bool = False, **kwargs):
     """No read cap: _race_tool_call enforces each call's budget, which the SDK's 300s read timeout would cut short."""
     if _managed_mcp_restricted():
         client = _public_http_client_factory(**kwargs)
     else:
         from mcp.shared._httpx_utils import create_mcp_http_client
+
         kwargs.pop("follow_redirects", None)  # create_mcp_http_client sets its own redirect policy
         client = create_mcp_http_client(**kwargs)
+        if loopback:
+            # HTTP(S)_PROXY would route this machine's own servers (and their headers) through the proxy.
+            client = type(client)(
+                timeout = client.timeout,
+                headers = kwargs.get("headers"),
+                auth = kwargs.get("auth"),
+                trust_env = False,
+            )
     t = client.timeout
     client.timeout = type(t)(connect = t.connect, read = None, write = t.write, pool = t.pool)
     tracker = _SESSION_POSTS.get()
@@ -296,9 +337,7 @@ def is_stdio(address: str) -> bool:
 
 
 def _split_windows_command_line(address: str) -> list[str]:
-    """Parse a Windows command line using the same backslash/quote rules that
-    subprocess.list2cmdline() writes. This keeps trailing backslashes before a closing quote from
-    being doubled in the resulting argv."""
+    """Parse Windows argv by the rules list2cmdline() writes, so trailing backslashes stay undoubled."""
     parts: list[str] = []
     current: list[str] = []
     in_quotes = False
@@ -355,8 +394,7 @@ def _split_windows_command_line(address: str) -> list[str]:
 
 
 def parse_stdio_command(address: str) -> list[str]:
-    """Split a stdio command line into argv. Shared by route validation and the transport so both
-    agree on quoting (notably Windows backslash paths)."""
+    """Split a stdio command line into argv, shared so validation and transport quote alike."""
     posix = sys.platform != "win32"
     if posix:
         return shlex.split(address, posix = posix)
@@ -383,9 +421,8 @@ def _windows_batch_argument_is_unsafe(argument: str) -> bool:
 
 
 def _session_log_id(url: str) -> str:
-    """A non-secret label for logs. stdio commands can embed credentials in argv (e.g. ``npx server
-    --token sk-...``) and HTTP URLs in their query string, so never log the raw address; use the
-    executable basename (or the host) plus a short digest of the full address instead."""
+    """Non-secret log label: never log the raw address, since argv and query can hold credentials;
+    use the executable basename or host plus a short digest"""
     digest = hashlib.sha256(url.encode()).hexdigest()[:12]
     if not is_stdio(url):
         try:
@@ -455,8 +492,7 @@ def probe_timeout(address: str, use_oauth: bool) -> float:
 
 
 def parse_server_headers(server: dict) -> Optional[dict]:
-    """Parsed headers_json. For stdio servers this dict is the process env instead of HTTP headers
-    (see _client)."""
+    """Parsed headers_json; for stdio servers this dict is the process env, not HTTP headers."""
     raw = server.get("headers_json")
     if not raw:
         return None
@@ -519,6 +555,125 @@ def _strip_client_id_under_basic_auth(auth) -> None:
         logger.warning("MCP OAuth: client_id fixup could not be applied: %s", exc)
 
 
+class _RootSlashIssuer(str):
+    """The SDK compares a PRM-advertised issuer with a plain ``!=``; apply its own root-slash rule there."""
+
+    __slots__ = ()
+
+    def __eq__(self, other):
+        from mcp.client.auth.utils import issuers_match
+        if not isinstance(other, str):
+            return False
+        try:
+            return issuers_match(str.__str__(self), str.__str__(other))
+        except ValueError:
+            return False
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = str.__hash__
+
+
+def _accept_root_issuer_slash(auth) -> None:
+    """Google advertises https://accounts.google.com/ but issues https://accounts.google.com (python-sdk#1919)."""
+    expected = getattr(auth, "_expected_issuer", None)
+    if expected is None:
+        logger.warning("MCP OAuth: _expected_issuer missing; issuer slash fixup skipped")
+        return
+
+    def _expected_issuer():
+        issuer = expected()
+        return _RootSlashIssuer(issuer) if type(issuer) is str else issuer
+
+    try:
+        auth._expected_issuer = _expected_issuer
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
+
+
+_OAUTH_METADATA_COLLECTION = "mcp-oauth-server-metadata"
+
+
+def _remember_server_metadata(auth, store) -> None:
+    """Fresh providers skip discovery and refresh at <origin>/token: 404 on better-auth (#18164)."""
+    from mcp.shared.auth import OAuthMetadata
+
+    adapter = getattr(auth, "token_storage_adapter", None)
+    context = getattr(auth, "context", None)
+    initialize = getattr(auth, "_initialize", None)
+    if adapter is None or context is None or initialize is None:
+        logger.warning("MCP OAuth: provider internals missing; token endpoint is not remembered")
+        return
+    key = auth.mcp_url
+    set_tokens, clear = adapter.set_tokens, adapter.clear
+
+    async def _initialize():
+        await initialize()
+        if context.oauth_metadata is not None:
+            return
+        try:
+            raw = await store.get(key = key, collection = _OAUTH_METADATA_COLLECTION)
+            if raw:
+                context.oauth_metadata = OAuthMetadata.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP OAuth: could not load the saved server metadata: %s", exc)
+
+    async def _set_tokens(tokens):
+        await set_tokens(tokens)
+        if context.oauth_metadata is None:
+            return
+        try:
+            await store.put(
+                key = key,
+                value = context.oauth_metadata.model_dump(mode = "json", exclude_none = True),
+                collection = _OAUTH_METADATA_COLLECTION,
+                ttl = 60 * 60 * 24 * 365,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP OAuth: could not save the server metadata: %s", exc)
+
+    async def _clear():
+        await clear()
+        await store.delete(key = key, collection = _OAUTH_METADATA_COLLECTION)
+
+    auth._initialize = _initialize
+    adapter.set_tokens = _set_tokens
+    adapter.clear = _clear
+
+
+def _serialize_token_refresh(auth, lock: threading.Lock) -> None:
+    """Parallel refreshes each rotate the token and the one saved last can be revoked, forcing re-consent (#18164)."""
+    flow = auth.async_auth_flow
+
+    async def async_auth_flow(request):
+        held = False
+        if not auth._initialized or not auth.context.is_token_valid():
+            while not lock.acquire(blocking = False):
+                await asyncio.sleep(0.05)
+            held = True
+        try:
+            if held:
+                # Pick up a token another connection refreshed while this one waited.
+                await auth._initialize()
+            async with aclosing(flow(request)) as gen:
+                response = None
+                while True:
+                    try:
+                        sent = await gen.asend(response)
+                    except StopAsyncIteration:
+                        return
+                    if held and sent is request:
+                        lock.release()
+                        held = False
+                    response = yield sent
+        finally:
+            if held:
+                lock.release()
+
+    auth.async_auth_flow = async_auth_flow
+
+
 def _oauth(
     url: str,
     oauth_client_id: Optional[str] = None,
@@ -526,14 +681,20 @@ def _oauth(
 ):
     from fastmcp.client.auth import OAuth
 
+    store = _oauth_store()
     # A pre-registered client skips Dynamic Client Registration (Google's MCP servers have no /register).
     auth = OAuth(
         mcp_url = url,
-        token_storage = _oauth_store(),
+        token_storage = store,
         client_id = oauth_client_id,
         client_secret = oauth_client_secret,
     )
     _strip_client_id_under_basic_auth(auth)
+    _accept_root_issuer_slash(auth)
+    _remember_server_metadata(auth, store)
+    with _oauth_refresh_locks_guard:
+        lock = _oauth_refresh_locks.setdefault(_account_key(auth.mcp_url), threading.Lock())
+    _serialize_token_refresh(auth, lock)
     return auth
 
 
@@ -560,8 +721,7 @@ def _launcher_name(command: str) -> str:
 
 
 def _is_node_command(command: str) -> bool:
-    """Whether argv[0] is a Node launcher. Only those need the managed runtime, so a Python or other
-    stdio server keeps the toolchain its own env pinned."""
+    """Whether argv[0] is a Node launcher, the only kind given the managed runtime."""
     return _launcher_name(command) in _NODE_COMMANDS
 
 
@@ -588,8 +748,7 @@ def _runtime_requirements(command: Optional[str]) -> tuple[bool, bool]:
 
 
 def _path_key(env: dict) -> str:
-    """The key holding PATH. Windows env names are case-insensitive, so a config may spell it
-    ``Path``; on POSIX only the exact name counts."""
+    """The env key holding PATH; Windows names are case-insensitive, so match any case there."""
     if _IS_WINDOWS:
         for key in env:
             if key.upper() == "PATH":
@@ -598,8 +757,7 @@ def _path_key(env: dict) -> str:
 
 
 def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Optional[dict]:
-    """Process env for a stdio server: its own vars, plus the managed Node bin dir on PATH so ``npx
-    ...`` servers spawn on hosts with no usable system Node."""
+    """Stdio env: own vars plus the managed Node bin on PATH, so npx runs without system Node."""
     env = dict(headers or {})
     for key, value in env.items():
         if not isinstance(key, str) or not isinstance(value, str):
@@ -702,6 +860,22 @@ def is_studio_decisions(url: str) -> bool:
     )
 
 
+def is_studio_tools(url: str) -> bool:
+    from core.inference.studio_tools_mcp import STUDIO_TOOLS_MCP_PATH
+    from utils.host_policy import is_loopback_host
+
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "http"
+        and is_loopback_host(host)
+        and parts.path.rstrip("/") == STUDIO_TOOLS_MCP_PATH
+    )
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -714,6 +888,11 @@ def _client(
     if is_studio_decisions(url):
         from routes.systemone import decisions_mcp
         return Client(decisions_mcp)
+
+    if is_studio_tools(url):
+        # Listing only: calls go through studio_tools_mcp.call, which binds the caller.
+        from core.inference.studio_tools_mcp import chat_tools_mcp
+        return Client(chat_tools_mcp())
 
     if is_stdio(url):
         # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
@@ -751,7 +930,7 @@ def _client(
             url = url,
             headers = headers or None,
             auth = auth,
-            httpx_client_factory = _tool_http_client_factory,
+            httpx_client_factory = partial(_tool_http_client_factory, loopback = _is_loopback_url(url)),
         )
     )
 
@@ -776,9 +955,8 @@ _CANCEL_UNWIND_TIMEOUT = 2.0
 # With no read cap, a still-open abandoned reply is bounded by retiring its session after the old cap or a pile-up.
 _ABANDONED_REPLY_TIMEOUT = 300.0
 _MAX_ABANDONED_REPLIES = 8
-# An HTTP session idle this long is re-proved with tools/list before the next dispatch: the server may have expired it
-# (MCP says a server MAY terminate a session at any time), and no HTTP transport exposes a liveness probe we can ask
-# instead -- see _transport_dead.
+# Idle HTTP sessions are re-proved with tools/list before the next dispatch, as servers may expire
+# them (MCP lets a server terminate a session at any time) and no HTTP liveness probe exists
 _HTTP_IDLE_RECHECK = 30.0
 _DEFAULT_MAX_SESSIONS = 32
 
@@ -816,9 +994,8 @@ class _ConnectTimeout(asyncio.TimeoutError):
 
 
 def _is_tool_error(exc: BaseException) -> bool:
-    """A tool-level failure (the tool ran and errored) leaves the transport alive, so the session is
-    kept; fastmcp raises ToolError for these. Anything else from call_tool is transport-level.
-    Version-safe (fastmcp 3.0.2 has no dead probe)."""
+    """Version-safe: fastmcp 3.0.2 has no dead probe. ToolError (tool ran and errored) leaves the
+    transport alive, so the session is kept; other call_tool errors are transport-level"""
     try:
         from fastmcp.exceptions import ToolError
     except Exception:  # noqa: BLE001
@@ -837,10 +1014,24 @@ def _is_protocol_error(exc: BaseException) -> bool:
         except Exception:  # noqa: BLE001
             continue
         if cls is not None and isinstance(exc, cls):
-            # Only when the server actually sent an error object; a synthetic MCPError with nothing behind it stays
-            # transport-level.
+            # Only when the server sent an error object, not for a synthetic MCPError.
             return getattr(exc, "error", None) is not None
     return False
+
+
+# HTTP 404 for an unknown Mcp-Session-Id, so the request never ran: the client SDK's "Session terminated"
+# stand-in, or the server body mcp 2.x relays (Python SDK -32600 / TypeScript SDK -32001 "Session not found").
+_SESSION_GONE_MESSAGES = ("Session terminated", "Session not found")
+_SESSION_GONE_CODES = (32600, -32600, -32001)
+
+
+def _is_session_terminated(exc: BaseException) -> bool:
+    error = getattr(exc, "error", None)
+    return (
+        _is_protocol_error(exc)
+        and getattr(error, "message", None) in _SESSION_GONE_MESSAGES
+        and getattr(error, "code", None) in _SESSION_GONE_CODES
+    )
 
 
 def _transport_dead(session) -> bool:
@@ -900,7 +1091,7 @@ def _session_responsive(
         return not timeout_is_fatal
     except Exception as exc:  # noqa: BLE001
         # A JSON-RPC error means the transport works; reconnecting would lose session state.
-        if not _is_protocol_error(exc):
+        if _is_session_terminated(exc) or not _is_protocol_error(exc):
             return False
     session.dirty = False
     session.proved_at = time.monotonic()
@@ -1069,8 +1260,7 @@ class _McpSession:
         if loop_alive:
 
             async def _shutdown() -> None:
-                # Runs on the loop thread, so it serializes with an aborted connect() that finished anyway and just
-                # published its client.
+                # On the loop thread, it serializes with an aborted connect() that finished.
                 client, self.client = self.client, None
                 if client is not None:
                     await client.__aexit__(None, None, None)
@@ -1336,9 +1526,8 @@ def _drop_session(key: tuple, session: _McpSession) -> None:
 
 
 def _evict_lru_locked() -> list:
-    """Caller holds _mcp_sessions_lock. Evict least-recently-used *idle* sessions until the cache is
-    under the cap. Returns the evicted sessions so the caller can close them OUTSIDE the lock. If
-    every session is busy the cache may transiently overshoot rather than kill an in-flight call."""
+    """Caller holds _mcp_sessions_lock; returns idle LRU victims to close outside it; if every
+    session is busy the cache may overshoot the cap rather than kill an in-flight call"""
     victims: list = []
     if len(_mcp_sessions) < _MAX_SESSIONS:
         return victims
@@ -1459,8 +1648,7 @@ def _cleanup_worker() -> None:
 
 
 def _drain_cleanup_queue() -> tuple[list, Optional[threading.Thread]]:
-    """Take back whatever the worker has not started on yet, plus the worker itself so the caller
-    can wait out the one close already under way."""
+    """Takes back unstarted cleanups and the worker so a caller can wait out the active close."""
     with _mcp_cleanup_lock:
         pending = list(_mcp_cleanup_queue)
         _mcp_cleanup_queue.clear()
@@ -1535,7 +1723,8 @@ class McpToolList(list):
 
 
 def _capabilities(client) -> Any:
-    return getattr(getattr(client, "initialize_result", None), "capabilities", None)
+    # initialize_result stays None on a modern connection, which has no initialize handshake.
+    return getattr(client, "server_capabilities", None)
 
 
 async def _list_resources(client) -> Optional[list[dict]]:
@@ -1548,7 +1737,7 @@ async def _list_resources(client) -> Optional[list[dict]]:
         while len(listed) < MAX_MCP_RESOURCES:
             page = await client.list_resources_mcp(cursor = cursor)
             listed.extend(getattr(page, "resources", None) or ())
-            cursor = getattr(page, "nextCursor", None) or getattr(page, "next_cursor", None)
+            cursor = getattr(page, "next_cursor", None)
             # A repeated cursor would loop forever.
             if not cursor or cursor in cursors:
                 break
@@ -1839,9 +2028,8 @@ def _image_mime(mime: Any) -> Optional[str]:
 
 
 def _resource_mime(obj: Any) -> Any:
-    # mcp 2.x renames mimeType to mime_type, keeping camelCase only as an alias
-    mime = getattr(obj, "mimeType", None)
-    return mime if mime is not None else getattr(obj, "mime_type", None)
+    # mcp 2.x exposes mime_type; mimeType is only a constructor alias there
+    return obj.mime_type if hasattr(obj, "mime_type") else getattr(obj, "mimeType", None)
 
 
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
@@ -1949,6 +2137,43 @@ def _seeded_image_block(block: Any, mime: str) -> dict:
     return {**out, "type": "image", "mimeType": mime}
 
 
+# Below this an inline "image" is too small to be one, and the text too short to be worth parsing.
+_INLINE_IMAGE_MIN_CHARS = 1024
+_INLINE_IMAGE_PLACEHOLDER = "<image data moved out of the text>"
+
+
+def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Moves {"mimeType": "image/*", "data": <base64>} out of JSON text (Unreal's CaptureViewport) onto
+    the image-block path; left in, the model gets megabytes of truncated base64, never a picture."""
+    if (
+        len(text) < _INLINE_IMAGE_MIN_CHARS
+        or '"mimeType"' not in text
+        or text.lstrip()[:1] not in ("{", "[")
+    ):
+        return text, []
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        return text, []
+    found: list[tuple[str, str]] = []
+
+    def lift(node: Any) -> Any:
+        if isinstance(node, dict):
+            mime, data = _image_mime(node.get("mimeType")), node.get("data")
+            if mime is not None and isinstance(data, str) and len(data) >= _INLINE_IMAGE_MIN_CHARS:
+                found.append((data, mime))
+                return {**node, "data": _INLINE_IMAGE_PLACEHOLDER}
+            return {key: lift(item) for key, item in node.items()}
+        if isinstance(node, list):
+            return [lift(item) for item in node]
+        return node
+
+    lifted = lift(value)
+    if not found:
+        return text, []
+    return json.dumps(lifted, ensure_ascii = False), found
+
+
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
@@ -1958,9 +2183,12 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     omitted = 0
     has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
+    lifted = []
     for block in getattr(result, "content", None) or []:
         text = _block_text(block)
         if text:
+            text, inline_images = _lift_inline_images(text)
+            lifted.extend(inline_images)
             parts.append(text)
             has_text = True
             seed.append((block, None))
@@ -1988,6 +2216,14 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             unshown.append(note)
             if data:
                 payloads.add(data)
+    # After the block images: the widget hands images out positionally to the image blocks in its seed.
+    for data, mime in lifted:
+        payloads.add(data)
+        if len(data) > budget:
+            omitted += 1
+            continue
+        budget -= len(data)
+        images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
     # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)
@@ -2018,8 +2254,7 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
 
 
 def _unwind_budget(unwind_timeout: float, timeout: Optional[float], elapsed: float) -> float:
-    """How long a cancelled call may take to unwind: whatever is left of the caller's window, so the
-    wait is never charged on top of an expired deadline."""
+    """A cancelled call's unwind wait is the caller's leftover window, never past a deadline."""
     if not unwind_timeout:
         return 0.0
     if timeout is None:
@@ -2215,21 +2450,23 @@ def _call_session_tool(
                 # Intentional close may look like a transport error or AttributeError; do not treat as crash
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
+            if _is_session_terminated(exc):
+                # A 404 means the server never processed the request, so reconnect and replay once.
+                discard_session = True
+                retry = attempt == 0
             # Protocol error = server alive, keep session. Transport error: evict but DO NOT replay.
-            if _is_protocol_error(exc):
+            elif _is_protocol_error(exc):
                 # A protocol error means the server replied, so keep the session but probe it before the next call.
                 session.dirty = True
             elif not _is_tool_error(exc):
                 discard_session = True
-            raise
+            if not retry:
+                raise
         finally:
             if slot is not None:
                 session.posts.settle(slot, abandoned = False)
-            # Remove from the cache and mark defunct BEFORE giving up the borrow, so no other caller can check this
-            # session out after it failed. The order matters more now that HTTP callers do not queue on call_lock:
-            # released first, a concurrent same-scope call could check out the broken transport while it was still
-            # cached, and _release_session can sit closing LRU victims for seconds first. in_flight is still held
-            # here, so the close defers to the release below.
+            # Drop the broken session from the cache before its borrow is released, so no caller
+            # reuses it.
             if discard_session:
                 _drop_session(key, session)
             _release_session(session, defer_close = not ephemeral)
@@ -2254,6 +2491,19 @@ def call_tool_sync(
     **oauth,
 ) -> str:
     """Never raises: failures return as Error strings; OAuth or scope-less HTTP connects once per call."""
+
+    if is_studio_tools(url):
+        if config_check is not None and not config_check():
+            return f"Error: MCP tool '{name}' failed: MCP server was updated or removed"
+        from core.inference import studio_tools_mcp
+        return studio_tools_mcp.call(
+            name,
+            args,
+            timeout = timeout,
+            cancel_event = cancel_event,
+            ui_resource_uri = ui_resource_uri,
+            config_check = config_check,
+        )
 
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth, **oauth) as client:

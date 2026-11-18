@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Packed rows of multimodal documents: each collated alone, then concatenated with per-document
-``position_ids``, from which transformers masks image blocks to their own document."""
+"""Packed multimodal rows: docs collated alone, concatenated; position_ids confine images to own doc."""
 
 from __future__ import annotations
 

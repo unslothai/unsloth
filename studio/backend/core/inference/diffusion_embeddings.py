@@ -1,23 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Textual-inversion embeddings (EasyNegative and friends) for the CLIP-conditioned image families.
-
-Files live in ``<studio_home>/embeddings/diffusion`` (beside ``loras/diffusion``). As in AUTOMATIC1111 the
-filename stem is the trigger: a prompt or negative prompt naming it (any case, as a whole word, or ComfyUI's
-``embedding:NAME``) uses the embedding for that generation. safetensors only (``.pt`` is pickled).
-
-Formats, as diffusers' ``load_textual_inversion`` reads them (docs: "Textual inversion", SDXL section):
-  * SD 1.x: one tensor ``[n, 768]`` (A1111 ``emb_params`` or a single diffusers ``<token>`` key);
-  * SDXL: ``clip_l [n, 768]`` for ``text_encoder`` / ``tokenizer`` and ``clip_g [n, 1280]`` for
-    ``text_encoder_2`` / ``tokenizer_2``.
-
-Applying one never reloads the pipeline and never mutates a loaded component: each tokenizer is swapped for
-a copy carrying the added tokens (``tok``, ``tok_1``, ... as diffusers names multi-vector embeddings, so the
-pipeline's own ``maybe_convert_prompt`` expands them), and each text encoder's input embedding is wrapped by a
-module that serves the new ids and calls the original for every other id. ``restore`` puts the original
-objects back, so a generation that names no embedding runs the unchanged modules. The denoiser is untouched.
-"""
+"""Textual-inversion embeddings, safetensors only (.pt is pickled); filename stem is the trigger;
+applying one never reloads or mutates a loaded component, denoiser untouched"""
 
 from __future__ import annotations
 

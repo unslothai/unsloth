@@ -99,7 +99,8 @@ def test_qwencloud_is_offered_with_its_own_endpoint():
     assert qwencloud["base_url"] == "https://maas.qwencloudapi.com/compatible-mode/v1"
     assert qwencloud["hidden"] is False
     assert qwencloud["supports_studio_tools"] is True
-    assert {"qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash"} <= set(qwencloud["default_models"])
+    assert qwencloud["default_models"] == []
+    assert qwencloud["model_capabilities"] == {}
     assert rows["qwen"]["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
 
@@ -132,9 +133,15 @@ def test_the_qwencloud_thinking_toggle_reaches_the_wire(enabled):
     assert "thinking" not in body
 
 
-def test_qwencloud_vision_models_keep_mcp_pictures():
+def test_qwencloud_vision_models_keep_mcp_pictures(monkeypatch):
     info = get_provider_info("qwencloud")
-    for model in info["default_models"]:
+    models = ("qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash")
+    catalog = {
+        "fetched_at": 0,
+        "providers": {"qwen": {model: {"input": ["text", "image", "video"]} for model in models}},
+    }
+    monkeypatch.setattr(providers_route, "_model_catalog_cache", catalog)
+    for model in models:
         assert _external_takes_mcp_images("qwencloud", True, model, info) is True, model
     assert _external_takes_mcp_images("qwencloud", True, "glm-5.3", info) is False
 

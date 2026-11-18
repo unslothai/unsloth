@@ -249,8 +249,26 @@ const FIELDS: FieldCase[] = [
     different: false,
   },
   {
+    key: "engramPrecision",
+    statusKey: "engram_precision",
+    same: "Q8_0",
+    different: "BF16",
+  },
+  {
     key: "mlxInt8Prefill",
     statusKey: "mlx_int8_prefill_requested",
+    same: true,
+    different: false,
+  },
+  {
+    key: "mlxAnePrefill",
+    statusKey: "mlx_ane_prefill_requested",
+    same: true,
+    different: false,
+  },
+  {
+    key: "mlxFastVerify",
+    statusKey: "mlx_fast_verify_requested",
     same: true,
     different: false,
   },
@@ -474,6 +492,10 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
     "selectedGpuIndexKind",
     // Compared through standing.splitRatio, which the caller seeds from it.
     "tensorSplit",
+    // NPU picks never adopt a resident: loadNpuModel always reaches /load, which compares them.
+    "npuPowerMode",
+    "npuPrefillChunkLen",
+    "npuImgPreResize",
   ]);
   const unclassified = [...declared].filter(
     (field) => !compared.has(field) && !excluded.has(field),

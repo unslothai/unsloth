@@ -19,6 +19,7 @@ import {
   fetchChatAttachmentBlob,
   isTextAttachmentName,
   listChatAttachments,
+  prepareChatAttachmentDeletion,
 } from "@/features/chat";
 import {
   type UploadedDocument,
@@ -30,9 +31,9 @@ import {
 import { isTauri } from "@/lib/api-base";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArrowUpRight01Icon,
-  Delete02Icon,
   FileEmpty02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -315,6 +316,7 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
       });
     },
     remove: async () => {
+      await prepareChatAttachmentDeletion(att.id);
       await deleteChatAttachment(att.messageId, att.id);
       // Patch any loaded runtime copy so a later sync cannot write the attachment back.
       emitChatAttachmentDeleted({
@@ -636,7 +638,7 @@ export function UploadedFilesView() {
                     className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-wait disabled:opacity-50"
                   >
                     <HugeiconsIcon
-                      icon={Delete02Icon}
+                      icon={TrashIcon}
                       strokeWidth={1.75}
                       className="size-4"
                     />

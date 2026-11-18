@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run ``cuInit`` via ctypes (releases the GIL) before torch's first CUDA probe, which holds the GIL for the
-whole multi-second driver init and freezes the event loop. Idempotent; never raises. Concurrent callers wait on an
-Event rather than entering torch's GIL-holding call. ``UNSLOTH_STUDIO_DISABLE_CUDA_PRIME=1`` disables it.
-"""
+"""Early cuInit via ctypes before the torch CUDA probe, releasing the GIL; idempotent, never raises;
+UNSLOTH_STUDIO_DISABLE_CUDA_PRIME=1 disables it"""
 
 from __future__ import annotations
 
@@ -68,6 +66,12 @@ def prime_cuda_driver(torch_module = None) -> bool:
     global _claimed
     if _done.is_set():
         return False
+    if torch_module is None:
+        # Never imports torch (would deadlock mid-import waiters). Torch absent or mid-import (no ``torch.cuda`` yet)
+        # must not latch, so hardware detection's later call still primes.
+        torch_module = sys.modules.get("torch")
+        if torch_module is None or getattr(torch_module, "cuda", None) is None:
+            return False
     with _claim_lock:
         first = not _claimed
         _claimed = True
@@ -77,11 +81,6 @@ def prime_cuda_driver(torch_module = None) -> bool:
     try:
         if not _driver_names():
             return False
-        if torch_module is None:
-            # Never imports torch: a caller still inside `import torch` would deadlock its waiters.
-            torch_module = sys.modules.get("torch")
-            if torch_module is None:
-                return False
         if not _should_prime(torch_module):
             return False
         return _cu_init()

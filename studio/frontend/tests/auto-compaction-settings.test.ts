@@ -51,11 +51,31 @@ test("a managed vLLM or SGLang model compacts like a local GGUF", () => {
     { context_overflow: "error" },
   );
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  // SGLang has no exact count to fit against, so only the vLLM engine asks.
-  assert.match(adapter, /runtime\.loadedEngine === "vllm"/);
+  assert.match(adapter, /runtime\.loadedEngine !== "auto"/);
+  assert.match(adapter, /isManagedEngine: state\.loadedEngine !== "auto"/);
   // A queued turn keeps the engine it was queued against, like loadedIsGguf / loadedIsMlx.
   assert.match(readSrc("features/chat/utils/queued-chat-run-settings.ts"), /"loadedEngine",/);
   assert.match(adapter, /isManagedEngine: isManagedEngineForCompaction/);
+});
+
+test("an NPU model compacts like a local GGUF, and /compact reaches it", () => {
+  const options = { isGguf: false, isNpu: true, autoCompactEnabled: true };
+  assert.deepEqual(ggufCompactionRequestFields(options), {
+    context_overflow: "truncate_oldest",
+  });
+  assert.deepEqual(
+    ggufCompactionRequestFields({ ...options, autoCompactEnabled: false }),
+    { context_overflow: "error" },
+  );
+  assert.deepEqual(
+    ggufCompactionRequestFields({ ...options, autoCompactEnabled: false, compactNow: true }),
+    { context_overflow: "truncate_oldest", compact_context: true },
+  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /isNpu: isNpuModelId\(state\.params\.checkpoint\)/);
+  assert.match(adapter, /isNpuForCompaction = isNpuModelId\(params\.checkpoint\)/);
+  assert.match(adapter, /isNpu: isNpuForCompaction/);
+  assert.match(adapter, /isGgufForCompaction \|\| isMlxForCompaction \|\| isNpuForCompaction/);
 });
 
 test("nothing still offers the removed compaction style", () => {

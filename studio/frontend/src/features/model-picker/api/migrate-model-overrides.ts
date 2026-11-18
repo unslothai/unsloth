@@ -6,7 +6,7 @@
 import {
   cachedRepoConfigId,
   isNativeFileLabel,
-  isOllamaLinkPath,
+  isMaterializedOllamaLink,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   splitQuantSuffix,
@@ -79,7 +79,7 @@ export async function backfillModelOverrides(): Promise<void> {
   }
   const local = listPerModelConfigs().filter(
     (entry) =>
-      !isOllamaLinkPath(entry.modelId) &&
+      !isMaterializedOllamaLink(entry.modelId) &&
       !isNativeFileLabel(entry.modelId) &&
       cachedRepoConfigId(entry.modelId, entry.ggufVariant) === null &&
       !isDefaultConfig(entry.config),

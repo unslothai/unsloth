@@ -12,9 +12,8 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  FolderAddIcon,
-  FolderSyncIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderSyncIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,

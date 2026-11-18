@@ -435,9 +435,7 @@ _RECOVERED_CAPACITY_WARNING = (
 
 
 def test_a_recovered_capacity_warning_is_not_a_capacity_failure():
-    """Only the failing segment's [E] line is a capacity failure. Read as one, the warning would hide what really
-    stopped the render: the build-level failure below must still be recorded, and an unrelated crash must not be
-    explained as memory."""
+    """Only the failing [E] line is capacity; build failures stay recorded, unrelated crashes not memory."""
     assert not sd_cpp_backend.output_shows_capacity_failure(_RECOVERED_CAPACITY_WARNING)
     build_failure = (
         "sd-cli exited 1. Last output:\n"
@@ -449,7 +447,7 @@ def test_a_recovered_capacity_warning_is_not_a_capacity_failure():
     crash = (
         "sd-cli exited -11. Last output:\n" + _RECOVERED_CAPACITY_WARNING + "Segmentation fault\n"
     )
-    assert "renderer stopped unexpectedly" in video_failure_detail(RuntimeError(crash))
+    assert "renderer crashed" in video_failure_detail(RuntimeError(crash))
 
 
 def test_a_bare_device_loss_is_explained_as_likely_memory():
@@ -463,12 +461,12 @@ def test_an_unrelated_native_crash_keeps_its_old_text():
     detail = video_failure_detail(
         RuntimeError("sd-cli exited -11. Last output:\nSegmentation fault")
     )
-    assert "renderer stopped unexpectedly" in detail
+    assert "renderer crashed" in detail
 
 
 def test_a_torch_oom_keeps_its_old_text():
     detail = video_failure_detail(RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB"))
-    assert "smaller resolution, fewer frames, or fewer steps" in detail
+    assert "smaller resolution, fewer frames or fewer steps" in detail
 
 
 _V1_SWAP_ROOM = {
@@ -902,14 +900,7 @@ def test_native_host_ram_does_not_add_back_what_studio_holds(monkeypatch):
 
 
 def test_the_fallback_reason_names_the_missing_rocm_libraries(monkeypatch):
-    import ctypes
-
-    def fake_cdll(name, *a, **k):
-        if name == "libhipblas.so.3":
-            raise OSError(name)
-        return object()
-
-    monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
+    monkeypatch.setattr(sd_cpp_backend, "_rocm_missing_memo", (["libhipblas.so.3"],))
     monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
     monkeypatch.setattr(sd_cpp_backend.os, "name", "posix")
     assert sd_cpp_backend.rocm_runtime_missing_sonames() == ["libhipblas.so.3"]

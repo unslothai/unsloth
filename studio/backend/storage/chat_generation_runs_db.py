@@ -13,10 +13,11 @@ import sqlite3
 import threading
 import time
 import weakref
+from functools import partial
 from pathlib import Path
 from typing import Any, Iterable, Union
 
-from storage.studio_db import get_connection, on_wal_keeper_closed
+from storage.studio_db import get_connection, insert_server_chat_message, on_wal_keeper_closed
 from utils.account_context import current_account_id
 from utils.paths import studio_db_path
 
@@ -24,6 +25,7 @@ ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_CHANGED = threading.Condition()
+_EVENTS_COMMITS = 0
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
@@ -147,17 +149,6 @@ def _unregister_locked(entry: _PoolEntry | None) -> None:
             continue
         surviving.append(ref)
     _pool_registry[:] = surviving
-
-
-def _discard_pooled() -> None:
-    """Drop this thread's cached connection, for when it has errored or its database has gone."""
-    entry = getattr(_pool, "entry", None)
-    if entry is None:
-        return
-    _pool.entry = None
-    with _pool_lock:
-        _unregister_locked(entry)
-    entry.release()
 
 
 def _discard_all_pooled() -> None:
@@ -286,6 +277,28 @@ def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
     return conn, db_path.resolve() in _schema_ready
 
 
+_SPLICE_OK_SQL = "json_valid({0}) AND instr({0}, char(10))=0 AND instr({0}, char(13))=0"
+
+
+def _execute_splice(
+    conn: sqlite3.Connection, query: str, column: str, params: tuple
+) -> sqlite3.Cursor:
+    """Run query with {} as whether column is one line of valid JSON, safe to splice into a frame."""
+    global _SPLICE_OK_SQL
+    try:
+        return conn.execute(query.format(_SPLICE_OK_SQL.format(column)), params)
+    except sqlite3.OperationalError as exc:
+        # SQLite built without JSON1: re-encode every row, as the parsed read does.
+        if "json_valid" not in str(exc):
+            raise
+        _SPLICE_OK_SQL = "0"
+        return conn.execute(query.format("0"), params)
+
+
+def _dumps_payload(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii = False, separators = (",", ":"))
+
+
 def _loads(value: str | None, fallback: Any) -> Any:
     if value is None:
         return fallback
@@ -332,14 +345,14 @@ def canonical_request(
     return request_json, hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
+def _run_fields(row: sqlite3.Row, request_payload: Any) -> dict[str, Any]:
     return {
         "id": row["id"],
         "threadId": row["thread_id"],
         "userMessageId": row["user_message_id"],
         "assistantMessageId": row["assistant_message_id"],
         "requestHash": row["request_hash"],
-        "requestPayload": _loads(row["request_json"], {}),
+        "requestPayload": request_payload,
         "status": row["status"],
         "cancelRequested": bool(row["cancel_requested"]),
         "lastEventSeq": int(row["last_event_seq"]),
@@ -350,6 +363,27 @@ def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "startedAt": row["started_at"],
         "completedAt": row["completed_at"],
     }
+
+
+def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return _run_fields(row, _loads(row["request_json"], {}))
+
+
+def _run_json_from_row(row: sqlite3.Row) -> str:
+    """json.dumps(_run_from_row(row), ensure_ascii=False, separators=(",", ":")) without parsing
+    request_json: canonical_request's output is a fixed point of loads then dumps with these options."""
+    fields = _run_fields(row, None)
+    keys = list(fields)
+    split = keys.index("requestPayload")
+    head, tail = (
+        json.dumps(
+            {key: fields[key] for key in part},
+            ensure_ascii = False,
+            separators = (",", ":"),
+        )
+        for part in (keys[:split], keys[split + 1 :])
+    )
+    return f'{head[:-1]},"requestPayload":{row["request_json"]},{tail[1:]}'
 
 
 def _append_events_locked(
@@ -376,7 +410,8 @@ def _append_events_locked(
                 run_id,
                 seq,
                 event_type,
-                json.dumps(payload, ensure_ascii = False, separators = (",", ":")),
+                # The events route splices this text into SSE frames as is, so it must stay its encoding.
+                _dumps_payload(payload),
                 created,
             ),
         )
@@ -416,9 +451,11 @@ def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -
 
 
 def _commit(conn: sqlite3.Connection, *, notify: bool = False) -> None:
+    global _EVENTS_COMMITS
     conn.commit()
     if notify:
         with _EVENTS_CHANGED:
+            _EVENTS_COMMITS += 1
             _EVENTS_CHANGED.notify_all()
 
 
@@ -535,28 +572,15 @@ def create_run(
             (assistant_message_id,),
         ).fetchone()
         if assistant is None:
-            # An empty placeholder adds no attachment entries. Preserve an already
-            # clean inventory without clearing older dirtiness or advancing its version.
-            inventory_was_clean = (
-                conn.execute(
-                    "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"
-                ).fetchone()
-                is not None
+            insert_server_chat_message(
+                conn,
+                assistant_message_id,
+                thread_id,
+                user_message_id,
+                "[]",
+                json.dumps(metadata, ensure_ascii = False),
+                created,
             )
-            conn.execute(
-                """INSERT INTO chat_messages
-                   (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
-                   VALUES (?, ?, ?, 'assistant', '[]', ?, ?)""",
-                (
-                    assistant_message_id,
-                    thread_id,
-                    user_message_id,
-                    json.dumps(metadata, ensure_ascii = False),
-                    created,
-                ),
-            )
-            if inventory_was_clean:
-                conn.execute("UPDATE chat_attachment_inventory_state SET dirty=0 WHERE singleton=1")
         else:
             assistant_metadata = _loads(assistant["metadata_json"], {})
             existing_run_id = (
@@ -649,6 +673,52 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | N
                 (run_id, owner_subject),
             ).fetchone()
         return _run_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_run_state(run_id: str) -> dict[str, Any] | None:
+    """Status, lastEventSeq and updatedAt of get_run's row, without reading or parsing request_json."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT status, last_event_seq, updated_at FROM chat_generation_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "status": row["status"],
+            "lastEventSeq": int(row["last_event_seq"]),
+            "updatedAt": int(row["updated_at"]),
+        }
+    finally:
+        conn.close()
+
+
+def get_run_frame(run_id: str) -> tuple[dict[str, Any], str] | None:
+    """get_run_state's fields plus get_run's row as its compact JSON text, without parsing request_json.
+
+    A request_json SQLite does not see as one line of valid JSON (corrupt, hand edited) takes the old
+    parse and re-encode, so the route never splices text the client cannot parse or that splits the frame."""
+    conn = _connect()
+    try:
+        row = _execute_splice(
+            conn,
+            "SELECT *, {} AS splice_ok FROM chat_generation_runs WHERE id=?",
+            "request_json",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        state = {
+            "status": row["status"],
+            "lastEventSeq": int(row["last_event_seq"]),
+            "updatedAt": int(row["updated_at"]),
+        }
+        if row["splice_ok"]:
+            return state, _run_json_from_row(row)
+        return state, json.dumps(_run_from_row(row), ensure_ascii = False, separators = (",", ":"))
     finally:
         conn.close()
 
@@ -921,9 +991,30 @@ def list_events(
     run_id: str,
     after: int = 0,
     limit: int = 1000,
+    *,
+    raw: bool = False,
 ) -> list[dict[str, Any]]:
+    """raw=True returns the stored text as "payloadJson": it is already _dumps_payload output, the SSE
+    route's encoding. Rows that are not one line of valid JSON (corrupt, hand edited, NaN) are
+    re-encoded so the route never splices text the client cannot parse or that splits the frame."""
     conn = _connect()
     try:
+        if raw:
+            query = """SELECT seq, event_type, payload_json, created_at, {} AS splice_ok
+                       FROM chat_generation_events
+                       WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?"""
+            rows = _execute_splice(conn, query, "payload_json", (run_id, after, limit)).fetchall()
+            return [
+                {
+                    "seq": int(row["seq"]),
+                    "type": row["event_type"],
+                    "payloadJson": row["payload_json"]
+                    if row["splice_ok"]
+                    else _dumps_payload(_loads(row["payload_json"], {})),
+                    "createdAt": int(row["created_at"]),
+                }
+                for row in rows
+            ]
         rows = conn.execute(
             """SELECT seq, event_type, payload_json, created_at
                FROM chat_generation_events
@@ -947,16 +1038,21 @@ def wait_for_events(
     run_id: str,
     after: int = 0,
     timeout: float = 15,
+    raw: bool = False,
 ) -> list[dict[str, Any]]:
-    events = list_events(run_id, after)
+    read = partial(list_events, raw = True) if raw else list_events
+    # Bumped under the lock after each notifying commit: unchanged means the unlocked read saw them all.
+    seen = _EVENTS_COMMITS
+    events = read(run_id, after)
     if events:
         return events
     with _EVENTS_CHANGED:
-        events = list_events(run_id, after)
-        if events:
-            return events
+        if _EVENTS_COMMITS != seen:
+            events = read(run_id, after)
+            if events:
+                return events
         _EVENTS_CHANGED.wait(timeout)
-    return list_events(run_id, after)
+    return read(run_id, after)
 
 
 def reconcile_runs(

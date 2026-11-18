@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { authFetch } from "@/features/auth";
+import { useFreshApiKeyStore } from "@/features/settings/stores/fresh-api-key-store";
 import { type ReactElement, useEffect, useState } from "react";
 import {
   type ApiSamplingDefaults,
@@ -31,6 +32,7 @@ export function ApiExampleDialog({
 }): ReactElement {
   const [sampling, setSampling] = useState<ApiSamplingDefaults | null>(null);
   const choices = useApiExampleChoices(baseUrl, "python");
+  const freshKey = useFreshApiKeyStore((s) => s.key);
 
   useEffect(() => {
     if (!open) return;
@@ -67,10 +69,12 @@ export function ApiExampleDialog({
           <ApiExampleBox
             fitContent={true}
             choices={choices}
+            hasRealKey={freshKey !== null}
             code={buildApiExample({
               baseUrl,
               model,
               sampling,
+              apiKey: freshKey ?? undefined,
               language: choices.language,
               os: choices.os,
             })}

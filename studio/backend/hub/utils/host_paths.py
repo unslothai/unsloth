@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the host's filesystem layout inside the host. For an ``sk-unsloth`` API key every host
-path in an inventory payload is replaced by an opaque reference, stable for the life of the
-server so a client can still group rows. Output encoding, not an authorization decision.
-"""
+"""Swaps host paths for stable opaque refs under sk-unsloth keys; encoding only, not authorization."""
 
 from __future__ import annotations
 
@@ -308,8 +305,7 @@ def response_leaks_host_path(
 
 
 def _echoed(value: Any, echo: frozenset) -> bool:
-    """A reference cannot stand in for a path the caller NAMED: the HMAC is process-stable, so
-    referencing caller-chosen input is a confirmation oracle."""
+    """Never echo a caller-named path as a ref: a stable HMAC is a confirmation oracle."""
     text = _as_text(value)
     return bool(text) and text in echo
 
@@ -578,8 +574,7 @@ def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
 
 
 def redact_load_progress(progress: Any, *, via_api_key: bool) -> Any:
-    """A worker-thread failure stores ``str(exc)``, naming the path a ``ref:`` load resolved to,
-    answered on a LATER request whose handle map is empty."""
+    """Worker str(exc) can name the resolved path; redact it when the handle map is empty."""
     if not isinstance(progress, Mapping):
         return progress
     if host_paths_visible(via_api_key) or not progress.get("error"):

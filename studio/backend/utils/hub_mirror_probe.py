@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Log a warning when a custom Hub endpoint redirects to huggingface.co (hf-mirror.com does outside
-mainland China), which huggingface_hub otherwise follows silently. No token, no redirect followed."""
+"""Warns when a custom Hub endpoint redirects to huggingface.co, which huggingface_hub would follow
+silently; sends no token and follows no redirect"""
 
 from __future__ import annotations
 

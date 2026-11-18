@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Integrated GPUs skip pinned host memory: their VRAM is system RAM, so a pinned copy only takes RAM from the GPU
-(ComfyUI does the same). An unclassifiable device answers discrete (pinning allowed)."""
+"""Integrated GPUs skip pinned host memory (VRAM is RAM); unclassifiable devices count as discrete"""
 
 from __future__ import annotations
 
@@ -54,6 +53,22 @@ def device_is_integrated(device: Any = None) -> bool:
         with _LOCK:
             _CACHE[index] = answer
         return answer
+    except Exception:  # noqa: BLE001 - unclassifiable: keep the discrete path
+        return False
+
+
+def xpu_is_integrated() -> bool:
+    """Whether the current XPU is a Core Ultra Arc iGPU, by PCI id. Never raises."""
+    try:
+        import torch
+
+        xpu = getattr(torch, "xpu", None)
+        if xpu is None or not xpu.is_available():
+            return False
+        device_id = getattr(xpu.get_device_properties(), "device_id", None)
+        from utils.hardware.hardware import _INTEL_XPU_IGPU_PCI_IDS
+
+        return isinstance(device_id, int) and device_id in _INTEL_XPU_IGPU_PCI_IDS
     except Exception:  # noqa: BLE001 - unclassifiable: keep the discrete path
         return False
 

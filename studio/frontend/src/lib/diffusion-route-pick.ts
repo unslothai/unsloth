@@ -6,6 +6,11 @@ export interface DiffusionRoutePick {
   opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
 }
 
+export function diffusionFileKind(filename?: string | null): DiffusionRoutePick["opts"]["kind"] {
+  if (!filename) return "pipeline";
+  return filename.toLowerCase().endsWith(".safetensors") ? "single_file" : "gguf";
+}
+
 /** Chat-routed picks carry only search params, so recognise bare local single files here (a pipeline
  * load would evict the resident model and fail). `spec` covers curated single-file artifacts. */
 export function diffusionRoutePick(
@@ -13,7 +18,9 @@ export function diffusionRoutePick(
   quant?: string | null,
   spec?: { kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null,
 ): DiffusionRoutePick {
-  if (quant) return { repoId: model, opts: { kind: "gguf", filename: quant } };
+  if (quant) {
+    return { repoId: model, opts: { kind: diffusionFileKind(quant), filename: quant } };
+  }
   // A spec exists only for catalog repo ids, so it beats extension sniffing.
   if (spec) return { repoId: model, opts: { kind: spec.kind, filename: spec.filename } };
   const norm = model.replace(/\\/g, "/");

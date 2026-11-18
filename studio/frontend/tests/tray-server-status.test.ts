@@ -47,7 +47,13 @@ function actionableStatuses(hook: string): string[] {
   if (start < 0) {
     throw new Error("the tray-toggle-server listener is gone");
   }
-  const listener = hook.slice(start, hook.indexOf("});", start));
+  // End at the call's own close, matched by indent: a nested `});` (a .catch) ends earlier.
+  const indent = hook.slice(hook.lastIndexOf("\n", start) + 1, start);
+  const end = hook.indexOf(`\n${indent}});`, start);
+  if (!/^[ ]*$/.test(indent) || end < 0) {
+    throw new Error("the tray-toggle-server listener no longer starts its own line");
+  }
+  const listener = hook.slice(start, end);
   return [
     ...new Set(
       [...listener.matchAll(/statusRef\.current === "([^"]*)"/g)].map(

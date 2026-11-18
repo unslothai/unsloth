@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bundled chat-template selection for GGUF inference.
-
-Some shipped GGUF quants embed an older chat template. Rather than re-cutting and
-asking users to re-download every quant, Unsloth can override the embedded template
-at llama-server launch time with a bundled, up-to-date Jinja template for known
-model families. The override is wired through the existing ``chat_template_override``
--> ``--chat-template-file`` path in ``LlamaCppBackend.load_model``.
-
-Currently this covers ``unsloth/gemma-4-*-GGUF``, which gains the upstream PR #118
-``preserve_thinking`` flag (defaulted OFF here) so the Unsloth "Preserve thinking"
-toggle appears while staying disabled by default.
-"""
+"""Overrides embedded GGUF chat templates at llama-server launch (chat_template_override to --chat-
+template-file in LlamaCppBackend.load_model) for known families; currently covers
+unsloth/gemma-4-*-GGUF, whose preserve_thinking flag is OFF by default."""
 
 import re
 from functools import lru_cache

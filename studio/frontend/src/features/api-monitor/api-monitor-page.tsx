@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { apiMonitorTourSteps } from "./tour";
@@ -30,10 +31,12 @@ import {
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
 import { useIsAccountOwner } from "@/features/auth";
+import { isNpuModelId, useNpuDisplayNames } from "@/features/npu";
 import {
   loadLanAccess,
   loadMultiModelEnabled,
   publishLanUrls,
+  useKeylessExampleAccess,
   useSettingsDialogStore,
 } from "@/features/settings";
 // Not through the barrel: these pull in chat, which every barrel importer would then load.
@@ -57,18 +60,16 @@ import {
   Clock01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
-  Delete02Icon,
   FileSearchIcon,
-  FlashIcon,
   PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
-  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
+import { Settings01Icon, SpeedMeterIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -116,6 +117,7 @@ import {
   useApiMonitor,
 } from "./use-api-monitor";
 import { PlayIcon } from "lucide-react";
+import { useFreshApiKeyStore } from "@/features/settings/stores/fresh-api-key-store";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
@@ -145,21 +147,22 @@ const PANE_HEIGHT =
   "max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(260px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto";
 
 const SURFACE = "elevated-card bg-card";
-const DIVIDER = "border-border/60 dark:border-background";
+// glass-divider / glass-inset: index.css glass hooks.
+const DIVIDER = "glass-divider border-border/60 dark:border-background";
 const INSET =
-  "border border-border/50 bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
+  "glass-inset border border-border/50 bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 const INSET_OPAQUE =
   "bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 
 function formatTime(value: number): string {
-  return new Date(value * 1000).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return new Date(value * 1000).toLocaleTimeString(
+    [],
+    withTimeFormat({ hour: "numeric", minute: "2-digit" }),
+  );
 }
 
 function formatFullTime(value: number): string {
-  return new Date(value * 1000).toLocaleString();
+  return new Date(value * 1000).toLocaleString(undefined, withTimeFormat());
 }
 
 function formatAgo(value: number, now: number): string {
@@ -549,6 +552,8 @@ const RequestRow = memo(function RequestRow({
   onSelect: (id: string) => void;
   now: number;
 }): ReactElement {
+  useTimeFormat();
+  const model = useNpuDisplayNames(false)(entry.model) ?? entry.model;
   const age = (
     <span title={formatFullTime(entry.started_at)}>
       {formatAgo(entry.started_at, now)}
@@ -578,7 +583,7 @@ const RequestRow = memo(function RequestRow({
           </span>
         </div>
         <div className="min-w-0 truncate pl-3.5 text-ui-11 text-muted-foreground/80">
-          {entry.model}
+          {model}
         </div>
         {entry.error ? (
           // Backend error text can quote the request, so keep it out too.
@@ -621,7 +626,7 @@ const RequestRow = memo(function RequestRow({
       </div>
       <div className="flex min-w-0 items-center gap-2 pl-4">
         <span className="truncate text-ui-11 text-muted-foreground">
-          {entry.model}
+          {model}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-ui-11 tabular-nums text-muted-foreground">
           <span
@@ -642,7 +647,7 @@ const RequestRow = memo(function RequestRow({
           {speed ? (
             <span className="flex items-center gap-1" title="Generation speed">
               <HugeiconsIcon
-                icon={FlashIcon}
+                icon={SpeedMeterIcon}
                 strokeWidth={1.75}
                 className="size-3"
               />
@@ -801,6 +806,8 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
+  const model = useNpuDisplayNames(false)(entry.model) ?? entry.model;
+  useTimeFormat();
   // Prefer the detail only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&
@@ -840,7 +847,7 @@ function RequestDetail({
           {entry.endpoint}
         </h2>
         <p className="min-w-0 break-all text-ui-12 text-muted-foreground">
-          {entry.model}
+          {model}
         </p>
       </header>
 
@@ -916,6 +923,13 @@ function QuickStart({
   const choices = useApiExampleChoices(baseUrl, "curl");
   const [useTunnel] = useApiTunnelPref();
   const [kind, setKind] = useState<ApiExampleKind>("chat");
+  const freshKey = useFreshApiKeyStore((s) => s.key);
+  const isOwner = useIsAccountOwner();
+  const keylessAccess = useKeylessExampleAccess(isOwner);
+  const keyless = {
+    keylessScope: keylessAccess.scope,
+    keylessExposure: keylessAccess.exposure,
+  };
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -940,10 +954,12 @@ function QuickStart({
         <div className="w-full max-w-2xl text-left">
           <ApiExampleBox
             choices={choices}
+            hasRealKey={freshKey !== null}
             code={buildApiExample({
               baseUrl,
               model: model ?? "MODEL_ID",
               sampling: {},
+              apiKey: freshKey ?? undefined,
               language: choices.language,
               os: choices.os,
             })}
@@ -952,11 +968,26 @@ function QuickStart({
       ) : (
         <div className="w-full max-w-3xl text-left">
           {kind === "media" ? (
-            <MediaApiExamples useTunnel={useTunnel} showHeading={false} />
+            <MediaApiExamples
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+              {...keyless}
+            />
           ) : kind === "audio" ? (
-            <AudioApiExamples useTunnel={useTunnel} showHeading={false} />
+            <AudioApiExamples
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+              {...keyless}
+            />
           ) : (
-            <DecisionApiSection showHeading={false} />
+            <DecisionApiSection
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+              {...keyless}
+            />
           )}
         </div>
       )}
@@ -1247,6 +1278,12 @@ export function ApiMonitorPage(): ReactElement {
       servedModels(loadedModels, activeModel, residentCheckpoint, loadedIsMlx),
     [loadedModels, activeModel, residentCheckpoint, loadedIsMlx],
   );
+  const npuName = useNpuDisplayNames(
+    served.some((model) => isNpuModelId(model.checkpoint)),
+  );
+  // Labels only: API examples keep the id a client sends.
+  const servedName = (model: ServedModel): string =>
+    npuName(model.checkpoint) ?? model.name;
   const serverStatus =
     SERVER_STATUS[
       data?.status === "idle" && served.length > 0
@@ -1289,12 +1326,12 @@ export function ApiMonitorPage(): ReactElement {
     );
   };
   const settingsButton = (model: ServedModel): ReactElement => (
-    <ToolbarTooltip label={`Run settings for ${model.name}`}>
+    <ToolbarTooltip label={`Run settings for ${servedName(model)}`}>
       <Button
         type="button"
         variant="ghost"
         size="sm"
-        aria-label={`Run settings for ${model.name}`}
+        aria-label={`Run settings for ${servedName(model)}`}
         aria-haspopup="dialog"
         onClick={() => openRunSettings(model)}
         // Primary opens only on live settings: the kept-model fallback would send Run its bare label.
@@ -1304,7 +1341,7 @@ export function ApiMonitorPage(): ReactElement {
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
-          icon={Settings02Icon}
+          icon={Settings01Icon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -1313,12 +1350,12 @@ export function ApiMonitorPage(): ReactElement {
   );
   const reloadBusy = reload.reloadingKey != null || ejecting || modelLoading;
   const reloadButton = (model: ServedModel): ReactElement => (
-    <ToolbarTooltip label={`Reload ${model.name}`}>
+    <ToolbarTooltip label={`Reload ${servedName(model)}`}>
       <Button
         type="button"
         variant="ghost"
         size="sm"
-        aria-label={`Reload ${model.name}`}
+        aria-label={`Reload ${servedName(model)}`}
         onClick={() => void reload.reloadServed(model)}
         disabled={reloadBusy || !reload.canReload(model)}
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
@@ -1337,12 +1374,12 @@ export function ApiMonitorPage(): ReactElement {
     </ToolbarTooltip>
   );
   const ejectButton = (model: ServedModel): ReactElement => (
-    <ToolbarTooltip label={`Eject ${model.name}`}>
+    <ToolbarTooltip label={`Eject ${servedName(model)}`}>
       <Button
         type="button"
         variant="ghost"
         size="sm"
-        aria-label={`Eject ${model.name}`}
+        aria-label={`Eject ${servedName(model)}`}
         onClick={() => void ejectServed(model)}
         disabled={ejecting || modelLoading}
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
@@ -1356,12 +1393,12 @@ export function ApiMonitorPage(): ReactElement {
     </ToolbarTooltip>
   );
   const exampleButton = (model: ServedModel): ReactElement => (
-    <ToolbarTooltip label={`API example for ${model.name}`}>
+    <ToolbarTooltip label={`API example for ${servedName(model)}`}>
       <Button
         type="button"
         variant="ghost"
         size="sm"
-        aria-label={`API example for ${model.name}`}
+        aria-label={`API example for ${servedName(model)}`}
         aria-haspopup="dialog"
         onClick={() => setExampleModel(model)}
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100 dark:hover:bg-chat-icon-bg-hover [@media(hover:none)]:opacity-100"
@@ -1374,7 +1411,7 @@ export function ApiMonitorPage(): ReactElement {
     served.length > 1
       ? `Eject all ${served.length} models and free their memory`
       : served.length === 1
-        ? `Eject ${served[0].name} and free its memory`
+        ? `Eject ${servedName(served[0])} and free its memory`
         : "No model is loaded";
   const rowFacts = (model: ServedModel): ReactElement => {
     const { id } = model;
@@ -1433,7 +1470,7 @@ export function ApiMonitorPage(): ReactElement {
         </dl>
         <dl className={FACT_CELL}>
           {rowStats.tokensPerSecond != null ? (
-            <Fact label="Speed" icon={FlashIcon}>
+            <Fact label="Speed" icon={SpeedMeterIcon}>
               <span className="tabular-nums">
                 {rowStats.tokensPerSecond.toFixed(1)} tok/s
               </span>
@@ -1467,6 +1504,7 @@ export function ApiMonitorPage(): ReactElement {
     <>
       {/* In the macOS titlebar row like Chat's header; click-through so the row still drags. */}
       <div
+        data-page-model-header=""
         className={cn(
           "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
           !isMobileShell &&
@@ -1496,6 +1534,7 @@ export function ApiMonitorPage(): ReactElement {
         </div>
         <div
           aria-hidden={true}
+          data-slot="api-toolbar-fade"
           className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
         />
       </div>
@@ -1540,7 +1579,7 @@ export function ApiMonitorPage(): ReactElement {
               className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
             >
               <HugeiconsIcon
-                icon={Settings02Icon}
+                icon={Settings01Icon}
                 strokeWidth={1.75}
                 className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
@@ -1584,7 +1623,13 @@ export function ApiMonitorPage(): ReactElement {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <ToolbarTooltip label={reload.reloadAllTitle(served)}>
+              <ToolbarTooltip
+                label={
+                  served.length === 1
+                    ? `Reload ${servedName(served[0])}`
+                    : reload.reloadAllTitle(served)
+                }
+              >
                 <Button
                   type="button"
                   variant="outline"
@@ -1676,7 +1721,7 @@ export function ApiMonitorPage(): ReactElement {
                           aria-hidden={true}
                         />
                         <span className="ml-1 min-w-0 truncate font-mono text-foreground @max-3xl/served:whitespace-normal @max-3xl/served:[overflow-wrap:anywhere]">
-                          {model.name}
+                          {servedName(model)}
                         </span>
                         {exampleButton(model)}
                       </span>
@@ -1824,7 +1869,7 @@ export function ApiMonitorPage(): ReactElement {
                   <SelectItem value={ALL_MODELS}>All models</SelectItem>
                   {loggedModels.map((model) => (
                     <SelectItem key={model} value={model}>
-                      {model}
+                      {npuName(model) ?? model}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -1896,7 +1941,7 @@ export function ApiMonitorPage(): ReactElement {
                   className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
                 >
                   <HugeiconsIcon
-                    icon={Delete02Icon}
+                    icon={TrashIcon}
                     strokeWidth={1.75}
                     className="size-4"
                   />
