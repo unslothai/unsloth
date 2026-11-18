@@ -33307,9 +33307,7 @@ class LlamaCppBackend:
                         _retry_unbacked_mib = (
                             0
                             if is_vulkan_backend
-                            else self._rocm_apu_unbacked_free_mib(
-                                [row[0] for row in _retry_rows]
-                            )
+                            else self._rocm_apu_unbacked_free_mib([row[0] for row in _retry_rows])
                         )
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
                             cmd,

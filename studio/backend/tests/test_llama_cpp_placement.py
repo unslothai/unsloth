@@ -3039,7 +3039,13 @@ def test_a_retry_off_the_igpu_withdraws_the_paging_headroom():
     assert "auto_unmapped = _retry_auto_unmapped" in retry
 
 
-def _hip_apu(monkeypatch, *, free_mib, carve_mib = 512, unified = frozenset({0})):
+def _hip_apu(
+    monkeypatch,
+    *,
+    free_mib,
+    carve_mib = 512,
+    unified = frozenset({0}),
+):
     """A Windows ROCm APU whose HIP free reading is ``free_mib`` (PAL adds the shared heap)."""
     import types
 
@@ -3080,9 +3086,7 @@ def test_the_unbacked_part_of_a_strix_halo_hip_reading(monkeypatch):
     )
     assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0, 1]) == 0
     assert LlamaCppBackend._rocm_apu_unbacked_free_mib([1]) == 0
-    monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: None)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: None))
     assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 0
     monkeypatch.setattr(llama_cpp_module.sys, "platform", "linux")
     assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 0
