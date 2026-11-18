@@ -5443,8 +5443,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	);
 }
 
-/* Code blocks scroll sideways on the body in chat and on the block elsewhere; either bar shows only
-   while the block is hovered or focused. Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
+/* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
 @supports selector(::-webkit-scrollbar) {
 	:is([data-streamdown="code-block"], [data-streamdown="code-block-body"]) {
 		scrollbar-width: auto;
