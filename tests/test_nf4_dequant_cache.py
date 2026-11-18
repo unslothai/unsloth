@@ -290,3 +290,21 @@ def test_admission_keeps_the_transient_reserve(monkeypatch):
     W2, absmax2 = _weight(4096)  # 16 KiB do not
     dc._lookup(W2, absmax2, _decoder(calls, 4096), torch.bfloat16)
     assert calls == [True, False] and dc.cached_count() == 1 and dc.STATS["declined"] == 1
+
+
+def test_model_call_larger_than_measured_drops_cache_before_the_forward(monkeypatch):
+    # The pre-hook sees the input before the model allocates for it (a [1, 1, s, s] attention mask grows with
+    # the square of the sequence), so the cache is gone before that allocation, not at the first LoRA matmul.
+    dc._model_pre_hook(None, (), {"input_ids": torch.zeros(4, 16, dtype = torch.long)})
+    W, absmax = _admit_at_safe_point(monkeypatch, rows = 64)  # measured: 64 tokens, sequences of 16
+    dc._model_pre_hook(None, (), {"input_ids": torch.zeros(4, 16, dtype = torch.long)})
+    assert dc.cached_count() == 1
+    dc._model_pre_hook(
+        None, (), {"input_ids": torch.zeros(2, 32, dtype = torch.long)}
+    )  # same tokens, longer
+    assert dc.cached_count() == 0 and dc._BUDGET[None] == 0 and dc.STATS["shape_drops"] == 1
+    dc._model_pre_hook(None, (), {"input_ids": torch.zeros(2, 32, dtype = torch.long)})
+    dc._on_optimizer_step(None, (), {})
+    dc._lookup(W, absmax, _decoder([]), torch.bfloat16, 64)
+    dc._model_pre_hook(None, (), {"inputs_embeds": torch.zeros(2, 32, 8)})  # measured now: kept
+    assert dc.cached_count() == 1

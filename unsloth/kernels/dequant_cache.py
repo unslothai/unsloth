@@ -23,8 +23,9 @@ Between optimizer steps only the trainer's own code and its callbacks run: auto 
 come from a known library (user callbacks may allocate anything there), and drops the cache before evaluation.
 Safety: the budget only covers steps no larger than those already measured, so the cache is dropped (until the
 next safe point) when it is needed for anything else:
-  * a matmul with more rows (tokens) than any measured before the last safe point (a longer batch, a larger
-    evaluation or generation batch): its transient was never measured;
+  * a model call with more tokens or a longer sequence than any measured before the last safe point (a longer
+    batch, a larger evaluation or generation batch), seen by a forward pre-hook before the model allocates
+    anything (embeddings, attention masks); also any LoRA matmul with more rows than measured;
   * Trainer.evaluate() / predict(), for_inference() and saving; the end of Trainer.train() also returns it to
     the driver;
   * auto mode only: another process holding more than the margin on the device, or growing by more than it.
@@ -104,9 +105,11 @@ _ROWS_NEW = {}  # device index -> most matmul rows since the last safe point
 _FOREIGN = {}  # device index -> memory other processes held at the first safe point
 _FRACTIONS = {}  # device index -> set_per_process_memory_fraction (torch without the getter)
 _ACTIVE = 0  # Trainer.train() calls running: nothing is cached outside them
-_CHECKED = (
-    set()
-)  # device indices whose free memory was re-read at an admission since the last safe point
+# device indices whose free memory was re-read at an admission since the last safe point
+_CHECKED = set()
+_SHAPE_SEEN = [0, 0]  # most tokens / longest sequence of a model input before the last safe point
+_SHAPE_NEW = [0, 0]  # the same since the last safe point
+_HOOKS = []  # forward pre-hooks on the trained model, removed when training ends
 
 
 def _storage_ref(W):
@@ -292,6 +295,9 @@ def _on_optimizer_step(optimizer, args, kwargs):
             _pop(key)
             STATS["stale"] += 1
         _CHECKED.clear()
+        _SHAPE_SEEN[0] = max(_SHAPE_SEEN[0], _SHAPE_NEW[0])
+        _SHAPE_SEEN[1] = max(_SHAPE_SEEN[1], _SHAPE_NEW[1])
+        _SHAPE_NEW[0] = _SHAPE_NEW[1] = 0
         for index in list(_SEEN):
             # The budget below covers steps up to the largest matmul seen so far, no larger.
             _ROWS_SEEN[index] = max(_ROWS_SEEN.get(index, 0), _ROWS_NEW.pop(index, 0))
@@ -693,7 +699,47 @@ def nf4_lora_first(X, W, quant_state, XA, Bt, alpha):
 def _end_train():
     global _ACTIVE
     _ACTIVE = 0
+    while _HOOKS:
+        try:
+            _HOOKS.pop().remove()
+        except Exception:
+            pass
     clear_dequant_cache(release = True)
+
+
+def _input_shape(args, kwargs):
+    """(tokens, sequence length) of a causal LM call, from input_ids or inputs_embeds."""
+    x = kwargs.get("input_ids")
+    embeds = x is None
+    if embeds:
+        x = kwargs.get("inputs_embeds")
+    if x is None and args:
+        x, embeds = args[0], False
+    if not isinstance(x, torch.Tensor) or x.dim() < 1:
+        return None
+    if embeds:
+        if x.dim() < 2:
+            return None
+        return x.numel() // max(x.shape[-1], 1), x.shape[-2]
+    return x.numel(), x.shape[-1]
+
+
+def _model_pre_hook(module, args, kwargs):
+    # Runs before the model allocates anything for this call (embeddings, attention masks that grow with the
+    # square of the sequence): a call larger than every step the budget was measured on drops the cache now.
+    shape = _input_shape(args, kwargs)
+    if shape is None:
+        return
+    tokens, length = shape
+    if tokens > _SHAPE_NEW[0]:
+        _SHAPE_NEW[0] = tokens
+    if length > _SHAPE_NEW[1]:
+        _SHAPE_NEW[1] = length
+    if (tokens > _SHAPE_SEEN[0] or length > _SHAPE_SEEN[1]) and (
+        _CACHE or any(b > 0 for b in _BUDGET.values())
+    ):
+        for index in list(_BUDGET):
+            _drop_device(index, "shape_drops")
 
 
 _KNOWN_CALLBACK_PACKAGES = frozenset(
@@ -725,6 +771,14 @@ def _make_callback():
                 STATS["user_callbacks_off"] += 1
             else:
                 _ACTIVE = 1
+            model = kwargs.get("model")
+            if _ACTIVE and isinstance(model, torch.nn.Module) and not _HOOKS:
+                try:
+                    _HOOKS.append(
+                        model.register_forward_pre_hook(_model_pre_hook, with_kwargs = True)
+                    )
+                except Exception:
+                    _ACTIVE = 0  # cannot see the input sizes before the model allocates for them
 
         def on_step_end(self, args, state, control, **kwargs):
             if control.should_evaluate:
