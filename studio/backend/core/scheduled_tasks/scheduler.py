@@ -147,13 +147,11 @@ def _run_instructions(task: dict, now_ms: int) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-# How much of the task's chat a run reads back: its newest turns, cut at whole turns.
 _HISTORY_TURNS = 40
 _HISTORY_CHARS = 48_000
 
 
 def _target_chat(task: dict) -> Optional[dict]:
-    """The chat this task posts into, or None for a chat per run (also when that chat is gone)."""
     from storage import studio_db
 
     thread_id = task.get("threadId")
@@ -167,9 +165,7 @@ _ROLE_ORDER = {"system": 0, "user": 1, "assistant": 2}
 
 
 def _shown_branch(messages: list[dict]) -> list[dict]:
-    """The branch Chat shows, oldest first: the newest message followed down to its newest leaf, then
-    up its parents. Mirrors message-order.ts: a null parent before any recorded one chains to the
-    previous message (legacy chats), and an edited turn can be newer than the reply below it."""
+    """The branch Chat shows, oldest first; mirrors resolveSavedBranchHead and createParentResolver."""
     if not messages:
         return []
     ordered = sorted(
@@ -225,7 +221,7 @@ def _message_text(message: dict) -> str:
 
 
 def _chat_history(task: dict) -> list[dict]:
-    """The target chat's text turns, alternating and opening on the user as chat templates expect."""
+    """Text turns, alternating and opening on the user as chat templates expect."""
     from storage import studio_db
 
     thread = _target_chat(task)
@@ -250,7 +246,6 @@ def _chat_history(task: dict) -> list[dict]:
     kept.reverse()
     while kept and kept[0]["role"] != "user":
         kept.pop(0)
-    # The task's prompt follows as a user turn, so a trailing user turn would break the alternation.
     if kept and kept[-1]["role"] == "user":
         kept.pop()
     return kept
@@ -723,7 +718,7 @@ async def generate_answer(
                     ],
                     "stream": False,
                     "cancel_id": run["id"],
-                    # The chat's turns are budgeted in characters; on a small window drop the oldest, not the run.
+                    # History is budgeted in characters, so a small window must drop turns, not fail.
                     **(
                         {"context_overflow": "truncate_oldest", "context_policy": "rolling"}
                         if history
@@ -870,7 +865,6 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
 
     target = _target_chat(task)
     if target is not None:
-        # Into the task's chat: its title, project and archive state are the user's, so only messages are added.
         thread_id = target["id"]
         user_message_id, answer_message_id = db.message_ids_for_run(run["id"])
         branch = _shown_branch(studio_db.list_chat_messages(thread_id))
@@ -912,7 +906,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
             ],
         )
     except Exception:
-        # Never leave an empty chat behind; in the task's chat the failed run's settle removes the pair.
+        # Never leave an empty chat behind.
         if target is None:
             _discard_chat(thread_id)
         raise

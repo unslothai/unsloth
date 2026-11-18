@@ -14,7 +14,7 @@ from typing import Callable, Iterator, Optional
 
 from storage.studio_db import delete_chat_threads_in, get_connection
 
-# Per account. A run without a target chat opens one, so this also bounds how many chats schedules can make.
+# Per account. Every run opens a chat, so this also bounds how many chats schedules can make.
 MAX_TASKS = 100
 RUN_HISTORY_LIMIT = 20
 
@@ -67,7 +67,7 @@ def chat_id_for_run(run_id: str) -> str:
 
 
 def message_ids_for_run(run_id: str) -> tuple[str, str]:
-    """The prompt and answer a run posts into an existing chat, derived so a failed run's pair can be found."""
+    """Derived, so a failed run's two messages in a task's chat can be found."""
     return (
         str(uuid.uuid5(_RUN_CHAT_NAMESPACE, f"{run_id}:prompt")),
         str(uuid.uuid5(_RUN_CHAT_NAMESPACE, f"{run_id}:answer")),
@@ -75,7 +75,6 @@ def message_ids_for_run(run_id: str) -> tuple[str, str]:
 
 
 def discard_run_output(conn: sqlite3.Connection, run_ids: list[str]) -> None:
-    """Remove what failed runs wrote: a chat of their own, or their two messages in the task's chat."""
     if not run_ids:
         return
     delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
@@ -87,7 +86,6 @@ def discard_run_output(conn: sqlite3.Connection, run_ids: list[str]) -> None:
 
 
 def discard_run(run_id: str) -> None:
-    """``discard_run_output`` for a run whose settle did not land."""
     with _connect("BEGIN IMMEDIATE") as conn:
         discard_run_output(conn, [run_id])
 
@@ -263,7 +261,7 @@ def update_task(
 
 
 def delete_task(task_id: str) -> bool:
-    """Delete a task and its run history; finished runs' chats stay, an in-progress run's output goes too."""
+    """Delete a task and its run history; finished runs' chats stay, an in-progress run's chat goes too."""
     with _connect("BEGIN IMMEDIATE") as conn:
         running = conn.execute(
             "SELECT id FROM scheduled_task_runs WHERE task_id = ? AND status = 'running'",

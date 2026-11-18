@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Scheduled tasks: a prompt that runs on a schedule and posts the answer to a new chat, or to the chat it was added from."""
+"""Scheduled tasks: a prompt that runs on a schedule and posts the answer to a new chat."""
 
 from __future__ import annotations
 
@@ -166,7 +166,6 @@ def _existing_chat(thread_id: Optional[str]) -> Optional[str]:
     if thread_id is None:
         return None
     thread = studio_db.get_chat_thread(thread_id)
-    # A comparison is two chats; a run answers in one.
     if thread is None or thread.get("pairId"):
         raise HTTPException(status_code = 400, detail = "Chat not found")
     return thread_id

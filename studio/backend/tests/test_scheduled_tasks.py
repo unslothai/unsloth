@@ -2819,7 +2819,6 @@ def test_a_run_reads_its_chat_before_the_prompt(monkeypatch):
         ("assistant", "Exported as CSV."),
         ("user", "Write a haiku about mornings."),
     ]
-    # A small context window drops the oldest turns instead of failing the run.
     assert producer.payload.context_overflow == "truncate_oldest"
     assert producer.payload.context_policy == "rolling"
 

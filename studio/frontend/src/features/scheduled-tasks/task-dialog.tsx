@@ -232,9 +232,7 @@ export function TaskDialog({
   onDelete,
 }: {
   task: ScheduledTask | null;
-  /** A new task's project, as when it is added from a project chat. */
   initialProjectId?: string | null;
-  /** A new task added from a chat replies in that chat on every run. */
   chat?: { id: string; title: string } | null;
   onClose: () => void;
   onDelete?: (task: ScheduledTask) => void;

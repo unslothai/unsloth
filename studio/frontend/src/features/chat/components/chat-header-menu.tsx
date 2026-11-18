@@ -97,7 +97,7 @@ export const CHAT_MENU = MENU;
 const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
 
-// Loaded on first use: the scheduled tasks module otherwise loads with the /tasks route.
+// Lazy: the scheduled tasks module loads with /tasks.
 const TaskDialog = lazy(() =>
   import("@/features/scheduled-tasks/task-dialog").then((m) => ({
     default: m.TaskDialog,
@@ -445,7 +445,6 @@ function ChatMenuItems({
   );
 }
 
-/** The temporary toggle on a new chat; a saved chat's options live on its title. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,
@@ -462,7 +461,7 @@ export function ChatHeaderMenu({
   );
 }
 
-/** The open chat's title, which opens its options. `threadId` guards a menu left from the last chat. */
+/** `threadId` guards against a menu left from the previous chat. */
 export function ChatTitleMenu({
   threadId,
   fallback,
@@ -472,7 +471,6 @@ export function ChatTitleMenu({
 }) {
   const t = useT();
   const menu = useActiveChatMenuStore((state) => state.menu);
-  // The new task's project while its dialog is open over the chat; undefined when closed.
   const [taskProject, setTaskProject] = useState<string | null | undefined>();
   if (!menu || !threadId || menu.item.id !== threadId) {
     return fallback ?? null;
@@ -494,7 +492,7 @@ export function ChatTitleMenu({
             />
           </button>
         </DropdownMenuTrigger>
-        {/* ml-0 drops the menus' 3px start nudge, so the panel lines up with the title's hover box. */}
+        {/* ml-0: align with the title's hover box. */}
         <DropdownMenuContent
           align="start"
           sideOffset={6}
