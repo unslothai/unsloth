@@ -45,6 +45,7 @@ _KEYCODES = {
 
 _WINDOW_LIST_ON_SCREEN = 1
 _WINDOW_LIST_NO_DESKTOP = 16
+_DOCK_LEVEL = 20
 _CF_NUMBER_SINT64 = 4
 _CF_UTF8 = 0x08000100
 # Events posted back to back can arrive out of order.
@@ -377,8 +378,9 @@ class MacBackend(Backend):
             return -1
         return number.value
 
-    def _windows(self) -> list[tuple[int, FrontWindow]]:
-        found: list[tuple[int, FrontWindow]] = []
+    def _windows(self) -> list[tuple[int, int, FrontWindow]]:
+        """On-screen windows, topmost first, as (level, window number, window)."""
+        found: list[tuple[int, int, FrontWindow]] = []
         windows = self._lib.CGWindowListCopyWindowInfo(
             _WINDOW_LIST_ON_SCREEN | _WINDOW_LIST_NO_DESKTOP, 0
         )
@@ -398,6 +400,7 @@ class MacBackend(Backend):
                 found.append(
                     (
                         self._cf_int(get("kCGWindowLayer")),
+                        self._cf_int(get("kCGWindowNumber")),
                         FrontWindow(
                             app = self._cf_text(get("kCGWindowOwnerName")),
                             # Empty without the Screen Recording grant.
@@ -413,7 +416,7 @@ class MacBackend(Backend):
 
     def front_window(self) -> FrontWindow:
         app, bundle, pid = self._front_app()
-        for layer, window in self._windows():
+        for layer, _number, window in self._windows():
             if layer == 0 and (not pid or window.pid == pid):
                 return FrontWindow(
                     app = app or window.app,
@@ -424,9 +427,17 @@ class MacBackend(Backend):
                 )
         return FrontWindow(app = app, app_id = bundle, pid = pid)
 
+    def window_stack(self) -> Optional[list[tuple[Any, tuple[float, float, float, float]]]]:
+        # Floating panels count too; from the Dock's level up, system windows can span the screen.
+        return [
+            (number, window.bounds)
+            for layer, number, window in self._windows()
+            if 0 <= layer < _DOCK_LEVEL and window.bounds is not None
+        ]
+
     def window_at(self, x: float, y: float) -> Optional[FrontWindow]:
         from ..policy import is_security_prompt
-        for layer, window in self._windows():
+        for layer, _number, window in self._windows():
             if window.bounds is None or not window.contains(x, y):
                 continue
             # A password prompt floats above normal windows, so it is found at any level.

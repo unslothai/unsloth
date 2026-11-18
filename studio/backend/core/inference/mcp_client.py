@@ -592,6 +592,56 @@ def _accept_root_issuer_slash(auth) -> None:
         logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
 
 
+_OAUTH_METADATA_COLLECTION = "mcp-oauth-server-metadata"
+
+
+def _remember_server_metadata(auth, store) -> None:
+    """Fresh providers skip discovery and refresh at <origin>/token: 404 on better-auth (#18164)."""
+    from mcp.shared.auth import OAuthMetadata
+
+    adapter = getattr(auth, "token_storage_adapter", None)
+    context = getattr(auth, "context", None)
+    initialize = getattr(auth, "_initialize", None)
+    if adapter is None or context is None or initialize is None:
+        logger.warning("MCP OAuth: provider internals missing; token endpoint is not remembered")
+        return
+    key = auth.mcp_url
+    set_tokens, clear = adapter.set_tokens, adapter.clear
+
+    async def _initialize():
+        await initialize()
+        if context.oauth_metadata is not None:
+            return
+        try:
+            raw = await store.get(key = key, collection = _OAUTH_METADATA_COLLECTION)
+            if raw:
+                context.oauth_metadata = OAuthMetadata.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP OAuth: could not load the saved server metadata: %s", exc)
+
+    async def _set_tokens(tokens):
+        await set_tokens(tokens)
+        if context.oauth_metadata is None:
+            return
+        try:
+            await store.put(
+                key = key,
+                value = context.oauth_metadata.model_dump(mode = "json", exclude_none = True),
+                collection = _OAUTH_METADATA_COLLECTION,
+                ttl = 60 * 60 * 24 * 365,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP OAuth: could not save the server metadata: %s", exc)
+
+    async def _clear():
+        await clear()
+        await store.delete(key = key, collection = _OAUTH_METADATA_COLLECTION)
+
+    auth._initialize = _initialize
+    adapter.set_tokens = _set_tokens
+    adapter.clear = _clear
+
+
 def _serialize_token_refresh(auth, lock: threading.Lock) -> None:
     """Parallel refreshes each rotate the token and the one saved last can be revoked, forcing re-consent (#18164)."""
     flow = auth.async_auth_flow
@@ -641,6 +691,7 @@ def _oauth(
     )
     _strip_client_id_under_basic_auth(auth)
     _accept_root_issuer_slash(auth)
+    _remember_server_metadata(auth, store)
     with _oauth_refresh_locks_guard:
         lock = _oauth_refresh_locks.setdefault(_account_key(auth.mcp_url), threading.Lock())
     _serialize_token_refresh(auth, lock)
@@ -2086,6 +2137,43 @@ def _seeded_image_block(block: Any, mime: str) -> dict:
     return {**out, "type": "image", "mimeType": mime}
 
 
+# Below this an inline "image" is too small to be one, and the text too short to be worth parsing.
+_INLINE_IMAGE_MIN_CHARS = 1024
+_INLINE_IMAGE_PLACEHOLDER = "<image data moved out of the text>"
+
+
+def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Moves {"mimeType": "image/*", "data": <base64>} out of JSON text (Unreal's CaptureViewport) onto
+    the image-block path; left in, the model gets megabytes of truncated base64, never a picture."""
+    if (
+        len(text) < _INLINE_IMAGE_MIN_CHARS
+        or '"mimeType"' not in text
+        or text.lstrip()[:1] not in ("{", "[")
+    ):
+        return text, []
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        return text, []
+    found: list[tuple[str, str]] = []
+
+    def lift(node: Any) -> Any:
+        if isinstance(node, dict):
+            mime, data = _image_mime(node.get("mimeType")), node.get("data")
+            if mime is not None and isinstance(data, str) and len(data) >= _INLINE_IMAGE_MIN_CHARS:
+                found.append((data, mime))
+                return {**node, "data": _INLINE_IMAGE_PLACEHOLDER}
+            return {key: lift(item) for key, item in node.items()}
+        if isinstance(node, list):
+            return [lift(item) for item in node]
+        return node
+
+    lifted = lift(value)
+    if not found:
+        return text, []
+    return json.dumps(lifted, ensure_ascii = False), found
+
+
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
@@ -2095,9 +2183,12 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     omitted = 0
     has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
+    lifted = []
     for block in getattr(result, "content", None) or []:
         text = _block_text(block)
         if text:
+            text, inline_images = _lift_inline_images(text)
+            lifted.extend(inline_images)
             parts.append(text)
             has_text = True
             seed.append((block, None))
@@ -2125,6 +2216,14 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             unshown.append(note)
             if data:
                 payloads.add(data)
+    # After the block images: the widget hands images out positionally to the image blocks in its seed.
+    for data, mime in lifted:
+        payloads.add(data)
+        if len(data) > budget:
+            omitted += 1
+            continue
+        budget -= len(data)
+        images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
     # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)

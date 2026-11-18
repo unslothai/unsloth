@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
 from transformers import BatchEncoding, TextIteratorStreamer, TextStreamer
@@ -214,6 +215,20 @@ def _load_with_offload_fallback(load, **kwargs):
         f"({torch.cuda.memory_allocated() / 2**30:.2f} GiB still allocated)"
     )
     return load(offload_layers = "auto", **kwargs)
+
+
+def _reviewed_code_revisions(trust_remote_code, *sources) -> dict:
+    """Map each Hub source to the commit its consent scan read; empty without trust_remote_code."""
+    if not trust_remote_code:
+        return {}
+    from core.inference.chat_template_helpers import reviewed_code_revision
+
+    pins = {}
+    for source in sources:
+        revision = reviewed_code_revision(source) if source else None
+        if revision:
+            pins[str(source)] = revision
+    return pins
 
 
 def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
@@ -1240,6 +1255,10 @@ class InferenceBackend:
                 "hf_token": hf_token,
                 # Reuse this model trust_remote_code consent for the template reload; never run unconsented code.
                 "trust_remote_code": trust_remote_code,
+                # The commit the consent scan just read, so a later template reload runs that code only.
+                "remote_code_revisions": _reviewed_code_revisions(
+                    trust_remote_code, model_name, config.base_model if config.is_lora else None
+                ),
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,
                 "is_audio": config.is_audio,
@@ -1871,7 +1890,7 @@ class InferenceBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
-        max_tool_iterations: int = 25,
+        max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,

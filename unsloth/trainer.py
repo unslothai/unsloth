@@ -2470,7 +2470,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
                         _unsloth_reset_stray_compile_cache(self)
                     except Exception:
                         pass
-                    return _orig_train(*train_args, **train_kwargs)
+                    try:
+                        return _orig_train(*train_args, **train_kwargs)
+                    finally:
+                        # Inference / saving after training get the memory the NF4 dequant cache held.
+                        _release_dequant_cache()
 
                 self.train = _train_with_reset
                 self._unsloth_train_reset_wrapped = True
@@ -2479,6 +2483,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
     sft_trainer.__init__ = new_init
     sft_trainer._unsloth_auto_packing_wrapped = True
+
+
+def _release_dequant_cache():
+    import sys
+    module = sys.modules.get("unsloth.kernels.dequant_cache")
+    if module is not None:
+        module.clear_dequant_cache()
 
 
 def _patch_trl_trainer():

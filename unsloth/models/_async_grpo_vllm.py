@@ -38,6 +38,11 @@ def _inplace_lora():
     return os.environ.get("UNSLOTH_ASYNC_GRPO_INPLACE_LORA", "1") != "0"
 
 
+def _pause_on_sync():
+    # Kill switch: 1 stops decoding from TRL's /pause to its /resume, as `vllm serve` does.
+    return os.environ.get("UNSLOTH_ASYNC_GRPO_PAUSE_ON_SYNC", "0") == "1"
+
+
 def _logprob(value):
     # Clamp -inf like vLLM's OpenAI server (plain JSON).
     return max(float(getattr(value, "logprob", value)), -9999.0)
@@ -85,6 +90,8 @@ class _Engine:
         self.commands = []
         self.active = {}
         self.paused = False
+        self.pause_on_sync = _pause_on_sync()
+        self.syncing = False
         self.stopping = False
         self.loras = {}
         self.newest = None
@@ -93,7 +100,15 @@ class _Engine:
         self.slot_id = None
         self.slot_version = 0
         self.aborted = None
-        self.stats = {"requests": 0, "tokens": 0, "steps": 0, "step_s": 0.0, "max_batch": 0}
+        self.stats = {
+            "requests": 0,
+            "tokens": 0,
+            "steps": 0,
+            "step_s": 0.0,
+            "max_batch": 0,
+            "syncs": 0,
+            "sync_steps": 0,
+        }
         self.thread = threading.Thread(
             target = self._run, name = "unsloth-async-grpo-vllm", daemon = True
         )
@@ -170,6 +185,8 @@ class _Engine:
             stats["steps"] += 1
             stats["step_s"] += time.perf_counter() - started
             stats["max_batch"] = max(stats["max_batch"], batch)
+            if self.syncing:
+                stats["sync_steps"] += 1
             for output in outputs:
                 if output.finished and output.request_id in self.active:
                     future, lora_id = self.active.pop(output.request_id)
@@ -322,6 +339,22 @@ class _Engine:
 
     def set_paused(self, paused):
         self.paused = paused
+        return True
+
+    def begin_sync(self):
+        # TRL pauses before saving the adapter and resumes after loading it. The load is already an engine-thread
+        # command between steps with rollback (`_reload_slot`), so decoding goes on through the save and barrier on
+        # the previous adapter. TRL stamps a group's version at dispatch and bumps it only after the load, so those
+        # tokens carry the version that sampled them.
+        self.syncing = True
+        self.stats["syncs"] += 1
+        if self.pause_on_sync:
+            self.paused = True
+        return True
+
+    def end_sync(self):
+        self.syncing = False
+        self.paused = False
         return True
 
     def abort_all(self):
@@ -516,8 +549,8 @@ class UnslothAsyncVLLMServer:
                 body["lora_name"], body["lora_path"]
             ),
             "/v1/unload_lora_adapter": lambda: engine.remove_adapter(body.get("lora_name")),
-            "/pause": lambda: engine.set_paused(True),
-            "/resume": lambda: engine.set_paused(False),
+            "/pause": engine.begin_sync,
+            "/resume": engine.end_sync,
         }
         if path not in commands:
             return 404, {"error": f"unknown path {path}"}

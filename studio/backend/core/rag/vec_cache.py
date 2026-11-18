@@ -184,7 +184,8 @@ def _publish(
 
 
 def search(conn, db_file: str, scope: str, vector, fetch: int):
-    """(rows, cap) from the cache at this snapshot's epoch, else None (and a build is queued)."""
+    """(rows, cap, complete) from the cache at this snapshot's epoch, else None (and a build is queued).
+    ``complete``: rows already hold every vector in the scope, so no wider search can add one."""
     if not enabled():
         return None
     np = _np()
@@ -230,7 +231,7 @@ def _search_entry(np, entry: _Entry, vector, fetch: int):
     q = np.array(vector, dtype = np.float32)
     qn = float(np.sqrt(np.dot(q, q)))
     if not np.isfinite(qn) or qn == 0.0 or n == 0:
-        return [], n
+        return [], n, True
     q /= qn
     store = entry.store
     f = min(int(fetch), n)
@@ -255,7 +256,7 @@ def _search_entry(np, entry: _Entry, vector, fetch: int):
     # Same order vec0 gives: distance ascending, ties by rowid.
     order = np.lexsort((store.rowids[idx], -best))
     ids = store.ids
-    return [(ids[i], 1.0 - float(s)) for i, s in zip(idx[order], best[order])], n
+    return [(ids[i], 1.0 - float(s)) for i, s in zip(idx[order], best[order])], n, f >= n
 
 
 _ANN_MAX_FETCH = 16384
@@ -284,7 +285,7 @@ def _search_ann(conn, np, entry: _AnnEntry, vector, fetch: int):
     q = np.array(vector, dtype = np.float32)
     qn = float(np.sqrt(np.dot(q, q)))
     if not np.isfinite(qn) or qn == 0.0 or not ann.size:
-        return [], cap
+        return [], cap, False
     q /= qn
     keys, dist = vec_ann.search(np, ann, q, min(int(fetch), cap))
     ids: dict[int, str] = {}
@@ -295,7 +296,7 @@ def _search_ann(conn, np, entry: _AnnEntry, vector, fetch: int):
             f"SELECT rowid, id FROM chunks WHERE rowid IN ({','.join('?' * len(batch))})", batch
         ):
             ids[rowid] = cid
-    return [(ids[k], float(d)) for k, d in zip(flat, dist.tolist()) if k in ids], cap
+    return [(ids[k], float(d)) for k, d in zip(flat, dist.tolist()) if k in ids], cap, False
 
 
 _ID_BATCH = 900

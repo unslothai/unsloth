@@ -289,7 +289,6 @@ def make_dataset_task(
         "fewshot_split": "train",
         "output_type": "generate_until",
         "doc_to_text": _doc_column(input_key),
-        "doc_to_target": _doc_column(target_key),
         "generation_kwargs": {"until": ["\n"]},
         # strip so " 2" matches gold "2"; with one capture group re.findall yields the group text
         "filter_list": [
@@ -306,7 +305,26 @@ def make_dataset_task(
     import yaml
 
     out_dir.mkdir(parents = True, exist_ok = True)
-    (out_dir / f"{name}.yaml").write_text(yaml.safe_dump(spec, sort_keys = False), encoding = "utf-8")
+    # lm-eval parses bracketed template results as lists. Use a callable to keep
+    # literal strings, preserve list-valued references and stringify scalars for few-shot prompts.
+    with tempfile.NamedTemporaryFile(
+        mode = "w",
+        prefix = "_target_",
+        suffix = ".py",
+        dir = out_dir,
+        encoding = "utf-8",
+        delete = False,
+    ) as target:
+        target.write(
+            "def doc_to_target(row):\n"
+            f"    value = row[{target_key!r}]\n"
+            "    return value if isinstance(value, list) else str(value)\n"
+        )
+    (out_dir / f"{name}.yaml").write_text(
+        yaml.safe_dump(spec, sort_keys = False)
+        + f"doc_to_target: !function {Path(target.name).stem}.doc_to_target\n",
+        encoding = "utf-8",
+    )
 
 
 def _yaml_task_name(path: Path) -> Tuple[str, bool]:
@@ -374,7 +392,8 @@ def resolve_tasks(
                 # copied alone so an unrelated broken yaml beside it cannot break lm-eval's index
                 custom_dir = (tmp_dir / "custom").resolve()
                 custom_dir.mkdir(parents = True, exist_ok = True)
-                shutil.copy2(path, custom_dir / f"{name}.yaml")
+                # lm-eval indexes by content, so a fixed file name keeps a task name like "../x" inside custom_dir.
+                shutil.copy2(path, custom_dir / f"task_{len(names)}.yaml")
                 add(name, custom_dir)
         elif suffix in _DATASET_SUFFIXES:
             if not path.exists():

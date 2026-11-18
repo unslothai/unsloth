@@ -4,10 +4,10 @@
 export function failureLabelFor(candidate: {
   id: string;
   ggufVariant: string | null;
+  label?: string;
 }): string {
-  return candidate.ggufVariant
-    ? `${candidate.id} (${candidate.ggufVariant})`
-    : candidate.id;
+  const name = candidate.label ?? candidate.id;
+  return candidate.ggufVariant ? `${name} (${candidate.ggufVariant})` : name;
 }
 
 // Quant names match case-insensitively, as resolveAutoLoadCandidate picks them.

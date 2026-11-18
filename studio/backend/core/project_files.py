@@ -241,6 +241,20 @@ def _git_env(root: str) -> dict:
     return env
 
 
+def _account_confinement():
+    """A managed account's tools write this folder, so its git runs under their confinement too;
+    None for the owner (unchanged) and where the account's tools cannot run anyway."""
+    if os.name == "nt":
+        return None
+    try:
+        from core.inference.tool_confinement import account_confinement
+        from core.inference.tools import _SANDBOX_SITE_DIR
+        confinement = account_confinement(_SANDBOX_SITE_DIR)
+    except Exception:
+        return None
+    return confinement if confinement is not None and confinement.confines else None
+
+
 def _run_git(git: str, root: str, args: list[str], config: list[str], deadline: float) -> bytes:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -252,10 +266,27 @@ def _run_git(git: str, root: str, args: list[str], config: list[str], deadline: 
         *config,
     ]:
         flags += ["-c", item]
+    argv = [git, *flags, *args]
+    env = _git_env(root)
+    confinement = _account_confinement()
+    preexec = None
+    if confinement is not None:
+        argv = confinement.wrap(argv)
+        preexec = confinement.preexec
+        # The confined child cannot read the service user's git config or ignore file; unreadable is fatal.
+        env.update(
+            {
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "HOME": os.devnull,
+                "XDG_CONFIG_HOME": os.devnull,
+            }
+        )
     result = subprocess.run(
-        [git, *flags, *args],
+        argv,
         cwd = root,
-        env = _git_env(root),
+        env = env,
+        preexec_fn = preexec,
         stdin = subprocess.DEVNULL,
         stdout = subprocess.PIPE,
         stderr = subprocess.DEVNULL,
@@ -281,7 +312,11 @@ def _disabled_filters(git: str, root: str, deadline: float) -> list[str]:
     for record in out.split(b"\0"):
         key = record.split(b"\n", 1)[0].decode("utf-8", "surrogateescape")
         if key.startswith("filter.") and key.count(".") >= 2:
-            names.add(key[len("filter.") :].rsplit(".", 1)[0])
+            name = key[len("filter.") :].rsplit(".", 1)[0]
+            if "=" in name:
+                # `-c` splits at the first '=', so this driver could not be switched off.
+                raise ValueError(f"unsupported git filter name {name!r}")
+            names.add(name)
     config = []
     for name in sorted(names):
         for var, value in (("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")):
@@ -352,7 +387,7 @@ def git_changes(root: str) -> dict:
             filters,
             deadline,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, ValueError):
         return none
     changes = [
         c

@@ -1253,6 +1253,11 @@ def decode_step(
     # RoPE rows the captured steps may read: the table is sized (and its address fingerprinted)
     # for this many, so a position at or past it runs eagerly (the eager step grows the table).
     rope_len = max(state.rope_len or 0, cap + 1)
+    # LongRoPE reads its long table once a position passes original: capture the short one only.
+    rope_len = min(
+        rope_len,
+        getattr(getattr(attn0, "rotary_emb", None), "original_max_position_embeddings", rope_len),
+    )
     bound = getattr(position_ids, "_unsloth_position_bound", None)
     if bound is None:
         # Caller-supplied positions can exceed the KV length: one host read, as the eager step does.
