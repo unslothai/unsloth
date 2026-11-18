@@ -56,6 +56,7 @@ from test_video_backend import (  # noqa: E402,F401
 )
 
 NANO, EDGE = "nvidia/Cosmos3-Nano", "nvidia/Cosmos3-Edge"
+NANO_FP8, EDGE_FP8 = "nvidia/Cosmos3-Nano-FP8", "nvidia/Cosmos3-Edge-FP8"
 SUPER, EDGE_POLICY = "nvidia/Cosmos3-Super", "nvidia/Cosmos3-Edge-Policy-DROID"
 _FAMILY = {NANO: "cosmos3-nano", EDGE: "cosmos3-edge"}
 # The cards' scheduler rebuilds: Nano README.md:887, Edge README.md:759-761.
@@ -65,7 +66,7 @@ _CARD_SCHEDULER = {
 }
 _OPT_OUT_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
 _REASONER = "Cosmos3 Reasoner checkpoint"
-_CONDITIONED = "Policy, Sim, Transfer or FP8 build"
+_CONDITIONED = "Policy, Sim or Transfer build"
 _PIPELINE_ONLY = "loads only as its full Diffusers pipeline"
 _CHECKPOINTS = json.loads(
     (Path(__file__).resolve().parent / "fixtures" / "cosmos3_checkpoints.json").read_text(
@@ -196,7 +197,11 @@ class _Log:
         ("/data/models/Cosmos3", None, None),
         ("nvidia/Cosmos3-Nano-Reasoner", None, None),
         (EDGE_POLICY, None, None),
-        ("/models/cosmos3_edge_fp8/", None, None),
+        ("/models/cosmos3_edge_fp8/", None, "cosmos3-edge"),
+        (NANO_FP8, None, "cosmos3-nano"),
+        (EDGE_FP8, None, "cosmos3-edge"),
+        ("/data/COSMOS3.NANO.FP8", None, "cosmos3-nano"),
+        ("nvidia/Cosmos3-Super-FP8", None, None),
         ("x", " COSMOS3.EDGE ", "cosmos3-edge"),
         # A bare token would claim Super, the Reasoners and Cosmos-Predict2's "cosmos" GGUF arch alike.
         ("x", "cosmos", None),
@@ -216,7 +221,8 @@ def test_detection(identifier, override, expected):
     [
         ("/models/Cosmos3-Nano-Reasoner/", {}, _REASONER),
         ("nvidia/Cosmos3-Nano-Policy-DROID", {}, _CONDITIONED),
-        ("/data/COSMOS3.NANO.FP8", {"model_kind": "pipeline"}, _CONDITIONED),
+        ("/data/COSMOS3.NANO.SIM", {"model_kind": "pipeline"}, _CONDITIONED),
+        ("nvidia/Cosmos3-Nano-Policy-DROID-FP8", {}, _CONDITIONED),
         ("nvidia/Cosmos3-Nano-Reasoner", {"family_override": "cosmos3-nano"}, _REASONER),
         (EDGE_POLICY, {"family_override": "wan2.2-ti2v-5b"}, _CONDITIONED),
         (EDGE, {"display_repo_id": "nvidia/Cosmos3-Edge-Reasoner"}, _REASONER),
@@ -657,7 +663,11 @@ class _FakeCosmos3Pipeline:
     @classmethod
     def from_pretrained(cls, source, **kwargs):
         cls.loads.append({"source": source, **kwargs})
-        return cls(_ckpt(EDGE if str(source).lower() == EDGE.lower() else NANO)["scheduler_config"])
+        pipe = cls(_ckpt(EDGE if str(source).lower() == EDGE.lower() else NANO)["scheduler_config"])
+        if kwargs.get("transformer") is not None:
+            # as diffusers does: a passed component replaces the one the folder names
+            pipe.transformer = kwargs["transformer"]
+        return pipe
 
     def to(self, device):
         return self
@@ -1281,8 +1291,9 @@ def test_the_local_listing_offers_only_generator_pipelines_as_video(tmp_path):
     assert cc._local_model_task(row(reasoner, "nvidia/Cosmos3-Nano-Reasoner")) is None
     assert cc._local_is_diffusers(row(reasoner)) is False
     assert cc._local_model_task(row(shards(tmp_path / "Cosmos3-Nano-finetune"))) is None
-    fp8 = _write_planned_tree(tmp_path / "Cosmos3-Edge-FP8", EDGE)
-    assert cc._local_model_task(row(fp8)) is None
+    for repo in (NANO_FP8, EDGE_FP8):
+        fp8 = _write_planned_tree(tmp_path / repo.partition("/")[2], repo)
+        assert cc._local_model_task(row(fp8)) == video, repo
 
 
 def test_no_cosmos3_gguf_or_loose_file_is_offered_as_video(tmp_path):
@@ -1843,3 +1854,114 @@ def test_the_request_model_keeps_continuation_apart_from_keyframes_and_reference
     ):
         with pytest.raises(ValidationError, match = fragment):
             VideoGenerateRequest(prompt = "p", **extra)
+
+
+# --- NVIDIA ModelOpt FP8 builds (nvidia/Cosmos3-Nano-FP8, nvidia/Cosmos3-Edge-FP8) ------------------------------
+
+
+@pytest.mark.parametrize("repo, family", [(NANO_FP8, "cosmos3-nano"), (EDGE_FP8, "cosmos3-edge")])
+def test_the_fp8_builds_validate_as_their_family(cosmos3_runtime, monkeypatch, repo, family):
+    _set_guardrail(monkeypatch, "default")
+    assert VideoBackend().validate_load_request(repo, model_kind = "pipeline").name == family
+
+
+@pytest.mark.parametrize("repo", [NANO_FP8, EDGE_FP8])
+def test_the_fp8_builds_share_their_familys_pipeline_and_scheduler(repo):
+    sibling = {NANO_FP8: NANO, EDGE_FP8: EDGE}[repo]
+    assert _ckpt(repo)["scheduler_config"] == _ckpt(sibling)["scheduler_config"]
+    assert _ckpt(repo)["model_index"]["transformer"] == _ckpt(sibling)["model_index"]["transformer"]
+    arch = dict(_ckpt(repo)["transformer_config"])
+    assert arch.pop("quantization_config")["quant_algo"] == "FP8"
+    base = {k: v for k, v in _ckpt(sibling)["transformer_config"].items() if not k.startswith("_")}
+    assert base and {k: arch.get(k) for k in base} == base
+    files = _planned_files(repo)
+    assert any(n.startswith("transformer/") and n.endswith(".safetensors") for n in files)
+    assert not any(n.endswith(".pth") for n in files)
+
+
+def _modelopt_fake(monkeypatch, runtime):
+    from core.inference import diffusion_modelopt_fp8 as mo
+
+    calls: list = []
+    scan = mo.ModelOptFp8Scan(
+        folder = "x", layers = {"layers.0.self_attn.to_q": (64, 64)}, fp8_bytes = 10**9, dense_bytes = 10**8
+    )
+
+    def _load(transformer_cls, path, **kwargs):
+        calls.append({"path": str(path), **kwargs})
+        dit = _FakeWanDiT()
+        kept = 0 if kwargs["runtime"] == mo.RUNTIME_DEQUANT else 504
+        setattr(
+            dit,
+            mo.MODELOPT_ATTR,
+            {"runtime": kwargs["runtime"], "fp8": kept, "dequantized": 504 - kept, "layers": 504},
+        )
+        return dit
+
+    def _scan(path):
+        scan.folder = str(Path(str(path)) / "transformer")
+        return scan
+
+    monkeypatch.setattr(mo, "scan_modelopt_fp8", _scan)
+    monkeypatch.setattr(mo, "load_modelopt_fp8_transformer", _load)
+    monkeypatch.setattr(
+        mo,
+        "modelopt_runtime",
+        lambda target, **kw: runtime if kw.get("keep", True) else mo.RUNTIME_DEQUANT,
+    )
+    return calls
+
+
+@pytest.mark.parametrize("runtime, kept", [("static", True), ("stored", True), ("dequant", False)])
+@pytest.mark.parametrize("repo", [NANO_FP8, EDGE_FP8])
+def test_an_fp8_build_loads_its_transformer_through_the_modelopt_loader(
+    cosmos3_runtime, monkeypatch, tmp_path, repo, runtime, kept
+):
+    calls = _modelopt_fake(monkeypatch, runtime)
+    root = _write_planned_tree(tmp_path / repo.partition("/")[2], repo)
+    backend = VideoBackend()
+    status = backend.load_pipeline(str(root), model_kind = "pipeline")
+    (call,) = calls
+    assert call["path"] == str(root / "transformer") and call["runtime"] == runtime
+    (load,) = _FakeCosmos3Pipeline.loads
+    # the pipeline gets the ModelOpt-built transformer; its other components are the repo's own
+    assert load["transformer"] is backend._state.pipe.transformer
+    assert load["source"] == str(root) and load["sound_tokenizer"] is None
+    assert status["family"] == {NANO_FP8: "cosmos3-nano", EDGE_FP8: "cosmos3-edge"}[repo]
+    resolved = status["resolved"]["transformer_quant"]
+    if kept:
+        assert resolved["value"] == "fp8", resolved
+        assert "NVIDIA ModelOpt FP8 checkpoint" in str(resolved), resolved
+    else:
+        assert resolved["value"] != "fp8", resolved
+
+
+def test_a_pinned_bf16_dit_dequantizes_the_fp8_build(cosmos3_runtime, monkeypatch, tmp_path):
+    calls = _modelopt_fake(monkeypatch, "static")
+    root = _write_planned_tree(tmp_path / "Cosmos3-Edge-FP8", EDGE_FP8)
+    VideoBackend().load_pipeline(str(root), model_kind = "pipeline", transformer_quant = "off")
+    assert [c["runtime"] for c in calls] == ["dequant"]
+
+
+def test_the_bf16_siblings_never_reach_the_modelopt_loader(cosmos3_runtime, monkeypatch, tmp_path):
+    from core.inference import diffusion_modelopt_fp8 as mo
+
+    loads: list = []
+    monkeypatch.setattr(mo, "load_modelopt_fp8_transformer", lambda *a, **k: loads.append(k))
+    for repo in (NANO, EDGE):
+        root = _write_planned_tree(tmp_path / repo.partition("/")[2], repo)
+        VideoBackend().load_pipeline(str(root), model_kind = "pipeline")
+    assert loads == []
+    assert all("transformer" not in load for load in _FakeCosmos3Pipeline.loads)
+
+
+def test_the_planner_prices_the_fp8_dit_at_the_bytes_the_runtime_keeps(monkeypatch):
+    from core.inference import diffusion_modelopt_fp8 as mo
+
+    scan = mo.ModelOptFp8Scan(folder = "x", fp8_bytes = 13_892_000_000, dense_bytes = 2_564_000_000)
+    fam = vf.detect_video_family(NANO_FP8)
+    for runtime, gb in (("static", 16.456), ("stored", 16.456), ("dequant", 30.348)):
+        monkeypatch.setattr(mo, "modelopt_runtime", lambda target, _r = runtime, **kw: _r)
+        assert video_mod._modelopt_planned_gb(
+            scan, fam, NANO_FP8, None, keep = True
+        ) == pytest.approx(gb)
