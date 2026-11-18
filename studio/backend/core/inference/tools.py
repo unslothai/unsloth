@@ -13,6 +13,7 @@ from collections.abc import Iterable
 import fnmatch
 import functools
 import hashlib
+import io
 from html.parser import HTMLParser
 import json
 import math
@@ -35,6 +36,7 @@ import shlex
 import posixpath
 import shutil
 import ssl
+import tokenize
 import stat
 from stat import S_ISREG
 import subprocess
@@ -5062,6 +5064,9 @@ def _token_command_base(token: str) -> str:
 @functools.lru_cache(maxsize = 64)
 def _parse_python(code: str):
     """Parses each snippet once; the tree is only read, so the source-keyed cache cannot go stale."""
+    # The interpreter skips one leading UTF-8 BOM in the script file; parse what it runs.
+    if code.startswith("\ufeff"):
+        code = code[1:]
     try:
         return ast.parse(code), None
     except SyntaxError as exc:
@@ -10474,7 +10479,7 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
             # Written here, not read back from the workdir copy: a sandboxed call could have replaced that file.
             path = os.path.join(private, os.path.basename(argv[-1]))
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w", encoding = "utf-8") as f:
+            with os.fdopen(fd, "w", encoding = _python_source_encoding(script) or "utf-8") as f:
                 f.write(script)
             argv = (*argv[:-1], path)
             # The script's own folder stays off sys.path too (CPython >= 3.11).
@@ -21966,15 +21971,49 @@ def _check_signal_escape_patterns(code: str):
     }
 
 
+def _nested_python_payload(command: str) -> "str | None":
+    """The literal program of a `python -c PROGRAM` argv the code launches, else None."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if len(argv) < 2:
+        return None
+    name = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if not name.startswith(("python", "pypy")) or _inline_code_flag_spec(name) is None:
+        return None
+    for i, arg in enumerate(argv[1:], 1):
+        if not arg.startswith("-") or arg in ("-", "--", "-m"):
+            # A script path, stdin or a module runs, not an inline program.
+            return None
+        attached = _short_flag_arg(arg, "c")
+        if attached is not None:
+            if attached:
+                return attached
+            return argv[i + 1] if i + 1 < len(argv) else None
+    return None
+
+
 def _check_code_safety(
     code: str,
     *,
     host_approved: bool = False,
     analysis: "tuple | None" = None,
+    _depth: int = 0,
 ) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
     safe, info = analysis or _check_signal_escape_patterns(code)
+    # A literal `python -c PROGRAM` the code launches runs PROGRAM unscreened; screen it the same way.
+    if _depth < 3 and not info.get("error"):
+        for command in info.get("shell_commands", ()):
+            payload = _nested_python_payload(command)
+            if payload:
+                nested = _check_code_safety(payload, host_approved = host_approved, _depth = _depth + 1)
+                if nested is not None:
+                    return nested
     if not safe:
         # Let SyntaxError through so the child reports a normal traceback.
         if info.get("error"):
@@ -23878,6 +23917,31 @@ def _timed_out_result(
     return result
 
 
+def _python_source_encoding(code: str) -> "str | None":
+    """Encoding to write the python tool's script in, so the child decodes exactly the analysed str.
+
+    ast.parse(str) ignores a PEP 263 `# coding:` line the interpreter honours on the file, so a
+    cookie like utf_7 would run source the screen never saw. Written in the declared encoding, the
+    file decodes back to the same str; None when that cannot hold."""
+    try:
+        data = code.encode("utf-8")
+        declared = tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    except (UnicodeError, SyntaxError, LookupError):
+        # The write or the child's own decode fails with an ordinary error, as before.
+        return "utf-8"
+    if declared in ("utf-8", "utf-8-sig"):
+        return "utf-8"
+    try:
+        data = code.encode(declared)
+        if tokenize.detect_encoding(io.BytesIO(data).readline)[0] != declared:
+            return None
+        if data.decode(declared) != code:
+            return None
+    except (UnicodeError, SyntaxError, LookupError):
+        return None
+    return declared
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -23900,6 +23964,13 @@ def _python_exec(
         code, _guard_workdir
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
+
+    source_encoding = _python_source_encoding(code)
+    if source_encoding is None:
+        return (
+            "Error: the code's `# coding:` line would make Python run different source than "
+            "was written. Remove the coding line and run it again."
+        )
 
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
@@ -23941,7 +24012,7 @@ def _python_exec(
         _scratch_name = os.path.basename(tmp_path)
         with _scratch_lock:
             _active_scratch.add(_scratch_name)
-        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        with os.fdopen(fd, "w", encoding = source_encoding) as f:
             f.write(code)
 
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
