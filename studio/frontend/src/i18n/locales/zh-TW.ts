@@ -2184,8 +2184,7 @@ export const zhTW = {
       },
       modelAliases: {
         sectionTitle: "模型別名（OpenAI API）",
-        description:
-          "供 API 用戶端使用的固定名稱，例如 fast-chat 或 code。指定別名的請求會由該別名指向的模型處理，因此切換模型時，已連線的應用程式仍可正常運作。開啟「依請求切換模型」，別名才能載入其模型。",
+        description: "供 API 用戶端使用的簡短名稱，可代替完整的模型名稱。",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "別名名稱",
         modelAriaLabel: "別名指向的模型",
@@ -2194,6 +2193,12 @@ export const zhTW = {
         add: "新增別名",
         loadError: "無法載入模型別名。",
         saveError: "無法儲存模型別名。",
+        contextLength: "上下文長度",
+        kvCacheType: "KV 快取類型",
+        speculativeDecoding: "推測解碼",
+        savedSetting: "已儲存的設定",
+        loadSettings: "載入設定",
+        loadSettingsHint: "僅適用於 GGUF 模型。留空的欄位使用模型已儲存的設定。",
       },
       previewSharing: {
         sectionTitle: "預覽分享",

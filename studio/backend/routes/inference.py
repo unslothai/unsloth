@@ -10320,6 +10320,227 @@ def load_alongside_for_request(scope) -> None:
         scope[_LOAD_ALONGSIDE_SCOPE_KEY] = True
 
 
+def _request_alias(fastapi_request) -> Optional[dict[str, Any]]:
+    from utils.model_aliases import ALIAS_SCOPE_KEY
+
+    scope = getattr(fastapi_request, "scope", None)
+    alias = scope.get(ALIAS_SCOPE_KEY) if isinstance(scope, dict) else None
+    return alias if alias and alias.get("load_settings") else None
+
+
+_ALIAS_DEFAULTED_FIELDS = (
+    "max_seq_length",
+    "max_seq_length_auto_derived",
+    "cache_type_kv",
+    "speculative_type",
+)
+
+
+def _launched_with(backend, settings: dict[str, Any]) -> bool:
+    from core.inference.llama_cpp import (
+        _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
+        _planned_main_cache_types,
+    )
+
+    intent = backend.last_load_intent
+    # The requested mode survives a crash recovery that relaunches with "off".
+    requested_mode = getattr(backend, "requested_spec_mode", intent.speculative_type or "auto")
+    launched = {
+        "max_seq_length": intent.n_ctx,
+        "kv_cache_dtype": intent.cache_type_kv or "f16",
+        # None when extra arguments own --spec-type, which no alias mode matches.
+        "speculative_type": requested_mode and _canonicalize_spec_mode(requested_mode),
+    }
+    from utils.openai_auto_switch_settings import (
+        model_override_load_kwargs,
+        resolve_override_for_load,
+        strip_args_shadowed_by,
+    )
+
+    _key, saved = resolve_override_for_load(
+        str(getattr(backend, "model_identifier", None) or intent.model_identifier),
+        getattr(backend, "_openai_advertised_id", None),
+        getattr(backend, "hf_variant", None),
+    )
+    saved = model_override_load_kwargs(saved, is_gguf = True)
+    extras = getattr(backend, "requested_extra_args", None) or list(intent.extra_args or ())
+    # A reload keeps the saved row's extras, else inherits the resident's: --spec-type there wins.
+    load_extras = saved.get("llama_extra_args")
+    # Blank alias fields mean the saved setting, else the loader default, as a cold load would.
+    wanted = {
+        "max_seq_length": 0,
+        "kv_cache_dtype": "f16",
+        "speculative_type": None
+        if _extra_args_set_spec_type(extras if load_extras is None else load_extras)
+        else "auto",
+    }
+    named = {
+        name: saved.get(key)
+        for name, key in (
+            ("max_seq_length", "max_seq_length"),
+            ("kv_cache_dtype", "cache_type_kv"),
+            ("speculative_type", "speculative_type"),
+        )
+        if saved.get(key) is not None
+    }
+    named.update(settings)
+    wanted |= named
+    wanted["speculative_type"] = _canonicalize_spec_mode(wanted["speculative_type"])
+    # Launch flags may run another cache or context; a named setting strips them, so must match.
+    if "kv_cache_dtype" in named:
+        k_type, v_type = getattr(
+            backend, "_requested_cache_types", None
+        ) or _planned_main_cache_types(intent.cache_type_kv, extras)
+        launched["kv_cache_dtype"] = k_type if k_type == v_type else None
+    if (
+        "max_seq_length" in named
+        and extras
+        and strip_args_shadowed_by(extras, {"max_seq_length": wanted["max_seq_length"]})
+        != list(extras)
+    ):
+        return False
+    return all(launched[name] == value for name, value in wanted.items())
+
+
+def _alias_load_settings_met(fastapi_request) -> bool:
+    alias = _request_alias(fastapi_request)
+    backend = get_llama_cpp_backend()
+    if (
+        alias is None
+        or not getattr(backend, "is_loaded", False)
+        or getattr(backend, "last_load_intent", None) is None
+    ):
+        return True
+    return _launched_with(backend, alias["load_settings"])
+
+
+def _alias_reload_due(fastapi_request) -> bool:
+    return _loads_anything() and not _alias_load_settings_met(fastapi_request)
+
+
+def _alias_refusal(
+    fastapi_request,
+    code: str,
+    message: str,
+    status: int = 409,
+) -> HTTPException:
+    return HTTPException(
+        status_code = status,
+        detail = error_body_for_path(
+            fastapi_request.url.path, message, status = status, code = code, param = "model"
+        ),
+    )
+
+
+def _ignored_alias_load_settings(
+    fastapi_request,
+    alias: dict[str, Any],
+    limit: str = "only apply when a local GGUF model generates text",
+) -> HTTPException:
+    return _alias_refusal(
+        fastapi_request,
+        "alias_load_settings_unsupported",
+        f"The alias '{alias['name']}' has its own load settings, and those {limit}. Remove the "
+        "load settings from the alias, or send the model's own name.",
+        status = 400,
+    )
+
+
+async def _refuse_ignored_alias_load_settings(
+    request: Request, _subject: str = Depends(get_current_subject)
+) -> None:
+    """Refuse an alias whose load settings this request would ignore (non-GGUF, embeddings)."""
+    alias = _request_alias(request)
+    if alias is None:
+        return
+    ignored = (
+        request.url.path.rstrip("/").endswith("/embeddings")
+        or _connection_model_ref(alias["model"]) is not None
+    )
+    if not ignored:
+        from core.inference.local_model_resolver import local_target_is_gguf
+        ignored = not await asyncio.to_thread(local_target_is_gguf, alias["model"], alias["model"])
+    if not ignored:
+        body = await request.json()
+        ignored = isinstance(body, dict) and bool(
+            body.get("provider_id") or body.get("provider_type")
+        )
+    if ignored:
+        raise _ignored_alias_load_settings(request, alias)
+
+
+def _refuse_alias_on_other_resident(fastapi_request) -> None:
+    alias = _request_alias(fastapi_request)
+    if alias is None:
+        return
+    backend = get_llama_cpp_backend()
+    if getattr(backend, "is_loaded", False):
+        # The diffusion runner records no launch, so any settings would pass for the alias's.
+        if getattr(backend, "is_diffusion", False):
+            raise _ignored_alias_load_settings(
+                fastapi_request, alias, "do not apply to DiffusionGemma models"
+            )
+    elif _loaded_slot_ident() is not None:
+        # A Transformers, MLX or NPU model the name check read as a GGUF (an unindexed id).
+        raise _ignored_alias_load_settings(fastapi_request, alias)
+
+
+def _refuse_changed_alias(fastapi_request) -> None:
+    from utils.model_aliases import get_model_aliases
+    alias = _request_alias(fastapi_request)
+    if alias is not None and alias not in get_model_aliases():
+        raise _alias_refusal(
+            fastapi_request,
+            "alias_changed",
+            f"The alias '{alias['name']}' was changed while this request waited. Send it again.",
+        )
+
+
+def _serves_alias_load_settings(switch):
+    @functools.wraps(switch)
+    async def wrapper(requested_model, fastapi_request, *args, **kwargs):
+        await switch(requested_model, fastapi_request, *args, **kwargs)
+        _refuse_changed_alias(fastapi_request)
+        _refuse_alias_on_other_resident(fastapi_request)
+        if _alias_load_settings_met(fastapi_request):
+            return
+        alias = _request_alias(fastapi_request)
+        raise _alias_refusal(
+            fastapi_request,
+            "model_settings_mismatch",
+            f"The alias '{alias['name']}' has its own load settings, and '{alias['model']}' is "
+            "loaded with different ones. This request could not reload it: that needs 'Switch "
+            "model by request' on under Settings > API and an API key that may load models. Or "
+            "load the model with these settings in Unsloth Studio.",
+        )
+
+    return wrapper
+
+
+def _alias_row_for_its_launch(row: dict) -> dict:
+    """An alias row copied from a loaded model that runs with other load settings, as unloaded."""
+    settings = row.get("load_settings")
+    if not settings or not row.get("loaded"):
+        return row
+    target = row["alias_for"].lower()
+
+    def _probe() -> Optional[bool]:
+        backend = get_llama_cpp_backend()
+        if not backend.is_loaded or getattr(backend, "last_load_intent", None) is None:
+            return None
+        public = (_llama_public_model_id(backend) or "").lower()
+        if not public or public not in (target, target.rpartition(":")[0]):
+            return None
+        return _launched_with(backend, settings)
+
+    launches = [model_slots.in_slot(slot, _probe) for slot in (None, *model_slots.visible())]
+    if any(launches) or all(launch is None for launch in launches):
+        return row
+    shared = ("id", "object", "created", "owned_by", "task", "alias_for", "load_settings")
+    return _with_openai_residency({**{k: row[k] for k in shared if k in row}, "loaded": False})
+
+
 def _load_alongside_for_request(fastapi_request) -> bool:
     scope = getattr(fastapi_request, "scope", None)
     return isinstance(scope, dict) and bool(scope.get(_LOAD_ALONGSIDE_SCOPE_KEY))
@@ -11646,6 +11867,7 @@ async def _npu_path_for_display_name(
     raise _refuse(404, message, "model_not_found")
 
 
+@_serves_alias_load_settings
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -11875,7 +12097,11 @@ async def _maybe_auto_switch_model(
         return
 
     # Check resident state before the filesystem index; rebuilding it can take seconds.
-    if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+    if (
+        auto_switch_on
+        and await asyncio.to_thread(_loaded_identity_satisfies, requested_model)
+        and not _alias_reload_due(fastapi_request)
+    ):
         await _refuse_foreign_resident()
         warm_index_soon()
         if claim_resident:
@@ -12091,6 +12317,8 @@ async def _maybe_auto_switch_model(
                     return False
                 return _matches_any(override_id, loaded_keys)
             if not backend.is_loaded or not backend.model_identifier:
+                return False
+            if _alias_reload_due(fastapi_request):
                 return False
             loaded_keys = {backend.model_identifier.lower()}
             advertised = getattr(backend, "_openai_advertised_id", None)
@@ -12365,6 +12593,7 @@ async def _maybe_auto_switch_model(
                             ollama_same_system = await asyncio.to_thread(
                                 _same_ollama_system, target_id, backend
                             )
+                        _refuse_changed_alias(fastapi_request)
                         if _already_serving():
                             if claim_resident:
                                 _set_preview_resident(None)
@@ -12394,6 +12623,14 @@ async def _maybe_auto_switch_model(
                         _override_key, override = resolve_override_for_load(
                             target_id, override_id, variant
                         )
+                        alias = _request_alias(fastapi_request)
+                        alias_settings = None
+                        if alias is not None and resolved is not None and target_is_gguf:
+                            alias_settings = alias["load_settings"]
+                            override = {**override, **alias_settings}
+                            if "max_seq_length" in alias_settings:
+                                # Manual GPU memory with Auto layers reads the context from this key.
+                                override["custom_context_length"] = alias_settings["max_seq_length"]
                         if require_speech and resolved is not None and speech_budget is not None:
                             target_context = await asyncio.to_thread(
                                 _target_effective_context_length,
@@ -12427,7 +12664,12 @@ async def _maybe_auto_switch_model(
                             override, is_gguf = target_is_gguf
                         )
                         if stashed_intent is not None and target_is_gguf:
-                            load_kwargs.update(_replay_load_kwargs(stashed_intent, override_kwargs))
+                            replay = _replay_load_kwargs(stashed_intent, override_kwargs)
+                            if alias_settings is not None:
+                                # Blank alias fields load the defaults, not the last launch's.
+                                for name in _ALIAS_DEFAULTED_FIELDS:
+                                    replay.pop(name, None)
+                            load_kwargs.update(replay)
                         load_kwargs.update(override_kwargs)
                         if caller_hf_token:
                             load_kwargs["hf_token"] = caller_hf_token
@@ -32481,7 +32723,7 @@ async def _collect_chat_completion(lines, model: str):
     return JSONResponse(body)
 
 
-@router.post("/chat/completions")
+@router.post("/chat/completions", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -38659,7 +38901,12 @@ async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
         objects = await _openai_catalog_objects(quant_pins = True)
     else:
         objects = await _openai_catalog_objects()
-    aliases = await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_row)
+    aliases = await asyncio.to_thread(
+        lambda: [
+            _alias_row_for_its_launch(row)
+            for row in alias_model_objects(objects, _pinned_quant_row)
+        ]
+    )
     # The rewrite gives an alias precedence, so a same-named model row would never be served.
     shadowed = {row["id"].lower() for row in aliases}
     return [o for o in objects if str(o.get("id", "")).lower() not in shadowed] + aliases
@@ -39494,7 +39741,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
     }
 
 
-@router.post("/completions")
+@router.post("/completions", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
@@ -40340,7 +40587,7 @@ def _embeddings_input_present(body: dict) -> bool:
     return inp is not None
 
 
-@router.post("/embeddings")
+@router.post("/embeddings", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
@@ -43039,7 +43286,7 @@ async def _responses_stream(
     )
 
 
-@router.post("/responses")
+@router.post("/responses", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_responses(
     payload: ResponsesRequest,
@@ -44372,7 +44619,7 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
     return total, parts, rendered.get("prompt")
 
 
-@router.post("/chat/count_tokens")
+@router.post("/chat/count_tokens", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
     current_subject: str = Depends(get_current_subject),
@@ -45185,7 +45432,7 @@ async def _anthropic_messages_via_connection(
     return JSONResponse(_anthropic_message_from_events([event async for event in events]))
 
 
-@router.post("/messages/count_tokens")
+@router.post("/messages/count_tokens", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
     request: Request,
@@ -45845,7 +46092,7 @@ async def _anthropic_in_process_messages(
     return _monitor_anthropic_response(response, monitor_id, context_length, cancel_event)
 
 
-@router.post("/messages")
+@router.post("/messages", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def anthropic_messages(
     payload: AnthropicMessagesRequest,

@@ -2122,7 +2122,7 @@ export const ptBR = {
       modelAliases: {
         sectionTitle: "Aliases de modelos (OpenAI API)",
         description:
-          "Nomes fixos para clientes da API, como fast-chat ou code. Uma solicitação que cita um alias é atendida pelo modelo para o qual ele aponta, então os apps conectados continuam funcionando quando você troca de modelo. Ative Trocar de modelo por requisição para que um alias possa carregar o modelo para o qual aponta.",
+          "Nomes curtos que os clientes da API podem usar no lugar do nome completo do modelo.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Nome do alias",
         modelAriaLabel: "Modelo para o qual o alias aponta",
@@ -2131,6 +2131,13 @@ export const ptBR = {
         add: "Adicionar alias",
         loadError: "Não foi possível carregar os aliases de modelos.",
         saveError: "Não foi possível salvar os aliases de modelos.",
+        contextLength: "Tamanho do contexto",
+        kvCacheType: "Tipo de cache KV",
+        speculativeDecoding: "Decodificação especulativa",
+        savedSetting: "Configuração salva",
+        loadSettings: "Configurações de carregamento",
+        loadSettingsHint:
+          "Apenas para modelos GGUF. Campos em branco usam as configurações salvas do modelo.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",

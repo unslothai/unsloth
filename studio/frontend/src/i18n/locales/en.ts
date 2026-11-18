@@ -2134,7 +2134,7 @@ export const en = {
       modelAliases: {
         sectionTitle: "Model aliases (OpenAI API)",
         description:
-          "Stable names for API clients, such as fast-chat or code. A request naming an alias is served by the model it points to, so connected apps keep working when you swap models. Turn on Switch model by request so an alias can load its model.",
+          "Short names that API clients can use instead of the full model name.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Alias name",
         modelAriaLabel: "Model the alias points to",
@@ -2143,6 +2143,13 @@ export const en = {
         add: "Add alias",
         loadError: "Failed to load model aliases.",
         saveError: "Failed to save model aliases.",
+        contextLength: "Context length",
+        kvCacheType: "KV cache type",
+        speculativeDecoding: "Speculative decoding",
+        savedSetting: "Saved setting",
+        loadSettings: "Load settings",
+        loadSettingsHint:
+          "GGUF models only. Blank fields use the model's saved settings.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",

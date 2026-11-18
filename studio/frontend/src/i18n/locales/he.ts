@@ -2172,7 +2172,7 @@ export const he = {
       modelAliases: {
         sectionTitle: "כינויים למודלים (OpenAI API)",
         description:
-          "שמות קבועים ללקוחות API, כמו fast-chat או code. בקשה שמציינת כינוי מוגשת על ידי המודל שאליו הוא מצביע, כך שאפליקציות מחוברות ממשיכות לעבוד כשמחליפים מודל. הפעילו את החלף מודל לפי בקשה כדי שכינוי יוכל לטעון את המודל שלו.",
+          "שמות קצרים שלקוחות API יכולים להשתמש בהם במקום השם המלא של המודל.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "שם הכינוי",
         modelAriaLabel: "המודל שאליו הכינוי מצביע",
@@ -2181,6 +2181,13 @@ export const he = {
         add: "הוספת כינוי",
         loadError: "טעינת הכינויים למודלים נכשלה.",
         saveError: "שמירת הכינויים למודלים נכשלה.",
+        contextLength: "אורך הקשר",
+        kvCacheType: "סוג מטמון KV",
+        speculativeDecoding: "פענוח ספקולטיבי",
+        savedSetting: "הגדרה שמורה",
+        loadSettings: "הגדרות טעינה",
+        loadSettingsHint:
+          "למודלי GGUF בלבד. שדות ריקים משתמשים בהגדרות השמורות של המודל.",
       },
       previewSharing: {
         sectionTitle: "שיתוף תצוגה מקדימה",

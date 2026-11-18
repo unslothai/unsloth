@@ -2120,7 +2120,7 @@ export const hi = {
       modelAliases: {
         sectionTitle: "मॉडल उपनाम (OpenAI API)",
         description:
-          "API क्लाइंट के लिए स्थिर नाम, जैसे fast-chat या code. किसी उपनाम वाले अनुरोध को वही मॉडल जवाब देता है जिसकी ओर वह इशारा करता है, इसलिए मॉडल बदलने पर भी जुड़े ऐप चलते रहते हैं. उपनाम अपना मॉडल लोड कर सके, इसके लिए अनुरोध के अनुसार मॉडल बदलें चालू करें.",
+          "छोटे नाम, जिन्हें API क्लाइंट मॉडल के पूरे नाम की जगह इस्तेमाल कर सकते हैं।",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "उपनाम का नाम",
         modelAriaLabel: "वह मॉडल जिसकी ओर उपनाम इशारा करता है",
@@ -2129,6 +2129,13 @@ export const hi = {
         add: "उपनाम जोड़ें",
         loadError: "मॉडल उपनाम लोड नहीं हो सके.",
         saveError: "मॉडल उपनाम सहेजे नहीं जा सके.",
+        contextLength: "कॉन्टेक्स्ट लंबाई",
+        kvCacheType: "KV कैश प्रकार",
+        speculativeDecoding: "स्पेक्युलेटिव डिकोडिंग",
+        savedSetting: "सहेजी गई सेटिंग",
+        loadSettings: "लोड सेटिंग्स",
+        loadSettingsHint:
+          "केवल GGUF मॉडल के लिए। खाली फ़ील्ड मॉडल की सहेजी गई सेटिंग्स का उपयोग करते हैं।",
       },
       previewSharing: {
         sectionTitle: "पूर्वावलोकन साझाकरण",

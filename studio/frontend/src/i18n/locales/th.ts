@@ -2197,8 +2197,7 @@ export const th = {
       },
       modelAliases: {
         sectionTitle: "ชื่อแทนโมเดล (OpenAI API)",
-        description:
-          "ชื่อคงที่สำหรับไคลเอ็นต์ API เช่น fast-chat หรือ code คำขอที่ระบุชื่อแทนจะได้รับบริการจากโมเดลที่ชื่อแทนนั้นชี้ไป แอปที่เชื่อมต่อจึงทำงานต่อได้เมื่อคุณสลับโมเดล เปิด “สลับโมเดลตามคำขอ” เพื่อให้ชื่อแทนโหลดโมเดลของตนได้",
+        description: "ชื่อสั้นที่ไคลเอ็นต์ API ใช้แทนชื่อเต็มของโมเดลได้",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "ชื่อแทน",
         modelAriaLabel: "โมเดลที่ชื่อแทนชี้ไป",
@@ -2207,6 +2206,13 @@ export const th = {
         add: "เพิ่มชื่อแทน",
         loadError: "โหลดชื่อแทนโมเดลไม่สำเร็จ",
         saveError: "บันทึกชื่อแทนโมเดลไม่สำเร็จ",
+        contextLength: "ความยาวบริบท",
+        kvCacheType: "ประเภท KV cache",
+        speculativeDecoding: "การถอดรหัสแบบคาดการณ์",
+        savedSetting: "การตั้งค่าที่บันทึกไว้",
+        loadSettings: "การตั้งค่าการโหลด",
+        loadSettingsHint:
+          "ใช้ได้กับโมเดล GGUF เท่านั้น ช่องที่เว้นว่างจะใช้การตั้งค่าที่บันทึกไว้ของโมเดล",
       },
       previewSharing: {
         sectionTitle: "การแชร์ตัวอย่าง",

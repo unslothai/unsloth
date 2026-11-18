@@ -2107,8 +2107,7 @@ export const ja = {
       },
       modelAliases: {
         sectionTitle: "モデルエイリアス (OpenAI API)",
-        description:
-          "fast-chat や code のような、API クライアント向けの固定名です。エイリアスを指定したリクエストは、そのエイリアスが指すモデルで処理されるため、モデルを入れ替えても接続中のアプリはそのまま動きます。エイリアスがモデルを読み込めるよう、リクエストごとにモデルを切り替えをオンにしてください。",
+        description: "API クライアントがモデルの正式名の代わりに使える短い名前です。",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "エイリアス名",
         modelAriaLabel: "エイリアスが指すモデル",
@@ -2117,6 +2116,12 @@ export const ja = {
         add: "エイリアスを追加",
         loadError: "モデルエイリアスを読み込めませんでした。",
         saveError: "モデルエイリアスを保存できませんでした。",
+        contextLength: "コンテキスト長",
+        kvCacheType: "KV キャッシュの種類",
+        speculativeDecoding: "投機的デコード",
+        savedSetting: "保存済みの設定",
+        loadSettings: "読み込み設定",
+        loadSettingsHint: "GGUF モデルのみ。空欄の項目にはモデルに保存された設定が使われます。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",
