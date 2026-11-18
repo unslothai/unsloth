@@ -4607,12 +4607,20 @@ _amd_request_has_a_wheel_route() {
     _AMD_REQUEST_TARGET_GFX=""
     # Only a probe-resolved target may clear a safety gate; a declared one just routes.
     _AMD_REQUEST_TARGET_SOURCE=""
-    _amd_visible_masks_select_no_gpu && return 1
+    # Why the last call said no, for _warn_force_rocm_not_honoured.
+    _AMD_REQUEST_DECLINE=""
+    if _amd_visible_masks_select_no_gpu; then
+        _AMD_REQUEST_DECLINE="ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES (or CUDA_VISIBLE_DEVICES) hides every AMD GPU"
+        return 1
+    fi
     # A declared arch decides, but only after hardware corroborates there is an AMD GPU.
     _arwr_decl=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" \
         | tr '[:upper:]' '[:lower:]' | sed 's/:.*$//' | tr -d '[:space:]')
     if [ -n "$_arwr_decl" ]; then
-        _amd_hardware_corroborated || _kfd_gfx_targets 2>/dev/null | grep -q . || return 1
+        if ! _amd_hardware_corroborated && ! _kfd_gfx_targets 2>/dev/null | grep -q .; then
+            _AMD_REQUEST_DECLINE="UNSLOTH_ROCM_GFX_ARCH=$_arwr_decl is set, but no AMD GPU was found"
+            return 1
+        fi
         if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ] || \
            [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
             _arwr_dd=$(_amd_ordered_gfx_devices 2>/dev/null | sed 's/:.*$//' \
@@ -4620,6 +4628,7 @@ _amd_request_has_a_wheel_route() {
             [ -n "$_arwr_dd" ] || _arwr_dd=$(_kfd_gfx_targets 2>/dev/null | sed 's/:.*$//' \
                 | tr '[:upper:]' '[:lower:]' | awk 'NF')
             if [ -n "$_arwr_dd" ] && [ -z "$(_amd_runtime_gfx_target "$_arwr_dd")" ]; then
+                _AMD_REQUEST_DECLINE="the GPU visibility masks leave no AMD GPU for UNSLOTH_ROCM_GFX_ARCH=$_arwr_decl"
                 return 1
             fi
         fi
@@ -4628,17 +4637,24 @@ _amd_request_has_a_wheel_route() {
             _AMD_REQUEST_TARGET_SOURCE=declared
             return 0
         fi
+        _AMD_REQUEST_DECLINE="there are no ROCm PyTorch wheels for $_arwr_decl (UNSLOTH_ROCM_GFX_ARCH)"
         return 1
     fi
     _arwr_all=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
     [ -n "$_arwr_all" ] || _arwr_all=$(_kfd_gfx_targets 2>/dev/null || true)
     if [ -z "$_arwr_all" ]; then
-        _amd_hardware_corroborated || return 1
+        if ! _amd_hardware_corroborated; then
+            _AMD_REQUEST_DECLINE="no AMD GPU was found"
+            return 1
+        fi
         _arwr_all=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
     fi
     _arwr_archs=$(printf '%s\n' "$_arwr_all" | sed 's/:.*$//' \
         | tr '[:upper:]' '[:lower:]' | awk 'NF')
-    [ -n "$_arwr_archs" ] || return 1
+    if [ -z "$_arwr_archs" ]; then
+        _AMD_REQUEST_DECLINE="an AMD GPU was found, but its gfx arch could not be read"
+        return 1
+    fi
     # Physical count before masks: gfx906's rocm6.3 tag requires it to be the sole arch.
     _arwr_count=$(printf '%s\n' "$_arwr_archs" | sort -u | wc -l | tr -d ' ')
     # Fails closed: a wrong yes replaces a working CUDA stack with kernel-less wheels.
@@ -4658,17 +4674,66 @@ _amd_request_has_a_wheel_route() {
     elif [ "$_arwr_count" -eq 1 ]; then
         _arwr_sel=$(_amd_runtime_gfx_target "$_arwr_archs")
     else
+        _AMD_REQUEST_DECLINE="AMD GPUs of different archs ($(printf '%s\n' "$_arwr_archs" | sort -u | tr '\n' ' ' | sed 's/ $//')) and no device order to tell which one ROCm would use"
         return 1
     fi
-    [ -n "$_arwr_sel" ] || return 1
+    if [ -z "$_arwr_sel" ]; then
+        _AMD_REQUEST_DECLINE="the GPU visibility masks leave no AMD GPU"
+        return 1
+    fi
     _arwr_pref="$_arwr_devs"
     [ -n "$_arwr_pref" ] || _arwr_pref="$_arwr_archs"
     _arwr_sel=$(_amd_prefer_discrete_gfx "$_arwr_pref" "$_arwr_sel")
-    [ "$_arwr_sel" = gfx906 ] && [ "$_arwr_count" -gt 1 ] && return 1
-    _amd_gfx_has_wheel_route "$_arwr_sel" || return 1
+    if [ "$_arwr_sel" = gfx906 ] && [ "$_arwr_count" -gt 1 ]; then
+        _AMD_REQUEST_DECLINE="gfx906 only has ROCm 6.3 wheels, which need it to be the only AMD arch on the host"
+        return 1
+    fi
+    if ! _amd_gfx_has_wheel_route "$_arwr_sel"; then
+        _AMD_REQUEST_DECLINE="there are no ROCm PyTorch wheels for $_arwr_sel"
+        return 1
+    fi
     _AMD_REQUEST_TARGET_GFX="$_arwr_sel"
     _AMD_REQUEST_TARGET_SOURCE=probe
     return 0
+}
+
+_rocm_wsl_runtime_present() {
+    for _rwp_d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib /opt/rocm-*/lib64; do
+        { [ -e "$_rwp_d/librocdxg.so" ] || [ -e "$_rwp_d/librocdxg.so.1" ]; } && return 0
+    done
+    return 1
+}
+
+# UNSLOTH_FORCE_ROCM_TORCH was set and CUDA torch is kept: say why, in one line.
+# Re-asks the route in this shell (get_torch_index_url runs in a subshell) and puts its target back.
+_warn_force_rocm_not_honoured() {
+    _wfr_gfx="${_AMD_REQUEST_TARGET_GFX:-}"
+    _wfr_src="${_AMD_REQUEST_TARGET_SOURCE:-}"
+    case "$(uname -m)" in
+        x86_64|amd64) _wfr_x86=true ;;
+        *) _wfr_x86=false ;;
+    esac
+    if [ "$_wfr_x86" = false ]; then
+        _wfr_why="ROCm PyTorch wheels are x86_64 only"
+    elif _amd_request_has_a_wheel_route; then
+        # The route picked a card; a gate in get_torch_index_url turned it down and printed why.
+        _wfr_why="ROCm PyTorch was ruled out for ${_AMD_REQUEST_TARGET_GFX} (see the warning above)"
+    else
+        _wfr_why="${_AMD_REQUEST_DECLINE:-no AMD GPU with ROCm PyTorch wheels was found}"
+    fi
+    _AMD_REQUEST_TARGET_GFX="$_wfr_gfx"
+    _AMD_REQUEST_TARGET_SOURCE="$_wfr_src"
+    echo "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but ROCm PyTorch can't be used here: ${_wfr_why}." >&2
+    # WSL sees the AMD GPU only through librocdxg, and _maybe_bootstrap_rocm_wsl skips it beside NVIDIA.
+    [ "${OS:-}" = wsl ] || return 0
+    _rocm_wsl_runtime_present && return 0
+    _wfr_name=$(_wsl_amd_gpu_name 2>/dev/null) || _wfr_name=""
+    if [ -z "$_wfr_name" ]; then
+        grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+        _wfr_name="an AMD GPU"
+    fi
+    echo "[WARN] WSL: Windows reports ${_wfr_name}, but ROCm-on-WSL (librocdxg) isn't installed; this installer skips that setup while an NVIDIA GPU is usable." >&2
+    echo "[WARN] To set it up (sudo, large download): run scripts/install_rocm_wsl_strixhalo.sh from the unsloth repo, then re-run this installer." >&2
 }
 
 # Single answer to "does NVIDIA win" so index selection and reroutes agree (#10450).
@@ -6659,10 +6724,10 @@ fi
 if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
    _rocm_torch_explicitly_requested && _has_usable_nvidia_gpu; then
     if ! _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
+        _warn_force_rocm_not_honoured
         _cuda_fallback_index=$(UNSLOTH_FORCE_ROCM_TORCH=0 get_torch_index_url)
         if [ -n "$_cuda_fallback_index" ] && \
            [ "$_cuda_fallback_index" != "$TORCH_INDEX_URL" ]; then
-            echo "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host." >&2
             echo "[WARN] Keeping the CUDA build rather than installing CPU PyTorch on a machine with a working NVIDIA GPU." >&2
             TORCH_INDEX_URL="$_cuda_fallback_index"
         fi

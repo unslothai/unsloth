@@ -3068,14 +3068,17 @@ def _amd_hardware_is_corroborated() -> bool:
 def _forced_rocm_route_is_viable() -> bool:
     """Whether a forced ROCm swap has a wheel route here; the bar is _gfx_has_a_wheel_route, not
     presence or rocminfo, since a runtime-less AMD card gets per-arch wheels on pure-AMD hosts
-    and rocminfo would answer differently beside NVIDIA."""
+    and rocminfo would answer differently beside NVIDIA. A False records why in
+    _FORCED_ROCM_DECLINE for _note_forced_rocm_declined."""
+    global _FORCED_ROCM_DECLINE
+    _FORCED_ROCM_DECLINE = ""
     # ROCm wheels are x86_64 only; elsewhere standing CUDA repair down would leave torch broken.
     if platform.machine().lower() not in {"x86_64", "amd64"}:
-        return False
+        return _forced_rocm_declined("ROCm PyTorch wheels are x86_64 only")
     if not _amd_hardware_is_corroborated():
-        return False
+        return _forced_rocm_declined("no AMD GPU was found")
     if _miscomputing_arch_host():
-        return False
+        return _forced_rocm_declined(_MISCOMPUTING_REASON)
     # The card the runtime will hand torch, not any sibling. _runtime_gfx_target returns the
     # whole machine beside the target, which _gfx_route_on_host's gfx906 rule needs.
     _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0] or None
@@ -3086,14 +3089,22 @@ def _forced_rocm_route_is_viable() -> bool:
         and _target is not None
         and any(_gfx in _ROCM_MISCOMPUTING_GFX for _gfx in _physical_amd_gfx_archs())
     ):
-        return False
+        return _forced_rocm_declined(
+            f"UNSLOTH_ROCM_GFX_ARCH is set and this host also has {_MISCOMPUTING_REASON}"
+        )
     # A mask HIP cannot resolve exposes no device; checked before the target test on purpose.
-    if not _LAST_HIP_MASK_RESOLVED or not _LAST_ROCR_MASK_RESOLVED or _LAST_GFX_TARGET_AMBIGUOUS:
-        return False
+    if not _LAST_HIP_MASK_RESOLVED or not _LAST_ROCR_MASK_RESOLVED:
+        return _forced_rocm_declined(
+            "HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES names no AMD GPU this host has"
+        )
+    if _LAST_GFX_TARGET_AMBIGUOUS:
+        return _forced_rocm_declined(
+            "AMD GPUs of different archs and no device order to tell which one ROCm would use"
+        )
     if _target is not None:
         # Keyed on the SELECTED target: _miscomputing_arch_host needs every arch bad, a mask can pick one.
         if _target in _ROCM_MISCOMPUTING_GFX:
-            return False
+            return _forced_rocm_declined(_MISCOMPUTING_REASON)
         # Below ROCm 6.0 no generic tag resolves; ask _ensure_rocm_torch's version-independent arms.
         _raw_ver = _detect_rocm_version()
         _ver = _raw_ver or (0, 0)
@@ -3104,7 +3115,7 @@ def _forced_rocm_route_is_viable() -> bool:
             _installed_ver = (_torch_ver or "").lower() if (_torch_ran and _torch_imp) else ""
             # Already on ROCm: "nothing to install" after a swap must not let _ensure_cuda_torch overwrite it.
             if "rocm" in _installed_ver or "hip" in _installed_ver:
-                return _gfx_route_on_host(_target, _host_codes or [_target])
+                return _target_route_or_decline(_target, _host_codes)
             if (
                 _explicit_rocm_torch_index_url() is None
                 and not _inferred
@@ -3112,8 +3123,10 @@ def _forced_rocm_route_is_viable() -> bool:
                 and not _rocm_torch_family_needs_repair(_target, None, _host_codes or [_target])
                 and not _rocm_compat_reroute_pending(_target, (0, 0), _installed_ver)
             ):
-                return False
-            return _gfx_route_on_host(_target, _host_codes or [_target])
+                return _forced_rocm_declined(
+                    f"no ROCm version could be read, and no index serves {_target} without one"
+                )
+            return _target_route_or_decline(_target, _host_codes)
         if (
             _explicit_rocm_torch_index_url() is None
             and _generic_pytorch_rocm_tag(_ver) is None
@@ -3124,14 +3137,69 @@ def _forced_rocm_route_is_viable() -> bool:
                 and _amd_arch_index_url(_inferred) is not None
             )
         ):
-            return False
-        return _gfx_route_on_host(_target, _host_codes or [_target])
+            return _forced_rocm_declined(
+                f"no ROCm PyTorch wheels for {_target} match ROCm {_ver[0]}.{_ver[1]}"
+            )
+        return _target_route_or_decline(_target, _host_codes)
     # No target resolved: a mask exposing no GPU is deliberate, anything else is a detection
     # miss where the inventory is still the best evidence.
     if _visible_masks_select_no_gpu():
-        return False
+        return _forced_rocm_declined(
+            "ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES (or CUDA_VISIBLE_DEVICES) hides every AMD GPU"
+        )
     _archs = _physical_amd_gfx_archs()
-    return any(_gfx_route_on_host(_gfx, _archs) for _gfx in _archs)
+    if any(_gfx_route_on_host(_gfx, _archs) for _gfx in _archs):
+        return True
+    if not _archs:
+        return _forced_rocm_declined("an AMD GPU was found, but its gfx arch could not be read")
+    return _forced_rocm_declined(_no_wheels_reason(_archs[0], _archs))
+
+
+_FORCED_ROCM_DECLINE = ""
+_FORCED_ROCM_DECLINE_NOTED = False
+_MISCOMPUTING_REASON = (
+    "gfx1033 (Van Gogh), which computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md)"
+)
+
+
+def _forced_rocm_declined(reason: str) -> bool:
+    global _FORCED_ROCM_DECLINE
+    _FORCED_ROCM_DECLINE = reason
+    return False
+
+
+def _no_wheels_reason(gfx: str, host_codes: "list[str]") -> str:
+    if gfx in _MIXED_HOST_UNROUTABLE and len(set(host_codes)) > 1:
+        return f"{gfx} only has ROCm 6.3 wheels, which need it to be the only AMD arch on the host"
+    return f"there are no ROCm PyTorch wheels for {gfx}"
+
+
+def _target_route_or_decline(target: str, host_codes: "list[str] | None") -> bool:
+    _codes = host_codes or [target]
+    if _gfx_route_on_host(target, _codes):
+        return True
+    return _forced_rocm_declined(_no_wheels_reason(target, _codes))
+
+
+def _note_forced_rocm_declined() -> None:
+    """Standalone update: UNSLOTH_FORCE_ROCM_TORCH is set and CUDA torch stays. Say why, once
+    (_ensure_rocm_torch runs twice on Linux)."""
+    global _FORCED_ROCM_DECLINE_NOTED
+    if _FORCED_ROCM_DECLINE_NOTED:
+        return
+    _FORCED_ROCM_DECLINE_NOTED = True
+    _why = _FORCED_ROCM_DECLINE or "no AMD GPU with ROCm PyTorch wheels was found"
+    _safe_print(
+        f"   UNSLOTH_FORCE_ROCM_TORCH is set, but ROCm PyTorch can't be used here: {_why}. "
+        "Keeping CUDA torch for the NVIDIA GPU."
+    )
+    # WSL sees the AMD GPU only through librocdxg, which install.sh skips beside NVIDIA.
+    if _is_wsl() and not _wsl_rocm_runtime_present():
+        _safe_print(
+            "   WSL: ROCm-on-WSL (librocdxg) isn't installed; install.sh skips that setup while an "
+            "NVIDIA GPU is usable. To set it up (sudo, large download): run "
+            "scripts/install_rocm_wsl_strixhalo.sh from the unsloth repo, then re-run this update."
+        )
 
 
 def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
@@ -6026,16 +6094,18 @@ def _ensure_rocm_torch() -> "bool | None":
             or _explicit_cpu_torch_index_url() is not None
         ):
             return
-        # rocminfo / amd-smi rows are authoritative; /opt/rocm or hipcc misses runtime-only installs.
-        if not _has_rocm_gpu() and not _inferred_linux_gfx:
-            return  # no AMD GPU visible
-        # A stale UNSLOTH_ROCM_GFX_ARCH can pass the line above with no AMD card; require a viable route.
+        # A stale UNSLOTH_ROCM_GFX_ARCH could pass the presence test below with no AMD card; require a
+        # viable route. Checked first so a forced request with no AMD GPU visible says why too.
         if (
             _rocm_torch_explicitly_requested()
             and _has_usable_nvidia_gpu()
             and not _forced_rocm_route_is_viable()
         ):
+            _note_forced_rocm_declined()
             return
+        # rocminfo / amd-smi rows are authoritative; /opt/rocm or hipcc misses runtime-only installs.
+        if not _has_rocm_gpu() and not _inferred_linux_gfx:
+            return  # no AMD GPU visible
 
     ver = _detect_rocm_version()
     if ver is None:
