@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import time
@@ -329,6 +330,26 @@ def test_a_summary_still_streaming_past_the_idle_timeout_is_kept(monkeypatch):
     assert truncation["summarized"] is True and not truncation.get("summary_failed")
     [record] = studio_db.list_chat_thread_summaries(thread)
     assert record["summary"] == _SUMMARY
+
+
+def test_a_summary_that_never_ends_hits_the_total_limit_and_closes_the_stream(monkeypatch):
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_TIMEOUT_S", 0.5)
+    closed = []
+
+    async def endless():
+        try:
+            while True:
+                await asyncio.sleep(0.05)
+                yield 'data: {"choices":[{"delta":{"content":"more "}}]}'
+        finally:
+            closed.append(True)
+
+    started = time.monotonic()
+    with pytest.raises(cloud_compaction.SummaryTimedOut):
+        asyncio.run(cloud_compaction.collect_summary(endless()))
+    assert 0.5 <= time.monotonic() - started < 2.0
+    assert closed == [True]
 
 
 def test_a_summary_that_came_back_empty_is_asked_for_again_on_the_next_turn():
