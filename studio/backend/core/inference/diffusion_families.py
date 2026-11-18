@@ -1496,6 +1496,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             quant_names = ("moss-image-base",),
             # fp8 scored LPIPS 0.163 (int8 ConvRot 0.058): explicit picks only.
             auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
+            # Training bases: nf4 (the default), bf16 and int8; fp8 trails int8 at inference, so it is no training base.
+            train_scheme_deny = frozenset({"fp8", "mxfp8"}),
             # NVFP4 scored LPIPS 0.383 vs bf16 (INT8-ConvRot 0.058); as FLUX.3, a passing gate record lifts it.
             scheme_deny = frozenset({"nvfp4"}),
             # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
@@ -1542,6 +1544,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
         sd_cpp_arch_marker = "MOSS-Image",
         sd_cpp_scheduler = "simple",
+        # LoRA training (diffusion_dit_trainer): both releases train, and the adapter renders on either.
+        trainable = True,
+        train_base_repos = ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"),
     ),
     # MiniMax-H3-Image: 33B H3 DiT without audio plus per-step PDD heads, conditioned by Qwen3-VL-32B. diffusers has
     # no class yet, so diffusion_minimax_h3_image loads, converts, quantizes and places it itself.
