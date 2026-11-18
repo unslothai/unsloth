@@ -64,6 +64,8 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     bucket_groups,
     discover_image_caption_pairs,
+    dit_fp16_dense_reason,
+    dit_fp16_fallback,
     has_functional_torchao,
     flow_bf16_trainable,
     native_bf16_supported_xpu,
@@ -95,6 +97,7 @@ from core.training.diffusion_samples import (
     plan_samples,
     run_sample_round,
 )
+from core.training.diffusion_dit_fp16 import MAX_CONSECUTIVE_SKIPS as FP16_MAX_CONSECUTIVE_SKIPS
 from core.training.diffusion_train_extras import (
     BucketBatchSampler,
     LoRAEMA,
@@ -2924,8 +2927,10 @@ def run_dit_lora_training(
         return True
 
     device = resolve_train_device()
+    # A non-bf16 NVIDIA card trains the validated families in fp16 autocast + loss scaling; a bf16 card never does.
+    fp16_amp = device == "cuda" and dit_fp16_fallback(spec.family)
     # is_bf16_supported() counts emulation on CUDA and XPU, so gate on NATIVE bf16.
-    if device == "cuda" and not flow_bf16_trainable():
+    if device == "cuda" and not fp16_amp and not flow_bf16_trainable():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."
@@ -2936,6 +2941,13 @@ def run_dit_lora_training(
             "support bf16 natively."
         )
     weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
+    if fp16_amp:
+        # Latents, embeds and every non-quantized weight stay fp32 (the residual stream never has to fit fp16); only
+        # the autocast matmuls run fp16.
+        weight_dtype = torch.float32
+        mode = (cfg.base_precision or "nf4").strip().lower()
+        if mode not in ("nf4", "auto"):
+            raise ValueError(dit_fp16_dense_reason(mode))
 
     # A local FLUX.3 pipeline is modular (modular_model_index.json, no model_index.json).
     _assert_trusted_base_model(
@@ -2998,13 +3010,24 @@ def run_dit_lora_training(
             _check_stop,
             lambda: save_on_stop,
             identity,
+            fp16_amp = fp16_amp,
         )
     finally:
         _restore_perf_flags(perf_snap)
 
 
 def _train_dit(
-    cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_stop, _save_on_stop, identity
+    cfg,
+    spec,
+    pairs,
+    rng,
+    device,
+    weight_dtype,
+    on_event,
+    _check_stop,
+    _save_on_stop,
+    identity,
+    fp16_amp = False,
 ):
     """The body of ``run_dit_lora_training``, split out so the backend perf flags are
     snapshot/restored around it in exactly one place."""
@@ -3167,7 +3190,8 @@ def _train_dit(
     caption_embeds = _pin_caption_embeds(caption_embeds, device)
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
-    base_precision = _resolve_base_precision(cfg, spec, device)
+    # The fp16 path trains the nf4 base only (dense modes compute bf16); validated in run_dit_lora_training.
+    base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
     _emit(
         on_event,
         "model_load_started",
@@ -3179,6 +3203,10 @@ def _train_dit(
     with report_model_load_progress(on_event):
         transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
     base_is_bnb = base_precision == "nf4"
+    fp16_report = None
+    if fp16_amp:
+        from core.training.diffusion_dit_fp16 import install_fp32_islands, prepare_fp16_base
+        fp16_report = prepare_fp16_base(transformer)
 
     transformer.requires_grad_(False)
     transformer.add_adapter(
@@ -3190,6 +3218,9 @@ def _train_dit(
             target_modules = list(use_lora_targets),
         )
     )
+    if fp16_amp:
+        # After the adapter: an island must wrap the PEFT layer so its LoRA branch runs fp32 too.
+        fp16_report["fp32_islands"] = len(install_fp32_islands(transformer, spec.family, device))
     if cfg.gradient_checkpointing:
         enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
@@ -3213,14 +3244,19 @@ def _train_dit(
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
 
     # A resume runs only the remaining steps, so the nf4 compile break-even is judged on those.
-    compiled = _maybe_compile_transformer(
-        transformer,
-        cfg,
-        base_is_bnb,
-        device,
-        on_event,
-        base_precision,
-        resume_steps_left(cfg, identity),
+    # The fp16 path runs eager: its fp32 islands are unmeasured under regional compile.
+    compiled = (
+        False
+        if fp16_amp
+        else _maybe_compile_transformer(
+            transformer,
+            cfg,
+            base_is_bnb,
+            device,
+            on_event,
+            base_precision,
+            resume_steps_left(cfg, identity),
+        )
     )
     # Compiled Qwen graphs need one fixed text length across steps.
     qwen_pad_to = None
@@ -3261,7 +3297,20 @@ def _train_dit(
         num_training_steps = cfg.train_steps,
     )
 
-    _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
+    # Dynamic loss scaling for the fp16 path; disabled (a pass-through) on the bf16 path.
+    scaler = torch.amp.GradScaler("cuda", enabled = fp16_amp)
+    if fp16_amp:
+        _emit(
+            on_event,
+            "model_load_completed",
+            compiled = compiled,
+            base_precision = base_precision,
+            mixed_precision = "fp16",
+            fp16_islands = fp16_report["fp32_islands"],
+            fp16_linear4bit = fp16_report["linear4bit_fp16"],
+        )
+    else:
+        _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
     # Read the commit after the base is on disk: an earlier identity says unresolved, so resume cannot detect a moved repo. Record the repo actually fetched.
     identity = with_resolved_revision(identity, fetch_cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
@@ -3294,6 +3343,9 @@ def _train_dit(
         rng_streams = rng_streams,
     )
     resumed = restored.step if restored is not None else 0
+    skipped_steps = (
+        _restore_scaler(restored.progress, scaler) if fp16_amp and restored is not None else 0
+    )
     # Resuming from A into reused dir B: the bundles of B are foreign, and the first save must clear them or a higher-numbered one outranks this run.
     resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
     # The bundles already here when this run started, so a discard removes only what this run wrote.
@@ -3335,7 +3387,12 @@ def _train_dit(
             sampler = index_sampler,
             rng_streams = rng_streams,
             # The identity records the REQUESTED mode, which cannot tell nf4 from bf16 under "auto".
-            progress = {"running_loss": running_loss, "resolved_base_precision": base_precision},
+            progress = _resume_progress(
+                {"running_loss": running_loss, "resolved_base_precision": base_precision},
+                scaler,
+                skipped_steps,
+                fp16_amp,
+            ),
             # NOT discard_existing: a cancelled retrain would destroy the run being retrained.
             discard_existing = False,
             # A branched resume must not prune the higher-numbered checkpoints it did not write.
@@ -3344,7 +3401,7 @@ def _train_dit(
 
     # Reconciles the fp32 LoRA params with the bnb 4-bit base matmuls.
     autocast = (
-        torch.autocast(device_type = device, dtype = torch.bfloat16)
+        torch.autocast(device_type = device, dtype = torch.float16 if fp16_amp else torch.bfloat16)
         if device in ("cuda", "xpu")
         else nullcontext()
     )
@@ -3427,7 +3484,10 @@ def _train_dit(
 
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
-    for opt_step in range(resumed, cfg.train_steps):
+    consecutive_skips = 0
+    # A while, not a range: on the fp16 path an overflow step applies no update, so it does not count as a step.
+    opt_step = resumed
+    while opt_step < cfg.train_steps:
         if stop_latched:
             stopped = True
             break
@@ -3497,21 +3557,38 @@ def _train_dit(
                     )
                     w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
                     loss = (per * w).mean()
-            (loss / cfg.gradient_accumulation_steps).backward()
+            if fp16_amp:
+                scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
+            else:
+                (loss / cfg.gradient_accumulation_steps).backward()
             step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
 
+        if fp16_amp:
+            # Unscale once, after every micro-step's backward, so the clip sees true gradient norms.
+            scaler.unscale_(optimizer)
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
             # Pre-clip norm: the UI's health signal.
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         step_loss = loss_value(step_acc)
-        optimizer.step()
-        lr_sched.step()
+        if not _optimizer_update(optimizer, lr_sched, scaler, fp16_amp):
+            # fp16 only: inf/NaN gradients, so the update was skipped and the scale backed off. Neither the LR
+            # schedule, the EMA nor the step counter advance, so step N is still the N-th applied update.
+            skipped_steps += 1
+            consecutive_skips += 1
+            if consecutive_skips >= FP16_MAX_CONSECUTIVE_SKIPS:
+                raise RuntimeError(_fp16_overflow_message(spec, consecutive_skips, step_loss))
+            if _check_stop():
+                stopped = True
+                break
+            continue
+        consecutive_skips = 0
         if ema is not None:
             ema.update(transformer)
 
         running_loss += step_loss
         done = opt_step + 1
+        opt_step = done
         now = time.time()
         # Rates count only the steps THIS process ran, so a resumed run does not divide by steps it never executed.
         ran_here = done - resumed
@@ -3530,6 +3607,11 @@ def _train_dit(
                 sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)
             else:
                 sps = round(ran_here * per_step / max(now - t_rate, 1e-6), 3)
+            extra_progress = (
+                {"grad_scale": scaler.get_scale(), "skipped_steps": skipped_steps}
+                if fp16_amp
+                else {}
+            )
             _emit(
                 on_event,
                 "progress",
@@ -3541,6 +3623,7 @@ def _train_dit(
                 grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
                 samples_per_second = sps,
                 peak_memory_gb = peak_gb or None,
+                **extra_progress,
             )
         stop_now = _check_stop()
         if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
@@ -3609,10 +3692,55 @@ def _train_dit(
         steps_run = done if cfg.train_steps else 0,
         wall_seconds = round(time.time() - t_start, 1),
         resumed_from_step = resumed or None,
+        **({"mixed_precision": "fp16", "skipped_steps": skipped_steps} if fp16_amp else {}),
         # Stop without saving discards the run, so its periodic checkpoints must not keep offering a resume.
         discarded = bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)
+
+
+def _optimizer_update(optimizer, lr_sched, scaler, fp16_amp) -> bool:
+    """One optimizer update; False when the fp16 GradScaler skipped it on inf/NaN gradients, in which case the LR
+    schedule does not tick either. The bf16 path is the plain step + schedule tick and never touches the scaler."""
+    if not fp16_amp:
+        optimizer.step()
+        lr_sched.step()
+        return True
+    scale_before = scaler.get_scale()
+    scaler.step(optimizer)
+    scaler.update()
+    # update() only lowers the scale when this step found inf/NaN (and skipped optimizer.step); growth raises it.
+    if scaler.get_scale() < scale_before:
+        return False
+    lr_sched.step()
+    return True
+
+
+def _resume_progress(progress: dict, scaler, skipped_steps: int, fp16_amp: bool) -> dict:
+    """The checkpoint's progress block; the fp16 path adds the loss-scaler state and the skip count, bf16 is unchanged."""
+    if not fp16_amp:
+        return progress
+    return {**progress, "grad_scaler": scaler.state_dict(), "skipped_steps": int(skipped_steps)}
+
+
+def _restore_scaler(progress: dict, scaler) -> int:
+    """Load a checkpoint's loss-scaler state (continue at the scale the run backed off to, not 2**16, which would
+    overflow again); returns the run's skipped-step count so far."""
+    state = (progress or {}).get("grad_scaler")
+    if isinstance(state, dict) and state:
+        scaler.load_state_dict(state)
+    try:
+        return int((progress or {}).get("skipped_steps") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fp16_overflow_message(spec, skips, step_loss) -> str:
+    return (
+        f"{spec.family} fp16 training skipped {skips} steps in a row on non-finite gradients (last loss "
+        f"{step_loss!r}): loss scaling cannot fix an overflow in the forward itself. Train this family on a "
+        "bf16-capable GPU."
+    )
 
 
 def _make_optimizer(
