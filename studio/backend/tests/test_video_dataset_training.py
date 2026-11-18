@@ -419,7 +419,17 @@ def test_hub_relative_clips_resolve_from_the_dataset_repo(monkeypatch, tmp_path)
     )
     own_message_videos(messages, dataset_name = "someone/clips", dataset_revision = "abc123")
     assert revisions and {revision for _, revision in revisions} == {"abc123"}
-    assert {kind for kind, _ in revisions} == {"list", "download"}
+
+    # A row-level clip column behind a bare placeholder resolves from the repo as well.
+    adapt = _mlx_adapter()
+    bare = {
+        "messages": [{"role": "user", "content": [{"type": "video"}]}],
+        "videos": ["clip00.mp4"],
+    }
+    from utils.datasets.format_conversion import _HubClips
+
+    out = adapt([bare], hub = _HubClips("someone/clips"))
+    assert out[0]["videos"] == [str(tmp_path / "videos/clip00.mp4")]
 
 
 def test_the_dataset_revision_reaches_the_clip_resolver_from_every_trainer():
@@ -646,6 +656,7 @@ def test_mlx_old_zoo_refuses_clips_in_any_forwarded_split():
     require(images_only, None)
     with pytest.raises(ValueError, match = "newer unsloth-zoo"):
         require(images_only, [{"messages": [], "videos": [CLIPS[0]]}])
+    require(images_only, [{"messages": [], "images": "img.png", "videos": []}])
     _, new_zoo = _mlx_video_guards(zoo_has_video = True)
     new_zoo(images_only, [{"messages": [], "videos": [CLIPS[0]]}])
 

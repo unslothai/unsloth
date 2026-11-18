@@ -2612,6 +2612,7 @@ def _adapt_for_mlx_vlm(
     items,
     resize = None,
     image_layout = None,
+    hub = None,
 ):
     """mlx-vlm needs images at top level to build pixel_values, not inside message content."""
     adapted = []
@@ -2667,9 +2668,9 @@ def _adapt_for_mlx_vlm(
         if videos:
             out["videos"] = videos[0] if len(videos) == 1 else videos
         elif item.get("videos") is not None:
-            out["videos"] = _own_mlx_video_values(item["videos"])
+            out["videos"] = _own_mlx_video_values(item["videos"], hub)
         elif item.get("video") is not None:
-            out["videos"] = _own_mlx_video_values(item["video"])
+            out["videos"] = _own_mlx_video_values(item["video"], hub)
         placeholders = sum(
             1
             for msg in messages
@@ -2691,14 +2692,14 @@ def _adapt_for_mlx_vlm(
     return adapted
 
 
-def _own_mlx_video_values(value):
+def _own_mlx_video_values(value, hub = None):
     """Top-level video columns bypass the message-part ownership checks, so apply them here."""
     from utils.account_context import current_account
     from utils.datasets.format_conversion import _own_video_part
 
     account = current_account()
     values = value if isinstance(value, list) else [value]
-    owned = [_own_video_part(video, account, None) for video in values]
+    owned = [_own_video_part(video, account, hub) for video in values]
     return owned if isinstance(value, list) else owned[0]
 
 
@@ -2735,7 +2736,7 @@ def _require_mlx_video_collation(*splits):
     if _mlx_zoo_collates_video():
         return
     if any(
-        isinstance(row, dict) and row.get("videos") is not None
+        isinstance(row, dict) and row.get("videos") not in (None, [], ())
         for split in splits
         if split is not None
         for row in split
@@ -3658,6 +3659,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         eval_dataset, resize = vision_image_size, image_layout = image_layout
                     )
         elif is_vlm:
+            from utils.datasets.format_conversion import _HubClips
+
+            # Row-level clip columns resolve against the same Hub repo as message parts.
+            clip_hub = _HubClips(hf_dataset, config.get("dataset_revision"))
             _send("status", status_message = "Formatting VLM dataset...")
             vlm_info = format_and_template_dataset(
                 dataset,
@@ -3679,6 +3684,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     vlm_info["dataset"],
                     resize = vision_image_size,
                     image_layout = vision_image_layout,
+                    hub = clip_hub,
                 )
             else:
                 errors = vlm_info.get("errors", [])
@@ -3703,6 +3709,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         ev_info["dataset"],
                         resize = vision_image_size,
                         image_layout = vision_image_layout,
+                        hub = clip_hub,
                     )
 
         elif format_type:
