@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 import os
+import warnings
 
 __all__ = [
     "ParallelSpec",
@@ -315,19 +316,23 @@ ALLOCATOR_ENV = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_A
 
 
 def _allocator_env_value(torch, environ):
-    """The caching allocator settings this torch reads from the environment (None when unset)."""
-    legacy = (
-        "PYTORCH_HIP_ALLOC_CONF"
-        if getattr(torch.version, "hip", None)
-        else "PYTORCH_CUDA_ALLOC_CONF"
-    )
+    """The caching allocator settings this torch reads from the environment (None when unset): the first of its
+    variables that is set wins, an empty one included."""
+    hip = bool(getattr(torch.version, "hip", None))
     try:
         major, minor = (int(x) for x in torch.__version__.split(".")[:2])
     except ValueError:
         major, minor = 2, 10
-    names = ("PYTORCH_ALLOC_CONF", legacy) if (major, minor) >= (2, 10) else (legacy,)
+    if (major, minor) >= (2, 10):
+        # c10/core/AllocatorConfig.cpp from 2.10: the legacy names still come first, on every platform.
+        names = ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+    elif hip:
+        # c10/cuda/CUDAAllocatorConfig.h: ROCm builds fall back to the HIP name when the CUDA one is unset.
+        names = ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF")
+    else:
+        names = ("PYTORCH_CUDA_ALLOC_CONF",)
     for name in names:
-        if environ.get(name):
+        if environ.get(name) is not None:
             return environ[name]
     return None
 
@@ -355,7 +360,10 @@ def apply_late_allocator_env(before, environ = None):
             value = ",".join(x for x in (value, "expandable_segments:False") if x)
         if not value:
             return None
-        setter(value)
+        with warnings.catch_warnings():
+            # torch 2.10+ deprecates the name (FutureWarning) but keeps it as an alias of the accelerator setter.
+            warnings.simplefilter("ignore", FutureWarning)
+            setter(value)
         return value
     except Exception:
         return None

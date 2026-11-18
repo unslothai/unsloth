@@ -91,6 +91,104 @@ def test_torch_reads_the_environment_itself_before_cuda_starts(monkeypatch):
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "version, hip, before, after, expect",
+    [
+        # torch 2.10+ reads PYTORCH_CUDA_ALLOC_CONF before PYTORCH_ALLOC_CONF (c10/core/AllocatorConfig.cpp): a
+        # rank > 0 started CUDA with the legacy expandable_segments:True, zoo then dropped the legacy name.
+        (
+            "2.14.1",
+            None,
+            {
+                "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+                "PYTORCH_ALLOC_CONF": "max_split_size_mb:512",
+            },
+            {"PYTORCH_ALLOC_CONF": "max_split_size_mb:512"},
+            "max_split_size_mb:512,expandable_segments:False",
+        ),
+        # ROCm before 2.10 reads PYTORCH_CUDA_ALLOC_CONF first, PYTORCH_HIP_ALLOC_CONF only when it is unset.
+        (
+            "2.9.1",
+            "6.4",
+            {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
+            {},
+            "expandable_segments:False",
+        ),
+    ],
+)
+def test_late_allocator_env_reads_variables_in_torch_order(
+    monkeypatch, version, hip, before, after, expect
+):
+    env = _parallel_env()
+    calls = []
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(version, True, calls, hip = hip))
+    assert env.apply_late_allocator_env(before, environ = after) == expect
+    assert calls == [expect]
+
+
+def test_deprecated_setter_neither_warns_nor_is_skipped(monkeypatch):
+    """torch 2.10+ marks torch.cuda.memory._set_allocator_settings deprecated (FutureWarning on every call): every
+    rank > 0 printed it at import, and with warnings as errors the settings were silently not applied."""
+    import warnings
+
+    env = _parallel_env()
+    calls = []
+
+    def deprecated_setter(value):
+        warnings.warn(
+            "torch.cuda._set_allocator_settings is deprecated. Use "
+            "torch._C._accelerator_setAllocatorSettings instead.",
+            FutureWarning,
+            stacklevel = 2,
+        )
+        calls.append(value)
+
+    fake = _fake_torch("2.14.1", True, calls)
+    fake.cuda.memory._set_allocator_settings = deprecated_setter
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    after = {"PYTORCH_ALLOC_CONF": "expandable_segments:True"}
+    with warnings.catch_warnings(record = True) as seen:
+        warnings.simplefilter("error")
+        got = env.apply_late_allocator_env({}, environ = after)
+    assert got == "expandable_segments:True"
+    assert calls == ["expandable_segments:True"]
+    assert not seen
+
+
+_REAL_SETTER = textwrap.dedent(
+    """
+    import importlib.util, json, os, sys, warnings
+    import torch
+    spec = importlib.util.spec_from_file_location("pe", os.path.join(sys.argv[1], "unsloth", "parallel_env.py"))
+    pe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pe)
+    torch.cuda.is_initialized = lambda: True
+    with warnings.catch_warnings(record = True) as seen:
+        warnings.simplefilter("always")
+        pe.apply_late_allocator_env({}, environ = {"PYTORCH_ALLOC_CONF": "expandable_segments:False",
+                                                   "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"})
+    print("RESULT", json.dumps([str(w.message) for w in seen if issubclass(w.category, FutureWarning)]))
+    """
+)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason = "needs torch")
+def test_real_torch_setter_emits_no_future_warning():
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", HIP_VISIBLE_DEVICES = "")
+    out = subprocess.run(
+        [sys.executable, "-c", _REAL_SETTER, REPO],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    lines = [l for l in out.stdout.splitlines() if l.startswith("RESULT ")]
+    assert lines, out.stdout[-3000:] + out.stderr[-3000:]
+    import json
+
+    assert json.loads(lines[-1][len("RESULT ") :]) == []
+
+
 _RANK1 = textwrap.dedent(
     """
     import json, os, torch
