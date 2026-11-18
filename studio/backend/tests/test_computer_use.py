@@ -797,7 +797,7 @@ def test_a_local_model_gets_the_grid_unless_its_encoder_answers_in_pixels(deskto
     assert policy.coordinate_mode("my-finetune", "") == "pixels"
 
 
-def test_the_local_encoder_is_the_checkpoint_the_worker_loaded(tmp_path):
+def test_the_local_encoder_is_the_checkpoint_the_worker_loaded(tmp_path, monkeypatch):
     from core.inference import worker
     from core.inference.orchestrator import _mirrored_model_entry
     from routes.inference import _loaded_model_type
@@ -810,6 +810,10 @@ def test_the_local_encoder_is_the_checkpoint_the_worker_loaded(tmp_path):
     assert _loaded_model_type("org/adapter", entry) == "qwen2_5_vl"
     (tmp_path / "config.json").write_text('{"model_type": "qwen2_5_vl"}')
     assert _loaded_model_type(str(tmp_path)) == "qwen2_5_vl"
+    monkeypatch.setattr(
+        "utils.paths.normalize_path", lambda p: str(tmp_path) if p == "C:\\m" else p
+    )
+    assert _loaded_model_type("C:\\m") == "qwen2_5_vl"
 
 
 def test_zoom_enlarges_without_moving_the_frame(desktop):

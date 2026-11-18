@@ -6245,9 +6245,10 @@ def _loaded_model_type(name, entry = None) -> str:
     if (entry or {}).get("model_type"):
         return str(entry["model_type"])
     try:
+        from utils.paths import normalize_path
         from utils.transformers_version import _config_json_from_hf_cache
 
-        path = Path(os.path.expanduser(name or "")) / "config.json"
+        path = Path(os.path.expanduser(normalize_path(name or ""))) / "config.json"
         if path.is_file():
             with open(path, encoding = "utf-8") as f:
                 config = json.load(f)
