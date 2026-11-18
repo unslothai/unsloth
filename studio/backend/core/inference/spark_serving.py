@@ -33,6 +33,7 @@ from core.inference import rpc_serving as rs
 logger = logging.getLogger(__name__)
 
 ENV_TOGGLE = "UNSLOTH_SPARK_SERVING"  # "0" disables
+SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"  # the two-node split block's --tensor-split
 ENV_TOPOLOGY = "UNSLOTH_SPARK_TOPOLOGY"
 ENV_PEER = "UNSLOTH_SPARK_PEER"  # peer address override (tests, unusual cabling)
 ENV_RPC_BIND = "UNSLOTH_SPARK_RPC_BIND"  # ggml-rpc-server -H on the peer
@@ -1125,7 +1126,7 @@ def layer_split_extra_args(
         "-sm",
         "layer",
         "--tensor-split",
-        rs.SPLIT_TENSOR_SPLIT_EVEN,
+        SPLIT_TENSOR_SPLIT_EVEN,
         "--cache-ram",
         "0",
     ]
@@ -1139,7 +1140,7 @@ def strip_echoed_split_block(extra: Sequence[str], peer: Optional[str]) -> Optio
     if not peer:
         return None
     tokens = [str(t) for t in extra]
-    optional = [("--tensor-split", rs.SPLIT_TENSOR_SPLIT_EVEN), ("--cache-ram", "0")]
+    optional = [("--tensor-split", SPLIT_TENSOR_SPLIT_EVEN), ("--cache-ram", "0")]
     for start in range(len(tokens) - 1, -1, -1):
         if tokens[start] != "--rpc":
             continue
@@ -2367,6 +2368,24 @@ def tag_conversation(payload: Dict[str, Any], thread_id: Optional[str]) -> None:
     if _STATE is None:
         return
     _STATE.tag_conversation(payload, thread_id)
+
+
+def strip_split_block(tokens: Sequence[str]) -> List[str]:
+    """``tokens`` without the two-node split block ``layer_split_extra_args`` appended last."""
+    tokens = [str(t) for t in tokens]
+    fixed = ["--device", "RPC0,CUDA0", "-sm", "layer", "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN]
+    fixed += ["--cache-ram", "0"]
+    for start in range(len(tokens) - 1, -1, -1):
+        if tokens[start] != "--rpc":
+            continue
+        end = start + 2 + len(fixed)
+        if tokens[start + 2 : end] != fixed:
+            return tokens
+        tail = tokens[end:]
+        if not tail or (len(tail) == 2 and tail[0] == rs.PIPELINE_GROUPS_FLAG):
+            return tokens[:start]
+        return tokens
+    return tokens
 
 
 def replica_count(llama_backend: Any) -> int:
