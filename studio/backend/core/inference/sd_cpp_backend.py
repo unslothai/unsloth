@@ -3151,6 +3151,8 @@ def _sole_nvidia_card_mib() -> "tuple[Optional[int], Optional[int]]":
         ],
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = 10,
     )
     rows = [r.split(",") for r in out.stdout.strip().splitlines() if r.strip()]
