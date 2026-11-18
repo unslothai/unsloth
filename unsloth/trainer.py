@@ -41,7 +41,9 @@ from unsloth.utils import (
     enable_sample_packing,
 )
 from unsloth.utils.packing import (
+    _HYBRID_PACKING_ENV_VAR,
     _stateful_mixer_kind,
+    hybrid_packing_opt_in_device,
     packing_boundary_blocker,
     patch_hybrid_linear_attention_varlen,
 )
@@ -2077,6 +2079,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         is_hybrid = False
         is_encoder_decoder = False
         hybrid_varlen_active = False
+        hybrid_opt_in_device = None
         if model is not None:
             model_config = getattr(model, "config", None)
             if model_config is None and isinstance(model, str):
@@ -2106,6 +2109,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                     hybrid_varlen_active = patch_hybrid_linear_attention_varlen(model)
                 except Exception:
                     hybrid_varlen_active = False
+                if hybrid_varlen_active:
+                    hybrid_opt_in_device = hybrid_packing_opt_in_device(model)
 
         processing_class = (
             args[5] if len(args) >= 6 else kwargs.get("processing_class") or kwargs.get("tokenizer")
@@ -2440,7 +2445,14 @@ def _patch_sft_trainer_auto_packing(trl_module):
             _install_text_prepended_position_ids(self.model)
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)
-            if default_packing:
+            if is_hybrid and hybrid_opt_in_device is not None:
+                print(
+                    f"🦥 Unsloth: Packing enabled on {hybrid_opt_in_device} through "
+                    f"{_HYBRID_PACKING_ENV_VAR}=1 (on by default only on CUDA). The speedup "
+                    "depends on this device's attention kernels, so compare seconds per step "
+                    "against packing = False."
+                )
+            elif default_packing:
                 print(_DEFAULT_PACKING_NOTE)
             else:
                 print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
