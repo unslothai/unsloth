@@ -407,6 +407,10 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       } catch {
         baseline = null;
       }
+      // A cancel while the preflight was in flight found no active op for the
+      // backend to stop, so a not-yet-started op must honor the intent here.
+      if (!isCurrent()) throw new Error("Export run superseded");
+      if (get().cancelRequested) throw new ExportCanceledError();
       try {
         const resp = await post();
         return {
