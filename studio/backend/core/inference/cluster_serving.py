@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import socket
 import struct
 import subprocess
 import sys
@@ -1184,7 +1185,18 @@ def _local_tls_client() -> bool:
         return False
 
 
-def _go_native(relays: Any, peer: Any, status: Dict[str, Any]) -> Optional[int]:
+def _native_port_open(host: str, port: int) -> bool:
+    """Whether this machine can open the worker's TLS port; the worker only checked it locally."""
+    try:
+        with socket.create_connection((host, port), timeout = REACH_TIMEOUT_S):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def _go_native(
+    relays: Any, peer: Any, status: Dict[str, Any], host: Optional[str]
+) -> Optional[int]:
     offer = status.get("native") if isinstance(status, dict) else None
     if not isinstance(offer, dict) or not offer.get("available") or not _local_tls_client():
         return None
@@ -1202,7 +1214,16 @@ def _go_native(relays: Any, peer: Any, status: Dict[str, Any]) -> Optional[int]:
         port = int(reply.get("port") or 0)
     except (TypeError, ValueError):
         port = 0
-    return port if 0 < port < 65536 else None
+    if not 0 < port < 65536:
+        return None
+    if host is not None and not _native_port_open(host, port):
+        # A firewall in front of the TLS port must not cost a worker whose relay works.
+        logger.info(
+            "cluster link: %s:%s is not reachable; %s stays on the relay", host, port, peer.node_id
+        )
+        relays.native_close(peer.node_id)
+        return None
+    return port
 
 
 def _peer_addresses(peer: Any, default_port: int) -> List[Tuple[str, int]]:
@@ -1394,7 +1415,8 @@ def _link_nodes(verify: bool = True) -> List[Node]:
             continue
         native_port = None
         if verified is not None:
-            native_port = _go_native(relays, peer, verified[2])
+            # A tunnelled worker is reached through its forward, which is itself the reachability check.
+            native_port = _go_native(relays, peer, verified[2], None if tunnelled else host)
             if native_port is not None and tunnelled:
                 # llama-server dials tls://fp@127.0.0.1:<forward>, not the worker's own port.
                 remote = _remote()

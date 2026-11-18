@@ -321,6 +321,7 @@ class TestSetupShHelpersRun:
             f"-S {tree} -B {tree}/build {expected_args} -DGGML_RPC=OFF",
             f"--build {tree}/build --config Release --target llama-server -j3",
             f"--build {tree}/build --config Release --target llama-quantize -j3",
+            f"--build {tree}/build --config Release --target llama-fit-params -j3",
             f"--build {tree}/build --config Release --target llama-diffusion-gemma-visual-server -j3",
         ]
         assert "BUILD_OK=true" in result.stdout

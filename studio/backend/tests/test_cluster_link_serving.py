@@ -474,8 +474,9 @@ def _offer_native(
     relays,
     reply = None,
     local = True,
+    reachable = True,
 ):
-    calls = {"native": [], "close": []}
+    calls = {"native": [], "close": [], "dialled": []}
     relays.statuses["node-a"] = {
         "busy": False,
         "rpc_up": True,
@@ -491,8 +492,13 @@ def _offer_native(
         calls["close"].append(node_id)
         return True
 
+    def native_port_open(host, port):
+        calls["dialled"].append((host, port))
+        return reachable
+
     relays.native, relays.native_close = native, native_close
     monkeypatch.setattr(cs, "_local_tls_client", lambda: local)
+    monkeypatch.setattr(cs, "_native_port_open", native_port_open)
     return calls
 
 
@@ -506,6 +512,7 @@ def test_a_worker_offering_native_tls_is_planned_on_a_pinned_tls_endpoint(monkey
     assert (a.host, a.rpc_port) == REAL
     assert b.transport == "link" and b.endpoint.startswith("127.0.0.1:")
     assert calls["native"] == ["node-a"]
+    assert calls["dialled"] == [("192.168.1.20", 50053)]
     # A status read reuses the grant without asking again.
     again = {n.node_id: n for n in cs._link_nodes(verify = False)}
     assert again["node-a"].transport == "native_tls"
@@ -523,6 +530,7 @@ def test_a_worker_offering_native_tls_is_planned_on_a_pinned_tls_endpoint(monkey
             id = "another_certificate",
         ),
         pytest.param({"reply": {"type": "busy"}}, ["node-a"], [], id = "refused_request"),
+        pytest.param({"reachable": False}, ["node-a"], ["node-a"], id = "tls_port_firewalled"),
     ],
 )
 def test_native_tls_falls_back_to_the_relay_never_plaintext(
@@ -531,7 +539,22 @@ def test_native_tls_falls_back_to_the_relay_never_plaintext(
     calls = _offer_native(monkeypatch, relays, **offer)
     node = {n.node_id: n for n in cs.load_nodes()}["node-a"]
     assert node.transport == "link" and node.endpoint.startswith("127.0.0.1:")
-    assert calls == {"native": asked, "close": closed}
+    assert (calls["native"], calls["close"]) == (asked, closed)
+    assert "node-a" not in cs._NATIVE
+
+
+def test_the_tls_port_is_dialled_for_real(monkeypatch):
+    import socket
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        assert cs._native_port_open("127.0.0.1", port)
+    finally:
+        listener.close()
+    assert not cs._native_port_open("127.0.0.1", port)
 
 
 def test_the_tls_launch_env_carries_the_master_certificate_not_argv(monkeypatch, relays):
@@ -784,10 +807,12 @@ def test_a_relayed_only_worker_is_left_out_unless_allowed(monkeypatch, relays, a
 
 def test_native_tls_through_tailcat_dials_the_forwarded_native_port(monkeypatch, relays):
     fake = _off_the_lan(monkeypatch, relays)
-    _offer_native(monkeypatch, relays)
+    # The direct dial would fail off the LAN; only the forward is a meaningful check here.
+    calls = _offer_native(monkeypatch, relays, reachable = False)
     a = {n.node_id: n for n in cs.load_nodes()}["node-a"]
     assert fake.forwards[-1] == ("node-a", "tcNODEA0123456789", 50053)
     assert a.endpoint == f"tls://{FP_A}@127.0.0.1:47002"
+    assert ("127.0.0.1", 50053) not in calls["dialled"] and calls["close"] == []
     again = {n.node_id: n for n in cs._link_nodes(verify = False)}["node-a"]
     assert again.endpoint == a.endpoint and again.via == "tailnet"
 
