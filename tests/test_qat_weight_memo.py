@@ -58,6 +58,7 @@ def _model(
     arm = True,
 ):
     monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", mode)
+    monkeypatch.setenv("UNSLOTH_QAT_ROUND_INPLACE", "0")
     torch.manual_seed(0)
     model = peft.get_peft_model(
         _Block(),

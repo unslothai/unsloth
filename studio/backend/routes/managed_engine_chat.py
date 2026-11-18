@@ -3,6 +3,7 @@
 
 """Native managed-engine tool calls and Studio's shared execution loop."""
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import asyncio
 import json
 import threading
@@ -411,7 +412,7 @@ async def managed_tool_chat(
                         tools = tools,
                         max_calls = payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25,
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                         timeout = payload.tool_call_timeout or 300,
                         permission_mode = payload.permission_mode or "auto",
                         sandbox_level = payload.sandbox_level,

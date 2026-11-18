@@ -86,6 +86,17 @@ def _read_dataset_task(path):
     return yaml.load(path.read_text(), Loader = yaml.BaseLoader)
 
 
+def _indexed_task_name(path):
+    # lm-eval names a task by the group:/task: key inside the file, never by its file name.
+    cfg = _read_dataset_task(path)
+    return cfg.get("group") or cfg["task"]
+
+
+def _staged_custom_task(custom_dir):
+    (staged,) = Path(custom_dir).glob("*.yaml")
+    return staged
+
+
 def test_dataset_task_yaml(tmp_path):
     data = tmp_path / "qa.jsonl"
     data.write_text('{"question": "1+1?", "answer": "2"}\n')
@@ -163,7 +174,7 @@ def test_dataset_task_avoids_explicit_yaml_name(tmp_path, suffix, dataset_first)
     spec = _read_dataset_task(generated / "qa_2.yaml")
     assert spec["task"] == "qa_2"
     assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
-    assert yaml.safe_load((custom / "qa.yaml").read_text())["task"] == "qa"
+    assert yaml.safe_load(_staged_custom_task(custom).read_text())["task"] == "qa"
 
 
 @pytest.mark.parametrize("dataset_first", [True, False])
@@ -228,7 +239,9 @@ def test_standalone_yaml_is_copied_alone(tmp_path):
     task.write_text("task: my_task\ndataset_path: json\n")
     names, includes = evalmod.resolve_tasks(str(task), "q", "a", tmp_path / "tmp")
     assert names == ["my_task"]
-    assert sorted(p.name for p in Path(includes[0]).iterdir()) == ["my_task.yaml"]
+    (staged,) = Path(includes[0]).iterdir()
+    assert staged.suffix == ".yaml" and staged.read_text() == task.read_text()
+    assert _indexed_task_name(staged) == "my_task"
 
 
 def test_group_yaml_puts_its_directory_on_the_include_path(tmp_path):
@@ -390,7 +403,7 @@ def env(monkeypatch):
             calls["include_path"] = include_path
             self.all_tasks = ["gsm8k", "mmlu", "mmlu_a", "mmlu_b"]
             for directory in include_path or []:
-                self.all_tasks += [p.stem for p in Path(directory).glob("*.yaml")]
+                self.all_tasks += [_indexed_task_name(p) for p in Path(directory).glob("**/*.yaml")]
 
         def match_tasks(self, patterns):
             import fnmatch
