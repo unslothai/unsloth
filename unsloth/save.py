@@ -1632,6 +1632,10 @@ def unsloth_save_model(
     datasets: Optional[List[str]] = None,
 ):
     _refuse_mtp_variant(model, variant)
+    # Merging needs the memory the training-time NF4 dequant cache held.
+    from .kernels.dequant_cache import clear_dequant_cache
+
+    clear_dequant_cache()
     if push_to_hub and _attached_mtp_head(model) is not None:
         return _push_with_mtp_head(dict(locals()))
 
