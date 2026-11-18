@@ -505,6 +505,72 @@ def _agents_display() -> str:
     return str(_owner_skills_dir() or "~/.agents/skills")
 
 
+def project_skill_root(project_root: Optional[Path]) -> Optional[Path]:
+    """Return the trusted project root used for project-local Agent Skills.
+
+    Project skills are read-only host files.  They are available only to the
+    installation owner, and the root must resolve to an existing directory so
+    a request cannot use a caller-supplied path to escape the project.
+    """
+    if project_root is None or not is_owner_context():
+        return None
+    try:
+        resolved = Path(project_root).expanduser().resolve(strict = True)
+    except (OSError, RuntimeError, TypeError):
+        return None
+    return resolved if resolved.is_dir() else None
+
+
+def project_skill_root_for_thread(thread_id: Optional[str]) -> Optional[Path]:
+    """Resolve the project folder for a saved chat thread, if it has one."""
+    if not thread_id or not is_owner_context():
+        return None
+    try:
+        from storage.studio_db import (
+            available_project_working_folder,
+            get_chat_project,
+            get_chat_thread,
+        )
+
+        thread = get_chat_thread(str(thread_id))
+        project_id = (thread or {}).get("projectId")
+        project = get_chat_project(project_id) if project_id else None
+        if not project or project.get("archived"):
+            return None
+        working = available_project_working_folder(project)
+        candidate = working or project.get("rootPath")
+        return project_skill_root(Path(candidate)) if candidate else None
+    except Exception:
+        logger.debug("Could not resolve project skills for thread %s", thread_id, exc_info = True)
+        return None
+
+
+def project_skill_root_for_session(session_id: Optional[str]) -> Optional[Path]:
+    """Resolve a project folder from a project sandbox session id.
+
+    New chats can reach inference before their thread row is visible to a
+    worker, while the project session id is already available.
+    """
+    prefixes = ("project-", "project:")
+    prefix = next(
+        (value for value in prefixes if session_id and session_id.startswith(value)), None
+    )
+    if prefix is None or not is_owner_context():
+        return None
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+
+        project = get_chat_project(session_id[len(prefix) :])
+        if not project or project.get("archived"):
+            return None
+        working = available_project_working_folder(project)
+        candidate = working or project.get("rootPath")
+        return project_skill_root(Path(candidate)) if candidate else None
+    except Exception:
+        logger.debug("Could not resolve project skills for session %s", session_id, exc_info = True)
+        return None
+
+
 def _skill_roots(home: Optional[Path] = None) -> tuple[tuple[str, Path], ...]:
     if home is not None:
         base = home
@@ -608,7 +674,10 @@ def _candidate_dirs(root: Path) -> list[Path]:
     return visible
 
 
-def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional[os.stat_result]]]:
+def _discover(
+    home: Optional[Path],
+    project_root: Optional[Path] = None,
+) -> list[tuple[dict, Optional[Path], Optional[os.stat_result]]]:
     """Every record with, for a valid skill, the directory it was read from and that
     directory's identity at discovery time, so a later read can refuse a swapped tree."""
     overrides = _load_overrides()
@@ -616,7 +685,11 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
     selected: dict[str, dict] = {}
     # A linked Agents root makes every skill under it read-only, like a linked entry.
     agents_linked = _agents_root_linked(home)
-    for source, root in _skill_roots(home):
+    roots = _skill_roots(home)
+    trusted_project_root = project_skill_root(project_root)
+    if trusted_project_root is not None:
+        roots = (("project", trusted_project_root / ".agents" / "skills"), *roots)
+    for source, root in roots:
         try:
             candidates = _candidate_dirs(root)
         except SkillError as exc:
@@ -630,7 +703,7 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                         "enabled": False,
                         "valid": False,
                         "shadowed": False,
-                        "linked": False,
+                        "linked": source == "project" and _is_linked_path(root),
                         "error": str(exc),
                     },
                     None,
@@ -646,7 +719,9 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                 "enabled": False,
                 "valid": False,
                 "shadowed": False,
-                "linked": _is_linked_path(candidate) or (source == "agents" and agents_linked),
+                "linked": _is_linked_path(candidate)
+                or (source == "agents" and agents_linked)
+                or (source == "project" and _is_linked_path(root)),
             }
             try:
                 metadata, skill_dir = _validate_skill_dir(candidate)
@@ -686,24 +761,28 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
     return found
 
 
-def list_skills(*, home: Optional[Path] = None) -> list[dict]:
+def list_skills(
+    *, home: Optional[Path] = None, project_root: Optional[Path] = None
+) -> list[dict]:
     with _LOCK:
-        return [record for record, _, _ in _discover(home)]
+        return [record for record, _, _ in _discover(home, project_root)]
 
 
-def enabled_skills(*, home: Optional[Path] = None) -> list[dict]:
+def enabled_skills(
+    *, home: Optional[Path] = None, project_root: Optional[Path] = None
+) -> list[dict]:
     return [
         skill
-        for skill in list_skills(home = home)
+        for skill in list_skills(home = home, project_root = project_root)
         if skill["valid"] and not skill["shadowed"] and skill["enabled"]
     ]
 
 
 def _selected_skill(
-    name: str, *, home: Optional[Path] = None
+    name: str, *, home: Optional[Path] = None, project_root: Optional[Path] = None
 ) -> tuple[dict, Path, Optional[os.stat_result]]:
     normalized = _normalize_skill_name(name)
-    for record, skill_dir, identity in _discover(home):
+    for record, skill_dir, identity in _discover(home, project_root):
         if record["valid"] and not record["shadowed"] and record["name"] == normalized:
             return record, skill_dir, identity
     raise SkillNotFoundError(f"Skill '{normalized}' was not found.")
@@ -899,9 +978,13 @@ def _replace_skill_manifest(skill_dir: Path, manifest: bytes, identity) -> None:
         raise
 
 
-def read_skill_manifest(name: str, *, home: Optional[Path] = None) -> dict:
+def read_skill_manifest(
+    name: str, *, home: Optional[Path] = None, project_root: Optional[Path] = None
+) -> dict:
     with _LOCK:
-        record, skill_dir, identity = _selected_skill(name, home = home)
+        record, skill_dir, identity = _selected_skill(
+            name, home = home, project_root = project_root
+        )
         raw = _read_limited(
             skill_dir / "SKILL.md", MAX_SKILL_MD_BYTES, contained_in = skill_dir, identity = identity
         )
@@ -910,6 +993,8 @@ def read_skill_manifest(name: str, *, home: Optional[Path] = None) -> dict:
             "agents": _agents_display(),
             "claude": "~/.claude/skills",
         }.get(record["source"])
+        if record["source"] == "project" and project_root is not None:
+            display = str(Path(project_root).expanduser() / ".agents" / "skills")
         return {
             **record,
             "instructions": body.strip(),
@@ -1251,9 +1336,12 @@ def _read_enabled_skill_text(
     resource: str,
     *,
     home: Optional[Path] = None,
+    project_root: Optional[Path] = None,
 ):
     with _LOCK:
-        record, skill_dir, identity = _selected_skill(name, home = home)
+        record, skill_dir, identity = _selected_skill(
+            name, home = home, project_root = project_root
+        )
         if not record["enabled"]:
             raise SkillError(f"Skill '{record['name']}' is disabled.")
         path = _normalize_resource_path(resource)
@@ -1296,9 +1384,13 @@ def _read_enabled_skill_text(
         return record, path.as_posix(), content
 
 
-def read_skill_instructions(name: str, *, home: Optional[Path] = None) -> str:
+def read_skill_instructions(
+    name: str, *, home: Optional[Path] = None, project_root: Optional[Path] = None
+) -> str:
     """One secure snapshot, complete or refused; unlike resource reads this is not a page."""
-    _, _, content = _read_enabled_skill_text(name, "SKILL.md", home = home)
+    _, _, content = _read_enabled_skill_text(
+        name, "SKILL.md", home = home, project_root = project_root
+    )
     if len(content.encode("utf-8")) > MAX_SKILL_MD_BYTES:
         raise SkillError("Skill manifest exceeds the instruction size limit.")
     return content
@@ -1311,12 +1403,15 @@ def read_skill_resource(
     *,
     page_chars: int = MAX_SKILL_PAGE_CHARS,
     home: Optional[Path] = None,
+    project_root: Optional[Path] = None,
 ) -> str:
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise SkillError("Skill resource offset must be a non-negative integer.")
     if isinstance(page_chars, bool) or not isinstance(page_chars, int) or page_chars <= 0:
         raise SkillError("Skill resource page size must be a positive integer.")
-    record, normalized, content = _read_enabled_skill_text(name, resource, home = home)
+    record, normalized, content = _read_enabled_skill_text(
+        name, resource, home = home, project_root = project_root
+    )
     if offset > len(content):
         raise SkillError("Skill resource offset is past the end of the file.")
     end = min(offset + min(page_chars, MAX_SKILL_PAGE_CHARS), len(content))
