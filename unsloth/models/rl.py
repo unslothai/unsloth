@@ -3480,6 +3480,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "auto_find_batch_size": False,  # Cannot work on GRPO
             # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
             "vllm_importance_sampling_correction": False,
+            # None = unset: resolved below to "token_truncate" instead of TRL's "sequence_mask".
+            "vllm_importance_sampling_mode": None,
             # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off.
             "router_aux_loss_coef": 0.0,
             # None = unset, so the dapo check below can tell it from an explicit False.
@@ -3640,6 +3642,20 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 else "    beta = 0.001\n"
             )
             + "\n"
+        )
+
+    # sequence_mask multiplies token ratios over the completion; vLLM logprobs cover only the min_p / top_p kept set,
+    # so every ratio is < 1 and the product shrinks with length (Qwen3-0.6B min_p 0.1: ESS 0.42 vs 0.996 per token).
+    if trainer_file == "grpo_trainer" and "vllm_importance_sampling_mode" in call_args:
+        extra_args += (
+            "if vllm_importance_sampling_mode is None:\n"
+            "    vllm_importance_sampling_mode = 'token_truncate'\n"
+            + (
+                "    if vllm_importance_sampling_correction:\n"
+                "        print(\"Unsloth: vllm_importance_sampling_correction = True now defaults to token-level truncated importance sampling (vllm_importance_sampling_mode = 'token_truncate'). Set vllm_importance_sampling_mode = 'sequence_mask' for TRL's default.\")\n"
+                if "vllm_importance_sampling_correction" in call_args
+                else ""
+            )
         )
 
     # Check dr_grpo loss_type with scale_rewards for GRPO; TRL >= 0.22 defaults scale_rewards to group.
