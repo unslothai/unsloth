@@ -2069,8 +2069,12 @@ class ClusterServing:
                 "the caller locks a full host copy of the model (mlock); placement is theirs",
             )
             return request
-        from core.inference.llama_cpp import _emitted_n_batch
+        from core.inference.llama_cpp import _emitted_n_batch, _extra_args_n_parallel
 
+        caller_slots = _extra_args_n_parallel(flags, os.environ)
+        if caller_slots is not None and caller_slots > 0:
+            # llama.cpp keeps the last --parallel, so size per-slot state for what will launch.
+            n_parallel = caller_slots
         batch, ubatch, _named, _named_u = _named_batch_sizes(
             flags,
             os.environ,
