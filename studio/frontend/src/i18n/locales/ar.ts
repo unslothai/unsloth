@@ -4842,6 +4842,7 @@ export const ar = {
   translate: {
     title: "الترجمة",
     detectLanguage: "اكتشاف اللغة",
+    detectedLanguage: "{language} (مكتشفة)",
     sourceLanguage: "الترجمة من",
     targetLanguage: "الترجمة إلى",
     recentTargets: "الأخيرة",

@@ -97,6 +97,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistoryList } from "./history-list";
+import { detectTranslateLanguage } from "./detect-language";
 import { ICON_ACTION, IconAction } from "./icon-action";
 import {
   TRANSLATE_LANGUAGES,
@@ -200,11 +201,13 @@ function LanguagePicker({
   onChange,
   label,
   allowAuto,
+  detected,
 }: {
   value: string;
   onChange: (code: string) => void;
   label: string;
   allowAuto?: boolean;
+  detected?: string | null;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -229,10 +232,14 @@ function LanguagePicker({
   const autoLabel = t("translate.detectLanguage");
   const showAuto =
     allowAuto === true && (!needle || autoLabel.toLowerCase().includes(needle));
+  const labelOf = (code: string) =>
+    languages.find((language) => language.code === code)?.label ?? code;
   const currentLabel =
     allowAuto && value === AUTO_SOURCE
-      ? autoLabel
-      : (languages.find((language) => language.code === value)?.label ?? value);
+      ? detected
+        ? t("translate.detectedLanguage", { language: labelOf(detected) })
+        : autoLabel
+      : labelOf(value);
   const pick = (code: string) => {
     onChange(code);
     setOpen(false);
@@ -1037,6 +1044,13 @@ export function TranslatePage() {
   const busy = phase !== null;
   const paneHeight = prefs.showPrompt ? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT;
   const canTranslate = source.trim() !== "";
+  const detected = useMemo(
+    () => (prefs.from === AUTO_SOURCE ? detectTranslateLanguage(source) : null),
+    [prefs.from, source],
+  );
+  const canSwap =
+    prefs.from !== AUTO_SOURCE ||
+    (detected !== null && detected !== prefs.target);
   const stale = translationIsStale({ result, source, prefs });
   const modelKey = translateModelKey(prefs.modelId, prefs.customModel);
   const dedicated = dedicatedTranslateModel(prefs.modelId);
@@ -1254,16 +1268,15 @@ export function TranslatePage() {
             onChange={(from) => setPrefs({ from })}
             label={t("translate.sourceLanguage")}
             allowAuto={true}
+            detected={detected}
           />
           <IconAction
             icon={ArrowLeftRightIcon}
             label={
-              prefs.from === AUTO_SOURCE
-                ? t("translate.swapNeedsSource")
-                : t("translate.swap")
+              canSwap ? t("translate.swap") : t("translate.swapNeedsSource")
             }
-            disabled={prefs.from === AUTO_SOURCE || busy}
-            onClick={swap}
+            disabled={!canSwap || busy}
+            onClick={() => swap(detected)}
           />
           <LanguagePicker
             value={prefs.target}
