@@ -370,9 +370,8 @@ def gather_replica(
     what = "generate",
     persistent = True,
 ):
-    """Collective over the world: put the whole model back on every rank (the kept CPU copies moved to this
-    GPU, the trained weights of every stage broadcast from it). Refused on every rank alike, with the memory
-    numbers, when some rank lacks the room. Returns the stage."""
+    """Collective: restore the whole model on every rank from kept CPU copies and every stage's
+    trained weights; refused on all ranks alike if any lacks room. Returns the stage."""
     dist = _dist()
     stage = _stage_of(model)
     refusal = replica_refusal(stage, what)
@@ -461,8 +460,7 @@ def _apply_adapter_state(root, state):
 
 
 def _note_trained(stage):
-    """Remember which parameters this stage trains: a later requires_grad_(False) (before generate / export) must
-    not drop them from the replica sync."""
+    """Remember trained params; a later requires_grad_(False) must not drop them from the sync."""
     seen = stage.__dict__.setdefault("_unsloth_trained_names", set())
     seen.update(name for name, p in stage.model.named_parameters() if p.requires_grad)
 
@@ -974,9 +972,8 @@ def _batch(stage, inputs):
 
 
 def _refuse_split_router_aux(stage, n_microbatches):
-    """The pipeline adds the router load-balancing loss of each micro-batch (gradient accumulation semantics),
-    while the Trainer's step on one GPU forms it once over the whole batch: a product of means, so the micro-batch
-    sum is a different objective. Refused when the step has more than one micro-batch."""
+    """Pipeline sums router load-balancing loss per micro-batch; one GPU step forms it once over the
+    batch (a product of means), a different objective. Refused when micro-batches > 1."""
     moe = getattr(getattr(stage, "ctx", None), "moe", None)
     if n_microbatches <= 1 or moe is None:
         return
@@ -1000,11 +997,10 @@ def _split_router_aux_message(env_vars, n_microbatches):
 
 
 def _first_stage_batch(stage, input_ids, labels, extra, count):
-    """Every stage takes the first stage's batch (and its token count). The sampler gives the stages the same rows,
-    but a stochastic collator or dataset transform draws from each rank's own RNG, which the stages advance
-    differently (dropout over different layers), so the stage embedding the tokens and the stage scoring the labels
-    could otherwise see different batches. Tensor parallel peers inside a stage are synced first: their reductions
-    combine one example's activations."""
+    """Every stage takes the first stage's batch and token count: a stochastic collator or dataset
+    transform draws from each rank's own RNG, so stages could see different batches; tensor
+    parallel peers in a stage sync first, since their reductions combine one example's
+    activations."""
     import torch.distributed as dist
 
     if getattr(stage, "num_stages", 1) <= 1 or not dist.is_available() or not dist.is_initialized():
@@ -1376,8 +1372,7 @@ def _pp_save_optimizer_and_scheduler(self, output_dir):
 
 
 def _pp_load_from_checkpoint(self, *args, **kwargs):
-    """A checkpoint holds this rank's stage only: drop a replica left by generate / for_inference before the
-    layout check, as the optimizer save does."""
+    """Checkpoint holds this rank's stage only: drop a generate / for_inference replica first."""
     from .tp_native import _tp_load_from_checkpoint
 
     release_replica(self.model)

@@ -52,9 +52,8 @@ def _copy_into(dst, src):
 
 
 class _FakeGraph:
-    """Replay = the captured step run again into the captured outputs; host counters are left
-    as a real replay leaves them (unchanged). perturb: True = every replay, an int n = from the
-    n-th replay on (drift after validation)."""
+    """Replay reruns the captured step into its outputs and leaves host counters unchanged; perturb
+    is True for every replay, or an int n to drift from the n-th replay (after validation)."""
 
     def __init__(self, fn, outputs, cache, perturb):
         self.fn, self.outputs, self.cache, self.perturb = fn, outputs, cache, perturb
@@ -265,10 +264,9 @@ def test_counts_captures_refusals_and_recompiles_separately(host, llama):
 
 
 def test_graph_path_runs_the_compiled_variant_eager_runs(host, llama):
-    """A compiled region on the step's arguments (zoo compiles create_causal_mask) guards on their
-    inference-ness and strides: the graph path must hit the variant the eager step compiled, never
-    a new one, and give the eager logits. (Dynamo's global-state guard also covers the autocast cache
-    flag, so the step keeps the ambient autocast; CUDA autocast is not reachable on the host.)"""
+    """A compiled region on the step's args (zoo's create_causal_mask) guards on inference-ness and
+    strides: the graph path must reuse the eager variant and logits; Dynamo's global guard covers
+    the autocast cache flag, so the step keeps the ambient autocast (no CUDA here)."""
     seen, calls = [], []
 
     @torch.compile(backend = "eager", dynamic = False)
@@ -339,12 +337,9 @@ def test_static_buffers_keep_eager_strides(host, make):
 
 @pytest.mark.parametrize("past", [False, True])
 def test_sliding_window_roll_is_captured_without_host_copies(host, gemma3, monkeypatch, past):
-    # Inside the window every sliding layer updates by index: one key, every step after the first two replays.
-    # Past the window the sliding layers roll by one slot per step: a second key (window full) is captured and
-    # validated (its rolled rows restored between the replay and the eager step), then replays. transformers
-    # rolls a full window with an index made by torch.tensor(..., device=...), a host-to-device copy a real
-    # capture refuses; the warm-up and recording run that branch on an index made outside the capture. The
-    # recording runs no device work, so the capture holds no copy of the full windows' rows while it records.
+    # Past the window a second key is captured and validated (rolled rows restored), then replays;
+    # the transformers index from torch.tensor(..., device=...) is a host-to-device copy capture
+    # refuses, so warm-up and recording use an outside index; recording copies no full-window rows
     taken = []
     snapshot = GG._snapshot
 
@@ -715,9 +710,8 @@ def test_generate_routes_only_static_cache_calls():
 def test_real_capture_matches_eager(name, monkeypatch):
     monkeypatch.setattr(G, "ENABLED", True)
     torch.manual_seed(0)
-    # bf16 only where the GPU computes it natively: below sm80 Inductor skips a bf16 frame, which torch 2.14 turns
-    # into a hard error inside zoo's fullgraph-compiled Gemma3 RMSNorm (and the skip sticks to that code object for
-    # the rest of the process). Unsloth itself never runs Gemma3 in bf16 there (it forces float32).
+    # bf16 only on GPUs that compute it natively: below sm80 Inductor skips bf16 frames, which torch
+    # 2.14 makes a hard error in zoo's Gemma3 RMSNorm; Unsloth forces float32 there.
     bf16 = torch.cuda.is_bf16_supported(including_emulation = False)
     model = (
         AutoModelForCausalLM.from_pretrained(name, dtype = torch.bfloat16 if bf16 else torch.float16)
@@ -954,9 +948,8 @@ def test_step_type_ids_only_with_prebuilt_masks():
 
 
 def test_step_that_fills_the_window_is_never_captured(host, gemma3):
-    # A first decode step at count == window - 1 fills the window. Its key is the filling one, but the capture
-    # records after the warm-up advanced the counters (the rolling branch): a kept graph of that key would then
-    # roll a window that is still filling. That step runs eagerly; the window-full key is captured after it.
+    # A decode step at count == window - 1 fills the window; a graph kept for that key would roll a
+    # still-filling window, so it runs eagerly and the full-window key is captured after.
     window = gemma3.config.sliding_window
     # A call past the window first: the roll index exists, so a capture of the rolling branch would succeed.
     _fresh(gemma3)

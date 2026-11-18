@@ -192,9 +192,8 @@ def test_compile_trace_unchanged(scheme, monkeypatch):
     try:
         frames, out = _compile_count(model, x)
     except Exception as error:
-        # Some torchao / torch pairs cannot trace their own quantizers with fullgraph (torchao 0.17 +
-        # torch 2.11 skips _per_token_quant_qparam_dim_check). That is only this PR's problem if the
-        # unwrapped quantizer forward does trace there.
+        # Some torchao/torch pairs cannot trace quantizers fullgraph (torchao 0.17 + torch 2.11
+        # skips the qparam check); only unwrapped forward tracing matters
         owners = {
             owner
             for m in model.modules()

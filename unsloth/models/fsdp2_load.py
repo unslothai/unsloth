@@ -463,8 +463,7 @@ def _full_from_chunks(
     dtype,
     device = None,
 ):
-    """All-gather dim-0 chunks into one full tensor on `device`, slice by slice (a whole-chunk gather held 5x
-    the chunk and OOMed a T4)."""
+    """All-gather dim-0 chunks slice by slice; whole-chunk gather (5x the chunk) OOMed a T4."""
     import torch.distributed as dist
 
     if info.get("packed"):

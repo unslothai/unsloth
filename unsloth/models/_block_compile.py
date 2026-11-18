@@ -766,10 +766,8 @@ def _region_recompile_limit(kinds):
     return max(16 * kinds + 16, 32)
 
 
-# gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
-# DeepSeek-V4.1 port: the CSA2 top-k gather is [B, S, min(index_topk, T), D]; Inductor's backward codegen fails on the
-# unbound symbol ("For Min(4, s24), expected [s24] to have been codegen-ed", torch 2.14). Its layers also share a
-# per-forward group-state dict that gradient checkpointing replays per layer.
+# gpt-oss builds its flex mask inside attention, so the block broke and recompiled per length;
+# DeepSeek-V4.1 top-k gather [B, S, min(index_topk, T), D] fails Inductor backward on torch 2.14
 _SKIP = {"GptOssDecoderLayer", "DeepseekV41DecoderLayer"}
 
 
@@ -872,12 +870,7 @@ def _rebind_class(cls):
 
 
 def _relax_strict_dynamic(obj):
-    """Alias tensors that carry a caller's strict mark_dynamic so the block only sees its own maybe marks.
-
-    unsloth_zoo marks input_ids dim 1 for its loss bookkeeping, and Qwen4Exp passes input_ids into every
-    block as ple_input_ids. A length the block specializes then raised ConstraintViolationError and demoted
-    the layer kind to the stock forward. A view drops the mark (it lives on the tensor object), not the data.
-    """
+    """Views drop the strict mark, so a block's specialized length cannot raise ConstraintViolationError."""
     if isinstance(obj, torch.Tensor):
         return obj.view(obj.shape) if getattr(obj, "_dynamo_dynamic_indices", None) else obj
     if type(obj) in (tuple, list):
@@ -1226,11 +1219,7 @@ def _prepare_gdn(layer, hidden_states):
         _GDN_OP[0] = False
 
 
-# PEFT's ParamWrapper (target_parameters on a non-expert weight, e.g. a MoE router) registers a torch
-# parametrization on every forward and removes it after, and torch builds a new Parametrized<Class>
-# subclass per registration. Dynamo guards a module's type id, so each call recompiles the module's
-# forward whenever the fresh class lands at an address it has not seen (how many do depends on the
-# allocator: a different code path shifted the count). One class per module instance keeps the id.
+# A fresh class per PEFT forward would change the type id Dynamo guards, so each module keeps one.
 _PARAMETRIZED_CLASSES = weakref.WeakKeyDictionary()
 
 
@@ -1243,8 +1232,7 @@ def _stable_parametrized_classes():
     if original is None or getattr(original, "_unsloth_stable", False):
         return
 
-    # Eager: the class swap is the graph break PEFT's registration already takes, and Dynamo must
-    # not fold the cache lookup into a graph.
+    # Eager: the swap is the graph break PEFT already takes; Dynamo must not fold the lookup.
     @torch.compiler.disable
     @functools.wraps(original)
     def _inject_new_class(module):
@@ -1840,9 +1828,7 @@ _CHECKPOINT_CACHE_KWARGS = ("past_key_values", "layer_past")
 
 
 def _checkpointing(forward):
-    """transformers' layer checkpoint wrapper around the block forward. The block replaces the class
-    forward, so transformers' own wrapper (now inside the block) never saw itself as outermost and
-    every layer ran without gradient checkpointing (gemma-4-12b QLoRA 2048: 16 GB kept, 8192: OOM)."""
+    """The block's forward hides transformers' checkpoint wrapper, so layers ran without checkpointing."""
 
     @functools.wraps(forward)
     def forward_with_checkpointing(self, *args, **kwargs):
@@ -2105,9 +2091,8 @@ def _wrap(
             bit == 2 and not checked & 2 and not _IN_TRIAL[0] and _in_nonreentrant_checkpoint()
         )
         if (bit == 1 or nonreentrant) and not checked & 2:
-            # Grad-mode trial first (RNG forked): a checkpoint recompute must not demote below this call.
-            # Non-reentrant: identity saved-tensor hooks (innermost wins) keep a failed attempt's partly
-            # run graph out of the checkpoint, else its saved count differs from the recompute's.
+            # Grad-mode trial runs first (RNG forked); a checkpoint recompute must not demote below
+            # this call. Non-reentrant: identity saved-tensor hooks keep a failed trial graph out
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             hooks = (
                 torch.autograd.graph.saved_tensors_hooks(_same, _same)
@@ -2402,9 +2387,8 @@ def _install_router_capture_hooks(model):
     ):
         return 0
     installed = 0
-    # Outermost first, as transformers would: an install recurses into nested models and flags them. Its
-    # recursion does not check that flag, so a module with an already hooked descendant (an earlier eager
-    # capturing forward) is skipped: installing it would hook that descendant twice (duplicated outputs).
+    # Outermost first, as transformers does; skip modules with a hooked descendant (no double
+    # hooks).
     for module in model.modules():
         # dict.get: 5.23's _CanRecordRegistry.get expects the model and returned {} for a string (transformers#49594).
         flags = dict.get(registry, str(type(module))) or {}

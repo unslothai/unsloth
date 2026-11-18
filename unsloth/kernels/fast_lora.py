@@ -354,9 +354,7 @@ def _lora_AB_grads(X, mask, p, y_dB, A, B, dY, S, need_A, need_B):
 
 
 def _shared_XA(X, As, dtype):
-    # One X @ [A_1; A_2; ...].t() instead of one pass over X per projection; per-projection column views.
-    # Compressed sparse adapters cannot be concatenated: one product each, as before.
-    # Eager only: a strided layout is neither sparse nor compressed sparse.
+    # Eager only: one X @ concatenated A's for strided layouts; sparse adapters stay separate.
     if not all(A.layout == torch.strided for A in As):
         return [torch.matmul(X, A.to(dtype).t()) for A in As]
     XA = torch.matmul(X, torch.cat([A if A.dtype is dtype else A.to(dtype) for A in As], 0).t())
