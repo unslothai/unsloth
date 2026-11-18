@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Parallel connections to one OAuth MCP server must share one refresh and keep a live refresh token."""
-
 import asyncio
 import json
 import threading
