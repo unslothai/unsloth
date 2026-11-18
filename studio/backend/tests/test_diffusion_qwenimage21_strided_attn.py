@@ -110,6 +110,37 @@ def test_plain_calls_only(strided):
     assert Q.plain_qkv(m, (q[..., ::2], k[..., ::2], v[..., ::2]), {}) is None
 
 
+def test_marker_admits_only_its_probed_dtype(strided):
+    m = Q.StridedCudnn((0,), torch.bfloat16)
+    q, k, v = _qkv()
+    assert Q.plain_qkv(m, (q, k, v), {}) is not None
+    assert Q.plain_qkv(m, (q.half(), k.half(), v.half()), {}) is None
+    for other in (copy.deepcopy(m), pickle.loads(pickle.dumps(m))):
+        assert other.dtype is torch.bfloat16 and other.cards == m.cards
+
+
+def test_reinstall_at_a_new_dtype_probes_it(monkeypatch):
+    _tq, model = _tiny_qwen21()
+    pipe = types.SimpleNamespace(transformer = model)
+    seen = []
+    _fake_card(monkeypatch)
+    monkeypatch.setattr(
+        Q, "strided_matches", lambda dev, dtype, h, d: seen.append(dtype) or dtype == torch.bfloat16
+    )
+    _pin(model, attention_dispatch.AttentionBackendName._NATIVE_CUDNN)
+    assert Q.install(pipe, "_native_cudnn", _TARGET) == 2
+    assert all(b.dtype is torch.bfloat16 for b in _backends(model))
+    half = types.SimpleNamespace(device = "cuda:0", dtype = torch.float16)
+    assert Q.install(pipe, "_native_cudnn", half) == 0 and torch.float16 in seen
+    assert all(b.dtype is torch.bfloat16 for b in _backends(model))
+
+
+def test_strided_incumbent_races_under_its_own_name():
+    contiguous = attention_dispatch.AttentionBackendName._NATIVE_CUDNN
+    assert D._race_name(contiguous) == "dispatch:_native_cudnn"
+    assert D._race_name(Q.StridedCudnn((0,), torch.bfloat16)) == "dispatch:_native_cudnn:strided"
+
+
 def test_unprobed_card_keeps_diffusers():
     q, k, v = _qkv()
     assert (
@@ -323,5 +354,6 @@ def test_strided_equals_diffusers_cudnn_bitwise(sq, sk):
     ref = attention_dispatch._native_cudnn_attention(q, k, v)
     got = Q.strided_cudnn_attention(q, k, v)
     assert torch.equal(ref, got) and torch.equal(ref.flatten(2, 3), got.flatten(2, 3))
-    # no output copy: the processor's flatten is a view
-    assert got.flatten(2, 3).is_contiguous()
+    # no output copy: a contiguous [B, S, H, D] output makes the processor's flatten a view
+    flat = got.flatten(2, 3)
+    assert got.is_contiguous() and flat.data_ptr() == got.data_ptr() and flat._base is not None

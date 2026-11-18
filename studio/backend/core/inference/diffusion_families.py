@@ -350,6 +350,14 @@ _QWENIMAGE_RDNA_AUTO_W8A8 = (
     "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "
     "LPIPS 0.014"
 )
+# rdna_explicit_w8a8: an explicit int8 request on gfx1151 (ROCm 7.13, 1024^2, 16 steps, compiled) runs W8A8 with Q / K / V
+# and the MLP input on one shared rotation + act quant per block (diffusion_flux_convrot_fused); AUTO keeps bf16. Device
+# time per step, two repeats each: W8A8 shared 1.364 / 1.367 s, weight-only int8 1.422 / 1.413, W8A8 with a quant per
+# Linear 1.419 (the quant was the whole deficit), bf16 1.364 / 1.371. LPIPS vs bf16 0.012 (weight-only 0.024).
+_FLUX3_KLEIN_RDNA_EXPLICIT_W8A8 = (
+    "compiled int8 W8A8 with one shared act quant per block measured 1.365 vs 1.418 s/step against compiled "
+    "weight-only int8 on gfx1151 (1024^2, 16 steps), LPIPS 0.012 vs bf16"
+)
 # FLUX.3 renders black in plain float16; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
 _FLUX3_FP16_INCOMPATIBLE = (
     os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16") or ""
@@ -765,6 +773,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
             turing_auto_int8 = _FLUX3_KLEIN_TURING_AUTO_INT8,
+            rdna_explicit_w8a8 = _FLUX3_KLEIN_RDNA_EXPLICIT_W8A8,
             int8_convrot = ConvRotSpec(
                 group = 256,
                 suffixes = _FLUX3_CONVROT_SUFFIXES,
@@ -1491,6 +1500,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             scheme_deny = frozenset({"nvfp4"}),
             # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
             preview_factors = "flux2",
+            compile_from_render_one = (
+                "the eager port is host-bound: 1024 px bf16 eager 14.5 s vs compiled 8.0 s per image on an RTX PRO "
+                "6000, 27.5 s vs 12.9 s on an A100, so bf16 compiles from render 1 like the INT8 default"
+            ),
         ),
         pipeline_class = "MOSSImagePipeline",
         transformer_class = "MOSSImageTransformer",

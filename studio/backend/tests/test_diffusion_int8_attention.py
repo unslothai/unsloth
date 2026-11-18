@@ -1226,6 +1226,7 @@ def test_checkpoint_attention_races_each_backend_once(monkeypatch, _active_backe
         dtype,
         *,
         kernel = False,
+        device = None,
     ):
         races.append(kernel)
         found = {"keep": plan["sage_keep"], "ms": [10.0, 9.0], "native": "_native_math"}
@@ -1366,6 +1367,147 @@ def test_checkpoint_race_decision_does_not_follow_a_clock_step(monkeypatch, afte
         if kernel:
             large = found["paired"][H._KERNEL_RACE_IMAGES[0]]
             assert large[2] < I.RACE_MARGIN, (step, found)
+
+
+class _StreamedAttention(_ClockedAttention):
+    """Host-resident attention that only runs while ``_weights_on`` has staged it."""
+
+    COST = {"native": 10.0, "sage": 10.0}
+
+    def __init__(self):
+        super().__init__(10**6, 1.0, False)
+        self.on_card = False
+        self.staged: list = []
+
+    def parameters(self):
+        return iter([types.SimpleNamespace(is_cuda = self.on_card, device = torch.device("cpu"))])
+
+    def __call__(self, x, rotary, mask):
+        assert (
+            self.on_card
+        ), "the race ran a streamed block's attention with its weights on the host"
+        super().__call__(x, rotary, mask)
+
+
+def _streamed_race(monkeypatch, device):
+    H = _h3_image()
+    attn = _StreamedAttention()
+
+    class Event:
+        def __init__(self, enable_timing = False):
+            self.t = 0.0
+
+        def record(self):
+            self.t = attn.now
+
+        def synchronize(self):
+            pass
+
+        def elapsed_time(self, other):
+            return other.t - self.t
+
+    @contextlib.contextmanager
+    def weights_on(module, dev):
+        assert module is attn and not attn.on_card
+        attn.staged.append(str(dev))
+        attn.on_card = True
+        try:
+            yield module
+        finally:
+            attn.on_card = False
+
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: contextlib.nullcontext())
+    monkeypatch.setattr(H, "_weights_on", weights_on)
+    norm = types.SimpleNamespace(normalized_shape = (8,))
+    blocks = [types.SimpleNamespace(attn = attn, norm1 = norm)]
+    blocks.append(types.SimpleNamespace(attn = _StreamedAttention(), norm1 = norm))
+    transformer = types.SimpleNamespace(transformer_blocks = blocks, rope = lambda pos: None)
+    real_to = torch.Tensor.to
+
+    def to(self, *args, **kwargs):
+        # no card here: the race's inputs stay on the host
+        kwargs.pop("device", None)
+        args = tuple(a for a in args if not isinstance(a, (str, torch.device)))
+        return real_to(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", to)
+    found = H.race_checkpoint_attention(transformer, {attn: "native"}, torch.float32, device = device)
+    return found, attn
+
+
+def test_a_fully_streamed_dit_races_its_first_block_on_the_card(monkeypatch):
+    """A fully streamed DiT still races (staged block) and decides as a resident layout: a tie keeps native."""
+    found, attn = _streamed_race(monkeypatch, "cuda")
+    assert found is not None and found["staged"] and not found["keep"]
+    assert found["ms"] == [10.0 * 4396 / 4396] * 2
+    assert (
+        attn.staged == ["cuda"]
+        and not attn.on_card
+        and attn.calls == 2 * (2 + _h3_image()._RACE_ROUNDS)
+    )
+    assert attn.processor._attention_backend == "sage"
+    # no device to stage on: untimed, the caller keeps its route
+    found, attn = _streamed_race(monkeypatch, None)
+    assert found is None and attn.calls == 0 and not attn.staged
+    found, attn = _streamed_race(monkeypatch, "cpu")
+    assert found is None and attn.calls == 0 and not attn.staged
+
+
+def test_streamed_weights_come_back_to_the_host_after_the_race():
+    """``_weights_on`` restores the same host tensors, also when the body raises."""
+    H = _h3_image()
+    m = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.LayerNorm(4))
+    m[0].register_buffer("scale", torch.ones(4))
+    before = {n: t for n, t in list(m.named_parameters()) + list(m.named_buffers())}
+    with H._weights_on(m, torch.device("meta")):
+        inside = list(m.parameters()) + list(m.buffers())
+        assert inside and all(t.device.type == "meta" for t in inside)
+        assert all(not p.requires_grad for p in m.parameters())
+    after = {n: t for n, t in list(m.named_parameters()) + list(m.named_buffers())}
+    assert after.keys() == before.keys() and all(after[n] is before[n] for n in before)
+    with pytest.raises(RuntimeError):
+        with H._weights_on(m, torch.device("meta")):
+            raise RuntimeError("race failed")
+    after = {n: t for n, t in list(m.named_parameters()) + list(m.named_buffers())}
+    assert all(after[n] is before[n] for n in before)
+
+
+def test_install_races_a_fully_streamed_dit_on_its_device(monkeypatch):
+    """``install_checkpoint_attention`` passes the load device so a fully streamed DiT is raced."""
+    H = _h3_image()
+    seen: list = []
+
+    def race(transformer, saved, dtype, **kw):
+        seen.append(kw)
+        return {"keep": False, "ms": [1.0, 1.0], "native": "_native_flash", "staged": True}
+
+    proc = types.SimpleNamespace(_attention_backend = "_native_flash")
+    attn = torch.nn.Module()
+    attn.processor = proc
+    attn.register_parameter("w", torch.nn.Parameter(torch.zeros(1), requires_grad = False))
+    block = torch.nn.Module()
+    block.attn = attn
+    transformer = torch.nn.Module()
+    transformer.transformer_blocks = torch.nn.ModuleList([block])
+    pipe = types.SimpleNamespace(transformer = transformer)
+    from core.inference import diffusion_attention as da
+
+    def fake_apply(
+        p,
+        backend,
+        logger = None,
+        target = None,
+    ):
+        proc._attention_backend = backend
+        return backend
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    monkeypatch.setattr(H, "race_checkpoint_attention", race)
+    monkeypatch.delenv(H.INT8_ATTENTION_ENV, raising = False)
+    assert H.install_checkpoint_attention(pipe, "cuda", scheme = "int8") is None
+    assert proc._attention_backend == "_native_flash"
+    assert seen and str(seen[0].get("device")) == "cuda"
 
 
 def _case(

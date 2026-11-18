@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import type { ChatPresetSource } from "../presets/preset-policy";
+import type {
+  ChatPresetSource,
+  RecommendedSamplingKey,
+} from "../presets/preset-policy";
 import type {
   PermissionMode,
   SandboxLevel,
@@ -44,6 +47,8 @@ export interface PersistedChatSettings {
   editCustomPresets?: Record<string, PersistedChatPreset | null>;
   activePreset?: string;
   activePresetSource?: ChatPresetSource;
+  /** Per key, so edits from two tabs merge; `false` clears a key. */
+  presetEditedKeys?: Partial<Record<RecommendedSamplingKey, boolean>>;
   autoTitle?: boolean;
   reasoningEffort?: ReasoningEffort;
   preserveThinking?: boolean;

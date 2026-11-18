@@ -66,6 +66,7 @@ from storage.studio_db import (
     fork_counts_for_thread,
     get_chat_attachment,
     get_chat_project,
+    get_chat_history_revisions,
     get_chat_thread,
     get_chat_pins,
     get_chat_message,
@@ -87,6 +88,7 @@ from storage.studio_db import (
     project_working_folder_status,
     ProjectWorkingFolderConflictError,
     migrate_chat_pins,
+    PRESET_EDITED_KEYS,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -609,6 +611,7 @@ class ChatSettingsPayload(BaseModel):
     )
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
+    presetEditedKeys: Optional[dict[Literal[PRESET_EDITED_KEYS], bool]] = None
     autoTitle: Optional[bool] = None
     reasoningEffort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
@@ -907,6 +910,29 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
         if not payload.projectId:
             raise
         raise _missing_project_error(payload.projectId) from exc
+
+
+_REVISION_THREADS_MAX = 50
+
+
+class ChatHistoryRevisionResponse(BaseModel):
+    revision: int
+    threads: dict[str, int]
+
+
+@router.get("/revision", response_model = ChatHistoryRevisionResponse)
+def chat_history_revision(
+    thread_id: list[str] = Query(default_factory = list, alias = "threadId"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Change counters other devices poll, so a chat open elsewhere picks up writes made here."""
+    if len(thread_id) > _REVISION_THREADS_MAX:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"At most {_REVISION_THREADS_MAX} thread ids per request",
+        )
+    revision, threads = get_chat_history_revisions(thread_id)
+    return ChatHistoryRevisionResponse(revision = revision, threads = threads)
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
@@ -2503,3 +2529,13 @@ def export_history(current_subject: str = Depends(get_current_subject)):
         threads = [thread_from_row(thread) for thread in threads],
         messages = [ChatMessage(**message) for message in messages],
     )
+
+
+@router.get("/memory-context")
+def get_memory_context(
+    thread_id: str,
+    context_length: int = Query(4096, ge = 1, le = 10000000),
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.chat_memory import context
+    return context(thread_id, context_length)
