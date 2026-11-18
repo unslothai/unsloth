@@ -185,7 +185,7 @@ test("rows only draw the columns when the setting is on", () => {
   assert.match(picker, /row\.favoriteQuant\s*\?\s*favoriteOnDisk\s*:/);
   assert.match(
     picker,
-    /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*favoriteOnDisk \? quantBytes\(favoriteOnDisk\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,[\s\S]*?row\.sizeBytes \?\?\s*\(row\.lora\?\.source === "local"\s*\? localInfo\.get\(row\.id\)\?\.size_bytes\s*: undefined\),\s*\)/,
+    /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*favoriteOnDisk \? quantBytes\(favoriteOnDisk\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,[\s\S]*?row\.sizeBytes \?\?\s*\(row\.lora\?\.source === "local" \? row\.lora\.sizeBytes : undefined\),\s*\)/,
   );
 });
 

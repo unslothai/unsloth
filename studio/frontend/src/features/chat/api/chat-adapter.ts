@@ -40,6 +40,7 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+import { isTranslationHeldSlot, isTranslationOnlyRepo } from "@/lib/translation-models";
 import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-cache-snapshot";
 import {
   isServedByLlamaCpp,
@@ -272,10 +273,9 @@ import {
   clampReasoningEffortToLevels,
   externalMaxOutputTokensNeedsConnectionCap,
   externalStopWindow,
-  getExternalMaxOutputTokens,
+  externalRequestMaxTokens,
   getPublishedExternalMaxOutputTokens,
   getGroundedExternalMaxOutputTokens,
-  getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   providerModelReplaysReasoning,
   providerSupportsPreserveThinking,
@@ -363,6 +363,12 @@ import {
   recordLastLocalModelLoad,
   type LastLocalModelKind,
 } from "../utils/last-local-model-load";
+import {
+  failureLabelFor,
+  rememberedMissNote,
+  sameVariant,
+  withRememberedMiss,
+} from "../utils/auto-load-remembered";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import {
   createImageGateRunOwner,
@@ -384,6 +390,7 @@ import {
 import {
   createThinkTagTracker,
   extractDeltaText,
+  markLiteralThinkTags,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 import { createSegmentedAssistantText } from "../utils/incremental-assistant-content";
@@ -2616,6 +2623,8 @@ type AutoLoadCandidate = {
   ggufVariant: string | null;
   maxSeqLength: number;
   successLabel: string;
+  /** Shown instead of id when they differ, e.g. a repo id for a snapshot path. */
+  label?: string;
 };
 
 // Same case rules as autoLoadSourceKey: folding a POSIX target would conflate /models/Foo and /models/foo.
@@ -2903,6 +2912,7 @@ function applyAutoLoadRuntimeState(
 
 /** Whether a cache row is chattable. Every field is optional so an older backend keeps trying. */
 function isChattableCachedRepo(repo: {
+  repo_id?: string;
   partial?: boolean;
   task?: string | null;
   model_format?: string | null;
@@ -2914,7 +2924,9 @@ function isChattableCachedRepo(repo: {
     // Adapters fetch base weights from the Hub, and can_chat is true on file layout alone.
     repo.model_format !== "adapter" &&
     // Cached diffusion and speech repos report can_chat true on file format alone.
-    !NON_CHAT_TASKS.has(repo.task ?? "")
+    !NON_CHAT_TASKS.has(repo.task ?? "") &&
+    // Translate's models are tagged text-generation, but would translate the user's prompt.
+    !isTranslationOnlyRepo(repo.repo_id)
   );
 }
 
@@ -2954,6 +2966,7 @@ function isAutoLoadableLocalRow(
     // Allowlist: backends send "unknown" or omit the field, so a denylist admitted pickles.
     (isGgufLocalRow(row) || row.model_format === "safetensors") &&
     !NON_CHAT_TASKS.has(row.task ?? "") &&
+    !isTranslationOnlyRepo(row.model_id) &&
     runsOnThisPlatform(row) &&
     !isHiddenModelId(row.model_id, row.id, row.path)
   );
@@ -2994,6 +3007,8 @@ type AutoLoadSource = {
   id: string;
   /** Sent to /api/inference/load as model_path. */
   loadId: string;
+  /** Hub repo id of an hf_cache row: in another cache its id and loadId are the snapshot path. */
+  repoId?: string;
   sizeBytes: number;
   maxSeqLength: number;
   /** null when the target is one file already (a local .gguf) or safetensors. */
@@ -3058,6 +3073,8 @@ function buildAutoLoadSources(
       kind: isGguf ? "gguf" : "model",
       id: row.id,
       loadId: row.load_id || row.id,
+      repoId:
+        row.source === "hf_cache" && row.model_id ? row.model_id : undefined,
       sizeBytes: row.size_bytes ?? 0,
       maxSeqLength: isGguf ? 0 : safetensorsMaxSeqLength,
       listVariants: needsVariant
@@ -3073,16 +3090,40 @@ function buildAutoLoadSources(
   return sources;
 }
 
-function isRememberedSource(
+function rememberedMatch(
   source: AutoLoadSource,
   remembered: { id: string; kind: LastLocalModelKind },
-): boolean {
-  if (source.kind !== remembered.kind) return false;
+): "exact" | "repo" | null {
+  if (source.kind !== remembered.kind) return null;
   // Same case rules as the dedupe key.
   const target = normalizeTarget(remembered.id);
-  return (
+  if (
     normalizeTarget(source.id) === target ||
     normalizeTarget(source.loadId) === target
+  ) {
+    return "exact";
+  }
+  return source.repoId !== undefined &&
+    normalizeTarget(source.repoId) === target
+    ? "repo"
+    : null;
+}
+
+/** A snapshot matched only by repo id stands in for a missing exact row, never retries a failed one. */
+function rememberedSources(
+  sources: AutoLoadSource[],
+  remembered: { id: string; kind: LastLocalModelKind } | null,
+): Set<AutoLoadSource> {
+  if (!remembered) return new Set();
+  const exact = sources.filter(
+    (source) => rememberedMatch(source, remembered) === "exact",
+  );
+  return new Set(
+    exact.length > 0
+      ? exact
+      : sources.filter(
+          (source) => rememberedMatch(source, remembered) === "repo",
+        ),
   );
 }
 
@@ -3091,8 +3132,9 @@ function orderAutoLoadSources(
   sources: AutoLoadSource[],
   remembered: { id: string; kind: LastLocalModelKind } | null,
 ): AutoLoadSource[] {
+  const preferred = rememberedSources(sources, remembered);
   const rank = (source: AutoLoadSource): number => {
-    if (remembered && isRememberedSource(source, remembered)) return 0;
+    if (preferred.has(source)) return 0;
     return source.kind === "gguf" ? 1 : 2;
   };
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
@@ -3107,16 +3149,20 @@ async function resolveAutoLoadCandidate(
   source: AutoLoadSource,
   rememberedVariant: string | null,
   isSkipped: (candidate: AutoLoadCandidate) => boolean,
+  // Keys saved settings and the record: the repo id when only that matched the last used model.
+  id: string = source.id,
 ): Promise<AutoLoadCandidate | null> {
+  const label = source.repoId ?? id;
   const build = (ggufVariant: string | null): AutoLoadCandidate => ({
-    id: source.id,
+    id,
     loadId: source.loadId,
     kind: source.kind,
     ggufVariant,
     maxSeqLength: source.maxSeqLength,
     successLabel: ggufVariant
-      ? `Loaded ${source.id} (${ggufVariant})`
-      : `Loaded ${source.id}`,
+      ? `Loaded ${label} (${ggufVariant})`
+      : `Loaded ${label}`,
+    label,
   });
   if (!source.listVariants) {
     const variants =
@@ -3507,14 +3553,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     cpuFallbackReason?: CpuFallbackReason | null,
     mmprojFallbackReason?: MmprojFallbackReason | null,
     offloadCounts?: OffloadCounts,
+    missedNote?: string | null,
   ): void => {
     // Both reasons composed (mmproj and CPU); see loadFallbackNotice.
-    const notice = loadFallbackNotice(
-      message,
-      cpuFallbackReason,
-      mmprojFallbackReason,
-      offloadWarning(offloadCounts ?? {}),
-      expertSpillNote(offloadCounts ?? {}),
+    const notice = withRememberedMiss(
+      loadFallbackNotice(
+        message,
+        cpuFallbackReason,
+        mmprojFallbackReason,
+        offloadWarning(offloadCounts ?? {}),
+        expertSpillNote(offloadCounts ?? {}),
+      ),
+      missedNote ?? null,
     );
     const options = {
       description: notice.description,
@@ -3539,6 +3589,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const loadFailure: {
     current: { label: string; detail: string; blamesModel: boolean } | null;
   } = { current: null };
+  // Set when the last used model was tried and did not load: a fallback must say so and must not replace it (#18002).
+  const rememberedMiss: { current: string | null } = { current: null };
 
   // Set once the user declines the HF token dialog, so nothing asks again.
   let autoLoadCancelled = false;
@@ -3624,6 +3676,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
+    // Set when this load stands in for a last used model that failed.
+    missedNote: string | null = null,
   ): Promise<boolean> {
     if (
       autoLoadCancelled ||
@@ -3634,9 +3688,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     }
     const currentStore = useChatRuntimeStore.getState();
     const modelPath = candidate.loadId ?? candidate.id;
-    const failureLabel = candidate.ggufVariant
-      ? `${candidate.id} (${candidate.ggufVariant})`
-      : candidate.id;
+    const failureLabel = failureLabelFor(candidate);
     const { config } = resolveInitialConfig(
       candidate.id,
       candidate.ggufVariant,
@@ -4041,7 +4093,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           activeModelIsLocal: loadResp.is_local_model ?? false,
         });
       }
-      if (!(loadResp.is_lora ?? false)) {
+      if (!(loadResp.is_lora ?? false) && missedNote === null) {
         recordLastLocalModelLoad({
           id: candidate.id,
           kind: candidate.kind,
@@ -4053,6 +4105,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         loadResp.cpu_fallback_reason,
         loadResp.mmproj_fallback_reason,
         offloadCountsFrom(loadResp),
+        missedNote,
       );
     });
     return true;
@@ -4111,6 +4164,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     );
 
     // A target can be in several lists; a twin is tried only if the preferred row resolved nothing.
+    const remembered = rememberedSources(sources, lastLoaded);
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
       if (
@@ -4122,9 +4176,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
-      const isRemembered = lastLoaded
-        ? isRememberedSource(source, lastLoaded)
-        : false;
+      const isRemembered = remembered.has(source);
       const isTried = (entry: AutoLoadCandidate): boolean =>
         skippedAutoLoadCandidates.has(
           autoLoadCandidateKey(
@@ -4144,22 +4196,47 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             source,
             isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
             isTried,
+            isRemembered &&
+              lastLoaded &&
+              rememberedMatch(source, lastLoaded) === "repo"
+              ? lastLoaded.id
+              : source.id,
           );
           options?.abortSignal?.throwIfAborted();
           if (!candidate) break;
           candidateResolvedFor.add(sourceKey);
           updateAutoLoadToast(
             isRemembered ? "Loading last used model…" : "Loading a model…",
-            candidate.ggufVariant
-              ? `${candidate.id} (${candidate.ggufVariant})`
-              : candidate.id,
+            failureLabelFor(candidate),
           );
+          const isRememberedCandidate =
+            isRemembered &&
+            sameVariant(candidate.ggufVariant, lastLoaded?.ggufVariant ?? null);
+          const failuresBefore = loadFailure.current;
+          const noteRememberedMiss = (): void => {
+            if (!isRememberedCandidate || rememberedMiss.current !== null) {
+              return;
+            }
+            const failure =
+              loadFailure.current !== failuresBefore ? loadFailure.current : null;
+            rememberedMiss.current = rememberedMissNote(
+              failureLabelFor(candidate),
+              failure?.detail ?? null,
+            );
+          };
           try {
-            if (await loadAutoLoadCandidate(candidate)) {
+            if (
+              await loadAutoLoadCandidate(
+                candidate,
+                isRememberedCandidate ? null : rememberedMiss.current,
+              )
+            ) {
               return { loaded: true, blockedByTrustRemoteCode: false };
             }
+            noteRememberedMiss();
           } catch {
             options?.abortSignal?.throwIfAborted();
+            noteRememberedMiss();
             hadNonTrustFailure = true;
             // loadAutoLoadCandidate does not record rejections; mark here or the same quant loops forever.
             skippedAutoLoadCandidates.add(
@@ -4363,16 +4440,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           activeModelIsLocal: loadResp.is_local_model ?? false,
           ...resolveLoadedSpeculativeSettings(loadResp),
         });
-        recordLastLocalModelLoad({
-          id: DEFAULT_CHAT_MODEL_REPO,
-          kind: "gguf",
-          ggufVariant: DEFAULT_CHAT_MODEL_VARIANT,
-        });
+        if (rememberedMiss.current === null) {
+          recordLastLocalModelLoad({
+            id: DEFAULT_CHAT_MODEL_REPO,
+            kind: "gguf",
+            ggufVariant: DEFAULT_CHAT_MODEL_VARIANT,
+          });
+        }
         showAutoLoadSuccess(
           `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
           loadResp.cpu_fallback_reason,
           loadResp.mmproj_fallback_reason,
           offloadCountsFrom(loadResp),
+          rememberedMiss.current,
         );
       });
       return { loaded: true, blockedByTrustRemoteCode: false };
@@ -4429,8 +4509,9 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
         };
       }
       const status = settled.status;
-      // A speech model is not one chat can queue against, so read the slot as empty.
-      const checkpoint = isSpeechOnlyStatus(status)
+      // A speech or Translate-held model is not one chat can queue against, so read the slot as empty.
+      const checkpoint =
+        isSpeechOnlyStatus(status) || isTranslationHeldSlot(status.active_model, null)
         ? null
         : resolveInferenceCheckpointId(status);
       if (checkpoint) {
@@ -5720,8 +5801,11 @@ export function createOpenAIStreamAdapter(
       // Both this stream and recovery followers persist it, or reload blocks the composer again.
       let generationStalled = false;
       let parseThink = true;
-      const generationCustom = () =>
-        generationRunId
+      // Recovery and Continue mark tags as this stream does only if they know reasoning arrived split out.
+      let reasoningContentSeen = false;
+      const generationCustom = () => ({
+        ...(reasoningContentSeen ? { splitReasoningSeen: true } : {}),
+        ...(generationRunId
           ? {
               generationRunId,
               generationSeq,
@@ -5737,7 +5821,8 @@ export function createOpenAIStreamAdapter(
               serverManaged: true,
               parseThinkTags: parseThink,
             }
-          : {};
+          : {}),
+      });
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
@@ -5836,7 +5921,11 @@ export function createOpenAIStreamAdapter(
         owner: serverCancel,
       });
       const continuationPartial = continuation
-        ? continuationSeed(continuation.partial, resumedThought)
+        ? continuationSeed(
+            continuation.partial,
+            resumedThought,
+            continuation.splitReasoningSeen === true,
+          )
         : "";
       const geminiContinuationReplayTurns =
         continuation?.geminiReplayTurns?.length
@@ -5988,6 +6077,8 @@ export function createOpenAIStreamAdapter(
       }
       // Keep the <think> block open across reasoning deltas; answer content closes it.
       let reasoningContentOpen = resumesInsideThought;
+      reasoningContentSeen =
+        resumesInsideThought || continuation?.splitReasoningSeen === true;
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -6774,6 +6865,12 @@ export function createOpenAIStreamAdapter(
                 }
               }
             }
+            const externalMaxTokens = externalRequestMaxTokens(
+              externalProvider?.providerType,
+              externalSelection?.modelId,
+              externalProvider?.maxOutputTokens,
+              params.maxTokens,
+            );
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
@@ -6792,18 +6889,9 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.topP !== false && params.topP < 1
                 ? { top_p: params.topP }
                 : {}),
-              // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
-              max_tokens: Math.min(
-                Math.max(
-                  params.maxTokens,
-                  getExternalMinOutputTokens(externalProvider?.providerType),
-                ),
-                getExternalMaxOutputTokens(
-                  externalProvider?.providerType,
-                  externalSelection?.modelId,
-                  externalProvider?.maxOutputTokens,
-                ),
-              ),
+              ...(externalMaxTokens == null
+                ? {}
+                : { max_tokens: externalMaxTokens }),
 
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.minP
@@ -8637,17 +8725,22 @@ export function createOpenAIStreamAdapter(
               if (reasoning) {
                 if (!reasoningContentOpen) {
                   reasoningDurationTracker.startGroup();
-                  appendCumulative(`<think>${reasoning}`);
+                  appendCumulative(`<think>${markLiteralThinkTags(reasoning)}`);
                   reasoningContentOpen = true;
+                  reasoningContentSeen = true;
                 } else {
-                  appendCumulative(reasoning);
+                  appendCumulative(markLiteralThinkTags(reasoning));
                 }
               }
               if (delta) {
                 if (reasoningContentOpen) {
                   closeReasoningContent();
                 }
-                appendCumulative(delta);
+                if (reasoningContentSeen && typeof rawDelta === "string") {
+                  appendCumulative(markLiteralThinkTags(delta));
+                } else {
+                  appendCumulative(delta);
+                }
               }
               streamedChars += reasoning.length + delta.length;
               producedReplyText = true;

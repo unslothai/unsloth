@@ -1218,3 +1218,22 @@ def test_a_plain_row_is_written_without_the_per_value_walk(monkeypatch):
 
     assert _json_dumps_row(row) == json.dumps(row, ensure_ascii = False)
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("range_header", "status"), [("bytes=garbage", 400), ("bytes=999999-", 416)]
+)
+def test_rejected_download_ranges_leave_no_generated_file(
+    monkeypatch, tmp_path, range_header, status
+):
+    from fastapi.testclient import TestClient
+    from routes.data_recipe import jobs
+
+    app, token = _download_app(monkeypatch, tmp_path, jobs)
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/data-recipe/jobs/job-1/download",
+            headers = {"Authorization": f"Bearer {token}", "Range": range_header},
+        )
+    assert response.status_code == status
+    assert not (tmp_path / "out.jsonl").exists()

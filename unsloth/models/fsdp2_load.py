@@ -125,7 +125,7 @@ def _materialize(model, name, kwargs, mesh, plan, device):
         else:
             rows = old.shape[0]
             start, stop = _chunk_rows(rows, world, rank)
-            local = reader.rows(key, start, stop).to(device = device, dtype = old.dtype)
+            local = reader.rows_to(key, start, stop, old.dtype, device)
             new = nn.Parameter(local.contiguous(), requires_grad = old.requires_grad)
             shape, packed = tuple(old.shape), False
         setattr(
@@ -288,6 +288,10 @@ def sharded_load_env(loader):
     def wrapper(*args, **kwargs):
         if _ACTIVE[0]:
             return loader(*args, **kwargs)
+        if os.environ.get("UNSLOTH_PARALLEL", "").strip().lower() == "auto":
+            # Before anything below (or inside the load) reads UNSLOTH_FSDP2: DDP or FSDP2 by size.
+            from ..parallel_auto import resolve_for_load
+            resolve_for_load(loader, args, kwargs)
         if fsdp2_sharded_load_requested():
             with fsdp2_sharded_loading():
                 return loader(*args, **kwargs)
@@ -448,21 +452,48 @@ def _as_storage(local, info, dtype):
     return local.contiguous().reshape(-1).view(torch.uint8).view(dtype).reshape(-1, 1)
 
 
-def _full_from_chunks(local, info, mesh, dtype):
-    """All-gather the dim-0 chunks back into the full tensor (exactly the checkpoint's)."""
+# Rows per all-gather slice of a replicated chunk: about this many bytes per rank.
+_GATHER_SLICE_BYTES = 64 << 20
+
+
+def _full_from_chunks(
+    local,
+    info,
+    mesh,
+    dtype,
+    device = None,
+):
+    """All-gather dim-0 chunks into one full tensor on `device`, slice by slice (a whole-chunk gather held 5x
+    the chunk and OOMed a T4)."""
     import torch.distributed as dist
 
     if info.get("packed"):
         raw = local.contiguous().reshape(-1).view(torch.uint8).reshape(-1, 1)
-        full = _full_from_chunks(raw, dict(info, packed = False), mesh, torch.uint8)
+        full = _full_from_chunks(raw, dict(info, packed = False), mesh, torch.uint8, device)
         return _as_storage(full, info, dtype)
     rows, world = info["shape"][0], info["world"]
     size = math.ceil(rows / world)
-    padded = local.new_zeros((size,) + tuple(info["shape"][1:]))
-    padded[: local.shape[0]].copy_(local)
-    pieces = [torch.empty_like(padded) for _ in range(world)]
-    dist.all_gather(pieces, padded.contiguous(), group = mesh.get_group())
-    return torch.cat(pieces, 0)[:rows].to(dtype).contiguous()
+    tail = tuple(info["shape"][1:])
+    row_bytes = max(1, math.prod(tail) * local.element_size())
+    step = max(1, min(size, _GATHER_SLICE_BYTES // row_bytes)) if size else 1
+    full = torch.empty(
+        (rows,) + tail, dtype = local.dtype, device = local.device if device is None else device
+    )
+    group = mesh.get_group()
+    for start in range(0, size, step):
+        n = min(step, size - start)
+        piece = local.new_zeros((n,) + tail)
+        have = max(0, min(n, local.shape[0] - start))
+        if have:
+            piece[:have].copy_(local[start : start + have])
+        pieces = [torch.empty_like(piece) for _ in range(world)]
+        dist.all_gather(pieces, piece, group = group)
+        for r, got in enumerate(pieces):
+            first = r * size + start
+            keep = min(n, rows - first)
+            if keep > 0:
+                full[first : first + keep].copy_(got[:keep])
+    return full if full.dtype == dtype else full.to(dtype)
 
 
 def gather_replicated(
@@ -471,10 +502,9 @@ def gather_replicated(
     replicated,
     mesh,
     also = (),
+    device = None,
 ):
-    """Chunks whose parameter stays replicated (outside FSDP2) are gathered whole, and swapped in
-    `replicated` and the sets in `also`. Collective over `mesh`; every rank reaches it with the same set
-    (the layout and dtype decisions are agreed)."""
+    """Gather replicated (non-FSDP2) chunks whole onto `device`. Collective: every rank passes the same set."""
     if not pending:
         return 0
     keep = {id(p) for p in replicated}
@@ -487,7 +517,7 @@ def gather_replicated(
             local, info = pending.pop(key)
             if id(p) not in done:
                 with torch.no_grad():
-                    full = _full_from_chunks(local, info, mesh, p.dtype)
+                    full = _full_from_chunks(local, info, mesh, p.dtype, device)
                 if info.get("packed"):
                     new = torch.Tensor._make_subclass(type(p), full, p.requires_grad)
                 else:

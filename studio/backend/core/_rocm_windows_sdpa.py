@@ -55,19 +55,35 @@ def _wide_cuda_head(query: Any) -> bool:
     )
 
 
+_ORIGINALS: dict = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
+
+
+def _math_only(token: str, query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+    """allow_in_graph (as unsloth.import_fixes does): Dynamo cannot enter the lock, and the restore must use the
+    run-time backends, not the trace-time ones."""
+    _math_on()
+    try:
+        return _ORIGINALS[token](query, key, value, *args, **kwargs)
+    finally:
+        _math_off()
+
+
 def guard_sdpa(sdpa: Any) -> Any:
     """``sdpa`` with every call whose head is wider than 256 pinned to the math backend."""
     if getattr(sdpa, _GUARD_ATTR, False):
         return sdpa
+    try:
+        import torch._dynamo
+        torch._dynamo.allow_in_graph(_math_only)
+    except Exception:  # noqa: BLE001 -- eager calls still take the math backend
+        pass
+    token = f"sdpa_{len(_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
+    _ORIGINALS[token] = sdpa
 
     @functools.wraps(sdpa)
     def guarded(query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
         if _wide_cuda_head(query):
-            _math_on()
-            try:
-                return sdpa(query, key, value, *args, **kwargs)
-            finally:
-                _math_off()
+            return _math_only(token, query, key, value, *args, **kwargs)
         return sdpa(query, key, value, *args, **kwargs)
 
     setattr(guarded, _GUARD_ATTR, True)

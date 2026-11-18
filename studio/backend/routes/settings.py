@@ -2703,22 +2703,26 @@ def update_openai_auto_switch(
 class ModelAliasEntry(BaseModel):
     name: str
     model: str
+    load_settings: Optional[dict[str, Any]] = None
 
 
 class ModelAliasesPayload(BaseModel):
     aliases: list[ModelAliasEntry] = Field(default_factory = list)
+    revision: Optional[str] = None
 
 
 class ModelAliasesResponse(BaseModel):
     aliases: list[ModelAliasEntry]
+    revision: str
 
 
 @_owner_settings_router.get("/model-aliases", response_model = ModelAliasesResponse)
 def get_model_aliases_setting(
     current_subject: str = Depends(get_current_subject),
 ) -> ModelAliasesResponse:
-    from utils.model_aliases import get_model_aliases
-    return ModelAliasesResponse(aliases = get_model_aliases())
+    from utils.model_aliases import get_model_aliases, model_aliases_revision
+    aliases = get_model_aliases()
+    return ModelAliasesResponse(aliases = aliases, revision = model_aliases_revision(aliases))
 
 
 @_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
@@ -2727,7 +2731,7 @@ async def update_model_aliases_setting(
 ) -> ModelAliasesResponse:
     from core.systemone import catalog as decision_catalog
     from routes.inference import _openai_catalog_objects
-    from utils.model_aliases import set_model_aliases
+    from utils.model_aliases import AliasConflict, model_aliases_revision, set_model_aliases
 
     # Decision ids (clef, laya-multilingual) are reserved even while that API is off.
     objects = await _openai_catalog_objects()
@@ -2735,8 +2739,13 @@ async def update_model_aliases_setting(
     model_ids += list(decision_catalog.CHECKPOINTS)
     try:
         aliases = await asyncio.to_thread(
-            set_model_aliases, [entry.model_dump() for entry in payload.aliases], model_ids
+            set_model_aliases,
+            [entry.model_dump(exclude_unset = True) for entry in payload.aliases],
+            model_ids,
+            payload.revision,
         )
+    except AliasConflict as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -2745,7 +2754,7 @@ async def update_model_aliases_setting(
             event = "settings.update_model_aliases_failed",
             log = logger,
         ) from exc
-    return ModelAliasesResponse(aliases = aliases)
+    return ModelAliasesResponse(aliases = aliases, revision = model_aliases_revision(aliases))
 
 
 @_account_settings_router.get(
@@ -5079,6 +5088,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "export": False,
     "api": False,
     "tasks": False,
+    "translate": False,
 }
 
 MAX_SIDEBAR_NAV_INPUT_ITEMS = 4 * len(SIDEBAR_NAV_ITEM_DEFAULTS)
@@ -5122,6 +5132,7 @@ SidebarNavItemId = Literal[
     "export",
     "api",
     "tasks",
+    "translate",
 ]
 
 
@@ -6312,6 +6323,69 @@ async def start_sandbox_setup(
         job.id,
     )
     return _sandbox_setup_response(job)
+
+
+class LearnedMemoryPatch(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+    enabled: Optional[StrictBool] = None
+    thread_enabled: Optional[StrictBool] = None
+    key: Optional[str] = None
+    value: Optional[str] = None
+    revision: Optional[StrictInt] = None
+    clear: StrictBool = False
+
+
+@_account_settings_router.get("/learned-memory")
+def get_learned_memory(
+    project_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core import chat_memory
+    from storage import studio_db
+    return {
+        **chat_memory.read(project_id),
+        "enabled": chat_memory.enabled(),
+        "thread_enabled": not studio_db.get_app_setting("memory_disabled:" + thread_id, False)
+        if thread_id
+        else True,
+    }
+
+
+@_account_settings_router.put("/learned-memory")
+def put_learned_memory(
+    payload: LearnedMemoryPatch,
+    project_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+):
+    from core import chat_memory
+    from storage import studio_db
+
+    try:
+        if payload.key is not None or payload.clear:
+            if payload.revision is None:
+                raise ValueError("Read memory before editing it.")
+            if payload.clear:
+                chat_memory.clear(project_id, payload.revision)
+            else:
+                if "value" not in payload.model_fields_set:
+                    raise ValueError("Provide a fact, or null to forget it.")
+                chat_memory.update(project_id, payload.key, payload.value, payload.revision)
+        if payload.enabled is not None:
+            studio_db.upsert_app_settings(
+                {"learned_memory_enabled": payload.enabled}, read_back = False
+            )
+        if payload.thread_enabled is not None:
+            if not thread_id or not studio_db.get_chat_thread(thread_id):
+                raise ValueError("A saved chat is required.")
+            studio_db.upsert_app_settings(
+                {"memory_disabled:" + thread_id: not payload.thread_enabled}, read_back = False
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return get_learned_memory(project_id, thread_id, current_subject)
 
 
 router.include_router(_account_settings_router)

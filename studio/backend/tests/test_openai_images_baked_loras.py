@@ -42,6 +42,8 @@ class _BakedBackend(_FakeBackend):
         self,
         *,
         loras = None,
+        # The diffusers engine takes the adapter pin; the strict base fake does not.
+        expected_load_loras = None,
         **kwargs,
     ):
         self.loras_seen.append(loras)

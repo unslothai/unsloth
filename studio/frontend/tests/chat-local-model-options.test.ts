@@ -156,3 +156,14 @@ test("a GGUF directory without gguf in its name is still offered as GGUF", () =>
   assert.equal(dir?.isDirectGguf, undefined);
   assert.equal(plain?.isGguf, undefined);
 });
+
+test("a folder listed once per weights format sizes its row from the entry it keeps", () => {
+  const [option] = chatLocalModelOptions([
+    // biome-ignore lint/style/useNamingConvention: API schema
+    row({ model_format: "gguf", size_bytes: 9e9 }),
+    // biome-ignore lint/style/useNamingConvention: API schema
+    row({ model_format: "safetensors", size_bytes: 16e9 }),
+  ]);
+  assert.equal(option.isGguf, true);
+  assert.equal(option.sizeBytes, 9e9);
+});

@@ -62,11 +62,9 @@ def replica_active(model):
 
 
 def _device(root):
-    for param in root.parameters():
-        if tpn._is_dtensor(param):
-            return param.to_local().device
-        return param.device
-    return torch.device("cpu")
+    # Not a host-served input embedding (tp_native._serve_embedding_from_host): it is often the first
+    # parameter, and its CPU device would send NCCL collectives CPU tensors.
+    return tpn._compute_device(root, torch.device("cpu"))
 
 
 def _gib(n):
@@ -420,6 +418,9 @@ def _switch_to_one_gpu(root, replica):
                 replica.set(p, "_unsloth_tp_local", tpn._MISSING)
     for block in plan.moe_blocks if plan is not None else ():
         replica.set(block, "_unsloth_tp_gathered", True)  # replicated MoE: no tp average
+        shard = block.__dict__.get("_unsloth_tp_expert_shard")
+        for module, key, value in shard.full_attrs if shard is not None else ():
+            replica.set(module, key, value)  # sharded experts: the whole expert count is back
     for level in tpn._tp_chain(root):
         forward = level.__dict__.get("forward")
         original = getattr(forward, "__wrapped__", None)
