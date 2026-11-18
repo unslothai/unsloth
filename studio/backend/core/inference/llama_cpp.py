@@ -7,6 +7,7 @@ Manages a llama-server subprocess and proxies chat completions through its
 OpenAI-compatible /v1/chat/completions endpoint.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import ast
 import atexit
 import bisect
@@ -38717,7 +38718,7 @@ class LlamaCppBackend:
         # False when the caller knows the history held reasoning its conversion dropped.
         replay_preserve_thinking: bool = True,
         continue_final_message: bool = False,
-        max_tool_iterations: int = 25,
+        max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
@@ -39272,6 +39273,9 @@ class LlamaCppBackend:
         iteration = -1
         # Cap is across the whole conversation, seeded with already promoted images.
         loop_mcp_image_parts: list = list(replayed_image_parts)
+        _compacts_images = bool(
+            context_overflow == "truncate_oldest" and self._effective_context_length
+        )
         while True:
             iteration += 1
             while _model_note_events:
@@ -41911,6 +41915,9 @@ class LlamaCppBackend:
                         lead = MCP_DETACHED_IMAGE_TURN_TEXT
                         if _batch_results != 1
                         else MCP_IMAGE_TURN_TEXT,
+                        # A compacting chat keeps every picture and lets the fit make room, so
+                        # the prompt stays append-only and the prefix cache warm (#18231).
+                        limit = None if _compacts_images else MCP_MAX_TOTAL_MODEL_IMAGES,
                     )
 
                 # Close provisional cards not resolved by execution/no-op handling.

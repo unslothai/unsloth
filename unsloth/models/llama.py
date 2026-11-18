@@ -5831,6 +5831,10 @@ class FastLlamaModel:
             )
         _tensor_parallel_for_inference(model)
         restore_fp8_lora_for_inference(model)
+        # Training's NF4 dequant cache (kernels/dequant_cache.py) would hold memory generation may need.
+        from ..kernels.dequant_cache import clear_dequant_cache
+
+        clear_dequant_cache()
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
