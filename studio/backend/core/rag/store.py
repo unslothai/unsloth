@@ -894,7 +894,12 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
                     fetches[s] = min(fetch * 4, cap)
                     widen.append(s)
                 else:
-                    kept[s] = _search_compatible_dense(conn, s, query, embedding_model, untagged)
+                    # Merge, not replace: an ANN pass can hold more hits than vec0's fallback cap.
+                    merged = dict(kept[s])
+                    merged.update(
+                        _search_compatible_dense(conn, s, query, embedding_model, untagged)
+                    )
+                    kept[s] = list(merged.items())
         pending = widen
     out = [hit for s in scopes for hit in kept[s]]
     out.sort(key = lambda t: t[1], reverse = True)

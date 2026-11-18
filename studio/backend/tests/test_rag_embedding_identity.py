@@ -357,6 +357,25 @@ def test_stale_chunks_cannot_exhaust_the_dense_candidate_limit(rag_conn, monkeyp
     assert [cid for cid, _ in hits] == ["new:0", "legacy:0", "unknown:0"]
 
 
+def test_the_compatible_rescan_keeps_ann_hits_past_its_own_cap(rag_conn, monkeypatch):
+    pytest.importorskip("usearch")
+    monkeypatch.setenv("RAG_VEC_CACHE", "1")
+    monkeypatch.setenv("RAG_VEC_ANN", "1")
+    monkeypatch.setenv("RAG_VEC_ANN_MIN_ROWS", "50")
+    monkeypatch.setattr(vec_cache, "_ANN_MAX_FETCH", 32)
+    monkeypatch.setattr(store, "_MAX_DENSE_FETCH", 2)
+    stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
+    current = config.embedding_identity("sentence-transformers", MODEL)
+    _put(rag_conn, "kb_ann", "new", ["alpha"] * 6, current)
+    _put(rag_conn, "kb_ann", "old", ["alpha bravo"] * 58, stale)
+    query = _vector("alpha")
+    store.search_dense(rag_conn, "kb_ann", query, 8)
+    assert vec_cache.drain()
+    assert vec_cache._ann
+    hits = store.search_dense(rag_conn, "kb_ann", query, 8, embedding_model = current)
+    assert sorted(cid for cid, _ in hits) == [f"new:{i}" for i in range(6)]
+
+
 def test_a_scope_the_exact_cache_covers_skips_the_compatible_rescan(rag_conn, monkeypatch):
     monkeypatch.setenv("RAG_VEC_CACHE", "1")
     monkeypatch.setenv("RAG_VEC_ANN", "0")
