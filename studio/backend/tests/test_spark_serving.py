@@ -1586,8 +1586,8 @@ def test_the_layer_boundary_is_explicit_and_the_rows_table_is_consistent():
     sc = _load_spark_cluster()
     extra = ss.layer_split_extra_args("192.168.200.13", 50052)
     assert "--tensor-split" in extra, "the split must not inherit llama.cpp's free-memory boundary"
-    assert extra[extra.index("--tensor-split") + 1] == rs.SPLIT_TENSOR_SPLIT_EVEN
-    assert rs.SPLIT_TENSOR_SPLIT_EVEN == sc.SPLIT_TENSOR_SPLIT_EVEN, "mirror drifted"
+    assert extra[extra.index("--tensor-split") + 1] == ss.SPLIT_TENSOR_SPLIT_EVEN
+    assert ss.SPLIT_TENSOR_SPLIT_EVEN == sc.SPLIT_TENSOR_SPLIT_EVEN, "mirror drifted"
     assert extra.index("--device") < extra.index("--tensor-split")
     assert extra[extra.index("--device") + 1] == "RPC0,CUDA0"
 
