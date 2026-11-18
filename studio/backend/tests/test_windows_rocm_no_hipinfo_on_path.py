@@ -79,9 +79,29 @@ def test_unsloth_fallback_skips_venv_hipinfo(tmp_path, monkeypatch):
         (d / "hipInfo.exe").write_bytes(b"")
     monkeypatch.setattr(sys, "executable", str(scripts / "python.exe"))
     monkeypatch.setattr(sysconfig, "get_path", lambda name: str(scripts))
-    monkeypatch.setattr(shutil, "which", lambda name: str(scripts / "hipInfo.exe"))
+    monkeypatch.setenv("PATH", str(scripts))
     monkeypatch.setenv("HIP_PATH", str(sdk))
     monkeypatch.delenv("ROCM_PATH", raising = False)
     monkeypatch.setenv("ProgramFiles", str(tmp_path / "nope"))
 
     assert list(_load_iter_hipinfo_paths()()) == [str(sdk / "bin" / "hipInfo.exe")]
+
+
+def test_unsloth_fallback_keeps_searching_path_past_the_venv(tmp_path, monkeypatch):
+    import os, sys, sysconfig
+
+    scripts = tmp_path / "venv" / "Scripts"
+    custom = tmp_path / "custom-hip" / "bin"
+    for d in (scripts, custom):
+        d.mkdir(parents = True)
+        exe = d / "hipinfo.exe"
+        exe.write_bytes(b"")
+        exe.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(scripts / "python.exe"))
+    monkeypatch.setattr(sysconfig, "get_path", lambda name: str(scripts))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(scripts), str(custom)]))
+    monkeypatch.delenv("HIP_PATH", raising = False)
+    monkeypatch.delenv("ROCM_PATH", raising = False)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "nope"))
+
+    assert list(_load_iter_hipinfo_paths()()) == [str(custom / "hipinfo.exe")]

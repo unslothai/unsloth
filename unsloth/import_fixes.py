@@ -10810,12 +10810,14 @@ def _iter_hipinfo_paths():
         pass
     candidates = []
     try:
-        resolved = shutil.which("hipinfo.exe")
-        if (
-            resolved
-            and os.path.normcase(os.path.dirname(os.path.normpath(resolved))) not in skip_dirs
-        ):
-            candidates.append(resolved)
+        # The first PATH hit outside the skipped dirs, not just which()'s first hit.
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if entry and os.path.normcase(os.path.normpath(entry)) not in skip_dirs:
+                resolved = shutil.which("hipinfo.exe", path = entry)
+                if resolved:
+                    candidates.append(resolved)
+                    break
     except Exception:
         pass
     for env_key in ("HIP_PATH", "ROCM_PATH"):
