@@ -229,7 +229,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     )
 
     assert_ltx_pick_supported(family, base_model)
-    # model_family="ltx-2" must not train a local LTX-2.5 pipeline (nor "ltx-2.5" an LTX-2 one).
+    # "ltx-2" must not train a local LTX-2.5 pipeline, nor vice versa.
     assert_local_pipeline_family(base_model, family)
     return family
 
@@ -298,7 +298,7 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
         from core.inference.video_families import local_cosmos3_pipeline_family
         from core.inference.video_families import local_ltx_pipeline_family
 
-        # A local LTX folder whose name carries no version: its model_index.json says 2.0-2.3 or 2.5.
+        # Unversioned local LTX folder: model_index.json tells 2.x from 2.5.
         local_family = local_cosmos3_pipeline_family(base_model) or local_ltx_pipeline_family(
             base_model
         )
@@ -471,7 +471,6 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
-    # LTX-2's starting point: the same DiT layout, VAE and LoRA targets.
     "ltx-2.5": {
         "lora_rank": 32,
         "learning_rate": 1e-4,
@@ -559,8 +558,7 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
-    # Measured on an A100-80 (nf4, 512px, rank 32): whole-card peak 22.9 GB, during the caption pass (the int8 Gemma 4
-    # worker); it exits before the 22B dev DiT loads, and the loop peaks at 11.7 GB.
+    # A100-80 nf4 512px r32: peak 22.9 GB in the caption pass (int8 Gemma 4 worker); loop 11.7 GB.
     "ltx-2.5": {
         "params": "22B",
         "qlora_vram_gb": 24,
@@ -2009,7 +2007,7 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
 
 # LTX-2.3 repos are single-file checkpoints the trainer cannot load; refuse before eviction.
 _LTX23_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.3", "lightricks/ltx-2.3-fp8")
-# LTX-2.5's split single-file release: the Diffusers pack holds the same weights in the layout training loads.
+# Split single-file release: train from the Diffusers pack instead.
 _LTX25_SINGLE_FILE_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.5",)
 
 

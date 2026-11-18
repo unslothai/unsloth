@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 LoRA training, CPU only: routing, the encoder-worker caption pass, the dev DiT base, the dev scheduler,
-and a tiny end-to-end run whose adapter the Video page's bake reads back."""
+"""LTX-2.5 LoRA training, CPU only: routing, encoder-worker captions, dev DiT base and scheduler, tiny end-to-end."""
 
 from __future__ import annotations
 
@@ -135,16 +134,12 @@ def _index(folder: Path, encoder_class: str, *extra: str) -> Path:
     return folder
 
 
-# ── registration and routing ────────────────────────────────────────────────
-
-
 def test_ltx25_is_a_trainable_video_family_on_the_dit_trainer():
     assert FAMILY in TRAINABLE_VIDEO_FAMILIES
     assert FAMILY in _DIT_TRAIN_FAMILIES and FAMILY in _FORCE_BF16_FAMILIES
     assert FAMILY in AUTO_FLOW_SHIFT_FAMILIES
     assert get_trainer(FAMILY) is dit.run_dit_lora_training
     spec = _SPECS[FAMILY]
-    # Same DiT layout as LTX-2.3: video self / text cross attention only, never the audio stream.
     assert spec.lora_targets == _LTX2_TARGETS
     assert spec.force_bf16 is True
     assert 40.0 <= spec.dense_bf16_gb <= 44.0
@@ -169,7 +164,6 @@ def test_a_local_pack_routes_by_its_model_index(tmp_path):
     assert resolve_trainable_family(str(v25)) == FAMILY
     assert resolve_trainable_family(str(v25), FAMILY) == FAMILY
     assert resolve_trainable_family(str(v2)) == "ltx-2"
-    # One family never trains the other's weights.
     with pytest.raises(ValueError, match = "loads as the 'ltx-2.5' family, not 'ltx-2'"):
         resolve_trainable_family(str(v25), "ltx-2")
     with pytest.raises(ValueError, match = "loads as the 'ltx-2' family, not 'ltx-2.5'"):
@@ -210,12 +204,8 @@ def test_family_train_infos_offers_ltx25(dit_train_host):
     assert "nf4" in info["precision_modes"]
 
 
-# ── conditioning: staged files, the encoder worker, its release ─────────────
-
-
 def test_conditioning_stages_one_copy_of_the_small_components_only():
     files = ltx25_conditioning_files(PACK_LISTING)
-    # The Hub listing arrives as a generator: read once, model_index.json must still be staged.
     assert ltx25_conditioning_files(iter(PACK_LISTING)) == files
     assert "model_index.json" in files
     assert {f.split("/", 1)[0] for f in files if "/" in f} == {
@@ -228,7 +218,6 @@ def test_conditioning_stages_one_copy_of_the_small_components_only():
     # The connectors' indexed shard set, not also the 6.3 GB unsharded duplicate.
     assert "connectors/diffusion_pytorch_model.safetensors" not in files
     assert "connectors/diffusion_pytorch_model.safetensors.index.json" in files
-    # Never the encoder (the worker reads it), the enhancer, either DiT or the root-level LoRA.
     for name in files:
         assert not name.startswith(
             ("text_encoder/", "tokenizer/", "prompt_enhancer/", "transformer")
@@ -305,7 +294,6 @@ def test_captions_encode_through_the_worker_and_the_worker_stops(monkeypatch, tm
     pipe, vae = _SPECS[FAMILY].load_conditioners(cfg, "cpu", torch.float32)
     ((source, kwargs),) = _FakePipe.calls
     assert source == cfg.base_model
-    # No in-process encoder or DiT: the encoder needs the transformers 5.10 sidecar, the DiT loads later.
     for name in (
         "transformer",
         "text_encoder",
@@ -321,7 +309,6 @@ def test_captions_encode_through_the_worker_and_the_worker_stops(monkeypatch, tm
     out = _SPECS[FAMILY].encode_prompts(pipe, ["a sloth", ""], "cpu")
     assert client.prompts == ["a sloth", ""]
     video, audio, mask = out[0]
-    # The connector output of the worker's hidden states, per caption, on the host.
     assert video.shape == (1, 6, 12) and audio.shape == (1, 6, 12) and mask.shape == (1, 6)
     assert video.device.type == "cpu"
 
@@ -341,7 +328,6 @@ def test_the_worker_encodes_like_the_video_page(monkeypatch):
     cfg = types.SimpleNamespace(base_model = PACK, hf_token = "tok")
     monkeypatch.setattr(dit, "_current_index", lambda device: 3)
     assert dit._ltx25_start_encoder(cfg, "cuda") == "client"
-    # The Video page's default: the hosted int8 ConvRot encoder for the official pack, resident on the training card.
     assert seen["te_quant"] == "int8" and seen["resident"] is True and seen["device"] == "cuda:3"
     assert seen["repo"] == PACK and seen["base_repo"] == PACK and seen["hf_token"] == "tok"
 
@@ -350,13 +336,9 @@ def test_the_worker_encodes_like_the_video_page(monkeypatch):
     assert seen["te_quant"] is None and seen["resident"] is False and seen["device"] == "cpu"
 
 
-# ── the DiT the LoRA trains against, and its sigmas ─────────────────────────
-
-
 def test_the_dev_dit_is_the_default_base(monkeypatch, tmp_path):
     monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV, raising = False)
     real = dit._ltx25_has_dev_dit
-    # Hub ids without the network; local packs through the real check.
     monkeypatch.setattr(
         dit,
         "_ltx25_has_dev_dit",
@@ -370,7 +352,6 @@ def test_the_dev_dit_is_the_default_base(monkeypatch, tmp_path):
     assert (
         dit._ltx25_dit_subfolder(types.SimpleNamespace(base_model = str(full))) == "transformer_full"
     )
-    # A local pack without the dev DiT trains the distilled one it ships.
     bare = _index(tmp_path / "bare", "Gemma4UnifiedForConditionalGeneration")
     assert dit._ltx25_dit_subfolder(types.SimpleNamespace(base_model = str(bare))) == "transformer"
     monkeypatch.setenv(dit.LTX25_TRAIN_DIT_ENV, "distilled")
@@ -378,8 +359,7 @@ def test_the_dev_dit_is_the_default_base(monkeypatch, tmp_path):
 
 
 def test_the_mirror_fetch_takes_the_dev_dit_from_the_upstream_pack(monkeypatch):
-    """The mirror ships only the distilled DiT, so the dev DiT comes from the upstream pack the token can read; with
-    no readable dev DiT anywhere the run trains the mirror's distilled DiT."""
+    """Mirror ships only distilled: dev comes from a readable upstream pack, else distilled."""
     monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV, raising = False)
     asked = []
     monkeypatch.setattr(
@@ -388,7 +368,6 @@ def test_the_mirror_fetch_takes_the_dev_dit_from_the_upstream_pack(monkeypatch):
     cfg = types.SimpleNamespace(base_model = MIRROR, hf_token = "tok")
     assert dit._ltx25_dit_source(cfg) == (PACK, "transformer_full")
     assert asked == [(MIRROR, "tok"), (PACK, "tok")]
-    # Resolved once per run: the scheduler and the DiT load ask the same question.
     dit._ltx25_dit_source(cfg)
     assert len(asked) == 2
 
@@ -449,15 +428,12 @@ def test_the_dev_scheduler_trains_on_ltx2s_sigma_table(monkeypatch, tmp_path):
     ltx2 = FlowMatchEulerDiscreteScheduler.from_config(LTX2_SCHEDULER)
     got, want = _training_sigma_table(dev, "auto"), _training_sigma_table(ltx2, "auto")
     assert torch.equal(got, want)
-    # Shifted toward noise like LTX-2, not the distilled config's identity table.
     assert not torch.equal(got, dev.sigmas)
 
     monkeypatch.setenv(dit.LTX25_TRAIN_DIT_ENV, "distilled")
     distilled = dit._ltx25_training_scheduler(cfg)
     assert distilled.config.use_dynamic_shifting is False
 
-
-# ── tiny end-to-end: train, publish, bake on the video load path ────────────
 
 _TINY_DIT = {
     "activation_fn": "gelu-approximate",
@@ -562,8 +538,7 @@ _TINY_CONNECTORS = {
 
 @pytest.fixture
 def tiny_pack(tmp_path):
-    """A tiny LTX-2.5 Diffusers pack: random dev and distilled DiTs, VAE, connectors, the pack's scheduler. Audio VAE,
-    vocoder and encoder are listed but absent (the trainer passes the encoder as None; the audio parts are stubbed)."""
+    """Tiny LTX-2.5 pack; audio VAE, vocoder and encoder are listed but absent."""
     diffusers = pytest.importorskip("diffusers")
     from diffusers import AutoencoderKLLTX2Video, LTX2VideoTransformer3DModel
     from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
@@ -581,8 +556,6 @@ def tiny_pack(tmp_path):
 
 
 class _TinyCondPipe:
-    """The parts of LTX2Pipeline the conditioning pass reads, loaded from the tiny pack like from_pretrained would."""
-
     calls: list = []
 
     @staticmethod
@@ -606,7 +579,6 @@ class _TinyCondPipe:
 
 @pytest.fixture
 def tiny_trainer(tiny_pack, tmp_path, monkeypatch):
-    """run(**cfg) trains on the tiny pack through run_dit_lora_training; every run gets a fresh fake worker client."""
     from PIL import Image
 
     monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV, raising = False)
@@ -619,12 +591,10 @@ def tiny_trainer(tiny_pack, tmp_path, monkeypatch):
     catalog.mkdir()
     monkeypatch.setattr("core.inference.diffusion_lora.loras_dir", lambda: catalog)
     monkeypatch.setattr(dit, "_resolve_base_precision", lambda cfg, spec, device: "bf16")
-    # The tiny pack lists components it does not ship (encoder, audio parts).
     monkeypatch.setattr(dit, "_assert_trusted_base_model", lambda *a, **k: None)
     monkeypatch.setitem(sys.modules, "unsloth_zoo", None)
     _TinyCondPipe.calls = []
     monkeypatch.setattr(dit, "_ltx2_pipeline_cls", lambda: _TinyCondPipe)
-    # Real diffusers pack / unpack helpers (static methods on the pipeline).
     from diffusers import LTX2Pipeline
 
     monkeypatch.setattr(
@@ -721,7 +691,6 @@ def test_tiny_end_to_end_trains_the_dev_dit_and_bakes_on_the_distilled_one(tiny_
 
 
 def test_a_warm_caption_cache_never_starts_the_encoder_worker(tiny_trainer, tmp_path):
-    """Studio's conditioning cache serves the second run's captions and latents, so no Gemma 4 worker is spawned."""
     cache = tmp_path / "cond_cache"
     first = tiny_trainer.run("first", cond_cache_dir = str(cache))
     assert len(tiny_trainer.clients) == 1 and tiny_trainer.clients[0].closed == 1
@@ -733,5 +702,4 @@ def test_a_warm_caption_cache_never_starts_the_encoder_worker(tiny_trainer, tmp_
             e["loss"] for e in events if e.get("type") == "progress" and e.get("loss") is not None
         ]
 
-    # Same conditioning from the cache: the same seeded run.
     assert losses(second) == losses(first)

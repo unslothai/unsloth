@@ -631,7 +631,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # reference 1280x720 resolves to the 1280x704 latent canvas it actually renders.
     VideoFamily(
         name = "ltx-2.5",
-        # Trains on the pack's dev DiT (the model card's trainable one), runs on its distilled DiT.
+        # Trains the dev DiT, runs the distilled one.
         trainable = True,
         label = "LTX-2.5",
         profile = FamilyProfile(

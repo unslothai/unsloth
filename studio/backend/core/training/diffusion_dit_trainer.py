@@ -2004,16 +2004,11 @@ def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
-# LTX-2.5 (Lightricks/LTX-2.5-Diffusers): the LTX-2.3 DiT layout, so the LTX-2 targets, latents, collate, forward and
-# save carry over. Two things differ. The Gemma 4 encoder needs transformers >= 5.10, which Studio keeps in the
-# .venv_t5_510 sidecar, so captions go through the Video page's encoder worker once, before the DiT loads, and the
-# worker (its weights, CUDA context and host copy) exits with them. And the model card names the dev DiT
-# (transformer_full/) as the trainable one; the Video page runs the distilled DiT (transformer/), which dev LoRAs carry
-# over to, so dev is the default and UNSLOTH_LTX25_TRAIN_DIT=distilled trains the distilled one instead.
+# LTX-2.5: LTX-2.3 DiT layout. Gemma 4 needs the transformers 5.10 sidecar, so captions go through the Video page's
+# encoder worker, which exits before the DiT loads. Trains the dev DiT (model card) unless UNSLOTH_LTX25_TRAIN_DIT=distilled.
 LTX25_TRAIN_DIT_ENV = "UNSLOTH_LTX25_TRAIN_DIT"
 _LTX25_DEV_SUBFOLDER = "transformer_full"
 _LTX25_DISTILLED_SUBFOLDER = "transformer"
-# The pack components conditioning reads: the encoder runs in the worker and the DiTs load on their own.
 _LTX25_CONDITIONING_COMPONENTS = ("scheduler", "vae", "audio_vae", "vocoder", "connectors")
 
 
@@ -2021,7 +2016,7 @@ def _ltx25_trains_dev() -> bool:
     return (os.environ.get(LTX25_TRAIN_DIT_ENV) or "").strip().lower() not in ("distilled", "0")
 
 
-# (repo, subfolder) per (base, token): the scheduler and the DiT load ask the same question.
+# (base, token) -> (repo, subfolder); scheduler and DiT load must agree.
 _LTX25_DIT_SOURCES: dict = {}
 
 
@@ -2038,9 +2033,7 @@ def _ltx25_has_dev_dit(repo: str, token) -> bool:
 
 
 def _ltx25_dit_source(cfg) -> tuple[str, str]:
-    """``(repo, subfolder)`` of the DiT the LoRA trains against: the dev DiT unless distilled is asked for. The fetched
-    repo may be the ungated unsloth mirror, which ships only the distilled DiT, so the dev DiT then comes from the
-    upstream pack when this token can read it; with neither, the distilled DiT the fetched repo ships."""
+    """The unsloth mirror ships only the distilled DiT: dev comes from the upstream pack if readable, else distilled."""
     base = str(cfg.base_model)
     token = getattr(cfg, "hf_token", None)
     if not _ltx25_trains_dev():
@@ -2078,9 +2071,7 @@ def _with_base(cfg, base: str):
 
 
 def ltx25_conditioning_files(names) -> list[str]:
-    """The files of an LTX-2.5 pack listing that conditioning reads: model_index.json plus one copy of each component
-    in ``_LTX25_CONDITIONING_COMPONENTS`` (the pack ships connectors/ both sharded and whole; ``ltx25_pack_files``
-    keeps the indexed set). Never the encoder, the prompt enhancer, either DiT or the root-level LoRA."""
+    """Conditioning files only (connectors/ ships sharded and whole; keep the indexed set)."""
     from core.inference.video_ltx25 import ltx25_pack_files
 
     names = list(names)
@@ -2094,8 +2085,7 @@ def ltx25_conditioning_files(names) -> list[str]:
 
 
 def _ltx25_conditioning_source(cfg) -> str:
-    """A local pack as given; a Hub pack staged down to the conditioning files (skips ~90 GB the full listing holds:
-    two DiTs, the prompt enhancer, the dense encoder the worker may not read)."""
+    """Hub packs are staged down to the conditioning files (skips ~90 GB)."""
     base = str(cfg.base_model)
     if Path(base).expanduser().is_dir():
         return base
@@ -2117,8 +2107,6 @@ def _ltx25_conditioning_source(cfg) -> str:
 
 
 def _ltx25_start_encoder(cfg, device):
-    """The Video page's Gemma 4 worker, at the precision the Video page encodes with by default (the hosted int8
-    ConvRot encoder when it serves this pack, else bf16), resident on the card it trains on."""
     from core.inference.diffusion import hub_cache_dir
     from core.inference.video_ltx25 import (
         ltx25_resolve_te_request,
@@ -2164,10 +2152,9 @@ def _ltx25_load_conditioners(cfg, device, weight_dtype):
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
-    # Stays on host until the encoder worker exits (never resident beside it).
+    # VAE stays on host until the encoder worker exits.
     pipe.vae.to(dtype = torch.float32)
     pipe.connectors.to(device)
-    # pipe.encode_prompt becomes the worker round trip; _free_text_encoders stops the worker.
     install_remote_encode_prompt(pipe, _ltx25_start_encoder(cfg, device))
     return pipe, pipe.vae
 
@@ -2189,8 +2176,7 @@ def _ltx25_load_transformer(cfg, device, weight_dtype, base_precision):
 
 
 def _ltx25_training_scheduler(cfg):
-    """The pack's scheduler, which is the distilled DiT's (static, unshifted); the dev DiT samples with the README's
-    dynamic shift and terminal stretch, which makes it LTX-2's scheduler, so the auto sigma table matches LTX-2's."""
+    """The pack's scheduler is the distilled DiT's (unshifted); the dev DiT uses LTX-2's dynamic shift."""
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from core.inference.video_ltx25 import LTX25_DEV_SCHEDULER_OVERRIDES
@@ -2587,7 +2573,6 @@ _SPECS: dict[str, _FamilySpec] = {
         family = "ltx-2.5",
         lora_targets = _LTX2_TARGETS,
         force_bf16 = True,
-        # 22B DiT, 42.0 GB bf16 (both DiTs); the Gemma 4 worker has exited before it loads.
         dense_bf16_gb = 42.0,
         load_conditioners = _ltx25_load_conditioners,
         load_transformer = _ltx25_load_transformer,
@@ -3856,7 +3841,6 @@ def _free_text_encoders(pipe) -> None:
     from core.training.diffusion_te_stream import release_text_encoders
 
     release_text_encoders(pipe)
-    # LTX-2.5 encodes in a worker process: stopping it returns its card and host memory.
     if getattr(pipe, "_unsloth_ltx25_encoder", None) is not None:
         from core.inference.video_ltx25 import close_encoder
         close_encoder(pipe)
