@@ -931,6 +931,28 @@ def test_an_unloaded_mlx_tag_resolves_for_the_api(mlx_store):
     assert resolver._local_servable_entry(row.model_id, row.model_copy(update = {"id": "/x"})) is None
 
 
+@pytest.mark.parametrize("key", ["auto_map", "model_file"])
+def test_an_mlx_tag_needing_custom_code_is_not_offered_to_the_api(tmp_path, monkeypatch, key):
+    import hashlib
+
+    from core.inference import local_model_resolver as resolver
+    from hub.services.models import ollama, ollama_mlx
+
+    root = tmp_path / "ollama"
+    tag_file = _write_ollama_mlx_store(root)[0]
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    monkeypatch.setattr(ollama_mlx, "mlx_host", lambda: True)
+    manifest = json.loads(tag_file.read_text())
+    layer = next(layer for layer in manifest["layers"] if layer.get("name") == "config.json")
+    text = json.dumps({"model_type": "gemma4", key: {"AutoModel": "m.Model"}}).encode()
+    digest = hashlib.sha256(text).hexdigest()
+    (root / "blobs" / f"sha256-{digest}").write_bytes(text)
+    layer.update(digest = f"sha256:{digest}", size = len(text))
+    tag_file.write_text(json.dumps(manifest))
+    (row,) = ollama.scan_ollama_dir(root)
+    assert resolver._local_servable_entry(row.model_id, row) is None
+
+
 def test_an_mlx_tag_the_checkpoint_cannot_serve_as_pulled_is_not_listed(tmp_path, monkeypatch):
     from hub.services.models import ollama, ollama_mlx
 

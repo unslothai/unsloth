@@ -778,6 +778,23 @@ def acquire_ollama_model_ref(ref: str) -> OllamaModelLease:
         raise
 
 
+def ollama_mlx_json_reader(ref: str):
+    """A reader of the MLX tag's JSON layers by name, None for one it lacks or cannot parse."""
+    ollama_dir, manifest, _ = _ollama_model_ref_info(ref)
+    layers = ollama_mlx._json_layers(manifest.get("layers") or [])
+
+    def read(name: str):
+        blob = _ollama_blob_path(ollama_dir / "blobs", (layers.get(name) or {}).get("digest"))
+        if blob is None or not _safe_is_file(blob) or blob.stat().st_size > 1 << 20:
+            return None
+        try:
+            return json.loads(blob.read_text(encoding = "utf-8-sig"))
+        except (OSError, ValueError):
+            return None
+
+    return read
+
+
 def materialize_ollama_mlx_ref(ref: str) -> str:
     """Builds the MLX checkpoint for an ``ollama-mlx:`` *ref* if its manifest has none yet, and
     returns the tag's checkpoint path."""
