@@ -26,7 +26,8 @@ function fetchOnce(): Promise<NpuCompat | null> {
 export function useNpuCompat(active = true): NpuCompat | null {
   const [compat, setCompat] = useState<NpuCompat | null>(cached);
   useEffect(() => {
-    if (!active || cached) return;
+    // Read on every mount: the backend memoizes per installed FastFlowLM, so an upgrade shows up.
+    if (!active) return;
     let live = true;
     void fetchOnce().then((next) => {
       if (live && next) setCompat(next);
