@@ -6,14 +6,13 @@ rag_upload_requirements.txt. A RAG test that imports a module unconditionally un
 missing wheel as a packaging failure) needs that module pinned there, at studio.txt's version."""
 
 import ast
-import json
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UPLOAD_REQS = ROOT / "tests/studio/rag_upload_requirements.txt"
 STUDIO_REQS = ROOT / "studio/backend/requirements/studio.txt"
-HNSW_CATALOG = ROOT / "studio/hnsw_prebuilt_pins.json"
+HNSW_REQS = ROOT / "studio/hnsw_prebuilt.txt"
 
 
 def _pins(path):
@@ -26,9 +25,8 @@ def _pins(path):
 
 
 def _hnsw_catalog_pins():
-    # The pair is not a pip requirement: the installer's catalog is its one pin.
-    packages = json.loads(HNSW_CATALOG.read_text(encoding = "utf-8"))["packages"]
-    return {name: pkg["version"] for name, pkg in packages.items()}
+    # The pair is not a pip requirement: the installer's hash-pinned file is its one pin.
+    return _pins(HNSW_REQS)
 
 
 def _is_ci_check(node):

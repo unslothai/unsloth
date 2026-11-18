@@ -300,14 +300,14 @@ def test_the_installer_runs_as_a_subprocess_with_a_filtered_env(tmp_path, monkey
         import json, os, sys
         print("noise from uv")
         print(json.dumps({"status": "busy", "argv": sys.argv[1:], "token": os.environ.get("HF_TOKEN"),
-                          "mirror": os.environ.get("UNSLOTH_HNSW_MIRROR")}))
+                          "index": os.environ.get("UV_INDEX_URL")}))
     """,
     )
     monkeypatch.setenv("HF_TOKEN", "hf_secret")
-    monkeypatch.setenv("UNSLOTH_HNSW_MIRROR", "https://mirror.example/")
+    monkeypatch.setenv("UV_INDEX_URL", "https://index.example/simple")
     result = hnsw_runtime._run_installer()
     assert result["status"] == "busy" and result["argv"] == ["--json"]
-    assert result["token"] is None and result["mirror"] == "https://mirror.example/"
+    assert result["token"] is None and result["index"] == "https://index.example/simple"
 
 
 @pytest.mark.parametrize("stdout", ["", "garbage\n", '{"status": 1}\n', "{not json\n", "[1, 2]\n"])
