@@ -1343,6 +1343,20 @@ export function TranslatePage() {
     }
   };
 
+  // The page scrolls inside the layout's <main>. Mark that element while Translate is mounted so its
+  // stable gutter needs no main:has(.translate-page), which Chromium re-matched across the whole chat
+  // thread on every keystroke.
+  useLayoutEffect(() => {
+    const host = document
+      .querySelector(".translate-page")
+      ?.parentElement?.closest("main");
+    if (!host) {
+      return;
+    }
+    host.setAttribute("data-translate-page", "");
+    return () => host.removeAttribute("data-translate-page");
+  }, []);
+
   const {
     ref: dropRef,
     dragging,
