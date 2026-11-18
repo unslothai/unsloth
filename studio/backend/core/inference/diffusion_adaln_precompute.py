@@ -1,0 +1,667 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""AdaLN modulation precompute: the per-block modulation Linears of FLUX.1 (norm1 / norm1_context / single norm /
+norm_out) and Qwen-Image (img_mod / txt_mod / norm_out) read only the timestep (+ guidance, + pooled text)
+embedding, never the image tokens. They are swapped for ``AdaLNTable`` stand-ins with no parameters; the real
+modules move to host memory. Each transformer call keys its embedding inputs (timestep, guidance, pooled, ...);
+the first miss of a request computes the rows of every timestep the scheduler will visit in one pass over the
+modulation weights (each step at its own batch shape, so every row is the GEMM main would run: bit-identical),
+then every call copies its row into one static buffer the stand-ins return.
+
+Frees 27% (FLUX.1) / 33% (Qwen-Image, -2512, -Edit) of the transformer from the card, and those weights are never
+streamed by an offloaded denoiser. Families with one shared modulation (Qwen-Image-2.1, FLUX.2, FLUX.3, Z-Image:
+1-4%) are not worth the host copy and are not installed.
+
+UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE: ``0`` off, ``1`` on for every supported denoiser, ``auto`` (default) on when
+the denoiser is planned offloaded / streamed / split. UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks every served row
+against the module's real input (eager only; a sync per call, tests and benches)."""
+
+from __future__ import annotations
+
+import hashlib
+import inspect
+import os
+import threading
+import time
+import weakref
+from collections import OrderedDict
+from typing import Any, Callable, Optional
+
+ENV = "UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE"
+VERIFY_ENV = "UNSLOTH_DIFFUSION_ADALN_VERIFY"
+TABLE_MB_ENV = "UNSLOTH_DIFFUSION_ADALN_TABLE_MB"
+_DEFAULT_TABLE_MB = 1024
+STATE_ATTR = "_unsloth_adaln"
+
+MODE_OFF, MODE_ON, MODE_AUTO = "off", "on", "auto"
+
+# Engagement evidence for benches and tests (process-wide).
+COUNTS = {
+    "installs": 0,
+    "served": 0,
+    "rows_computed": 0,
+    "weight_passes": 0,
+    "precompute_s": 0.0,
+    "predicted_rows": 0,
+    "verify_checks": 0,
+}
+
+# Input kinds: what the stand-in's module receives, from the embedding ``temb``.
+_SILU = "silu"  # Linear(silu(temb))
+_SILU_FIRST = (
+    "silu_first"  # Linear(silu(temb.chunk(2, 0)[0])): Qwen zero_cond_t text / norm_out paths
+)
+_SILU_CAST = "silu_cast"  # AdaLayerNormContinuous: Linear(silu(temb).to(x.dtype))
+_SILU_FIRST_CAST = "silu_first_cast"
+
+
+def mode() -> str:
+    raw = (os.environ.get(ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return MODE_OFF
+    if raw in ("1", "on", "true", "yes", "force"):
+        return MODE_ON
+    return MODE_AUTO
+
+
+def verify_enabled() -> bool:
+    return (os.environ.get(VERIFY_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def _table_budget_bytes() -> int:
+    try:
+        mb = int(os.environ.get(TABLE_MB_ENV) or _DEFAULT_TABLE_MB)
+    except ValueError:
+        mb = _DEFAULT_TABLE_MB
+    return max(16, mb) * 1024 * 1024
+
+
+def _torch() -> Any:
+    import torch
+    return torch
+
+
+class AdaLNTable(_torch().nn.Module):
+    """Stands in for one modulation Linear; returns the armed row (a view of the transformer's static buffer). The
+    real module sits in ``__dict__`` (not a submodule): never placed, streamed, cast, compiled or quantised."""
+
+    def __init__(self, orig: Any, name: str, kind: str) -> None:
+        super().__init__()
+        object.__setattr__(self, "_unsloth_orig", orig)
+        self.site_name = name
+        self.kind = kind
+        self.in_features = getattr(orig, "in_features", None)
+        self.out_features = getattr(orig, "out_features", None)
+        # Set per layout by the transformer's pre-hook; the same tensor object for a layout, refilled in place.
+        self.unsloth_adaln_cur = None
+        self.unsloth_adaln_ref = None  # verify mode: the input row the armed output came from
+
+    def forward(self, x: Any) -> Any:
+        cur = self.unsloth_adaln_cur
+        if cur is None:
+            raise RuntimeError(
+                f"AdaLN precompute: {self.site_name} ran outside an armed transformer call"
+            )
+        if self.unsloth_adaln_ref is not None:
+            torch = _torch()
+            if not torch.compiler.is_compiling():
+                COUNTS["verify_checks"] += 1
+                if x.shape != self.unsloth_adaln_ref.shape or not torch.equal(
+                    x, self.unsloth_adaln_ref
+                ):
+                    raise RuntimeError(
+                        f"AdaLN precompute: {self.site_name} input differs from the precomputed row"
+                    )
+        return cur
+
+    def extra_repr(self) -> str:
+        return f"{self.site_name}, kind={self.kind}, in={self.in_features}, out={self.out_features}"
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Family adapters: where the modulation sites are, which forward inputs the embedding reads, and the forward's own
+# preamble (op for op) that turns them into ``temb``.
+
+
+class _Adapter:
+    cls_names: tuple = ()
+    # forward keyword names the embedding reads (all optional except timestep)
+    key_names: tuple = ()
+
+    def sites(self, model: Any) -> Optional[list]:
+        raise NotImplementedError
+
+    def temb(self, model: Any, tte: Any, inputs: dict) -> Any:
+        raise NotImplementedError
+
+
+class _FluxAdapter(_Adapter):
+    cls_names = ("FluxTransformer2DModel",)
+    key_names = ("timestep", "guidance", "pooled_projections")
+
+    def sites(self, model: Any) -> Optional[list]:
+        out = []
+        for i, blk in enumerate(getattr(model, "transformer_blocks", ()) or ()):
+            for attr in ("norm1", "norm1_context"):
+                norm = getattr(blk, attr, None)
+                if norm is None or getattr(norm, "emb", None) is not None:
+                    return None
+                out.append((f"transformer_blocks.{i}.{attr}.linear", norm, "linear", _SILU))
+        for i, blk in enumerate(getattr(model, "single_transformer_blocks", ()) or ()):
+            norm = getattr(blk, "norm", None)
+            if norm is None:
+                return None
+            out.append((f"single_transformer_blocks.{i}.norm.linear", norm, "linear", _SILU))
+        norm_out = getattr(model, "norm_out", None)
+        if norm_out is None or not hasattr(norm_out, "linear"):
+            return None
+        out.append(("norm_out.linear", norm_out, "linear", _SILU_CAST))
+        return out
+
+    def temb(self, model: Any, tte: Any, inputs: dict) -> Any:
+        # FluxTransformer2DModel.forward, op for op.
+        dtype = inputs["_dtype"]
+        timestep = inputs["timestep"].to(dtype) * 1000
+        guidance = inputs.get("guidance")
+        if guidance is not None:
+            guidance = guidance.to(dtype) * 1000
+        pooled = inputs.get("pooled_projections")
+        return tte(timestep, pooled) if guidance is None else tte(timestep, guidance, pooled)
+
+
+class _QwenImageAdapter(_Adapter):
+    cls_names = ("QwenImageTransformer2DModel",)
+    key_names = ("timestep", "guidance", "additional_t_cond")
+
+    def sites(self, model: Any) -> Optional[list]:
+        zero = bool(getattr(model, "zero_cond_t", False))
+        out = []
+        for i, blk in enumerate(getattr(model, "transformer_blocks", ()) or ()):
+            for attr in ("img_mod", "txt_mod"):
+                seq = getattr(blk, attr, None)
+                if seq is None or len(seq) != 2 or type(seq[0]).__name__ != "SiLU":
+                    return None
+                kind = _SILU_FIRST if (zero and attr == "txt_mod") else _SILU
+                out.append((f"transformer_blocks.{i}.{attr}.1", seq, "1", kind))
+        norm_out = getattr(model, "norm_out", None)
+        if norm_out is None or not hasattr(norm_out, "linear"):
+            return None
+        out.append(
+            ("norm_out.linear", norm_out, "linear", _SILU_FIRST_CAST if zero else _SILU_CAST)
+        )
+        return out
+
+    def temb(self, model: Any, tte: Any, inputs: dict) -> Any:
+        # QwenImageTransformer2DModel.forward, op for op (hidden_states only carries the dtype into the embedder).
+        torch = _torch()
+        dtype = inputs["_dtype"]
+        timestep = inputs["timestep"].to(dtype)
+        if getattr(model, "zero_cond_t", False):
+            timestep = torch.cat([timestep, timestep * 0], dim = 0)
+        guidance = inputs.get("guidance")
+        if guidance is not None:
+            guidance = guidance.to(dtype) * 1000
+        hs = torch.empty(1, dtype = dtype, device = timestep.device)
+        extra = inputs.get("additional_t_cond")
+        return tte(timestep, hs, extra) if guidance is None else tte(timestep, guidance, hs, extra)
+
+
+_ADAPTERS = (_FluxAdapter(), _QwenImageAdapter())
+
+
+def adapter_for(model: Any) -> Optional[_Adapter]:
+    name = type(model).__name__
+    for ad in _ADAPTERS:
+        if name in ad.cls_names:
+            return ad
+    return None
+
+
+def _site_input(kind: str, temb: Any, dtype: Any) -> Any:
+    import torch.nn.functional as F
+
+    if kind in (_SILU_FIRST, _SILU_FIRST_CAST):
+        temb = temb.chunk(2, dim = 0)[0]
+    x = F.silu(temb)
+    if kind in (_SILU_CAST, _SILU_FIRST_CAST):
+        x = x.to(dtype)
+    return x
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Host residency of the real modules.
+
+
+def _pin(t: Any) -> Any:
+    try:
+        return t.pin_memory()
+    except Exception:  # noqa: BLE001 - subclass tensors / no CUDA: pageable
+        return t
+
+
+def _to_host(mod: Any) -> int:
+    """Moves ``mod``'s tensors to (pinned) host memory in place; returns bytes moved."""
+    torch = _torch()
+    moved = 0
+    for m in mod.modules():
+        for store in (m._parameters, m._buffers):
+            for n, t in list(store.items()):
+                if t is None:
+                    continue
+                moved += _nbytes(t)
+                host = t.detach()
+                if host.device.type != "cpu":
+                    host = host.to("cpu")
+                host = _pin(host)
+                store[n] = (
+                    torch.nn.Parameter(host, requires_grad = False)
+                    if store is m._parameters
+                    else host
+                )
+    return moved
+
+
+def _nbytes(t: Any) -> int:
+    try:
+        return int(t.numel()) * int(t.element_size())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _device_clone(mod: Any, device: Any) -> Any:
+    """A shallow clone of ``mod`` whose tensors live on ``device``; the host original is untouched."""
+    import copy
+
+    clone = copy.copy(mod)
+    clone._parameters = {
+        n: (None if t is None else t.detach().to(device, non_blocking = True))
+        for n, t in mod._parameters.items()
+    }
+    clone._buffers = {
+        n: (None if t is None else t.to(device, non_blocking = True)) for n, t in mod._buffers.items()
+    }
+    clone._modules = {
+        n: (None if c is None else _device_clone(c, device)) for n, c in mod._modules.items()
+    }
+    return clone
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Per-transformer state.
+
+
+def _key_of(tensors: list) -> tuple:
+    """Exact key: dtype / shape / bytes of every embedding input (one small device-to-host copy)."""
+    torch = _torch()
+    meta = []
+    flat = []
+    for t in tensors:
+        if t is None:
+            meta.append(None)
+            continue
+        if not isinstance(t, torch.Tensor):
+            meta.append(("py", repr(t)))
+            continue
+        meta.append((str(t.dtype), tuple(t.shape)))
+        flat.append(t.detach().contiguous().reshape(-1).view(torch.uint8))
+    digest = b""
+    if flat:
+        blob = torch.cat([f.to(flat[0].device) for f in flat]).cpu().numpy().tobytes()
+        digest = hashlib.blake2b(blob, digest_size = 20).digest()
+    return (tuple(meta), digest)
+
+
+class _State:
+    def __init__(self, model: Any, adapter: _Adapter, sites: list, tables: list, pipe: Any) -> None:
+        self.model_ref = weakref.ref(model)
+        self.adapter = adapter
+        self.sites = sites  # [(name, parent, attr, kind)]
+        self.stand_ins = tables  # AdaLNTable per site
+        self.pipe_ref = None
+        if pipe is not None:
+            try:
+                self.pipe_ref = weakref.ref(pipe)
+            except TypeError:  # not weak-referenceable: hold only its scheduler lookup
+                self.pipe_ref = lambda pipe = pipe: pipe
+        self.lock = threading.RLock()
+        self.rows: OrderedDict = OrderedDict()  # key -> (layout id, flat tensor)
+        self.row_bytes = 0
+        self.layouts: dict = {}  # layout id -> (flat cur buffer, [views])
+        self.armed_layout = None
+        self.active = True
+        self.host_bytes = 0
+        self.tte_host = (
+            None  # host copy of the embedder used for prediction when the live one is offloaded
+        )
+        self.reason = ""
+        self._sig = None
+
+    # ---- inputs / keys
+    def inputs(self, model: Any, args: tuple, kwargs: dict) -> dict:
+        sig = self._sig
+        if sig is None:
+            sig = self._sig = inspect.signature(type(model).forward)
+        names = [n for n in sig.parameters][1:]
+        bound = dict(zip(names, args))
+        bound.update(kwargs)
+        hs = bound.get("hidden_states")
+        out = {name: bound.get(name) for name in self.adapter.key_names}
+        if out.get("timestep") is None or hs is None:
+            raise _Unsupported("no timestep / hidden_states in the call")
+        out["_dtype"] = hs.dtype
+        out["_device"] = hs.device
+        return out
+
+    def key(self, inputs: dict) -> tuple:
+        return (str(inputs["_dtype"]),) + _key_of([inputs.get(n) for n in self.adapter.key_names])
+
+    def predicted(self, inputs: dict) -> list:
+        """The inputs of every scheduler timestep this request will visit, when the call's timestep is provably
+        ``t.expand(B).to(dtype) / 1000`` of one of them (FLUX / Qwen-Image pipelines); else []."""
+        pipe = self.pipe_ref() if self.pipe_ref is not None else None
+        sched = getattr(pipe, "scheduler", None) if pipe is not None else None
+        timesteps = getattr(sched, "timesteps", None)
+        ts = inputs.get("timestep")
+        torch = _torch()
+        if (
+            timesteps is None
+            or not isinstance(timesteps, torch.Tensor)
+            or ts is None
+            or ts.dim() != 1
+        ):
+            return []
+        try:
+            grid = timesteps.to(ts.device)
+            cands = [t.expand(ts.shape[0]).to(ts.dtype) / 1000 for t in grid]
+            if not cands:
+                return []
+            stacked = torch.stack(cands)
+            if not bool((stacked == ts.unsqueeze(0)).all(dim = 1).any()):
+                return []
+        except Exception:  # noqa: BLE001 - prediction is only an optimisation
+            return []
+        out = []
+        for c in cands:
+            d = dict(inputs)
+            d["timestep"] = c
+            out.append(d)
+        return out
+
+    # ---- compute
+    def _embedder(self, model: Any, device: Any) -> tuple:
+        tte = getattr(model, "time_text_embed")
+        for p in list(tte.parameters())[:1]:
+            if p.device == device or (p.device.type == device.type and device.index is None):
+                return tte, None
+        if self.tte_host is None:
+            raise _Unsupported("the time embedder is not on the call's device")
+        clone = _device_clone(self.tte_host, device)
+        return clone, clone
+
+    def compute(self, model: Any, pending: "OrderedDict[tuple, dict]") -> None:
+        torch = _torch()
+        t0 = time.perf_counter()
+        first = next(iter(pending.values()))
+        device = first["_device"]
+        tte, _tmp = self._embedder(model, device)
+        tembs = {}
+        with torch.no_grad():
+            for key, inp in pending.items():
+                tembs[key] = self.adapter.temb(model, tte, inp)
+            # one pass over the weights: each site onloads once, runs every pending row at its own shape
+            outs: dict = {key: [] for key in pending}
+            refs: dict = {key: [] for key in pending}
+            keep_refs = verify_enabled()
+            for (name, _parent, _attr, kind), stand in zip(self.sites, self.stand_ins):
+                dev_mod = _device_clone(stand._unsloth_orig, device)
+                for key, inp in pending.items():
+                    x = _site_input(kind, tembs[key], inp["_dtype"])
+                    y = dev_mod(x)
+                    outs[key].append(y)
+                    if keep_refs:
+                        refs[key].append(x)
+                del dev_mod
+        for key in pending:
+            ys = outs[key]
+            if any(y.dtype != ys[0].dtype or y.device != ys[0].device for y in ys):
+                raise _Unsupported("modulation outputs mix dtypes / devices")
+            layout_id = tuple((tuple(y.shape), str(y.dtype), str(y.device)) for y in ys)
+            flat = torch.cat([y.reshape(-1) for y in ys])
+            self._store(key, layout_id, flat, refs[key] if keep_refs else None)
+            COUNTS["rows_computed"] += 1
+        COUNTS["weight_passes"] += 1
+        if device.type == "cuda":
+            torch.cuda.current_stream(device).synchronize()
+        COUNTS["precompute_s"] += time.perf_counter() - t0
+
+    def _store(self, key: tuple, layout_id: tuple, flat: Any, refs: Optional[list]) -> None:
+        old = self.rows.pop(key, None)
+        if old is not None:
+            self.row_bytes -= _nbytes(old[1])
+        self.rows[key] = (layout_id, flat, refs)
+        self.row_bytes += _nbytes(flat)
+        budget = _table_budget_bytes()
+        while self.row_bytes > budget and len(self.rows) > 1:
+            _k, (_l, f, _r) = self.rows.popitem(last = False)
+            self.row_bytes -= _nbytes(f)
+
+    def _layout(self, layout_id: tuple, like: Any) -> tuple:
+        lay = self.layouts.get(layout_id)
+        if lay is None:
+            torch = _torch()
+            total = sum(int(torch.Size(s).numel()) for s, _d, _v in layout_id)
+            buf = torch.empty(total, dtype = like.dtype, device = like.device)
+            views = []
+            off = 0
+            for shape, _d, _v in layout_id:
+                n = int(torch.Size(shape).numel())
+                views.append(buf[off : off + n].view(shape))
+                off += n
+            lay = self.layouts[layout_id] = (buf, views)
+        return lay
+
+    def arm(self, key: tuple) -> None:
+        layout_id, flat, refs = self.rows[key]
+        self.rows.move_to_end(key)
+        buf, views = self._layout(layout_id, flat)
+        buf.copy_(flat, non_blocking = True)
+        if self.armed_layout is not layout_id:
+            for stand, view in zip(self.stand_ins, views):
+                stand.unsloth_adaln_cur = view
+            self.armed_layout = layout_id
+        for i, stand in enumerate(self.stand_ins):
+            stand.unsloth_adaln_ref = refs[i] if refs is not None else None
+        COUNTS["served"] += 1
+
+
+class _Unsupported(Exception):
+    pass
+
+
+def _pre_hook(model: Any, args: tuple, kwargs: dict) -> None:
+    st = model.__dict__.get(STATE_ATTR)
+    if st is None or not st.active:
+        return None
+    try:
+        _serve(model, st, args, kwargs)
+    except _Unsupported as exc:
+        # Cannot key this call: put the real modules back on the call's device and run stock from here on.
+        device = None
+        hs = kwargs.get("hidden_states", args[0] if args else None)
+        if hs is not None and hasattr(hs, "device"):
+            device = hs.device
+        uninstall(model, device = device, reason = f"unsupported call: {exc}")
+    return None
+
+
+def _serve(model: Any, st: "_State", args: tuple, kwargs: dict) -> None:
+    with st.lock:
+        inputs = st.inputs(model, args, kwargs)
+        key = st.key(inputs)
+        if key not in st.rows:
+            pending: OrderedDict = OrderedDict()
+            pending[key] = inputs
+            for pred in st.predicted(inputs):
+                pk = st.key(pred)
+                if pk not in st.rows and pk not in pending:
+                    pending[pk] = pred
+                    COUNTS["predicted_rows"] += 1
+            st.compute(model, pending)
+        st.arm(key)
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Install / uninstall.
+
+
+def decline_reason(
+    model: Any,
+    *,
+    offloaded: bool,
+    requested: Optional[str] = None,
+) -> Optional[str]:
+    """None when ``model`` should take the lever under the current mode."""
+    m = requested or mode()
+    if m == MODE_OFF:
+        return f"{ENV}=0"
+    if model is None:
+        return "no transformer"
+    if adapter_for(model) is None:
+        return f"{type(model).__name__} has no per-block modulation adapter"
+    if m == MODE_AUTO and not offloaded:
+        return "auto: the denoiser is resident (set UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE=1 to force)"
+    if getattr(model, "peft_config", None):
+        return "LoRA adapters are attached"
+    return None
+
+
+def installed(model: Any) -> bool:
+    st = getattr(model, "__dict__", {}).get(STATE_ATTR)
+    return st is not None and st.active
+
+
+def install(
+    model: Any,
+    pipe: Any = None,
+    *,
+    offloaded: bool = False,
+    logger: Any = None,
+    requested: Optional[str] = None,
+) -> bool:
+    """Swaps the modulation Linears of a supported denoiser for ``AdaLNTable`` stand-ins (weights to host)."""
+    reason = decline_reason(model, offloaded = offloaded, requested = requested)
+    if reason is not None:
+        if logger is not None:
+            logger.info("diffusion.adaln_precompute: off (%s)", reason)
+        return False
+    if installed(model):
+        return True
+    adapter = adapter_for(model)
+    sites = adapter.sites(model)
+    if not sites or not hasattr(model, "time_text_embed"):
+        if logger is not None:
+            logger.info(
+                "diffusion.adaln_precompute: off (unrecognised %s layout)", type(model).__name__
+            )
+        return False
+    import copy
+
+    stands = []
+    moved = 0
+    for name, parent, attr, kind in sites:
+        orig = parent._modules[attr] if attr in parent._modules else getattr(parent, attr)
+        moved += _to_host(orig)
+        stand = AdaLNTable(orig, name, kind)
+        parent._modules[attr] = stand
+        stands.append(stand)
+    st = _State(model, adapter, sites, stands, pipe)
+    st.host_bytes = moved
+    # A host copy of the (small) embedder, for calls whose live embedder an offload hook keeps on the host.
+    try:
+        st.tte_host = copy.deepcopy(model.time_text_embed).to("cpu")
+    except Exception:  # noqa: BLE001
+        st.tte_host = None
+    model.__dict__[STATE_ATTR] = st
+    # Always eager: a whole-module compile graph-breaks here instead of tracing the keyed lookup.
+    torch = _torch()
+    st.hook = model.register_forward_pre_hook(torch.compiler.disable(_pre_hook), with_kwargs = True)
+    COUNTS["installs"] += 1
+    try:
+        torch = _torch()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+    if logger is not None:
+        logger.info(
+            "diffusion.adaln_precompute: on (%s, %d modulation sites, %.2f GiB moved to host)",
+            type(model).__name__,
+            len(stands),
+            moved / 2**30,
+        )
+    return True
+
+
+def uninstall(
+    model: Any,
+    *,
+    device: Any = None,
+    logger: Any = None,
+    reason: str = "",
+) -> bool:
+    """Puts the real modulation modules back (on ``device``, else beside their block's weights)."""
+    st = getattr(model, "__dict__", {}).get(STATE_ATTR)
+    if st is None:
+        return False
+    torch = _torch()
+    with st.lock:
+        st.active = False
+        try:
+            st.hook.remove()
+        except Exception:  # noqa: BLE001
+            pass
+        for (name, parent, attr, _kind), stand in zip(st.sites, st.stand_ins):
+            orig = stand._unsloth_orig
+            target = device
+            if target is None:
+                for p in parent.parameters():
+                    target = p.device
+                    break
+            if target is not None and str(target) != "cpu":
+                orig.to(target)
+            parent._modules[attr] = orig
+        st.rows.clear()
+        st.layouts.clear()
+    del model.__dict__[STATE_ATTR]
+    if logger is not None:
+        logger.info("diffusion.adaln_precompute: removed (%s)", reason or "requested")
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return True
+
+
+def bind_pipe(pipe: Any) -> None:
+    """Points the prediction at the scheduler of the pipe about to render (derived pipes share the denoiser)."""
+    model = getattr(pipe, "transformer", None)
+    st = getattr(model, "__dict__", {}).get(STATE_ATTR) if model is not None else None
+    if st is None:
+        return
+    try:
+        st.pipe_ref = weakref.ref(pipe)
+    except TypeError:
+        st.pipe_ref = lambda pipe = pipe: pipe
+
+
+def summary(model: Any) -> dict:
+    st = getattr(model, "__dict__", {}).get(STATE_ATTR)
+    if st is None:
+        return {"active": False}
+    return {
+        "active": st.active,
+        "sites": len(st.stand_ins),
+        "host_gib": round(st.host_bytes / 2**30, 3),
+        "cached_rows": len(st.rows),
+        "table_mib": round(st.row_bytes / 2**20, 1),
+        **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in COUNTS.items()},
+    }

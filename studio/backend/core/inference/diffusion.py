@@ -2185,6 +2185,16 @@ def _lora_fuse_dits(pipe: Any) -> list:
         return []
 
 
+def bind_adaln_pipe(pipe: Any) -> None:
+    """AdaLN precompute predicts a request's timesteps from the scheduler of the pipe that renders it."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or "_unsloth_adaln" not in getattr(transformer, "__dict__", {}):
+        return
+    from .diffusion_adaln_precompute import bind_pipe
+
+    bind_pipe(pipe)
+
+
 def _refuse_lora_without_loader(fam: Any, loras: Any) -> None:
     """A family whose pipeline has no LoRA loader refuses an active selection before anything loads."""
     from core.inference import diffusion_lora
@@ -11404,6 +11414,18 @@ class DiffusionBackend:
                     from .diffusion_mps_fp16 import install_mps_fp16
 
                     install_mps_fp16(getattr(pipe, "transformer", None), target, logger = logger)
+                    # After quantization, before compile and placement: the modulation weights go to the host,
+                    # so neither the planner's loaded-weight refinement nor an offloader ever sees or streams them.
+                    try:
+                        from . import diffusion_adaln_precompute as adaln_precompute
+                        adaln_precompute.install(
+                            getattr(pipe, "transformer", None),
+                            pipe,
+                            offloaded = plan.offload_policy != OFFLOAD_NONE or bool(split_expected),
+                            logger = logger,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - optional lever: stock modules stay
+                        logger.warning("diffusion.adaln_precompute: not installed: %s", exc)
 
                     self._raise_if_load_cancelled(_load_token)
                     speed_offload = plan.offload_policy != OFFLOAD_NONE and not split_expected
@@ -14561,6 +14583,15 @@ class DiffusionBackend:
             return
         if specs:
             _refuse_lora_without_loader(getattr(state, "family", None), specs)
+            # Adapters may target the modulation Linears (or the embedder): the real modules come back first.
+            from . import diffusion_adaln_precompute as adaln_precompute
+
+            transformer = getattr(pipe, "transformer", None)
+            if adaln_precompute.installed(transformer):
+                adaln_precompute.uninstall(
+                    transformer, logger = logger, reason = "LoRA adapters requested"
+                )
+                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
         quant = (state.transformer_quant or "").lower()
         # A quantized single file reports no transformer_quant but bakes its adapters the same way.
@@ -16071,6 +16102,8 @@ class DiffusionBackend:
                         # Only with the step callback: it stops the carry before the last step's decode.
                         cross_forward_render(pipe, enabled = "callback_on_step_end" in chunk_kwargs),
                     ):
+                        # img2img / inpaint / controlnet pipes share the denoiser: predict from this call's scheduler
+                        bind_adaln_pipe(pipe)
                         return pipe(**chunk_kwargs).images
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
