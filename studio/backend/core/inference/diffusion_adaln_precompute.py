@@ -522,6 +522,65 @@ def _pre_hook(model: Any, args: tuple, kwargs: dict) -> None:
     return None
 
 
+def arm_call(model: Any, args: tuple, kwargs: dict) -> None:
+    """Arms the rows for a call that reaches the forward without ``model.__call__`` (the CFG router's merged
+    cond / uncond batch): its own inputs, so each half reads its own branch's modulation."""
+    _pre_hook(model, args, kwargs)
+
+
+def offload_reason(model: Any) -> Optional[str]:
+    """Why ``model`` streams (offload machinery holds per-module bookkeeping a restored module would miss), or None."""
+    for name, sub in model.named_modules():
+        if getattr(sub, "_hf_hook", None) is not None:
+            return f"{name or '<root>'} carries an accelerate hook"
+        registry = sub.__dict__.get("_diffusers_hook")
+        hooks = getattr(registry, "hooks", None) or {}
+        if any("offload" in str(k).lower() or "prefetch" in str(k).lower() for k in hooks):
+            return f"{name or '<root>'} is group offloaded"
+        if "_unsloth_group_prefetcher" in sub.__dict__:
+            return f"{name or '<root>'} streams through the group prefetcher"
+    return None
+
+
+# Adapter key fragments (diffusers, kohya / BFL and ai-toolkit spellings, '_' read as '.') that reach a modulation
+# Linear or the embedder that builds its input.
+_MOD_KEY_TOKENS = (
+    "norm1.linear",
+    "norm1.context.linear",
+    "norm.linear",
+    "norm.out",
+    "img.mod",
+    "txt.mod",
+    "mod.lin",
+    "modulation",
+    "adaln",
+    "time.text.embed",
+    "time.in",
+    "vector.in",
+    "guidance.in",
+    "timestep.embed",
+    "guidance.embed",
+    "text.embedder",
+)
+
+
+def lora_touches_modulation(paths: Any) -> Optional[str]:
+    """The first adapter key that targets a modulation Linear or the embedder, or None (unreadable files count as
+    touching: the caller then takes the safe path)."""
+    for path in paths or ():
+        try:
+            from safetensors import safe_open
+            with safe_open(str(path), framework = "pt") as f:
+                keys = list(f.keys())
+        except Exception:  # noqa: BLE001
+            return f"{path} (keys unreadable)"
+        for key in keys:
+            norm = key.lower().replace("_", ".")
+            if any(tok in norm for tok in _MOD_KEY_TOKENS):
+                return key
+    return None
+
+
 def _serve(model: Any, st: "_State", args: tuple, kwargs: dict) -> None:
     with st.lock:
         inputs = st.inputs(model, args, kwargs)
@@ -567,6 +626,12 @@ def decline_reason(
     return None
 
 
+def _pipe_loras(pipe: Any) -> bool:
+    return bool(
+        getattr(pipe, "_unsloth_loras", None) or getattr(pipe, "_unsloth_loras_baked", False)
+    )
+
+
 def installed(model: Any) -> bool:
     st = getattr(model, "__dict__", {}).get(STATE_ATTR)
     return st is not None and st.active
@@ -583,6 +648,9 @@ def install(
 ) -> bool:
     """Swaps the modulation Linears of a supported denoiser for ``AdaLNTable`` stand-ins (weights to host)."""
     reason = decline_reason(model, offloaded = offloaded, requested = requested, split = split)
+    if reason is None and pipe is not None and _pipe_loras(pipe):
+        # baked into the weights before quantisation and re-merged in place later: the modules must stay in the tree
+        reason = "LoRA adapters are baked into this load"
     if reason is not None:
         if logger is not None:
             logger.info("diffusion.adaln_precompute: off (%s)", reason)
@@ -599,6 +667,25 @@ def install(
         return False
     import copy
 
+    # A layer whose output depends on the step beyond its input (NVFP4 per-step protection runs protected steps at
+    # another precision) stays live: a precomputed row would ignore the step's mode.
+    live = [
+        name
+        for name, parent, attr, _kind in sites
+        if any(
+            getattr(m, "protect", None) is not None
+            for m in (parent._modules.get(attr) or getattr(parent, attr)).modules()
+        )
+    ]
+    if live:
+        sites = [site for site in sites if site[0] not in set(live)]
+        if logger is not None:
+            logger.info(
+                "diffusion.adaln_precompute: %d step-protected modulation layer(s) stay live",
+                len(live),
+            )
+        if not sites:
+            return False
     stands = []
     moved = 0
     for name, parent, attr, kind in sites:
@@ -660,10 +747,17 @@ def uninstall(
     logger: Any = None,
     reason: str = "",
 ) -> bool:
-    """Puts the real modulation modules back (on ``device``, else beside their block's weights)."""
+    """Puts the real modulation modules back (on ``device``, else beside their block's weights). Refused (RuntimeError)
+    on a streamed denoiser: its offload groups were built without these modules and would index them at the next
+    upload."""
     st = getattr(model, "__dict__", {}).get(STATE_ATTR)
     if st is None:
         return False
+    streamed = offload_reason(model)
+    if streamed is not None:
+        raise RuntimeError(
+            f"AdaLN precompute: cannot restore the modulation modules into a streamed denoiser ({streamed})"
+        )
     torch = _torch()
     with st.lock:
         st.active = False

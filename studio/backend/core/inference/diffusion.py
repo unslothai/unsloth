@@ -2185,6 +2185,30 @@ def _lora_fuse_dits(pipe: Any) -> list:
         return []
 
 
+def _adaln_before_loras(state: Any, pipe: Any, desired: Any, log: Any) -> None:
+    """AdaLN precompute vs adapters: a resident denoiser gets its real modulation modules back (adapters may target
+    them or the embedder). A streamed one cannot (its offload groups were built without them): adapters that miss
+    the modulation path keep the lever, ones that reach it are refused with a reload hint."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or "_unsloth_adaln" not in getattr(transformer, "__dict__", {}):
+        return
+    from . import diffusion_adaln_precompute as adaln_precompute
+
+    if not adaln_precompute.installed(transformer):
+        return
+    streamed = adaln_precompute.offload_reason(transformer)
+    if streamed is None:
+        adaln_precompute.uninstall(transformer, logger = log, reason = "LoRA adapters requested")
+        cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+        return
+    hit = adaln_precompute.lora_touches_modulation([path for _name, path, _weight in desired or ()])
+    if hit is not None:
+        raise LoraSelectionError(
+            f"This LoRA adapts the modulation layers ({hit}), which this streamed load precomputes. Reload the "
+            "model with UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE=0 to use it."
+        )
+
+
 def bind_adaln_pipe(pipe: Any) -> None:
     """AdaLN precompute predicts a request's timesteps from the scheduler of the pipe that renders it."""
     transformer = getattr(pipe, "transformer", None)
@@ -14584,15 +14608,6 @@ class DiffusionBackend:
             return
         if specs:
             _refuse_lora_without_loader(getattr(state, "family", None), specs)
-            # Adapters may target the modulation Linears (or the embedder): the real modules come back first.
-            from . import diffusion_adaln_precompute as adaln_precompute
-
-            transformer = getattr(pipe, "transformer", None)
-            if adaln_precompute.installed(transformer):
-                adaln_precompute.uninstall(
-                    transformer, logger = logger, reason = "LoRA adapters requested"
-                )
-                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
         quant = (state.transformer_quant or "").lower()
         # A quantized single file reports no transformer_quant but bakes its adapters the same way.
@@ -14634,6 +14649,7 @@ class DiffusionBackend:
             hf_token = state.hf_token,
             cancel = cancel,
         )
+        _adaln_before_loras(state, pipe, desired, logger)
         if desired == current:
             # the same set as the last render: fold it into the weights (no-op once folded)
             self._fuse_constant_loras(state, pipe)

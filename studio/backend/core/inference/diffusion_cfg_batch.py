@@ -1108,6 +1108,11 @@ class CfgBatchRouter:
             return None
         graphs = _graph_count()
         try:
+            module = self.module_ref()
+            if module is not None and "_unsloth_adaln" in module.__dict__:
+                # AdaLN precompute armed the first branch's rows in the pre-hook; the merged call needs its own
+                from .diffusion_adaln_precompute import arm_call
+                arm_call(module, b_args, b_kwargs)
             out = self.orig_forward(*b_args, **b_kwargs)
             mine, other = split_output(out, int(latent.shape[0]))
         except Exception as exc:  # noqa: BLE001 - the branch reruns plain
