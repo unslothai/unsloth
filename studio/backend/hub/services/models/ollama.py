@@ -795,14 +795,16 @@ def ollama_mlx_json_reader(ref: str):
     return read
 
 
-def materialize_ollama_mlx_ref(ref: str) -> str:
-    """Builds the MLX checkpoint for an ``ollama-mlx:`` *ref* if its manifest has none yet, and
-    returns the tag's checkpoint path."""
+def acquire_ollama_mlx_ref(ref: str) -> OllamaModelLease:
+    """Builds the MLX checkpoint for an ``ollama-mlx:`` *ref* if its manifest has none yet, holding
+    the tag until the caller releases the lease, so a delete cannot remove it mid-load."""
     if not is_ollama_mlx_ref(ref):
         raise ValueError("Not an Ollama MLX reference")
     ollama_dir, _, info = _ollama_model_ref_info(ref)
     tag_file, _ = _validated_ollama_manifest_location(ref)
-    with _materialization_lock(tag_file, ollama_dir):
+    lock = _materialization_lock(tag_file, ollama_dir)
+    lock.acquire()
+    try:
         # The manifest and config are read again under the lock: a pull may have replaced them.
         manifest_bytes = tag_file.read_bytes()
         manifest = json.loads(manifest_bytes)
@@ -815,7 +817,7 @@ def materialize_ollama_mlx_ref(ref: str) -> str:
         ollama_config = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
         if not isinstance(ollama_config, dict):
             raise ValueError("Ollama MLX model config blob is not an object")
-        return ollama_mlx.materialize(
+        path = ollama_mlx.materialize(
             Path(info.id).parent.parent,
             ollama_dir / "blobs",
             _ollama_blob_path,
@@ -823,6 +825,17 @@ def materialize_ollama_mlx_ref(ref: str) -> str:
             ollama_config,
             info.model_id,
         )
+        return OllamaModelLease(path, lock)
+    except BaseException:
+        lock.release()
+        raise
+
+
+def materialize_ollama_mlx_ref(ref: str) -> str:
+    """The tag's checkpoint path, built for its current manifest."""
+    lease = acquire_ollama_mlx_ref(ref)
+    lease.release()
+    return lease.path
 
 
 def _manifest_digests(manifest: object) -> set[str]:

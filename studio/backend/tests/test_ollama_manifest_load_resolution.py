@@ -1067,13 +1067,13 @@ def test_an_mlx_tag_materializes_as_a_standard_mlx_checkpoint(mlx_store):
     layers = json.loads(tag_file.read_text())["layers"]
     digest = next(layer["digest"] for layer in layers if layer["name"] == norm)
     (root / "blobs" / digest.replace(":", "-")).unlink()
-    kept = second / checkpoint.name
+    kept = second
     shard = json.loads((kept / "model.safetensors.index.json").read_text())["weight_map"][norm]
     assert np.array_equal(load_file(str(kept / shard))[norm], tensors[norm][0][norm])
 
 
 @_APFS
-@pytest.mark.parametrize("name", ["ollama_tag.txt", "Config.json"])
+@pytest.mark.parametrize("name", ["ollama_tag.txt", "payload.py", "Config.json"])
 def test_an_mlx_layer_named_as_a_generated_file_cannot_write_into_a_blob(mlx_store, name):
     import contextlib
 
@@ -1086,6 +1086,10 @@ def test_an_mlx_layer_named_as_a_generated_file_cannot_write_into_a_blob(mlx_sto
     tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
     blob = root / "blobs" / shared["digest"].replace(":", "-")
     before = blob.read_bytes()
+    if not name.endswith(".json"):
+        # Nor is a tag whose JSON layer could land as a non-JSON file (``model.py``) listed.
+        assert ollama.scan_ollama_dir(root) == []
+        return
     row_id = ollama.scan_ollama_dir(root)[0].id
     # On a case-sensitive volume the alias is just another file, so the build may succeed.
     with contextlib.suppress(OSError):
@@ -1121,6 +1125,44 @@ def test_an_mlx_load_builds_the_checkpoint_it_names_and_advertises_the_tag(mlx_s
     assert ollama.ollama_mlx_ref_for_path(str(elsewhere)) is None
     copied = shutil.copytree(row_id, root.parent / "copy" / "gemma4-e4b-mlx", symlinks = True)
     assert _as_ollama_mlx_request(LoadRequest(model_path = str(copied)))._advertised_id is None
+
+
+@_APFS
+def test_an_mlx_load_holds_the_tag_until_it_ends(mlx_store):
+    from hub.services.models import ollama
+    from routes.inference import _acquire_ollama_lease
+
+    root, tag_file, _ = mlx_store
+    row_id = ollama.scan_ollama_dir(root)[0].id
+    lease = _acquire_ollama_lease(row_id, None)
+    lock = ollama._materialization_lock(tag_file, root)
+    try:
+        assert lease.path == row_id and (Path(row_id) / "config.json").is_file()
+        assert not lock.acquire(blocking = False)  # a delete waits for the load
+    finally:
+        lease.release()
+    assert lock.acquire(blocking = False)
+    lock.release()
+    assert _acquire_ollama_lease(row_id, "unverified") is None
+
+
+@_APFS
+def test_an_mlx_config_naming_a_model_file_is_refused(mlx_store):
+    import hashlib
+
+    from hub.services.models import ollama
+
+    root, tag_file, _ = mlx_store
+    manifest = json.loads(tag_file.read_text())
+    layer = next(layer for layer in manifest["layers"] if layer.get("name") == "config.json")
+    text = json.dumps({"model_type": "gemma4", "model_file": "model.py"}).encode()
+    digest = hashlib.sha256(text).hexdigest()
+    (root / "blobs" / f"sha256-{digest}").write_bytes(text)
+    layer.update(digest = f"sha256:{digest}", size = len(text))
+    tag_file.write_text(json.dumps(manifest))
+    row_id = ollama.scan_ollama_dir(root)[0].id
+    with pytest.raises(ValueError, match = "model_file"):
+        ollama.materialize_ollama_mlx_ref(ollama.ollama_mlx_ref_for_path(row_id))
 
 
 def test_an_mlx_tag_builds_only_after_the_access_check():

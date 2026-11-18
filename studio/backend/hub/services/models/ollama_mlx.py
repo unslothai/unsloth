@@ -109,8 +109,12 @@ def layout_problem(config: dict, layers: list) -> Optional[str]:
     )
     if unsupported:
         return f"it has layers Unsloth Studio cannot preserve: {', '.join(unsupported)}"
-    if "config.json" not in _json_layers(layers):
+    json_layers = _json_layers(layers)
+    if "config.json" not in json_layers:
         return "it has no config.json"
+    # A non-JSON name (``model.py``) would land in the checkpoint as code a config could run.
+    if any(not name.endswith(".json") for name in json_layers):
+        return "it has a JSON layer whose name is not a .json file"
     if not all(
         isinstance(layer.get("name"), str)
         for layer in layers
@@ -354,6 +358,9 @@ def _write_config(directory: Path, blobs_dir: Path, blob_path, layer: dict, quan
     config = json.loads(blob.read_text(encoding = "utf-8"))
     if not isinstance(config, dict):
         raise ValueError(f"Ollama MLX {layer['name']} is not an object")
+    # mlx-vlm imports ``model_file`` even without trust_remote_code.
+    if "model_file" in config:
+        raise ValueError(f"Ollama MLX {layer['name']} names a model_file to run")
     # Its ModelOpt block describes the source export, not the MLX packing Ollama converted it to.
     config.pop("quantization_config", None)
     quantization = _quantization(quant)

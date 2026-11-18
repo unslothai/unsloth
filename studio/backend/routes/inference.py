@@ -9221,18 +9221,29 @@ def _as_local_scan_folder_request(request, owner_session: bool):
     return request.model_copy(update = {"model_path": load_path, "gguf_variant": variant})
 
 
+def _acquire_ollama_lease(model_path: str, native_path_lease):
+    """The GGUF tag's lease, or an MLX tag's whose checkpoint path *model_path* is, else None."""
+    from hub.services.models.ollama import acquire_ollama_mlx_ref, ollama_mlx_ref_for_path
+
+    if is_ollama_manifest_ref(model_path):
+        return acquire_ollama_model_ref(model_path)
+    ref = not native_path_lease and ollama_mlx_ref_for_path(model_path)
+    return acquire_ollama_mlx_ref(ref) if ref else None
+
+
 async def _lease_ollama_model_ref(
     request: LoadRequest | ValidateModelRequest, *, operation: str, stack: ExitStack
 ) -> Optional[str]:
-    if not is_ollama_manifest_ref(request.model_path):
+    if not isinstance(request.model_path, str):
         return None
     loop = asyncio.get_running_loop()
     lease_future = loop.run_in_executor(
         _OLLAMA_LEASE_EXECUTOR,
         run_as,
         current_account(),
-        acquire_ollama_model_ref,
+        _acquire_ollama_lease,
         request.model_path,
+        getattr(request, "native_path_lease", None),
     )
     try:
         lease = await asyncio.shield(lease_future)
@@ -9240,20 +9251,24 @@ async def _lease_ollama_model_ref(
 
         def _release_cancelled_lease(done):
             try:
-                done.result().release()
+                if done.result() is not None:
+                    done.result().release()
             except BaseException:
                 pass
 
         lease_future.add_done_callback(_release_cancelled_lease)
         raise
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         logger.warning("inference.ollama_materialize_failed: %s", exc)
         raise HTTPException(
             status_code = 400,
             detail = redact_native_paths(str(exc)),
         ) from exc
+    if lease is None:
+        return None
     stack.callback(lease.release)
-    return lease.path
+    # An MLX tag loads by its checkpoint path, which the request already names.
+    return lease.path if is_ollama_manifest_ref(request.model_path) else None
 
 
 def _defers_access_to_native_grant(request) -> bool:
