@@ -35,7 +35,11 @@ def _run_cli(monkeypatch, **overrides):
     class _HubDataset:
         mapped = False
 
-        def map(self, fn, batched = False):
+        def map(
+            self,
+            fn,
+            batched = False,
+        ):
             self.mapped = True
             return self
 
@@ -161,9 +165,7 @@ def test_dataset_text_file_honours_chunk_size_and_stride(tmp_path, monkeypatch):
 
 def test_dataset_csv_file_uses_raw_loader(tmp_path, monkeypatch):
     path = tmp_path / "corpus.csv"
-    path.write_text(
-        "text\n" + "\n".join(f"row{i} has words" for i in range(60)), encoding = "utf-8"
-    )
+    path.write_text("text\n" + "\n".join(f"row{i} has words" for i in range(60)), encoding = "utf-8")
     dataset, hub_loads = _run_cli(monkeypatch, dataset = str(path), chunk_size = 32, stride = 8)
     assert hub_loads == []
     # 180 text-column words chunk into more than one window; the hub path maps columns instead.
