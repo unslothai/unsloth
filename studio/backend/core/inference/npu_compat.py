@@ -336,6 +336,9 @@ def current(install_converter: bool = True) -> dict:
     from utils.paths.storage_roots import studio_root
 
     backend = get_npu_backend()
+    # No supported NPU: nothing is installed or fetched, every model reads as unknown.
+    if not backend.hardware().get("supported"):
+        return build_compat(None, None)
     flm_binary = backend._flm_binary()
     root = studio_root() / "q4nx_converter"
     installer = _installer()

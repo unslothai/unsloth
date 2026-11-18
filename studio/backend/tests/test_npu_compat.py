@@ -222,3 +222,21 @@ def test_the_route_returns_the_table_without_starting_the_runtime(monkeypatch):
         npu_routes, "get_npu_backend", lambda: pytest.fail("the runtime must not be touched")
     )
     assert asyncio.run(npu_routes.npu_compat()) == {"shapes": [], "fastflowlm_known": False}
+
+
+def test_without_a_supported_npu_nothing_is_installed_or_fetched(monkeypatch):
+    from core.export import q4nx
+    from core.inference import npu_backend
+
+    class _NoNpu:
+        def hardware(self):
+            return {"present": False, "supported": False}
+
+        def _flm_binary(self):
+            pytest.fail("FastFlowLM must not be looked up without an NPU")
+
+    monkeypatch.setattr(npu_backend, "get_npu_backend", lambda: _NoNpu())
+    monkeypatch.setattr(q4nx, "_installer", lambda: pytest.fail("the converter must not install"))
+    compat = nc.current()
+    assert compat["fastflowlm_known"] is False and compat["converter_known"] is False
+    assert compat["shapes"] == [] and nc.runnable_shapes() is None
