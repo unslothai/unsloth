@@ -5904,9 +5904,12 @@ def _ensure_rocm_torch() -> "bool | None":
     if IS_WINDOWS:
         # An explicit ROCm pin overrides the per-arch index: retry the PINNED one, not repo.amd.com.
         _win_rocm_pin = _explicit_rocm_torch_index_url()
-        # UNSLOTH_FORCE_ROCM_TORCH is deliberately not read: install.ps1 / setup.ps1 would restore CUDA,
-        # making this a multi-GB round trip.
-        if _win_rocm_pin is None and _has_usable_nvidia_gpu():
+        # install.ps1 / setup.ps1 honour UNSLOTH_FORCE_ROCM_TORCH too, so this no longer undoes them.
+        if (
+            _win_rocm_pin is None
+            and _has_usable_nvidia_gpu()
+            and not _rocm_torch_explicitly_requested()
+        ):
             return
         gfx_arch = _detect_windows_gfx_arch()
         if not gfx_arch and _win_rocm_pin is None:

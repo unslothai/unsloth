@@ -3999,11 +3999,16 @@ $HasNvidiaDriverEvidence = $HasNvidiaSmi -and -not $script:NvidiaPresenceOnly
 $NvidiaGpuName = $null
 $NvidiaSmArch = $null
 $NvidiaDriverVersion = $null
-$nvMaskHidesAll = $false
-if ($null -ne $env:CUDA_VISIBLE_DEVICES) {
-    $nvMask = ($env:CUDA_VISIBLE_DEVICES -replace '\s', '')
-    $nvMaskHidesAll = ($nvMask -eq '' -or $nvMask -eq '-1')
+# In step with install.ps1's copies (install.sh's _cvd_hides_nvidia / _rocm_torch_explicitly_requested).
+function Test-CudaMaskHidesNvidia {
+    if ($null -eq $env:CUDA_VISIBLE_DEVICES) { return $false }
+    $mask = $env:CUDA_VISIBLE_DEVICES -replace '\s', ''
+    return ($mask -eq '' -or $mask -eq '-1')
 }
+function Test-RocmTorchExplicitlyRequested {
+    return ("$env:UNSLOTH_FORCE_ROCM_TORCH".Trim() -match '^(?i)(1|true|yes|on)$')
+}
+$nvMaskHidesAll = Test-CudaMaskHidesNvidia
 if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not $nvMaskHidesAll) {
     try {
         # -StdoutOnly: driver warnings on stderr would corrupt the CSV.
@@ -4223,7 +4228,11 @@ function Resolve-ShadowingGfxPick {
     substep "Run 'setx HIP_VISIBLE_DEVICES $discreteIdx' and reopen your terminal so Unsloth uses $discreteArch at runtime too, not just at install time" "Cyan"
     return $discreteArch
 }
-if (-not $HasNvidiaSmi) {
+# UNSLOTH_FORCE_ROCM_TORCH, or a mask hiding every NVIDIA device, hands a mixed host's torch to the
+# AMD card, as install.ps1 did; without them the AMD probe stays skipped, so an update keeps CUDA.
+$script:ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not (Get-PinnedTorchIndexUrl) -and
+    ((Test-RocmTorchExplicitlyRequested) -or $nvMaskHidesAll)
+if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
     # The venv hipInfo.exe comes from an AMD wheel, not a HIP SDK.
     function Test-HipinfoIsVenvInternal {
         param([AllowNull()][string]$HipinfoPath)
@@ -4578,6 +4587,22 @@ $_rocmWheelArches = @(
 )
 # "AMD gets GPU wheels", not "AMD GPU present": unmapped arches install CPU torch.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
+if ($script:ProbeAmdBesideNvidia) {
+    if ($AmdHasGpuWheels) {
+        # An AMD host from here on, so the stale check keeps ROCm torch rather than restoring CUDA.
+        $HasNvidiaSmi = $false
+        $_rocmWhy = if (Test-RocmTorchExplicitlyRequested) { "UNSLOTH_FORCE_ROCM_TORCH is set" } else { "CUDA_VISIBLE_DEVICES hides the NVIDIA GPU" }
+        substep "$_rocmWhy -- ROCm PyTorch for the AMD GPU ($script:ROCmGfxArch), not CUDA" "Cyan"
+    } else {
+        if ((Test-RocmTorchExplicitlyRequested) -and $env:SKIP_STUDIO_BASE -ne "1") {
+            substep "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host; keeping CUDA." "Yellow"
+        }
+        # NVIDIA keeps torch: forget the AMD card so the rest runs as it did before the probe.
+        $HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = $null; $ROCmGpuName = $null
+        $script:ROCmGpuLabels = @(); $script:ROCmPeerLabels = @(); $script:ROCmGfxArch = $null
+        $script:ROCmUnsupportedGfxArch = $null; $script:ROCmVersion = $null; $script:ROCmVersionFull = $null
+    }
+}
 
 # Mirrors install.ps1's Intel scan; self-contained since `studio update` runs setup.ps1 standalone.
 $script:IsIntelXpu = $false
