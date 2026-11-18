@@ -174,6 +174,8 @@ BENIGN_TIMING = {
     ("test_decision_native_gpu.py", "_bare_llama_server"),
     # A 10 s poll deadline: descheduling only delays the poll, it cannot make the condition false.
     ("test_npu_chat_route.py", "_wait_for"),
+    # A poll deadline for a Tk window and the file it writes: descheduling only delays the poll.
+    ("test_computer_use_live.py", "_wait_for"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
     # A 600-second expiry vs the wall clock; late reads cannot make it false.
     (
@@ -191,6 +193,10 @@ BENIGN_TIMING = {
     ("test_hf_download_fallback_and_kill.py", "_wait_for_transfer"),
     ("test_hf_download_reclaim_race.py", "test_gguf_reclaim_preserves_publication_and_active_peer"),
     ("test_hf_download_ref_concurrency.py", "test_peer_completion_survives_an_older_process"),
+    # A 5 s poll deadline for a request to reach the admission queue: descheduling only delays the poll.
+    ("test_anthropic_admission.py", "_until_queued"),
+    # A 5 s poll deadline for two image requests to join one batch: descheduling only delays the poll.
+    ("test_openai_images_load_swap.py", "test_a_batch_waiting_through_a_reload_carries_the_pin"),
 }
 
 
@@ -342,20 +348,20 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 14, (
-        f"expected fourteen parallel pytest runs, four shards of the backend matrix and ten "
+    assert len(parallel) == 16, (
+        f"expected sixteen parallel pytest runs, five shards of the backend matrix and eleven "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
     )
     root = [command for command in parallel if _over_the_repo_tests(command)]
-    assert len(root) == 10, (
-        f"expected the ten repo-root shards, got {root}. The isolation checks above apply "
+    assert len(root) == 11, (
+        f"expected the eleven repo-root shards, got {root}. The isolation checks above apply "
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]
-    assert len(backend) == 4, (
-        f"expected the four backend shards, got {backend}. Same reason: the backend "
+    assert len(backend) == 5, (
+        f"expected the five backend shards, got {backend}. Same reason: the backend "
         f"isolation checks apply to those."
     )
     # The two jobs' sets must be disjoint or each job's isolation rules apply to the other.
@@ -370,7 +376,7 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     assert all("${{" not in command for command in root + backend)
     assert any("--ignore=" in command for command in root)
     assert {command for command in root} == set(root), "a shard selection appears twice"
-    assert len(set(backend)) == 4, "a backend shard selection appears twice"
+    assert len(set(backend)) == 5, "a backend shard selection appears twice"
     # Non-vacuous for the backend side too.
     assert any(_collects(command, "tests/test_account_contract.py") for command in backend)
     # Non-vacuous for the repo root too.

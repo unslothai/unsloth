@@ -320,6 +320,7 @@ def _real_mp4_bytes(
     frames: int = 8,
     size: int | tuple[int, int] = 32,
     rate: int = 8,
+    codec: str = "mpeg4",
 ) -> bytes:
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
@@ -327,7 +328,7 @@ def _real_mp4_bytes(
 
     buf = io.BytesIO()
     with av.open(buf, "w", format = "mp4") as out:
-        stream = out.add_stream("mpeg4", rate = rate)
+        stream = out.add_stream(codec, rate = rate)
         width, height = size if isinstance(size, tuple) else (size, size)
         stream.width = width
         stream.height = height
@@ -475,6 +476,16 @@ def test_transcode_gif_and_webm_produce_real_containers():
     assert gif is not None and gif.startswith(b"GIF8")
     webm = gallery.transcode(record["id"], "webm")
     assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
+
+
+def test_webm_export_keeps_every_frame_of_an_h264_clip():
+    av = pytest.importorskip("av")
+    import io
+
+    record = gallery.save(_real_mp4_bytes(frames = 25, codec = "libx264"), _meta())
+    webm = gallery.transcode(record["id"], "webm")
+    with av.open(io.BytesIO(webm)) as container:
+        assert sum(1 for _ in container.decode(video = 0)) == 25
 
 
 def test_thumbnail_produces_a_webp_from_the_video():

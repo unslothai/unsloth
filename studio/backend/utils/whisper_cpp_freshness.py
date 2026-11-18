@@ -49,10 +49,6 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
     return marker
 
 
-def _load_disk_cache(repo: str) -> Optional[tuple[float, Optional[str]]]:
-    return _flow.load_disk_cache(repo, _cache_dir())
-
-
 def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
     _flow.save_disk_cache(
         repo, latest_tag, _cache_dir(), log_message = "whisper freshness cache write failed"

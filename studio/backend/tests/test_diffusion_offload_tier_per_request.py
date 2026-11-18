@@ -360,3 +360,15 @@ def test_request_gate_keeps_the_eager_key_once_the_profile_rewrites_the_load_key
     _learned.clear()
     assert _request(state)[2] == 2560
     assert _learned[-1] == (*RECORDED, "pre_decode")
+
+
+def test_low_vram_never_runs_the_denoiser_whole_for_a_request(_learned, monkeypatch):
+    monkeypatch.delenv(dm.LOW_VRAM_PROMOTE_ENV, raising = False)
+    balanced = _state(memory_mode = dm.MEMORY_MODE_BALANCED)
+    balanced.pipe._unsloth_peak_identity = LOADED
+    assert _request(balanced) is not None
+    low = _state(memory_mode = dm.MEMORY_MODE_LOW_VRAM)
+    low.pipe._unsloth_peak_identity = LOADED
+    assert _request(low) is None
+    monkeypatch.setenv(dm.LOW_VRAM_PROMOTE_ENV, "1")
+    assert _request(low) is not None

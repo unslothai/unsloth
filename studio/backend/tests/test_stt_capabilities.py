@@ -45,6 +45,7 @@ def test_audio_cpp_table(hub, folder, family, timestamps, speakers, cpu_only, do
         assert (result["engine"], result["family"]) == ("audiocpp", family)
         assert (result["timestamps"], result["speakers"]) == (timestamps, speakers)
         assert result["cpu_only"] is cpu_only
+        assert result["accent_hint"] is False
         assert (result["aligner"] is not None) == (timestamps == "on_request")
 
 
@@ -90,6 +91,7 @@ def test_other_engines_and_unknown_models_are_plain_text(
         "family": None,
         "timestamps": "unsupported",
         "speakers": False,
+        "accent_hint": expected_engine == "mtmd",
         "aligner": None,
         "cpu_only": False,
         "max_seconds": 4 * 3600 if expected_engine == "audiocpp" else 30 * 60,

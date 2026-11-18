@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""stop used os.kill(pid, 0), which raises WinError 87 on Windows; _pid_alive uses tasklist there."""
+"""stop used os.kill(pid, 0), which raises WinError 87 on Windows; _pid_alive uses psutil, else tasklist, there."""
 
 import ast
 import os
@@ -36,6 +36,93 @@ def _load_pid_alive(platform: str, fake_run = None):
     ns = {"os": os, "sys": fake_sys, "subprocess": fake_sub}
     exec(src, ns)
     return ns["_pid_alive"]
+
+
+@pytest.fixture(autouse = True)
+def _no_psutil(monkeypatch):
+    monkeypatch.setitem(sys.modules, "psutil", None)
+
+
+def _fake_psutil(
+    monkeypatch,
+    result = None,
+    *,
+    raises = None,
+):
+    calls = []
+
+    def pid_exists(pid):
+        calls.append(pid)
+        if raises is not None:
+            raise raises
+        return result
+
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(pid_exists = pid_exists))
+    return calls
+
+
+def _counting_tasklist(returns_pid):
+    spawns = []
+    inner = _fake_tasklist(returns_pid)
+
+    def _run(cmd, *args, **kwargs):
+        spawns.append(cmd)
+        return inner(cmd, *args, **kwargs)
+
+    return _run, spawns
+
+
+@pytest.mark.parametrize("alive", [True, False])
+def test_pid_alive_windows_uses_psutil_without_spawning(monkeypatch, alive):
+    calls = _fake_psutil(monkeypatch, alive)
+    run, spawns = _counting_tasklist(4242 if alive else None)
+    assert _load_pid_alive("win32", fake_run = run)(4242) is alive
+    assert calls == [4242]
+    assert spawns == []
+
+
+@pytest.mark.parametrize("alive", [True, False])
+def test_pid_alive_windows_falls_back_to_tasklist_without_psutil(alive):
+    run, spawns = _counting_tasklist(4242 if alive else None)
+    assert _load_pid_alive("win32", fake_run = run)(4242) is alive
+    assert len(spawns) == 1
+
+
+@pytest.mark.parametrize("err", [OSError("denied"), RuntimeError("boom")])
+@pytest.mark.parametrize("alive", [True, False])
+def test_pid_alive_windows_falls_back_to_tasklist_when_psutil_raises(monkeypatch, err, alive):
+    _fake_psutil(monkeypatch, raises = err)
+    run, spawns = _counting_tasklist(4242 if alive else None)
+    assert _load_pid_alive("win32", fake_run = run)(4242) is alive
+    assert len(spawns) == 1
+
+
+def test_pid_alive_windows_psutil_raises_and_tasklist_fails_means_alive(monkeypatch):
+    _fake_psutil(monkeypatch, raises = OSError("denied"))
+    pid_alive = _load_pid_alive("win32", fake_run = _fake_tasklist(None, raises = True))
+    assert pid_alive(4242) is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "real psutil on Windows")
+def test_pid_alive_windows_real_psutil_without_spawning(monkeypatch):
+    monkeypatch.delitem(sys.modules, "psutil")
+    pytest.importorskip("psutil")
+    run, spawns = _counting_tasklist(None)
+    pid_alive = _load_pid_alive("win32", fake_run = run)
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_pid = child.pid
+    child.wait()
+    del child  # drops the process handle, else Windows keeps the exited process listed
+    assert pid_alive(os.getpid()) is True
+    assert pid_alive(dead_pid) is False
+    assert spawns == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "os.kill(pid, 0) terminates on Windows")
+def test_pid_alive_posix_never_consults_psutil(monkeypatch):
+    calls = _fake_psutil(monkeypatch, False)
+    assert _load_pid_alive("linux")(os.getpid()) is True
+    assert calls == []
 
 
 # `stop` delegates to `_signal_stop`, so both must be guarded against os.kill(pid, 0).

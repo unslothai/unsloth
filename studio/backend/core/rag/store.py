@@ -69,15 +69,36 @@ def _now() -> str:
 
 
 _TOKEN = re.compile(r"\w+", re.UNICODE)
+_CJK_RUN = re.compile(f"([{rag_db.CJK}]+)")
 # Quotes mark a word being named rather than used; non-greedy and single-line so an unclosed quote spans nothing.
 _QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([^`\n]+)`")
+
+
+def _terms(token: str) -> list[str]:
+    terms = []
+    for i, part in enumerate(_CJK_RUN.split(token)):
+        if i % 2:
+            terms.extend(" ".join(part[j : j + 2]) for j in range(max(1, len(part) - 1)))
+        elif part:
+            terms.append(part)
+    return terms
+
+
+def _or_terms(tokens) -> str:
+    # Dedupe CJK phrases only: a repeated plain word keeps its bm25 weight.
+    seen = set()
+    return " OR ".join(
+        f'"{t}"'
+        for token in tokens
+        for t in _terms(token)
+        if " " not in t or not (t in seen or seen.add(t))
+    )
 
 
 def _match_query(query: str) -> str:
     """User text -> safe FTS5 OR-of-quoted-terms query; quoting defuses FTS5
     operators. "" (no tokens) means no lexical results."""
-    toks = _TOKEN.findall(query.lower())
-    return " OR ".join(f'"{t}"' for t in toks)
+    return _or_terms(_TOKEN.findall(query.lower()))
 
 
 # Fixed list for reproducibility; 'no'/'not' deliberately excluded (they carry meaning).
@@ -120,10 +141,10 @@ def conversation_match_queries(query: str) -> list[str]:
         for token in _TOKEN.findall("".join(match))
     )
     content = [t for t in tokens if t not in _ARCHIVE_STOPWORDS or t in quoted] or tokens
-    permissive = " OR ".join(f'"{t}"' for t in content)
+    permissive = _or_terms(content)
     if not identifiers:
         return [permissive]
-    focused = " OR ".join(f'"{t}"' for t in identifiers)
+    focused = " OR ".join('"' + " ".join(rag_db.fts_text(t).split()) + '"' for t in identifiers)
     return [focused] if focused == permissive else [focused, permissive]
 
 
@@ -421,7 +442,7 @@ def _insert_chunk(
     )
     conn.execute(
         "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
-        (chunk.text, chunk_id, scope),
+        (rag_db.fts_text(chunk.text), chunk_id, scope),
     )
     return cur.lastrowid
 
@@ -569,8 +590,20 @@ def delete_document(
     commit: bool = True,
 ) -> None:
     """Remove a document and all its chunks (+ fts + vec rows)."""
-    rag_db._delete_document_chunks(conn, document_id)
-    conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
+    delete_documents(conn, [document_id], commit = commit)
+
+
+def delete_documents(
+    conn: sqlite3.Connection,
+    document_ids,
+    *,
+    commit: bool = True,
+    vec: bool = True,
+) -> None:
+    ids = list(document_ids)
+    rag_db._delete_documents_chunks(conn, ids, vec = vec)
+    for batch, marks in rag_db._id_batches(ids):
+        conn.execute(f"DELETE FROM documents WHERE id IN ({marks})", batch)
     if commit:
         conn.commit()
 
@@ -595,10 +628,14 @@ def _copy_chunk_rows(
         "FROM chunks WHERE document_id=?",
         (target_id, target_id, scope, source_id),
     )
-    conn.execute(
-        "INSERT INTO chunks_fts(text, chunk_id, scope) "
-        "SELECT text, id, scope FROM chunks WHERE document_id=?",
-        (target_id,),
+    conn.executemany(
+        "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
+        [
+            (rag_db.fts_text(r["text"]), r["id"], r["scope"])
+            for r in conn.execute(
+                "SELECT text, id, scope FROM chunks WHERE document_id=?", (target_id,)
+            ).fetchall()
+        ],
     )
     return chunk_ids
 
@@ -880,7 +917,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
         widen: list[str] = []
         for s in pending:
             fetch = fetches[s]
-            rows, cap = _knn(conn, db_file, s, vector, query, fetch)
+            rows, cap, complete = _knn(conn, db_file, s, vector, query, fetch)
             kept[s] = _drop_incompatible(
                 conn,
                 # A NaN vector written by an fp16 embedder reads back as a NULL distance: skip it, or the
@@ -889,9 +926,17 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
                 embedding_model,
                 untagged,
             )
-            if len(kept[s]) < k and len(rows) >= fetch and fetch < cap:
-                fetches[s] = min(fetch * 4, cap)
-                widen.append(s)
+            if len(kept[s]) < k and len(rows) >= fetch and not complete:
+                if fetch < cap:
+                    fetches[s] = min(fetch * 4, cap)
+                    widen.append(s)
+                else:
+                    # Merge, not replace: an ANN pass can hold more hits than vec0's fallback cap.
+                    merged = dict(kept[s])
+                    merged.update(
+                        _search_compatible_dense(conn, s, query, embedding_model, untagged)
+                    )
+                    kept[s] = list(merged.items())
         pending = widen
     out = [hit for s in scopes for hit in kept[s]]
     out.sort(key = lambda t: t[1], reverse = True)
@@ -903,7 +948,8 @@ _MAX_DENSE_FETCH = 4096
 
 
 def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
-    """(chunk_id, distance) rows plus the largest fetch worth asking for: the cache's row count, or vec0's cap."""
+    """(chunk_id, distance) rows, the largest fetch worth asking for (the cache's row count, or vec0's cap), and
+    whether the rows already cover the whole scope."""
     if db_file is not None:
         hit = vec_cache.search(conn, db_file, scope, vector, fetch)
         if hit is not None:
@@ -914,11 +960,36 @@ def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
         "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
         (scope, query, min(fetch, _MAX_DENSE_FETCH)),
     ).fetchall()
-    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH
+    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH, False
 
 
 # One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
 _ID_BATCH = 900
+
+_COMPATIBLE_CHUNKS = (
+    "NOT EXISTS (SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+    "AND (d.linked_folder_id IS NULL OR EXISTS "
+    "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
+    "AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=? "
+    "OR d.embedding_model=?)"
+)
+
+
+def _search_compatible_dense(conn, scope, query, embedding_model, untagged):
+    # Prefilter on rowid, not chunk_id: vec0 matches a TEXT metadata IN list per row x per value.
+    rows = conn.execute(
+        "SELECT chunk_id, distance FROM chunks_vec "
+        "WHERE scope=? AND embedding MATCH ? AND k=? AND rowid IN ("
+        "SELECT v.rowid FROM chunks_vec v WHERE v.scope=? AND v.chunk_id IN ("
+        "SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
+        f"WHERE c.scope=? AND {_COMPATIBLE_CHUNKS})) ORDER BY distance",
+        (scope, query, _MAX_DENSE_FETCH, scope, scope, embedding_model, embedding_model, untagged),
+    ).fetchall()
+    return [
+        (r["chunk_id"], 1.0 - r["distance"])
+        for r in rows
+        if r["distance"] is not None and math.isfinite(r["distance"])
+    ]
 
 
 def _drop_incompatible(
@@ -938,12 +1009,7 @@ def _drop_incompatible(
             r["id"]
             for r in conn.execute(
                 f"SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
-                f"WHERE c.id IN ({placeholders}) AND NOT EXISTS "
-                f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
-                f"AND (d.linked_folder_id IS NULL OR EXISTS "
-                f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
-                f"AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=? "
-                f"OR d.embedding_model=?)",
+                f"WHERE c.id IN ({placeholders}) AND {_COMPATIBLE_CHUNKS}",
                 (*batch, embedding_model, embedding_model, untagged),
             ).fetchall()
         )

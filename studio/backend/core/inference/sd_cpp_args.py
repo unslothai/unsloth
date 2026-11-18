@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Optional
@@ -34,6 +35,7 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "flux.3-klein": ("--llm",),
     "flux.3-klein-base": ("--llm",),
     "krea-2": ("--llm",),
+    "minimax-h3-image": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
     "flux.1-kontext": ("--clip_l", "--t5xxl"),
 }
@@ -84,6 +86,7 @@ class SdCppGenParams:
     guidance: Optional[float] = None
     seed: Optional[int] = None
     sampling_method: Optional[str] = None
+    scheduler: Optional[str] = None
     batch_count: int = 1
     init_img: Optional[str] = None
     strength: Optional[float] = None
@@ -93,6 +96,7 @@ class SdCppGenParams:
     lora_apply_mode: Optional[str] = None
     # Qwen-Image-Layered layer count; sd.cpp returns layers + 1 images (first = input reconstruction). None = its default 3.
     qwen_image_layers: Optional[int] = None
+    rng: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -117,8 +121,16 @@ class SdCppVideoGenParams:
     ref_videos: tuple[str, ...] = ()
     ref_video_audios: tuple[str, ...] = ()
     ref_audios: tuple[str, ...] = ()
-    # sd.cpp exposes only the video schedule shift.
+    # 0-based ref_videos index of each ref_video_audios entry; () pairs them by position.
+    ref_video_audio_indices: tuple[int, ...] = ()
     flow_shift: Optional[float] = None
+    # --audio-flow-shift: builds with sd_cpp_supports_flag(binary, "--audio-flow-shift") only; None = model default.
+    audio_flow_shift: Optional[float] = None
+    # --sampling-method / --scheduler; None leaves the build's default.
+    sample_method: Optional[str] = None
+    scheduler: Optional[str] = None
+    # Uncompressed AVI (BGR24 + float PCM) so Studio's x264 / AAC export is the only lossy step.
+    lossless_output: bool = False
 
 
 @dataclass(frozen = True)
@@ -845,6 +857,34 @@ def offload_flags(
     return out
 
 
+# H3 VAE tiler: --vae-tile-overlap is a minimum overlap fraction (0.5 unset); 0.25 = the reference 64 px layout.
+H3_VAE_TILE_OVERLAP = "0.25"
+
+
+def with_h3_vae_tile_overlap(flags: "tuple[str, ...] | list[str]") -> tuple[str, ...]:
+    """``flags`` plus ``--vae-tile-overlap 0.25`` when they tile the VAE and set no overlap, else unchanged."""
+    flags = tuple(flags)
+    if "--vae-tiling" not in flags or "--vae-tile-overlap" in flags:
+        return flags
+    return flags + ("--vae-tile-overlap", H3_VAE_TILE_OVERLAP)
+
+
+# sd-cli's own <lora:NAME:W> pattern; it loads an absolute NAME from anywhere, whatever --lora-model-dir says.
+_LORA_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
+
+
+def strip_lora_tags(prompt: str) -> str:
+    """Removes every tag sd-cli would parse, to a fixed point so a split tag cannot reassemble, plus any dangling
+    ``<lora:`` that could pair with a tag appended after it."""
+    out, prev = prompt, None
+    while prev != out:
+        prev = out
+        out = _LORA_TAG_RE.sub("", out).replace("<lora:", "")
+    if out == prompt:
+        return prompt
+    return re.sub(r"[ \t]{2,}", " ", out).strip()
+
+
 def build_sd_cpp_command(
     binary: str,
     files: SdCppModelFiles,
@@ -879,7 +919,9 @@ def build_sd_cpp_command(
         if value:
             cmd += [flag, value]
 
-    cmd += ["--prompt", params.prompt]
+    # Tags are only honoured against a lora_dir the caller filled with validated adapters.
+    prompt = params.prompt if params.lora_dir else strip_lora_tags(params.prompt)
+    cmd += ["--prompt", prompt]
     if params.negative_prompt:
         cmd += ["--negative-prompt", params.negative_prompt]
     if params.init_img:
@@ -912,8 +954,12 @@ def build_sd_cpp_command(
         cmd += ["--guidance", _fmt_float(params.guidance)]
     if params.sampling_method:
         cmd += ["--sampling-method", str(params.sampling_method)]
+    if params.scheduler:
+        cmd += ["--scheduler", str(params.scheduler)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
+    if params.rng:
+        cmd += ["--rng", str(params.rng)]
     if params.batch_count and params.batch_count != 1:
         # The runner collects only --output, so a CLI batch drops images; use the server API.
         raise ValueError(
@@ -933,6 +979,11 @@ def build_sd_cpp_command(
     if extra_args:
         cmd += list(extra_args)
     return cmd
+
+
+# References are already sized. sd.cpp's "max" leaves a short edge <= 2048 untouched; its default
+# "match" is not idempotent after the 32 px snap, so it could resize them again. Pre-#2177 builds ignore it.
+H3_SIZED_REF_IMAGE_ARGS = "ref_image_size=max"
 
 
 def build_sd_cpp_video_command(
@@ -982,23 +1033,27 @@ def build_sd_cpp_video_command(
             "MiniMax-H3 keyframes and references cannot be combined: they run against "
             "different denoiser partitions."
         )
-    if len(params.ref_video_audios) > len(params.ref_videos):
-        raise ValueError("each reference video soundtrack needs a reference video to pair with")
+    _check_ref_video_audio_indices(params)
     if params.init_img:
         cmd += ["--init-img", params.init_img]
     if params.end_img:
         cmd += ["--end-img", params.end_img]
     for ref in params.ref_images:
         cmd += ["--ref-image", ref]
+    if params.ref_images:
+        cmd += ["--ref-image-args", H3_SIZED_REF_IMAGE_ARGS]
     for ref in params.ref_videos:
         cmd += ["--ref-video", ref]
     for ref in params.ref_video_audios:
         cmd += ["--ref-video-audio", ref]
+    for index in params.ref_video_audio_indices:
+        cmd += ["--ref-video-audio-index", str(int(index))]
     for ref in params.ref_audios:
         cmd += ["--ref-audio", ref]
     cmd += [
         "--prompt",
-        params.prompt,
+        # Video has no LoRA selection, so no prompt tag is legitimate.
+        strip_lora_tags(params.prompt),
         "--cfg-scale",
         _fmt_float(params.cfg_scale),
         "--width",
@@ -1014,10 +1069,18 @@ def build_sd_cpp_video_command(
     ]
     if params.steps is not None:
         cmd += ["--steps", str(int(params.steps))]
+    if params.sample_method:
+        cmd += ["--sampling-method", str(params.sample_method)]
+    if params.scheduler:
+        cmd += ["--scheduler", str(params.scheduler)]
     if params.flow_shift is not None:
         cmd += ["--flow-shift", _fmt_float(params.flow_shift)]
+    if params.audio_flow_shift is not None:
+        cmd += ["--audio-flow-shift", _fmt_float(params.audio_flow_shift)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
+    if params.lossless_output:
+        cmd.append("--lossless-video")
     cmd += ["--output", output_path]
     if threads is not None:
         cmd += ["--threads", str(int(threads))]
@@ -1088,6 +1151,7 @@ def build_sd_cpp_server_command(
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
     accelerator: Optional[str] = None,
+    rng: Optional[str] = None,
 ) -> list[str]:
     """Those dir flags all point at ``scratch_dir``, which must exist: sd-server fails on a missing dir."""
     if not files.diffusion_model:
@@ -1110,6 +1174,9 @@ def build_sd_cpp_server_command(
             cmd += [flag, value]
     if vae_format:
         cmd += ["--vae-format", vae_format]
+    # A server-wide flag: the request body has no rng field.
+    if rng:
+        cmd += ["--rng", str(rng)]
     cmd += ["--listen-ip", str(host), "--listen-port", str(int(port))]
     if scratch_dir:
         cmd += [
@@ -1151,6 +1218,7 @@ def build_img_gen_request(
     seed: Optional[int] = None,
     batch_count: int = 1,
     sample_method: Optional[str] = None,
+    scheduler: Optional[str] = None,
     flow_shift: Optional[float] = None,
     cfg_scale: Optional[float] = None,
     distilled_guidance: Optional[float] = None,
@@ -1177,6 +1245,8 @@ def build_img_gen_request(
         sample_params["sample_steps"] = int(steps)
     if sample_method:
         sample_params["sample_method"] = str(sample_method)
+    if scheduler:
+        sample_params["scheduler"] = str(scheduler)
     if flow_shift is not None:
         sample_params["flow_shift"] = float(flow_shift)
     if custom_sigmas:
@@ -1229,6 +1299,91 @@ H3_SERVER_REFS_ENV = "UNSLOTH_H3_SERVER_REFS"
 _SD_CLI_FRAME_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
+# "0" = no family --scheduler / flow-shift variants (sd.cpp default schedule).
+FAMILY_SCHEDULER_ENV = "UNSLOTH_SD_CPP_FAMILY_SCHEDULER"
+
+# MiniMax-H3's reference recipe: res_multistep (eta 0, one evaluation per step) on the simple schedule. Distilled /
+# PDD checkpoints keep Euler on the same schedule (their recipe). "legacy" restores Euler on sd.cpp's discrete grid.
+H3_SAMPLER_ENV = "UNSLOTH_H3_SD_CPP_SAMPLER"
+H3_SAMPLE_METHOD = "res_multistep"
+H3_DISTILLED_SAMPLE_METHOD = "euler"
+H3_SCHEDULER = "simple"
+# "0" keeps sd.cpp's MJPG AVI (lossy) even on builds with the uncompressed AVI.
+H3_LOSSLESS_ENV = "UNSLOTH_H3_SD_CPP_LOSSLESS"
+H3_LOSSLESS_SERVER_FORMAT = "avi_raw"
+
+
+def h3_sd_cpp_sampler(distilled: bool) -> tuple[str, str]:
+    """``(sample_method, scheduler)`` for one MiniMax-H3 render on sd.cpp."""
+    if os.environ.get(H3_SAMPLER_ENV, "").strip().lower() == "legacy":
+        return "euler", "discrete"
+    return (H3_DISTILLED_SAMPLE_METHOD if distilled else H3_SAMPLE_METHOD), H3_SCHEDULER
+
+
+def h3_server_output_format(server_formats: Iterable[str]) -> str:
+    """vid_gen ``output_format`` for an sd-server listing ``server_formats``: uncompressed AVI when offered."""
+    if h3_lossless_enabled() and H3_LOSSLESS_SERVER_FORMAT in tuple(server_formats or ()):
+        return H3_LOSSLESS_SERVER_FORMAT
+    return "avi"
+
+
+def sd_cpp_supports_flag(binary: Optional[str], flag: str) -> bool:
+    """True when ``binary --help`` lists ``flag``. Fails closed (older builds reject an unknown flag)."""
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _flag_in_help(str(binary), st.st_size, st.st_mtime_ns, flag)
+
+
+def sd_cpp_supports_ref_video_audio_index(binary: Optional[str]) -> bool:
+    """Explicit soundtrack pairing (``--ref-video-audio-index``)."""
+    return sd_cpp_supports_flag(binary, "--ref-video-audio-index")
+
+
+@functools.lru_cache(maxsize = 32)
+def _flag_in_help(binary: str, size: int, mtime_ns: int, flag: str) -> bool:
+    import re
+
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and re.search(r"(?<![\w-])" + re.escape(flag) + r"\b", text) is not None
+
+
+def h3_lossless_enabled() -> bool:
+    value = os.environ.get(H3_LOSSLESS_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def sd_cpp_supports_lossless_video(binary: Optional[str]) -> bool:
+    """True when ``binary --help`` lists ``--lossless-video``. Fails closed (older builds reject the unknown flag)."""
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _lossless_video_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _lossless_video_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    import re
+
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and re.search(r"(?<![\w-])--lossless-video\b", text) is not None
+
+
+def family_scheduler_enabled() -> bool:
+    value = os.environ.get(FAMILY_SCHEDULER_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
 def h3_server_refs_enabled() -> bool:
     value = os.environ.get(H3_SERVER_REFS_ENV, "").strip().lower()
     return value not in ("0", "false", "no", "off")
@@ -1242,6 +1397,8 @@ def h3_reference_media_keys(params: "SdCppVideoGenParams") -> tuple[str, ...]:
         keys.append("ref_video_audios")
     if params.ref_audios:
         keys.append("ref_audios")
+    if params.ref_video_audio_indices:
+        keys.append("ref_video_audio_indices")
     return tuple(keys)
 
 
@@ -1280,10 +1437,9 @@ def build_vid_gen_request(
         "ref_audios": ref_audios_b64,
     }
     for key in h3_reference_media_keys(params):
-        if len(inline_refs[key] or ()) != len(getattr(params, key)):
+        if key in inline_refs and len(inline_refs[key] or ()) != len(getattr(params, key)):
             raise ValueError(f"{key} must be sent inline to the sd-server vid_gen API")
-    if len(params.ref_video_audios) > len(params.ref_videos):
-        raise ValueError("each reference video soundtrack needs a reference video to pair with")
+    _check_ref_video_audio_indices(params)
     images = dict(images_b64 or {})
     if (images.get("init_image") or images.get("end_image")) and (
         ref_images_b64 or h3_reference_media_keys(params)
@@ -1297,6 +1453,12 @@ def build_vid_gen_request(
         sample_params["sample_steps"] = int(params.steps)
     if params.flow_shift is not None:
         sample_params["flow_shift"] = float(params.flow_shift)
+    if params.sample_method:
+        sample_params["sample_method"] = str(params.sample_method)
+    if params.scheduler:
+        sample_params["scheduler"] = str(params.scheduler)
+    if params.audio_flow_shift is not None:
+        sample_params["audio_flow_shift"] = float(params.audio_flow_shift)
     req: dict = {
         "prompt": params.prompt,
         "width": int(params.width),
@@ -1304,7 +1466,7 @@ def build_vid_gen_request(
         "video_frames": int(params.num_frames),
         "fps": int(params.fps),
         "sample_params": sample_params,
-        "output_format": "avi",
+        "output_format": H3_LOSSLESS_SERVER_FORMAT if params.lossless_output else "avi",
         "output_compression": int(output_compression),
     }
     if params.seed is not None:
@@ -1314,9 +1476,25 @@ def build_vid_gen_request(
             req[key] = images[key]
     if ref_images_b64:
         req["ref_images"] = list(ref_images_b64)
+        req["ref_image_args"] = H3_SIZED_REF_IMAGE_ARGS
     for key in h3_reference_media_keys(params):
-        req[key] = [list(item) if key == "ref_videos" else item for item in inline_refs[key]]
+        if key == "ref_video_audio_indices":
+            req[key] = [int(index) for index in params.ref_video_audio_indices]
+        else:
+            req[key] = [list(item) if key == "ref_videos" else item for item in inline_refs[key]]
     return req
+
+
+def _check_ref_video_audio_indices(params: "SdCppVideoGenParams") -> None:
+    if len(params.ref_video_audios) > len(params.ref_videos):
+        raise ValueError("each reference video soundtrack needs a reference video to pair with")
+    indices = params.ref_video_audio_indices
+    if indices and (
+        len(indices) != len(params.ref_video_audios)
+        or len(set(indices)) != len(indices)
+        or any(not 0 <= int(i) < len(params.ref_videos) for i in indices)
+    ):
+        raise ValueError("each reference video soundtrack needs its own reference video index")
 
 
 def _fmt_float(value: float) -> str:

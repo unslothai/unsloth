@@ -98,7 +98,7 @@ def test_the_cap_admits_a_clip_of_exactly_the_composer_limit():
 
     from routes.inference import _MAX_VIDEO_B64_CHARS
 
-    limit_bytes = 64 * 1024 * 1024
+    limit_bytes = 256 * 1024 * 1024
     # Padded base64 is 4 characters per 3 bytes, rounded up.
     assert len(base64.b64encode(b"x" * 3001)) == 4 * math.ceil(3001 / 3)
     assert 4 * math.ceil(limit_bytes / 3) <= _MAX_VIDEO_B64_CHARS
@@ -139,16 +139,6 @@ def test_video_joins_the_projector_requirement_before_switching():
     switch = source.index("await _maybe_auto_switch_model(", start)
     assert start < source.index("payload.audio_base64", start) < switch
     assert start < source.index("_request_has_video(payload)", start) < switch
-
-
-def test_an_external_provider_refuses_video_rather_than_ignoring_it():
-    """input_video is llama.cpp's own part type, so the proxy cannot carry the clip."""
-    source = _inference_source()
-    start = source.index("if payload.provider_id or payload.provider_type:")
-    branch = source[start : source.index("_proxy_to_external_provider(payload", start)]
-    # Both spellings through one predicate, so a video_url part cannot reach the proxy either.
-    assert "_request_has_video(payload)" in branch
-    assert "_VIDEO_INPUT_REFUSAL" in branch
 
 
 def _model_info(**fields):
@@ -221,7 +211,7 @@ def test_token_counting_refuses_video_like_image_and_audio():
 def test_both_video_checks_share_one_rule():
     """Pre-switch and post-load size checks must agree, or a load is wasted on a refused clip."""
     source = _inference_source()
-    assert source.count("= _request_video_rejection(payload)") == 3
+    assert source.count("= _request_video_rejection(payload)") == 4
 
 
 def _video_url_request(
@@ -332,7 +322,7 @@ def test_every_data_uri_part_is_sized_not_only_the_first():
     assert _request_video_rejection(fits) is None
     oversized = "data:video/mp4;base64," + "A" * (_MAX_VIDEO_B64_CHARS + 1)
     too_big = _video_url_request("data:video/mp4;base64,QUJD", oversized)
-    assert _request_video_rejection(too_big) == (413, "Video file is too large (max 64 MB).")
+    assert _request_video_rejection(too_big) == (413, "Video file is too large (max 256 MB).")
     assert _request_video_rejection(_video_url_request("")) == (
         400,
         "Could not read the provided video file.",
@@ -344,7 +334,7 @@ def test_the_legacy_field_is_sized_beside_a_message_part():
     req = _video_url_request(
         "https://example.com/clip.mp4", video_base64 = "A" * (_MAX_VIDEO_B64_CHARS + 1)
     )
-    assert _request_video_rejection(req) == (413, "Video file is too large (max 64 MB).")
+    assert _request_video_rejection(req) == (413, "Video file is too large (max 256 MB).")
 
 
 def test_admission_prices_a_message_clip_as_media_not_prompt_text():

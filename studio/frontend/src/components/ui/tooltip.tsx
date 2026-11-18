@@ -19,7 +19,7 @@ import {
   subscribeModalLayer,
 } from "@/components/ui/tooltip-modal-layer";
 import { resolveTooltipOpen } from "@/components/ui/tooltip-open-state";
-import { isTouchClick } from "@/components/ui/touch-click";
+import { isTouchClick, opensPopup } from "@/components/ui/touch-click";
 import { roundIfSingleLine } from "@/lib/tooltip-pill";
 import { cn } from "@/lib/utils";
 
@@ -90,12 +90,15 @@ function getServerModalBlock(): boolean {
 
 function TooltipProvider({
   delayDuration = 0,
+  // Off, so neighbouring icons switch labels at once; link tooltips pass `false` to stay hoverable.
+  disableHoverableContent = true,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
     <TooltipPrimitive.Provider
       data-slot="tooltip-provider"
       delayDuration={delayDuration}
+      disableHoverableContent={disableHoverableContent}
       {...props}
     />
   );
@@ -225,8 +228,15 @@ function TooltipTrigger({
     (e: React.MouseEvent<HTMLButtonElement>) => {
       // Composed handler first: a wrapped Radix trigger skips its action if already default-prevented.
       onClick?.(e);
-      // With a mouse, hover already shows it and a pin only strands it.
-      if (disableClickToggle || !toggle || !isTouchClick(e)) return;
+      // With a mouse, hover already shows it and a pin only strands it. A wrapped popover
+      // trigger runs after this handler, so the preventDefault below would cancel its open.
+      if (
+        disableClickToggle ||
+        !toggle ||
+        !isTouchClick(e) ||
+        opensPopup(e.currentTarget)
+      )
+        return;
       // preventDefault stops Radix's close-on-click undoing the tap-toggle below.
       e.preventDefault();
       toggle();

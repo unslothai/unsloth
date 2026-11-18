@@ -3388,8 +3388,10 @@ def stream_prequantized_module(
     *,
     logger: Any = None,
     label: str = "pre-quantized denoiser",
+    defer_pin: bool = False,
 ) -> Optional[str]:
-    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render."""
+    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render.
+    ``defer_pin``: lazy host copies, no up-front pin (the caller pins what does not end up resident)."""
     if not torchao_group_offload_supported():
         return None
     import inspect
@@ -3441,7 +3443,9 @@ def stream_prequantized_module(
                 kwargs["non_blocking"] = True
             if "record_stream" in params:
                 kwargs["record_stream"] = True
-            if "low_cpu_mem_usage" in params:
+            if "low_cpu_mem_usage" in params and defer_pin:
+                kwargs["low_cpu_mem_usage"] = True
+            elif "low_cpu_mem_usage" in params:
                 from itertools import chain
                 payload_mib = sum(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())

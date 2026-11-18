@@ -6,6 +6,7 @@ import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type { ModelCatalogSnapshotEntry } from "../model-catalog-snapshot";
 import type { CustomReasoningConfig } from "../custom-reasoning";
+import type { ProviderCompactionMode } from "../utils/auto-compaction";
 
 
 export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
@@ -32,6 +33,7 @@ export interface ProviderRegistryEntry {
   model_list_mode?: "remote" | "curated";
 
   auth_kind?: ProviderAuthKind;
+  api_key_url?: string | null;
   base_url_editable?: boolean;
   model_ids_editable?: boolean;
 }
@@ -54,6 +56,8 @@ export interface ProviderConfig {
   models?: string[];
   available_models?: string[];
   max_output_tokens?: number | null;
+  auto_compact_tokens?: number | null;
+  compaction_mode?: ProviderCompactionMode | null;
   reasoning_config?: CustomReasoningConfig | null;
   extra_headers?: Record<string, string>;
   shared?: boolean;
@@ -93,10 +97,22 @@ export interface ModelCatalogResponse {
   providers: Record<string, Record<string, ModelCatalogSnapshotEntry>>;
 }
 
+export type ProviderTestErrorKind =
+  | "auth"
+  | "billing"
+  | "rate_limit"
+  | "not_found"
+  | "unreachable"
+  | "timeout"
+  | "invalid_url"
+  | "other";
+
 export interface ProviderTestResult {
   success: boolean;
   message: string;
   models_count?: number | null;
+  /** Absent on older backends. */
+  error_kind?: ProviderTestErrorKind | null;
 }
 
 function parseErrorText(status: number, body: unknown): string {
@@ -203,13 +219,21 @@ export async function encryptProviderApiKey(
   ].join(".");
 }
 
+let registryRequest: Promise<ProviderRegistryEntry[]> | null = null;
+
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  // include_hidden returns the self-hosted presets carrying the studio-tools capability; older
-  // backends ignore it, leaving the capability unknown.
-  const response = await authFetch(
-    "/api/providers/registry?include_hidden=true&include_oauth=true",
-  );
-  return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
+  // The settings page and the sync it starts both ask in the same tick: share that one request.
+  registryRequest ??= (async () => {
+    // include_hidden returns the self-hosted presets carrying the studio-tools capability; older
+    // backends ignore it, leaving the capability unknown.
+    const response = await authFetch(
+      "/api/providers/registry?include_hidden=true&include_oauth=true",
+    );
+    return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
+  })().finally(() => {
+    registryRequest = null;
+  });
+  return registryRequest;
 }
 
 export async function listProviderConfigs(): Promise<ProviderConfig[]> {
@@ -225,6 +249,8 @@ export async function createProviderConfig(payload: {
   models?: string[];
   availableModels?: string[];
   maxOutputTokens?: number | null;
+  autoCompactTokens?: number | null;
+  compactionMode?: ProviderCompactionMode | null;
   reasoningConfig?: CustomReasoningConfig | null;
   extraHeaders?: Record<string, string>;
   shared?: boolean;
@@ -244,6 +270,12 @@ export async function createProviderConfig(payload: {
         ...(payload.maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: payload.maxOutputTokens }),
+        ...(payload.autoCompactTokens === undefined
+          ? {}
+          : { auto_compact_tokens: payload.autoCompactTokens }),
+        ...(payload.compactionMode === undefined
+          ? {}
+          : { compaction_mode: payload.compactionMode }),
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
@@ -282,6 +314,8 @@ export async function updateProviderConfig(
     models?: string[];
     availableModels?: string[];
     maxOutputTokens?: number | null;
+    autoCompactTokens?: number | null;
+    compactionMode?: ProviderCompactionMode | null;
     reasoningConfig?: CustomReasoningConfig | null;
     extraHeaders?: Record<string, string>;
     shared?: boolean;
@@ -305,6 +339,12 @@ export async function updateProviderConfig(
         ...(payload.maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: payload.maxOutputTokens }),
+        ...(payload.autoCompactTokens === undefined
+          ? {}
+          : { auto_compact_tokens: payload.autoCompactTokens }),
+        ...(payload.compactionMode === undefined
+          ? {}
+          : { compaction_mode: payload.compactionMode }),
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),

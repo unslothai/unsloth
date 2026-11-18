@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import os
 import re
 from dataclasses import dataclass
@@ -947,13 +948,34 @@ def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
     return f"{parents}/{stem}" if with_stem else parents
 
 
-def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: object) -> None:
+_NAME_SEPARATORS = "-_. /"
+
+
+def _distinct_name_tails(variants: list[GgufVariantInfo]) -> dict[int, str]:
+    """Each name past the shared prefix (``HIGH`` in ``Model-HIGH.gguf``); empty when none is shared."""
+    stems = [variant.filename.replace("\\", "/").rsplit(".", 1)[0] for variant in variants]
+    shared = os.path.commonprefix(stems)
+    cut = max(shared.rfind(sep) for sep in _NAME_SEPARATORS) + 1
+    if cut <= 0:
+        return {}
+    tails = {id(variant): stem[cut:] for variant, stem in zip(variants, stems)}
+    if not all(tails.values()) or len(set(tails.values())) != len(tails):
+        return {}
+    return tails
+
+
+def _apply_gguf_display_labels(
+    variants: list[GgufVariantInfo],
+    *repo_ids: object,
+    name_tails: bool = False,
+) -> None:
     """Fill ``display_label`` where the key alone does not say which checkpoint a row is."""
     root_label = gguf_root_label(*repo_ids) if repo_ids else None
     unknown_variants = [
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
     ambiguous = len(unknown_variants) > 1
+    unknown_tails = _distinct_name_tails(unknown_variants) if ambiguous and name_tails else {}
 
     # The bpw modifier reads perfectly well on its own, so a key that is only the token plus its bpw suffix is NOT path-qualified and needs no scope label.
     def _plain_key(variant) -> Optional[str]:
@@ -982,7 +1004,11 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: objec
             variant.display_label = f"{task} · {token or 'GGUF'} · {build}"
             continue
         if token is None:
-            variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
+            variant.display_label = (
+                f"GGUF · {unknown_tails.get(id(variant), variant.filename)}"
+                if ambiguous
+                else "GGUF"
+            )
         elif variant.quant.lower() != (_plain_key(variant) or "").lower():
             collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
             variant.display_label = (
@@ -1336,6 +1362,12 @@ def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, 
     return whole or variants, has_vision, None
 
 
+# A caller's list here receives the model_info list_gguf_variants fetched, for reuse in the same request.
+HUB_MODEL_INFO_SINK: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "gguf_hub_model_info_sink", default = None
+)
+
+
 def list_gguf_variants(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
@@ -1374,6 +1406,9 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
         raise
 
+    sink = HUB_MODEL_INFO_SINK.get()
+    if sink is not None:
+        sink.append(info)
     has_vision = False
     main_files: list[tuple[str, int]] = []
 
@@ -1506,7 +1541,7 @@ def list_local_gguf_variants(
         for quant, (filename, size) in group_gguf_variant_files(main_files, keys).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
-    _apply_gguf_display_labels(variants, directory, model_root)
+    _apply_gguf_display_labels(variants, directory, model_root, name_tails = keys is not None)
     if keys:
         _label_split_builds(variants, keys)
     return variants, has_vision

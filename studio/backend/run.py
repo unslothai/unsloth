@@ -2636,7 +2636,11 @@ def run_server(
     from utils.forwarded_headers import uvicorn_forwarded_kwargs, wrap_direct_server
 
     config_kwargs.update(uvicorn_forwarded_kwargs(is_colab = _IS_COLAB))
-    served_app = app if config_kwargs["proxy_headers"] else wrap_direct_server(app, app.state)
+    served_app = (
+        app
+        if config_kwargs["proxy_headers"]
+        else wrap_direct_server(app, app.state, is_colab = _IS_COLAB)
+    )
     if tls is not None:
         from utils.studio_tls import StudioTLSConfig
         config = StudioTLSConfig(served_app, tls = tls, **config_kwargs)

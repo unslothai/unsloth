@@ -4,6 +4,7 @@
 import { LazyImportBoundary } from "@/components/lazy-import-boundary";
 import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
+import { ArrowRightIcon } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -32,6 +33,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  Cursor02Icon,
   Download01Icon,
   LayoutTwoColumnIcon,
   LibrariesIcon,
@@ -57,6 +59,12 @@ import {
   toolResultLimitChoices,
   updateToolResultLimit,
 } from "../api/tool-result-limit";
+import {
+  ChatWidthSelect,
+  ComposerOutlineSliderRow,
+  ComposerPositionSliderRow,
+  SentAttachmentsSelect,
+} from "../components/appearance-custom-controls";
 import { ChatMenuOrderList } from "../components/chat-menu-order-list";
 import { FirstTokenTimeoutRow } from "../components/first-token-timeout-row";
 import { GenerationStatsUpdatesRow } from "../components/generation-stats-updates-row";
@@ -101,6 +109,17 @@ const PLUS_MENU_SETTINGS: {
     icon: (
       <HugeiconsIcon
         icon={CursorInWindowIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "computerUse",
+    labelKey: "settings.chat.menu.computerUse",
+    icon: (
+      <HugeiconsIcon
+        icon={Cursor02Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -508,46 +527,15 @@ export function ChatTab() {
           >
             <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
             {t("settings.chat.library.action")}
+            <ArrowRightIcon data-icon="inline-end" strokeWidth={1.75} />
           </Button>
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.general.chatDefaults")}>
+      {/* Chat owns composer preferences; the in-composer popovers are shortcuts. */}
+      <SettingsSection title={t("composerSettings.title")}>
         <ComposerSettings embedded={true} />
-        <SettingsRow
-          label={t("settings.chat.autoScroll")}
-          description={t("settings.chat.autoScrollDescription")}
-        >
-          <div
-            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
-            role="group"
-            aria-label={t("settings.chat.autoScroll")}
-          >
-            {([true, false] as const).map((follow) => (
-              <button
-                key={String(follow)}
-                type="button"
-                aria-pressed={autoScrollWhileGenerating === follow}
-                onClick={() => setAutoScrollWhileGenerating(follow)}
-                className={cn(
-                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  autoScrollWhileGenerating === follow
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {autoScrollWhileGenerating === follow && (
-                  <SegmentedPill group={`${pillId}-auto-scroll`} />
-                )}
-                {t(
-                  follow
-                    ? "settings.chat.autoScrollAuto"
-                    : "settings.chat.autoScrollManual",
-                )}
-              </button>
-            ))}
-          </div>
-        </SettingsRow>
+        <ComposerFormatRows />
         <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
           description={
@@ -581,6 +569,67 @@ export function ChatTab() {
               ))}
             </SelectContent>
           </Select>
+        </SettingsRow>
+        <ContextWindowUsageRow />
+        <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerPosition")}
+          description={t("settings.chat.composerPositionDescription")}
+        >
+          <ComposerPositionSliderRow />
+        </SettingsRow>
+        <SettingsRow label={t("chatBackground.outline")}>
+          <ComposerOutlineSliderRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.sentAttachments.label")}
+          description={t(
+            "settings.appearance.custom.sentAttachments.description",
+          )}
+        >
+          <SentAttachmentsSelect />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.chat.autoScroll")}
+          description={t("settings.chat.autoScrollDescription")}
+        >
+          <div
+            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+            role="group"
+            aria-label={t("settings.chat.autoScroll")}
+          >
+            {([true, false] as const).map((follow) => (
+              <button
+                key={String(follow)}
+                type="button"
+                aria-pressed={autoScrollWhileGenerating === follow}
+                onClick={() => setAutoScrollWhileGenerating(follow)}
+                className={cn(
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  autoScrollWhileGenerating === follow
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {autoScrollWhileGenerating === follow && (
+                  <SegmentedPill group={`${pillId}-auto-scroll`} />
+                )}
+                {t(
+                  follow
+                    ? "settings.chat.autoScrollAuto"
+                    : "settings.chat.autoScrollManual",
+                )}
+              </button>
+            ))}
+          </div>
         </SettingsRow>
         <GenerationStatsUpdatesRow />
       </SettingsSection>
@@ -834,7 +883,6 @@ export function ChatTab() {
             onCheckedChange={setShowGenerationDetails}
           />
         </SettingsRow>
-        <ContextWindowUsageRow />
         <SettingsRow
           label={t("settings.chat.inlineEditResponse")}
           description={t("settings.chat.inlineEditResponseDescription")}
@@ -855,7 +903,6 @@ export function ChatTab() {
             onCheckedChange={setShowTurnNavigation}
           />
         </SettingsRow>
-        <ComposerFormatRows />
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.modelSelection.title")}>

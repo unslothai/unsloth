@@ -7,6 +7,7 @@ streamed."""
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
@@ -428,19 +429,131 @@ def _host_empty_cache() -> None:
         pass
 
 
+# A fully resident initial fit skips the up-front block pin (18 s, 20 GB pinned transient on 48 GB); leftovers pin after.
+H3_DEFER_RESIDENT_PIN_ENV = "UNSLOTH_H3_DEFER_RESIDENT_PIN"
+_PIN_DEFERRED_ATTR = "_unsloth_pin_deferred"
+
+
+def h3_defer_resident_pin_enabled() -> bool:
+    return str(os.environ.get(H3_DEFER_RESIDENT_PIN_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _onload_pageable(group: Any) -> bool:
+    """diffusers' stream onload of a pin-deferred group, read from the pageable host copy without pinning."""
+    from contextlib import nullcontext
+
+    cpu = getattr(group, "cpu_param_dict", None)
+    process = getattr(group, "_process_tensors_from_modules", None)
+    if not isinstance(cpu, dict) or not cpu or not callable(process):
+        return False
+    import torch
+
+    stream = getattr(group, "stream", None)
+    if stream is not None:
+        stream.synchronize()
+    current = torch.cuda.current_stream() if stream is not None else None
+    with nullcontext() if stream is None else torch.cuda.stream(stream):
+        process(cpu, default_stream = current)
+    return True
+
+
+def _host_alias(tensor: Any) -> Any:
+    """A host-copy object distinct from ``tensor`` over the same storage. diffusers' lazy copy of a torchao weight is
+    the weight itself, so the onload's swap_tensors would carry that "host copy" to the device as well."""
+    if _is_wrapper(tensor):
+        names, ctx = tensor.__tensor_flatten__()
+        inner = {name: getattr(tensor, name) for name in names}
+        return type(tensor).__tensor_unflatten__(inner, ctx, tensor.size(), tensor.stride())
+    return tensor.detach()
+
+
+def defer_resident_block_pins(
+    residency: "H3Residency",
+    budget_bytes: int,
+    logger: Any = None,
+) -> bool:
+    """Engage the deferral if ``budget_bytes`` holds top + every block; call before the prefetch and initial fit."""
+    if not h3_defer_resident_pin_enabled() or not h3_resident_unpin_enabled():
+        return False
+    if not residency.usable:
+        return False
+    top, n = residency.plan(budget_bytes)
+    if (residency.top is not None and not top) or n != len(residency.blocks):
+        return False
+    for group in residency.blocks:
+        cpu = getattr(group, "cpu_param_dict", None)
+        if (
+            not getattr(group, "low_cpu_mem_usage", False)
+            or getattr(group, "stream", None) is None
+            or getattr(group, "offload_to_disk_path", None)
+            or not isinstance(cpu, dict)
+            or not cpu
+            or is_resident(group)
+        ):
+            return False
+    try:
+        aliases = [
+            {t: _host_alias(src) for t, src in group.cpu_param_dict.items() if src is t}
+            for group in residency.blocks
+        ]
+    except Exception:  # noqa: BLE001 -- unknown wrapper: pin as the lazy path does
+        return False
+    for group, alias in zip(residency.blocks, aliases):
+        group.cpu_param_dict.update(alias)
+        group.low_cpu_mem_usage = False
+        setattr(group, _PIN_DEFERRED_ATTR, True)
+    if logger is not None:
+        logger.info(
+            "video.h3_block_pin: %d block groups will be resident, pin deferred (%.2f GB)",
+            len(residency.blocks),
+            sum(residency.block_bytes) / 1e9,
+        )
+    return True
+
+
+def pin_deferred_block_groups(transformer: Any, logger: Any = None) -> tuple[int, int]:
+    """Pin the deferred blocks the initial fit left streamed; returns (groups pinned, block groups)."""
+    _top, blocks = h3_offload_groups(transformer)
+    left = [g for g in blocks if getattr(g, _PIN_DEFERRED_ATTR, False) and not is_resident(g)]
+    if not left:
+        return 0, len(blocks)
+    for group in left:
+        group.low_cpu_mem_usage = True
+        setattr(group, _PIN_DEFERRED_ATTR, False)
+    if logger is not None:
+        logger.info(
+            "video.h3_block_pin: %d of %d pin-deferred block groups stay streamed, pinning them now",
+            len(left),
+            len(blocks),
+        )
+    return pin_streamed_block_groups(transformer, logger = logger)
+
+
 def make_resident(group: Any) -> None:
     """Onload ``group`` once and make its hooks' onload / offload no-ops, so it stays on the device."""
     import torch
 
     if is_resident(group):
         return
-    # Instance attribute: an instance override is an onload path too, except the prefetcher's own.
-    prefetcher = getattr(group, "_unsloth_prefetcher", None)
-    owns = getattr(prefetcher, "owns", None)
-    if callable(owns) and owns(group):
-        _outside_inference_mode(type(group).onload_)(group)
-    else:
-        group.onload_()
+    promoted = False
+    if getattr(group, _PIN_DEFERRED_ATTR, False):
+        try:
+            promoted = _outside_inference_mode(_onload_pageable)(group)
+        except Exception:  # noqa: BLE001 -- diffusers' onload re-copies every tensor from the host copy
+            promoted = False
+    if not promoted:
+        # Instance attribute: an instance override is an onload path too, except the prefetcher's own.
+        prefetcher = getattr(group, "_unsloth_prefetcher", None)
+        owns = getattr(prefetcher, "owns", None)
+        if callable(owns) and owns(group):
+            _outside_inference_mode(type(group).onload_)(group)
+        else:
+            group.onload_()
     stream = getattr(group, "stream", None)
     if stream is not None:
         stream.synchronize()
@@ -450,6 +563,8 @@ def make_resident(group: Any) -> None:
     group.onload_ = _resident_onload(group)
     group.offload_ = _noop
     group._unsloth_resident = True
+    if getattr(group, _PIN_DEFERRED_ATTR, False):
+        setattr(group, _PIN_DEFERRED_ATTR, False)
 
 
 def demote(
@@ -513,6 +628,8 @@ class H3Residency:
         # bytes of slabs the last ``apply`` compacted; a compaction that could not fit every slab retries next re-fit
         self.compacted_bytes = 0
         self.compact_pending = False
+        # video_minimax_h3_te.H3TeDeviceShare
+        self.te_share: Any = None
 
     @property
     def usable(self) -> bool:
@@ -529,6 +646,17 @@ class H3Residency:
     def resident_bytes(self) -> int:
         total = self.top_bytes if (self.top is not None and is_resident(self.top)) else 0
         return total + sum(b for g, b in zip(self.blocks, self.block_bytes) if is_resident(g))
+
+    def device_bytes(self) -> int:
+        te = getattr(self, "te_share", None)
+        return self.resident_bytes() + (te.resident_bytes() if te is not None else 0)
+
+    def te_budget(self, budget_bytes: int, top: bool, n: int) -> int:
+        """Zero unless the whole denoiser is resident: it is read every step, the conditioner once."""
+        if n < len(self.blocks) or (self.top is not None and not top):
+            return 0
+        planned = (self.top_bytes if top else 0) + sum(self.block_bytes[:n])
+        return max(0, int(budget_bytes) - planned)
 
     def plan(
         self,
@@ -590,7 +718,21 @@ class H3Residency:
     ) -> tuple[bool, int]:
         """Re-fit the resident set to ``budget_bytes`` (the device bytes the resident set may occupy)."""
         top, n = self.plan(budget_bytes)
+        te = getattr(self, "te_share", None)
+        te_left = self.te_budget(budget_bytes, top, n) if te is not None else 0
+        te_n = te.plan(te_left) if te is not None else 0
+        if te is not None:
+            # the conditioner gives its share back before any denoiser block is promoted
+            te.shrink(te_n)
         self.apply(top, n)
+        if te is not None:
+            try:
+                te.grow(te_n)
+            except Exception as exc:  # noqa: BLE001 -- the conditioner streams as before
+                te.shrink(0)
+                if self.logger is not None:
+                    self.logger.warning("video.h3_te_resident_device: staying streamed: %s", exc)
+            te.report(te_left, force = initial)
         if initial:
             self.max_blocks = n
         released = getattr(self, "released_bytes", 0)
@@ -624,6 +766,13 @@ def release_all(residency: "H3Residency", *, logger: Any = None) -> None:
     """Return every group of ``residency`` to streaming, including one whose onload failed partway. Never raises."""
     import torch
 
+    te = getattr(residency, "te_share", None)
+    if te is not None:
+        try:
+            te.shrink(0)
+        except Exception as exc:  # noqa: BLE001
+            if logger is not None:
+                logger.warning("video.h3_te_resident_device: could not release the share: %s", exc)
     groups = list(reversed(residency.blocks))
     if residency.top is not None:
         groups.append(residency.top)
@@ -1333,3 +1482,111 @@ def install_pinned_swap(
             sum(t.numel() * t.element_size() for t in host.values()) / 1e9,
         )
     return True
+
+
+H3_ROTATION_PARK_ENV = "UNSLOTH_H3_ROTATION_PARK"
+_PARK_ATTR = "_unsloth_h3_rotation_park"
+_COMPONENTS_MANAGER_LOGGER = "diffusers.modular_pipelines.components_manager"
+_FALLBACK_WARNING = "no combination of models to offload to cpu is found"
+
+
+def h3_rotation_park_enabled() -> bool:
+    return str(os.environ.get(H3_ROTATION_PARK_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+class _DropFallbackWarning(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return _FALLBACK_WARNING not in record.getMessage()
+        except Exception:  # noqa: BLE001 -- an unformattable record is not ours to drop
+            return True
+
+
+class H3QuietOffloadStrategy:
+    """The wrapped strategy, minus its "offloading all models" warning (evict-all is this tier's policy)."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        inner = self.__dict__.get("inner")
+        if inner is None:
+            raise AttributeError(name)
+        return getattr(inner, name)
+
+    def __call__(self, hooks: Any, model_id: Any, model: Any, execution_device: Any) -> Any:
+        log = logging.getLogger(_COMPONENTS_MANAGER_LOGGER)
+        quiet = _DropFallbackWarning()
+        log.addFilter(quiet)
+        try:
+            return self.inner(
+                hooks = hooks, model_id = model_id, model = model, execution_device = execution_device
+            )
+        finally:
+            log.removeFilter(quiet)
+
+
+def install_h3_rotation_park(
+    pipe: Any,
+    *,
+    park: bool,
+    logger: Any = None,
+) -> bool:
+    """Streamed tiers only. ``park`` (streamed denoiser): evict the rotation when a render returns, not at the next
+    forward, so the next request's VRAM floor stops counting the last decode's audio VAE."""
+    if pipe is None or not h3_rotation_park_enabled():
+        return False
+    manager = getattr(pipe, "_components_manager", None)
+    hooks = list(getattr(manager, "model_hooks", None) or ())
+    if not hooks or getattr(manager, "_auto_offload_device", None) is None:
+        return False
+    wrapped: dict[int, Any] = {}
+
+    def _quiet(strategy: Any) -> Any:
+        if strategy is None or isinstance(strategy, H3QuietOffloadStrategy):
+            return strategy
+        if id(strategy) not in wrapped:
+            wrapped[id(strategy)] = H3QuietOffloadStrategy(strategy)
+        return wrapped[id(strategy)]
+
+    for hook in hooks:
+        inner = getattr(hook, "hook", None)
+        if inner is not None and hasattr(inner, "offload_strategy"):
+            inner.offload_strategy = _quiet(inner.offload_strategy)
+    if hasattr(manager, "_offload_strategy"):
+        manager._offload_strategy = _quiet(manager._offload_strategy)
+    setattr(pipe, _PARK_ATTR, bool(park))
+    if logger is not None:
+        logger.info(
+            "video.h3_rotation: evicting every resident component is this tier's policy, so the diffusers "
+            "fallback warning is muted; %s %s (%s=0 keeps both as before)",
+            ", ".join(str(getattr(hook, "model_id", "?")) for hook in hooks),
+            "park on the host when a render returns, so the next request's VRAM floor and resident set see that "
+            "room free"
+            if park
+            else "stay until they are evicted (the conditioner's pre-hook may be skipped by a prompt-cache hit)",
+            H3_ROTATION_PARK_ENV,
+        )
+    return True
+
+
+def park_h3_rotation(pipe: Any) -> bool:
+    """Evict resident rotating components (the pre-hooks' own eviction); never raises."""
+    if pipe is None or not getattr(pipe, _PARK_ATTR, False):
+        return False
+    try:
+        manager = getattr(pipe, "_components_manager", None)
+        device = getattr(manager, "_auto_offload_device", None)
+        if manager is None or device is None:
+            return False
+        from .diffusion_prequant import _evict_rotation_hook
+
+        _evict_rotation_hook(manager, device)(None, None)
+        return True
+    except Exception:  # noqa: BLE001 -- the next render's pre-hook evicts them as before
+        return False

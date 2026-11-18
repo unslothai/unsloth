@@ -10,6 +10,7 @@ import itertools
 import re
 from pathlib import Path
 from tests.studio._js_source import assert_guard_holds, blank_literals_and_comments
+from tests.studio._playwright_robust import RUN_SETTINGS_CONTEXT_LABEL
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -768,7 +769,8 @@ def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
     assert '<span data-pill-tab-label className="min-w-0 truncate">' in tabs
 
     selector = _read("features/model-picker/components/model-selector.tsx")
-    assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector
+    # Recommended wears Sparkles: the star now means Favorite in both pickers.
+    assert 'icon={SparklesIcon} className="size-3.5 shrink-0"' in selector
     assert 'icon={Download01Icon} className="size-3.5 shrink-0"' in selector
     assert 'icon={CloudIcon} className="size-3.5 shrink-0"' in selector
 
@@ -903,7 +905,7 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     while an explicit local row still scans only its own directory."""
     src = _read("features/chat/api/chat-adapter.ts")
     sources = src.split("function buildAutoLoadSources", 1)[1]
-    sources = sources.split("function isRememberedSource", 1)[0]
+    sources = sources.split("function rememberedMatch", 1)[0]
     assert sources.count("preferLocalCache: true") == 2
     assert "localPath: repo.load_id || repo.cache_path" in sources
     assert "loadId: repo.load_id || repo.repo_id" in sources
@@ -1120,7 +1122,7 @@ def test_same_click_commit_covers_all_numeric_inputs():
     assert "const effectiveMaxSeqLengthValue =" in page
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
     assert (
-        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));"
+        "contextPinPatch(committedMaxSeqLength, pinsContextLength, config.npuPrefillChunkLen),"
         in page
     )
 
@@ -1202,12 +1204,13 @@ def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
 
 
 def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
-    """MLX sizes its own window, so the control is GGUF's Context Length and states what a
+    """MLX sizes its own window, so the control is GGUF's Context (window) and states what a
     load would serve. Max Seq Length at 4096 would describe a pin never sent."""
     page = _read("features/model-picker/components/model-config-page.tsx")
-    assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
+    assert 'const label = isMlx ? "Context" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
-    assert 'displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}' in page
+    assert "displayValue={isMlx && windowUnknown && !dragging ? unknownLabel : undefined}" in page
+    assert 'unknownLabel = "—",' in page
     assert (
         "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
         "                npuServedWindow == null\n" in page
@@ -1238,7 +1241,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "final !== value || displayValue != null || derived;" in numeric
     assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
     assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
-    assert "update(contextPinPatch(value, pinsContextLength))" in page
+    assert "update(contextPinPatch(value, pinsContextLength, config.npuPrefillChunkLen))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"
@@ -2792,8 +2795,12 @@ def test_override_writes_are_ordered_per_model():
         "const key = modelOverrideKey( normalizeModelIdentity(modelId), normalizeGgufVariantIdentity(ggufVariant), );"
         in src
     )
-    # Chained on the settled tail, so one failed write cannot cancel the next.
-    assert "previous .catch(() => {}) .then(() => sendModelOverride(" in src
+    # Chained on the settled tails (allSettled), so one failed write cannot cancel the next.
+    assert "Promise.allSettled([forgetBarrier, writesByKey.get(key)])" in src
+    # A forget clears every alias on the server, so it waits on every key's tail, not just its own.
+    assert "Promise.allSettled([forgetBarrier, ...writesByKey.values()])" in src
+    assert "const write = previous.then(() => sendModelOverride(" in src
+    # The tail is stored, or every writer chains on the same empty slot.
     assert "writesByKey.set(key, write);" in src
     # Only the last writer clears the slot, or a queue still building loses order.
     assert "if (writesByKey.get(key) === write) { writesByKey.delete(key); }" in src
@@ -2914,12 +2921,17 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     assert "apiLoadable: apiAutoSwitchMayLoad([id, loadId], meta.isLora)," in handoff
     assert "apiLoadable: apiAutoSwitchMayLoad([modelId], isLora)," in handoff
     predicate = " ".join(_read("features/model-picker/model-config/model-identity.ts").split())
-    assert "return !isLora && !ids.some(isOllamaLinkPath);" in predicate
+    # An Ollama MLX tag's checkpoint is indexed by the resolver, so only a materialized .gguf link is
+    # unloadable by the API (#18253).
+    assert "return !isLora && !ids.some(isMaterializedOllamaLink);" in predicate
     backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
-    assert "!isOllamaLinkPath(entry.modelId) &&" in backfill
+    assert "!isMaterializedOllamaLink(entry.modelId) &&" in backfill
 
     identity = _read("features/hub/lib/model-identity.ts")
     assert 'new Set([".studio_links", "ollama_links"])' in identity
+    assert "return isOllamaLinkPath(modelId) && !isOllamaMlxModelId(modelId);" in " ".join(
+        identity.split()
+    )
     resolver = _read_backend("core/inference/local_model_resolver.py")
     assert 'seg in (".studio_links", "ollama_links")' in resolver, "the rule this mirrors"
 
@@ -3145,9 +3157,11 @@ def test_picker_rows_keep_their_automation_attributes():
 
 def test_picker_popover_and_trigger_keep_their_tour_hooks():
     """Match tour props exactly: the trigger's value is a prefix of the popover's, so substrings mislead."""
-    chat = _read("features/chat/chat-page.tsx")
-    assert 'triggerDataTour="chat-model-selector"' in chat
-    assert 'contentDataTour="chat-model-selector-popover"' in chat
+    # Chat's picker is the composer chip now; the tour and drivers still find it by these hooks.
+    composer = _read("components/assistant-ui/composer-model-picker/composer-model-picker.tsx")
+    # Only Chat's own chip: a Compare pane's would take the tour's model step.
+    assert composer.count('data-tour={pane ? undefined : "chat-model-selector"}') >= 1
+    assert 'data-tour="chat-model-selector-popover"' in composer
 
 
 def test_run_settings_gear_label_names_its_model():
@@ -3227,16 +3241,17 @@ def test_a_sole_quant_row_keeps_its_gear_and_reaches_the_expander_from_its_menu(
 def test_run_settings_page_keeps_its_identifying_controls():
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'aria-label="Back to model list"' in page
-    assert 'ariaLabel="Context Length"' in page
-    assert 'aria-label="Context Length"' in page
+    # The Playwright drivers find the context field by this name (_playwright_robust.py).
+    assert f'ariaLabel="{RUN_SETTINGS_CONTEXT_LABEL}"' in page
+    assert f'aria-label="{RUN_SETTINGS_CONTEXT_LABEL}"' in page
     # The button element, not the word: "Reset" also appears in comments. Reset picks the pinned set,
     # else Default settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
     reset = any(
         "onClick={() => pickSet(pinnedSet)}" in el.group(0)
-        and re.search(r">\s*Reset\s*<", el.group(0))
+        and re.search(r">\s*Reset all\s*<", el.group(0))
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )
-    assert reset, "the Reset button's JSX is gone or no longer named Reset"
+    assert reset, "the Reset all button's JSX is gone or no longer named Reset all"
     assert "const next = entry?.config ?? DEFAULT_PER_MODEL_CONFIG;" in page
 
 
@@ -3398,7 +3413,7 @@ def test_remembered_matching_uses_the_same_case_rules_as_the_dedupe_key():
     """Folding a POSIX path would mark two models differing only by case as
     both being the remembered one."""
     src = _read("features/chat/api/chat-adapter.ts")
-    remembered = src.split("function isRememberedSource", 1)[1].split("\n}", 1)[0]
+    remembered = src.split("function rememberedMatch", 1)[1].split("\n}", 1)[0]
     assert "normalizeTarget(remembered.id)" in remembered
     assert "normalizeTarget(source.id)" in remembered
     assert "normalizeTarget(source.loadId)" in remembered
@@ -3481,7 +3496,7 @@ def test_sources_dedupe_on_the_load_target_alone():
 def test_variant_scans_take_the_run_signal():
     src = _read("features/chat/api/chat-adapter.ts")
     build = src.split("function buildAutoLoadSources", 1)[1]
-    build = build.split("function isRememberedSource", 1)[0]
+    build = build.split("function rememberedMatch", 1)[0]
     assert build.count("signal,") == 2
     assert "options?.abortSignal,\n      )," in src
 
@@ -3511,7 +3526,7 @@ def test_every_load_target_comparison_uses_the_same_case_rules():
     """Source dedupe, remembered matching, and tried-candidate keys all compare
     load targets, so they must agree on POSIX case."""
     src = _read("features/chat/api/chat-adapter.ts")
-    for fn in ("autoLoadSourceKey", "isRememberedSource", "autoLoadCandidateKey"):
+    for fn in ("autoLoadSourceKey", "rememberedMatch", "autoLoadCandidateKey"):
         body = src.split(f"function {fn}(", 1)[1].split("\n}", 1)[0]
         assert "normalizeTarget(" in body, fn
         assert "id.toLowerCase()" not in body, fn
@@ -3903,3 +3918,25 @@ def test_a_download_only_pick_is_allowed_while_the_page_is_busy():
     text = body.group(1)
     assert "if (busy !== null && !downloadOnlyPick) return;" in text
     assert text.index("const downloadOnlyPick =") < text.index("if (busy !== null")
+
+
+def test_every_run_settings_gear_marks_saved_settings():
+    # A gear that opens run settings but skips savedFor saves settings the row never shows.
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    gears = [m.group(0) for m in re.finditer(r"<ModelLoadSettingsAction\b.*?/>", picker, re.S)]
+    run_settings = [g for g in gears if "onConfigure(" in g or ".configure(" in g]
+    assert len(run_settings) >= 10, "the run-settings gears moved; update this guard"
+    missing = [g.splitlines()[1].strip() for g in run_settings if "savedFor=" not in g]
+    assert not missing, f"run-settings gears without savedFor: {missing}"
+
+
+def test_a_quant_saved_before_download_still_offers_reset():
+    # The gear saves settings on a quant that is not on disk yet; such a row has no other menu.
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    gate = re.search(r"function SavedRunSettingsMenu\(.*?\n}\n", picker, re.S)
+    assert gate, "the saved-only Reset menu was renamed"
+    assert "useHasRememberedRunSettings(runSettings ?? null)" in gate.group(0)
+    assert re.search(
+        r"!variantHasMenu\(v\) && \(\s*<SavedRunSettingsMenu[^/]*runSettings=\{configTarget\}",
+        picker,
+    ), "a quant row without a menu lost its Reset"

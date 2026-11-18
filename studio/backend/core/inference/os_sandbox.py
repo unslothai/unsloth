@@ -32,7 +32,6 @@ PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
-# tools.py re-adds this only to an UNISOLATED launch, and only if it already exists.
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 
@@ -70,14 +69,22 @@ def session_script_dirs(packages: str) -> list[str]:
     )
 
 
+def studio_pip_prefix(packages: str) -> dict:
+    return {
+        "_UNSLOTH_PIP_PREFIX": packages,
+        "_UNSLOTH_PIP_PREFIX_FOR": sys.prefix,
+        "_UNSLOTH_PIP_PREFIX_PY": "%d.%d" % sys.version_info[:2],
+    }
+
+
 def with_session_packages(env: dict, workdir: str) -> dict:
-    """Reuse existing session packages without letting their binaries shadow PATH."""
+    """Session packages for an unisolated launch, their binaries never shadowing PATH."""
     packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
-    if not os.path.isdir(packages):
-        return env
-    updated = dict(env)
-    # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
-    updated["PYTHONNOUSERSITE"] = "1"
+    # sitecustomize sets PIP_PREFIX only in Studio's own interpreter: a project venv's pip keeps installing there.
+    updated = {**env, **studio_pip_prefix(packages)}
+    if os.path.isdir(packages):
+        # Block a planted usercustomize.py; a fresh chat keeps pip --user usable.
+        updated["PYTHONNOUSERSITE"] = "1"
     for key, value in (
         ("PYTHONPATH", os.pathsep.join(session_package_paths(packages))),
         ("PATH", os.pathsep.join(session_script_dirs(packages))),
@@ -199,6 +206,8 @@ class ToolLaunchPlan:
     # Set by the trusted tool owner, never inferred from model args.
     execution_kind: Literal["python", "terminal"] | None = None
     cancel_event: Any = None
+    # Network only through a per-call proxy that refuses metadata and local addresses; unhonoured if unsupported.
+    egress_proxy: bool = False
 
 
 @dataclass
@@ -219,6 +228,8 @@ class PreparedSandboxLaunch:
     cleanup_diagnostics: list[str] = field(default_factory = list)
     spawn_callback: Callable | None = None
     launch_limitations: tuple[str, ...] = ()
+    # The proxy URL when the launch honoured ToolLaunchPlan.egress_proxy.
+    egress_proxy: str | None = None
 
     def cleanup(self) -> None:
         while self.cleanup_callbacks:

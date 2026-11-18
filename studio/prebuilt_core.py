@@ -1027,11 +1027,27 @@ def release_asset_download_url(repo: str, release_tag: str, asset_name: str) -> 
     )
 
 
+# Currency check + resolve ask seconds apart; short TTL so a failure, later run or long-lived importer re-asks.
+_DOWNLOAD_HOST_LATEST_TAG_TTL_S = 300.0
+_DOWNLOAD_HOST_LATEST_TAG_MEMO: dict[tuple[str, Any], tuple[str, float]] = {}
+
+
 def download_host_latest_release_tag(ops: ModuleOps, repo: str) -> str | None:
     """Latest release tag from github.com/<repo>/releases/latest via its redirect
     target (no api.github.com call). None on 404 so the caller falls back to the
     API. /releases/latest resolves by created_at/make_latest, which can lag the
     published_at newest the freshness check uses -- acceptable for install."""
+    key = (repo, ops._URL_OPENER)
+    cached = _DOWNLOAD_HOST_LATEST_TAG_MEMO.get(key)
+    if cached is not None and time.monotonic() - cached[1] < _DOWNLOAD_HOST_LATEST_TAG_TTL_S:
+        return cached[0]
+    tag = _download_host_latest_release_tag_uncached(ops, repo)
+    if tag:
+        _DOWNLOAD_HOST_LATEST_TAG_MEMO[key] = (tag, time.monotonic())
+    return tag
+
+
+def _download_host_latest_release_tag_uncached(ops: ModuleOps, repo: str) -> str | None:
     url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
     request = urllib.request.Request(
         url,
