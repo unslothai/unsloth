@@ -94,5 +94,6 @@ async def caller_may_send_large_body_async(scope: dict, path: str) -> bool:
     try:
         return await run_in_threadpool(caller_may_send_large_body, scope, path)
     except Exception:
-        # An unexpected failure must not turn a signed-in user's upload away.
-        return True
+        # Fail closed: a malformed credential (e.g. a lone surrogate subject) can raise here, and the
+        # route's own auth check would hit the same failure for a real session.
+        return False

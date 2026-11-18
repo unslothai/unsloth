@@ -36,6 +36,7 @@ def _no_keyless_and_one_user(monkeypatch):
     real = storage.get_user_and_secret
 
     def fake(subject):
+        subject.encode("utf-8")  # as sqlite3 binding does: a lone surrogate raises
         if subject == "alice":
             return ("salt", "hash", _SECRET, False)
         return None
@@ -123,6 +124,13 @@ def test_unauthenticated_large_body_is_refused_before_buffering(main_module, dec
 
 def test_forged_session_token_does_not_unlock_the_full_cap(main_module):
     headers = {"Authorization": f"Bearer {_session_token(secret = 'not-the-secret')}"}
+    status, seen = _drive(main_module, "/api/chat/threads", headers, _BIG, declared = False)
+    assert status == 401
+    assert seen["inner_bytes"] is None
+
+
+def test_malformed_subject_does_not_fail_open(main_module):
+    headers = {"Authorization": f"Bearer {_session_token(secret = 'x', subject = chr(0xD800))}"}
     status, seen = _drive(main_module, "/api/chat/threads", headers, _BIG, declared = False)
     assert status == 401
     assert seen["inner_bytes"] is None
