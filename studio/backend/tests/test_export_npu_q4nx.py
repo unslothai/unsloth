@@ -674,7 +674,7 @@ def _fastflowlm_shapes(monkeypatch, tmp_path):
     flm = tmp_path / "flm-bin" / "flm"
     flm.parent.mkdir()
     (flm.parent / "model_list.json").write_bytes((_COMPAT / "flm" / "model_list.json").read_bytes())
-    configs = json.loads((_COMPAT / "hf_configs.json").read_text())
+    configs = json.loads((_COMPAT / "hf_configs.json").read_text(encoding = "utf-8"))
     shapes = npu_compat.flm_shapes(
         flm,
         tmp_path / "flm-models",

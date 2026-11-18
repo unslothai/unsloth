@@ -593,7 +593,8 @@ def _up_rows(
     grid = ((4 * n * w + block_p - 1) // block_p, 1, (c + block_c - 1) // block_c)
     with fused._on_card(x):
         k.up_nearest2x[grid](
-            x5, inner, c, 1, n, w, *x5.stride(), INTERLEAVE = False, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+            x5, inner, x5, c, 1, n, w, *x5.stride(), INTERLEAVE = False, BLOCK_P = block_p, BLOCK_C = block_c,
+            HAS_BIAS = False, num_warps = 4,
         )  # fmt: skip
 
 
