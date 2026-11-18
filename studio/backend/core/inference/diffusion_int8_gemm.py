@@ -2175,7 +2175,6 @@ def _gemm_probe_jobs(index: int) -> list:
 
 
 def _prewarm_probes(index: int, transformer: Any, rotated: bool, logger: Any) -> int:
-    """Compile what this card's cold probes will compile on a thread pool first (``prewarm_probe_kernels``)."""
     try:
         from .diffusion_convrot_quant import (
             prewarm_probe_kernels,

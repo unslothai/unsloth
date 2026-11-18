@@ -595,8 +595,7 @@ def _arm_cards(transformer: Any, logger: Any = None) -> list:
 
 
 def producer_probe_expected(transformer: Any) -> bool:
-    """``install`` will arm ``rotq_h16x`` (and so probe it) for this denoiser: a FLUX.2 / FLUX.3 class with the
-    fused helpers on. Cheap: class name and switch only (the caller already found rotated Linears)."""
+    """``install`` will arm (and probe) ``rotq_h16x`` for this denoiser."""
     return not flux_convrot_fused_disabled() and type(transformer).__name__ in (
         "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",

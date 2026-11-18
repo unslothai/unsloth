@@ -1960,12 +1960,10 @@ def _arm_producer(index: int) -> bool:
     return bool(_PRODUCER_DEVICE[index])
 
 
-# A cold card's probes compile ~60 Triton specializations one after another (L4, FLUX.3 klein int8: 48 s of a 97 s
-# load); compiles release the GIL, so the same launches on a thread pool first leave the serial probes only cache hits.
-# The probes, their order and their verdicts are unchanged: the warm launches' outputs are discarded.
+# Cold probes compile ~60 Triton kernels serially (48 s of a 97 s L4 load); compiles release the GIL, so warm them
+# on a thread pool first. Probe order and verdicts are unchanged; warm outputs are discarded.
 PROBE_PREWARM_ENV = "UNSLOTH_DIFFUSION_PROBE_PREWARM"
 _PREWARM_MAX_WORKERS = 8
-# card index -> warm launches that ran (engagement record)
 PREWARM_COUNTS: dict = {}
 
 
@@ -2015,9 +2013,7 @@ def probe_warm_jobs(
     rotq: bool = True,
     producer: bool = False,
 ) -> list:
-    """Zero-argument launches covering the Triton specializations the cold probes compile: ``_rotq_probe`` for every
-    candidate tile (preferred, fallback, per-K rules), ``_h16_probe`` and ``_swiglu_probe`` in the first mode the
-    probe tries, ``_producer_probe`` (``producer``), each on the probe's own shapes, kinds and layouts."""
+    """Zero-argument launches matching the cold probes' shapes, kinds and layouts (every candidate tile)."""
     from functools import partial
 
     import torch
@@ -2070,8 +2066,7 @@ def prewarm_probe_kernels(
     extra: tuple = (),
     logger: Any = None,
 ) -> int:
-    """Run ``extra`` plus ``probe_warm_jobs`` on a thread pool before the serial probes; returns the launches that
-    ran. Never raises; nothing runs inside a capture or a trace, or with ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0``."""
+    """Run ``extra`` + ``probe_warm_jobs`` on a thread pool; returns launches run. Never raises; skipped in capture/trace."""
     if not probe_prewarm_enabled():
         return 0
     try:

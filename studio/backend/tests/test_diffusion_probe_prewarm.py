@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The cold-card probe prewarm (``diffusion_convrot_quant.prewarm_probe_kernels``): the Triton specializations the
-int8 GEMM / ConvRot probes compile one by one are compiled on a thread pool first, the serial probes then only hit the
-cache. CPU only: the capability, the kernels and the launches are faked; the verdicts must not depend on the warm-up."""
+"""Cold-card probe prewarm; CPU only (kernels faked). Verdicts must not depend on the warm-up."""
 
 from __future__ import annotations
 
@@ -143,7 +141,6 @@ def test_warm_jobs_cover_every_cold_probe_launch(monkeypatch, cap, producer):
     keys = {k for k, _ in seen}
     assert keys == _expected(cap, producer)
     assert ran == len(seen) == cq.PREWARM_COUNTS[0]
-    # on a pool, not the caller's thread
     assert all(name.startswith("unsloth-probe-prewarm") for _, name in seen)
 
 
