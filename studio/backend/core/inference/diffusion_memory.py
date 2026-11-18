@@ -3799,6 +3799,15 @@ def learned_peak_label(
     ):
         if value is not None:
             label = f"{label}|{name}:{value}"
+    # AdaLN precompute keeps the modulation weights off the card: its peaks never size a load without it.
+    transformer = getattr(pipe, "transformer", None)
+    state = (
+        getattr(transformer, "__dict__", {}).get("_unsloth_adaln")
+        if transformer is not None
+        else None
+    )
+    if state is not None and getattr(state, "active", False):
+        label = f"{label}|adaln:on"
     return label
 
 

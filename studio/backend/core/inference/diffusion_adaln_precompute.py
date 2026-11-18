@@ -45,6 +45,7 @@ COUNTS = {
     "precompute_s": 0.0,
     "predicted_rows": 0,
     "verify_checks": 0,
+    "cross_device": 0,
 }
 
 # Input kinds: what the stand-in's module receives, from the embedding ``temb``.
@@ -113,6 +114,10 @@ class AdaLNTable(_torch().nn.Module):
                     raise RuntimeError(
                         f"AdaLN precompute: {self.site_name} input differs from the precomputed row"
                     )
+        if cur.device != x.device:
+            # A block placed on another card (layer split, a replica): its row follows its own input.
+            COUNTS["cross_device"] += 1
+            return cur.to(x.device, non_blocking = True)
         return cur
 
     def extra_repr(self) -> str:
@@ -399,7 +404,12 @@ class _State:
         clone = _device_clone(self.tte_host, device)
         return clone, clone
 
-    def compute(self, model: Any, pending: "OrderedDict[tuple, dict]") -> None:
+    def compute(
+        self,
+        model: Any,
+        pending: "OrderedDict[tuple, dict]",
+        protect: tuple = (),
+    ) -> None:
         torch = _torch()
         t0 = time.perf_counter()
         first = next(iter(pending.values()))
@@ -428,22 +438,39 @@ class _State:
                 raise _Unsupported("modulation outputs mix dtypes / devices")
             layout_id = tuple((tuple(y.shape), str(y.dtype), str(y.device)) for y in ys)
             flat = torch.cat([y.reshape(-1) for y in ys])
-            self._store(key, layout_id, flat, refs[key] if keep_refs else None)
+            self._store(key, layout_id, flat, refs[key] if keep_refs else None, protect = protect)
             COUNTS["rows_computed"] += 1
         COUNTS["weight_passes"] += 1
         if device.type == "cuda":
             torch.cuda.current_stream(device).synchronize()
         COUNTS["precompute_s"] += time.perf_counter() - t0
 
-    def _store(self, key: tuple, layout_id: tuple, flat: Any, refs: Optional[list]) -> None:
+    def _store(
+        self,
+        key: tuple,
+        layout_id: tuple,
+        flat: Any,
+        refs: Optional[list],
+        protect: tuple = (),
+    ) -> None:
         old = self.rows.pop(key, None)
         if old is not None:
             self.row_bytes -= _nbytes(old[1])
         self.rows[key] = (layout_id, flat, refs)
         self.row_bytes += _nbytes(flat)
+        self._evict(protect)
+
+    def _evict(self, protect: tuple = ()) -> None:
+        """Oldest first, never a ``protect`` row (the call being served): over budget, predictions go first."""
         budget = _table_budget_bytes()
-        while self.row_bytes > budget and len(self.rows) > 1:
-            _k, (_l, f, _r) = self.rows.popitem(last = False)
+        if self.row_bytes <= budget:
+            return
+        for k in list(self.rows):
+            if self.row_bytes <= budget:
+                break
+            if k in protect:
+                continue
+            _l, f, _r = self.rows.pop(k)
             self.row_bytes -= _nbytes(f)
 
     def _layout(self, layout_id: tuple, like: Any) -> tuple:
@@ -507,7 +534,7 @@ def _serve(model: Any, st: "_State", args: tuple, kwargs: dict) -> None:
                 if pk not in st.rows and pk not in pending:
                     pending[pk] = pred
                     COUNTS["predicted_rows"] += 1
-            st.compute(model, pending)
+            st.compute(model, pending, protect = (key,))
         st.arm(key)
 
 
@@ -520,6 +547,7 @@ def decline_reason(
     *,
     offloaded: bool,
     requested: Optional[str] = None,
+    split: bool = False,
 ) -> Optional[str]:
     """None when ``model`` should take the lever under the current mode."""
     m = requested or mode()
@@ -527,6 +555,9 @@ def decline_reason(
         return f"{ENV}=0"
     if model is None:
         return "no transformer"
+    if split:
+        # Blocks on several cards: one static row buffer cannot sit beside all of them.
+        return "the denoiser is split across devices"
     if adapter_for(model) is None:
         return f"{type(model).__name__} has no per-block modulation adapter"
     if m == MODE_AUTO and not offloaded:
@@ -548,9 +579,10 @@ def install(
     offloaded: bool = False,
     logger: Any = None,
     requested: Optional[str] = None,
+    split: bool = False,
 ) -> bool:
     """Swaps the modulation Linears of a supported denoiser for ``AdaLNTable`` stand-ins (weights to host)."""
-    reason = decline_reason(model, offloaded = offloaded, requested = requested)
+    reason = decline_reason(model, offloaded = offloaded, requested = requested, split = split)
     if reason is not None:
         if logger is not None:
             logger.info("diffusion.adaln_precompute: off (%s)", reason)
@@ -603,6 +635,24 @@ def install(
     return True
 
 
+def _owner_device(model: Any, site_name: str) -> Any:
+    """Device of the nearest enclosing module that still holds weights (the stand-in's parent norm or modulation
+    Sequential holds none once the Linear is swapped out): the block, else the transformer itself."""
+    parts = site_name.split(".")[:-1]
+    while True:
+        prefix = ".".join(parts)
+        try:
+            owner = model.get_submodule(prefix) if prefix else model
+        except AttributeError:
+            owner = None
+        if owner is not None:
+            for p in owner.parameters():
+                return p.device
+        if not parts:
+            return None
+        parts.pop()
+
+
 def uninstall(
     model: Any,
     *,
@@ -623,11 +673,7 @@ def uninstall(
             pass
         for (name, parent, attr, _kind), stand in zip(st.sites, st.stand_ins):
             orig = stand._unsloth_orig
-            target = device
-            if target is None:
-                for p in parent.parameters():
-                    target = p.device
-                    break
+            target = device if device is not None else _owner_device(model, name)
             if target is not None and str(target) != "cpu":
                 orig.to(target)
             parent._modules[attr] = orig

@@ -269,3 +269,76 @@ def test_compiled_blocks_bit_identical():
         blk.compile(backend = "aot_eager", fullgraph = True)
     out = _run(model, calls)
     assert all(torch.allclose(a, b, atol = 1e-6, rtol = 0) for a, b in zip(ref, out))
+
+
+# ---- review fixes (PR #18342)
+
+
+def test_layer_split_declines_and_rows_follow_block_device():
+    model = _flux()
+    # a denoiser planned split across cards takes no lever
+    assert ap.install(model, _pipe(4), requested = ap.MODE_ON, split = True) is False
+    assert not ap.installed(model)
+    # a stand-in whose block sits on another device returns its row there (CPU mock: "meta" as the second card)
+    stand = ap.AdaLNTable(torch.nn.Linear(4, 6), "transformer_blocks.0.norm1.linear", "silu")
+    stand.unsloth_adaln_cur = torch.randn(1, 6)
+    out = stand(torch.empty(1, 4, device = "meta"))
+    assert out.device.type == "meta" and tuple(out.shape) == (1, 6)
+    same = torch.randn(1, 4)
+    assert stand(same) is stand.unsloth_adaln_cur
+
+
+def test_uninstall_restores_beside_owning_block():
+    model = _flux()
+    assert ap.install(model, _pipe(4), requested = ap.MODE_ON)
+    # the load places the denoiser after install (CPU mock: "meta" as the GPU); restore without a device
+    model.to("meta")
+    assert ap.uninstall(model, reason = "LoRA adapters requested")
+    for blk in model.transformer_blocks:
+        assert blk.norm1.linear.weight.device.type == "meta"
+        assert blk.norm1_context.linear.weight.device.type == "meta"
+    for blk in model.single_transformer_blocks:
+        assert blk.norm.linear.weight.device.type == "meta"
+    assert model.norm_out.linear.weight.device.type == "meta"
+
+
+def test_qwen_uninstall_restores_beside_owning_block():
+    model = _qwen()
+    assert ap.install(model, _pipe(4), requested = ap.MODE_ON)
+    model.to("meta")
+    assert ap.uninstall(model)
+    assert model.transformer_blocks[0].img_mod[1].weight.device.type == "meta"
+    assert model.transformer_blocks[1].txt_mod[1].weight.device.type == "meta"
+
+
+def test_predicted_rows_over_budget_keep_the_served_row(monkeypatch):
+    model = _flux()
+    calls = _flux_calls(torch.float32, steps = 6)
+    ref = _run(model, calls)
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    # room for about two rows: the predicted rows of the request overflow it on the first miss
+    with torch.no_grad():
+        model(**calls[0])
+        st = model.__dict__[ap.STATE_ATTR]
+        assert len(st.rows) == len(calls)  # every step predicted on the first miss
+        row = st.row_bytes / len(st.rows)
+        ap.uninstall(model)
+        assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+        monkeypatch.setattr(ap, "_table_budget_bytes", lambda: int(row * 2.5))
+        out = [model(**kw)[0].clone() for kw in calls]
+    assert all(torch.equal(a, b) for a, b in zip(ref, out))
+    assert ap.summary(model)["cached_rows"] <= 2
+
+
+def test_learned_peak_label_records_the_lever():
+    from core.inference.diffusion_memory import learned_peak_label
+
+    model = _flux()
+    pipe = _keep(_Pipe(torch.linspace(1000.0, 30.0, 4)))
+    pipe.transformer = model
+    off = learned_peak_label(pipe, "native", "m")
+    assert ap.install(model, pipe, requested = ap.MODE_ON)
+    on = learned_peak_label(pipe, "native", "m")
+    assert on != off and on.endswith("|adaln:on")
+    ap.uninstall(model)
+    assert learned_peak_label(pipe, "native", "m") == off

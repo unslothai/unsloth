@@ -11422,6 +11422,7 @@ class DiffusionBackend:
                             getattr(pipe, "transformer", None),
                             pipe,
                             offloaded = plan.offload_policy != OFFLOAD_NONE or bool(split_expected),
+                            split = bool(split_expected),
                             logger = logger,
                         )
                     except Exception as exc:  # noqa: BLE001 - optional lever: stock modules stay
