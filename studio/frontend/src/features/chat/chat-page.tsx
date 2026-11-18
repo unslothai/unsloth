@@ -4930,6 +4930,7 @@ export function ChatPage({
                 size="icon-sm"
                 title="New chat"
                 aria-label="New chat"
+                data-chat-new-chat=""
                 onClick={handleDesktopNewChat}
                 className="!size-[calc(30px*var(--ui-space-scale,1))] shrink-0 rounded-[10px] text-muted-foreground"
               >

@@ -247,7 +247,7 @@ test("glass frosts the chat model controls and gives the account row the row hov
 test("glass gives the chat header's icon buttons the model picker's glass, not a new style", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const model = String.raw`\[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
-	const actions = String.raw`\[data-chat-header-actions\] > button`;
+	const actions = String.raw`:is\(\[data-chat-header-actions\] > button, \[data-chat-new-chat\]\)`;
 	// Listed beside the picker in each of its rules, so the buttons share its fill, rim, edge and hover.
 	for (const glass of [String.raw`\[data-glass\]`, String.raw`\[data-glass\^="liquid"\]`, String.raw`\[data-glass="liquid-3d"\]`]) {
 		const after = glass.includes("3d") ? "::before" : "";
@@ -259,6 +259,23 @@ test("glass gives the chat header's icon buttons the model picker's glass, not a
 	assert.match(css, new RegExp(String.raw`${actions}:focus-visible,\n[^{]*:focus-visible:is\(\[class\*="focus-visible:ring"\]\) \{\n  box-shadow: var\(--tw-inset-shadow[^;]*!important;`));
 	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
 	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-header-actions="" className="pointer-events-auto ml-auto/);
+	// The collapsed sidebar's New chat button sits beside the picker and takes the same glass.
+	assert.match(page, /aria-label="New chat"\n\s*data-chat-new-chat=""\n\s*onClick=\{handleDesktopNewChat\}/);
+});
+
+test("docked Run settings rounds its top corner only while no pinned sidebar strip meets it", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const panel = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\]`;
+	assert.match(css, new RegExp(String.raw`${panel} aside\[data-slot="chat-settings-panel"\] \{\n  transition: border-top-left-radius \.2s ease;`));
+	// No custom titlebar (macOS, browser, fullscreen) leaves the corner square.
+	assert.match(css, new RegExp(String.raw`${panel}:not\(:has\(\[data-windows-glass-frame\]\)\) aside\[data-slot="chat-settings-panel"\] \{\n  border-top-left-radius: min\(14px, var\(--studio-custom-titlebar-height, 0px\)\);`));
+	assert.match(css, new RegExp(String.raw`${panel} aside\[data-slot="chat-settings-panel"\] > div:last-child \{\n  border-top-left-radius: inherit;`));
+	// The strip is only drawn for a pinned sidebar under the custom titlebar.
+	const sidebar = readFileSync(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8");
+	assert.match(sidebar, /data-windows-glass-frame=\{\(pinned && usesCustomTitlebar\) \|\| undefined\}/);
+	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
+	const docked = sheet.slice(sheet.indexOf("<aside"), sheet.indexOf("</aside>"));
+	assert.match(docked, /\{settingsContent\}\n\s*<\/div>\n\s*$/);
 });
 
 test("the narrow window's Run settings sheet takes the docked panel's glass", () => {
