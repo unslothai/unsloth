@@ -100,6 +100,26 @@ def test_a_save_from_a_stale_or_older_page_cannot_drop_load_settings(store):
     assert set_model_aliases([], revision = aliases_mod.model_aliases_revision()) == []
 
 
+def test_the_settings_page_gets_the_revision_of_the_aliases_it_was_sent(store, monkeypatch):
+    from routes.settings import get_model_aliases_setting
+
+    model = "unsloth/Qwen3-4B-GGUF"
+    old = [{"name": "long", "model": model, "load_settings": _LONG}]
+    set_model_aliases(old)
+    real_get = aliases_mod.get_model_aliases
+
+    def get_then_concurrent_save():
+        aliases = real_get()
+        store[aliases_mod.MODEL_ALIASES_SETTING_KEY] = [{"name": "other", "model": model}]
+        return aliases
+
+    monkeypatch.setattr(aliases_mod, "get_model_aliases", get_then_concurrent_save)
+    response = get_model_aliases_setting(current_subject = "owner")
+    monkeypatch.setattr(aliases_mod, "get_model_aliases", real_get)
+    with pytest.raises(aliases_mod.AliasConflict):
+        set_model_aliases(old, revision = response.revision)
+
+
 @pytest.mark.parametrize(
     "load_settings",
     [{"kv_cache_dtype": "q9"}, {"max_seq_length": 0}, {"speculative_type": "fast"}, "q4_0"],

@@ -2721,7 +2721,8 @@ def get_model_aliases_setting(
     current_subject: str = Depends(get_current_subject),
 ) -> ModelAliasesResponse:
     from utils.model_aliases import get_model_aliases, model_aliases_revision
-    return ModelAliasesResponse(aliases = get_model_aliases(), revision = model_aliases_revision())
+    aliases = get_model_aliases()
+    return ModelAliasesResponse(aliases = aliases, revision = model_aliases_revision(aliases))
 
 
 @_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
@@ -2753,7 +2754,7 @@ async def update_model_aliases_setting(
             event = "settings.update_model_aliases_failed",
             log = logger,
         ) from exc
-    return ModelAliasesResponse(aliases = aliases, revision = model_aliases_revision())
+    return ModelAliasesResponse(aliases = aliases, revision = model_aliases_revision(aliases))
 
 
 @_account_settings_router.get(

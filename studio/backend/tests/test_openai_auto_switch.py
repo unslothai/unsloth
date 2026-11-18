@@ -431,8 +431,23 @@ def test_an_alias_edited_while_its_request_waited_is_refused_before_any_reload(m
     assert rec.calls == []
 
 
+def test_a_blank_alias_field_without_a_saved_setting_reloads_with_the_loader_default(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    ctx_only = {**_FAST, "load_settings": {"max_seq_length": 4096}}
+    _run_alias_hook(
+        monkeypatch, alias = {**_FAST, "load_settings": {**_FAST_ALIAS, "speculative_type": "off"}}
+    )
+    _run_alias_hook(monkeypatch, alias = ctx_only)
+    _run_alias_hook(monkeypatch, alias = ctx_only)
+    assert [(c.max_seq_length, c.cache_type_kv, c.speculative_type) for c in rec.calls] == [
+        (4096, "q4_0", "off"),
+        (4096, None, None),
+    ]
+
+
 def test_models_listing_marks_only_the_alias_whose_load_settings_are_running(monkeypatch):
-    _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent("unsloth/a-gguf", n_ctx = 8192)
     loaded = {"id": "unsloth/a-gguf", "object": "model", "loaded": True, "context_length": 8192}
     long = {**_FAST, "name": "long", "load_settings": {"max_seq_length": 8192}}
 

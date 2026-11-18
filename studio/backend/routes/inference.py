@@ -10330,7 +10330,7 @@ def _request_alias(fastapi_request) -> Optional[dict[str, Any]]:
 
 
 def _launched_with(backend, settings: dict[str, Any]) -> bool:
-    from core.inference.llama_cpp import _canonicalize_spec_mode
+    from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
 
     intent = backend.last_load_intent
     # The requested mode survives a crash recovery that relaunches with "off".
@@ -10353,7 +10353,14 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
         getattr(backend, "hf_variant", None),
     )
     saved = model_override_load_kwargs(saved, is_gguf = True)
+    # Fields neither saved nor set load the loader defaults, as a cold load would.
     wanted = {
+        "kv_cache_dtype": "f16",
+        "speculative_type": None
+        if _extra_args_set_spec_type(saved.get("llama_extra_args"))
+        else "auto",
+    }
+    wanted |= {
         name: saved.get(key)
         for name, key in (
             ("max_seq_length", "max_seq_length"),
@@ -10363,8 +10370,7 @@ def _launched_with(backend, settings: dict[str, Any]) -> bool:
         if saved.get(key) is not None
     }
     wanted.update(settings)
-    if "speculative_type" in wanted:
-        wanted["speculative_type"] = _canonicalize_spec_mode(wanted["speculative_type"])
+    wanted["speculative_type"] = _canonicalize_spec_mode(wanted["speculative_type"])
     return all(launched[name] == value for name, value in wanted.items())
 
 

@@ -115,8 +115,8 @@ class AliasConflict(ValueError):
 _write_lock = threading.Lock()
 
 
-def model_aliases_revision() -> str:
-    stored = json.dumps(get_model_aliases(), sort_keys = True)
+def model_aliases_revision(aliases: Optional[list[dict[str, Any]]] = None) -> str:
+    stored = json.dumps(get_model_aliases() if aliases is None else aliases, sort_keys = True)
     return hashlib.sha256(stored.encode("utf-8")).hexdigest()[:16]
 
 
