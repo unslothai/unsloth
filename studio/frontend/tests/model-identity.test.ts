@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isMaterializedOllamaLink,
   isOllamaLinkPath,
   isOllamaMlxModelId,
   isOllamaModelId,
@@ -214,6 +215,9 @@ test("an Ollama MLX tag is an Ollama id but never a .gguf link", () => {
   assert.equal(isOllamaMlxModelId("/h/.ollama/models/.studio_links/q/qwen3-Q4_K_M.gguf"), false);
   assert.equal(isOllamaMlxModelId("/srv/models/0c918e29a9/mlx/qwen3.5-4b-mlx"), false);
   assert.equal(modelDisplayName(dir), "qwen3.5-4b-mlx");
+  // The API resolves the checkpoint, so its settings sync; a .gguf link's never do.
+  assert.equal(isMaterializedOllamaLink(dir), false);
+  assert.equal(isMaterializedOllamaLink("/h/.ollama/models/.studio_links/q/qwen3-Q4_K_M.gguf"), true);
 });
 
 // The backfill matches on the folded identity, unambiguous only because storage holds one record per model.

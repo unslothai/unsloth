@@ -4,7 +4,7 @@
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
   isHfCacheSnapshotPath,
-  isOllamaLinkPath,
+  isMaterializedOllamaLink,
   isStandaloneGgufPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
@@ -14,6 +14,7 @@ import { looksLikeLocalPath } from "@/lib/local-path";
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 export {
+  isMaterializedOllamaLink,
   isNativeFileLabel,
   isOllamaLinkPath,
   isOllamaMlxModelId,
@@ -61,7 +62,7 @@ export function apiAutoSwitchMayLoad(
   ids: readonly string[],
   isLora: boolean,
 ): boolean {
-  return !isLora && !ids.some(isOllamaLinkPath);
+  return !isLora && !ids.some(isMaterializedOllamaLink);
 }
 
 /** /status reports the snapshot path while the picker keys the repo id, and the backend folds the

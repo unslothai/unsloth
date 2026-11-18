@@ -218,6 +218,11 @@ export function isOllamaMlxModelId(modelId: string | null | undefined): boolean 
   return isOllamaLinkPath(modelId) && OLLAMA_MLX_CHECKPOINT_RE.test(modelId);
 }
 
+/** A materialized .gguf link, which the resolver never indexes; an MLX tag's checkpoint it does. */
+export function isMaterializedOllamaLink(modelId: string | null | undefined): boolean {
+  return isOllamaLinkPath(modelId) && !isOllamaMlxModelId(modelId);
+}
+
 // Bare file names come from lease-backed loads whose host path /status withholds.
 const NATIVE_FILE_LABEL_RE = /^[^/\\]+\.gguf$/i;
 
