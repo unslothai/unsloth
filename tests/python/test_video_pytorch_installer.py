@@ -26,7 +26,12 @@ def installer(monkeypatch):
     pip = Mock()
     monkeypatch.setattr(ips, "pip_install", pip)
     monkeypatch.setattr(ips.subprocess, "run", Mock(return_value = SimpleNamespace(returncode = 0)))
-    for name in ("_ensure_cuda_torch", "_ensure_rocm_torch", "_ensure_xpu_torch", "_ensure_cpu_torch"):
+    for name in (
+        "_ensure_cuda_torch",
+        "_ensure_rocm_torch",
+        "_ensure_xpu_torch",
+        "_ensure_cpu_torch",
+    ):
         monkeypatch.setattr(ips, name, Mock())
     monkeypatch.setattr(ips, "_ensure_expected_torch_flavor", lambda: True)
     return pip
@@ -57,10 +62,16 @@ def test_cuda_uses_selected_index_and_compatible_specs(installer, monkeypatch):
     monkeypatch.setattr(ips, "IS_MACOS", False)
     monkeypatch.setattr(ips, "_expected_torch_flavor_tag", lambda: "cu128")
     monkeypatch.setattr(ips, "_expected_torch_index_url", lambda tag: "https://example.test/" + tag)
-    monkeypatch.setattr(ips, "_cuda_repair_torch_specs", lambda *a: ("torch==2.9.0", "torchvision", "torchaudio"))
+    monkeypatch.setattr(
+        ips, "_cuda_repair_torch_specs", lambda *a: ("torch==2.9.0", "torchvision", "torchaudio")
+    )
     assert ips.install_video_pytorch() == 0
     assert installer.call_args.args[1:] == (
-        "torch==2.9.0", "torchvision", "torchaudio", "--index-url", "https://example.test/cu128",
+        "torch==2.9.0",
+        "torchvision",
+        "torchaudio",
+        "--index-url",
+        "https://example.test/cu128",
     )
     assert installer.call_args.kwargs["constrain"] is False
 

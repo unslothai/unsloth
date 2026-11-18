@@ -12639,7 +12639,6 @@ def _video_runtime_constraints():
     if installed:
         from packaging.requirements import Requirement
         from packaging.utils import canonicalize_name
-
         for dist in installed:
             name = dist.metadata.get("Name")
             if name and dist.version:
@@ -12690,7 +12689,9 @@ def install_video_pytorch() -> int:
         if index is None and expected and expected != "rocm":
             index = _expected_torch_index_url(expected)
             if index is None:
-                _safe_print("The configured package mirror cannot supply the required PyTorch build.")
+                _safe_print(
+                    "The configured package mirror cannot supply the required PyTorch build."
+                )
                 return 1
         if index == "":
             _safe_print("The configured PyTorch index is unavailable.")
@@ -12710,7 +12711,12 @@ def install_video_pytorch() -> int:
         )
         _invalidate_torch_runtime_probe()
         if not IS_MACOS:
-            for ensure in (_ensure_cuda_torch, _ensure_rocm_torch, _ensure_xpu_torch, _ensure_cpu_torch):
+            for ensure in (
+                _ensure_cuda_torch,
+                _ensure_rocm_torch,
+                _ensure_xpu_torch,
+                _ensure_cpu_torch,
+            ):
                 if ensure() is False:
                     return 1
             if not _ensure_expected_torch_flavor():

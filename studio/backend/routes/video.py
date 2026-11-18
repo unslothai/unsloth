@@ -94,7 +94,6 @@ openai_router = APIRouter()
 @router.get("/video/pytorch-install", dependencies = [Depends(get_current_subject)])
 async def video_pytorch_install_status():
     from utils import video_pytorch_install
-
     return video_pytorch_install.status()
 
 
@@ -104,7 +103,6 @@ async def video_pytorch_install_status():
 )
 async def install_video_pytorch():
     from utils import video_pytorch_install
-
     try:
         return await asyncio.to_thread(video_pytorch_install.start)
     except RuntimeError as exc:

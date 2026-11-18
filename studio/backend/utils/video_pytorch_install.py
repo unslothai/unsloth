@@ -25,7 +25,6 @@ def status():
 
 def _missing():
     from utils.hardware.hardware import video_capability
-
     return video_capability().get("video_unsupported_reason") == "pytorch_not_installed"
 
 
@@ -38,10 +37,14 @@ def start():
         if _job["status"] in {"installing", "restart_required"}:
             return dict(_job)
         if not _missing():
-            raise RuntimeError("PyTorch installation is only available when the video runtime is missing.")
+            raise RuntimeError(
+                "PyTorch installation is only available when the video runtime is missing."
+            )
         if not _installer().is_file():
             raise RuntimeError("The dependency installer is missing. Update Unsloth and try again.")
-        _job.update(status = "installing", message = "Installing PyTorch. This may take several minutes.")
+        _job.update(
+            status = "installing", message = "Installing PyTorch. This may take several minutes."
+        )
         try:
             threading.Thread(target = _run, name = "video-pytorch-install", daemon = True).start()
         except Exception:
