@@ -985,3 +985,32 @@ def test_split_extras_follow_the_same_gguf_whatever_the_reload_names_it(monkeypa
     assert inherits(("org/m", "Q4_K_M"), "org/m")  # the variant it resolves to anyway
     assert not inherits(("org/m", "Q4_K_M"), "org/m", "Q8_0")
     assert not inherits((str(other), "Q4_K_M"), str(snapshot), "Q4_K_M")  # a shared stem
+
+
+def test_split_extras_drop_a_template_file_the_bundled_gemma4_template_replaces(monkeypatch):
+    """The planner's extras stand in for the route's inheritance, so they get the same stripping."""
+    import routes.inference as ri
+
+    stored = ["--chat-template-file", "/tmp/old.jinja", "-c", "8192"]
+    repo = "unsloth/gemma-4-31B-it-GGUF"
+
+    class _Backend:
+        extra_args = list(stored)
+        extra_args_requested_source = (repo, "Q4_K_M")
+        extra_args_source = (repo, "Q4_K_M")
+
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Backend())
+    request = SimpleNamespace(
+        model_path = repo, gguf_variant = "Q4_K_M", llama_extra_args = None,
+        chat_template_override = None, model_fields_set = set(),
+    )  # fmt: skip
+    inherited = ri._split_inherited_extra_args(request)
+    assert "--chat-template-file" not in inherited and inherited[-2:] == ["-c", "8192"]
+    other = SimpleNamespace(**{**vars(request), "model_path": "org/plain-GGUF"})
+
+    class _Plain(_Backend):
+        extra_args_requested_source = ("org/plain-GGUF", "Q4_K_M")
+        extra_args_source = ("org/plain-GGUF", "Q4_K_M")
+
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Plain())
+    assert ri._split_inherited_extra_args(other)[:2] == ["--chat-template-file", "/tmp/old.jinja"]
