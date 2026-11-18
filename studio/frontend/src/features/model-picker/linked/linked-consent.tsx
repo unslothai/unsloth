@@ -25,14 +25,19 @@ function accepted(): Set<string> {
   }
 }
 
-/** Whether this machine's owner has already been told what leaves the machine for `id`. */
-export function hasLinkedConsent(id: string): boolean {
-  return accepted().has(id);
+// Keyed by address too: pointing a link at another machine asks again.
+function consentKey(instance: Pick<LinkedInstance, "id" | "base_url">): string {
+  return `${instance.id} ${instance.base_url}`;
 }
 
-export function rememberLinkedConsent(id: string): void {
+/** Whether this machine's owner has already been told what leaves the machine for `instance`. */
+export function hasLinkedConsent(instance: Pick<LinkedInstance, "id" | "base_url">): boolean {
+  return accepted().has(consentKey(instance));
+}
+
+export function rememberLinkedConsent(instance: Pick<LinkedInstance, "id" | "base_url">): void {
   const ids = accepted();
-  ids.add(id);
+  ids.add(consentKey(instance));
   try {
     localStorage.setItem(ACCEPTED_KEY, JSON.stringify([...ids]));
   } catch {
@@ -80,7 +85,7 @@ export function LinkedConsentDialog({
           </Button>
           <Button
             onClick={() => {
-              if (instance) rememberLinkedConsent(instance.id);
+              if (instance) rememberLinkedConsent(instance);
               onConfirm();
             }}
           >

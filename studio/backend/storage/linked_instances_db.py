@@ -152,13 +152,17 @@ def update_instance(
     api_key: Optional[str] = None,
     allow_tools: Optional[bool] = None,
 ) -> Optional[dict]:
-    if get_instance(instance_id) is None:
+    current = get_instance(instance_id)
+    if current is None:
         return None
     fields: dict[str, object] = {}
     if name is not None:
         fields["name"] = validate_name(name)
     if base_url is not None:
         fields["base_url"] = base_url
+        # The tools grant was for the old machine.
+        if allow_tools is None and base_url != current["base_url"]:
+            allow_tools = False
     if allow_tools is not None:
         fields["allow_tools"] = 1 if allow_tools else 0
     fields["updated_at"] = datetime.now(timezone.utc).isoformat()

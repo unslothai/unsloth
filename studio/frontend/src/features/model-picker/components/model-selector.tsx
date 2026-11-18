@@ -1112,12 +1112,12 @@ export function ModelSelector({
             void loadLinkedChatWithToast(instance, pick, (modelId) =>
               onValueChange?.(modelId, { source: "external", isLora: false }),
             );
-          if (hasLinkedConsent(instance.id)) run();
+          if (hasLinkedConsent(instance)) run();
           else setConsent({ instance, run });
         }}
         onLinkedImagePick={(instance, id, meta) => {
           const run = () => handleSelect(id, meta);
-          if (hasLinkedConsent(instance.id)) run();
+          if (hasLinkedConsent(instance)) run();
           else setConsent({ instance, run });
         }}
       />

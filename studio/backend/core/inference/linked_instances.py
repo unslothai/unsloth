@@ -345,7 +345,14 @@ async def forward(
         else:
             _record_json(entry_id, payload)
             api_monitor.finish(entry_id)
-        return Response(content, status_code = upstream.status_code, media_type = media_type)
+        if payload is None:
+            return Response(
+                content,
+                status_code = upstream.status_code,
+                media_type = relayed_media_type(media_type),
+                headers = {**_RELAY_SAFETY_HEADERS, "Content-Disposition": "attachment"},
+            )
+        return Response(content, status_code = upstream.status_code, media_type = "application/json")
 
     async def relay():
         # Split on bytes: "\n" never occurs inside a multi-byte UTF-8 character.
@@ -380,8 +387,8 @@ async def forward(
     return StreamingResponse(
         relay(),
         status_code = upstream.status_code,
-        media_type = media_type,
-        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        media_type = relayed_media_type(media_type),
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **_RELAY_SAFETY_HEADERS},
     )
 
 
@@ -395,7 +402,8 @@ async def fetch_models(instance: dict) -> list[dict]:
         f"{instance['base_url']}/v1/models", headers = headers, timeout = _PROBE_TIMEOUT
     )
     response.raise_for_status()
-    data = response.json().get("data")
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, list):
         raise ValueError("Unexpected /v1/models response")
     return [m for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)]
@@ -424,7 +432,10 @@ async def probe(instance: dict) -> dict:
             m
             for m in models
             if not m["id"].startswith(MODEL_PREFIX)
-            and (m.get("task") is None or m["task"] in FORWARDED_TASKS)
+            and (
+                m.get("task") is None
+                or (isinstance(m["task"], str) and m["task"] in FORWARDED_TASKS)
+            )
         ],
         "latency_ms": round((time.monotonic() - started) * 1000),
     }

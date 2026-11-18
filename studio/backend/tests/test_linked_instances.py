@@ -947,3 +947,47 @@ def test_a_streamed_linked_image_request_is_relayed_not_rewritten(monkeypatch):
         )
     )
     assert isinstance(response, StreamingResponse)
+
+
+def test_pointing_a_link_at_another_machine_drops_its_tools_grant():
+    instance = linked_instances_db.create_instance("wsl", "http://remote:8888", REMOTE_KEY)
+    linked_instances_db.update_instance(instance["id"], allow_tools = True)
+    assert linked_instances_db.update_instance(instance["id"], name = "wsl2")["allow_tools"] is True
+    moved = linked_instances_db.update_instance(instance["id"], base_url = "http://other:8888")
+    assert moved["allow_tools"] is False
+    regranted = linked_instances_db.update_instance(
+        instance["id"], base_url = "http://third:8888", allow_tools = True
+    )
+    assert regranted["allow_tools"] is True
+
+
+@pytest.mark.parametrize(
+    "catalog",
+    [[{"id": "x"}], {"data": [{"id": "unsloth/a", "task": ["text-to-image"]}]}],
+)
+def test_a_malformed_remote_catalog_reads_as_offline_or_skips_the_row(monkeypatch, catalog):
+    linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    _remote(lambda request: httpx.Response(200, json = catalog), monkeypatch)
+    objects = asyncio.run(linked_instances.catalog_objects(_request({})))
+    assert objects == []
+
+
+def test_a_forwarded_non_json_reply_is_never_relayed_as_a_document(monkeypatch):
+    linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    _remote(
+        lambda request: httpx.Response(
+            200, content = b"<script>alert(1)</script>", headers = {"content-type": "text/html"}
+        ),
+        monkeypatch,
+    )
+    body = {"model": "@wsl/unsloth/a", "messages": []}
+    request = _request(body)
+
+    async def run():
+        target = await linked_instances.resolve(request, body["model"])
+        return await linked_instances.forward(request, "chat/completions", target)
+
+    response = asyncio.run(run())
+    assert response.media_type == "application/octet-stream"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-disposition"] == "attachment"
