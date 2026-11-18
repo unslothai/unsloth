@@ -174,7 +174,6 @@ import { useDictation, useReadAloud } from "./use-translate-voice";
 const AUTO_TRANSLATE_DELAY_MS = 800;
 const TEXT_FILE_EXTENSIONS =
   ".txt,.md,.markdown,.srt,.vtt,.csv,.tsv,.json,.html,.xml,.yaml,.yml,.log,.tex,.rst";
-// Read on the server: documents through their parsers, images through the loaded vision model or OCR.
 const SERVER_FILE_EXTENSIONS = [
   ".pdf,.docx,.xlsx,.pptx,.odt,.ods,.rtf,.eml",
   SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS,
@@ -197,7 +196,6 @@ const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.platform);
 
-// Disabled stays the accent pill, faded, so the button keeps its place in an empty box.
 const ACTION_BUTTON = "relative z-10 transition-opacity disabled:opacity-40";
 const GO_BUTTON =
   "ms-1 h-9 rounded-full px-4 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85";
@@ -205,7 +203,6 @@ const STOP_BUTTON =
   "ms-1 h-9 rounded-full px-3.5 text-ui-14 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
 const PANEL = "rounded-xl bg-wash-6";
-// Panes grow with the longer text, up to the bottom of the window, then scroll.
 const PANE_HEIGHT =
   "min-h-52 max-h-[70dvh] sm:min-h-[calc(18rem*var(--ui-space-scale,1))] md:max-h-[max(18rem,calc(100dvh-10rem))]";
 const PANE_HEIGHT_WITH_PROMPT =
@@ -219,7 +216,7 @@ const EDGE_SCROLL = "hover-scrollbar w-[calc(100%+2px)] max-w-none";
 const SOURCE_TEXT =
   "min-h-full rounded-none border-0 bg-transparent dark:bg-transparent dark:focus-visible:bg-transparent";
 const STOP_GLYPH = "size-3.5 fill-current";
-// While more text is below, the last lines fade out; the second layer keeps the scrollbar's strip opaque.
+// The second mask layer keeps the scrollbar opaque.
 const BOTTOM_FADE =
   "data-[fade-bottom]:[mask-image:linear-gradient(to_bottom,#000_calc(100%-2.5rem),transparent),linear-gradient(#000,#000)] data-[fade-bottom]:[mask-size:100%_100%,12px_100%] data-[fade-bottom]:[mask-position:0_0,right] data-[fade-bottom]:[mask-repeat:no-repeat]";
 
@@ -249,7 +246,6 @@ const TAB =
   "relative flex h-9 shrink-0 cursor-pointer items-center whitespace-nowrap rounded-full px-3.5 text-ui-14 font-medium text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring";
 const LIST_ROW =
   "h-9 cursor-pointer break-inside-avoid rounded-full py-0 text-ui-14 data-[checked=true]:font-medium data-[checked=true]:text-control-accent";
-// Footer controls share the icons' 36px row.
 const CONTROL_HOVER =
   "hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]";
 const FOOTER_ICON = cn("size-9", CONTROL_HOVER);
@@ -274,7 +270,6 @@ const MODEL_NOTE: Record<
   "hy-mt2-7b": "translate.model.quality",
 };
 
-/** The full list opens under the whole row and spans its column, so it never covers the other panel. */
 function LanguagePicker({
   value,
   onChange,
@@ -298,7 +293,7 @@ function LanguagePicker({
   const locale = useLocale();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  // The highlighted row: opens on the current language, not on whichever row comes first.
+  // Opens on the current language, not the first row.
   const [active, setActive] = useState(value);
   const languages = useMemo(
     () =>
@@ -367,7 +362,7 @@ function LanguagePicker({
       </PopoverAnchor>
       <PopoverContent
         align="start"
-        // The sections' gap-3: the list's top meets its panel's.
+        // Matches the sections' gap-3.
         sideOffset={12}
         collisionPadding={16}
         className="w-[var(--radix-popper-anchor-width)] max-w-none gap-0 overflow-hidden rounded-xl p-0"
@@ -379,7 +374,7 @@ function LanguagePicker({
           onValueChange={setActive}
           className="rounded-none bg-transparent p-0"
         >
-          {/* The whole row takes a click into the search; ! beats the global pointer for comboboxes. */}
+          {/* ! beats the global combobox pointer. */}
           <div
             onMouseDown={(event) => {
               const input = event.currentTarget.querySelector("input");
@@ -403,7 +398,6 @@ function LanguagePicker({
               className="h-full min-w-0 flex-1 cursor-text! bg-transparent text-ui-14 outline-hidden placeholder:text-muted-foreground"
             />
           </div>
-          {/* Columns read top to bottom, as many as the row's width fits. */}
           <CommandList className="hover-scrollbar max-h-[min(24rem,calc(var(--radix-popover-content-available-height)-3rem))] p-2 **:[[cmdk-list-sizer]]:columns-[10.5rem] **:[[cmdk-list-sizer]]:gap-x-1">
             {!showAuto && shown.length === 0 && (
               <CommandEmpty>{t("translate.noLanguages")}</CommandEmpty>
@@ -438,7 +432,6 @@ function LanguagePicker({
   );
 }
 
-/** A row of language tabs over its panel, with the full list behind the chevron. */
 function LanguageTabs({
   value,
   tabs,
@@ -502,7 +495,7 @@ function LanguageTabs({
       className={className}
       trailing={children}
       tabs={
-        // Clipped, not scrolled: a narrow window drops the last tabs, the chevron still lists them all.
+        // Clipped, not scrolled: the chevron lists any dropped tab.
         <div
           role="tablist"
           aria-label={label}
@@ -529,7 +522,6 @@ function LanguageTabs({
   );
 }
 
-/** Style and tone, folded into the source box's footer. */
 function StyleMenu() {
   const t = useT();
   const { mode, tone } = useTranslateStore(
@@ -1150,7 +1142,6 @@ function OptionsPopover() {
   );
 }
 
-/** What the empty output panel says while a run works; download progress is the shared downloads toast's. */
 function useRunStatusText(phase: TranslatePhase | null, model: string) {
   const t = useT();
   if (!phase) return null;
@@ -1420,7 +1411,7 @@ export function TranslatePage() {
 
   const shortcut = `${IS_MAC ? "⌘" : "Ctrl"}+Enter`;
   const runStatus = useRunStatusText(phase, runModelLabel);
-  // A first run asks before fetching the model, as dictation does; auto-translate never downloads.
+  // Auto-translate never downloads, so only a click can ask.
   const [confirmDownload, setConfirmDownload] = useState<
     (typeof DEDICATED_TRANSLATE_MODELS)[number] | null
   >(null);
@@ -1437,7 +1428,6 @@ export function TranslatePage() {
   };
 
   return (
-    // A file dropped anywhere on the page opens into the source box.
     <main
       ref={dropRef}
       {...dragHandlers}
@@ -1501,7 +1491,6 @@ export function TranslatePage() {
                 dragging && "shadow-[inset_0_0_0_1px_var(--ring)]",
               )}
             >
-              {/* The text sizes itself and this scrolls it, so the box grows until it reaches its cap. */}
               <div
                 ref={sourceScrollRef}
                 className={cn(
@@ -1509,7 +1498,6 @@ export function TranslatePage() {
                   BOTTOM_FADE,
                   "min-h-0 flex-1 cursor-text overflow-y-auto",
                 )}
-                // Under a short text: a click there still lands in the text.
                 onPointerUp={(event) => {
                   if (event.target === event.currentTarget)
                     event.currentTarget.querySelector("textarea")?.focus();
@@ -1590,7 +1578,6 @@ export function TranslatePage() {
                   <TooltipTrigger asChild={true}>
                     <span className="group/count ms-auto cursor-default whitespace-nowrap pe-2 font-mono text-ui-12 tabular-nums text-muted-foreground max-sm:hidden">
                       {source.length.toLocaleString(locale)}
-                      {/* The limit only on hover, or once the draft is near it. */}
                       <span
                         className={cn(
                           "group-hover/count:inline",

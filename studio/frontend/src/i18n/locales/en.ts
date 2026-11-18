@@ -4857,7 +4857,6 @@ export const en = {
     detectLanguage: "Detect language",
     // Source picker while detecting: the language found in the text so far.
     detectedLanguage: "{language} (detected)",
-    // The Detect tab while detecting, as "English - Detected".
     detectedTab: "{language} - Detected",
     sourceLanguage: "Translate from",
     targetLanguage: "Translate to",

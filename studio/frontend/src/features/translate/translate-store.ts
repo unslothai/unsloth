@@ -49,7 +49,7 @@ export const TRANSLATE_SOURCE_MAX_CHARS = 50_000;
 export type TranslatePrefs = {
   from: string;
   target: string;
-  /** The language tabs beside each picker, in a stable order: picking a shown tab never reorders them. */
+  /** Stable: picking a shown tab never reorders them. */
   recentSources: string[];
   recentTargets: string[];
   modelId: TranslateModelId;
@@ -123,7 +123,6 @@ function writeJson(key: string, value: unknown): boolean {
   }
 }
 
-/** The tabs for a picker: its recent languages, with the current one shown even if it was never picked from a tab. */
 export function languageTabs(
   current: string,
   recent: readonly string[],

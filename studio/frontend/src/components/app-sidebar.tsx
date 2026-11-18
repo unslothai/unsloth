@@ -355,7 +355,6 @@ import { Tick02Icon } from "@/lib/tick-icon";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
-// Same chip as the Settings tab "New" tag.
 const NAV_TAG =
   "shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent";
 
