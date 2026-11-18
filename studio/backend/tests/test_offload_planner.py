@@ -1408,11 +1408,7 @@ def test_a_partial_shard_set_still_abstains():
 
 def test_split_shard_paths_follow_llama_cpp_naming():
     paths = split_shard_paths("/m/model-Q4-00002-of-00003.gguf")
-    assert paths == [
-        "/m/model-Q4-00001-of-00003.gguf",
-        "/m/model-Q4-00002-of-00003.gguf",
-        "/m/model-Q4-00003-of-00003.gguf",
-    ]
+    assert paths == [os.path.join("/m", f"model-Q4-0000{i}-of-00003.gguf") for i in (1, 2, 3)]
     assert split_shard_paths("/m/model-Q4.gguf") is None
 
 

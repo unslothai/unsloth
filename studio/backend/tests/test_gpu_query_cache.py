@@ -81,6 +81,8 @@ class FakeSmi:
             )
         )
         exe.chmod(0o755)
+        # Windows resolves nvidia-smi through PATHEXT and cannot run the shebang script itself.
+        (root / "nvidia-smi.cmd").write_text(f'@"{sys.executable}" "{exe}" %*\r\n')
 
     def save(self):
         self.state_path.write_text(json.dumps(self.state))
