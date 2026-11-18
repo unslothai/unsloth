@@ -3642,3 +3642,33 @@ def test_plan_cluster_host_extra_on_the_first_device_is_the_old_charge():
     b = cs.plan_cluster(250 * GIB, 0, GIB, devices, host_extra = (0, GIB))
     assert (a.topology, a.weights, a.extra_bytes) == (b.topology, b.weights, b.extra_bytes)
     assert b.host_extra_device is None
+
+
+@pytest.mark.parametrize(
+    "extras, env, sized",
+    [
+        (["--parallel", "8"], None, 8),
+        (["-np=6"], None, 6),
+        (None, "5", 5),
+        (None, None, 2),
+    ],
+    ids = ["extras", "inline", "env", "none"],
+)
+def test_the_split_is_sized_for_the_slot_count_that_launches(monkeypatch, extras, env, sized):
+    """An extras --parallel (or LLAMA_ARG_N_PARALLEL) wins at launch, so per-slot recurrent state,
+    checkpoints and compute buffers must be priced for it, not for request.n_parallel."""
+    _cluster_env(monkeypatch)
+    if env is None:
+        monkeypatch.delenv("LLAMA_ARG_N_PARALLEL", raising = False)
+    else:
+        monkeypatch.setenv("LLAMA_ARG_N_PARALLEL", env)
+    seen = []
+    real = cs.ClusterServing._size
+
+    async def spy(self, request, n_parallel, flags, ss_mod):
+        seen.append(n_parallel)
+        return await real(self, request, n_parallel, flags, ss_mod)
+
+    monkeypatch.setattr(cs.ClusterServing, "_size", spy)
+    run(ss.before_load(_request(llama_extra_args = extras), 2))
+    assert seen == [sized]
