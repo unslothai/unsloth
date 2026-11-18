@@ -781,6 +781,15 @@ def install_h3_flashinfer(
         )
         or ""
     )
+    if any(
+        getattr(getattr(getattr(b, "attn", None), "processor", None), "_unsloth_int8", False)
+        for b in blocks
+    ):
+        # the fused block calls SDPA itself: it would silently replace Studio's INT8 attention kernel the load engaged
+        result["reason"] = "Studio's INT8 attention kernel is engaged on these blocks"
+        if logger is not None:
+            logger.info("video.h3_flashinfer: off: %s", result["reason"])
+        return result
     if backend not in _SDPA_BACKENDS:
         # the fused block calls SDPA itself (cuDNN-pinned or unrestricted); any other selected backend would be overridden
         result["reason"] = f"attention backend {backend!r} is not reproduced by the fused block"

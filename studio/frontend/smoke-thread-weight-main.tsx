@@ -16,6 +16,7 @@ import {
   type ChatModelAdapter,
   ExportedMessageRepository,
   SimpleImageAttachmentAdapter,
+  type ThreadAssistantMessagePart,
   type ThreadMessageLike,
   useAui,
   unstable_useRemoteThreadListRuntime,
@@ -239,9 +240,36 @@ const STREAM_CHUNKS = Number(
 // `&sources=1`: the streamed reply follows a web_search call with six URL sources.
 const STREAM_SOURCES =
   new URLSearchParams(window.location.search).get("sources") === "1";
+// `&rounds=N`: N agent rounds (reasoning, a call, its result, text with math) stream before the reply.
+const STREAM_ROUNDS = Number(
+  new URLSearchParams(window.location.search).get("rounds") ?? "0",
+);
+const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
 const NEVER_RUNS: ChatModelAdapter = STREAM_CHUNKS > 0
   ? {
       async *run({ abortSignal }) {
+        const rounds: ThreadAssistantMessagePart[] = [];
+        for (let round = 0; round < STREAM_ROUNDS; round++) {
+          const callArgs = { url: `https://example.com/${round}` };
+          const call = {
+            type: "tool-call" as const,
+            toolCallId: `call_round_${round}`,
+            toolName: "browser_snapshot",
+            args: callArgs,
+            argsText: JSON.stringify(callArgs),
+          };
+          for (const step of [
+            () => rounds.push({ type: "reasoning", text: `Planning round ${round}.` }),
+            () => rounds.push(call),
+            () => (rounds[rounds.length - 1] = { ...call, result: `Snapshot ${round}. ${PROSE}` }),
+            () => rounds.push({ type: "text", text: `Round ${round} gave $x_{${round}}^2$.` }),
+          ]) {
+            step();
+            await tick();
+            if (abortSignal.aborted) return;
+            yield { content: [...rounds] };
+          }
+        }
         const args = { query: "live reference" };
         const prefix = STREAM_SOURCES
           ? [
@@ -258,10 +286,10 @@ const NEVER_RUNS: ChatModelAdapter = STREAM_CHUNKS > 0
           : [];
         let text = "";
         for (let chunk = 0; chunk < STREAM_CHUNKS; chunk++) {
-          await new Promise((resolve) => setTimeout(resolve, 20));
+          await tick();
           if (abortSignal.aborted) return;
           text += `word${chunk} `;
-          yield { content: [...prefix, { type: "text" as const, text }] };
+          yield { content: [...rounds, ...prefix, { type: "text" as const, text }] };
         }
       },
     }

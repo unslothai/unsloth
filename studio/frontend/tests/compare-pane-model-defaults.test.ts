@@ -20,6 +20,7 @@ const { useChatRuntimeStore } = await import(
 const {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   replayMaxTokensCap,
 } = await import("../src/features/chat/presets/preset-policy.ts");
 const { resolveQwenThinkingParams } = await import(
@@ -56,6 +57,7 @@ const commitPaneLoad = new Function(
   "mergeBackendRecommendedInference",
   "loadedContextForParams",
   "resolveQwenThinkingParams",
+  "recommendedValuesForPick",
   `let upgradeUnloadedActive; ${composer.slice(start, end)}`,
 );
 
@@ -78,6 +80,7 @@ function pickerLoad(model: string): void {
       response: response(model),
       modelId: model,
       presetSource: store.activePresetSource,
+      presetEditedKeys: store.presetEditedKeys,
       loadedContextLength: CONTEXT,
     }),
     { fromModelDefaults: true, maxTokensCap: CONTEXT },
@@ -97,6 +100,7 @@ function compareLoad(model: string, gguf = true): void {
     mergeBackendRecommendedInference,
     loadedContextForParams,
     resolveQwenThinkingParams,
+    recommendedValuesForPick,
   );
 }
 
@@ -165,6 +169,21 @@ test("a compare pane model keeps its remembered sampling over the recommendation
   assert.equal(useChatRuntimeStore.getState().paramsByModel[GEMMA]?.temperature, 0.4);
 });
 
+test("an edited Default holds only the moved keys on a compare pane load", (t) => {
+  const store = useChatRuntimeStore.getState();
+  t.after(() => store.setActivePresetSource("builtin-default"));
+  pickerLoad(QWEN);
+  store.setActivePresetSource("modified");
+  compareLoad(GEMMA);
+  assert.deepEqual(sampling(), { temperature: 1, topP: 0.95, topK: 64 });
+
+  store.setActivePresetSource("modified", "temperature");
+  store.setParams({ ...useChatRuntimeStore.getState().params, temperature: 0.3 });
+  useChatRuntimeStore.setState({ paramsByModel: {} });
+  compareLoad(QWEN);
+  assert.deepEqual(sampling(), { temperature: 0.3, topP: 0.95, topK: 20 });
+});
+
 test("a non-GGUF compare pane load takes its sampling and context without filing an entry", async () => {
   pickerLoad(QWEN);
   compareLoad(GEMMA, false);
@@ -190,4 +209,19 @@ test("a compare pane Qwen model gets the sampling for the active thinking mode",
   useChatRuntimeStore.setState({ paramsByModel: {} });
   compareLoad(QWEN35);
   assert.deepEqual(sampling(), { temperature: 0.7, topP: 0.8, topK: 20 });
+});
+
+test("an NPU load keeps its sized window when Lemonade reports no model limit", () => {
+  const fields = loadedContextFields({
+    is_npu: true,
+    context_length: 65536,
+    max_context_length: 65536,
+    native_context_length: null,
+  });
+  assert.equal(fields.loadedContextLength, 65536);
+  assert.equal(fields.maxContextLength, 65536);
+  assert.equal(fields.loadedNpuContextFit, null);
+  const fallback = loadedContextFields({ is_npu: true, context_length: 8192, npu_context_fit: 0 });
+  assert.equal(fallback.loadedNpuContextFit, 0);
+  assert.equal(fallback.loadedContextLength, 8192);
 });

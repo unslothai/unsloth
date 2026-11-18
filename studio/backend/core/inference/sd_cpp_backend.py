@@ -573,10 +573,33 @@ def _usable_or_discard_managed(binary: str) -> bool:
     return False
 
 
+# Successful ``--help`` text per (path, size, mtime_ns); a rewritten binary changes the key.
+_HELP_TEXT_CACHE: dict[tuple[str, int, int], str] = {}
+_HELP_TEXT_CACHE_MAX = 8
+_help_text_cache_lock = threading.Lock()
+
+
+def _help_cache_key(binary: str) -> Optional[tuple[str, int, int]]:
+    # A bare name is resolved by the spawn through PATH, not by stat; only explicit paths are cached.
+    if not os.path.dirname(binary):
+        return None
+    try:
+        st = os.stat(binary)
+    except (OSError, ValueError):
+        return None
+    return (os.path.abspath(binary), int(st.st_size), int(st.st_mtime_ns))
+
+
 def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     """Identifying output settles it whatever the exit code (old builds exit 1); else only a clean exit is evidence, and rc 127 from the loader is not."""
     import subprocess
 
+    cache_key = _help_cache_key(str(binary)) if args == ("--help",) else None
+    if cache_key is not None:
+        with _help_text_cache_lock:
+            cached = _HELP_TEXT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
     try:
         with windows_loader_error_boxes_suppressed():
             proc = subprocess.run(
@@ -593,7 +616,16 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
         return None
     if proc.returncode != 0:
         return None
-    return (proc.stdout or "") + (proc.stderr or "")
+    text = (proc.stdout or "") + (proc.stderr or "")
+    # Re-stat: a binary replaced while it ran must not leave this text under the old build's key.
+    if cache_key is not None and _help_cache_key(str(binary)) == cache_key:
+        with _help_text_cache_lock:
+            for stale in [k for k in _HELP_TEXT_CACHE if k[0] == cache_key[0]]:
+                del _HELP_TEXT_CACHE[stale]
+            while len(_HELP_TEXT_CACHE) >= _HELP_TEXT_CACHE_MAX:
+                del _HELP_TEXT_CACHE[next(iter(_HELP_TEXT_CACHE))]
+            _HELP_TEXT_CACHE[cache_key] = text
+    return text
 
 
 # --ref-video arrived with H3 upstream; --version is "unknown" on release prebuilts.
@@ -2430,24 +2462,15 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
 
 
 _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
+_SD_CPP_LIBS = ("stable-diffusion.dll", "libstable-diffusion.so", "libstable-diffusion.dylib")
 
 
-def binary_carries_marker(
-    binary: Optional[str],
-    marker: Optional[str],
-    *,
-    unreadable: bool = True,
-) -> bool:
-    """No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the caller passes unreadable=False."""
-    if not marker:
-        return True
-    if not binary:
-        return False
+def _file_carries_marker(path: str, marker: str) -> Optional[bool]:
     try:
-        st = os.stat(binary)
-        key = (str(binary), int(st.st_size), int(st.st_mtime_ns), marker)
+        st = os.stat(path)
+        key = (str(path), int(st.st_size), int(st.st_mtime_ns), marker)
     except OSError:
-        return unreadable
+        return None
     hit = _ARCH_MARKER_CACHE.get(key)
     if hit is not None:
         return hit
@@ -2455,7 +2478,7 @@ def binary_carries_marker(
     chunk = 8 << 20
     found = False
     try:
-        with open(binary, "rb") as fh:
+        with open(path, "rb") as fh:
             tail = b""
             while True:
                 block = fh.read(chunk)
@@ -2466,9 +2489,31 @@ def binary_carries_marker(
                     break
                 tail = block[-(len(needle) - 1) :] if len(needle) > 1 else b""
     except OSError:
-        return unreadable
+        return None
     _ARCH_MARKER_CACHE[key] = found
     return found
+
+
+def binary_carries_marker(
+    binary: Optional[str],
+    marker: Optional[str],
+    *,
+    unreadable: bool = True,
+) -> bool:
+    """The binary or the libstable-diffusion beside it (shared builds keep some markers only there) carries the
+    marker. No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the
+    caller passes unreadable=False."""
+    if not marker:
+        return True
+    if not binary:
+        return False
+    found = _file_carries_marker(binary, marker)
+    if found is None:
+        return unreadable
+    return found or any(
+        _file_carries_marker(os.path.join(os.path.dirname(binary), lib), marker)
+        for lib in _SD_CPP_LIBS
+    )
 
 
 def _native_output_image(fam: Any, im: Any) -> Any:
@@ -3066,6 +3111,93 @@ def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
     return OFFLOAD_NONE
 
 
+def _unmeasured_card_free_mib(
+    klass: Optional[str], description: Optional[str], ordinal: Optional[int]
+) -> "tuple[Optional[int], Optional[int]]":
+    """(free, total) MiB of the card a CPU torch never measured, read without a device context: amdgpu sysfs for an
+    AMD Vulkan device (sole card only), nvidia-smi for the CUDA card the load pins (sd.cpp's first when unpinned).
+    (None, None) when unsure."""
+    try:
+        if klass == "cuda":
+            from core.inference.diffusion_device import smi_free_total_mib
+
+            free, total = smi_free_total_mib(0 if ordinal is None else int(ordinal))
+            # A CPU torch lists no CUDA devices, so that reads nothing; a sole unmasked card is unambiguous.
+            if free is None and not ordinal and os.environ.get("CUDA_VISIBLE_DEVICES") is None:
+                free, total = _sole_nvidia_card_mib()
+            return free, total
+        from core.inference.video_minimax_h3 import amdgpu_vram_reading, vulkan_device_is_amd
+        if klass == "vulkan" and vulkan_device_is_amd(description):
+            free, total = amdgpu_vram_reading()
+            if free is not None:
+                return free >> 20, None if total is None else total >> 20
+    except Exception:  # noqa: BLE001 -- an unreadable card keeps the offload
+        pass
+    return None, None
+
+
+def _sole_nvidia_card_mib() -> "tuple[Optional[int], Optional[int]]":
+    """(free, total) MiB of the machine's only NVIDIA GPU from nvidia-smi, without torch; (None, None) otherwise."""
+    import subprocess
+
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None, None
+    out = subprocess.run(
+        [
+            smi,
+            "--query-gpu=memory.total,memory.used,mig.mode.current",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 10,
+    )
+    rows = [r.split(",") for r in out.stdout.strip().splitlines() if r.strip()]
+    if out.returncode != 0 or len(rows) != 1 or rows[0][2].strip().lower() == "enabled":
+        return None, None
+    total, used = int(float(rows[0][0])), int(float(rows[0][1]))
+    return max(total - used, 0), total
+
+
+def _offload_would_exhaust_host_ram(
+    files: Any,
+    klass: Optional[str],
+    description: Optional[str],
+    ordinal: Optional[int] = None,
+) -> bool:
+    """--offload-to-cpu forces every weight into anonymous host RAM (``*=cpu`` params, which also turns off sd.cpp's
+    auto-fit). When RAM cannot hold them, auto drops it as long as the card holds the diffusion model: auto-fit then
+    places the DiT on the card first and spills the text encoder / VAE to RAM or disk itself. Unreadable keeps it."""
+    from core.inference.diffusion_small_host import host_ram_mib, host_reserve_mib
+    from core.inference.sd_cpp_multigpu import CARD_RESERVE_MIB, TEXT_ENCODER_FIELDS, file_mib
+
+    dit = file_mib(getattr(files, "diffusion_model", None))
+    weights = dit + sum(file_mib(getattr(files, f, None)) for f in ("vae", *TEXT_ENCODER_FIELDS))
+    total, available = host_ram_mib()
+    if not dit or available is None or weights <= available - host_reserve_mib(total):
+        return False
+    from core.inference.diffusion_memory import _user_budget_reserve_mib
+
+    free, card_total = _unmeasured_card_free_mib(klass, description, ordinal)
+    # sd.cpp's auto-fit takes no VRAM cap, so a lowered VRAM Budget keeps the offload it can enforce.
+    if free is None or _user_budget_reserve_mib(card_total or free) > 0:
+        return False
+    if dit + CARD_RESERVE_MIB > free:
+        return False
+    logger.info(
+        "sd_cpp.placement: offloading %s MiB of weights exceeds host RAM (%s MiB available); the card's %s MiB "
+        "free holds the %s MiB diffusion model, so auto-fit places them",
+        weights,
+        available,
+        free,
+        dit,
+    )
+    return True
+
+
 def _native_speed_for(speed_mode: Optional[str]) -> str:
     mode = (speed_mode or "off").strip().lower()
     return mode if mode in ("default", "max") else "off"
@@ -3105,6 +3237,12 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
         return None
     per_step = (now - first_step_at) / steps_since_first
     return max(0.0, (total_steps - step) * per_step)
+
+
+def _family_rng_kwargs(fam: Any) -> dict[str, str]:
+    """``rng=`` for an sd-server start when the family pins one (``sd_cpp_rng``), else nothing."""
+    rng = getattr(fam, "sd_cpp_rng", None)
+    return {"rng": rng} if rng else {}
 
 
 def _request_extra_sample_args(state: Any) -> Optional[str]:
@@ -3575,6 +3713,8 @@ class SdCppDiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         # Accepted for parity; native never raises the unified-memory refusal.
         allow_oversized_load: bool = False,
+        # Accepted for parity and ignored: sd.cpp has no Studio INT8 attention kernel.
+        int8_attention: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch on a daemon thread, returns at once; an empty token must become None, since a literal empty string breaks the anonymous fallback."""
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
@@ -3877,6 +4017,13 @@ class SdCppDiffusionBackend:
                 # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
                 if placed == "cpu":
                     return placed, ()
+                if unmeasured and _offload_would_exhaust_host_ram(
+                    files,
+                    klass,
+                    sd_cpp_listed_device(binary)[1] if binary else None,
+                    gpu_ordinal,
+                ):
+                    unmeasured = False
                 return placed, tuple(
                     offload_flags(_memory_policy(memory_mode, cpu_offload or unmeasured))
                 )
@@ -4026,6 +4173,7 @@ class SdCppDiffusionBackend:
                             native_speed = native_speed,
                             threads = _default_threads(),
                             env = spawn_env,
+                            **_family_rng_kwargs(fam),
                         )
                         started_ok = True
                     except SdCppCancelled:
@@ -4868,7 +5016,7 @@ class SdCppDiffusionBackend:
                         model_kind = "gguf",
                         transformer_quant = None,
                     ):
-                        raise ValueError(
+                        raise diffusion_lora.LoraSelectionError(
                             f"LoRA is not supported for {state.family.name} on the native "
                             "sd.cpp engine."
                         )
@@ -5029,7 +5177,10 @@ class SdCppDiffusionBackend:
             stage = Path(server.lora_dir) / f"gen_{os.urandom(6).hex()}"
             lora_stages.append(stage)
             materialized = diffusion_lora.materialize_native_dir(
-                lora_resolved, stage, real_files = True
+                lora_resolved,
+                stage,
+                real_files = True,
+                family = getattr(state.family, "name", None),
             )
             return [
                 {"path": f"{stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
@@ -5266,7 +5417,7 @@ class SdCppDiffusionBackend:
         watcher.start()
         failed = False
         try:
-            server.start(state.files, **start_kwargs)
+            server.start(state.files, **start_kwargs, **_family_rng_kwargs(state.family))
         except Exception:  # noqa: BLE001 -- the original server error is the more useful one
             failed = True
         finally:
@@ -5490,7 +5641,9 @@ class SdCppDiffusionBackend:
             lora_dir: Optional[str] = None
             if lora_resolved:
                 materialized = diffusion_lora.materialize_native_dir(
-                    lora_resolved, Path(tmpdir) / "loras"
+                    lora_resolved,
+                    Path(tmpdir) / "loras",
+                    family = getattr(state.family, "name", None),
                 )
                 eff_prompt = diffusion_lora.inject_prompt_tags(prompt, materialized)
                 lora_dir = str(Path(tmpdir) / "loras")
@@ -5522,6 +5675,7 @@ class SdCppDiffusionBackend:
                     lora_apply_mode = "auto" if lora_dir else None,
                     ref_images = tuple(ref_paths),
                     qwen_image_layers = layers,
+                    rng = getattr(state.family, "sd_cpp_rng", None),
                 )
                 # Hold installs off while sd-cli runs; injected engines may have no binary.
                 with _tree_reader(getattr(engine, "binary", None), cancel):

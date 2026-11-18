@@ -29,6 +29,8 @@ holds every row mounted). Structure only, never a timing:
  12. The leading spacer carries the KaTeX equation numbers of the rows it stands for, so the
      page-wide numbering of the mounted rows is the fully mounted thread's.
  13. A code block's own word wrap survives its row being unmounted and mounted again.
+ 14. A reader who scrolls away while a reply streams has rows under them before it ends: the
+     stream does not hold the window's commits back.
 """
 
 from __future__ import annotations
@@ -56,6 +58,12 @@ ENGINES = [e for e in os.environ.get("SMOKE_ENGINES", "chromium").split(",") if 
 SMALL = 80
 LARGE = 400
 STREAM_CHUNKS = 20
+LONG_STREAM_CHUNKS = 600
+AWAY_WHEEL_STEPS = 12
+# Rows slower to render than the gap between two streamed chunks.
+AWAY_SEED = {"agent": {"rounds": 5, "compactionEvery": 10, "sources": True, "rich": True}}
+# Frames, not a time: a row the reader reaches is committed inside the frame that shows it.
+AWAY_FRAMES = 20
 DRAFT = "unsaved draft for the windowed thread"
 SEED = {"agent": {"rounds": 2, "compactionEvery": 10, "sources": True, "rich": True}}
 # Same allowance studiobench gives a windowed arm (analysis/behaviour.py).
@@ -87,6 +95,7 @@ STATE = """() => {
     mounted: rows.length,
     positions: rows.map((row) => Number(row.getAttribute('aria-posinset'))),
     sizes: [...new Set(rows.map((row) => row.getAttribute('aria-setsize')))],
+    roles: [...new Set(rows.map((row) => row.getAttribute('role')))],
     scrollTop: viewport.scrollTop,
     scrollHeight: viewport.scrollHeight,
     clientHeight: viewport.clientHeight,
@@ -125,6 +134,19 @@ COVERED = """(min) => {
     covered += Math.max(0, Math.min(at.bottom, box.bottom) - Math.max(at.top, box.top));
   }
   return covered / box.height >= min;
+}"""
+
+COVERED_AFTER = """async ([frames, min]) => {
+  for (let frame = 0; frame < frames; frame += 1) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  const box = window.__threadWeight.viewport().getBoundingClientRect();
+  let covered = 0;
+  for (const row of document.querySelectorAll('[data-role]')) {
+    const at = row.getBoundingClientRect();
+    covered += Math.max(0, Math.min(at.bottom, box.bottom) - Math.max(at.top, box.top));
+  }
+  return covered / box.height;
 }"""
 
 STOP_RECORD = """() => {
@@ -256,7 +278,7 @@ def open_thread(
     messages: int,
     *,
     windowed: bool,
-    stream: bool = False,
+    stream: bool | int = False,
     seed: dict = SEED,
 ):
     page = context.new_page()
@@ -265,7 +287,7 @@ def open_thread(
     query = (
         "shell=1"
         + ("&window=1" if windowed else "")
-        + (f"&stream={STREAM_CHUNKS}" if stream else "")
+        + (f"&stream={STREAM_CHUNKS if stream is True else stream}" if stream else "")
     )
     page.goto(f"{BASE}/smoke-thread-weight.html?{query}", wait_until = "load")
     page.wait_for_function("() => window.__threadWeight !== undefined", timeout = 120_000)
@@ -305,6 +327,10 @@ def check_ordinals(
     assert state["sizes"] == [str(state["length"])], (
         f"{label}: rows must all publish the thread's length {state['length']} as aria-setsize, "
         f"got {state['sizes']}"
+    )
+    assert state["roles"] == ["article"], (
+        f"{label}: every windowed row must carry role=article, the role its ordinals need, got "
+        f"{state['roles']}"
     )
     assert positions == sorted(positions), f"{label}: rows are out of order: {positions}"
     if pinned is not None:
@@ -700,6 +726,42 @@ def check_engine(playwright, engine: str) -> None:
         assert [fork.get("messageId") for fork in forks] == [
             last
         ], f"the fork chord posted {forks!r} with the last row unmounted, not one fork of {last}"
+        page.close()
+
+        # 14. Scrolling away from a streaming reply.
+        page, errors = open_thread(
+            context, TALL_MESSAGES, windowed = True, stream = LONG_STREAM_CHUNKS, seed = AWAY_SEED
+        )
+        page.evaluate("() => window.__threadWeight.send('go')")
+        page.wait_for_function("() => window.__threadWeight.isRunning()", timeout = 60_000)
+        box = page.locator(".aui-thread-viewport").bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        for _ in range(AWAY_WHEEL_STEPS):
+            page.mouse.wheel(0, -WHEEL_PX)
+            page.wait_for_timeout(WHEEL_GAP_MS)
+        coverage = page.evaluate(COVERED_AFTER, [AWAY_FRAMES, MIN_COVERAGE])
+        away = page.evaluate(STATE)
+        assert page.evaluate(
+            "() => window.__threadWeight.isRunning()"
+        ), "the reply ended before the check: it proves nothing about a stream"
+        assert coverage >= MIN_COVERAGE, (
+            f"rows cover {coverage:.0%} of the viewport {AWAY_FRAMES} frames after the reader "
+            f"wheeled away from a streaming reply (mounted {away['positions']}): the window is "
+            "waiting for the stream"
+        )
+        check_ordinals(away, "away from a streaming reply", pinned = TALL_MESSAGES + 2)
+        info(
+            f"{engine}: wheeled away from a streaming reply, rows {away['positions']} cover the "
+            "reader while it is still being written"
+        )
+        page.wait_for_function(
+            "() => !window.__threadWeight.isRunning()", timeout = 300_000, polling = 100
+        )
+        text = page.evaluate("() => window.__threadWeight.lastAssistantMessage()?.innerText ?? ''")
+        assert (
+            f"word{LONG_STREAM_CHUNKS - 1}" in text
+        ), "the reply the reader left did not finish in its mounted row"
+        assert not errors, errors
         page.close()
         info(f"{engine}: ok " + json.dumps({"small": small["mounted"], "large": opened["mounted"]}))
     finally:

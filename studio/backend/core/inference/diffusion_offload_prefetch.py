@@ -17,6 +17,8 @@ from typing import Any, Iterator, Optional
 ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
 PREFETCH_DEPTH_ENV = "UNSLOTH_DIFFUSION_PREFETCH_DEPTH"
 CROSS_FORWARD_ENV = "UNSLOTH_DIFFUSION_PREFETCH_CROSS_FORWARD"
+# "0": pins always count on top of the host copies they replace
+PIN_REPLACES_HOST_ENV = "UNSLOTH_DIFFUSION_PIN_REPLACES_HOST"
 # Groups carried while the last streamed block still runs (see GroupPrefetcher._carry).
 TAIL_CARRY_GROUPS = 1
 DEFAULT_PREFETCH_DEPTH = 2
@@ -48,6 +50,15 @@ def async_prefetch_enabled() -> bool:
 
 def cross_forward_enabled() -> bool:
     return (os.environ.get(CROSS_FORWARD_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def pin_replaces_host_enabled() -> bool:
+    return (os.environ.get(PIN_REPLACES_HOST_ENV) or "").strip().lower() not in (
         "0",
         "off",
         "false",
@@ -1361,13 +1372,16 @@ class PrefetchedListStreamer:
         self.prefetcher: Optional[GroupPrefetcher] = None
         self.streamed = 0
         self.pinned_bytes = 0
+        self.replaced_bytes = 0
         self.arena: Any = None
         # matches ModuleListStreamer, whose release path clears ``_host``
         self._host: dict = {}
 
     def stats(self) -> dict:
         pf = self.prefetcher
-        return dict(pf.stats) if pf is not None else {}
+        out = dict(pf.stats) if pf is not None else {}
+        out["pinned_bytes"] = int(self.pinned_bytes)
+        return out
 
     def remove(self) -> None:
         for handle in self.handles:
@@ -1414,6 +1428,16 @@ def _list_stream_refusal(device: Any) -> Optional[str]:
     return None
 
 
+def _end_stream_forward(pf: Any, release_after_forward: bool) -> None:
+    """``end()`` clears ``capturing``, so read it first; never ``empty_cache`` inside a graph capture."""
+    import torch
+
+    capturing = bool(getattr(pf, "capturing", False))
+    pf.end()
+    if release_after_forward and not capturing and not torch.cuda.is_current_stream_capturing():
+        torch.cuda.empty_cache()
+
+
 def stream_module_list(
     owner: Any,
     blocks: Any,
@@ -1424,9 +1448,13 @@ def stream_module_list(
     depth: int = LIST_STREAM_DEPTH,
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
+    replaces_counted: bool = False,
+    release_after_forward: bool = False,
 ) -> Optional[PrefetchedListStreamer]:
     """A ``PrefetchedListStreamer`` over ``blocks``, or None (nothing changed) when it does not apply or cannot pin.
-    Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given."""
+    Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given. ``replaces_counted``:
+    pins replace host copies the caller already counts, so only the live budget bounds them.
+    ``release_after_forward``: empty the copy stream's cache after each forward (once-per-request owners)."""
     import torch
 
     refused = _list_stream_refusal(device)
@@ -1435,7 +1463,7 @@ def stream_module_list(
     streamed = blocks[resident:]
     if refused is None and not streamed:
         refused = "nothing streams"
-    need = 0
+    need = replaced = 0
     if refused is None:
         from .diffusion_memory import _pin_budget_mib, _storage_nbytes
 
@@ -1445,7 +1473,16 @@ def stream_module_list(
             for t in list(b.parameters()) + list(b.buffers())
         )
         budget = _pin_budget_mib()
-        if max_pin_bytes is not None and need > int(max_pin_bytes):
+        replaced = need if replaces_counted and pin_replaces_host_enabled() else 0
+        # only where the credit is what lets the pin fit (that owner streamed pageable before): pinned owners keep
+        # their cache as they did
+        release_after_forward = bool(
+            release_after_forward
+            and replaced
+            and max_pin_bytes is not None
+            and need > int(max_pin_bytes)
+        )
+        if max_pin_bytes is not None and need - replaced > int(max_pin_bytes):
             refused = (
                 f"{need / 1e9:.1f} GB to pin exceeds the {max(0, int(max_pin_bytes)) / 1e9:.1f} GB the host plan "
                 "leaves for pinned copies"
@@ -1542,13 +1579,15 @@ def stream_module_list(
             pf.begin()
             pf.kick()  # the first streamed members copy while the resident ones run
 
+        def _end(*_a: Any, **_k: Any) -> None:
+            _end_stream_forward(pf, release_after_forward)
+
         streamer.handles.append(owner.register_forward_pre_hook(_eager(_begin)))
-        streamer.handles.append(
-            owner.register_forward_hook(_eager(lambda *_a, **_k: pf.end()), always_call = True)
-        )
+        streamer.handles.append(owner.register_forward_hook(_eager(_end), always_call = True))
         streamer.prefetcher = pf
         streamer.streamed = len(streamed)
         streamer.pinned_bytes = int(need)
+        streamer.replaced_bytes = int(replaced)
         bump_placement_epoch()
     except Exception as exc:  # noqa: BLE001 - the caller's pageable streamer takes the members as they are now
         streamer.remove()
@@ -1568,11 +1607,12 @@ def stream_module_list(
         payload = getattr(arena, "payload_bytes", 0) if arena is not None else 0
         logger.info(
             "diffusion.memory: %s streams %d of %d members with pinned copies (%.2f GB) and event-fenced prefetch "
-            "(%d ahead)",
+            "(%d ahead)%s",
             type(owner).__name__,
             len(streamed),
             len(blocks),
             payload / 1e9,
             depth,
+            " in place of the host copies the plan counts" if replaced else "",
         )
     return streamer

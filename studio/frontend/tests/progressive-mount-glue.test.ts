@@ -635,3 +635,46 @@ test("a copy from a field leaves the window alone", () => {
   assert.match(copy, /const target = event\.target as Element \| null;\s*if \(target\?\.closest\?\.\(EDITABLE\)\) return;/);
   assert.match(GLUE, /const EDITABLE = "input, textarea, \[contenteditable=true\]";/);
 });
+
+test("rows get their role and ordinals before anything reads their style", () => {
+  // Published only in the layout effect, the role restyled every newly mounted row a second time.
+  const early = section(GLUE, "useInsertionEffect(() => {\n    const viewport = viewportRef.current;\n    if (!viewport) return;\n    const windowed", "}, [win, count, readMetas, viewportRef]);");
+  assert.match(early, /publishOrdinals\(viewport, readMetas\(\), windowed\);/);
+  assert.match(early, /ordinalsRef\.current = windowed;/);
+  assert.ok(
+    GLUE.indexOf("publishOrdinals(viewport, readMetas(), windowed);") <
+      GLUE.indexOf("useLayoutEffect(() => {\n    winRef.current = win;"),
+    "the ordinals go on before the layout effect's anchor reads",
+  );
+});
+
+test("a commit that can wait does not start while a reply streams", () => {
+  // React restarts a transition render on every chunk: one issued mid-stream lands after the reply.
+  const step = section(GLUE, "const step = useCallback(", "stepRef.current = step;");
+  assert.match(
+    step,
+    /if \(streaming && !\(WEBKIT_GTK \|\| trimOnly \|\| exposed\)\) \{[\s\S]*?settleTimerRef\.current = window\.setTimeout\(schedule, STREAM_QUIET_MS\);\s*return;\s*\}\s*commit\(next, WEBKIT_GTK \|\| trimOnly \|\| exposed\);/,
+    "what is not urgent waits for the reply to pause, and is looked at again",
+  );
+  assert.match(step, /if \(streaming\) next = planFill\(current, total, 1, heightOf\);/);
+  assert.match(step, /if \(modeRef\.current === "fill"\) \{\s*commit\(next, true\);\s*return;/);
+  assert.match(
+    GLUE,
+    /pulseRef\.current\?\.streaming\(performance\.now\(\)\) === true &&\s*aui\.thread\(\)\.getState\(\)\.isRunning === true/,
+  );
+  assert.match(GLUE, /return aui\.subscribe\(\(\) => pulse\.note\(tailContent\(\), performance\.now\(\)\)\);/);
+  assert.match(
+    step,
+    /if \(viewport && pendingRef\.current && inFlight\) \{[\s\S]*?if \(streamingNow\(\) && \(pulseRef\.current\?\.changes \?\? 0\) - inFlight\.changes >= 2\) \{\s*commit\(inFlight\.next, true\);\s*return;/,
+  );
+  assert.ok(
+    step.indexOf("if (viewport && pendingRef.current && inFlight)") < step.indexOf("if (!viewport || pendingRef.current) return;"),
+    "the in-flight check must come before the step gives way to the commit",
+  );
+  const commit = section(GLUE, "const commit = useCallback(", "[viewportRef],");
+  assert.match(commit, /transitionRef\.current = sync \? null : \{ next, changes: pulseRef\.current\?\.changes \?\? 0 \};/);
+  assert.match(
+    section(GLUE, "useLayoutEffect(() => {\n    winRef.current = win;", "}, [win, atFirstRow, spacers,"),
+    /pendingRef\.current = false;\s*transitionRef\.current = null;/,
+  );
+});

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import urllib.error
@@ -31,8 +32,11 @@ NON_INSTALLING = {"constraints.txt", "overrides-darwin-arm64.txt", "overrides.tx
 
 # Keyed by version so a pin bump fails here until the new window is confirmed.
 DECLARED_TOKENIZERS_WINDOW = {
-    "5.5.0": ">=0.22.0,<=0.23.0",
+    "5.5.4": ">=0.22.0,<=0.23.0",
     "4.57.6": ">=0.22.0,<=0.23.0",
+    # Sidecar-only releases (.venv_t5_*): installed --no-deps, they import the main env's tokenizers.
+    "5.3.0": ">=0.22.0,<=0.23.0",
+    "5.13.1": ">=0.22.0,<=0.23.0",
 }
 
 # Named, not computed, so the negative control cannot drift with PyPI.
@@ -115,6 +119,47 @@ def test_the_tokenizers_bound_matches_the_pinned_transformers_release():
             )
 
 
+def _sidecar_transformers_pins() -> dict[str, str]:
+    import ast
+
+    source = (REPO_ROOT / "studio" / "backend" / "utils" / "transformers_version.py").read_text(
+        encoding = "utf-8"
+    )
+    pins = {}
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and re.fullmatch(r"TRANSFORMERS_(5\d+|457)_VERSION", node.targets[0].id)
+            and isinstance(node.value, ast.Constant)
+        ):
+            pins[node.targets[0].id] = node.value.value
+    return pins
+
+
+def test_every_sidecar_release_accepts_the_main_env_tokenizers():
+    """The sidecars install transformers --no-deps over the main env, so each one imports the
+    main env's tokenizers and enforces its own window on it at import."""
+    pins = _sidecar_transformers_pins()
+    assert {
+        "TRANSFORMERS_530_VERSION",
+        "TRANSFORMERS_550_VERSION",
+        "TRANSFORMERS_510_VERSION",
+    } <= set(pins)
+    main_window = _named(_requirements(EXTRAS_NO_DEPS), "tokenizers")[0].specifier
+    for name, version in pins.items():
+        if version.startswith("4."):
+            continue  # .venv_t4_457 carries its own huggingface_hub; its window is the 4.57.6 entry above
+        assert (
+            version in DECLARED_TOKENIZERS_WINDOW
+        ), f"{name} = {version!r} is not in DECLARED_TOKENIZERS_WINDOW; add the window it declares"
+        assert SpecifierSet(DECLARED_TOKENIZERS_WINDOW[version]) == main_window, (
+            f"transformers {version} ({name}) declares tokenizers{DECLARED_TOKENIZERS_WINDOW[version]}, "
+            f"but the main env installs tokenizers{main_window}"
+        )
+
+
 def test_the_tokenizers_line_covers_both_python_branches():
     """The transformers pins split on python_version, so the tokenizers line must split the same
     way; an unconditional line is only correct while both releases declare the same window."""
@@ -182,7 +227,7 @@ def test_the_darwin_override_admits_only_the_pinned_transformers():
 def test_the_checker_rejects_the_pair_that_broke_apple_silicon():
     """Negative control. Every assertion above is a "nothing found" shape, which is also
     what a checker that has quietly stopped checking reports."""
-    window = SpecifierSet(DECLARED_TOKENIZERS_WINDOW["5.5.0"])
+    window = SpecifierSet(DECLARED_TOKENIZERS_WINDOW["5.5.4"])
     assert STRANDED_TOKENIZERS not in window
     assert "0.22.2" in window
 

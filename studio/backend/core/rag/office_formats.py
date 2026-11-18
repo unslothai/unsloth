@@ -51,8 +51,8 @@ _NS = {
     "opf": "http://www.idpf.org/2007/opf",
 }
 # ISO Strict OOXML names the same schemas with other URIs.
-_STRICT_NS = tuple(
-    (f"http://purl.oclc.org/ooxml/{strict}".encode(), _NS[prefix].encode())
+_STRICT_NS = {
+    f"http://purl.oclc.org/ooxml/{strict}": _NS[prefix]
     for strict, prefix in (
         ("spreadsheetml/main", "s"),
         ("presentationml/main", "p"),
@@ -61,7 +61,17 @@ _STRICT_NS = tuple(
         ("drawingml/diagram", "dgm"),
         ("officeDocument/relationships", "r"),
     )
-)
+}
+
+
+# expat also reads UTF-16, where an ASCII search for the declaration finds nothing.
+_ENTITY_DECLS = tuple("<!ENTITY".encode(codec) for codec in ("utf-8", "utf-16-le", "utf-16-be"))
+
+
+def _transitional_name(name: str) -> str:
+    namespace, separator, local = name.partition("}")
+    mapped = _STRICT_NS.get(namespace[1:]) if separator else None
+    return f"{{{mapped}}}{local}" if mapped else name
 
 
 def _q(prefix: str, tag: str) -> str:
@@ -115,18 +125,32 @@ class _Archive:
     def _xml_events(self, name: str, events: tuple[str, ...]):
         data = self.read(name)
         # Office XML never declares entities; refusing them rules out expansion attacks.
-        if b"<!ENTITY" in data:
+        if any(decl in data for decl in _ENTITY_DECLS):
             raise ValueError("XML entity declarations are not supported")
-        if b"purl.oclc.org/ooxml/" in data:
-            for strict, transitional in _STRICT_NS:
-                data = data.replace(strict, transitional)
-        parser = ET.XMLPullParser(events)
+        parser = ET.XMLPullParser((*events, "start-ns"))
+        strict = False
+
+        def read_events():
+            nonlocal strict
+            for event, element in parser.read_events():
+                if event == "start-ns":
+                    strict = strict or element[1] in _STRICT_NS
+                    continue
+                if strict and event == "start":
+                    # Expanded names identify namespaces in every XML encoding; values are data.
+                    element.tag = _transitional_name(element.tag)
+                    if element.attrib:
+                        element.attrib = {
+                            _transitional_name(key): value for key, value in element.attrib.items()
+                        }
+                yield event, element
+
         try:
             for start in range(0, len(data), 1 << 20):
                 parser.feed(data[start : start + (1 << 20)])
-                yield from parser.read_events()
+                yield from read_events()
             parser.close()
-            yield from parser.read_events()
+            yield from read_events()
         except ET.ParseError as exc:
             raise ValueError(f"malformed XML in {name}") from exc
 
@@ -971,6 +995,8 @@ def _email_parts(part, html_text) -> list[str]:
     """Inline body text in order: every part of a mixed message, one choice per alternative."""
     if part.get_content_disposition() == "attachment":
         return []
+    if part.get_content_type() == "message/rfc822" and part.is_multipart():
+        return [_email_text(message, html_text) for message in part.get_payload()]
     if part.get_content_maintype() == "multipart":
         children = list(part.iter_parts())
         if part.get_content_subtype() != "alternative":
@@ -1294,8 +1320,13 @@ def doc(path: str) -> list[Section]:
                 chars.append(word[offset : offset + hi - lo].decode("cp1252", "replace"))
             else:
                 offset = fc + 2 * (lo - start)
-                chars.append(word[offset : offset + 2 * (hi - lo)].decode("utf-16-le", "replace"))
-        return _word_text("".join(chars))
+                raw = word[offset : offset + 2 * (hi - lo)]
+                if len(raw) & 1:
+                    # Corrupt piece ending mid-character: one U+FFFD.
+                    raw = raw[:-1] + b"\xfd\xff"
+                chars.append(raw.decode("utf-16-le", "surrogatepass"))
+        text = "".join(chars).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+        return _word_text(text)
 
     # Stories follow the main text in this order; headers and comments are left out, as for .docx.
     starts = [sum(ccps[:i]) for i in range(len(ccps))]

@@ -9,6 +9,7 @@ import logging
 import os
 
 from . import config
+from .parsers import mupdf_serialized
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ def unreadable_pages_error(page_numbers) -> PDFOCRError:
     )
 
 
+@mupdf_serialized
 def ocr_pages(path: str, page_numbers) -> dict[int, str]:
     """OCRs only the requested pages via PyMuPDF's Tesseract, which must already have its language data."""
     if not page_numbers:

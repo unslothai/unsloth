@@ -14,6 +14,8 @@ import {
   type RowWindow,
   FILL_BUDGET_PX,
   RowHeights,
+  STREAM_QUIET_MS,
+  TailPulse,
   WINDOW_KEEP_PX,
   WINDOW_MIN_ROWS,
   WINDOW_MIN_TOTAL_PX,
@@ -612,4 +614,22 @@ test("an edited message's page readings no longer stand for it", () => {
   assert.deepEqual(heights.equationsIn([after], 0, 1), { html: 1, mathml: 1 });
   assert.equal(heights.measure(after, 300), true, "a new revision is a new reading at any height");
   assert.equal(heights.heightOf(after), 300);
+});
+
+test("a reply counts as streaming while its content keeps changing", () => {
+  const first = ["a"];
+  const pulse = new TailPulse(first);
+  assert.equal(pulse.streaming(0), false, "the content a thread opened with is not a chunk");
+  pulse.note(first, 10);
+  assert.equal(pulse.changes, 0, "a store write that left the tail alone is not a chunk");
+  assert.equal(pulse.streaming(10), false);
+  pulse.note(["a", "b"], 100);
+  assert.equal(pulse.changes, 1);
+  assert.equal(pulse.streaming(100 + STREAM_QUIET_MS - 1), true);
+  assert.equal(pulse.streaming(100 + STREAM_QUIET_MS), false, "the reply paused");
+  pulse.note(["a", "b", "c"], 5000);
+  assert.equal(pulse.changes, 2);
+  assert.equal(pulse.streaming(5001), true);
+  // A token a second is still one stream: a transition issued between two would be restarted.
+  assert.ok(STREAM_QUIET_MS >= 1000);
 });
