@@ -77,14 +77,16 @@ def fakes(monkeypatch):
         load = lambda self: self
         transaction = lambda self: contextlib.nullcontext(self)
         workers = lambda self: list(state.peers)
+        master = lambda self: None
         authorize = lambda self, peer, role: None
         remove = lambda self, node_id: state.removed.append(node_id) or True
         record_address = lambda self, *args: state.recorded.append(args)
 
     class PairingWindow:
-        __init__ = lambda self, master, host, port, ttl, addrs: setattr(
-            state, "window", SimpleNamespace(ttl = ttl, addrs = addrs)
+        __init__ = lambda self, master, host, port, ttl, addrs, approve = None: setattr(
+            state, "window", SimpleNamespace(ttl = ttl, addrs = addrs, approve = approve)
         )
+        tc = None
         start = coro(lambda self: TOKEN)
         close = lambda self: setattr(state.window, "closed", True)
 
@@ -168,7 +170,7 @@ def test_pair_prints_the_token_but_never_in_a_command_line(fakes):
     assert result.exit_code == 0, result.output
     # A token in argv is readable by every local user on the worker while join runs.
     assert TOKEN in result.output and f"join {TOKEN}" not in result.output
-    assert "unsloth cluster join" in result.output and "Paired desk" in result.output
+    assert "unsloth worker --join" in result.output and "Paired desk" in result.output
     assert fakes.window.ttl == 90 and fakes.window.addrs == ["192.168.1.10"] and fakes.window.closed
 
 
@@ -224,6 +226,7 @@ def test_join_records_the_worker_port_and_worker_defaults_to_it(worker, monkeypa
 
     async def join(token, **kw):
         kw.pop("name")
+        assert callable(kw.pop("on_words"))
         seen.update(kw)
         return ident("worker")
 
@@ -281,7 +284,7 @@ REFUSALS = {
     "rpc-equals-native": (("worker", "--no-discovery", "--rpc-port", "50111", "--native-port", "50111"), *DIFFER),
     "agent-equals-native": (("worker", "--no-discovery", "--port", "50070", "--native-port", "50070"), *DIFFER),
     "agent-equals-rpc": (("worker", "--no-discovery", "--port", "50111", "--rpc-port", "50111"), *DIFFER),
-    "unpaired": (("worker",), 1, ["unsloth cluster join"]),
+    "unpaired": (("worker",), 1, ["unsloth worker --join"]),
     "no-rpc-server": (("worker",), 1, ["install Studio"]),
 }  # fmt: skip
 
@@ -345,6 +348,26 @@ def test_leave_resets_a_master_nobody_joined_but_not_one_with_workers(fakes):
     fakes.peers = []
     reset = invoke("cluster", "leave", "--yes")
     assert reset.exit_code == 0 and fakes.left == ["master"]
+
+
+@pytest.mark.parametrize("role", ["worker", "master"])
+def test_leave_deletes_the_tunnel_keys_under_the_identity_lock(fakes, monkeypatch, role):
+    events = []
+
+    @contextlib.contextmanager
+    def lock():
+        events.append("lock")
+        yield
+        events.append("unlock")
+
+    monkeypatch.setattr(link.identity, "identity_lock", lock)
+    remote = SimpleNamespace(forget_keys = lambda held = False: events.append(("keys", held)))
+    monkeypatch.setitem(sys.modules, "studio.cluster_link.remote", remote)
+    monkeypatch.setattr(link, "remote", remote, raising = False)
+    fakes.peers = []
+    fakes.worker = ident("worker") if role == "worker" else None
+    assert invoke("cluster", "leave", "--yes").exit_code == 0
+    assert events == ["lock", ("keys", True), "unlock"]
 
 
 SPOOF = SimpleNamespace(host = "192.168.1.66", agent_port = 50070, fp = "f" * 64, seen_at = 0.0)
@@ -414,3 +437,63 @@ def test_discover_rejects_negative_seconds(fakes):
     bad = invoke("cluster", "discover", "--seconds", "-1")
     assert bad.exit_code == 2 and "Traceback" not in bad.output
     assert not isinstance(bad.exception, ValueError)
+
+
+def test_list_names_how_each_worker_is_reached(fakes, monkeypatch):
+    # desk answers on the LAN; laptop and phone only through tailcat, directly and relayed.
+    desk, laptop, phone = (
+        worker_peer(),
+        worker_peer("laptop", "node-bbbb2222"),
+        worker_peer("phone", "node-cccc3333"),
+    )
+    laptop.addrs, phone.addrs = ["10.9.9.1"], ["10.9.9.2"]
+    laptop.tc_addr, phone.tc_addr = "tcLAPTOP0123456", "tcPHONE01234567"
+    fakes.peers = [desk, laptop, phone]
+    fakes.errors = {("10.9.9.1", 50070): "timed out", ("10.9.9.2", 50070): "timed out"}
+    ports = {"node-bbbb2222": 47001, "node-cccc3333": 47002}
+    relays_allowed = [False]
+    remote = SimpleNamespace(
+        enabled = lambda: True,
+        ensure_helper = lambda note = None: True,
+        relay_allowed = lambda: relays_allowed[0],
+        forward = lambda node_id, address, port: ports[node_id],
+        path = lambda node_id: SimpleNamespace(direct = node_id == "node-bbbb2222"),
+        forwarded = lambda: list(ports),
+        drop = lambda node_id: None,
+        close = lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "studio.cluster_link.remote", remote)
+    monkeypatch.setattr(link, "remote", remote, raising = False)
+    out = invoke("cluster", "list").output
+    lines = {line.split()[0]: line for line in out.splitlines() if line.split()}
+    assert "ready (local network)" in lines["desk"], out
+    assert "ready (direct internet connection)" in lines["laptop"], out
+    assert "relayed only: too slow to serve models" in lines["phone"], out
+    assert fakes.recorded == []  # a tunnel's local end is never saved as an address
+    relays_allowed[0] = True  # UNSLOTH_CLUSTER_ALLOW_RELAY=1: it serves, slowly
+    out = invoke("cluster", "list").output
+    lines = {line.split()[0]: line for line in out.splitlines() if line.split()}
+    assert "ready (through a relay: slow)" in lines["phone"] and "too slow" not in out, out
+
+
+def test_worker_join_pairs_with_the_code_then_serves(fakes, monkeypatch):
+    monkeypatch.setattr(cli, "_rpc_server_binary", lambda: RPC_BIN)
+    seen = {}
+
+    async def join(token, **kw):
+        seen.update(token = token, **kw)
+        kw["on_words"](["amber", "falcon", "river"])
+        fakes.worker = ident("worker")
+        return fakes.worker
+
+    monkeypatch.setattr(mod("pairing"), "join", join)
+    result = invoke("worker", "--join", "--no-discovery", "--name", "box", input = TOKEN + "\n")
+    assert result.exit_code == 0, result.output
+    assert seen["token"] == TOKEN and seen["name"] == "box" and TOKEN not in result.output
+    assert "amber falcon river" in result.output and fakes.agent["tunnel_allow"]() == []
+    assert invoke("worker", "--join", TOKEN).exit_code != 0  # never a code in argv
+
+
+def test_pair_asks_the_owner_unless_yes(fakes):
+    assert invoke("cluster", "pair").exit_code == 0 and callable(fakes.window.approve)
+    assert invoke("cluster", "pair", "--yes").exit_code == 0 and fakes.window.approve is None

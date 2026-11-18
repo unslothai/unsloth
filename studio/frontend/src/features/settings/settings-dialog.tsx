@@ -28,6 +28,7 @@ import {
   Cancel01Icon,
   CancelCircleIcon,
   CloudIcon,
+  ComputerIcon,
   ComputerTerminal01Icon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
@@ -107,6 +108,8 @@ const TAB_LOADERS = {
     import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
   "remote-lan": () =>
     import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
+  machines: () =>
+    import("./tabs/machines-tab").then((m) => ({ default: m.MachinesTab })),
   agents: () =>
     import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
   debugging: () =>
@@ -284,6 +287,11 @@ const TABS: TabDef[] = [
     id: "remote-lan",
     labelKey: "settings.tabs.remoteLan",
     icon: HomeWifiIcon,
+  },
+  {
+    id: "machines",
+    labelKey: "settings.tabs.machines",
+    icon: ComputerIcon,
   },
   {
     id: "connections",
@@ -679,6 +687,7 @@ export function SettingsDialog() {
     data: null,
     "api-keys": null,
     "remote-lan": null,
+    machines: null,
     agents: null,
     debugging: null,
     about: null,

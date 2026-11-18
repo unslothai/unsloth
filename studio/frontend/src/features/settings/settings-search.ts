@@ -277,6 +277,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   // the English card labels cannot match localized keys, so the header carries both entries.
   "remote-lan": ["settings.remoteLan.title", "settings.remoteLan.description"],
+  machines: ["settings.machines.title", "settings.machines.description"],
   agents: [
     // every key needs a rendered data-settings-label as its scroll target.
     "settings.agents.title",
