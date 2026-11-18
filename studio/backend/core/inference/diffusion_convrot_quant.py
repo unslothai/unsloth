@@ -1960,6 +1960,170 @@ def _arm_producer(index: int) -> bool:
     return bool(_PRODUCER_DEVICE[index])
 
 
+# A cold card's probes compile ~60 Triton specializations one after another (L4, FLUX.3 klein int8: 48 s of a 97 s
+# load); compiles release the GIL, so the same launches on a thread pool first leave the serial probes only cache hits.
+# The probes, their order and their verdicts are unchanged: the warm launches' outputs are discarded.
+PROBE_PREWARM_ENV = "UNSLOTH_DIFFUSION_PROBE_PREWARM"
+_PREWARM_MAX_WORKERS = 8
+# card index -> warm launches that ran (engagement record)
+PREWARM_COUNTS: dict = {}
+
+
+def probe_prewarm_enabled() -> bool:
+    """False only under ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0``."""
+    return _env_mode(PROBE_PREWARM_ENV) != "off"
+
+
+def rotq_probes_pending(index: int) -> bool:
+    """``rotquant_device_config`` would probe card ``index`` (no verdict in this process nor on disk)."""
+    return index not in _ROTQ_DEVICE and _verdict_load(index) is None
+
+
+def producer_probe_pending(index: int) -> bool:
+    """``_arm_producer`` would probe card ``index`` (no in-process verdict and none persisted)."""
+    if index in _PRODUCER_DEVICE:
+        return False
+    stored = _verdict_load(index)
+    return not (isinstance(stored, dict) and isinstance(stored.get("producer"), bool))
+
+
+def _warm_input(m: int, k: int, dev: Any) -> Any:
+    import torch
+    return torch.randn(m, k, device = dev, dtype = torch.float32).mul_(0.5).to(torch.bfloat16)
+
+
+def _warm_rotq(dev: Any, m: int, k: int, kind: str, cfg: tuple) -> None:
+    _rotq_launch(_warm_input(m, k, dev), 256, kind, cfg)
+
+
+def _warm_h16(dev: Any, m: int, k: int, kind: str, tf32x3: bool, swiglu: bool) -> None:
+    x = _warm_input(m, k, dev)
+    _h16_launch(x, kind, _warm_input(m, k, dev) if swiglu else None, tf32x3 = tf32x3)
+
+
+def _warm_producer(dev: Any, m: int, pre: Optional[tuple], f: int, kind: str, tf32x3: bool) -> None:
+    import torch
+    prefix, gate, value = _producer_probe_inputs(
+        m, pre, f, torch.Generator(device = "cpu").manual_seed(5), dev
+    )
+    _h16x_launch(prefix, gate, value, kind, tf32x3 = tf32x3)
+
+
+def probe_warm_jobs(
+    index: int,
+    *,
+    rotq: bool = True,
+    producer: bool = False,
+) -> list:
+    """Zero-argument launches covering the Triton specializations the cold probes compile: ``_rotq_probe`` for every
+    candidate tile (preferred, fallback, per-K rules), ``_h16_probe`` and ``_swiglu_probe`` in the first mode the
+    probe tries, ``_producer_probe`` (``producer``), each on the probe's own shapes, kinds and layouts."""
+    from functools import partial
+
+    import torch
+
+    if not (
+        torch.cuda.is_available()
+        and not is_rocm_torch(torch)
+        and _triton_ok()
+        and _kernels() is not None
+    ):
+        return []
+    cap = tuple(torch.cuda.get_device_capability(index))
+    dev = torch.device("cuda", index)
+    tf32x3 = cap in _H16_TF32X3_ARCHS  # "tf32x3" is tried first there, else "ieee" only
+    kinds = ("v1", "v2")
+    jobs: list = []
+    want = rotquant_config(cap)
+    if rotq and want is not None and _rotq_op() is not None:
+        cfgs: list = []
+        for cfg in (want, _ROTQ_FALLBACK, *(rule[2] for rule in rotq_k_tiles(cap))):
+            if cfg not in cfgs:
+                cfgs.append(cfg)
+        for cfg in cfgs:
+            for m, k in _ROTQ_PROBE_SHAPES:
+                if _rotq_rows(k, 256, cfg) >= 1:
+                    jobs += [partial(_warm_rotq, dev, m, k, kind, cfg) for kind in kinds]
+        if rotquant_h16_enabled():
+            for m, k in _H16_PROBE_SHAPES:
+                jobs += [partial(_warm_h16, dev, m, k, kind, tf32x3, False) for kind in kinds]
+            if rotquant_swiglu_enabled() and _swiglu_op() is not None:
+                for m, k in _SWIGLU_PROBE_SHAPES:
+                    jobs += [partial(_warm_h16, dev, m, k, kind, tf32x3, True) for kind in kinds]
+    if (
+        producer
+        and want is not None
+        and rotquant_h16_enabled()
+        and rotquant_producer_enabled()
+        and _producer_op() is not None
+    ):
+        for m, pre, f in _PRODUCER_PROBE_SHAPES:
+            jobs += [partial(_warm_producer, dev, m, pre, f, kind, tf32x3) for kind in kinds]
+    return jobs
+
+
+def prewarm_probe_kernels(
+    index: int,
+    *,
+    rotq: bool = True,
+    producer: bool = False,
+    extra: tuple = (),
+    logger: Any = None,
+) -> int:
+    """Run ``extra`` plus ``probe_warm_jobs`` on a thread pool before the serial probes; returns the launches that
+    ran. Never raises; nothing runs inside a capture or a trace, or with ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0``."""
+    if not probe_prewarm_enabled():
+        return 0
+    try:
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        import torch
+
+        if torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling():
+            return 0
+        jobs = list(extra) + probe_warm_jobs(index, rotq = rotq, producer = producer)
+        workers = min(_PREWARM_MAX_WORKERS, os.cpu_count() or 1, len(jobs))
+        if workers < 2:
+            return 0
+        t0 = time.perf_counter()
+
+        def run(job: Any) -> bool:
+            try:
+                with torch.cuda.device(index):
+                    job()
+                return True
+            except Exception:  # noqa: BLE001 - the serial probe decides; a warm launch only fills the cache
+                return False
+
+        with ThreadPoolExecutor(
+            max_workers = workers, thread_name_prefix = "unsloth-probe-prewarm"
+        ) as pool:
+            ran = sum(pool.map(run, jobs))
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(torch.device("cuda", index))
+        PREWARM_COUNTS[index] = PREWARM_COUNTS.get(index, 0) + ran
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: compiled %d of %d probe kernels on cuda:%d in %.1f s on %d threads ahead of "
+                "the probes (%s=0 turns this off)",
+                ran,
+                len(jobs),
+                index,
+                time.perf_counter() - t0,
+                workers,
+                PROBE_PREWARM_ENV,
+            )
+        return ran
+    except Exception as exc:  # noqa: BLE001 - a cache warm-up never fails a load
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: probe prewarm skipped (%s: %s)", type(exc).__name__, exc
+            )
+        return 0
+
+
 _SITU_PROBE_SHAPES = ((65, 256 * 4), (130, 256 * 32))
 # Cards where building the SiTU-GLU product inside the act quant measured faster end to end (MOSS-Image SFT, 1024 px,
 # 25 steps, INT8 default): sm120 (RTX PRO 6000) 4.914 -> 4.859 s/image, sm89 (L4) 30.76 -> 29.45 s/image. On sm80

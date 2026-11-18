@@ -594,6 +594,15 @@ def _arm_cards(transformer: Any, logger: Any = None) -> list:
     return cards
 
 
+def producer_probe_expected(transformer: Any) -> bool:
+    """``install`` will arm ``rotq_h16x`` (and so probe it) for this denoiser: a FLUX.2 / FLUX.3 class with the
+    fused helpers on. Cheap: class name and switch only (the caller already found rotated Linears)."""
+    return not flux_convrot_fused_disabled() and type(transformer).__name__ in (
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+    )
+
+
 def install(transformer: Any, logger: Any = None) -> dict:
     """After the int8 GEMM swap, before the regional compile: patch the FLUX.2 / FLUX.3 helpers (each checks its
     Linears per call) and arm ``rotq_h16x`` on the denoiser's cards, at the first forward when the weights (and so

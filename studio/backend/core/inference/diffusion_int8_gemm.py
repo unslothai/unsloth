@@ -2151,6 +2151,61 @@ def _weight_card(module: Any) -> Optional[int]:
     return dev.index if dev is not None and dev.type == "cuda" else None
 
 
+def _gemm_probe_jobs(index: int) -> list:
+    """``device_config``'s cold-card ``_probe`` calls (preferred, fallback and per-shape tiles) as warm-up jobs."""
+    from functools import partial
+
+    import torch
+
+    if index in _DEVICE_CFG or index in _UNLISTED_CARDS:
+        return []
+    if not (_triton_version_ok() and _kernels() is not None):
+        return []
+    cap = torch.cuda.get_device_capability(index)
+    if unlisted_arch(cap):
+        return []
+    want = arch_config(cap)
+    if want is None:
+        return []
+    cfgs: list = []
+    for cfg in (want, _FALLBACK_CONFIG, *(rule[4] for rule in shape_tiles(cap))):
+        if cfg is not None and cfg not in cfgs:
+            cfgs.append(cfg)
+    return [partial(_probe, index, cfg) for cfg in cfgs]
+
+
+def _prewarm_probes(index: int, transformer: Any, rotated: bool, logger: Any) -> int:
+    """Compile what this card's cold probes will compile on a thread pool first (``prewarm_probe_kernels``)."""
+    try:
+        from .diffusion_convrot_quant import (
+            prewarm_probe_kernels,
+            probe_prewarm_enabled,
+            producer_probe_pending,
+            rotq_probes_pending,
+        )
+
+        if not probe_prewarm_enabled():
+            return 0
+        from .diffusion_flux_convrot_fused import producer_probe_expected
+
+        rotq = bool(rotated) and rotq_probes_pending(index)
+        producer = (
+            bool(rotated) and producer_probe_expected(transformer) and producer_probe_pending(index)
+        )
+        extra = tuple(_gemm_probe_jobs(index))
+        if not (extra or rotq or producer):
+            return 0
+        return prewarm_probe_kernels(
+            index, rotq = rotq, producer = producer, extra = extra, logger = logger
+        )
+    except Exception as exc:  # noqa: BLE001 - a warm-up only
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: probe prewarm skipped (%s: %s)", type(exc).__name__, exc
+            )
+        return 0
+
+
 def _swap_on(
     transformer: Any,
     logger: Any,
@@ -2183,9 +2238,10 @@ def _swap_on(
         recs = [(m, r) for m, r in recs if _card_dtypes_ok(m, r, True)]
         if not recs:
             return 0
+    rotated = any(r[1] is not None for _, r in recs)
+    _prewarm_probes(index, transformer, rotated, logger)
     gemm = device_config(index) is not None
     triton_gemm = gemm
-    rotated = any(r[1] is not None for _, r in recs)
     rotq = rotated and rotquant_device_config(index) is not None
     if gemm and rotated and not rotq and index in _UNLISTED_CARDS:
         # unlisted card: rotated Linears only with rotq_h16; else the stock fusions keep them, as on main
