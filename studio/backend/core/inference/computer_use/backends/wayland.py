@@ -9,6 +9,7 @@ policy asks the user before each call.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from pathlib import Path
@@ -53,7 +54,11 @@ def _default_grabber(open_fd: Callable[[], int], streams: list[_portal.Stream]) 
     return Grabber(
         open_fd,
         [stream.node for stream in streams],
-        {stream.node: (int(stream.width), int(stream.height)) for stream in streams},
+        {
+            stream.node: (int(stream.width), int(stream.height))
+            for stream in streams
+            if stream.width
+        },
     )
 
 
@@ -119,6 +124,8 @@ class WaylandBackend(LinuxBackend):
             streams = session.start()
             self._session = session
             self._primed = False
+            if any(not stream.width for stream in streams):
+                streams = self._measured(streams)
             self._displays = [
                 (
                     Display(index, stream.x, stream.y, stream.width, stream.height, index == 1),
@@ -131,6 +138,26 @@ class WaylandBackend(LinuxBackend):
                 self._pointer = (first.x + first.width / 2, first.y + first.height / 2)
         self._touch()
         return self._session
+
+    def _measured(self, streams: list[_portal.Stream]) -> list[_portal.Stream]:
+        """Call with the lock held. Sizes a stream the portal sent without one from its first frame."""
+        self._grabber = self._make_grabber(self._open_fd, streams)
+        left = max((stream.x + stream.width for stream in streams if stream.width), default = 0.0)
+        measured = []
+        for stream in streams:
+            if not stream.width:
+                try:
+                    width, height = self._grabber.grab(stream.node).size
+                except Exception as exc:  # noqa: BLE001 - no frame: the screen can't be used
+                    self._end()
+                    raise BackendError(
+                        "the shared screen could not be captured. Try again."
+                    ) from exc
+                x = stream.x if stream.placed else left
+                stream = dataclasses.replace(stream, x = x, width = float(width), height = float(height))
+                left = max(left, x + width)
+            measured.append(stream)
+        return measured
 
     def _live(self) -> _portal.PortalSession:
         """Call with the lock held. Input never starts a session: only a run's displays() does."""

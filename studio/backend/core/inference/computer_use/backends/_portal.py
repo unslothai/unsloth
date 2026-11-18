@@ -22,7 +22,7 @@ _SESSION = "org.freedesktop.portal.Session"
 
 KEYBOARD, POINTER = 1, 2
 MONITOR = 1
-CURSOR_HIDDEN, CURSOR_EMBEDDED = 1, 2
+CURSOR_HIDDEN, CURSOR_EMBEDDED, CURSOR_METADATA = 1, 2, 4
 PERSIST_UNTIL_REVOKED = 2
 _CALL_TIMEOUT_S = 10.0
 _PROBE_TIMEOUT_S = 5.0
@@ -41,6 +41,8 @@ class Stream:
     y: float
     width: float
     height: float
+    # Size and position are optional in the portal's reply; a sizeless stream is measured from a frame.
+    placed: bool = True
 
 
 def _jeepney():
@@ -235,23 +237,20 @@ class PortalSession:
             )
             try:
                 modes = int(_property(self._conn, _CAST, "AvailableCursorModes"))
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - a version 1 portal: its default is hidden
                 modes = 0
+            sources: dict = {"types": ("u", MONITOR), "multiple": ("b", True)}
+            # An unadvertised cursor mode closes the session; screen.take draws its own pointer.
+            mode = next(
+                (m for m in (CURSOR_HIDDEN, CURSOR_EMBEDDED, CURSOR_METADATA) if modes & m), None
+            )
+            if mode is not None:
+                sources["cursor_mode"] = ("u", mode)
             self._request(
                 _CAST,
                 "SelectSources",
                 "oa{sv}",
-                (
-                    self.handle,
-                    {
-                        "types": ("u", MONITOR),
-                        "multiple": ("b", True),
-                        "cursor_mode": (
-                            "u",
-                            CURSOR_HIDDEN if modes & CURSOR_HIDDEN else CURSOR_EMBEDDED,
-                        ),
-                    },
-                ),
+                (self.handle, sources),
                 _CALL_TIMEOUT_S,
             )
             try:
@@ -260,8 +259,8 @@ class PortalSession:
                 )
             except TimeoutError:
                 raise BackendError(
-                    "the user has not answered the screen sharing prompt yet. Ask the user to "
-                    "answer it, then try again."
+                    "the screen sharing prompt was not answered in time, so it was closed. Ask "
+                    "the user to watch for a new one, then try again."
                 ) from None
             if int(started.get("devices", KEYBOARD | POINTER)) & (KEYBOARD | POINTER) != (
                 KEYBOARD | POINTER
@@ -284,12 +283,19 @@ class PortalSession:
         found, left = [], 0.0
         for node, properties in raw:
             properties = {key: value for key, (_signature, value) in properties.items()}
-            size = properties.get("size")
-            if not size:
-                continue
+            size = properties.get("size") or (0, 0)
             position = properties.get("position")
             x, y = position if position else (left, 0)
-            found.append(Stream(int(node), float(x), float(y), float(size[0]), float(size[1])))
+            found.append(
+                Stream(
+                    int(node),
+                    float(x),
+                    float(y),
+                    float(size[0]),
+                    float(size[1]),
+                    placed = bool(position) or bool(size[0]),
+                )
+            )
             left = max(left, float(x) + float(size[0]))
         return found
 

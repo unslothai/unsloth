@@ -52,6 +52,11 @@ class FakePortal:
         self.version = 2
         self.devices = 3
         self.restore = "token-1"
+        self.cursor_modes = 1 | 2
+        self.streams = [
+            (node, {"position": ("(ii)", position), "size": ("(ii)", size)})
+            for node, position, size in LAYOUT
+        ]
         self.stop = False
         self.lock = threading.Lock()
         self.thread = threading.Thread(target = self._serve, daemon = True)
@@ -130,7 +135,7 @@ class FakePortal:
                 "version": ("u", self.version),
                 "AvailableDeviceTypes": ("u", self.devices),
                 "AvailableSourceTypes": ("u", 1 | 2),
-                "AvailableCursorModes": ("u", 1 | 2),
+                "AvailableCursorModes": ("u", self.cursor_modes),
             }
             return ("v", (values[name],))
         if member == "CreateSession":
@@ -145,10 +150,7 @@ class FakePortal:
         if member in ("SelectDevices", "SelectSources"):
             return ("o", (self._respond(sender, body[1]["handle_token"][1], {}),))
         if member == "Start":
-            streams = [
-                (node, {"position": ("(ii)", position), "size": ("(ii)", size)})
-                for node, position, size in LAYOUT
-            ]
+            streams = self.streams
             results = {
                 "devices": ("u", 3),
                 "streams": ("a(ua{sv})", streams),
@@ -332,7 +334,7 @@ def test_a_declined_prompt_is_reported_and_retried_next_time(bus, tmp_path):
 def test_an_unanswered_prompt_times_out(bus, tmp_path):
     bus.answer, bus.answer_delay = 2, 5.0
     backend = _backend(tmp_path, answer_timeout = 0.5)
-    with pytest.raises(BackendError, match = "not answered"):
+    with pytest.raises(BackendError, match = "not answered in time.*watch for a new one"):
         backend.displays()
 
 
@@ -526,3 +528,21 @@ def test_a_user_stop_mid_chain_does_not_reopen_sharing_for_the_last_screenshot(
         state.reset()
         host_policy._reset_loopback_default_state()
         backend.close()
+
+
+@pytest.mark.parametrize("modes, sent", [(1 | 2, 1), (2, 2), (4, 4), (0, None)])
+def test_only_an_advertised_cursor_mode_is_asked_for(bus, tmp_path, modes, sent):
+    # An unadvertised mode closes the session (ScreenCast.SelectSources).
+    bus.cursor_modes = modes
+    _backend(tmp_path).displays()
+    sources = next(body for name, body in bus.calls if name == "SelectSources")[1]
+    assert sources.get("cursor_mode") == (None if sent is None else ("u", sent))
+
+
+def test_a_stream_without_a_size_is_measured_from_its_frame(bus, tmp_path):
+    bus.streams = [(41, {}), (42, {"position": ("(ii)", (64, 0)), "size": ("(ii)", (1280, 1024))})]
+    displays = _backend(tmp_path).displays()
+    assert [(d.x, d.y, d.width, d.height) for d in displays] == [
+        (1344.0, 0.0, 64.0, 32.0),
+        (64.0, 0.0, 1280.0, 1024.0),
+    ]
