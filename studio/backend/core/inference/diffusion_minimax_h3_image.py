@@ -4518,12 +4518,22 @@ def demote_dit_blocks(
         new = _pinned(keep)
         if new is None and reuse is not None:
             # the newly streamed blocks could not be pinned: the earlier split again (nothing new to pin)
-            new = _pinned(resident)
             keep = resident
+            new = _pinned(resident)
             if new is None:
-                raise RuntimeError("MiniMax-H3-Image: the DiT block streamer could not be rebuilt")
+                # last resort, never a pipe without hooks: pageable over the earlier split (the int8 GEMM sees
+                # swapped parameters and takes the stock path per call)
+                logger.warning(
+                    "diffusion.minimax_h3_image: the pinned DiT streamer could not be rebuilt: %d resident "
+                    "blocks, the rest stream from pageable memory",
+                    resident,
+                )
+                new = ModuleListStreamer(blocks, device, resident)
         if new is None:
             if gemm:
+                # the old streamer stays: every block it keeps resident goes back on the card
+                for block in list(blocks)[:resident]:
+                    block.to(device)
                 logger.warning(
                     "diffusion.minimax_h3_image: %s, but the blocks cannot be pinned and the int8 GEMM needs "
                     "pinned streaming: keeping %d resident",

@@ -1429,6 +1429,15 @@ class PrefetchedListStreamer:
         return out
 
 
+def _module_device(module: Any) -> Any:
+    """The device of ``module``'s first tensor (CPU when it has none)."""
+    import torch
+
+    for t in list(module.parameters()) + list(module.buffers()):
+        return t.device
+    return torch.device("cpu")
+
+
 def _list_stream_refusal(device: Any) -> Optional[str]:
     if not async_prefetch_enabled():
         return f"{ASYNC_PREFETCH_ENV}=0"
@@ -1541,6 +1550,8 @@ def stream_module_list(
         return None
     onload = torch.device(device)
     streamer = PrefetchedListStreamer()
+    # where each newly streamed member was: a failure puts it back there ("nothing changed")
+    origin: dict = {}
     try:
         from .diffusion_memory import install_group_offload_buffer_restore
 
@@ -1549,6 +1560,7 @@ def stream_module_list(
         from .diffusion_pinned_arena import packable_bytes, pinned_arena_for_group_offload
 
         for block in fresh:
+            origin[id(block)] = _module_device(block)
             block.to("cpu")
         tensors = [t for b in fresh for t in list(b.parameters()) + list(b.buffers())]
         try:
@@ -1639,7 +1651,7 @@ def stream_module_list(
         del detached
         for block in fresh:
             try:
-                block.to("cpu")
+                block.to(origin.get(id(block)) or "cpu")
             except Exception:  # noqa: BLE001
                 pass
         if logger is not None:

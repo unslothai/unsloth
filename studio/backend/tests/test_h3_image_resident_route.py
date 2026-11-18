@@ -364,3 +364,87 @@ def test_measured_plans_fit_their_budget_and_keep_at_least_as_many_blocks(h3i, m
     old = h3i.plan_placement(**card, **INT8)
     if card.get("h2d_gib_s"):  # priced: the measured room never buys fewer resident blocks
         assert new.dit_resident_blocks >= old.dit_resident_blocks, (new.reasons, old.reasons)
+
+
+@pytest.fixture
+def pin_failure(monkeypatch):
+    """The pinned streamer gets past its refusals on CPU and fails after moving the newly streamed blocks to the
+    host (its copy stream is a CUDA one): the failure path a pinning error takes on a card."""
+    from core.inference import diffusion_offload_prefetch as op
+
+    monkeypatch.setattr(op, "_list_stream_refusal", lambda device: None)
+    seen = []
+    real = op._module_device
+
+    def spy(module):
+        seen.append(module)
+        return real(module)
+
+    monkeypatch.setattr(op, "_module_device", spy)
+    return seen
+
+
+def _fake_gemm(pipe, speed):
+    setattr(
+        pipe, speed.LEVERS_ATTR, tuple(speed.speed_levers(pipe) or ()) + ("h3_int8_gemm_streamed",)
+    )
+
+
+def test_a_pin_failure_under_the_gemm_keeps_every_block_resident(
+    h3i, speed, tmp_path, monkeypatch, pin_failure
+):
+    import torch
+
+    root, te = _tiny(h3i, tmp_path, monkeypatch, resident = 2)
+    pipe = h3i.load_minimax_h3_image_pipeline(
+        str(root), device = "cpu", text_encoder = copy.deepcopy(te)
+    )
+    try:
+        want = _image(pipe)
+        old = _dit_streamer(pipe)
+        assert isinstance(old, h3i.ModuleListStreamer) and old.streamed == 0
+        _fake_gemm(pipe, speed)
+        pin_failure.clear()  # the load's encoder streamer took the same path
+        assert not h3i.demote_dit_blocks(pipe, 0, "pin failure")
+        blocks = list(pipe.transformer.transformer_blocks)
+        assert pin_failure == blocks  # both newly streamed blocks were put back where they were
+        assert _dit_streamer(pipe) is old and pipe._unsloth_h3_plan.dit_resident_blocks == 2
+        assert all(p.device == pipe._device() for b in blocks for p in b.parameters())
+        assert torch.equal(want, _image(pipe))
+    finally:
+        pipe.release()
+
+
+def test_a_pin_failure_after_detaching_a_prefetch_streamer_rebuilds_the_old_split(
+    h3i, speed, tmp_path, monkeypatch, pin_failure
+):
+    import torch
+
+    from core.inference import diffusion_offload_prefetch as op
+
+    root, te = _tiny(h3i, tmp_path, monkeypatch, resident = 1)
+    pipe = h3i.load_minimax_h3_image_pipeline(
+        str(root), device = "cpu", text_encoder = copy.deepcopy(te)
+    )
+    try:
+        want = _image(pipe)
+        # stand in for the pinned streamer a card builds: detach() hands back no groups on CPU
+        old = _dit_streamer(pipe)
+        old.remove()
+        fake = op.PrefetchedListStreamer()
+        fake._unsloth_role, fake._unsloth_resident = "transformer", 1
+        streamers = pipe._unsloth_h3_streamers
+        streamers[streamers.index(old)] = fake
+        _fake_gemm(pipe, speed)
+        assert not h3i.demote_dit_blocks(pipe, 0, "pin failure")
+        new = _dit_streamer(pipe)
+        # neither the new split nor the old one could be pinned: the old split, pageable, never no streamer
+        assert (
+            isinstance(new, h3i.ModuleListStreamer)
+            and new._unsloth_resident == 1
+            and new.streamed == 1
+        )
+        assert pipe._unsloth_h3_plan.dit_resident_blocks == 1
+        assert torch.equal(want, _image(pipe))
+    finally:
+        pipe.release()
