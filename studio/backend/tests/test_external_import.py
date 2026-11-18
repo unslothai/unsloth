@@ -1325,19 +1325,44 @@ def test_codex_deleting_the_base_rollout_keeps_studio_edits(codex_home):
     assert len(after) == len(rows)
 
 
-def test_a_session_that_crashes_costs_only_its_own_chat(claude_home):
-    _session(claude_home, sid = "bad", records = [{"type": "user", "uuid": "b1", "message": None}])
-    _session(claude_home, sid = "good")
+def test_a_null_message_record_costs_only_itself(claude_home):
+    _session(
+        claude_home,
+        records = [
+            {"type": "user", "uuid": "b1", "message": None},
+            c_user("u1", "Fix the header"),
+            c_asst("a1", [{"type": "text", "text": "Fixed it."}], parent = "u1"),
+        ],
+    )
 
     summary = run_import(claude.SOURCE)
 
-    assert summary.new_chats == 1
-    assert [m["content"][0]["text"] for m in _messages(claude.SOURCE, "good")] == [
+    assert summary.new_chats == 1 and summary.warnings == []
+    assert [m["content"][0]["text"] for m in _messages(claude.SOURCE, "s1")] == [
         "Fix the header",
         "Fixed it.",
     ]
-    assert any("bad.jsonl" in warning for warning in summary.warnings)
-    assert run_import(claude.SOURCE).new_chats == 0
+
+
+def test_a_session_that_crashes_costs_only_its_own_chat(claude_home):
+    _session(claude_home, sid = "bad")
+    _session(claude_home, sid = "good")
+
+    def read(path, *args):
+        if path.stem == "bad":
+            raise ValueError("torn frame")
+        return claude.read_transcript(path, *args)
+
+    source = dataclasses.replace(claude.SOURCE, read_transcript = read)
+    summary = run_import(source)
+
+    assert summary.new_chats == 1
+    assert [m["content"][0]["text"] for m in _messages(source, "good")] == [
+        "Fix the header",
+        "Fixed it.",
+    ]
+    assert summary.warnings == ["bad.jsonl: could not be imported (torn frame)."]
+    assert run_import(source).new_chats == 0
 
 
 def test_a_cyclic_parent_chain_reimports_instead_of_looping(claude_home):
