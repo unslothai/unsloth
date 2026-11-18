@@ -329,12 +329,8 @@ def test_ltx2_reflect_decoder_fused_matches_stock(monkeypatch):
     "levers",
     [
         {},
-        {
-            "UNSLOTH_VAE_FUSED_PREPAD": "1",
-            "UNSLOTH_VAE_FUSED_T1_CONV2D": "1",
-            "UNSLOTH_VAE_FUSED_BIAS_FOLD": "1",
-        },
-        {"UNSLOTH_VAE_FUSED_CAUSAL_TAIL": "0"},
+        {"UNSLOTH_VAE_FUSED_PREPAD": "1", "UNSLOTH_VAE_FUSED_T1_CONV2D": "1"},
+        {"UNSLOTH_VAE_FUSED_CAUSAL_TAIL": "0", "UNSLOTH_VAE_FUSED_BIAS_FOLD": "0"},
     ],
 )
 def test_wan22_decoder_matches_stock_under_each_causal_lever(levers, monkeypatch):
@@ -355,9 +351,8 @@ def test_wan22_decoder_matches_stock_under_each_causal_lever(levers, monkeypatch
     z = torch.randn(1, 8, 4, 6, 8, device = "cuda", dtype = torch.float16)
     _check(vae, z, min_psnr = 45)
     assert (F.ENGAGED.get("causal_tail", 0) > 0) is ("UNSLOTH_VAE_FUSED_CAUSAL_TAIL" not in levers)
-    opt_in = "UNSLOTH_VAE_FUSED_BIAS_FOLD" in levers
-    assert (F.ENGAGED.get("bias_fold", 0) > 0) is opt_in
-    assert (F.ENGAGED.get("t1_conv2d", 0) > 0) is opt_in
+    assert (F.ENGAGED.get("bias_fold", 0) > 0) is ("UNSLOTH_VAE_FUSED_BIAS_FOLD" not in levers)
+    assert (F.ENGAGED.get("t1_conv2d", 0) > 0) is ("UNSLOTH_VAE_FUSED_T1_CONV2D" in levers)
 
 
 @needs_cuda
@@ -729,13 +724,13 @@ def test_shape_args_do_not_multiply_jit_variants():
 
 
 def test_causal_levers_default_and_kill_switches(monkeypatch):
-    for env in (F.CAUSAL_TAIL_ENV, F.LTX2_REFLECT_ENV):
+    for env in (F.CAUSAL_TAIL_ENV, F.LTX2_REFLECT_ENV, F.BIAS_FOLD_ENV):
         monkeypatch.delenv(env, raising = False)
         assert F.lever_on(env) is True
         monkeypatch.setenv(env, "0")
         assert F.lever_on(env) is False
     # measured inside the A/A spread: opt-in
-    for env in (F.T1_CONV2D_ENV, F.BIAS_FOLD_ENV):
+    for env in (F.T1_CONV2D_ENV,):
         monkeypatch.delenv(env, raising = False)
         assert F.lever_on(env) is False
         monkeypatch.setenv(env, "1")
