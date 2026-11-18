@@ -1276,6 +1276,55 @@ def _fast_resnet2d(block: Any) -> Any:
     return fast
 
 
+# Upsample2D (nearest 2x, then its 3x3 conv) with the 2x map written by the channels-last Triton copy instead of
+# upsample_nearest2d: bit-identical, same peak. ``0`` keeps diffusers' interpolate.
+FUSED_UPSAMPLE_ENV = "UNSLOTH_VAE_FUSED_UPSAMPLE"
+
+
+def fused_upsample_disabled() -> bool:
+    return os.environ.get(FUSED_UPSAMPLE_ENV, "").strip().lower() in _FALSE
+
+
+def _upsample2d_fusable(up: Any) -> bool:
+    torch = _torch()
+    return (
+        type(up).__name__ == "Upsample2D"
+        and getattr(up, "use_conv", False)
+        and not getattr(up, "use_conv_transpose", False)
+        and getattr(up, "interpolate", True)
+        and getattr(up, "norm", None) is None
+        and getattr(up, "name", "conv") == "conv"
+        and isinstance(getattr(up, "conv", None), torch.nn.Conv2d)
+    )
+
+
+def _fast_upsample2d(up: Any) -> Any:
+    def fast(
+        hidden_states: Any,
+        output_size: Any = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        x = hidden_states
+        if (
+            output_size is not None
+            or args
+            or kwargs
+            or fused_upsample_disabled()
+            or not getattr(x, "is_cuda", False)
+            or x.dim() != 4
+            or x.dtype not in (_torch().float16, _torch().bfloat16, _torch().float32)
+            or x.shape[1] != up.channels
+            # interpolate keeps a contiguous map contiguous (fp32 VAEs): only a channels-last one takes the copy
+            or not x.is_contiguous(memory_format = _torch().channels_last)
+        ):
+            return _stock_forward(up)(hidden_states, output_size, *args, **kwargs)
+        y, _ = up_nearest2x(x.unsqueeze(2), False)
+        return up.conv(y)
+
+    return fast
+
+
 def _fast_norm(norm: Any, act: bool) -> Any:
     def fast(x: Any) -> Any:
         return group_norm_act(x, norm, act = act)
@@ -1319,6 +1368,15 @@ def install_group_norm_vae(
             if type(module).__name__ == "ResnetBlock2D" and _resnet2d_fusable(module):
                 _guard(
                     module, _fast_resnet2d(module), _stock_forward(module), "ResnetBlock2D", logger
+                )
+                n += 1
+            elif (
+                part_name == "decoder"
+                and not fused_upsample_disabled()
+                and _upsample2d_fusable(module)
+            ):
+                _guard(
+                    module, _fast_upsample2d(module), _stock_forward(module), "Upsample2D", logger
                 )
                 n += 1
         for module in part.modules():
