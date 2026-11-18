@@ -549,7 +549,8 @@ export function isTestFixtureRepo(id: string): boolean {
   return TEST_FIXTURE.test(id);
 }
 
-/** Chat-list fallback only before a search has results; else unrelated Hub rows would show. */
+/** Discover falls back to the chat list only before a search has results; else rows the Hub matched
+ * without a text match would show unrelated models. */
 export function discoverUsesFallback(
   hubQuery: string,
   hubResultCount: number,

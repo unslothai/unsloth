@@ -1312,7 +1312,8 @@ function restoreChatOwnedValues(
   threadId: string,
   settings: ThreadScopedSettings,
 ): void {
-  // Forced thinking is the model's, so saving it would erase a chat's stored false.
+  // A model that cannot stop thinking forces thinking on: that true is the model's, so
+  // persisting it would erase a chat's stored false.
   if (
     threadId === threadScopedSettingsThreadId &&
     !explicitlyEditedThreadFields.has("reasoningEnabled") &&

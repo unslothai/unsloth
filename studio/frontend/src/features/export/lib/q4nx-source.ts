@@ -136,7 +136,8 @@ export type Q4nxArchFit =
 // The converter finds no qwen2vl architecture name, so a Qwen2-VL basename falls to the dense qwen2 prefix.
 const QWEN2_VL_NAME = /(^|[\s/\\._-])qwen2[-_]?vl/i;
 
-/** name refuses models the converter would misroute, even when the architecture is unknown. */
+/** `name` is the repo id or file path, used to refuse models the converter would misroute, even
+ *  when the architecture is unknown. `compat` is GET /api/npu/compat. */
 export function q4nxArchFit(
   architecture: string | null | undefined,
   name?: string | null,

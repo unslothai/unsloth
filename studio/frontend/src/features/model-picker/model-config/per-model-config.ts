@@ -1766,7 +1766,8 @@ export function perModelConfigChangedSince(
   );
 }
 
-/** False if a record remains; unchangedSince keeps any record written after the snapshot. */
+/** Delete the records the server keys name; false when one was left behind. With
+ *  `unchangedSince`, a record written after that snapshot is kept. */
 export function deletePerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
   unchangedSince?: PerModelConfigSnapshot,

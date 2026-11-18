@@ -1630,7 +1630,8 @@ function useLineWindow(
       setState({ measured: true, window: null, pins: null });
       return;
     }
-    // A parked message keeps its portal and state but no geometry; find and print expand it first.
+    // A parked message keeps its portal and state, but has no meaningful geometry.
+    // Find/print above still expand it before the body is reconnected.
     if (!node.isConnected) return;
     let known = geometry.current;
     if (

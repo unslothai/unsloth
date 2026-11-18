@@ -9,8 +9,11 @@ export type LazyWithoutSuspense<P extends object> = ComponentType<P> & {
 };
 
 /**
- * Skips the React 19 300 ms Suspense reveal hold: null until the module loads, then renders at
- * once; a failed import throws from render and retries on next mount
+ * A code-split component that never suspends. React 19 holds a Suspense reveal for up to
+ * 300 ms after its fallback commits, so a `lazy()` panel waits that long on its first open
+ * even when its chunk is already loaded. This renders nothing until the module resolves,
+ * then the component itself; once loaded it renders synchronously. A failed import is
+ * thrown from render (as `lazy()` would) and retried on the next mount.
  */
 export function lazyWithoutSuspense<P extends object>(
   load: () => Promise<ComponentType<P>>,
