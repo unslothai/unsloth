@@ -2030,7 +2030,8 @@ def install_auto(
 ) -> int:
     """For ``apply_attention_backend`` with the switch unset: the strided processors of a DiT in the dispatch route's
     ``AUTO_DITS`` race their incumbent the way that route does (accuracy check, card race, the 2048 / long races,
-    ``MIN_TOKENS`` floor). Off with speed off (bit-identical), on ROCm, and off CUDA. Returns the count."""
+    ``MIN_TOKENS`` floor; on ROCm the ``ROCM_AUTO_DITS`` of the card's gfx arch and the OS). Off with speed off
+    (bit-identical) and off CUDA. Returns the count."""
     import torch
 
     if mode() != "auto" or not speed_active:
@@ -2042,12 +2043,18 @@ def install_auto(
         from . import diffusion_int8_attention_dispatch as dispatch
     except Exception:  # noqa: BLE001
         return 0
-    if not dispatch.enabled() or type(transformer).__name__ not in dispatch.AUTO_DITS:
+    if not dispatch.enabled():
         return 0
     if speed_unset_only and type(transformer).__name__ not in dispatch.SPEED_UNSET_DITS:
         return 0
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
-    if not device.startswith("cuda") or not torch.cuda.is_available() or _is_rocm():
+    if not device.startswith("cuda") or not torch.cuda.is_available():
+        return 0
+    rocm = _is_rocm()
+    listed = (
+        dispatch.rocm_auto_dits(_device_index(torch.device(device))) if rocm else dispatch.AUTO_DITS
+    )
+    if type(transformer).__name__ not in listed:
         return 0
     dtype = getattr(target, "dtype", None)
     if str(dtype) not in ("torch.float16", "torch.bfloat16"):
@@ -2061,7 +2068,7 @@ def install_auto(
     except Exception:  # noqa: BLE001 -- other families bring their own strided processors
         pass
 
-    cuda_only = type(transformer).__name__ in dispatch.AUTO_CUDA_ONLY
+    cuda_only = not rocm and type(transformer).__name__ in dispatch.AUTO_CUDA_ONLY
 
     def floor(dev: Any, dt: Any, heads: int, head_dim: int, fn: Any, name: str) -> tuple:
         if cuda_only and implementation(_device_index(dev), head_dim) != "cuda":

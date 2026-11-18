@@ -418,6 +418,9 @@ def _switch_to_one_gpu(root, replica):
                 replica.set(p, "_unsloth_tp_local", tpn._MISSING)
     for block in plan.moe_blocks if plan is not None else ():
         replica.set(block, "_unsloth_tp_gathered", True)  # replicated MoE: no tp average
+        shard = block.__dict__.get("_unsloth_tp_expert_shard")
+        for module, key, value in shard.full_attrs if shard is not None else ():
+            replica.set(module, key, value)  # sharded experts: the whole expert count is back
     for level in tpn._tp_chain(root):
         forward = level.__dict__.get("forward")
         original = getattr(forward, "__wrapped__", None)
