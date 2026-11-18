@@ -90,6 +90,37 @@ ROCM_AUTO_DITS: dict = {
 }
 # processors that already run the kernel themselves
 _STRIDED_FLAG = "_unsloth_int8"
+# Blocks whose attention keeps the incumbent under Auto: on real inputs their INT8 error is several times every other
+# block's. Qwen-Image-2.1 (and Turbo) block 0: relative L2 error 0.06-0.14 against torch attention (head 0 up to
+# 0.36) where blocks 1-31 stay at or below 0.0175, on A100 and L4; it drove most of the image drift against Off.
+# A forced request (On, or the env switch =1) still routes every block. ``NATIVE_BLOCKS_ENV=0`` routes them too.
+NATIVE_BLOCKS: dict = {"QwenImage21Transformer2DModel": frozenset({0})}
+NATIVE_BLOCKS_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_BLOCKS"
+_BLOCK_LISTS = ("transformer_blocks",)
+
+
+def native_blocks_enabled() -> bool:
+    raw = (os.environ.get(NATIVE_BLOCKS_ENV) or "1").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def block_index(name: str) -> Optional[int]:
+    """The block number in a module name like ``transformer_blocks.3.attn``, else None."""
+    parts = str(name).split(".")
+    for i, part in enumerate(parts[:-1]):
+        if part in _BLOCK_LISTS and parts[i + 1].isdigit():
+            return int(parts[i + 1])
+    return None
+
+
+def native_block_modules(dit: Any) -> set:
+    """ids of ``dit``'s attention modules in its ``NATIVE_BLOCKS`` entry (empty when switched off or not listed)."""
+    blocks = NATIVE_BLOCKS.get(type(dit).__name__)
+    named = getattr(dit, "named_modules", None)
+    if not blocks or not native_blocks_enabled() or not callable(named):
+        return set()
+    return {id(m) for name, m in named() if block_index(name) in blocks}
+
 
 # (large, small) token counts of the second race, for a card where the kernel loses at RACE_TOKENS
 LONG_RACE_TOKENS = (16384, 8192)
@@ -771,12 +802,24 @@ def _install(
             or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
         ):
             continue
+        native = set() if forced else native_block_modules(dit)
         mods = [
             m
             for m in routable_modules(dit)
             # a processor the strided race already lost for (install_auto) stays as it was
             if forced or not getattr(m.processor, "_unsloth_int8_raced", False)
         ]
+        if native:
+            kept = [m for m in mods if id(m) in native]
+            mods = [m for m in mods if id(m) not in native]
+            if kept and logger is not None:
+                logger.info(
+                    "diffusion.int8_attention: %d attention module(s) of %s keep %s (NATIVE_BLOCKS: INT8 error on "
+                    "their real inputs is several times the other blocks')",
+                    len(kept),
+                    type(dit).__name__,
+                    _backend_name(getattr(kept[0].processor, "_attention_backend", None)),
+                )
         candidates.extend(mods)
         family.update((id(m), type(dit).__name__) for m in mods)
         if not forced and not rocm and type(dit).__name__ in AUTO_CUDA_ONLY:
