@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import math
+import re
 import types
 
 import pytest
@@ -18,6 +19,15 @@ import torch.nn.functional as F
 
 from core.inference import diffusion_int8_attention as I
 from core.inference import diffusion_int8_attention_cuda as K
+
+
+@pytest.fixture(autouse = True)
+def _no_recorded_graph():
+    """A test that fakes a capture leaves no recorded graph behind (it freezes every later plan's decision)."""
+    I._GRAPHED[0] = False
+    yield
+    I._GRAPHED[0] = False
+
 
 # dynamic shared memory one block may ask for, and registers per SM, per capability
 SHARED_LIMIT = {
@@ -103,12 +113,19 @@ def reference_quantise(
         return t.permute(0, 2, 1, 3).reshape(BH, t.shape[1], D).double()
 
     kh, vh = heads_first(k), heads_first(v)
+    clip = torch.zeros(BH, dtype = torch.bool, device = q.device)
     if kc is None:
-        kstep, vstep, _, _ = I.stats_plan(Sk)
+        kstep, vstep, nvc, vrows = I.stats_plan(Sk)
         kc = kh[:, ::kstep].mean(1)
-        lo, hi = vh[:, ::vstep].amin(1), vh[:, ::vstep].amax(1)
-        vc, vg = 0.5 * (hi + lo), (0.5 * (hi - lo)).clamp_min(1e-12)
+        vc, vg, clip = reference_v_range(vh, vstep, nvc, vrows)
+    else:
+        clip = (
+            ((vh - vc.double()[:, None, :]).abs() > vg.double()[:, None, :] * (1 + 1e-4))
+            .flatten(1)
+            .any(1)
+        )
     kc, vc, vg = kc.double(), vc.double(), vg.double()
+    rcnt, ridx, rres = reference_residuals(vh, vc, vg, clip)
     qr = rotate_ref(heads_first(q))
     qa = qr.abs().amax(-1).clamp_min(1e-20)
     n_kpad = (Sk + bn - 1) // bn * bn
@@ -116,9 +133,9 @@ def reference_quantise(
     # one K scale per run of 32 keys and accumulator lane group ((key % 8) // 2)
     ka = kr.abs().amax(-1).view(BH, n_kpad // 32, 4, 4, 2).amax((2, 4)).clamp_min(1e-20)
     per_key = ka[:, :, None, :, None].expand(-1, -1, 4, -1, 2).reshape(BH, n_kpad)
-    vr = F.pad((vh - vc[:, None, :]) / vg[:, None, :], (0, 0, 0, n_kpad - Sk)).view(
-        BH, n_kpad // bn, bn, D
-    )
+    xr = (vh - vc[:, None, :]) / vg[:, None, :]
+    xr = torch.where(clip[:, None, None], xr.clamp(-1, 1), xr)
+    vr = F.pad(xr, (0, 0, 0, n_kpad - Sk)).view(BH, n_kpad // bn, bn, D)
     va = vr.abs().amax((2, 3)).clamp_min(1e-20)
     vt = torch.round(vr * (127.0 / va[:, :, None, None]))[
         :, :, key_of_position(bn, q.device)
@@ -133,10 +150,58 @@ def reference_quantise(
         "vs": (va / 127.0).float(),
         "vc": vc.float(),
         "vg": vg.float(),
+        "rcnt": rcnt,
+        "ridx": ridx,
+        "rres": rres,
         "shape": (B, Sq, Sk, H, D),
         "dtype": v.dtype,
         "config": config,
     }
+
+
+def reference_v_range(vh, vstep, nvc, vrows):
+    """(centre, gain, clip) per head in fp64, as the quantisers' v_range: the full range of every channel, or, where
+    at least half the channels have a full range more than SINK_RATIO (2) times their range without the stats chunk
+    that holds the head's largest |v| (an attention sink), that robust range widened by SINK_MARGIN (2) (at most the
+    full range), clipped."""
+    BH, Sk, D = vh.shape
+    lo, hi = vh[:, ::vstep].amin(1), vh[:, ::vstep].amax(1)
+    vc, vg = 0.5 * (hi + lo), (0.5 * (hi - lo)).clamp_min(1e-12)
+    pad = nvc * vrows - Sk
+    live = (torch.arange(nvc * vrows, device = vh.device) < Sk).view(1, nvc, vrows, 1)
+    chunks = F.pad(vh, (0, 0, 0, pad)).view(BH, nvc, vrows, D)
+    cmax = torch.where(live, chunks, torch.full_like(chunks, -1e300)).amax(2)
+    cmin = torch.where(live, chunks, torch.full_like(chunks, 1e300)).amin(2)
+    sink = (
+        torch.where(live, chunks.abs(), torch.full_like(chunks, -1.0)).amax((2, 3)).argmax(1)
+    )  # first max
+    keep = torch.ones(BH, nvc, dtype = torch.bool, device = vh.device)
+    keep[torch.arange(BH), sink] = False
+    hir = torch.where(keep[:, :, None], cmax, torch.full_like(cmax, -1e300)).amax(1)
+    lor = torch.where(keep[:, :, None], cmin, torch.full_like(cmin, 1e300)).amin(1)
+    far = ((hi - lo) > 2.0 * (hir - lor)).sum(-1)
+    clip = (2 * far >= D) & (nvc > 1) & (vstep == 1)
+    rc = 0.5 * (hir + lor)
+    rg = torch.minimum(2.0 * 0.5 * (hir - lor), 0.5 * (hi - lo)).clamp_min(1e-12)
+    return torch.where(clip[:, None], rc, vc), torch.where(clip[:, None], rg, vg), clip
+
+
+def reference_residuals(vh, vc, vg, clip):
+    """(rcnt, ridx, rres) of the residual job: per clipping head, the keys whose (v - centre) / gain leaves [-1, 1]
+    by more than 1/16 (SINK_MIN) in some channel, in key order, and the part clipped off."""
+    BH, Sk, D = vh.shape
+    x = (vh - vc[:, None, :]) / vg[:, None, :]
+    res = x - x.clamp(-1, 1)
+    out = (res.abs() > 0.0625).any(-1) & clip[:, None]
+    rcnt = out.sum(1)
+    n = max(1, int(rcnt.max()))
+    ridx = torch.zeros(BH, n, dtype = torch.long, device = vh.device)
+    rres = torch.zeros(BH, n, D, dtype = torch.float64, device = vh.device)
+    for bh in range(BH):
+        keys = torch.nonzero(out[bh]).flatten()
+        ridx[bh, : len(keys)] = keys
+        rres[bh, : len(keys)] = res[bh, keys]
+    return rcnt, ridx, rres
 
 
 def emulate(p):
@@ -166,6 +231,14 @@ def emulate(p):
     denom = (probs.sum(-1, keepdim = True) * weight).sum(2)
     pv = torch.einsum("bqtn,btnd->bqtd", probs, v_int)
     num = (pv * weight * p["vs"].double()[:, None, :, None]).sum(2)
+    # the keys a head clipped: their clipped-off part times their exact P, in the frame of the first tile's maximum
+    flat = s.reshape(BH, Sq, n_kpad).double()
+    for bh in range(BH):
+        n = int(p["rcnt"][bh]) if p.get("sinks", True) else 0
+        if n:
+            keys_ = p["ridx"][bh, :n].long()
+            pr = torch.exp2(flat[bh][:, keys_] - tile_max[bh, :, 0].double() + 7.99435343685886)
+            num[bh] += pr @ p["rres"][bh, :n].double()
     out = num / denom * p["vg"].double()[:, None, :] + p["vc"].double()[:, None, :]
     return out.view(B, H, Sq, D).permute(0, 2, 1, 3).float()
 
@@ -210,23 +283,63 @@ def test_alias_is_a_native_pick_with_the_overlay(monkeypatch):
     assert DA.select_attention_backend(target, "unsloth_int8", speed_active = False) is None
 
 
+def _variants(config: dict) -> list:
+    """The kernels a table entry compiles: the one of short calls, and the one from ``long_keys`` keys on."""
+    short = I.select_config(config, 0)
+    long = I.select_config(config, 10**9)
+    return [short] if long == short else [short, long]
+
+
 def test_every_config_fits_its_card():
     assert set(I.KERNEL_CONFIGS) == set(SHARED_LIMIT)
     for capability, table in I.KERNEL_CONFIGS.items():
         assert set(table) == set(I.HEAD_DIMS)
-        for head_dim, config in table.items():
-            assert config["bn"] in (64, 128) and config["nq"] >= 1 and config["stages"] in (1, 2)
-            assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT[capability]
-            cap = config.get("max_registers")
-            if cap is not None:
-                assert 32 * config["wpc"] * cap <= SM_REGISTERS
-            assert (
-                32 * config["wpc"] <= 1024
-            )  # sm75 holds 32 warps per SM, and a block is at most 1024 threads
-            assert I.kernel_config(capability, head_dim) == config
+        for head_dim, entry in table.items():
+            assert ("long" in entry) == ("long_keys" in entry)
+            for config in _variants(entry):
+                assert (
+                    config["bn"] in (64, 128) and config["nq"] >= 1 and config["stages"] in (1, 2)
+                )
+                assert config["bn"] == entry["bn"]  # the tile is what the output bits depend on
+                assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT[capability]
+                cap = config.get("max_registers")
+                if cap is not None:
+                    assert 32 * config["wpc"] * cap <= SM_REGISTERS
+                assert (
+                    32 * config["wpc"] <= 1024
+                )  # sm75 holds 32 warps per SM, and a block is at most 1024 threads
+            assert I.kernel_config(capability, head_dim) == entry
     assert I.kernel_config((9, 0), 128) is None and I.kernel_config((12, 0), 96) is None
     assert I.kernel_config((7, 0), 128) is None and I.kernel_config((6, 1), 128) is None
     assert I.kernel_config(None, 128) is None
+
+
+def test_long_overrides_apply_from_long_keys_on():
+    """A table entry may name another block shape for long sequences: ``select_config`` applies ``long`` from
+    ``long_keys`` keys on and returns a plain config either way (one compiled kernel). sm80 at head dim 128 and
+    sm89 at head dim 64 run 4 warps per block below 4608 keys and 8 from there on; no other entry has overrides."""
+    with_long = {
+        (capability, head_dim)
+        for capability, table in I.KERNEL_CONFIGS.items()
+        for head_dim, entry in table.items()
+        if "long" in entry
+    }
+    assert with_long == {((8, 0), 128), ((8, 9), 64)}
+    entry = I.kernel_config((8, 9), 64)
+    assert I.select_config(entry, 4607)["wpc"] == 4 and I.select_config(entry, 4608)["wpc"] == 8
+    entry = I.kernel_config((8, 0), 128)
+    assert entry["long_keys"] == 4608 and entry["long"] == {"wpc": 8}
+    short, long = (
+        I.select_config(entry, entry["long_keys"] - 1),
+        I.select_config(entry, entry["long_keys"]),
+    )
+    assert short == {"bn": 128, "wpc": 4, "nq": 1, "stages": 2, "qreg": 1}
+    assert long == dict(short, wpc = 8)
+    assert I.select_config(short, 10**9) == short
+    assert I.kernel_defines(128, entry) == I.kernel_defines(128, short)
+    assert I._config_key(entry) != I._config_key(short) and hash(I._config_key(entry)) is not None
+    plain = I.kernel_config((8, 9), 128)
+    assert I.select_config(plain, 0) == I.select_config(plain, 10**9) == plain
 
 
 def test_sm75_has_its_own_config():
@@ -281,28 +394,29 @@ def test_kernel_compiles_for_every_config(capability):
     arch = 10 * capability[0] + capability[1]
     if arch not in _nvrtc_archs():
         pytest.skip(f"NVRTC {K.nvrtc_version()} cannot target sm_{arch}")
-    for head_dim, config in I.KERNEL_CONFIGS[capability].items():
-        ptx = K.compile_ptx(
-            K.KERNEL_SOURCE,
-            f"sm_{arch}",
-            I.kernel_defines(head_dim, config),
-        ).decode(errors = "replace")
-        products = config["nq"] * (
-            (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
-        )
-        if capability < (8, 0):
-            assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
-            assert "m16n8k32" not in ptx and "cp.async" not in ptx
-        else:
-            assert ptx.count("mma.sync.aligned.m16n8k32") == products
-            assert "m8n8k16" not in ptx
-        assert "cvt.rn.f32.s32" not in ptx
+    for head_dim, entry in I.KERNEL_CONFIGS[capability].items():
+        for config in _variants(entry):
+            ptx = K.compile_ptx(
+                K.KERNEL_SOURCE,
+                f"sm_{arch}",
+                I.kernel_defines(head_dim, config),
+            ).decode(errors = "replace")
+            products = config["nq"] * (
+                (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
+            )
+            if capability < (8, 0):
+                assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
+                assert "m16n8k32" not in ptx and "cp.async" not in ptx
+            else:
+                assert ptx.count("mma.sync.aligned.m16n8k32") == products
+                assert "m8n8k16" not in ptx
+            assert "cvt.rn.f32.s32" not in ptx
         quant = K.compile_ptx(
             K.QUANT_SOURCE,
             f"sm_{arch}",
             {
                 "HD": head_dim,
-                "BN": config["bn"],
+                "BN": entry["bn"],
                 "RGX": min(I.ROT_GROUP, head_dim).bit_length() - 5,
             },
         ).decode(errors = "replace")
@@ -320,6 +434,63 @@ def test_op_off_cuda_is_native_attention():
     got = torch.ops.unsloth_studio.int8_attention_nhd(q, k, v)
     assert torch.equal(got, I.native_attention(q, k, v))
     assert I.STATS["native"] == before["native"] + 1 and I.STATS["int8"] == before["int8"]
+
+
+def _cpu_inductor_missing() -> str:
+    """Why Inductor cannot compile a CPU graph on this host ("" when it can). Its CPU backend builds C++ with the
+    host compiler; Windows has none unless MSVC's ``cl`` is on PATH (the gfx1151 Windows runners have none), and a
+    missing compiler fails every CPU graph with "Compiler: cl is not found", whatever the graph."""
+    try:
+        from torch._inductor.cpp_builder import get_cpp_compiler
+    except Exception:  # noqa: BLE001 -- an older layout: let the test say what happens
+        return ""
+    try:
+        get_cpp_compiler()
+    except Exception as exc:  # noqa: BLE001
+        return f"Inductor has no C++ compiler for CPU graphs here: {exc}"[:300]
+    return ""
+
+
+@pytest.mark.skipif(bool(_cpu_inductor_missing()), reason = _cpu_inductor_missing() or "n/a")
+@pytest.mark.parametrize("sdpa", ["default", "math"])
+@pytest.mark.parametrize("heads_first", [False, True], ids = ["bshd", "heads_first"])
+@pytest.mark.parametrize("dynamic", [False, True], ids = ["static", "dynamic"])
+def test_the_native_fallback_keeps_the_fake_layout_under_inductor(sdpa, heads_first, dynamic):
+    """The fake promises a contiguous ``[B, S, H, D]`` and Inductor asserts those strides on the real output, so
+    the native fallback must hand back that layout, not SDPA's permuted ``[B, H, S, D]``. opcheck does not catch
+    this: only a compiled graph executing the op does."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    I.int8_attention_op()
+    g = torch.Generator().manual_seed(0)
+
+    def inputs(B, S, H, D):
+        if (
+            heads_first
+        ):  # a [B, H, S, D] buffer viewed as [B, S, H, D], as the strided processors pass it
+            return tuple(torch.randn(B, H, S, D, generator = g).transpose(1, 2) for _ in range(3))
+        return tuple(torch.randn(B, S, H, D, generator = g) for _ in range(3))
+
+    def block(q, k, v):
+        return torch.ops.unsloth_studio.int8_attention_nhd(q, k, v).flatten(2, 3) + 1
+
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(block, backend = "inductor", fullgraph = True, dynamic = dynamic)
+        pin = sdpa_kernel(SDPBackend.MATH) if sdpa == "math" else contextlib.nullcontext()
+        with torch.no_grad(), pin:
+            for shape in ((2, 11, 3, 64), (2, 17, 3, 64), (1, 126, 2, 64)):
+                q, k, v = inputs(*shape)
+                before = I.STATS["native"]
+                # the compiled call first: on a layout mismatch Inductor's stride assertion is what fails
+                out = compiled(q, k, v)
+                assert I.STATS["native"] == before + 1
+                assert torch.allclose(out, block(q, k, v), atol = 1e-5, rtol = 1e-5)
+                got = torch.ops.unsloth_studio.int8_attention_nhd(q, k, v)
+                assert got.shape == q.shape and got.is_contiguous()
+                assert torch.equal(got, I.native_attention(q, k, v))
+    finally:
+        torch._dynamo.reset()
 
 
 class _Processor:
@@ -415,6 +586,60 @@ def test_no_probability_is_packed_unclamped():
         and "pack4(ex2(" not in source
         and " ex2(fmaf(" not in source
     )
+
+
+ORDERINGS = ("qkw", "pvw", "spread")
+
+
+def test_the_orderings_reach_the_kernel_as_defines():
+    """qkw / pvw / spread are per-card config keys that become compile-time defines; a config without them
+    compiles the kernel as it was. Head dim 128 on sm120 (all three) and on sm75 (the two product orders: its one
+    stage has no next tile to spread) are the configs that set them."""
+    tuned = {((12, 0), 128): {"QKW": 1, "PVW": 8, "SPREAD": 5}, ((7, 5), 128): {"QKW": 1, "PVW": 8}}
+    for capability in sorted(SHARED_LIMIT):
+        for head_dim in I.HEAD_DIMS:
+            defines = I.kernel_defines(head_dim, I.kernel_config(capability, head_dim))
+            got = {
+                name.upper(): defines[name.upper()] for name in ORDERINGS if name.upper() in defines
+            }
+            assert got == tuned.get((capability, head_dim), {}), (capability, head_dim)
+
+
+@pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
+def test_the_orderings_keep_the_products_and_refuse_bad_combinations():
+    """Each ordering compiles to the same number of tensor-core products and tile copies and adds no int <-> float
+    conversion; spread needs qkw, pvw an even divisor of the channel blocks, and a one-stage kernel has no next
+    tile to spread."""
+    arch = max(a for a in _nvrtc_archs() if a in (80, 86, 89, 120))
+    base = {"bn": 128, "wpc": 8, "nq": 1, "stages": 2}
+
+    def ptx(head_dim, **keys):
+        return K.compile_ptx(
+            K.KERNEL_SOURCE, f"sm_{arch}", I.kernel_defines(head_dim, dict(base, **keys))
+        ).decode(errors = "replace")
+
+    for head_dim in I.HEAD_DIMS:
+        plain = ptx(head_dim)
+        for keys in (
+            {"qkw": 1},
+            {"pvw": 2},
+            {"pvw": 8},
+            {"qkw": 1, "spread": 1},
+            {"qkw": 1, "pvw": 8, "spread": 5},
+            {"qkw": 1, "pvw": 8, "spread": 5, "nq": 2},
+        ):
+            got = ptx(head_dim, **keys)
+            scale = keys.get("nq", 1)
+            assert got.count("mma.sync.aligned.m16n8k32") == scale * plain.count(
+                "mma.sync.aligned.m16n8k32"
+            ), keys
+            assert got.count("ldmatrix") <= scale * plain.count("ldmatrix"), keys
+            assert got.count("cp.async.cg") == plain.count("cp.async.cg"), keys
+            assert "cvt.rn.f32.s32" not in got and "cvt.rni" not in got
+    assert ptx(128, qkw = 1, spread = 5, stages = 1) == ptx(128, qkw = 1, stages = 1)
+    for keys in ({"spread": 1}, {"pvw": 3}, {"pvw": 6}):
+        with pytest.raises(RuntimeError, match = "unsupported combination"):
+            ptx(128, **keys)
 
 
 def test_install_off_cuda_and_kill_switch(monkeypatch):
@@ -525,12 +750,83 @@ def test_the_method_stays_close_to_fp32_attention(shape, bn):
     assert acc["cos"] > 0.9995 and acc["rel_l1"] < 0.03, acc
 
 
+@pytest.mark.parametrize("sinks", [(1,), (1030, 1031)])
+def test_the_method_keeps_v_resolved_past_attention_sinks(sinks):
+    """A V key 60 std out in most channels (an attention sink: the first text tokens of a joint sequence) draws almost no
+    attention but set every channel's range, so every other key lost its resolution: the method's error against
+    fp32 was several times that of the same call without it. Now the head clips the sink's stats chunk to the range
+    of the others and adds the clipped-off part back exactly: the error stays at the sink-free level."""
+    shape = (1, 1100, 2, 128)
+    q, k, v = I.probe_inputs("cpu", torch.float32, *shape[1:])
+    plain = reference_quantise(q, k, v, {"bn": 128, "wpc": 1, "nq": 1, "stages": 1})
+    base = (emulate(plain) - I.reference_attention(q, k, v)).norm() / I.reference_attention(
+        q, k, v
+    ).norm()
+    v = v.clone()
+    for key in sinks:
+        sign = torch.ones(shape[-1] - 16)
+        sign[1::2] = -1
+        v[:, key, :, 16:] += 60 * v[:, :, :, 16:].std() * sign
+    p = reference_quantise(q, k, v, {"bn": 128, "wpc": 1, "nq": 1, "stages": 1})
+    for bh in range(2):
+        n = int(p["rcnt"][bh])
+        keys = p["ridx"][bh, :n].tolist()
+        assert set(sinks) <= set(keys) and keys == sorted(keys)
+    ref = I.reference_attention(q, k, v)
+    err = (emulate(p) - ref).norm() / ref.norm()
+    assert err < 1.5 * base, (float(err), float(base))
+
+
 def test_statistics_cover_every_key():
     for n in (1, 15, 16, 80, 1039, 4112, 10011, 75600, 300000):
         kstep, vstep, chunks, rows = I.stats_plan(n)
         assert vstep == 1 and rows % vstep == 0 and chunks <= I.V_RANGE_CHUNKS
         assert (chunks - 1) * rows < n <= chunks * rows
         assert 1 <= kstep <= I.K_MEAN_STEP and -(-n // kstep) >= min(n, I.K_MEAN_KEYS)
+
+
+def test_the_quantisers_read_only_aligned_rows():
+    """The quantisers load 16 bytes at a time: a tensor goes in as it is when its last-dim stride is 1 and every
+    row starts on a 16-byte boundary (packed QKV views do), and as a contiguous copy otherwise."""
+    H, D = 2, 64
+    packed = torch.zeros(1, 9, 3 * H * D, dtype = torch.bfloat16)
+    for view in packed.chunk(3, dim = -1):
+        x = view.unflatten(-1, (H, D))
+        assert I._strides_aligned(x) and I._aligned(x) is x
+    odd = torch.zeros(1, 9, 3 * H * D + 1, dtype = torch.bfloat16)[..., : H * D].unflatten(-1, (H, D))
+    assert not I._strides_aligned(odd)  # rows 2 bytes apart from a 16-byte boundary
+    shifted = torch.zeros(1, 9, H, D + 8, dtype = torch.bfloat16)[..., 1 : D + 1]
+    assert I._strides_aligned(shifted) and shifted.data_ptr() % 16 != 0
+    sparse = torch.zeros(1, 9, H, 2 * D, dtype = torch.bfloat16)[..., ::2]
+    assert not I._strides_aligned(sparse)
+    for x in (odd, shifted, sparse):
+        copy_ = I._aligned(x)
+        assert copy_ is not x and copy_.is_contiguous() and copy_.data_ptr() % 16 == 0
+        assert I._strides_aligned(copy_) and torch.equal(copy_, x)
+
+
+def test_a_launch_plan_is_keyed_by_everything_it_depends_on(monkeypatch):
+    """The launch arithmetic of a call is done once per signature: the same shape, dtypes, strides, config and
+    scale find the plan again (the config by value: the per-card table hands out copies), any other call does not."""
+    H, D = 2, 64
+    config = {"bn": 128, "wpc": 4, "nq": 2, "stages": 2}
+    packed = torch.zeros(1, 9, 3 * H * D, dtype = torch.bfloat16)
+    q, k, v = (x.unflatten(-1, (H, D)) for x in packed.chunk(3, dim = -1))
+    key = I._plan_key(q, k, v, config, None, 0)
+    assert key == I._plan_key(q, k, v, dict(reversed(list(config.items()))), None, 0)
+    assert hash(key) == hash(I._plan_key(q, k, v, dict(config), None, 0))
+    others = [
+        I._plan_key(q, k, v, dict(config, wpc = 8), None, 0),
+        I._plan_key(q, k, v, config, 0.25, 0),
+        I._plan_key(q, k, v, config, None, 1),
+        I._plan_key(q.contiguous(), k, v, config, None, 0),  # other strides
+        I._plan_key(q, k.float(), v.float(), config, None, 0),
+        I._plan_key(q[:, :8], k, v, config, None, 0),
+        I._plan_key(q, k[:, :8], v[:, :8], config, None, 0),
+    ]
+    assert len({key, *others}) == len(others) + 1
+    monkeypatch.setattr(I, "V_RANGE_STEP", 8)  # the statistics plan is part of what a plan holds
+    assert I._plan_key(q, k, v, config, None, 0) != key
 
 
 def test_v_range_over_every_key_keeps_a_short_sequence_accurate(monkeypatch):
@@ -791,12 +1087,41 @@ def _h3_image():
     return H
 
 
+def test_the_unset_switch_keeps_the_kernel_off_the_h3_image_blocks(monkeypatch):
+    """MiniMax-H3-Image: the block race picks the kernel on L4 / G4 / A100, which then renders 6-13% slower end to
+    end, so with the switch unset the blocks keep their backend with no check or race; forcing still routes them."""
+    import logging
+
+    H = _h3_image()
+    installs: list = []
+    monkeypatch.setattr(
+        I, "install_int8_attention", lambda t, **kw: installs.append(kw) or len(kw["modules"])
+    )
+    monkeypatch.setattr(H, "race_checkpoint_attention", lambda *a, **k: pytest.fail("no race"))
+    model, log = types.SimpleNamespace(), logging.getLogger(__name__)
+    blocks = [types.SimpleNamespace(processor = types.SimpleNamespace()) for _ in range(2)]
+    monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+    for sage in (None, True, False):
+        assert H._race_int8_kernel(model, blocks, {}, "cuda", torch.bfloat16, sage, False, log) == (
+            0,
+            None,
+        )
+    assert installs == []
+    monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
+    assert H._race_int8_kernel(model, blocks, {}, "cuda", torch.bfloat16, True, True, log) == (
+        2,
+        None,
+    )
+    assert len(installs) == 1 and installs[0]["force"]
+
+
 def test_checkpoint_race_times_the_kernel_on_a_block(monkeypatch, _active_backend):
     import logging
     import sys
 
     h3, A = _h3()
     H = _h3_image()
+    monkeypatch.setattr(H, "KERNEL_AUTO", True)
     model = _tiny_h3(h3)
     model.set_attention_backend("_native_math")
     assert A.install_strided_attention(model) == 3
@@ -901,6 +1226,7 @@ def test_checkpoint_attention_races_each_backend_once(monkeypatch, _active_backe
         dtype,
         *,
         kernel = False,
+        device = None,
     ):
         races.append(kernel)
         found = {"keep": plan["sage_keep"], "ms": [10.0, 9.0], "native": "_native_math"}
@@ -958,6 +1284,11 @@ def test_checkpoint_attention_races_each_backend_once(monkeypatch, _active_backe
     engaged, timed, blocks = load("1")
     assert engaged == I.BACKEND and timed == []
     assert all(p._unsloth_int8 for p in blocks)
+    # switch unset: the kernel stays off the blocks (KERNEL_AUTO), SageAttention's own race decides them
+    engaged, timed, blocks = load()
+    assert engaged == "sage_hub" and timed == [False]
+    assert not any(p._unsloth_int8 for p in blocks)
+    monkeypatch.setattr(H, "KERNEL_AUTO", True)
     engaged, timed, blocks = load()
     assert engaged == I.BACKEND and timed == [True]
     engaged, timed, blocks = load(kernel_ms = 9.9)
@@ -1038,6 +1369,147 @@ def test_checkpoint_race_decision_does_not_follow_a_clock_step(monkeypatch, afte
             assert large[2] < I.RACE_MARGIN, (step, found)
 
 
+class _StreamedAttention(_ClockedAttention):
+    """Host-resident attention that only runs while ``_weights_on`` has staged it."""
+
+    COST = {"native": 10.0, "sage": 10.0}
+
+    def __init__(self):
+        super().__init__(10**6, 1.0, False)
+        self.on_card = False
+        self.staged: list = []
+
+    def parameters(self):
+        return iter([types.SimpleNamespace(is_cuda = self.on_card, device = torch.device("cpu"))])
+
+    def __call__(self, x, rotary, mask):
+        assert (
+            self.on_card
+        ), "the race ran a streamed block's attention with its weights on the host"
+        super().__call__(x, rotary, mask)
+
+
+def _streamed_race(monkeypatch, device):
+    H = _h3_image()
+    attn = _StreamedAttention()
+
+    class Event:
+        def __init__(self, enable_timing = False):
+            self.t = 0.0
+
+        def record(self):
+            self.t = attn.now
+
+        def synchronize(self):
+            pass
+
+        def elapsed_time(self, other):
+            return other.t - self.t
+
+    @contextlib.contextmanager
+    def weights_on(module, dev):
+        assert module is attn and not attn.on_card
+        attn.staged.append(str(dev))
+        attn.on_card = True
+        try:
+            yield module
+        finally:
+            attn.on_card = False
+
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: contextlib.nullcontext())
+    monkeypatch.setattr(H, "_weights_on", weights_on)
+    norm = types.SimpleNamespace(normalized_shape = (8,))
+    blocks = [types.SimpleNamespace(attn = attn, norm1 = norm)]
+    blocks.append(types.SimpleNamespace(attn = _StreamedAttention(), norm1 = norm))
+    transformer = types.SimpleNamespace(transformer_blocks = blocks, rope = lambda pos: None)
+    real_to = torch.Tensor.to
+
+    def to(self, *args, **kwargs):
+        # no card here: the race's inputs stay on the host
+        kwargs.pop("device", None)
+        args = tuple(a for a in args if not isinstance(a, (str, torch.device)))
+        return real_to(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", to)
+    found = H.race_checkpoint_attention(transformer, {attn: "native"}, torch.float32, device = device)
+    return found, attn
+
+
+def test_a_fully_streamed_dit_races_its_first_block_on_the_card(monkeypatch):
+    """A fully streamed DiT still races (staged block) and decides as a resident layout: a tie keeps native."""
+    found, attn = _streamed_race(monkeypatch, "cuda")
+    assert found is not None and found["staged"] and not found["keep"]
+    assert found["ms"] == [10.0 * 4396 / 4396] * 2
+    assert (
+        attn.staged == ["cuda"]
+        and not attn.on_card
+        and attn.calls == 2 * (2 + _h3_image()._RACE_ROUNDS)
+    )
+    assert attn.processor._attention_backend == "sage"
+    # no device to stage on: untimed, the caller keeps its route
+    found, attn = _streamed_race(monkeypatch, None)
+    assert found is None and attn.calls == 0 and not attn.staged
+    found, attn = _streamed_race(monkeypatch, "cpu")
+    assert found is None and attn.calls == 0 and not attn.staged
+
+
+def test_streamed_weights_come_back_to_the_host_after_the_race():
+    """``_weights_on`` restores the same host tensors, also when the body raises."""
+    H = _h3_image()
+    m = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.LayerNorm(4))
+    m[0].register_buffer("scale", torch.ones(4))
+    before = {n: t for n, t in list(m.named_parameters()) + list(m.named_buffers())}
+    with H._weights_on(m, torch.device("meta")):
+        inside = list(m.parameters()) + list(m.buffers())
+        assert inside and all(t.device.type == "meta" for t in inside)
+        assert all(not p.requires_grad for p in m.parameters())
+    after = {n: t for n, t in list(m.named_parameters()) + list(m.named_buffers())}
+    assert after.keys() == before.keys() and all(after[n] is before[n] for n in before)
+    with pytest.raises(RuntimeError):
+        with H._weights_on(m, torch.device("meta")):
+            raise RuntimeError("race failed")
+    after = {n: t for n, t in list(m.named_parameters()) + list(m.named_buffers())}
+    assert all(after[n] is before[n] for n in before)
+
+
+def test_install_races_a_fully_streamed_dit_on_its_device(monkeypatch):
+    """``install_checkpoint_attention`` passes the load device so a fully streamed DiT is raced."""
+    H = _h3_image()
+    seen: list = []
+
+    def race(transformer, saved, dtype, **kw):
+        seen.append(kw)
+        return {"keep": False, "ms": [1.0, 1.0], "native": "_native_flash", "staged": True}
+
+    proc = types.SimpleNamespace(_attention_backend = "_native_flash")
+    attn = torch.nn.Module()
+    attn.processor = proc
+    attn.register_parameter("w", torch.nn.Parameter(torch.zeros(1), requires_grad = False))
+    block = torch.nn.Module()
+    block.attn = attn
+    transformer = torch.nn.Module()
+    transformer.transformer_blocks = torch.nn.ModuleList([block])
+    pipe = types.SimpleNamespace(transformer = transformer)
+    from core.inference import diffusion_attention as da
+
+    def fake_apply(
+        p,
+        backend,
+        logger = None,
+        target = None,
+    ):
+        proc._attention_backend = backend
+        return backend
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    monkeypatch.setattr(H, "race_checkpoint_attention", race)
+    monkeypatch.delenv(H.INT8_ATTENTION_ENV, raising = False)
+    assert H.install_checkpoint_attention(pipe, "cuda", scheme = "int8") is None
+    assert proc._attention_backend == "_native_flash"
+    assert seen and str(seen[0].get("device")) == "cuda"
+
+
 def _case(
     shape,
     dtype,
@@ -1102,18 +1574,501 @@ def test_kernel_matches_its_torch_model(shape, dtype, config, strided):
     assert torch.equal(I.int8_attention(q, k, v, config = config), out)
 
 
+def _sink_case(
+    shape,
+    dtype,
+    sinks,
+    seed = 0,
+):
+    """q / k / v of ``_case`` with attention sinks in V: the keys ``sinks`` 120 out in most channels (the first text
+    tokens of a joint sequence carry such values) on every other head."""
+    q, k, v = _case(shape, dtype, seed = seed)
+    g = torch.Generator(device = "cuda").manual_seed(seed + 1)
+    v = v.clone()
+    H, D = shape[2], shape[3]
+    for key in sinks:
+        bump = torch.randn(shape[0], 1, H, D, generator = g, device = "cuda").sign() * 120
+        bump[:, :, 1::2] = 0
+        bump[..., : D // 8] = 0
+        v[:, key : key + 1] += bump.to(dtype)
+    return q, k, v
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+@pytest.mark.parametrize("sinks", [(4097, 4098), (1,), (2, 3)])
+def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
+    """A few V keys 60x out in most channels set the per-channel range of every key: a head with them takes the range
+    without the stats chunk of its largest |v|, clips that chunk in place and adds the clipped-off parts back after
+    the kernel. Its error against fp32 stays within 4x that of the same call without the sinks (3.1x at most over
+    these cases on T4 / A100 / L4, the kernel equal to its fp64 model; 5.5x or more with the range over every key),
+    the kernel matches its torch model, and the heads without sinks keep the full range (no clipped keys)."""
+    shape = (1, 4128, 4, head_dim)
+    dtype = _card_dtype()
+    config = _cuda_config(head_dim)
+    q, k, v = _sink_case(shape, dtype, sinks, seed = 11)
+    out = I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
+    ref = I.reference_attention(q, k, v)
+    plain = I.reference_attention(*_case(shape, dtype, seed = 11))
+    plain_out = I.int8_attention(*_case(shape, dtype, seed = 11), config = config, mode = I.MODE_RACE)
+
+    def err(x, r, heads):
+        return float((x.float()[:, :, heads] - r[:, :, heads]).norm() / r[:, :, heads].norm())
+
+    sink_heads, other = list(range(0, 4, 2)), list(range(1, 4, 2))
+    assert err(out, ref, sink_heads) < 4.0 * err(plain_out, plain, sink_heads), (
+        err(out, ref, sink_heads),
+        err(plain_out, plain, sink_heads),
+    )
+    assert err(out, ref, other) < 1.5 * err(plain_out, plain, other)
+    p = I.quantise(q, k, v, config, mode = I.MODE_RACE)
+    counts = p["rcnt"].tolist()
+    assert all(c > 0 for c in counts[::2]) and all(c == 0 for c in counts[1::2]), counts
+    keys = {int(x) for x in p["ridx"][0, : counts[0]].tolist()}
+    assert set(sinks) <= keys and keys == set(sorted(keys)), keys
+    got = I.attend(p)
+    assert torch.equal(got, out)
+    want = emulate(p)
+    rel = ((got.float() - want).abs().mean() / want.abs().mean()).item()
+    assert rel < 4e-3, rel
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_more_clipped_keys_than_one_staging_pass(head_dim):
+    """A head with more clipped keys than unsloth_i8resid stages at once (32) adds them back in several passes: the
+    kernel still matches its torch model, and the keys are the bumped ones, in key order."""
+    shape = (1, 2100, 2, head_dim)
+    sinks = tuple(range(3, 3 + 40))
+    q, k, v = _sink_case(shape, _card_dtype(), sinks, seed = 7)
+    p = I.quantise(q, k, v, _cuda_config(head_dim), mode = I.MODE_RACE)
+    counts = p["rcnt"].tolist()
+    assert counts[0] >= len(sinks) > 32 and counts[1] == 0, counts
+    keys = p["ridx"][0, : counts[0]].tolist()
+    assert set(sinks) <= set(keys) and keys == sorted(keys)
+    want = emulate(p)
+    got = I.attend(p).float()
+    rel = ((got - want).abs().mean() / want.abs().mean()).item()
+    assert rel < 4e-3, rel
+
+
+@needs_kernel
+@pytest.mark.parametrize("with_sinks", [False, True])
+def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sinks, monkeypatch):
+    """A launch plan's first calls take the attention-sink path and report whether a head clipped; from its
+    SINK_DECIDE_AT-th call a plan without sinks runs the kernels without that path, with the same bits (no head of it
+    clips), and one with sinks keeps it where it wins its race (here: always)."""
+    monkeypatch.setattr(I, "_sink_race", lambda *a: True)
+    shape = (1, 700, 4, 128)
+    config = _cuda_config(128)
+    if with_sinks:
+        q, k, v = _sink_case(shape, _card_dtype(), (1,), seed = 3)
+    else:
+        q, k, v = _case(shape, _card_dtype(), seed = 3)
+    I.forget_plans()
+    first = I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
+    (plan,) = I._plans().values()
+    launched = []
+    kernels = {
+        id(f): name for name, f in (("sink", plan["kernels"][2]), ("base", plan["kernels0"][2]))
+    }
+    launch = K.Function.launch
+
+    def spy(self, *args):
+        launched.append(kernels.get(id(self)))
+        return launch(self, *args)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(K.Function, "launch", spy)
+        for _ in range(I.SINK_DECIDE_AT):
+            out = I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
+    assert (
+        plan["sinks"] is with_sinks
+        and plan["calls"] == I.SINK_DECIDE_AT + 1
+        and plan["checks"] == []
+    )
+    # the attention launches: the last call only is past the decision
+    assert launched.count("sink") == I.SINK_DECIDE_AT - (0 if with_sinks else 1)
+    assert launched.count("base") == (0 if with_sinks else 1)
+    assert torch.equal(out, first)
+
+
+@needs_kernel
+def test_a_new_prompt_length_learns_its_own_sinks(monkeypatch):
+    """A plan whose query and key counts share a DECIDE_BUCKET with a decided sink-free plan does not take that
+    decision at once: it learns from its own first calls on the sink path (a sink-free head gets the same bits), so a
+    sink-free verdict never applies to a call with sinks."""
+    monkeypatch.setattr(I, "_sink_race", lambda *a, **k: pytest.fail("no sinks: no race"))
+    config = _cuda_config(128)
+    I.forget_plans()
+    q, k, v = _case((1, 700, 4, 128), _card_dtype(), seed = 3)
+    for _ in range(I.SINK_DECIDE_AT + 1):
+        I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
+    q, k, v = _case((1, 710, 4, 128), _card_dtype(), seed = 4)
+    I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
+    first, second = I._plans().values()
+    assert first["sinks"] is False and second["sinks"] is None and len(second["checks"]) == 1
+
+
+@needs_kernel
+def test_a_plan_whose_sink_path_loses_its_race_runs_torch_attention(monkeypatch):
+    """A plan with attention sinks races the sink path against torch's attention on its deciding call's own inputs
+    (the guarded op's path, _cuda_attention); where the path loses, that call and the next ones run torch's
+    attention."""
+    races = []
+    monkeypatch.setattr(
+        I, "_sink_race", lambda plan, q, k, v, scale, index, **_: races.append(q.shape) or "native"
+    )
+    shape = (1, 700, 4, 128)
+    config = _cuda_config(128)
+    q, k, v = _sink_case(shape, _card_dtype(), (1,), seed = 3)
+    index = torch.cuda.current_device()
+    I.forget_plans()
+    for _ in range(I.SINK_DECIDE_AT):
+        I._cuda_attention(q, k, v, config, None, index, I.MODE_RACE)
+    (plan,) = I._plans().values()
+    assert plan["sinks"] is None and races == []
+    out = I._cuda_attention(q, k, v, config, None, index, I.MODE_RACE)
+    assert plan["sinks"] == "native" and races == [shape]
+    assert torch.equal(out, I.native_attention(q, k, v))
+    assert torch.equal(
+        I._cuda_attention(q, k, v, config, None, index, I.MODE_RACE), I.native_attention(q, k, v)
+    )
+    assert len(races) == 1
+
+
+@needs_kernel
+def test_the_sink_race_times_the_sink_path_on_the_call(monkeypatch):
+    """_sink_race: the sink path (quantisers, kernel, residual launch) against torch's attention on the call's own
+    inputs, counted toward no decision; its verdict is kept on the plan."""
+    shape = (1, 2100, 4, 128)
+    q, k, v = _sink_case(shape, _card_dtype(), (1,), seed = 5)
+    I.forget_plans()
+    I.int8_attention(q, k, v, config = _cuda_config(128), mode = I.MODE_RACE)
+    (plan,) = I._plans().values()
+    calls = plan["calls"]
+    path = I._sink_race(plan, q, k, v, None, torch.cuda.current_device())
+    assert (
+        path in (True, False, "native")
+        and set(plan["sink_race"]) == {"incumbent", "sinks", "plain"}
+        and set(plan["sink_error"]) == {"sinks", "plain"}
+        and plan["calls"] == calls
+    )
+    # the kernels without the sink path are picked only within PLAIN_ERROR_SLACK of its error
+    assert (
+        path is not False
+        or plan["sink_error"]["plain"] <= I.PLAIN_ERROR_SLACK * plan["sink_error"]["sinks"]
+    )
+
+
+def test_the_sink_path_is_decided_by_the_first_calls_of_a_plan(monkeypatch):
+    """_choose_path: every call takes the sink path until the plan's SINK_DECIDE_AT-th; from there only a plan one of
+    whose first SINK_LEARN_CALLS calls clipped keeps it (a clip after them does not count), and a CUDA graph capture
+    keeps what the plan has decided without counting a call."""
+
+    class Event:
+        def synchronize(self):
+            pass
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    for clipped_at in (None, 0, I.SINK_LEARN_CALLS - 1, I.SINK_LEARN_CALLS):
+        plan = {"calls": 0, "sinks": None, "checks": []}
+        paths = []
+        for _ in range(I.SINK_DECIDE_AT + 3):
+            sinks, n = I._choose_path(plan)
+            paths.append(sinks)
+            if n < I.SINK_LEARN_CALLS and plan["sinks"] is None:
+                plan["checks"].append(
+                    (Event(), torch.tensor([0, int(n == clipped_at)], dtype = torch.int32))
+                )
+        keeps = clipped_at is not None and clipped_at < I.SINK_LEARN_CALLS
+        assert all(paths[: I.SINK_DECIDE_AT + 1 if keeps else I.SINK_DECIDE_AT])
+        assert all(path is keeps for path in paths[I.SINK_DECIDE_AT :])
+        assert plan["sinks"] is keeps and plan["checks"] == []
+    # a plan with sinks takes the path its race picks: the sink path, the kernels without it, or torch's attention
+    for won in (True, False, "native"):
+        races = []
+        plan = {
+            "calls": I.SINK_DECIDE_AT,
+            "sinks": None,
+            "checks": [(Event(), torch.tensor([1], dtype = torch.int32))],
+        }
+        path, _ = I._choose_path(plan, race = lambda: races.append(1) or won)
+        assert path == won == plan["sinks"] and races == [1]
+        assert I._choose_path(plan, race = lambda: races.append(1) or won)[0] == path and races == [1]
+    plan = {
+        "calls": I.SINK_DECIDE_AT,
+        "sinks": None,
+        "checks": [(Event(), torch.tensor([0], dtype = torch.int32))],
+    }
+    assert I._choose_path(plan, race = lambda: pytest.fail("no sinks: no race")) == (
+        False,
+        I.SINK_DECIDE_AT,
+    )
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    for decided, path in ((False, False), (True, True), (None, True), ("native", "native")):
+        plan = {"calls": 7, "sinks": decided, "checks": []}
+        assert I._choose_path(plan) == (path, None) and plan["calls"] == 7
+
+
+def test_a_plan_reads_and_decides_no_sinks_while_another_thread_records(monkeypatch):
+    """Event records and waits are prohibited while another thread records a CUDA graph (thread_local capture): there
+    a call's clipped-key count goes unread and the decision waits for a later call, which makes it."""
+    from core.inference import diffusion_cuda_graph as G
+
+    class Event:
+        def synchronize(self):
+            pass
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(torch.cuda, "Event", lambda: pytest.fail("no event record while recording"))
+    monkeypatch.setattr(G, "_CAPTURE_DEPTH", 1)
+    plan = {"calls": 0, "sinks": None, "checks": []}
+    I._check_sinks(plan, None, 0)
+    assert plan["checks"] == []
+    plan = {
+        "calls": I.SINK_DECIDE_AT,
+        "sinks": None,
+        "checks": [(Event(), torch.tensor([1], dtype = torch.int32))],
+    }
+    race = lambda: pytest.fail("no race while recording")  # noqa: E731
+    assert I._choose_path(plan, race = race) == (True, I.SINK_DECIDE_AT)
+    assert plan["sinks"] is None and len(plan["checks"]) == 1
+    monkeypatch.setattr(G, "_CAPTURE_DEPTH", 0)
+    assert I._choose_path(plan, race = lambda: "native") == ("native", I.SINK_DECIDE_AT + 1)
+    assert plan["sinks"] == "native" and plan["checks"] == []
+
+
+def test_the_sink_race_keeps_the_faster_path_as_accurate_as_the_sink_path():
+    """_pick_path: the faster of the sink path and the kernels without it, those only within PLAIN_ERROR_SLACK of the
+    sink path's error (Qwen-Image-2.1-Turbo keeps the old kernels where faster, Z-Image-Turbo's sinks keep the path),
+    and torch's attention unless that beats it by RACE_MARGIN."""
+    pick = I._pick_path
+    near, far = {"sinks": 0.020, "plain": 0.0207}, {"sinks": 0.021, "plain": 0.034}
+    assert pick({"incumbent": 1.53, "sinks": 1.40, "plain": 1.30}, near) is False
+    assert pick({"incumbent": 1.53, "sinks": 1.40, "plain": 1.30}, far) is True
+    assert pick({"incumbent": 1.53, "sinks": 1.30, "plain": 1.40}, near) is True
+    assert pick({"incumbent": 1.25, "sinks": 1.29, "plain": 1.20}, near) is False
+    assert pick({"incumbent": 1.25, "sinks": 1.29, "plain": 1.20}, far) == "native"
+    assert pick({"incumbent": 1.25, "sinks": 1.29, "plain": 1.24}, near) == "native"
+    # Qwen-Image-2.1-Turbo on G4: the sink path 1.7% faster than the old kernels, as accurate: a near tie keeps the old
+    assert (
+        pick(
+            {"incumbent": 0.8704, "sinks": 0.6017, "plain": 0.6119},
+            {"sinks": 0.01263, "plain": 0.01275},
+        )
+        is False
+    )
+    # the old kernels kept only while they beat torch's attention, else the sink path where it does
+    assert pick({"incumbent": 1.0, "sinks": 0.97, "plain": 0.985}, near) is True
+
+
+def test_the_sink_race_never_takes_a_path_with_a_non_finite_error():
+    """A NaN / inf error (a broken output on the deciding call) disqualifies that path: the kernels without the sink
+    path stand alone where theirs is finite, torch's attention where neither is; NaN timings never win."""
+    pick, nan, inf = I._pick_path, float("nan"), float("inf")
+    fast = {"incumbent": 10.0, "sinks": 4.0, "plain": 5.0}
+    assert pick(fast, {"sinks": nan, "plain": 0.02}) is False
+    assert pick(fast, {"sinks": inf, "plain": 0.02}) is False
+    assert pick(fast, {"sinks": 0.02, "plain": nan}) is True
+    assert pick(fast, {"sinks": nan, "plain": nan}) == "native"
+    assert (
+        pick({"incumbent": nan, "sinks": 4.0, "plain": 5.0}, {"sinks": 0.02, "plain": 0.02})
+        == "native"
+    )
+
+
+def test_a_plan_that_decides_torch_attention_takes_its_bucket_out_of_the_raced_routes(monkeypatch):
+    """A plan that decides torch's attention raises the token floor of every raced route on its card and head dim
+    past its DECIDE_BUCKET, so those calls leave the op (and its compiled graph) for good; the decision holds for the
+    bucket's other plans, and a pipeline load forgets both."""
+    from core.inference import diffusion_int8_attention_dispatch as D
+
+    class Event:
+        def synchronize(self):
+            pass
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    I.forget_plans()
+    procs = [
+        types.SimpleNamespace(_unsloth_int8 = True, _unsloth_int8_min_tokens = 2560) for _ in range(3)
+    ]
+    for proc, (index, head_dim) in zip(procs, ((0, 128), (1, 128), (0, 64))):
+        I.register_route(index, head_dim, I._raise_processor_floor(proc))
+    stock = object()
+    strided = types.SimpleNamespace(
+        _unsloth_int8 = True, _unsloth_int8_min_tokens = 2560, _unsloth_stock = stock
+    )
+    module = types.SimpleNamespace(processor = strided)
+    I.register_route(0, 128, I._raise_processor_floor(strided, module))
+    route = D.Int8Route("native", 2560, torch.bfloat16, 0, 128, cards = {0: 2560, 1: 3072})
+    I.register_route(0, 128, D._raise_route_floor(route, 0))
+    D._DECISIONS["stale"] = (route, None)
+    plan = {
+        "calls": I.SINK_DECIDE_AT,
+        "sinks": None,
+        "checks": [(Event(), torch.tensor([1], dtype = torch.int32))],
+        "index": 0,
+        "shape": (1, 4176, 4176, 24, 128),
+        "decision": ("bucket",),
+    }
+    assert I._choose_path(plan, race = lambda: "native")[0] == "native"
+    assert [p._unsloth_int8_min_tokens for p in procs] == [4352, 2560, 2560]
+    # a processor that replaced a stock one gives it back, so the module's calls compile as before the install
+    assert module.processor is stock and strided._unsloth_int8_min_tokens == 2560
+    assert route.cards == {0: 4352, 1: 3072} and route.min_tokens == 3072 and not D._DECISIONS
+    assert I._decisions() == {("bucket", True): "native"}
+    I.forget_plans()
+    assert I._decisions() == {} and I._ROUTES == []
+
+
+def test_the_races_time_the_path_of_a_plan_without_sinks(monkeypatch):
+    """The races time on probe inputs (no attention sinks): inside _median_ms every kernel call takes the path a plan
+    without sinks runs and counts toward no decision, so the routing of the families without sinks is what it was;
+    outside it the plan decides again."""
+
+    class Event:
+        def __init__(self, **_):
+            pass
+
+        def record(self):
+            pass
+
+        def synchronize(self):
+            pass
+
+        def elapsed_time(self, other):
+            return 1.0
+
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    plan = {"calls": 0, "sinks": None, "checks": []}
+    seen = []
+    I._median_ms({"int8": lambda: seen.append(I._choose_path(plan))})
+    assert seen and set(seen) == {(False, None)} and plan["calls"] == 0
+    assert I._choose_path(plan) == (True, 0) and plan["calls"] == 1
+
+
+@pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
+def test_without_sinks_the_kernels_have_no_sink_path():
+    """SINKS compiles the attention-sink path in (two more attention-kernel parameters, the robust V range, the
+    residual job and unsloth_i8resid); without it the kernels have none of it."""
+    arch = max(_nvrtc_archs())
+    for head_dim in I.HEAD_DIMS:
+        config = {"bn": 128, "wpc": 8, "nq": 1, "stages": 2}
+        defines = I.kernel_defines(head_dim, config)
+        plain = K.compile_ptx(K.KERNEL_SOURCE, f"sm_{arch}", defines).decode(errors = "replace")
+        sink = K.compile_ptx(K.KERNEL_SOURCE, f"sm_{arch}", dict(defines, SINKS = 1)).decode(
+            errors = "replace"
+        )
+        params = [len(set(re.findall(r"unsloth_i8attn_param_\d+", x))) for x in (plain, sink)]
+        assert params[1] == params[0] + 2, params
+        quant = {
+            "HD": head_dim,
+            "BN": int(config["bn"]),
+            "RGX": min(I.ROT_GROUP, head_dim).bit_length() - 5,
+        }
+        plain = K.compile_ptx(K.QUANT_SOURCE, f"sm_{arch}", quant).decode(errors = "replace")
+        sink = K.compile_ptx(K.QUANT_SOURCE, f"sm_{arch}", dict(quant, SINKS = 1)).decode(
+            errors = "replace"
+        )
+        assert ".entry unsloth_i8resid(" in sink and "unsloth_i8resid" not in plain
+        assert all(f".entry {name}(" in plain for name in K.QUANT_KERNELS)
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_a_call_signature_is_planned_once(head_dim):
+    """Two quantiser launches, the kernel and the residual launch, with their grids and arguments worked out on the first call of a
+    signature only; packed views and separate tensors are two signatures with one answer, and the query rows are
+    padded to the kernel's block, no further."""
+    shape = (2, 333, 3, head_dim)
+    config = _cuda_config(head_dim)
+    q, k, v = _case(shape, _card_dtype(), seed = 5, strided = True)
+    I.forget_plans()
+    first = I.quantise(q, k, v, config)
+    plan = first["plan"]
+    assert len(I._plans()) == 1 and len(plan["stats_grids"]) == len(plan["kv_grids"]) == 1
+    rows = 16 * config["nq"] * config["wpc"]
+    assert first["pads"] == (-(-333 // rows) * rows, -(-333 // config["bn"]) * config["bn"])
+    assert (
+        first["qi"].shape == (6, first["pads"][0], head_dim) and first["f32"].dtype == torch.float32
+    )
+    out = I.attend(first)
+    again = I.quantise(q, k, v, dict(config))
+    assert again["plan"] is plan and len(I._plans()) == 1
+    assert torch.equal(I.attend(again), out)
+    apart = I.quantise(q.contiguous(), k.contiguous(), v.contiguous(), config)
+    assert apart["plan"] is not plan and len(I._plans()) == 2
+    assert torch.equal(I.attend(apart), out)
+    assert torch.equal(I.int8_attention(q, k, v, scale = 0.05), I.int8_attention(q, k, v, scale = 0.05))
+    assert len(I._plans()) == 3
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_long_overrides_do_not_change_the_output(head_dim):
+    """The block shape moves no output bit (rows do not see each other, the tile is the same), so the kernel a call
+    gets by its key count agrees with the other one; a call runs the long kernel exactly from long_keys keys on."""
+    base = I.select_config(_cuda_config(head_dim), 0)
+    entry = dict(base, long_keys = 300, long = {"wpc": 2 if base["wpc"] != 2 else 4})
+    for keys in (299, 300, 700):
+        q, k, v = _case((1, keys, 2, head_dim), _card_dtype(), seed = keys)
+        q = q[:, :333].contiguous()
+        p = I.quantise(q, k, v, entry)
+        assert p["config"] == I.select_config(entry, keys)
+        assert (p["config"]["wpc"] == base["wpc"]) is (keys < 300)
+        got = I.attend(p)
+        assert torch.equal(got, I.int8_attention(q, k, v, config = base))
+        assert torch.equal(
+            got, I.int8_attention(q, k, v, config = dict(base, wpc = entry["long"]["wpc"]))
+        )
+
+
+@needs_kernel
+def test_inputs_off_the_16_byte_grid_are_copied():
+    """A view whose rows do not start on a 16-byte boundary (here one element into a wider buffer) is read from
+    an aligned copy: the same bits as the aligned call."""
+    shape = (1, 200, 2, 128)
+    q, k, v = _case(shape, _card_dtype(), seed = 9)
+    want = I.int8_attention(q, k, v)
+    wide = torch.zeros(1, 200, 2, 128 + 8, dtype = q.dtype, device = "cuda")
+    wide[..., 1:129] = k
+    shifted = wide[..., 1:129]
+    assert shifted.data_ptr() % 16 != 0
+    assert torch.equal(I.int8_attention(q, shifted, v), want)
+    wide[..., 1:129] = q
+    assert torch.equal(I.int8_attention(shifted, k, v), want)
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_a_long_call_splits_its_quantiser_grids(monkeypatch, head_dim):
+    """A grid holds 65535 blocks along the axis the quantisers' jobs sit on; a call with more jobs than that runs
+    them in several launches, each told its first job. With the limit turned down to three the bits stay the same."""
+    q, k, v = _case((2, 700, 2, head_dim), _card_dtype(), seed = 11)
+    want = I.int8_attention(q, k, v)
+    monkeypatch.setattr(I, "GRID_LIMIT", 3)
+    I.forget_plans()
+    got = I.int8_attention(q, k, v)
+    (plan,) = I._plans().values()
+    assert len(plan["stats_grids"]) > 3 and len(plan["kv_grids"]) > 3
+    assert all(grid[1] <= 3 for grid, _ in plan["stats_grids"] + plan["kv_grids"])
+    assert torch.equal(got, want)
+
+
 @needs_kernel
 @pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
 def test_shipped_config_fits(head_dim):
     capability = torch.cuda.get_device_capability()
-    config = _cuda_config(head_dim)
-    fn = I.kernel_function("cuda", head_dim, config)
-    assert fn.local_bytes <= 64, "the kernel spilled more than a few registers to the stack"
-    cap = config.get("max_registers")
-    assert cap is None or fn.registers <= cap
-    # at least one block of this config is resident per SM (registers are granted in multiples of 8 per thread)
-    assert 32 * config["wpc"] * ((fn.registers + 7) // 8 * 8) <= SM_REGISTERS
-    assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT.get(tuple(capability), 99 * 1024)
+    for config, sinks in ((c, s) for c in _variants(_cuda_config(head_dim)) for s in (False, True)):
+        fn = I.kernel_function("cuda", head_dim, config, sinks)
+        assert fn.local_bytes <= 64, "the kernel spilled more than a few registers to the stack"
+        cap = config.get("max_registers")
+        assert cap is None or fn.registers <= cap
+        # at least one block of this config is resident per SM (registers are granted in multiples of 8 per thread)
+        assert 32 * config["wpc"] * ((fn.registers + 7) // 8 * 8) <= SM_REGISTERS
+        assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT.get(tuple(capability), 99 * 1024)
 
 
 @needs_kernel
@@ -1247,6 +2202,47 @@ def test_the_flush_placement_does_not_change_the_output(head_dim):
     )
 
 
+def _plain(config: dict) -> dict:
+    return {key: value for key, value in config.items() if key not in ORDERINGS}
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+@pytest.mark.parametrize(
+    "case",
+    [
+        (torch.bfloat16, 1039, 1.0, 0.0),
+        (torch.float16, 2500, 1.0, 0.0),
+        (torch.float32, 16 * 128 * 2 + 5, 1.0, 0.0),  # past two removals of the rounding constant
+        (torch.bfloat16, 3000, 2.0, 6.0),  # late keys far above the early ones: the rebase branch
+        (torch.bfloat16, 77, 3.0, 0.0),  # one padded tile
+    ],
+    ids = ["bf16", "fp16", "flush", "rebase", "short"],
+)
+def test_the_orderings_do_not_change_the_output(head_dim, case):
+    """The order the products and the tile copies are issued in gives the bits of the plain order: integer sums
+    are exact and every float accumulator sees the same operations. So a card tuned with them still agrees with
+    the others bit for bit."""
+    dtype, tokens, gain, spike = case
+    generator = torch.Generator().manual_seed(tokens)
+    q, k, v = (torch.randn(2, tokens, 3, head_dim, generator = generator) for _ in range(3))
+    q, k = q * gain, k * gain
+    if spike:
+        k[:, tokens // 2 :] *= spike
+        k[:, -3:] *= 4.0
+    q = q[:, : min(tokens, 700)].contiguous()
+    q, k, v = (x.to("cuda", dtype) for x in (q, k, v))
+    plain = _plain(_cuda_config(head_dim))
+    want = I.int8_attention(q, k, v, config = plain)
+    assert torch.isfinite(want.float()).all()
+    variants = [{"qkw": 1}, {"pvw": 2}, {"pvw": 8}, {"qkw": 1, "pvw": 16 if head_dim == 128 else 4}]
+    if plain["stages"] == 2:
+        variants += [{"qkw": 1, "spread": 1}, {"qkw": 1, "pvw": 8, "spread": 5}]
+    for variant in variants:
+        assert torch.equal(I.int8_attention(q, k, v, config = dict(plain, **variant)), want), variant
+    assert torch.equal(I.int8_attention(q, k, v), want)
+
+
 @needs_kernel
 def test_batch_offsets_past_2_31_elements():
     """Three batches whose stride is 2^30 elements: the third starts 2^31 elements into the buffer, past int32."""
@@ -1295,7 +2291,9 @@ def test_op_runs_the_kernel_only_where_it_was_verified(monkeypatch):
     torch.ops.unsloth_studio.int8_attention_nhd(*half)
     assert I.STATS["int8"] == before["int8"] + 2
     monkeypatch.setattr(I, "_BROKEN", set())
-    monkeypatch.setattr(I, "attend", lambda p: (_ for _ in ()).throw(RuntimeError("launch failed")))
+    monkeypatch.setattr(
+        I, "_launch_attention", lambda *a: (_ for _ in ()).throw(RuntimeError("launch failed"))
+    )
     assert torch.equal(
         torch.ops.unsloth_studio.int8_attention_nhd(q, k, v), I.native_attention(q, k, v)
     )
@@ -1349,6 +2347,133 @@ def test_cuda_graph_replay_matches_eager():
         graph.replay()
         torch.cuda.synchronize()
         assert torch.equal(out, op(*fresh))
+
+
+OTHER = 1  # the second card of the two-card tests
+
+needs_two_cards = pytest.mark.skipif(
+    _cuda_config() is None
+    or torch.cuda.device_count() <= OTHER
+    or I.kernel_config(torch.cuda.get_device_capability(OTHER), 128) is None,
+    reason = "needs two CUDA cards with an INT8 kernel config",
+)
+
+
+@needs_two_cards
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_each_card_loads_its_own_kernels(head_dim):
+    """A loaded module belongs to the context of one card: each card compiles and loads its own kernels and keeps
+    its own launch plans, and a call runs on the card of its operands whatever the current device is."""
+    dtype = _card_dtype()
+    there = torch.device("cuda", OTHER)
+    calls = {
+        index: I.probe_inputs(torch.device("cuda", index), dtype, 700, 3, head_dim)
+        for index in (0, OTHER)
+    }
+    I.forget_plans()
+    assert torch.cuda.current_device() == 0
+    out = {index: I.int8_attention(*calls[index]) for index in (0, OTHER)}
+    assert out[OTHER].device == there and torch.cuda.current_device() == 0
+    with torch.cuda.device(OTHER):
+        swapped = I.int8_attention(*calls[0])
+        assert torch.cuda.current_device() == OTHER
+    assert swapped.device.index == 0 and torch.equal(swapped, out[0])
+    assert sorted(plan["index"] for plan in I._plans().values()) == [0, OTHER]
+    loaded = {}
+    for index in (0, OTHER):
+        config = I.kernel_config(torch.cuda.get_device_capability(index), head_dim)
+        attn, quant, _ = I._functions(index, head_dim, config)
+        loaded[index] = [attn, *quant.values()]
+        assert I.accuracy(out[index], I.reference_attention(*calls[index]))["cos"] >= I.MIN_COSINE
+    assert len(loaded[0]) == 3 and all(a is not b for a, b in zip(loaded[0], loaded[OTHER]))
+    if torch.cuda.get_device_capability(OTHER) == torch.cuda.get_device_capability(0):
+        assert torch.equal(out[OTHER].cpu(), out[0].cpu())
+
+
+@needs_two_cards
+def test_the_card_check_counts_for_its_card_only(monkeypatch):
+    """A check passed on one card says nothing about the other: the verdicts and the verified set are per device,
+    and the op keeps native attention on a card until that card passed its own check."""
+    monkeypatch.setattr(I, "_VERDICTS", {})
+    monkeypatch.setattr(I, "_VERIFIED", set())
+    dtype = _card_dtype()
+    there = torch.device("cuda", OTHER)
+    here_call = I.probe_inputs("cuda:0", dtype, 500, 2, 128)
+    there_call = I.probe_inputs(there, dtype, 500, 2, 128)
+    first = I.verdict("cuda:0", dtype, 2, 128, timed = False)
+    assert first["ok"] and I._verified(*here_call) and not I._verified(*there_call)
+    assert {key[0] for key in I._VERDICTS} == {0} and {key[0] for key in I._VERIFIED} == {0}
+    native, ran = I.STATS["native"], I.STATS["int8"]
+    assert I.int8_attention_impl(*there_call).device == there
+    assert (I.STATS["native"], I.STATS["int8"]) == (native + 1, ran)
+    second = I.verdict(there, dtype, 2, 128, timed = False)
+    assert second["ok"] and second is not first and I._verified(*there_call)
+    assert {key[0] for key in I._VERDICTS} == {0, OTHER}
+    assert {key[0] for key in I._VERIFIED} == {0, OTHER}
+    assert I.int8_attention_impl(*there_call).device == there
+    assert (I.STATS["native"], I.STATS["int8"]) == (native + 1, ran + 1)
+
+
+@needs_two_cards
+def test_a_call_on_another_card_uses_that_cards_stream(monkeypatch):
+    """Every launch of a call goes to the current stream of the card its operands are on, with that card's context
+    current, also while another card is the current device."""
+    q, k, v = I.probe_inputs(torch.device("cuda", OTHER), _card_dtype(), 700, 3, 128)
+    seen = []
+    launch = K.Function.launch
+
+    def spy(self, grid, block, values, shared, stream):
+        seen.append((self.name, stream, torch.cuda.current_device()))
+        return launch(self, grid, block, values, shared, stream)
+
+    monkeypatch.setattr(K.Function, "launch", spy)
+    names = {
+        K.KERNEL_NAME,
+        *K.QUANT_KERNELS,
+        "unsloth_i8resid",
+    }  # a plan's first calls take the sink path
+    assert torch.cuda.current_device() == 0
+    out = I.int8_attention(q, k, v)
+    usual = torch.cuda.current_stream(OTHER).cuda_stream
+    assert {name for name, _, _ in seen} == names
+    assert all((stream, device) == (usual, OTHER) for _, stream, device in seen)
+    side = torch.cuda.Stream(device = OTHER)
+    assert side.cuda_stream != usual
+    del seen[:]
+    with (
+        torch.cuda.stream(side),
+        torch.cuda.device(0),
+    ):  # card 0 is current, the other card's stream is `side`
+        assert torch.cuda.current_device() == 0
+        again = I.int8_attention(q, k, v)
+    side.synchronize()
+    assert {name for name, _, _ in seen} == names
+    assert all((stream, device) == (side.cuda_stream, OTHER) for _, stream, device in seen)
+    assert torch.equal(again, out)
+
+
+@needs_two_cards
+def test_a_cuda_graph_of_another_card_replays_the_call():
+    """A graph captured on the other card holds the quantisers and the kernel: its replay follows new inputs. The
+    capture names a stream of that card: torch's default capture stream is one per process, on the card of the first
+    capture (after one on card 0 a capture here would be empty)."""
+    there = torch.device("cuda", OTHER)
+    dtype = _card_dtype()
+    q, k, v = (x.clone() for x in I.probe_inputs(there, dtype, 1100, 4, 128))
+    for _ in range(3):  # allocator and JIT warm, as before any capture
+        I.int8_attention(q, k, v)
+    with torch.cuda.device(OTHER):
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream = torch.cuda.Stream(device = OTHER)):
+            out = I.int8_attention(q, k, v)
+        for seed in (5, 6):
+            fresh = I.probe_inputs(there, dtype, 1100, 4, 128, seed = seed)
+            for dst, src in zip((q, k, v), fresh):
+                dst.copy_(src)
+            graph.replay()
+            torch.cuda.synchronize()
+            assert torch.equal(out, I.int8_attention(*fresh))
 
 
 @needs_kernel
@@ -1428,10 +2553,89 @@ def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     assert "kernel" not in plain and len(plain["ms"]) == 2 and I.STATS["int8"] == before + calls
     import logging
 
-    routed, race = H._race_int8_kernel(
-        model, blocks, saved, "cuda", dtype, None, False, logging.getLogger(__name__)
-    )
+    H.KERNEL_AUTO = True
+    try:
+        routed, race = H._race_int8_kernel(
+            model, blocks, saved, "cuda", dtype, None, False, logging.getLogger(__name__)
+        )
+    finally:
+        H.KERNEL_AUTO = False
     assert race is not None and "keep" in race
     record = getattr(model, H.ATTENTION_RACE_ATTR)
     assert record["timed"] == "block" and record["blocks"] == routed and routed in (0, 2)
     assert I.int8_attention_count(model) == routed
+
+
+def test_the_eager_call_skips_the_op_and_compile_traces_it(monkeypatch):
+    """``int8_attention_call`` runs the op's body directly in eager, and the custom op under torch.compile
+    (fullgraph: no break)."""
+    I.int8_attention_op()
+    seen = []
+    monkeypatch.setattr(I, "int8_attention_impl", lambda q, k, v: seen.append("impl") or v * 2)
+    q = torch.randn(1, 8, 2, 64)
+    assert torch.equal(I.int8_attention_call(q, q, q), q * 2) and seen == ["impl"]
+    graphs = []
+
+    def backend(gm, inputs):
+        graphs.append(gm)
+        return gm.forward
+
+    fn = torch.compile(
+        lambda q: I.int8_attention_call(q, q, q) + 1, backend = backend, fullgraph = True
+    )
+    torch._dynamo.reset()
+    assert torch.equal(fn(q), q * 2 + 1)
+    targets = {str(node.target) for node in graphs[0].graph.nodes}
+    assert any("int8_attention_nhd" in t for t in targets), targets
+    # a tensor subclass always takes the op
+    calls = []
+    monkeypatch.setattr(
+        I, "int8_attention_impl", lambda q, k, v: calls.append(type(q)) or v.clone()
+    )
+    p = torch.nn.Parameter(q.clone(), requires_grad = False)
+    I.int8_attention_call(p, q, q)
+    assert len(calls) == 1
+
+
+def test_tracers_that_look_like_plain_tensors_still_see_the_op(monkeypatch):
+    """A dispatch mode (make_fx, FlopCounterMode) records the op; raw launches would bypass it."""
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    I.int8_attention_op()
+    monkeypatch.setattr(I, "int8_attention_impl", lambda q, k, v: v.clone())
+
+    class Record(TorchDispatchMode):
+        def __init__(self):
+            super().__init__()
+            self.ops = []
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            self.ops.append(str(func))
+            return func(*args, **(kwargs or {}))
+
+    q = torch.randn(1, 8, 2, 64)
+    with Record() as mode:
+        I.int8_attention_call(q, q, q)
+    assert any("int8_attention_nhd" in op for op in mode.ops), mode.ops
+    assert not I._tracing()
+
+
+def test_torchscript_tracing_records_the_op(monkeypatch):
+    """torch.jit.trace sees plain tensors; tracing the op body would record its allocations but not its launches."""
+    I.int8_attention_op()
+    monkeypatch.setattr(I, "int8_attention_impl", lambda q, k, v: v.clone())
+
+    class Attend(torch.nn.Module):
+        def forward(self, q, k, v):
+            return I.int8_attention_call(q, k, v)
+
+    q = torch.randn(1, 8, 2, 64)
+    traced = torch.jit.trace(Attend(), (q, q, q), check_trace = False)
+    assert "int8_attention_nhd" in str(traced.graph), traced.graph
+    assert not I._tracing()

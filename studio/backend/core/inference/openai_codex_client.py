@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from core.inference.http_stream import aiter_sse_lines
 from core.inference import openai_codex_auth as codex_auth
 from core.inference.openai_codex_auth import (
     OPENAI_CODEX_CLIENT_VERSION,
@@ -881,7 +882,7 @@ class OpenAICodexClient:
                     cancel_task = asyncio.create_task(_close_on_cancel())
                 event_name, tool_indexes = "", {}
                 try:
-                    async for line in response.aiter_lines():
+                    async for line in aiter_sse_lines(response):
                         if cancel_event is not None and cancel_event.is_set():
                             return
                         if not line:

@@ -118,6 +118,8 @@ _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 # An incomplete ROCm probe is retried, but not by every check of the same load (up to 90 s per attempt).
 _ROCM_PROBE_RETRY_S = 120.0
 _ROCM_PROBE_INCOMPLETE: dict[tuple[str, str], float] = {}
+# Probe keys whose unanswered probe put the parent on MATH: they read as math-only until a probe answers.
+_ROCM_PROBE_FORCED_MATH: set[tuple[str, str]] = set()
 
 # Candidate-card probes must not flip the process-wide SDPA switches the running card also uses.
 _SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -134,16 +136,83 @@ def read_only_sdpa_probe():
         _SDPA_PROBE_READ_ONLY.reset(token)
 
 
+# AOTriton refuses the archs it lists as experimental unless TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1, which Studio sets
+# process-wide (main.py) so gfx1151 / gfx1100 do not fall back to MATH on AOTriton < 0.12. The opt-in is measured only on the
+# archs below. AOTriton 0.12b added the gfx1103 / gfx1152 / gfx1153 iGPUs as experimental, and on a Radeon 780M (gfx1103) those
+# kernels hung the GPU, both in the probe children and in the text encoder (#17985). Elsewhere the children probe with the
+# opt-in off, so AOTriton's own release list decides, and the parent keeps only fused kernels a child confirmed.
+ROCM_AOTRITON_EXPERIMENTAL_ENV = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
+ROCM_AOTRITON_EXPERIMENTAL_VERIFIED_ARCHS = frozenset(
+    ("gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1101", "gfx1151", "gfx1200", "gfx1201")
+)
+_ROCM_UNVERIFIED_LOGGED: set[str] = set()
+
+
+def _rocm_device_arch(device: str) -> str:
+    """Normalised gfx target torch presents for ``device``, "" when unreadable. Never raises."""
+    try:
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return _device_gfx_arch(torch, torch.device(device).index)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _rocm_kfd_silicon_archs(device: str) -> Optional[list[str]]:
+    """KFD's silicon target for ``device``; every KFD GPU's when the masks cannot be composed into its physical node
+    (a UUID mask, GPU_DEVICE_ORDINAL, an index past the list)."""
+    try:
+        import torch
+
+        from utils.hardware.amd import amd_kfd_gpu_gfx_targets
+
+        from .sd_cpp_backend import _physical_index_of
+
+        targets = amd_kfd_gpu_gfx_targets()
+        if not targets:
+            return targets
+        physical, _masked = _physical_index_of(torch.device(device).index or 0)
+        if physical is not None and 0 <= physical < len(targets):
+            return [targets[physical]]
+        return targets
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rocm_aotriton_experimental_verified(device: str) -> bool:
+    """Whether AOTriton's experimental kernels are verified on ``device``; an unreadable arch is False."""
+    verified = ROCM_AOTRITON_EXPERIMENTAL_VERIFIED_ARCHS
+    if _rocm_device_arch(device) not in verified:
+        return False
+    import sys
+
+    if sys.platform.startswith("linux") and any(
+        key.startswith("HSA_OVERRIDE_GFX_VERSION") and value.strip()
+        for key, value in os.environ.items()
+    ):
+        # The override renames the target torch reports; the kernels still run on the silicon KFD names.
+        silicon = _rocm_kfd_silicon_archs(device)
+        return bool(silicon) and all(arch in verified for arch in silicon)
+    return True
+
+
+def _rocm_children_experimental(device: str) -> bool:
+    # UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 leaves the parent's fused kernels on: the children then answer for what it runs.
+    return not _rocm_guard_allowed() or _rocm_aotriton_experimental_verified(device)
+
+
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     import time
 
     key = (device, str(dtype))
     last = _ROCM_PROBE_INCOMPLETE.get(key)
     if last is not None and time.monotonic() - last < _ROCM_PROBE_RETRY_S:
-        return ()
+        return (SDPA_MATH,) if key in _ROCM_PROBE_FORCED_MATH else ()
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
+        _ROCM_PROBE_FORCED_MATH.discard(key)
         if (
             not _SDPA_PROBE_READ_ONLY.get()
             and _rocm_guard_allowed()
@@ -155,6 +224,19 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
                 pass
     else:
         _ROCM_PROBE_INCOMPLETE[key] = time.monotonic()
+        if (
+            not _SDPA_PROBE_READ_ONLY.get()
+            and str(dtype) in ("torch.float16", "torch.bfloat16")
+            and not _rocm_children_experimental(device)
+        ):
+            # No child answered, and the parent would run unconfirmed fused kernels under its experimental opt-in.
+            # Report MATH so callers bound the score matrix; _sdpa_capability does not memoize it, so the probe retries.
+            try:
+                _apply_rocm_guard((SDPA_MATH,))
+                _ROCM_PROBE_FORCED_MATH.add(key)
+                return (SDPA_MATH,)
+            except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
+                pass
     return available
 
 
@@ -176,6 +258,18 @@ def _run_rocm_sdpa_children(device: str, dtype: Any) -> tuple[str, ...]:
     dll_directories = _rocm_dll_directories()
     if dll_directories:
         child_env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_directories)
+    if not _rocm_children_experimental(device):
+        # "0" is check_env's opt-out: AOTriton's experimental archs answer "No available kernel".
+        child_env[ROCM_AOTRITON_EXPERIMENTAL_ENV] = "0"
+        if device not in _ROCM_UNVERIFIED_LOGGED:
+            _ROCM_UNVERIFIED_LOGGED.add(device)
+            _module_logger().info(
+                "diffusion.attention: %s (%s) is not an arch AOTriton's experimental SDPA kernels are verified on; "
+                "probing fused SDPA with them off. %s=1 keeps them.",
+                device,
+                _rocm_device_arch(device) or "unknown arch",
+                ROCM_FUSED_SDPA_ALLOW_ENV,
+            )
 
     def probe(backend: str) -> str:
         try:
@@ -357,9 +451,9 @@ def _sdpa_capability(target: Any) -> tuple[str, ...]:
         available = _probe_sdpa_kernels(device, dtype)
     except Exception:  # noqa: BLE001 - a probe is a diagnostic; it may never fail a load
         available = ()
-    # Memoize only an answer: empty means the probe itself failed (transient).
-    if not available:
-        return ()
+    # Memoize only an answer: empty means the probe itself failed (transient), and a forced MATH is retried.
+    if not available or key in _ROCM_PROBE_FORCED_MATH:
+        return available
     with _SDPA_PROBE_LOCK:
         return _SDPA_PROBE_CACHE.setdefault(key, available)
 
@@ -3560,6 +3654,14 @@ def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
     warn_if_sdpa_math_only(target, logger, _dit_head_dims(pipe))
 
 
+def _auto_request(requested: Any) -> bool:
+    """Whether a load left the attention pick to Studio (no request, "" or "auto")."""
+    try:
+        return normalize_attention_backend(requested) == ATTN_AUTO
+    except ValueError:
+        return False
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
@@ -3567,19 +3669,55 @@ def apply_attention_backend(
     logger: Any = None,
     target: Any = None,
     requested: Optional[str] = None,
+    speed_active: bool = True,
+    speed_unset_only: bool = False,
 ) -> Optional[str]:
     """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
 
     ``requested`` is the load's own attention request: ``unsloth_int8`` (or its env switch) then routes the strided
-    processors of a native pick to the INT8 kernel, and that name is returned."""
+    processors of a native pick to the INT8 kernel, and that name is returned; with no request and the switch unset,
+    the strided processors of a family in ``AUTO_DITS`` race for it (``install_auto``). The DiTs whose processors call
+    diffusers' attention dispatch route there too (``diffusion_int8_attention_dispatch``): by name or the env switch
+    wherever the kernel is accurate, and with the switch unset for the families that race it on this card, unless
+    ``speed_active`` is False (``int8_attention_speed_active``: speed off by request stays bit-identical)."""
     engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
+    if target is not None:
+        try:
+            from .diffusion_int8_attention import forget_plans
+            forget_plans()
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8 plans", exc)
     if target is not None and (engaged is None or str(engaged).startswith("_native")):
         try:
-            from .diffusion_int8_attention import BACKEND, install_requested
+            from .diffusion_int8_attention import BACKEND, install_auto, install_requested
             if install_requested(pipe, requested, target, logger = logger):
+                return BACKEND
+            # switch unset: the strided processors of a raced family (FLUX.3) race their incumbent
+            if _auto_request(requested) and install_auto(
+                pipe,
+                target,
+                logger = logger,
+                speed_active = speed_active,
+                speed_unset_only = speed_unset_only,
+            ):
                 return BACKEND
         except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
             _warn(logger, "unsloth_int8", exc)
+    if target is not None:
+        try:
+            from .diffusion_int8_attention import BACKEND
+            from .diffusion_int8_attention_dispatch import install as install_int8_dispatch
+            if install_int8_dispatch(
+                pipe,
+                target,
+                requested = requested,
+                logger = logger,
+                speed_active = speed_active,
+                speed_unset_only = speed_unset_only,
+            ):
+                return BACKEND
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8 dispatch", exc)
     return engaged
 
 
@@ -3727,7 +3865,10 @@ def _apply_attention_backend(
             _tag_dits(pipe, backend)
             if backend == "_native_cudnn" and target is not None and _is_cuda_nvidia(target):
                 from .diffusion_flux3_attn import install as install_flux3_strided
+                from .diffusion_qwenimage21_attn import install as install_q21_strided
+
                 install_flux3_strided(pipe, backend, target, logger)
+                install_q21_strided(pipe, backend, target, logger)
             if backend == "flash" and target is not None and _is_cuda_rocm(target):
                 _track_rocm_flash_calls(pipe)
             else:
@@ -3841,7 +3982,9 @@ def _null_mask_processor_cls():
         return cached
 
     import torch
-    from diffusers.models.attention_dispatch import dispatch_attention_fn
+
+    # read at call time, as the stock processor does, so the INT8 dispatch route sees these calls too
+    from diffusers.models import attention_dispatch
     from diffusers.models.transformers.transformer_hunyuan_video15 import (
         HunyuanVideo15AttnProcessor2_0,
     )
@@ -3900,7 +4043,7 @@ def _null_mask_processor_cls():
                 key = torch.cat([key, encoder_key], dim = 1)
                 value = torch.cat([value, encoder_value], dim = 1)
 
-            hidden_states = dispatch_attention_fn(
+            hidden_states = attention_dispatch.dispatch_attention_fn(
                 query,
                 key,
                 value,

@@ -50,6 +50,10 @@ function loadRows(): Rows {
       purgeCaches: async () => null,
     },
     "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+    "./npu-model-clear": {
+      NpuModelClear: "NpuModelClear",
+      refreshNpuCatalogIfListed: () => undefined,
+    },
     "./storage-overview": { SettingsCardRow: noop },
   });
 }
@@ -198,6 +202,10 @@ function driveRows(options: {
       purgeCaches: options.purge ?? (async () => ({})),
     },
     "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+    "./npu-model-clear": {
+      NpuModelClear: "NpuModelClear",
+      refreshNpuCatalogIfListed: () => undefined,
+    },
     "./storage-overview": { SettingsCardRow: "SettingsCardRow" },
   });
 

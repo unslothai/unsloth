@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -112,6 +113,9 @@ def _script(prompt: str) -> str:
             + _chunk({}, "tool_calls", _USAGE)
             + "data: [DONE]\n\n"
         )
+    if "LOADFAIL" in prompt:
+        error = {"code": 500, "message": "Failed to load qwen3:0.6b model!", "type": "server_error"}
+        return "data: " + json.dumps({"error": error}) + "\n\n"
     if "FAULT" in prompt:
         return (
             _chunk({"content": "par"})
@@ -156,6 +160,10 @@ def _script(prompt: str) -> str:
     )
 
 
+# What lemond prints while a LOADFAIL request fails; set by the test that needs it.
+_on_load_failure = None
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -170,6 +178,8 @@ class _Handler(BaseHTTPRequestHandler):
         prompt = json.dumps(body.get("messages"))
         if "SLOW" in prompt:
             time.sleep(20)
+        if "LOADFAIL" in prompt and _on_load_failure is not None:
+            _on_load_failure()
         data = _script(prompt).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -182,9 +192,17 @@ class _FakeNpu:
     def __init__(self, upstream) -> None:
         self._upstream = upstream
         self.is_loaded = True
+        self.marks = 0
 
     def upstream(self):
         return self._upstream
+
+    def output_mark(self, upstream) -> int:
+        self.marks += 1
+        return 0
+
+    def explain_failure(self, mark: int, message: str) -> str:
+        return message
 
 
 @pytest.fixture
@@ -207,7 +225,8 @@ def flm(monkeypatch):
             supports_reasoning = caps.get("reasoning", False),
             context_length = 8192,
         )
-        monkeypatch.setattr(nb, "get_npu_backend", lambda: _FakeNpu(upstream))
+        fake = _FakeNpu(upstream)
+        monkeypatch.setattr(nb, "get_npu_backend", lambda: fake)
         return httpd.recorded
 
     yield install
@@ -559,6 +578,62 @@ def test_a_bare_error_line_becomes_an_error(flm):
     assert errors and "qds_device" in errors[0]["error"]["message"]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_failed_npu_chat_names_the_reason_lemonade_printed(flm, monkeypatch, tmp_path, stream):
+    from core.inference.lemonade_server import LemonadeServer
+
+    flm()
+    upstream = nb.get_npu_backend().upstream()
+    server = LemonadeServer(
+        tmp_path / "lemond",
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+    )
+    server._drain(
+        SimpleNamespace(stdout = ["2026-11-11 04:19:00.000 [Info] (Server) started on port 1\n"])
+    )
+    backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    server.api_key = upstream.api_key
+    backend._server = server
+    monkeypatch.setattr(backend, "upstream", lambda: upstream)
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: backend)
+    reason = "FLM NPU validation failed: insufficient NPU memory for ctx_size=32768"
+    lines = [
+        "2026-11-11 04:20:01.100 [Info] (FastFlowLM) Loading model: qwen3-0.6b-FLM",
+        f"2026-11-11 04:20:01.123 [Error] (Router) Backend load failed: {reason}",
+    ]
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_on_load_failure",
+        lambda: server._drain(SimpleNamespace(stdout = [line + "\n" for line in lines])),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        nb,
+        "_events",
+        SimpleNamespace(
+            warning = lambda message, **fields: warnings.append(
+                "\n".join([message, *fields["lemonade_output"]])
+            )
+        ),
+    )
+
+    status, body = _call(stream = stream, messages = [{"role": "user", "content": "LOADFAIL"}])
+
+    if stream:
+        message = next(chunk for chunk in _data(body) if "error" in chunk)["error"]["message"]
+    else:
+        assert status == 500
+        message = body["error"]["message"]
+    assert message.startswith("Failed to load qwen3:0.6b model!")
+    assert reason in message
+    logged = "\n".join(warnings)
+    assert f"Backend load failed: {reason}" in logged
+    assert "started on port" not in logged
+    assert "LOADFAIL" not in logged
+
+
 @pytest.mark.parametrize(
     "fields, message",
     [
@@ -612,6 +687,29 @@ def test_what_fastflowlm_would_drop_is_refused(flm, fields, message):
     assert caught.value.status_code == 400
     assert message in json.dumps(caught.value.detail)
     assert recorded == []
+    # A refused request opens no output window, which would mark a running load's as shared.
+    assert nb.get_npu_backend().marks == 0
+
+
+def test_a_request_the_proxy_refuses_opens_no_output_window(flm, monkeypatch):
+    # The proxy's own preflight (an MCP image, a video, the confirm gate) can still refuse.
+    import routes.inference as ri
+
+    flm()
+
+    async def refuse(*args, **kwargs):
+        raise HTTPException(status_code = 400, detail = "refused in preflight")
+
+    monkeypatch.setattr(ri, "_proxy_to_external_provider", refuse)
+    with pytest.raises(HTTPException, match = "refused in preflight"):
+        _call(stream = False)
+    assert nb.get_npu_backend().marks == 0
+
+
+def test_a_reply_opens_one_output_window(flm):
+    flm()
+    _call(stream = False)
+    assert nb.get_npu_backend().marks == 1
 
 
 def test_a_saved_connection_cannot_name_the_managed_type():
@@ -1152,7 +1250,7 @@ def test_a_dropped_progress_stream_does_not_stop_the_download(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             yield {"event": "progress", "percent": 40}
             assert release.wait(10)
             yield {"event": "complete", "model": model_id, "percent": 100}
@@ -1180,7 +1278,7 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             started.append(model_id)
             assert release.wait(10)
             yield {"event": "complete", "model": model_id, "percent": 100}
@@ -1192,6 +1290,27 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     release.set()
     assert [event["event"] for event in second.follow()] == ["complete"]
     assert started == ["gemma3-4b-FLM"]
+
+
+def test_cancel_stops_the_running_pull_and_tells_its_followers(monkeypatch):
+    from routes import npu as npu_routes
+
+    class _Npu:
+        def download(self, model_id, cancel):
+            yield {"event": "progress", "percent": 20}
+            assert cancel.wait(10)
+            raise npu_routes.NpuDownloadCancelled(f"Downloading {model_id} was cancelled.")
+
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(npu_routes.cancel_npu_download("qwen3-4b-FLM"))
+    assert missing.value.status_code == 404
+
+    job = npu_routes._start_download(_Npu(), "qwen3-4b-FLM")
+    _wait_for(lambda: len(job.events) == 1)
+    answer = asyncio.run(npu_routes.cancel_npu_download("qwen3-4b-FLM"))
+    assert answer == {"status": "cancelling", "model": "qwen3-4b-FLM"}
+    assert [event["event"] for event in job.follow()] == ["progress", "cancelled"]
+    _wait_for(lambda: "qwen3-4b-FLM" not in npu_routes._downloads)
 
 
 def _wait_for(condition) -> None:
@@ -1207,7 +1326,7 @@ def test_running_downloads_are_listed_until_they_end(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             yield {"event": "progress", "percent": 12}
             yield {"event": "progress", "bytes_downloaded": 5}
             assert release.wait(10)
@@ -1230,7 +1349,7 @@ def test_following_a_download_never_starts_one(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             started.append(model_id)
             yield {"event": "progress", "percent": 30}
             assert release.wait(10)
@@ -1268,7 +1387,7 @@ def test_a_failed_download_is_logged(monkeypatch):
     )
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             yield {"event": "progress", "percent": 37}
             raise nb.NpuError(f"Downloading {model_id} failed: connection reset")
 
@@ -1964,3 +2083,199 @@ def test_a_merged_reprompt_still_marks_the_users_turn(monkeypatch):
     notice = {"role": "user", "content": "You are out of tool calls. Answer now."}
     loop = chat[:-1] + [merged, call, result, notice]
     assert ri._active_turn_anchors(loop, chat) == {id(merged), id(call), id(result), id(notice)}
+
+
+def _shown_npu(
+    monkeypatch,
+    *,
+    loaded: bool,
+    running: bool = True,
+    auto_switch: bool = False,
+    runs_npu = True,
+):
+    """A backend whose catalog holds qwen3-0.6b-FLM, published as FastFlowLM/Qwen3-0.6B-NPU2."""
+    import utils.openai_auto_switch_settings as switch_settings
+
+    model = nb.NpuModel(
+        id = "qwen3-0.6b-FLM",
+        checkpoint = "qwen3:0.6b",
+        size_gb = 0.66,
+        downloaded = True,
+        labels = ("chat",),
+        max_context_length = 40960,
+        hf_repo = "FastFlowLM/Qwen3-0.6B-NPU2",
+    )
+
+    class _Server:
+        port, api_key = 1, "key"
+
+        def is_alive(self):
+            return running
+
+    class _Npu(nb.LemonadeNpuBackend):
+        catalog_reads = 0
+
+        def catalog(self):
+            self.catalog_reads += 1
+            return [model]
+
+        def can_run(self):
+            return runs_npu
+
+        def hardware(self):
+            return {"present": runs_npu, "family": "XDNA2", "supported": runs_npu}
+
+    npu = _Npu()
+    npu._server = _Server() if running else None
+    if loaded:
+        npu._loaded = nb._Loaded(model = model, context_length = 8192, requested_context_length = None)
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: npu)
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: npu)
+    monkeypatch.setattr(switch_settings, "get_openai_auto_switch_enabled", lambda: auto_switch)
+    return npu, model
+
+
+@pytest.mark.parametrize(
+    "name", ["Qwen3-0.6B-NPU2", "qwen3-0.6b-npu2", "FastFlowLM/Qwen3-0.6B-NPU2"]
+)
+def test_the_npu_resident_answers_to_the_name_the_app_shows(monkeypatch, name):
+    from routes import inference as routes
+
+    npu, model = _shown_npu(monkeypatch, loaded = True)
+    assert routes._loaded_satisfies(name)
+    assert routes._loaded_identity_satisfies(name)
+    assert asyncio.run(routes._npu_path_for_display_name(name, _request())) == model.model_path
+    assert npu.catalog_reads == 0
+    asyncio.run(routes._reject_unservable_model(model.model_path, None))
+
+
+def test_other_names_pass_the_npu_display_name_step_unchanged(monkeypatch):
+    from routes import inference as routes
+    npu, _ = _shown_npu(monkeypatch, loaded = True, auto_switch = True)
+    for name in ("unsloth/Qwen3-0.6B-GGUF", "lemonade:gemma3-4b-FLM", "Qwen3-0.6B", None):
+        assert asyncio.run(routes._npu_path_for_display_name(name, _request())) == name
+
+
+def test_an_unloaded_display_name_gets_the_not_loaded_error_of_its_id(monkeypatch):
+    from routes import inference as routes
+
+    npu, model = _shown_npu(monkeypatch, loaded = False)
+    path = asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", _request()))
+    assert path == model.model_path
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes._reject_unservable_model(path, _request()))
+    assert caught.value.status_code == 404
+    assert "lemonade:qwen3-0.6b-FLM' is not loaded" in json.dumps(caught.value.detail)
+
+
+def test_a_display_name_never_starts_the_runtime_with_switching_off(monkeypatch):
+    from routes import inference as routes
+
+    npu, _ = _shown_npu(monkeypatch, loaded = False, running = False)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", _request()))
+    assert caught.value.status_code == 404
+    assert "'Qwen3-0.6B-NPU2' is not loaded" in json.dumps(caught.value.detail)
+    assert npu.catalog_reads == 0
+
+
+def test_an_unknown_npu_name_is_refused_not_served_by_another_model(monkeypatch):
+    from routes import inference as routes
+
+    _shown_npu(monkeypatch, loaded = False, auto_switch = True)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes._npu_path_for_display_name("Qwen3-9B-Nope-NPU2", _request()))
+    assert caught.value.status_code == 404
+    assert "No NPU model is named 'Qwen3-9B-Nope-NPU2'" in json.dumps(caught.value.detail)
+
+
+def test_a_host_without_the_npu_passes_the_name_on(monkeypatch):
+    from routes import inference as routes
+
+    npu, _ = _shown_npu(monkeypatch, loaded = False, running = False, runs_npu = False)
+
+    async def _never(*_args, **_kwargs):
+        raise AssertionError("a host without the NPU must not reach the load policy")
+
+    monkeypatch.setattr(routes, "_keyless_caller_held_back", _never)
+    for name in ("Qwen3-0.6B-NPU2", "FastFlowLM/Qwen3-0.6B-NPU2"):
+        assert asyncio.run(routes._npu_path_for_display_name(name, _request())) == name
+    assert npu.catalog_reads == 0
+
+
+def test_a_display_name_auto_switches_to_its_lemonade_id(monkeypatch):
+    from routes import inference as routes
+
+    npu, model = _shown_npu(monkeypatch, loaded = False, running = False, auto_switch = True)
+    switched = []
+
+    async def _switch(named_model, *_args, **_kwargs):
+        switched.append(named_model)
+
+    async def _servable(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(routes, "_auto_switch_npu_model", _switch)
+    monkeypatch.setattr(routes, "_refuse_unservable_npu_switch", _servable)
+    monkeypatch.setattr(routes, "_refuse_unless_any_load", lambda *_args: None)
+    asyncio.run(
+        routes._maybe_auto_switch_model(
+            "Qwen3-0.6B-NPU2", _request(), "tester", claim_resident = False, serves_npu = True
+        )
+    )
+    assert switched == [model.model_path]
+    assert npu.catalog_reads == 1
+
+
+def test_models_list_shows_the_npu_display_name(monkeypatch):
+    from routes import inference as routes
+
+    _shown_npu(monkeypatch, loaded = True)
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: False)
+    entry = next(e for e in routes._slot_model_objects() if e.get("device") == "npu")
+    assert entry["id"] == "lemonade:qwen3-0.6b-FLM"
+    assert entry["display_name"] == "Qwen3-0.6B-NPU2"
+
+
+@pytest.mark.parametrize(
+    "name", ["Qwen3-0.6B-NPU2", "FastFlowLM/Qwen3-0.6B-NPU2", "fastflowlm/qwen3-0.6b-npu2"]
+)
+def test_model_retrieval_takes_the_display_name_and_its_repo(monkeypatch, name):
+    from routes import inference as routes
+
+    _shown_npu(monkeypatch, loaded = True)
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: False)
+
+    monkeypatch.setattr("utils.model_aliases.resolve_model_alias", lambda _m: None)
+    entry = asyncio.run(routes.openai_retrieve_model(name, current_subject = "tester"))
+    assert entry["id"] == "lemonade:qwen3-0.6b-FLM"
+
+
+@pytest.mark.parametrize("restriction", ["never", "loaded_only"])
+def test_a_credential_that_cannot_load_never_starts_the_runtime(monkeypatch, restriction):
+    from core.inference import load_policy
+    from routes import inference as routes
+
+    npu, _ = _shown_npu(monkeypatch, loaded = False, running = False, auto_switch = True)
+    request = _request()
+    if restriction == "never":
+        monkeypatch.setattr(
+            load_policy, "current_load_policy", lambda: load_policy.LoadPolicy.NEVER
+        )
+    else:
+        request.scope[routes.LOADED_MODELS_ONLY_SCOPE_KEY] = True
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", request))
+    assert caught.value.status_code == 404
+    assert npu.catalog_reads == 0
+
+
+def test_an_endpoint_that_cannot_serve_the_npu_never_starts_the_runtime(monkeypatch):
+    from routes import inference as routes
+
+    npu, _ = _shown_npu(monkeypatch, loaded = False, running = False, auto_switch = True)
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", _request(), serves_npu = False)
+        )
+    assert npu.catalog_reads == 0

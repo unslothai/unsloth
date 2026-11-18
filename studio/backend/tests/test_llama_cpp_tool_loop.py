@@ -7476,3 +7476,38 @@ def test_no_post_tool_nudge_when_only_the_user_can_unblock(monkeypatch):
     )
     content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
     assert len(payloads) == 2 and "I will make the song" in content
+
+
+def test_a_released_nudge_retry_records_its_reasoning_wrap(monkeypatch):
+    """A held-back retry shown after all must record its wrap, or its reasoning reads as answer."""
+    trace = "Think </think> and <tool_call>{}</tool_call> again."
+    streams = [
+        [
+            _sse({"reasoning_content": "Plan."}),
+            _sse({"content": "I will search the web now."}),
+            _done(),
+        ],
+        [
+            _sse({"reasoning_content": trace}),
+            _sse({"content": "The square "}),
+            _sse({"reasoning_content": "Check."}),
+            _sse({"content": "is red."}),
+            _done(),
+        ],
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, streams)
+    ledger = {"wrapped": 0}
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        [_web_search_tool()],
+        nudge_tool_calls = True,
+        reasoning_provenance = ledger,
+    )
+
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    shown = f"<think>{trace}</think>The square <think>Check.</think>is red."
+    assert content_texts[-1] == shown
+    assert ledger["wraps"][-1] == {"len": len(trace)}
+    assert ledger["later"][-1] == {"len": len("Check."), "at": shown.index("<think>Check.")}

@@ -47,6 +47,7 @@ _MAPPER_HELPERS = {
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version, get_quant_type
+from .packed_expert_loader import quantize_moe_experts_if_requested  # noqa: F401  (re-exported)
 import gc
 import traceback as _traceback
 
@@ -4366,7 +4367,11 @@ def check_and_disable_bitsandbytes_loading(
 
     if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
         from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+
         install_compressed_tensors_keep_packed()
+        from .packed_expert_loader import install_packed_expert_loading
+
+        install_packed_expert_loading()
 
     # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
     if (
@@ -4383,6 +4388,10 @@ def check_and_disable_bitsandbytes_loading(
         # Whoever loads the weights (vLLM included), a merged_16bit save must dequantize them.
         from .modelopt_fp8 import enable_modelopt_merged_save
         enable_modelopt_merged_save(model_config)
+    if rewrite_modelopt and str(quant_method).lower() == "modelopt":
+        from .modelopt_nvfp4 import arm_modelopt_nvfp4_loading
+        if arm_modelopt_nvfp4_loading(model_config, verbose = verbose) is not None:
+            quant_method = "compressed-tensors"
     if rewrite_modelopt and str(quant_method).lower() == "modelopt":
         from .modelopt_fp8 import arm_modelopt_fp8_loading
         if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:

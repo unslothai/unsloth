@@ -6,10 +6,12 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   type NpuCatalog,
   type NpuModel,
-  NpuRuntimeVersions,
   NpuSetupNotice,
   npuCapabilities,
+  npuDisplayName,
   npuDownloadLabel,
+  npuMemoryWarning,
+  npuRepoLabel,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -72,7 +74,6 @@ export function NpuCatalogList({
       className="mx-auto flex min-h-0 w-full max-w-[var(--hub-measure)] flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3"
     >
       {body()}
-      <NpuRuntimeVersions catalog={catalog} className="mt-auto px-3 pt-4" />
     </div>
   );
 }
@@ -90,12 +91,16 @@ function NpuCatalogRow({
   onSelect: () => void;
   onRun: () => void;
 }) {
+  const name = npuDisplayName(model);
+  const repo = npuRepoLabel(model);
   const details = [
+    repo.includes("/") ? repo.slice(0, repo.indexOf("/")) : null,
     model.checkpoint,
     npuSizeLabel(model.size_gb),
     ...npuCapabilities(model).map((capability) => capability.label),
     model.id in catalog.downloads ? null : npuResumeLabel(model),
   ].filter(Boolean);
+  const memoryWarning = npuMemoryWarning(model, catalog.status);
 
   return (
     <div
@@ -116,11 +121,19 @@ function NpuCatalogRow({
       />
       <div className="pointer-events-none relative min-w-0 flex-1">
         <div className="truncate text-ui-13 font-medium text-foreground">
-          {model.id}
+          {name}
         </div>
         <div className="truncate text-ui-12 text-muted-foreground">
           {details.join(" · ")}
         </div>
+        {memoryWarning ? (
+          <div
+            data-testid="hub-npu-memory-warning"
+            className="text-ui-12 text-amber-600 dark:text-amber-500"
+          >
+            {memoryWarning}
+          </div>
+        ) : null}
       </div>
       <div className="relative flex shrink-0 items-center gap-3">
         <NpuModelActions model={model} catalog={catalog} onRun={onRun} />
@@ -145,7 +158,7 @@ export function NpuModelActions({
     setDeleting(true);
     try {
       await catalog.remove(model);
-      toast.success(`Deleted ${model.id}`);
+      toast.success(`Deleted ${npuDisplayName(model)}`);
       setConfirming(false);
     } catch (error) {
       toast.error(
@@ -158,12 +171,22 @@ export function NpuModelActions({
 
   if (model.id in catalog.downloads) {
     return (
-      <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
-        {npuDownloadLabel(
-          catalog.downloads[model.id],
-          model.id in catalog.reconnecting,
-        )}
-      </span>
+      <>
+        <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
+          {npuDownloadLabel(
+            catalog.downloads[model.id],
+            model.id in catalog.reconnecting,
+            catalog.phases[model.id],
+          )}
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => void catalog.cancel(model)}
+        >
+          Cancel
+        </Button>
+      </>
     );
   }
   if (!model.downloaded) {
@@ -186,7 +209,14 @@ export function NpuModelActions({
         />
         On device
       </span>
-      <Button size="sm" variant="outline" onClick={onRun}>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          catalog.warnMemory(model);
+          onRun();
+        }}
+      >
         Run
       </Button>
       <Button size="sm" variant="destructive" onClick={() => setConfirming(true)}>
@@ -195,7 +225,7 @@ export function NpuModelActions({
       <DeleteConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}
-        title={`Delete ${model.id}?`}
+        title={`Delete ${npuDisplayName(model)}?`}
         description="This removes the model's NPU files from this device."
         deleting={deleting}
         onConfirm={() => void remove()}

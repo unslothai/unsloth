@@ -450,6 +450,7 @@ from routes import (
     mcp_servers_router,
     openai_fine_tuning_router,
     skills_router,
+    computer_use_router,
     models_router,
     providers_router,
     openai_codex_auth_router,
@@ -2193,6 +2194,7 @@ app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"
 app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["sandbox"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
+app.include_router(computer_use_router, prefix = "/api/computer-use", tags = ["computer-use"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(scheduled_tasks_router, prefix = "/api/scheduled-tasks", tags = ["scheduled-tasks"])
 app.include_router(library_router, prefix = "/api/library", tags = ["library"])
@@ -3057,6 +3059,7 @@ def get_system_info(
         export_capability,
         video_capability,
         cpu_frequency_mhz,
+        npu_load_percent,
     )
     from utils.hardware.hardware import _backend_label
 
@@ -3177,6 +3180,7 @@ def get_system_info(
         "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
+        "npu_load_percent": npu_load_percent(),
         "ml_packages": ml_packages,
         **export_capability(),
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
@@ -3499,7 +3503,12 @@ def _should_inject_bootstrap(request: Request) -> bool:
         return False
     if _IS_COLAB and _is_colab_notebook_request(request):
         return True
-    return _is_local_bootstrap_request(request)
+    if not _is_local_bootstrap_request(request):
+        return False
+    # A loopback port is not an identity: keep the password from another OS user's connection.
+    from utils.loopback_peer import peer_is_another_local_user
+
+    return not peer_is_another_local_user(request)
 
 
 _IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"

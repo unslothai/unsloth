@@ -227,6 +227,14 @@
       "reason": "Loader is _FrontmatterLoader, a yaml.SafeLoader subclass that only adds a merge-key pair budget; no Python object construction."
     },
     {
+      "file": "studio/backend/core/inference/video_cosmos3.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "e0a86e3c9895326a",
+      "count": 1,
+      "reason": "Imports GUARDRAIL_PACKAGE, the module constant 'cosmos_guardrail', only after guardrail_installed() confirmed it is installed; no user-controlled module name."
+    },
+    {
       "file": "studio/backend/core/inference/video_wan_fused.py",
       "rule": "dynamic-import",
       "sink": "import_module",
@@ -729,6 +737,14 @@
       "digest": "7c2f62e557f23dba",
       "count": 1,
       "reason": "Home module of an installed TRL config class (its __module__), not external input."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "8a43c55c018acccf",
+      "count": 1,
+      "reason": "TRL's async GRPO trainer module, from a fixed tuple of two literal names (trl.trainer.async_grpo_trainer, trl.experimental.async_grpo.async_grpo_trainer), not external input."
     },
     {
       "file": "unsloth/models/rl.py",

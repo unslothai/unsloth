@@ -13,9 +13,7 @@ from pathlib import Path
 
 import pytest
 
-_POSIX_ONLY = pytest.mark.skipif(
-    sys.platform == "win32", reason = "DGX Spark tooling and setup.sh assume a POSIX host"
-)
+_POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason = "setup.sh assumes a POSIX host")
 from unsloth_pwsh_runner import run_pwsh
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
