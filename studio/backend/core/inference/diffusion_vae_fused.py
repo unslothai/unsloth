@@ -853,14 +853,15 @@ PREPAD_ENV = "UNSLOTH_VAE_FUSED_PREPAD"
 T1_CONV2D_ENV = "UNSLOTH_VAE_FUSED_T1_CONV2D"
 LTX2_REFLECT_ENV = "UNSLOTH_VAE_FUSED_LTX2_REFLECT"
 BIAS_FOLD_ENV = "UNSLOTH_VAE_FUSED_BIAS_FOLD"
-# PREPAD (the conv's zero halo written by the norm pass, conv unpadded) is opt-in: same decode time on A100 / RTX PRO
-# 6000, so cuDNN's own zero padding stays.
+# Defaults follow the decode-level A/B (3 interleaved fresh processes, RTX PRO 6000 / A100): the cache tail (-1.4% Wan2.1,
+# -0.6% Wan2.2 decode) and the LTX-2 reflect pass are on; PREPAD (cuDNN zero halo written by the norm pass), the
+# frame-batched temporal-1 conv2d and the deferred shortcut / time_conv biases measured inside the A/A spread: opt-in.
 _LEVER_DEFAULTS = {
     CAUSAL_TAIL_ENV: True,
     PREPAD_ENV: False,
-    T1_CONV2D_ENV: True,
+    T1_CONV2D_ENV: False,
     LTX2_REFLECT_ENV: True,
-    BIAS_FOLD_ENV: True,
+    BIAS_FOLD_ENV: False,
 }
 # Engagement census: how often each lever actually ran (benchmarks read it; a silent fallback shows as 0).
 ENGAGED: dict = {}
