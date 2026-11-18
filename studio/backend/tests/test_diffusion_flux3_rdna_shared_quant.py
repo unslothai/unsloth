@@ -212,8 +212,14 @@ def test_explicit_w8a8_reason_follows_the_explicit_compile_gates(rocm, monkeypat
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: False)
     assert tq.rdna_explicit_w8a8_reason(_target(), "flux.3-klein") is None
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    # Windows ROCm: the regional compile probe decides (a failed probe keeps the eager weight-only path).
+    from core.inference import diffusion_rocm_compile as rc
+
     monkeypatch.setattr(tq._sys, "platform", "win32")
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda *_a: False)
     assert tq.rdna_explicit_w8a8_reason(_target(), "flux.3-klein") is None
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda *_a: True)
+    assert tq.rdna_explicit_w8a8_reason(_target(), "flux.3-klein")
 
 
 def test_explicit_w8a8_reason_is_rocm_only(monkeypatch):

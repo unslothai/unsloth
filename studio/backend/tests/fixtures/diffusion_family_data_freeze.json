@@ -407,14 +407,14 @@
    "vae_fused_encoder": true
   },
   "flux.3-klein": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
   "flux.3-klein-base": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -5054,7 +5054,9 @@
    "lightricks/ltx-2.5-diffusers",
    "minimaxai/minimax-h3",
    "nvidia/cosmos3-edge",
+   "nvidia/cosmos3-edge-fp8",
    "nvidia/cosmos3-nano",
+   "nvidia/cosmos3-nano-fp8",
    "wan-ai/wan2.1-t2v-1.3b-diffusers",
    "wan-ai/wan2.1-t2v-14b-diffusers",
    "wan-ai/wan2.2-t2v-a14b-diffusers",
