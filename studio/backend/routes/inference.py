@@ -9249,8 +9249,6 @@ def _gguf_request_intent(
         gpu_ids = gpu_ids,
         n_parallel = n_parallel,
         n_parallel_from_default = getattr(request, "n_parallel", None) is None,
-        # Both reuse checks read it: a set cache_type_kv makes the launch drop inherited cache flags.
-        cache_type_kv_set = "cache_type_kv" in getattr(request, "model_fields_set", set()),
     )
     settings.update(changes)
     return replace(source, **settings)
