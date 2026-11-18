@@ -335,7 +335,7 @@ def _write_tensors(
     for *_, item_quant in tensors:
         quant.update(item_quant)
     (directory / "model.safetensors.index.json").write_text(
-        json.dumps({"metadata": {}, "weight_map": weight_map})
+        json.dumps({"metadata": {}, "weight_map": weight_map}), encoding = "utf-8"
     )
     return quant
 
@@ -352,7 +352,7 @@ def _write_config(directory: Path, blobs_dir: Path, blob_path, layer: dict, quan
     quantization = _quantization(quant)
     if quantization is not None:
         config["quantization"] = quantization
-    (directory / "config.json").write_text(json.dumps(config, indent = 2))
+    (directory / "config.json").write_text(json.dumps(config, indent = 2), encoding = "utf-8")
     return config
 
 
