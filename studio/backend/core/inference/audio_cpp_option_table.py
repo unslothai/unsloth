@@ -273,6 +273,14 @@ STUDIO_OPTION_LISTS: Mapping[str, tuple[dict, ...]] = MappingProxyType(
 
 OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
     {
+        # guidance_scale is the join-cfg scale; under the default independent-cfg sampling the
+        # runtime refuses a request that carries it.
+        "echo_tts": (
+            OptionRule(
+                defaults = {"guidance_scale": None},
+                sources = {"guidance_scale": "audio.cpp model_specs/echo_tts.json (join-cfg only)"},
+            ),
+        ),
         "ace_step": (
             OptionRule(
                 extra = (
