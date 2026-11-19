@@ -94,3 +94,19 @@ def test_unchanged_scales_still_hit():
     for _ in range(3):
         assert dc.dequantize(W, quant_state) is first
     assert dc.STATS["hits"] == 3 and dc.STATS.get("stale", 0) == 0
+
+
+def test_scalar_offset_is_keyed_by_value():
+    # _unpack_quant_state accepts a Python scalar offset on a nested state; the cache key must too.
+    W, quant_state = _state(True)
+    quant_state.offset = float(quant_state.offset.item())
+    first = dc.dequantize(W, quant_state)
+    assert torch.equal(first, bnb_functional.dequantize_4bit(W, quant_state))
+    assert dc.cached_count() == 1
+    assert dc.dequantize(W, quant_state) is first and dc.STATS["hits"] == 1
+    quant_state.offset = quant_state.offset + 1.0  # a different scalar is a different weight
+    fresh = bnb_functional.dequantize_4bit(W, quant_state)
+    assert not torch.equal(fresh, first)
+    out = dc.dequantize(W, quant_state)
+    assert torch.equal(out, fresh)
+    assert dc.STATS["stale"] == 1

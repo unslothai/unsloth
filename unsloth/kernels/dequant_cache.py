@@ -132,6 +132,15 @@ def _storage_ref(W):
         return None
 
 
+def _offset_key(offset):
+    # A nested state's offset may be a Python scalar (_unpack_quant_state accepts it): key it by value.
+    if offset is None:
+        return None
+    if isinstance(offset, torch.Tensor):
+        return (offset.data_ptr(), offset._version)
+    return ("value", float(offset))
+
+
 def _scales_key(
     absmax,
     absmax2 = None,
@@ -146,7 +155,7 @@ def _scales_key(
             absmax.data_ptr(),
             absmax._version,
             None if absmax2 is None else (absmax2.data_ptr(), absmax2._version),
-            None if offset is None else (offset.data_ptr(), offset._version),
+            _offset_key(offset),
         )
     except RuntimeError:
         # Inference tensors carry no version counter (and cannot be written in place outside inference mode).
