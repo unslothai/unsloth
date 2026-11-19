@@ -95,7 +95,12 @@ def _speaker(item: dict) -> Optional[str]:
     return None
 
 
-def _segments(raw: Any, rate: int, *, speakers: bool = False) -> list[dict]:
+def _segments(
+    raw: Any,
+    rate: int,
+    *,
+    speakers: bool = False,
+) -> list[dict]:
     segments = []
     for item, (start, end) in _spanned(raw, rate):
         if isinstance(text := item.get("text"), str):
@@ -116,7 +121,9 @@ def _turns(raw: Any, rate: int) -> list[tuple[float, float, str, Optional[str]]]
     return turns
 
 
-def _pair_speakers(segments: list[dict], turns: list[tuple[float, float, str, Optional[str]]]) -> None:
+def _pair_speakers(
+    segments: list[dict], turns: list[tuple[float, float, str, Optional[str]]]
+) -> None:
     """MOSS and VibeVoice emit segment i and turn i from one span, so turn i names segment i's speaker."""
     if len(segments) == len(turns) and all(
         (segment["start"], segment["end"]) == (start, end) and text in (None, segment["text"])
