@@ -3168,6 +3168,10 @@ export const hi = {
         fitOnDeviceOnly: "केवल फ़िट होने वाले मॉडल दिखाएँ",
         fitOnDeviceOnlyDescription:
           "मॉडल पिकर और Hub में उन मॉडलों को छिपाएँ जो इस डिवाइस की GPU मेमोरी और RAM के लिए बहुत बड़े हैं। डाउनलोड किए गए मॉडल दिखते रहेंगे।",
+        pickerExpandLoaded: "पूरी मॉडल सूची दिखाएँ",
+        pickerExpandLoadedDescription: "मॉडल लोड होने पर मॉडल पिकर को केवल लोड किए गए मॉडल के बजाय पूरी सूची पर खोलें। पिकर को फैलाने या समेटने से भी यह सेटिंग बदलती है।",
+        pickerMonochromeIcons: "एकरंगी मॉडल आइकन",
+        pickerMonochromeIconsDescription: "मॉडल पिकर में मॉडल और प्रदाता लोगो काले, सफ़ेद और धूसर रंग में दिखाएँ।",
       },
       menu: {
         title: "चैट मेन्यू",

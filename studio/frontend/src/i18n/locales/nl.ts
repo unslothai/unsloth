@@ -3446,6 +3446,10 @@ export const nl = {
         fitOnDeviceOnly: "Alleen modellen tonen die passen",
         fitOnDeviceOnlyDescription:
           "Modellen die te groot zijn voor het GPU-geheugen en RAM van dit apparaat verbergen in de modelkiezer en de Hub. Gedownloade modellen blijven zichtbaar.",
+        pickerExpandLoaded: "Volledige modellijst tonen",
+        pickerExpandLoadedDescription: "Open de modelkiezer op de volledige lijst terwijl een model is geladen, in plaats van alleen het geladen model. Het uit- of samenvouwen van de kiezer wijzigt deze instelling ook.",
+        pickerMonochromeIcons: "Monochrome modelpictogrammen",
+        pickerMonochromeIconsDescription: "Toon logo's van modellen en providers in zwart, wit en grijs in de modelkiezer.",
       },
       menu: {
         title: "Chatmenu",

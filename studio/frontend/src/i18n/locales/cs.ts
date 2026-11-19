@@ -3421,6 +3421,10 @@ export const cs = {
         fitOnDeviceOnly: "Zobrazovat jen modely, které se vejdou",
         fitOnDeviceOnlyDescription:
           "Ve výběru modelu a v centru modelů skrýt modely, které jsou pro paměť GPU a RAM tohoto zařízení příliš velké. Stažené modely zůstanou viditelné.",
+        pickerExpandLoaded: "Zobrazit celý seznam modelů",
+        pickerExpandLoadedDescription: "Při načteném modelu otevírat výběr modelu na celém seznamu místo jen načteného modelu. Rozbalení nebo sbalení výběru toto nastavení také změní.",
+        pickerMonochromeIcons: "Jednobarevné ikony modelů",
+        pickerMonochromeIconsDescription: "Zobrazovat loga modelů a poskytovatelů ve výběru modelu černě, bíle a šedě.",
       },
       menu: {
         title: "Nabídka chatu",

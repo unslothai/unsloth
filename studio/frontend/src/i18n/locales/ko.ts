@@ -3150,6 +3150,10 @@ export const ko = {
         fitOnDeviceOnly: "맞는 모델만 표시",
         fitOnDeviceOnlyDescription:
           "이 기기의 GPU 메모리와 RAM보다 큰 모델을 모델 선택기와 Hub에서 숨깁니다. 다운로드한 모델은 계속 표시됩니다.",
+        pickerExpandLoaded: "전체 모델 목록 표시",
+        pickerExpandLoadedDescription: "모델이 로드되어 있을 때 로드된 모델만이 아니라 전체 목록으로 모델 선택기를 엽니다. 선택기를 펼치거나 접으면 이 설정도 바뀝니다.",
+        pickerMonochromeIcons: "단색 모델 아이콘",
+        pickerMonochromeIconsDescription: "모델 선택기에서 모델 및 제공자 로고를 검정, 흰색, 회색으로 표시합니다.",
       },
       menu: {
         title: "채팅 메뉴",

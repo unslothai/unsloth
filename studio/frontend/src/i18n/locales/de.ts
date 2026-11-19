@@ -3200,6 +3200,10 @@ export const de = {
         fitOnDeviceOnly: "Nur passende Modelle anzeigen",
         fitOnDeviceOnlyDescription:
           "Blendet in der Modellauswahl und im Hub Modelle aus, die für den GPU-Speicher und RAM dieses Geräts zu groß sind. Heruntergeladene Modelle bleiben sichtbar.",
+        pickerExpandLoaded: "Vollständige Modellliste anzeigen",
+        pickerExpandLoadedDescription: "Öffnet die Modellauswahl bei geladenem Modell mit der vollständigen Liste statt nur dem geladenen Modell. Auf- oder Zuklappen der Auswahl ändert diese Einstellung ebenfalls.",
+        pickerMonochromeIcons: "Einfarbige Modellsymbole",
+        pickerMonochromeIconsDescription: "Zeigt Modell- und Anbieterlogos in der Modellauswahl in Schwarz, Weiß und Grau.",
       },
       menu: {
         title: "Chatmenü",

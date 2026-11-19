@@ -3404,6 +3404,10 @@ export const vi = {
         fitOnDeviceOnly: "Chỉ hiện mô hình vừa với máy",
         fitOnDeviceOnlyDescription:
           "Ẩn các mô hình quá lớn so với bộ nhớ GPU và RAM của thiết bị này trong trình chọn mô hình và Hub. Mô hình đã tải xuống vẫn hiển thị.",
+        pickerExpandLoaded: "Hiển thị toàn bộ danh sách mô hình",
+        pickerExpandLoadedDescription: "Mở trình chọn mô hình ở danh sách đầy đủ khi đã tải một mô hình, thay vì chỉ mô hình đã tải. Mở rộng hoặc thu gọn trình chọn cũng thay đổi cài đặt này.",
+        pickerMonochromeIcons: "Biểu tượng mô hình đơn sắc",
+        pickerMonochromeIconsDescription: "Hiển thị logo mô hình và nhà cung cấp bằng màu đen, trắng và xám trong trình chọn mô hình.",
       },
       menu: {
         title: "Menu trò chuyện",

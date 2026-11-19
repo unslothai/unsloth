@@ -3252,6 +3252,10 @@ export const zhTW = {
         fitOnDeviceOnly: "僅顯示放得下的模型",
         fitOnDeviceOnlyDescription:
           "在模型選擇器和模型中心中，隱藏超出此裝置 GPU 記憶體和 RAM 的模型。已下載的模型仍會顯示。",
+        pickerExpandLoaded: "顯示完整模型清單",
+        pickerExpandLoadedDescription: "載入模型後，模型選擇器開啟時顯示完整清單，而非只顯示已載入的模型。展開或收合選擇器也會變更此設定。",
+        pickerMonochromeIcons: "單色模型圖示",
+        pickerMonochromeIconsDescription: "在模型選擇器中以黑、白、灰顯示模型與供應商標誌。",
       },
       menu: {
         title: "聊天選單",
