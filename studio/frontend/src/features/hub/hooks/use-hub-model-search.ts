@@ -44,7 +44,11 @@ import {
   parameterRange,
   type ModelSearchFilters,
 } from "../lib/model-search-filters";
-import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
+import {
+  MAX_RAW_ITEMS_PER_BATCH,
+  pullBatch,
+  useHubPaginatedSearch,
+} from "./use-hub-paginated-search";
 
 // "gguf" is not in the SDK's expandable-key type, but listModels passes it through at runtime;
 // it fills m.gguf.total for repos whose id has no "<n>B" token.
@@ -313,6 +317,45 @@ type ModelListingTransform = (
   iterator: AsyncGenerator<unknown>,
 ) => AsyncGenerator<unknown>;
 
+/**
+ * Requests a listing's first item now and hands the listing over later, so its first Hub round trip
+ * overlaps whatever is read before it. A failure surfaces where `read()` is iterated, as it would
+ * have without the head start; `cancel()` aborts a listing that will not be read.
+ */
+function prefetchListing(
+  create: (signal: AbortSignal) => AsyncGenerator<unknown>,
+  signal?: AbortSignal,
+) {
+  const controller = new AbortController();
+  const follow = () => controller.abort(signal?.reason);
+  if (signal?.aborted) follow();
+  else signal?.addEventListener("abort", follow, { once: true });
+  const unfollow = () => signal?.removeEventListener("abort", follow);
+  const iter = create(controller.signal);
+  // A tick later, so the listing read first still sends its request first.
+  const first = Promise.resolve().then(() => iter.next());
+  // Handled here so a cancelled or failed head start is never an unhandled rejection.
+  first.catch(() => {});
+  return {
+    async *read(): AsyncGenerator<unknown> {
+      try {
+        const head = await first;
+        if (head.done) return;
+        yield head.value;
+        yield* iter;
+      } finally {
+        unfollow();
+        await iter.return(undefined);
+      }
+    },
+    cancel() {
+      unfollow();
+      controller.abort();
+      iter.return(undefined).catch(() => {});
+    },
+  };
+}
+
 /** Merged generator yielding unsloth-owned models first, then deduped general results. */
 async function* mergedModelIterator(
   query: string,
@@ -330,6 +373,10 @@ async function* mergedModelIterator(
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
+  const limit = query.trim() ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
+  // Unfiltered, phase 1 reads at most `limit` rows, so the Hub need not send its usual 500 (with
+  // every expanded field, megabytes for a common term).
+  const unslothRows = filterPriority || parameterFilter ? {} : { limit };
   const unslothIter = mergeTaskIterators(
     tasks,
     (task, taskSignal) =>
@@ -337,48 +384,60 @@ async function* mergedModelIterator(
         hubUrl: getHfEndpoint(),
         search: { query, owner: "unsloth", ...(task ? { task } : {}) },
         fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+        ...unslothRows,
         ...common,
       }) as AsyncGenerator<unknown>,
     signal,
   );
-  const generalIter = mergeTaskIterators(
-    tasks,
-    (task, taskSignal) =>
-      listModels({
-        hubUrl: getHfEndpoint(),
-        search: { query, ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
-        ...common,
-      }) as AsyncGenerator<unknown>,
+  // Requested alongside the Unsloth listing, read after it: one Hub round trip before the first
+  // page, not two.
+  const general = prefetchListing(
+    (generalSignal) =>
+      mergeTaskIterators(
+        tasks,
+        (task, taskSignal) =>
+          listModels({
+            hubUrl: getHfEndpoint(),
+            search: { query, ...(task ? { task } : {}) },
+            fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+            ...common,
+          }) as AsyncGenerator<unknown>,
+        generalSignal,
+      ),
     signal,
   );
-
-  const limit = query.trim() ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
 
   // Phase 1: unsloth models first
   const seen = new Set<string>();
   let count = 0;
   let rejected = 0;
-  for await (const model of filterPriority
-    ? filterPriority(unslothIter)
-    : unslothIter) {
-    if (model === null) {
-      yield null;
-      if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
-      continue;
+  let phase1Done = false;
+  try {
+    for await (const model of filterPriority
+      ? filterPriority(unslothIter)
+      : unslothIter) {
+      if (model === null) {
+        yield null;
+        if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
+        continue;
+      }
+      const m = model as { name?: string };
+      if (m.name) {
+        seen.add(m.name);
+        primeFromListing(m.name, accessToken, model);
+      }
+      yield model;
+      count++;
+      if (count >= limit) break;
     }
-    const m = model as { name?: string };
-    if (m.name) {
-      seen.add(m.name);
-      primeFromListing(m.name, accessToken, model);
-    }
-    yield model;
-    count++;
-    if (count >= limit) break;
+    phase1Done = true;
+  } finally {
+    // A failed Unsloth listing or a consumer that stops here never reads the general one.
+    if (!phase1Done) general.cancel();
   }
 
   // Phase 2: general results, skipping already-seen models
-  for await (const model of generalIter) {
+  for await (const model of general.read()) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
@@ -472,7 +531,7 @@ async function* priorityThenListingIterator(
 
   // Phase 1: priority models in parallel via modelInfo
   const seen = new Set<string>();
-  const settled = await Promise.allSettled(
+  const priority = Promise.allSettled(
     priorityIds.map((id) =>
       cachedModelInfo({
         hubUrl: getHfEndpoint(),
@@ -483,27 +542,38 @@ async function* priorityThenListingIterator(
       }),
     ),
   );
-  for (const result of settled) {
-    if (result.status === "fulfilled") {
-      const m = result.value as { name?: string; pipeline_tag?: string };
-      if (!taskMatches(m.pipeline_tag, tasks)) continue;
-      if (m.name) seen.add(m.name);
-      yield result.value;
-    }
-  }
-
-  const generalIter = mergeTaskIterators(
-    tasks,
-    (task, taskSignal) =>
-      listModels({
-        hubUrl: getHfEndpoint(),
-        search: { owner: "unsloth", ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
-        ...common,
-      }) as AsyncGenerator<unknown>,
+  // The listing's first page loads while the priority lookups (a few at a time) finish.
+  const listing = prefetchListing(
+    (listingSignal) =>
+      mergeTaskIterators(
+        tasks,
+        (task, taskSignal) =>
+          listModels({
+            hubUrl: getHfEndpoint(),
+            search: { owner: "unsloth", ...(task ? { task } : {}) },
+            fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+            ...common,
+          }) as AsyncGenerator<unknown>,
+        listingSignal,
+      ),
     signal,
   );
-  for await (const model of generalIter) {
+  let phase1Done = false;
+  try {
+    for (const result of await priority) {
+      if (result.status === "fulfilled") {
+        const m = result.value as { name?: string; pipeline_tag?: string };
+        if (!taskMatches(m.pipeline_tag, tasks)) continue;
+        if (m.name) seen.add(m.name);
+        yield result.value;
+      }
+    }
+    phase1Done = true;
+  } finally {
+    if (!phase1Done) listing.cancel();
+  }
+
+  for await (const model of listing.read()) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
@@ -664,7 +734,7 @@ async function* freshChannelIterator(
   },
 ): AsyncGenerator<unknown> {
   const { tasks = [], ...listingOpts } = opts;
-  const listing = (sortBy: HfSortKey) =>
+  const listing = (sortBy: HfSortKey, limit?: number) =>
     mergeTaskIterators(
       tasks,
       (task, signal) =>
@@ -674,6 +744,8 @@ async function* freshChannelIterator(
           sortDirection: "desc",
           signal,
           task,
+          // Replaces any caller limit: the newest listing is read past its pool.
+          limit,
         }),
       opts.signal,
     );
@@ -690,7 +762,8 @@ async function* freshChannelIterator(
     }
     return items;
   };
-  const trending = listing("trendingScore");
+  // Only its pool is read, and no task listing can give more than the whole pool: fetch no more.
+  const trending = listing("trendingScore", poolSize);
   const [byDate, byTrend] = await Promise.all([take(newest), take(trending)]);
   void trending.return(undefined);
   const pool = new Map<string, FreshRankable>();
@@ -715,6 +788,8 @@ function createChannelIterator(
     signal: AbortSignal;
     parameterFilter?: string;
     task?: PipelineType;
+    /** Rows the caller reads at most; the Hub then sends no more than that. */
+    limit?: number;
   },
 ): AsyncGenerator<unknown> {
   if (opts.sortBy === "fresh") {
@@ -739,6 +814,7 @@ function createChannelIterator(
       opts.parameterFilter,
     ),
     sort: hubListingSort(opts.sortBy),
+    ...(opts.limit ? { limit: opts.limit } : {}),
     ...(opts.accessToken
       ? { credentials: { accessToken: opts.accessToken } }
       : {}),
@@ -866,6 +942,8 @@ export async function fetchChannelFirstPage(
       sortDirection,
       accessToken,
       signal,
+      // pullBatch reads no more than this many rows.
+      limit: MAX_RAW_ITEMS_PER_BATCH,
     });
     for await (const model of iter) {
       const name = (model as { name?: string }).name;
