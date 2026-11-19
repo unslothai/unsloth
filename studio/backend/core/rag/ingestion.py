@@ -530,8 +530,7 @@ def _run(
         scanned_pages = {p.page_number for p in pages if p.needs_ocr}
         ocred: set[int] = set()
         caption_on = config.CAPTION_IMAGES if caption is None else caption
-        # More scanned pages than OCR and captioning can reach always fails below; fail before the OCR work
-        # (in-process, under MUPDF_LOCK), which a linked folder would otherwise redo for every such book.
+        # Past what OCR and captioning can reach this always fails below: skip the wasted OCR first.
         reachable = config.OCR_MAX_PAGES if (config.OCR_SCANNED if ocr is None else ocr) else 0
         if caption_on and is_pdf and captioner.vision_endpoint() is not None:
             reachable += config.CAPTION_MAX_PAGES

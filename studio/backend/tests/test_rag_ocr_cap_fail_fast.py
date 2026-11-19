@@ -19,7 +19,6 @@ def test_a_scan_past_the_ocr_cap_fails_without_ocr(
     assert result["status"] == "failed"
     assert "Could not read scanned PDF pages: 3, 4, 5." in result["error"]
     assert result["num_chunks"] == 0
-    # The pages it could never finish are no longer OCR'd only to be thrown away.
     assert local_ocr == []
 
 
