@@ -1447,20 +1447,8 @@ def _qwen21_save(
     transformer_lora_layers,
     adapter_metadata = None,
 ):
-    import inspect
-
-    save = _qwen21_pipeline_cls().save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        _qwen21_pipeline_cls().save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1846,22 +1834,9 @@ def _flux3_save(
     transformer_lora_layers,
     adapter_metadata = None,
 ):
-    import inspect
-
     from diffusers.loaders import Flux3LoraLoaderMixin
-
-    save = Flux3LoraLoaderMixin.save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        Flux3LoraLoaderMixin.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1979,22 +1954,12 @@ def _moss_save(
     adapter_metadata = None,
 ):
     """``transformer.*`` keys plus adapter metadata, as MOSSImagePipeline.load_lora_weights reads."""
-    import inspect
-
     from diffusers.loaders import QwenImageLoraLoaderMixin
-
-    save = QwenImageLoraLoaderMixin.save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        QwenImageLoraLoaderMixin.save_lora_weights,
+        out_dir,
+        transformer_lora_layers,
+        adapter_metadata,
     )
 
 
@@ -2563,21 +2528,8 @@ def _wan_save(
     transformer_lora_layers,
     adapter_metadata = None,
 ):
-    # Older diffusers savers lack the metadata argument; they still get the weights.
-    import inspect
-
-    save = _wan_pipeline_cls().save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        _wan_pipeline_cls().save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
