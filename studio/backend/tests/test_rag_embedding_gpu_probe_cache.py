@@ -93,3 +93,22 @@ def test_plan_for_unsaved_model_probes_once(probe, monkeypatch):
             == "sentence-transformers"
         )
     assert probe["calls"] == 1
+
+
+def test_mask_changed_during_probe_is_not_cached(probe, monkeypatch, tmp_path):
+    """A mask lifted while the probe runs must not mark the masked environment as having a GPU."""
+    binary = tmp_path / "llama-server"
+    binary.write_text("")
+    probe["binary"] = str(binary)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+
+    def _gpus(*_a, **_kw):
+        probe["calls"] += 1
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        return [(0, 40000)]
+
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_gpus))
+    assert embeddings._resolve_auto() == "sentence-transformers"
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert embeddings._resolve_auto() == "sentence-transformers"
+    assert probe["calls"] == 2

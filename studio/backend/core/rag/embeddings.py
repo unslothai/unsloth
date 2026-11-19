@@ -933,7 +933,9 @@ def _gpu_present(llama_cpp_backend) -> bool:
         return True
     # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
     if llama_cpp_backend._get_gpu_free_memory():
-        _gpu_found_key = key
+        # Kept only if no key input moved while the probe ran (another thread changing a mask).
+        if _gpu_probe_key(llama_cpp_backend) == key:
+            _gpu_found_key = key
         return True
     return False
 
