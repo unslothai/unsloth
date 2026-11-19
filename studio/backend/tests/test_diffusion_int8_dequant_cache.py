@@ -255,3 +255,25 @@ def test_dequant_cache_wanted_for_int8(monkeypatch):
     assert dit._dequant_cache_wanted(True, "cuda", False)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE", "0")
     assert not dit._dequant_cache_wanted(True, "cuda", False)
+
+
+def test_int8_entries_yield_to_the_checkpointing_reserve():
+    """#18416's joint step-1 plan: kept activations take their room first and int8 entries are evicted to fit."""
+    x = _x()
+    ref = _model()
+    fl.install_fast_lora(ref)
+    want = _run(ref, x)
+
+    model = _model()
+    all_three = (96 * 64 + 64 * 96 + 64 * 64) * 2
+    cache = fl.Nf4DequantCache()
+    cache.plan(all_three)
+    fl.install_fast_lora(model, cache, int8 = True)
+    _run(model, x, steps = 1)
+    assert cache.used == all_three
+    # The checkpointing plan keeps activations worth one 96 x 64 entry (less the cache's usual share).
+    evicted = cache.reserve(int(96 * 64 * 2 / fl._BUDGET_FRAC) + 1, from_plan = True)
+    assert evicted > 0 and cache.used <= cache.budget < all_three
+    got = _run(model, x)
+    _assert_equal_runs(want, got)
+    assert cache.used <= cache.budget
