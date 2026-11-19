@@ -56,7 +56,7 @@ test("the dense-quant class follows the backend's capability answer, not its nam
     assert.equal(hostRunsDenseQuant(host), false, host);
   }
   // mac + cuda means a browser-derived Mac on a remote host.
-  for (const deviceBackend of ["mlx", "cpu"]) {
+  for (const deviceBackend of ["mlx"]) {
     assert.equal(
       classifyHost({
         deviceType: "mac",
@@ -96,15 +96,18 @@ test("a resolved accelerated backend outranks a browser-derived Mac", () => {
   }
 });
 
-test("a Mac is gguf-only whatever backend it reports", () => {
+test("a Mac is gguf-only unless its backend is a confirmed CPU", () => {
   // No Mac can place the Modular Diffusers workflow: video.py refuses the load.
-  for (const deviceBackend of ["mlx", "cpu", null]) {
+  for (const deviceBackend of ["mlx", null]) {
     assert.equal(
       classifyHost({ deviceType: "mac", deviceBackend, budgetKnown: true }),
       "gguf-only",
       String(deviceBackend),
     );
   }
+  // An Intel Mac (no MPS) resolves the diffusion target to cpu, where the backend refuses the dense rows.
+  assert.equal(classifyHost({ deviceType: "mac", deviceBackend: "cpu", budgetKnown: true }), "cpu-only");
+  assert.equal(classifyHost({ deviceType: "mac", deviceBackend: "cpu", budgetKnown: false }), "gguf-only");
 });
 
 test("a host still being discovered is unknown, not CPU-only", () => {

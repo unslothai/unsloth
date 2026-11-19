@@ -29,10 +29,11 @@ export function classifyHost({
   if (backend && budgetKnown && ACCELERATED_BACKENDS.has(backend)) {
     return denseQuantSupported ? "dense-quant" : "accelerated";
   }
+  // A confirmed CPU backend outranks the Mac fallback: an Intel Mac has no MPS, and the backend refuses its dense rows.
+  if (backend === "cpu" && budgetKnown) return "cpu-only";
   // Modular Diffusers needs mem_get_info, which torch.mps lacks.
   if (deviceType === "mac") return "gguf-only";
   if (!(backend && budgetKnown)) return "unknown";
-  if (backend === "cpu") return "cpu-only";
   if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
   // An unrecognised backend is a new accelerator, not a CPU.
   return "unknown";
