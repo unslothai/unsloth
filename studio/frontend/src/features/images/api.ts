@@ -13,6 +13,7 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
+import { isLoraReloadRefusal, LoraReloadRefusalError } from "./lib/lora-reload";
 import type { DetailerRecord, DetailerRequest } from "./lib/detailer";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
 import type { HiresCapability, HiresRequest } from "./lib/hires-choice";
@@ -67,6 +68,8 @@ export interface DiffusionStatus {
   attention_backend?: string | null;
   transformer_cache?: string | null;
   baked_loras?: string[] | null;
+  // The {id, weight} pairs the load baked in (int8 / fp8 builds); absent on older backends.
+  baked_lora_specs?: LoraSpecInput[] | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).
@@ -584,6 +587,9 @@ export async function generateDiffusionImage(
     isMemoryEstimateRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))
   ) {
     throw new MemoryEstimateRefusalError(await readFastApiError(response));
+  }
+  if (!response.ok && isLoraReloadRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))) {
+    throw new LoraReloadRefusalError(await readFastApiError(response));
   }
   return parseJson(response);
 }

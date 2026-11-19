@@ -6499,6 +6499,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "Adapter ids baked into the transformer at load time, as GalleryImage.baked_loras "
         "records them; empty when the load baked none",
     )
+    baked_lora_specs: list[dict] = Field(
+        default_factory = list,
+        description = "The baked adapters as the load requested them, [{id, weight}]; empty when none. The "
+        "Images page compares a LoRA selection against it to tell whether Generate needs a reload first",
+    )
     transformer_cache_stats: Optional[dict] = Field(
         None,
         description = "Static step skip only: mode, schedule and the last generation's "
