@@ -199,6 +199,21 @@ def test_adopted_rounded_checkpoint_survives_a_device_move(scheme, monkeypatch):
     assert any(k.endswith("up_proj.base_layer") for k in marked)
 
 
+@pytest.mark.parametrize("scheme", ["int4", "int8"])
+def test_copied_model_survives_a_device_move(scheme, monkeypatch):
+    # A deep copied prepared model adopts its rounded weights at the next round call; a device move after that is
+    # still not a rewrite.
+    import copy
+
+    x = torch.randn(4, DIM)
+    model = copy.deepcopy(_model(scheme, monkeypatch, "1"))
+    expected = _out(model, x)
+    assert qr.round_frozen_qat_weights(model) == 0
+    model._apply(lambda t: t.clone())
+    assert qr.round_frozen_qat_weights(model) == 0
+    assert torch.equal(_out(model, x), expected)
+
+
 def test_marked_rounded_state_dict_keeps_tensors_unchanged(monkeypatch):
     # The marker rides in the state dict's per module metadata: no new keys, so exports read the same tensors.
     model = _model("int8", monkeypatch, "1")
