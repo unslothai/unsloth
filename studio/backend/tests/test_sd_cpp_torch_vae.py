@@ -357,3 +357,28 @@ def test_windows_commit_headroom_caps_the_host_ram_reading(monkeypatch):
     assert not tv.fits_host_ram(64, 64)
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: None)
     assert not tv.fits_host_ram(64, 64), "the commit headroom alone still refuses"
+
+
+def test_a_stop_during_the_torch_decode_skips_the_rest_of_the_chunk(tmp_path, monkeypatch):
+    from core.inference.sd_cpp_engine import SdCppCancelled
+
+    torch.manual_seed(3)
+    server = _Server([_as_wire(torch.randn(4, 32, 2, 2))])
+    b, state = _backend(tmp_path, server)
+    kwargs = _kwargs()
+    kwargs["batch_size"] = 4
+    vae = tv._load_decoder(state.files.vae)
+    decoded = []
+    real = vae.decode
+
+    def _decode(z, **kw):
+        decoded.append(z.shape[0])
+        kwargs["cancel"].set()  # Stop pressed while the first image decodes.
+        return real(z, **kw)
+
+    monkeypatch.setattr(vae, "decode", _decode)
+    with pytest.raises(SdCppCancelled):
+        b._generate_server(state, **kwargs)
+    assert decoded == [1], "the remaining images are not decoded after a stop"
+    assert server.calls == ["latent"], "a stop is not a failed decode: no sd.cpp re-render"
+    assert tv.STATS == {"decoded": 0, "fallback": 0}

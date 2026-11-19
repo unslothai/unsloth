@@ -5196,7 +5196,11 @@ class SdCppDiffusionBackend:
                     payload, on_step = self._on_log, cancel_event = cancel, total_timeout = timeout
                 )
                 try:
-                    return sd_cpp_torch_vae.decode(latents, state.files.vae, threads = state.threads)
+                    return sd_cpp_torch_vae.decode(
+                        latents, state.files.vae, threads = state.threads, cancel_event = cancel
+                    )
+                except SdCppCancelled:
+                    raise
                 except Exception as exc:  # noqa: BLE001 -- sd.cpp's own decode is the fallback
                     torch_vae["on"] = False
                     sd_cpp_torch_vae.note_fallback(f"{type(exc).__name__}: {exc}")

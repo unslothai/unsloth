@@ -165,8 +165,10 @@ def decode(
     vae_path: str,
     *,
     threads: Optional[int] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> list:
-    """PIL images for sd.cpp's final FLUX.2 latents ``(shape [N, 128, H/16, W/16], float32 bytes)``."""
+    """PIL images for sd.cpp's final FLUX.2 latents ``(shape [N, 128, H/16, W/16], float32 bytes)``. A set
+    ``cancel_event`` raises ``SdCppCancelled`` before the next image, as the server path does."""
     import torch
     from PIL import Image
 
@@ -190,6 +192,9 @@ def decode(
                 )
                 # One image at a time: a batch would multiply the full-resolution activations.
                 for one in z.split(1):
+                    if cancel_event is not None and cancel_event.is_set():
+                        from core.inference.sd_cpp_engine import SdCppCancelled
+                        raise SdCppCancelled("sd-server generation was cancelled.")
                     out = vae.decode(
                         one.contiguous(memory_format = torch.channels_last), return_dict = False
                     )[0]
