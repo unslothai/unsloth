@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 
@@ -241,6 +242,26 @@ def test_no_swappable_chat_changes_nothing():
     with pytest.raises(swap.SwapUnavailable):
         asyncio.run(_trip(chat, FakeImage(log, chat = chat)).run())
     assert log == []
+
+
+def test_a_chat_admitted_before_the_gate_stops_the_swap():
+    """The gate blocks new admissions but does not drain one already running: re-read under the gate."""
+    log = Log()
+    chat = FakeChat(log)
+    media = FakeImage(log, chat = chat)
+    held = []
+
+    @contextlib.asynccontextmanager
+    async def gate():
+        held.append(True)
+        yield
+
+    trip = _trip(chat, media, hold_requests = gate, still_alone = lambda: not held)
+    with pytest.raises(swap.SwapUnavailable, match = "another chat is generating"):
+        asyncio.run(trip.run())
+    assert held == [True]
+    assert [entry[0] for entry in log] == [], "chat is never saved, unloaded or replaced"
+    assert chat.resident
 
 
 @pytest.mark.parametrize("where", ["load", "generate"])

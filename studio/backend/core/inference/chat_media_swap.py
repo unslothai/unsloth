@@ -35,6 +35,8 @@ ERR_NO_DEFAULT = (
     "Images page once, or set one in Settings."
 )
 
+ERR_BUSY = "Error: another chat is generating on this model. Try again when it finishes."
+
 SWAP_BUDGET_S = 900.0
 
 # Per account: one account's last load must neither steer nor reveal another account's swap.
@@ -127,6 +129,9 @@ class RoundTrip:
     render_started: Optional[float] = None
     # Held until the image model is gone so new chat requests wait; released before reload (it takes it too).
     hold_requests: Optional[Callable[[], Any]] = None
+    # True while this turn is the only generation; re-read under the gate, which stops new admissions but does not
+    # drain a chat admitted before it.
+    still_alone: Optional[Callable[[], bool]] = None
     beside_first: bool = False
 
     def stop(self) -> None:
@@ -191,6 +196,8 @@ class RoundTrip:
                     return ERR_STOPPED
                 raise
         try:
+            if self.still_alone is not None and not self.still_alone():
+                raise SwapUnavailable(ERR_BUSY)
             return await self._run_held(snap, gate, total)
         finally:
             await gate.aclose()
@@ -545,7 +552,7 @@ def run_in_tool(
     if name is None:
         return ERR_NO_DEFAULT
     if active_generations.count() > 1:
-        return "Error: another chat is generating on this model. Try again when it finishes."
+        return ERR_BUSY
     subject = getattr(account, "username", None) or "unsloth"
     from core.inference.load_policy import LoadPolicy
 
@@ -573,6 +580,7 @@ def run_in_tool(
         image_model = name,
         on_cancel = stop_render,
         hold_requests = inference_lifecycle_gate,
+        still_alone = lambda: active_generations.count() <= 1,
         beside_first = policy in ("fit", "always") or not on_gpu,
     )
 
