@@ -558,6 +558,18 @@ export function discoverUsesFallback(
   return hubQuery === "" || hubResultCount === 0;
 }
 
+/** Hub results to size: each is a file listing, and only a Discover row (`recommended`) shows or
+ *  filters by one, so a search's other results (speech, embeddings, image models) are not listed. */
+export function hubSizeIds(
+  results: readonly { id: string; isGguf: boolean }[],
+  recommended: readonly { id: string }[],
+): string[] {
+  const rows = new Set(recommended.map((m) => m.id.toLowerCase()));
+  return results.flatMap((r) =>
+    !r.isGguf && rows.has(r.id.toLowerCase()) ? [r.id] : [],
+  );
+}
+
 /** Reads `items` with at most `workers` in flight; stops taking new ones once `live()` is false. */
 export async function readBounded<T, R>(
   items: T[],

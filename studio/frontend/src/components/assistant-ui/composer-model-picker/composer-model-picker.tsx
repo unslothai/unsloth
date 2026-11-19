@@ -237,6 +237,7 @@ import {
   ejectTargetId,
   filterRows,
   findChosenRow,
+  hubSizeIds,
   isChatTask,
   isTestFixtureRepo,
   localSection,
@@ -2619,8 +2620,8 @@ export function ComposerModelPicker({
   // Not shownRows: the fit filter reads these, so a hidden row would lose its size.
   const hubSizes = useHubRepoSizes(
     useMemo(
-      () => hubResults.flatMap((r) => (r.isGguf ? [] : [r.id])),
-      [hubResults],
+      () => hubSizeIds(hubResults, recommended),
+      [hubResults, recommended],
     ),
     open && viewed === RECOMMENDED_TAB,
   );
