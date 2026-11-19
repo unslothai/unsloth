@@ -606,6 +606,17 @@ function GgufContextLengthSetting({
   );
   const shown = draft == null ? value : fromSlider(draft);
   const isAuto = shown === 0;
+  const reset = isAuto ? null : (
+    <button
+      type="button"
+      onClick={() => onChange(0)}
+      className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      aria-label="Reset context to Auto"
+      title="Reset to Auto"
+    >
+      <HugeiconsIcon icon={ArrowTurnBackwardIcon} className="size-4" strokeWidth={2} />
+    </button>
+  );
   const label = (
     // The hint and reset float after the label, so the slider's left gap counts from its text.
     <div className="relative flex shrink-0 items-center">
@@ -623,21 +634,7 @@ function GgufContextLengthSetting({
             ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
             : ""}
         </InfoHint>
-        {isAuto ? null : (
-          <button
-            type="button"
-            onClick={() => onChange(0)}
-            className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label="Reset context to Auto"
-            title="Reset to Auto"
-          >
-            <HugeiconsIcon
-              icon={ArrowTurnBackwardIcon}
-              className="size-4"
-              strokeWidth={2}
-            />
-          </button>
-        )}
+        {stacked ? null : reset}
       </span>
     </div>
   );
@@ -666,7 +663,9 @@ function GgufContextLengthSetting({
       />
     ) : null;
   const input = (
-    <div className="ml-auto flex shrink-0 items-center">
+    // The sidebar puts reset beside the number it resets; the label row there is narrow.
+    <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      {stacked ? reset : null}
       <NumericValueInput
         ref={inputRef}
         value={isAuto ? autoValue : shown}
