@@ -529,9 +529,21 @@ def _run(
         is_pdf = stored_path.lower().endswith(".pdf")
         scanned_pages = {p.page_number for p in pages if p.needs_ocr}
         ocred: set[int] = set()
+        caption_on = config.CAPTION_IMAGES if caption is None else caption
+        # More scanned pages than OCR and captioning can reach always fails below; fail before the OCR work
+        # (in-process, under MUPDF_LOCK), which a linked folder would otherwise redo for every such book.
+        reachable = config.OCR_MAX_PAGES if (config.OCR_SCANNED if ocr is None else ocr) else 0
+        if caption_on and is_pdf and captioner.vision_endpoint() is not None:
+            reachable += config.CAPTION_MAX_PAGES
+        if is_pdf and len(scanned_pages) > reachable:
+            if _abort_if_document_deleted(conn, job_id, document_id):
+                return
+            if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                conn.rollback()
+                raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
+            raise pdf_ocr.unreadable_pages_error(sorted(scanned_pages)[reachable:])
         if is_pdf:
             pages, ocred = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
-        caption_on = config.CAPTION_IMAGES if caption is None else caption
         # Skip all figure work (PDF rasterization included) without a vision model.
         if caption_on and is_pdf and captioner.vision_endpoint() is not None:
             _progress(conn, job_id, "captioning", 0.4)
