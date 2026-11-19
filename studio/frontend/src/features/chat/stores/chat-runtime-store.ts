@@ -567,13 +567,40 @@ function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
   }
 }
 
+const CROSS_WINDOW_SETTINGS = [
+  [CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, "researchWebsitePolicy", loadResearchWebsitePolicy],
+  [CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY, "researchMcpSources", loadResearchMcpSources],
+  [CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, "researchModelTimeoutSeconds", loadResearchModelTimeoutSeconds],
+] as const;
+
+let sendingPatch: SettingsPatch = {};
+
+function hasUnsentSettingEdit(field: string): boolean {
+  return field in pendingPatch || field in sendingPatch || (preHydrationPatch !== null && field in preHydrationPatch);
+}
+
+// A window that loaded settings before this save landed cached the old value; rewriting it notifies that window.
+function rebroadcastSavedSettings(sent: SettingsPatch): void {
+  const state = useChatRuntimeStore.getState();
+  for (const [key, field] of CROSS_WINDOW_SETTINGS) {
+    if (!(field in sent) || hasUnsentSettingEdit(field)) continue;
+    const { encode } = MIRRORED_SETTINGS[field];
+    const raw = encode(state[field]);
+    if (raw === encode(sent[field]) && readStorageValue(key) !== raw) writeStorageValue(key, raw);
+  }
+}
+
 async function flushSettingsPatch(keepalive = false): Promise<void> {
   if (Object.keys(pendingPatch).length === 0) return;
   const patch = pendingPatch;
   pendingPatch = {};
+  sendingPatch = patch;
   try {
     await savePersistedChatSettingsPatch(patch, { keepalive });
+    sendingPatch = {};
+    rebroadcastSavedSettings(patch);
   } catch (error) {
+    sendingPatch = {};
     // extra="forbid" refuses the whole body on one bad field; drop the fields the server named.
     const { patch: retryable, progressed } = retryablePatchAfterFailure(
       patch,
@@ -6534,14 +6561,11 @@ const clearChatFullAccessOnAuthChange = () => useChatRuntimeStore.getState().cle
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
   window.addEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
-  const crossWindowSettings = [
-    [CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, "researchWebsitePolicy", loadResearchWebsitePolicy],
-    [CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY, "researchMcpSources", loadResearchMcpSources],
-    [CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, "researchModelTimeoutSeconds", loadResearchModelTimeoutSeconds],
-  ] as const;
   window.addEventListener("storage", (event) => {
-    for (const [key, field, load] of crossWindowSettings) {
+    for (const [key, field, load] of CROSS_WINDOW_SETTINGS) {
       if (event.key !== key && event.key !== null) continue;
+      // Our own unsent edit is newer than a value another window's settings load cached.
+      if (hasUnsentSettingEdit(field)) continue;
       // Counts as an edit, so an older settings GET still in flight cannot write it back.
       scalarSettingMutationVersions[field] += 1;
       useChatRuntimeStore.setState((state) => ({

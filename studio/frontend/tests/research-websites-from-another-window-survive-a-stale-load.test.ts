@@ -32,3 +32,18 @@ test("a settings load answered before another window's save does not undo that s
   assert.deepEqual(useChatRuntimeStore.getState().researchWebsitePolicy, fresh);
   assert.deepEqual(JSON.parse(localStorageFake.get(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) ?? "null"), fresh);
 });
+
+test("another window's settings load cannot undo an edit this window has not saved yet", async () => {
+  const edited = { allowedDomains: [], blockedDomains: ["reddit.com", "pinterest.com", "quora.com"] };
+  const stale = JSON.stringify({ allowedDomains: [], blockedDomains: ["reddit.com"] });
+  useChatRuntimeStore.getState().setResearchWebsitePolicy(edited);
+
+  localStorageFake.set(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, stale);
+  fireWindowEvent("storage", { key: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, newValue: stale });
+  assert.deepEqual(useChatRuntimeStore.getState().researchWebsitePolicy, edited);
+
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const sent = settingsHttp.puts.filter((put) => "researchWebsitePolicy" in put);
+  assert.deepEqual(sent.at(-1)?.researchWebsitePolicy, edited);
+  assert.deepEqual(JSON.parse(localStorageFake.get(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) ?? "null"), edited);
+});
