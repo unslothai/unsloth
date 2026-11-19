@@ -2490,6 +2490,24 @@ class _MlxStreamedText:
         return closing
 
 
+class _PlainStreamedText:
+    """A plain reply's ids streamed as mlx-vlm's single path does with ``skip_special_tokens``."""
+
+    def __init__(self, detokenizer, special_ids):
+        self._detokenizer = detokenizer
+        self._special_ids = frozenset(special_ids or ())
+
+    def feed_token(self, token_id: int) -> str:
+        if token_id in self._special_ids:
+            return ""
+        self._detokenizer.add_token(token_id)
+        return self._detokenizer.last_segment
+
+    def finish(self, _sampled: str) -> str:
+        self._detokenizer.finalize()
+        return self._detokenizer.last_segment
+
+
 def _require_row_detokenizer(streamed):
     """A batch row feeds ids one at a time, so unlike the single path it has no runtime text to fall back on."""
     if streamed is not None and streamed._detokenizer is None:
@@ -4788,7 +4806,10 @@ def _streamed_tail(row):
     stream = row.plan.stream
     if row.plan.streamed is None or stream.stopped:
         return []
-    tail = stream.flush(row.plan.streamed.finish(stream.sampled))
+    held = row.plan.streamed.finish(stream.sampled)
+    if not held:
+        return []
+    tail = stream.flush(held)
     if stream.stopped:
         row.reason = "stop"
     return tail
@@ -8192,6 +8213,7 @@ class MLXInferenceBackend:
         request,
         *,
         decodes_ids = False,
+        reports_ids = False,
     ) -> "_VLMRowPlan":
         image = request.get("image")
         videos = request.get("videos") or None
@@ -8210,6 +8232,7 @@ class MLXInferenceBackend:
             response_format = request.get("response_format"),
             reasoning_is_extracted = request.get("reasoning_is_extracted", False),
             decodes_ids = decodes_ids,
+            reports_ids = reports_ids,
             videos = videos,
             **_row_kwargs(request),
         )
@@ -8241,6 +8264,7 @@ class MLXInferenceBackend:
         response_format = None,
         reasoning_is_extracted = False,
         decodes_ids = False,
+        reports_ids = False,
         videos = None,
     ) -> "_VLMRowPlan":
         """``decodes_ids``: the batch reports each row's ids, so the reply is decoded from them as
@@ -8358,6 +8382,14 @@ class MLXInferenceBackend:
                 _mlx_stop_token_ids(self._tokenizer, self._model),
             )
             _require_row_detokenizer(streamed)
+        elif (decodes_ids or reports_ids) and constraint is None and normalizer is None:
+            detokenizer = _mlx_stream_detokenizer(self._processor) or _mlx_stream_detokenizer(
+                self._tokenizer
+            )
+            if detokenizer is not None:
+                streamed = _PlainStreamedText(
+                    detokenizer, getattr(self._tokenizer, "all_special_ids", None)
+                )
 
         return _VLMRowPlan(
             prompt = prompt,
@@ -8584,6 +8616,8 @@ class MLXInferenceBackend:
             # mlx-vlm adds special tokens by family, doubling a BOS the template already emitted.
             import mlx.core as mx
             vlm_kwargs["input_ids"] = mx.array([self._encode_prompt(prompt)])
+        if vlm_token_decoder is None and constraint is None:
+            vlm_kwargs["skip_special_tokens"] = True
         session = self._vlm_prompt_cache_session(
             _adapter_state, images, prompt, has_video = bool(videos)
         )
@@ -9052,6 +9086,7 @@ class MLXInferenceBackend:
     ):
         import time
 
+        from unsloth_zoo.mlx import generate as engine
         from unsloth_zoo.mlx.generate import (
             GenerationDefaults,
             GenerationRequest,
@@ -9059,7 +9094,8 @@ class MLXInferenceBackend:
             stream_batch,
         )
 
-        plans = [self._plan_vlm_request(request) for request in requests]
+        reports_ids = _vision_batch_reports_ids(engine, None)
+        plans = [self._plan_vlm_request(request, reports_ids = reports_ids) for request in requests]
         defaults = GenerationDefaults(
             max_tokens = max(plan.max_tokens for plan in plans),
             prefill_batch_size = self._prefill_rows(len(plans)),
@@ -9106,7 +9142,14 @@ class MLXInferenceBackend:
             events = stream_batch(self._model, self._processor, batch, defaults = defaults)
 
             def _retire(row, result, *, cancelled):
-                stream = plans[row].stream
+                stream, streamed = plans[row].stream, plans[row].streamed
+                tail = (
+                    streamed.finish(stream.sampled)
+                    if streamed is not None and not (cancelled or stream.stopped)
+                    else ""
+                )
+                if tail:
+                    yield from ((row, snap) for snap in stream.flush(tail))
                 yield from ((row, snap) for snap in stream.settle())
                 yield from ((row, snap) for snap in stream.drain(cancelled = cancelled))
                 ready_at = prefilled_at[row] or time.perf_counter()
@@ -9139,9 +9182,15 @@ class MLXInferenceBackend:
                         getattr(event, "prompt_tokens", 0),
                         getattr(event, "generated_tokens", 0),
                     )
-                    if event.delta:
+                    streamed = plans[row].streamed
+                    text = (
+                        event.delta
+                        if streamed is None
+                        else "".join(streamed.feed_token(int(token)) for token in event.token_ids)
+                    )
+                    if text:
                         yield from (
-                            (row, snapshot) for snapshot in plans[row].stream.feed(text = event.delta)
+                            (row, snapshot) for snapshot in plans[row].stream.feed(text = text)
                         )
                     if event.result is not None:
                         pending.discard(row)

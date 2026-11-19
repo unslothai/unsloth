@@ -9139,6 +9139,75 @@ def test_a_resident_vision_tool_row_decodes_its_ids_and_keeps_the_stop_that_clos
     assert list(session.step())[-2:] == [("r", "".join(pieces)), ("r", None)]
 
 
+def _special_token_turn(monkeypatch):
+    pieces = ("▁Three", "<pad>", "▁colors", "▁zzz", "▁more", "<eos>")
+    turn = _SpmTurn(pieces, specials = ("<pad>", "<eos>"), eos = "<eos>", chat_template = "x")
+    backend = _vlm_backend(monkeypatch, markers = None)
+    backend._tokenizer = backend._processor.tokenizer = turn
+    ended = SimpleNamespace(finish_reason = "stop", prompt_token_count = 3, token_ids = turn.ids[:-1])
+    events = [
+        SimpleNamespace(
+            index = index,
+            delta = piece.replace("▁", " "),
+            token_ids = (token,),
+            result = ended if token == turn.ids[-1] else None,
+            prompt_tokens = 3,
+            generated_tokens = 1,
+        )
+        for index in (0, 1)
+        for piece, token in zip(pieces, turn.ids)
+    ]
+    return backend, events
+
+
+@pytest.mark.parametrize(
+    "stop, reply",
+    [(None, " Three colors zzz more"), (["zzz"], " Three colors ")],
+)
+def test_a_resident_vision_row_leaves_out_a_special_token_it_samples(monkeypatch, stop, reply):
+    from core.inference import mlx_inference
+
+    backend, events = _special_token_turn(monkeypatch)
+    plan = backend._plan_vlm_row(
+        [{"role": "user", "content": "hi"}],
+        None,
+        **dict(temperature = 0, top_p = 1, top_k = 0, min_p = 0, max_new_tokens = 9),
+        repetition_penalty = 1.0,
+        stop = stop,
+        decodes_ids = True,
+    )
+    session = _open_vision_session([mlx_inference._VisionBatchRow(handle = "r", plan = plan, row = 0)])
+    session.stream = SimpleNamespace(step = lambda: [event for event in events if event.index == 0])
+    snapshots = [snapshot for _row, snapshot in session.step() if snapshot]
+    assert snapshots[-1] == reply
+    assert len(set(snapshots)) > 1, "streamed as it was decoded, not once at the end"
+
+
+def test_a_fixed_vision_batch_leaves_out_a_special_token_each_row_samples(monkeypatch):
+    from dataclasses import make_dataclass
+
+    engine = _batch_engine(monkeypatch)
+    backend, events = _special_token_turn(monkeypatch)
+    for name in ("GenerationRequest", "GenerationDefaults"):
+        monkeypatch.setattr(engine, name, SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
+    monkeypatch.setattr(
+        engine, "GenerationEvent", make_dataclass("Event", ["token_ids"]), raising = False
+    )
+    monkeypatch.setattr(engine, "stream_batch", lambda *a, **k: iter(events), raising = False)
+    backend._render_vlm_prompt = lambda messages, images, **k: ("p", None, None)
+    backend._media_generation_limit = lambda p, n, *a: n
+    backend._kv_window_generate_kwargs, backend._generation_lock = dict, threading.Lock()
+    backend._release_held_vlm_snapshots = lambda: None
+    backend.last_batch_generation_stats = [None, None]
+    request = {"messages": [{"role": "user", "content": "hi"}], "max_new_tokens": 9}
+    replies = {}
+    for row, snapshot in backend._generate_vlm_batch([request, request]):
+        if snapshot is not None:
+            replies[row] = snapshot
+    assert replies == {0: " Three colors zzz more", 1: " Three colors zzz more"}
+
+
 def test_rows_ending_in_one_step_are_never_alone_until_it_ends(monkeypatch):
     """The speculative stream frees the caches of rows it reported finished only as its step ends."""
     from core.inference import mlx_inference
@@ -11340,12 +11409,13 @@ def _run_vlm_budget(
     max_new_tokens,
     served = _BUDGET_WINDOW,
     marker_tokens = 0,
+    seen = None,
 ):
-    seen = {}
+    seen = {} if seen is None else seen
     mlx_vlm = types.ModuleType("mlx_vlm")
 
     def _stream(*_a, **kwargs):
-        seen["max_tokens"] = kwargs.get("max_tokens")
+        seen.update(kwargs)
         yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = _stream
@@ -11363,6 +11433,12 @@ def _run_vlm_budget(
     args = (messages, [image] if image is not None else None, 0, 1, 0, 0, max_new_tokens, 1, None)
     list(backend._generate_vlm(*args, _adapter_state = False))
     return seen["max_tokens"]
+
+
+def test_a_vision_chat_reply_leaves_out_special_tokens_as_the_text_path_does(monkeypatch):
+    seen = {}
+    _run_vlm_budget(monkeypatch, _TEXT_TURN, None, 4, seen = seen)
+    assert seen.get("skip_special_tokens") is True
 
 
 def test_mlx_text_resolves_an_unset_budget_against_the_served_window(monkeypatch):
