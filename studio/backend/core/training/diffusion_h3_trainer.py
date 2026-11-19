@@ -628,6 +628,9 @@ def _prepare_h3_conditioning(
             key = _h3_clip_key(pcache, path, width, height, num_frames, num_audio_latents)
             hit = _cache_get(pcache, key)
             if hit is not None:
+                if not clip_entries:
+                    # Every clip shares one canvas, so the first hit sizes the cache: refuse before holding the rest.
+                    _check_h3_cache_budget(hit, len(clip_paths), width, height)
                 clip_entries[i] = tuple(hit)
     warm = len(caption_embeds) == len(to_encode) and len(clip_entries) == len(clip_paths)
 

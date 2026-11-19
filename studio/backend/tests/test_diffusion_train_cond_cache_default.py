@@ -415,6 +415,36 @@ def test_h3_warm_rerun_is_bit_identical_and_never_loads_the_conditioner(monkeypa
             assert a.dtype == b.dtype and torch.equal(a, b)
 
 
+@pytest.mark.parametrize("partial", [False, True])
+def test_h3_an_over_budget_warm_cache_is_refused_before_it_is_held(monkeypatch, tmp_path, partial):
+    fakes = _H3Fakes(monkeypatch, _num_audio())
+    h3 = fakes.h3
+    paths = _h3_clips(tmp_path, n = 4)
+    captions = ["a dog barks"] * 4
+    cfg = _h3_cfg()
+    _h3_prepare(cfg, paths, captions)
+    if partial:
+        for entry in extras.default_cond_cache_dir().glob("h3clip_v*.safetensors"):
+            if extras._file_content_hash(paths[0]) in entry.name:
+                entry.unlink()
+    held = []
+    real_get = h3._cache_get
+
+    def counting_get(pcache, key):
+        hit = real_get(pcache, key)
+        if hit is not None and key is not None and key.startswith("h3clip"):
+            held.append(key)
+        return hit
+
+    monkeypatch.setattr(h3, "_cache_get", counting_get)
+    monkeypatch.setattr(h3, "_latent_cache_over_budget", lambda *_a, **_k: True)
+    with pytest.raises(ValueError, match = "latent cache"):
+        _h3_prepare(cfg, paths, captions)
+    assert (
+        len(held) == 1
+    ), "the budget check must run on the first cached clip, before the rest are loaded"
+
+
 def test_h3_off_writes_nothing_and_re_encodes(monkeypatch, tmp_path):
     fakes = _H3Fakes(monkeypatch, _num_audio())
     paths = _h3_clips(tmp_path)
