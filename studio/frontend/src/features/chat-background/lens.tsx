@@ -25,8 +25,17 @@ function drawsGlass(el: HTMLElement): boolean {
   return el.hasAttribute("data-glass-moving") || glassLayer(el) !== null;
 }
 
-/** A wallpaper copy in every glass surface, since backdrop-filter cannot scale and SVG backdrop filters are Chromium only (not WebKit). */
-export function GlassLenses({ wallpaper }: { wallpaper: HTMLElement | null }) {
+const PREVIEW_HOSTS = ".wallpaper-preview-composer";
+
+/** A wallpaper copy in every glass surface, since backdrop-filter cannot scale and SVG backdrop filters are Chromium only (not WebKit).
+ * `preview` keeps it to a settings preview's own sample composers, over that preview's wallpaper. */
+export function GlassLenses({
+  wallpaper,
+  preview = false,
+}: {
+  wallpaper: HTMLElement | null;
+  preview?: boolean;
+}) {
   const material = useAppliedMaterial();
   const lens = useMaterialStore((s) => s.lens);
   const menus = useMaterialStore((s) => s.menus);
@@ -40,7 +49,9 @@ export function GlassLenses({ wallpaper }: { wallpaper: HTMLElement | null }) {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         // Menus, popovers and sheets are portaled to <body>, outside the workspace.
-        const found = [...document.querySelectorAll<HTMLElement>(LENS_HOSTS)].filter(drawsGlass);
+        const found = [
+          ...(preview ? workspace : document).querySelectorAll<HTMLElement>(preview ? PREVIEW_HOSTS : LENS_HOSTS),
+        ].filter(drawsGlass);
         setHosts((prev) =>
           prev.length === found.length && prev.every((h, i) => h === found[i])
             ? prev
@@ -50,7 +61,7 @@ export function GlassLenses({ wallpaper }: { wallpaper: HTMLElement | null }) {
     };
     // Menus and sheets portal to <body>, and app-level toasts mount anywhere under the root, not only in the workspace.
     const observer = new MutationObserver(scan);
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(preview ? workspace : document.body, { childList: true, subtree: true });
     // A panel opening or a menu's open animation settling changes which hosts draw glass.
     document.addEventListener("transitionend", scan, true);
     document.addEventListener("animationend", scan, true);
@@ -62,7 +73,7 @@ export function GlassLenses({ wallpaper }: { wallpaper: HTMLElement | null }) {
       cancelAnimationFrame(frame);
       setHosts([]);
     };
-  }, [workspace, on, menus]);
+  }, [workspace, on, menus, preview]);
   if (!wallpaper || !on) return null;
   return hosts.map((host, i) =>
     createPortal(

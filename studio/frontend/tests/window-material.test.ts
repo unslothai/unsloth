@@ -539,8 +539,8 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	}
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	// Menus and sheets are portaled to <body>; hosts without a backdrop filter (Glass menus off, opaque sheets) are skipped.
-	assert.match(lens, /document\.querySelectorAll<HTMLElement>\(LENS_HOSTS\)\]\.filter\(drawsGlass\)/);
-	assert.match(lens, /observer\.observe\(document\.body, \{ childList: true, subtree: true \}\);/);
+	assert.match(lens, /\(preview \? PREVIEW_HOSTS : LENS_HOSTS\),\n\s*\]\.filter\(drawsGlass\)/);
+	assert.match(lens, /observer\.observe\(preview \? workspace : document\.body, \{ childList: true, subtree: true \}\);/);
 	// The Desktop sidebar frame and layered panels draw their glass (and fill) on ::before.
 	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
 	assert.match(lens, /const fill = glass \?\? getComputedStyle\(host\);/);
@@ -559,6 +559,10 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");
 		assert.match(source, /<GlassLenses wallpaper=\{appWallpaper\} \/>/, file);
 	}
+	// The Appearance previews show the lens on their sample composers, over their own wallpaper.
+	const background = readFileSync(new URL("../src/features/chat-background/background.tsx", import.meta.url), "utf8");
+	assert.match(background, /\{previewWallpaper && <GlassLenses wallpaper=\{previewWallpaper\} preview \/>\}/);
+	assert.match(lens, /\(preview \? workspace : document\)\.querySelectorAll<HTMLElement>\(preview \? PREVIEW_HOSTS : LENS_HOSTS\)/);
 });
 
 test("glass strength scales the blur and the fill of every glass surface, with no fixed floors", () => {
