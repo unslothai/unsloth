@@ -59,6 +59,23 @@ test("non-GGUF loads keep the app default", () => {
   assert.equal(sent({ isGguf: false }), 4096);
 });
 
+test("the load and the re-pick check hand the resolver the user's setting, not the resident window", () => {
+  // The load sizes /validate and /load from the same request.
+  assert.match(
+    RUNTIME,
+    /const effectiveMaxSeqLength = resolveLoadMaxSeqLength\(\{\s*modelId,\s*ggufVariant,\s*isGguf,\s*customContextLength: loadCustomContextLength,\s*isMlx:/,
+  );
+  assert.match(
+    RUNTIME,
+    /const loadMaxSeqLength = resolveFitMaxSeqLength\(\s*isGguf,\s*loadGpuMemoryMode,\s*loadGpuLayers,\s*loadCustomContextLength,\s*effectiveMaxSeqLength,\s*\);/,
+  );
+  assert.match(RUNTIME, /max_seq_length: loadMaxSeqLength,/);
+  assert.match(
+    RUNTIME,
+    /resolveContextLength: \(customContextLength\) => \{[^}]*return resolveLoadMaxSeqLength\(\{\s*modelId,\s*ggufVariant,\s*isGguf: residentIsGguf,\s*customContextLength,\s*isMlx:/,
+  );
+});
+
 test("Manual with fixed layers keeps the resident context only on a same-model Auto reload", async () => {
   const { fixedLayerContextPin, resolveEstimateContext } = await import(
     "../src/features/model-picker/model-config/estimate-context.ts"
