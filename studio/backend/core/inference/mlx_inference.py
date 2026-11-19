@@ -6804,6 +6804,13 @@ class MLXInferenceBackend:
         logger.info("Model %s loaded successfully", model_name)
         return True
 
+    def _checkpoint_unchanged(self) -> bool:
+        """Whether the held weights are still the files on disk, so they can serve another load."""
+        try:
+            return bool(self._resume_files) and self._resume_files == self._resume_weight_files()
+        except OSError:
+            return False
+
     def narrow_context(self, max_seq_length):
         """Serve a smaller context from the held weights; None where a fresh load could decide differently."""
         entry = self.models.get(self.active_model_name)
@@ -6819,10 +6826,7 @@ class MLXInferenceBackend:
             or entry.get("spec_fallback_reason")
         ):
             return None
-        try:
-            if not self._resume_files or self._resume_files != self._resume_weight_files():
-                return None
-        except OSError:
+        if not self._checkpoint_unchanged():
             return None
         # The served length reads this attribute before the argument.
         previous = self._model.max_seq_length
@@ -6857,7 +6861,7 @@ class MLXInferenceBackend:
         """Apply settings the held weights serve as they are: these, a smaller context, a smaller
         prompt cache. None, with nothing changed, where a fresh load could decide differently."""
         entry = self.models.get(self.active_model_name)
-        if entry is None:
+        if entry is None or not self._checkpoint_unchanged():
             return None
         chosen_cache = (
             prompt_cache_mib if prompt_cache_mib is not None and prompt_cache_mib >= 0 else None

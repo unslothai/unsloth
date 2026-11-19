@@ -160,6 +160,8 @@ def test_budgets_batch_and_a_smaller_prompt_cache_are_applied_to_the_held_model(
     assert backend.models["org/m"]["cache_ram"] == backend._prompt_cache_mib == cache
     assert backend._served_context == 8192 and backend.cleared == 1
     assert backend.retune(4096, prompt_cache_mib = cache)["context_length"] == 4096
+    backend._resume_files = (("w.safetensors", 9, 9),)  # replaced on disk since the load
+    assert backend.retune(None, 32, "", None, cache) is None
 
 
 def test_the_worker_reports_whether_the_retuned_model_still_batches():
