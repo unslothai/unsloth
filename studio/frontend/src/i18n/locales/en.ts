@@ -188,6 +188,7 @@ export const en = {
       add: "Add",
       cancel: "Cancel",
       removeSite: "Remove {site}",
+      hostOnly: "This host only, not its subdomains",
       permissionsNote: "Only sites with their own permissions appear here. Actions are sign-ins, form posts, and buttons that buy, send, or delete.",
       siteInvalid: "Enter a site like example.com or *.example.com.",
     },
