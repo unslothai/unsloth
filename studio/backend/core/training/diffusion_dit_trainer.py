@@ -4069,6 +4069,7 @@ def _train_dit(
 
         fp8_backward = BACKWARD_WEIGHTS
         fp8_backward.clear()
+        fp8_backward.active = fp8_backward.enabled()
         if dequant_cache is None:
             set_vram_request_handler(fp8_backward_vram_handler(fp8_backward))
     train_peak = TrainingPeakMemory(device)
@@ -4257,6 +4258,7 @@ def _train_dit(
         if dequant_cache is None:
             set_vram_request_handler(None)
         fp8_backward.clear()
+        fp8_backward.active = False
     if fast_lora_layers:
         stats = fast_lora_stats()
         if dequant_cache is not None:

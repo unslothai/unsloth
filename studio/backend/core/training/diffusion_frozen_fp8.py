@@ -6,7 +6,8 @@
 grad_x needs the weight column-major (fp8 GEMMs take the reduction dim contiguous on both operands), which the
 row-major forward copy is not. ``Fp8BackwardWeights`` keeps those column-major copies while they fit its budget
 (planned from the room the checkpointing budget leaves after step 1); without room each backward makes it again, as
-before. Same tensor either way, so grad_x is bit-identical. ``UNSLOTH_DIFFUSION_FP8_BWD_CACHE=0`` turns it off."""
+before (with a tiled transpose). Same tensor either way, so grad_x is bit-identical. Only a trainer that plans the
+budget turns it on (``active``); ``UNSLOTH_DIFFUSION_FP8_BWD_CACHE=0`` keeps the inline copy."""
 
 import os
 import sys
@@ -43,7 +44,50 @@ def _unit_scaled_mm(a, b):
     return out[0] if isinstance(out, tuple) else out  # torch < 2.5 also returned amax
 
 
+_TRANSPOSE_KERNEL: list = []  # [kernel] once built, [None] when Triton is unavailable
+
+
+def _transpose_kernel():
+    if not _TRANSPOSE_KERNEL:
+        try:
+            import triton
+            import triton.language as tl
+
+            @triton.jit
+            def transpose(src, dst, M, N, BM: tl.constexpr, BN: tl.constexpr):
+                # Tiled, so both the read of [M, N] and the write of [N, M] are coalesced.
+                rm = tl.program_id(0) * BM + tl.arange(0, BM)
+                rn = tl.program_id(1) * BN + tl.arange(0, BN)
+                mask = (rm[:, None] < M) & (rn[None, :] < N)
+                tile = tl.load(src + rm[:, None].to(tl.int64) * N + rn[None, :], mask = mask)
+                tl.store(dst + rn[None, :].to(tl.int64) * M + rm[:, None], tile, mask = mask)
+
+            _TRANSPOSE_KERNEL.append(transpose)
+        except Exception:  # noqa: BLE001 -- no Triton: aten's copy below
+            _TRANSPOSE_KERNEL.append(None)
+    return _TRANSPOSE_KERNEL[0]
+
+
 def _column_major(q):
+    """``q`` [out, in] row-major as the same values column-major. aten's strided copy is several times slower than
+    a tiled transpose for 1-byte elements (the compiled graph used to get inductor's tiled one)."""
+    if (
+        q.is_cuda
+        and q.dim() == 2
+        and min(q.shape) > 1
+        and q.is_contiguous()
+        and q.element_size() == 1
+    ):
+        kernel = _transpose_kernel()
+        if kernel is not None:
+            try:
+                m, n = q.shape
+                dst = torch.empty((n, m), dtype = torch.uint8, device = q.device)
+                grid = ((m + 63) // 64, (n + 63) // 64)
+                kernel[grid](q.view(torch.uint8), dst, m, n, BM = 64, BN = 64)
+                return dst.view(q.dtype).t()
+            except Exception:  # noqa: BLE001 -- e.g. a Triton that cannot build here: aten's copy
+                _TRANSPOSE_KERNEL[0] = None
     return q.t().contiguous().t()
 
 
@@ -51,6 +95,9 @@ class Fp8BackwardWeights:
     """Column-major copies of frozen fp8 weights for grad_x, kept while they fit in ``budget`` bytes."""
 
     def __init__(self):
+        # Set by the trainer before its first step: the backward then looks the copy up (traced in on step 1, so
+        # this is read once per compiled graph); off, it copies inline as before.
+        self.active = False
         self.budget = 0
         self.used = 0
         # data_ptr -> (source weight, column-major copy); the entry holds the source, so its storage (and the key)
@@ -170,7 +217,10 @@ class _FrozenFp8MM(torch.autograd.Function):
         q, s_row = ctx.saved_tensors
         # The weight scale sits on the reduction dim of grad_y @ W, so it folds into grad_y; mat2 must be column-major.
         gq, sg = _rowwise_quant(gy.float() * s_row)
-        gx = _grad_input_mm(gq, q).float() * sg
+        if BACKWARD_WEIGHTS.active:
+            gx = _grad_input_mm(gq, q).float() * sg
+        else:
+            gx = _unit_scaled_mm(gq, q.t().contiguous().t()).float() * sg
         return gx.to(ctx.x_dtype), None, None, None
 
 

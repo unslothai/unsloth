@@ -34,8 +34,10 @@ def _fresh_cache(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_FP8_BWD_CACHE", raising = False)
     f8.BACKWARD_WEIGHTS.clear()
     f8.BACKWARD_WEIGHTS.hits = f8.BACKWARD_WEIGHTS.misses = 0
+    f8.BACKWARD_WEIGHTS.active = True
     yield
     f8.BACKWARD_WEIGHTS.clear()
+    f8.BACKWARD_WEIGHTS.active = False
 
 
 def _model(n = 3, width = 64):
@@ -78,6 +80,33 @@ def test_cache_keeps_to_its_budget():
 def test_no_budget_keeps_mains_behaviour():
     _grad_x(_model())
     assert f8.BACKWARD_WEIGHTS.entries == {} and f8.BACKWARD_WEIGHTS.used == 0
+
+
+def test_inactive_keeps_the_inline_copy():
+    # Outside a budgeted trainer run (the load probe, other callers) the backward never touches the cache.
+    model = _model()
+    ref = _grad_x(model)
+    f8.BACKWARD_WEIGHTS.active = False
+    f8.BACKWARD_WEIGHTS.hits = f8.BACKWARD_WEIGHTS.misses = 0
+    f8.BACKWARD_WEIGHTS.plan(GIB)
+    assert torch.equal(_grad_x(model), ref)
+    assert (
+        f8.BACKWARD_WEIGHTS.hits == f8.BACKWARD_WEIGHTS.misses == 0
+        and f8.BACKWARD_WEIGHTS.entries == {}
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize(
+    "shape", [(64, 64), (3072, 9216), (9216, 3072), (100, 37), (1, 4096), (4096, 1), (130, 260)]
+)
+def test_tiled_transpose_matches_aten_on_cuda(shape):
+    q = torch.randn(shape, device = "cuda").to(torch.float8_e4m3fn)
+    got = f8._column_major(q)
+    ref = q.t().contiguous().t()
+    assert got.shape == ref.shape and got.stride() == ref.stride() and got.dtype == q.dtype
+    assert torch.equal(got.view(torch.uint8), ref.view(torch.uint8))
+    assert f8._transpose_kernel() is not None
 
 
 def test_kill_switch(monkeypatch):
