@@ -6285,6 +6285,21 @@ class DiffusionResolvedControl(BaseModel):
         '{"step", "status": "engaged" | "declined" | "failed", "reason"} (why a step did not engage, or the '
         "error it failed with). Null on every other control.",
     )
+    engaged: Any = Field(
+        None,
+        description = "attention_backend: the backend the attention modules actually run (a string). "
+        "int8_attention: whether Studio's INT8 attention kernel engaged (a boolean). Null on every other control.",
+    )
+    modules: Optional[int] = Field(
+        None,
+        description = "attention_backend / int8_attention: how many attention modules run the engaged backend; "
+        "null when the pipeline has no countable processors and on every other control.",
+    )
+    routed: Optional[Dict[str, int]] = Field(
+        None,
+        description = "attention_backend only: how many attention modules route to each backend. Null on every "
+        "other control.",
+    )
 
 
 class DiffusionDownloadPlanEntry(BaseModel):

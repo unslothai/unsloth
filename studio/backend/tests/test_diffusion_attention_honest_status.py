@@ -370,6 +370,30 @@ def test_status_builders_use_the_census_entry():
     assert video.count("annotate_attention_resolved(") == 2
 
 
+@pytest.mark.parametrize("response", ["DiffusionStatusResponse", "VideoStatusResponse"])
+def test_the_census_survives_the_status_response_model(response):
+    # the status routes return through the response model, which drops any field it does not declare
+    import models.inference as M
+
+    pipe = _pipe()
+    for m in pipe.transformer.blocks[:3]:
+        m.processor._attention_backend = "sage_hub"
+    record = build_resolved_record(
+        {
+            "attention_backend": A.attention_resolved_entry(
+                "sage", "sage_hub", pipe, target = _target()
+            )
+        }
+    )
+    A.annotate_attention_resolved(record, pipe)
+    body = getattr(M, response)(loaded = True, resolved = record).model_dump()
+    entry = body["resolved"]["attention_backend"]
+    assert entry["value"] == "sage_hub" and entry["status"] == "applied"
+    assert entry["engaged"] == "sage_hub"
+    assert entry["modules"] == 3
+    assert entry["routed"] == {"native": 1, "sage_hub": 3}
+
+
 # ---------------------------------------------------------------- no graph break, recompile or tensor op added
 
 
