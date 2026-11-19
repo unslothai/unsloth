@@ -218,9 +218,9 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
             {FEATURES.map((feature) => (
               <li
                 key={feature.label}
-                className="flex items-center gap-2.5 rounded-full bg-muted/50 py-1.5 pr-4 pl-1.5"
+                className="flex items-center gap-2.5 rounded-full bg-muted/50 py-3 pr-4 pl-4"
               >
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary">
+                <span className="flex shrink-0 items-center justify-center text-primary">
                   <HugeiconsIcon
                     icon={feature.icon}
                     strokeWidth={1.9}
@@ -302,9 +302,9 @@ const CardArt: FC = () => (
 const DialogHero: FC = () => (
   <div
     aria-hidden="true"
-    className="relative mx-auto mt-2 h-[calc(232px*var(--ui-space-scale,1))] w-full max-w-[calc(400px*var(--ui-space-scale,1))]"
+    className="relative mx-auto mt-2 h-[calc(240px*var(--ui-space-scale,1))] max-sm:h-[calc(254px*var(--ui-space-scale,1))] w-full max-w-[calc(460px*var(--ui-space-scale,1))]"
   >
-    <div className="absolute inset-x-0 bottom-1 flex flex-col gap-3 rounded-[calc(22px*var(--ui-space-scale,1))] bg-white px-3 pt-3 pb-2.5 shadow-[var(--composer-shadow)] dark:bg-card">
+    <div className="absolute inset-x-0 bottom-4 flex flex-col gap-3 rounded-[calc(22px*var(--ui-space-scale,1))] bg-white px-3 pt-3 pb-2.5 shadow-[var(--composer-shadow)] dark:bg-card">
       <span className="px-1.5 text-muted-foreground text-xs">Ask anything</span>
       <div className="flex items-center gap-1.5 text-muted-foreground">
         <HugeiconsIcon
@@ -312,8 +312,8 @@ const DialogHero: FC = () => (
           className="size-4.5 shrink-0 stroke-[1.75px]"
         />
         <span className="flex-1" />
-        <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-muted-foreground/10 py-1 pr-2.5 pl-1.5 font-medium text-foreground text-xs">
-          <LogoDot src="/provider-logos/google-g.svg" className="size-3.5" />
+        <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-muted-foreground/10 py-1.5 pr-3 pl-2 font-medium text-foreground text-sm">
+          <LogoDot src="/provider-logos/google-g.svg" className="size-4" />
           <span className="min-w-0 truncate">gemma-4-E4B-it</span>
           <span className="shrink-0 text-muted-foreground">Thinking</span>
         </span>
