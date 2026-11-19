@@ -218,8 +218,7 @@ def test_vram_is_tight():
 
 
 def test_accelerator_memory_counts_what_the_hip_figure_misses(monkeypatch):
-    """Linux ROCm: hipMemGetInfo misses Vulkan users, so a resident Vulkan server (5.8 GiB here) read as 11.8 GiB
-    free and was never released before sd-server loaded. The kernel's count wins when it is lower."""
+    """Linux ROCm: the kernel's free figure wins when it is lower than HIP's, which misses Vulkan users."""
     import contextlib
     import types
 
@@ -241,7 +240,6 @@ def test_accelerator_memory_counts_what_the_hip_figure_misses(monkeypatch):
     free, total, device = pup._accelerator_memory_mib()
     assert (free, total, device) == (5_454, 12_272, "cuda")
     assert pup.vram_is_tight(free, total)
-    # Unknown or higher: the driver's figure stands.
     monkeypatch.setattr(hardware, "rocm_linux_kernel_free_mib", lambda *a, **k: None)
     assert pup._accelerator_memory_mib()[0] == 11_802
     monkeypatch.setattr(hardware, "rocm_linux_kernel_free_mib", lambda *a, **k: 12_000)

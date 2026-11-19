@@ -4174,7 +4174,7 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
 
 
 def rocm_linux_kernel_free_mib(device: Any = None, *, module: Any = None) -> Optional[int]:
-    """Free VRAM of a ROCm device as the kernel counts it (DRM sysfs: every process and every API), in MiB, or None when it cannot be told. On Linux, hipMemGetInfo counts only compute (KFD) allocations: a Vulkan llama-server or sd-server and the desktop are invisible to it (measured on an RX 6700 XT: a 2.5 GiB Vulkan llama-server left its free figure unchanged). The card is found by the PCI address torch reports, and only a card whose sysfs total matches torch's within ~10% is trusted (an APU's carve-out or a partitioned card is another memory scope). ``module`` defaults to torch.cuda; never raises."""
+    """Free MiB of a ROCm device per DRM sysfs, which counts the Vulkan users and desktop hipMemGetInfo misses on Linux, or None. Matched by PCI address; a sysfs total off torch's by >10% (APU carve-out, partitioned card) is another scope. Never raises."""
     if platform.system() != "Linux":
         return None
     try:

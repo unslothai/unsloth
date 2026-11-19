@@ -1223,8 +1223,7 @@ def _accelerator_memory_mib(
             if device == "cuda" and free_mib is not None:
                 from utils.hardware.hardware import rocm_linux_kernel_free_mib
 
-                # On Linux ROCm the HIP figure misses Vulkan users (this server and sd-server in the ROCm image)
-                # and the desktop, so a resident server would never read as tight. The kernel's count sees them.
+                # Linux ROCm: HIP's free figure misses Vulkan users (this server, sd-server) and the desktop.
                 kernel_free = rocm_linux_kernel_free_mib()
                 if kernel_free is not None:
                     free_mib = min(free_mib, kernel_free)
