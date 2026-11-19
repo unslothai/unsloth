@@ -806,3 +806,29 @@ def test_multigpu_batch_split_arms_each_half(monkeypatch):
         again = [model(**kw)[0].clone() for kw in calls]
     for a, b in zip(ref, again):
         torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
+
+
+def test_host_move_keeps_gguf_parameters_and_their_quant_type():
+    """The packed pinned arena copies a GGUFParameter's bytes into a plain slab view; the moved weight must stay a
+    GGUFParameter with its quant_type, or GGUFLinear on the device clone skips dequantization."""
+    utils = pytest.importorskip("diffusers.quantizers.gguf.utils")
+
+    def arena_like(t):
+        dst = (
+            torch.empty(t.numel() * t.element_size(), dtype = torch.uint8).view(t.dtype).view(t.shape)
+        )
+        dst.copy_(t)
+        return dst
+
+    lin = torch.nn.Linear(4, 4, bias = True)
+    packed = utils.GGUFParameter(torch.arange(16, dtype = torch.uint8).view(4, 4), quant_type = 8)
+    lin.weight = packed
+    ap._to_host(lin, pin = arena_like)
+    assert type(lin.weight) is utils.GGUFParameter
+    assert lin.weight.quant_type == 8 and lin.weight.quant_shape == packed.quant_shape
+    assert torch.equal(
+        lin.weight.detach().view(torch.uint8), torch.arange(16, dtype = torch.uint8).view(4, 4)
+    )
+    clone = ap._device_clone(lin, torch.device("cpu"))
+    assert getattr(clone.weight, "quant_type", None) == 8
+    assert type(lin.bias) is torch.nn.Parameter  # plain parameters keep the plain wrapper

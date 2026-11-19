@@ -279,13 +279,28 @@ def _to_host(mod: Any, pin: Callable[[Any], Any] = _pin) -> int:
                 host = t.detach()
                 if host.device.type != "cpu":
                     host = host.to("cpu")
-                host = pin(host)
+                host = _same_kind(t, pin(host))
                 store[n] = (
                     torch.nn.Parameter(host, requires_grad = False)
-                    if store is m._parameters
+                    if store is m._parameters and not isinstance(host, torch.nn.Parameter)
                     else host
                 )
     return moved
+
+
+def _same_kind(orig: Any, pinned: Any) -> Any:
+    """``pinned`` as ``orig``'s Parameter subclass with its attributes: the arena copies a GGUFParameter's packed bytes
+    into a plain slab view, and a GGUFLinear needs the subclass and its ``quant_type`` to dequantize."""
+    torch = _torch()
+    cls = type(orig)
+    if not isinstance(orig, torch.nn.Parameter) or cls is torch.nn.Parameter or type(pinned) is cls:
+        return pinned
+    try:
+        out = torch.Tensor._make_subclass(cls, pinned, False)
+        out.__dict__.update(orig.__dict__)
+        return out
+    except Exception:  # noqa: BLE001 - a subclass that cannot wrap a plain view keeps its own pinned copy
+        return _pin(orig.detach().to("cpu"))
 
 
 def _nbytes(t: Any) -> int:
