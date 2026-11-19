@@ -13873,8 +13873,8 @@ _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default =
 _MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
-# (account, thread) -> the MCP tools the thread lists, in order.
-_MCP_HELD_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
+# (account, thread) -> (the window it was sized for, the MCP tools the thread lists, in order).
+_MCP_HELD_THREADS: "OrderedDict[tuple, tuple[int, list[str]]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -14105,23 +14105,24 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
-def _mcp_held(by_name: dict) -> list[str] | None:
-    """The thread's listed tools still in the catalog, or None before its first listing."""
+def _mcp_held(by_name: dict, ctx: int) -> list[str] | None:
+    """The thread's listed tools still in the catalog, or None before its first listing at this window: a
+    reload to another window re-sizes the search tool anyway, so the preload is re-fitted with it."""
     key = _mcp_thread_key()
     if key is None:
         return None
     with _MCP_LOADED_LOCK:
-        listed = _MCP_HELD_THREADS.get(key)
-    return None if listed is None else [n for n in listed if n in by_name]
+        held_ctx, listed = _MCP_HELD_THREADS.get(key, (None, None))
+    return None if held_ctx != ctx else [n for n in listed if n in by_name]
 
 
-def _mcp_hold(listed: list[str]) -> None:
+def _mcp_hold(listed: list[str], ctx: int) -> None:
     key = _mcp_thread_key()
     if key is None or not _MCP_LISTING_REMEMBER.get():
         return
     with _MCP_LOADED_LOCK:
         _MCP_HELD_THREADS.pop(key, None)
-        _MCP_HELD_THREADS[key] = listed
+        _MCP_HELD_THREADS[key] = (ctx, listed)
         while len(_MCP_HELD_THREADS) > _MCP_LOADED_THREADS_MAX:
             _MCP_HELD_THREADS.popitem(last = False)
 
@@ -14204,14 +14205,14 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     # Opt-in: only the search tool and the pinned tools, never a preload.
     if os.environ.get("UNSLOTH_STUDIO_MCP_SEARCH_ONLY") == "1":
         return listing
-    held = _mcp_held(by_name)
+    held = _mcp_held(by_name, ctx)
     if held is None:
         wanted = list(dict.fromkeys(_mcp_ran(by_name) + _mcp_best(specs)))
         names = [spec["function"]["name"] for spec in _mcp_fill(listing, wanted, by_name, ctx)[1:]]
     else:
         # A newly pinned tool goes last and stays, so the block changes once for it, not on every image or forced turn.
         names = list(dict.fromkeys(held + [spec["function"]["name"] for spec in listing[1:]]))
-    _mcp_hold(names)
+    _mcp_hold(names, ctx)
     _mcp_note_matches(specs, by_name, listing[0], names, ctx)
     return listing[:1] + [by_name[name] for name in names]
 
