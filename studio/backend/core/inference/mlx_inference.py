@@ -4070,6 +4070,67 @@ class _MLXPromptCacheHistory:
         self._lru = lru_cls(max_size = max_entries, max_bytes = max_bytes)
         self._oversized = None
         self._newest = None
+        self._lent = None
+
+    def _lend(self, key, tokens):
+        """The stored prefix ``fetch_nearest_cache`` would deep-copy, handed over instead."""
+        from mlx_lm.models.cache import KVCache
+
+        lru, node = self._lru, self._lru._trie._trie.get(key)
+        walked = served = 0
+        for token in tokens:
+            node = node.get(token) if node is not None else None
+            if node is None:
+                break
+            walked += 1
+            if "__value__" in node:
+                served, entry = walked, node["__value__"]
+        # Upstream's shorter branch alone: no exact match, and no entry shares more of the prompt.
+        if not 1 < served == walked < len(tokens):
+            return None
+        cache = entry.prompt_cache
+        # Only a pure offset rewind can be undone by putting back the lent rows.
+        if any(type(layer) is not KVCache for layer in cache) or (
+            _kv_prefix_coverage(cache) != served
+        ):
+            return None
+        shorter, order = tokens[:served], lru._lru._lrus[entry.cache_type]
+        rows = [layer.keys.shape[2] for layer in cache]
+        slot = (entry.cache_type, order.index((key, shorter)), rows)
+        lru._trie.pop(key, shorter)
+        del order[slot[1]]
+        lru._n_bytes -= entry.nbytes
+        lru._n_bytes_by_type[entry.cache_type] -= entry.nbytes
+        self._lent = (key, shorter, cache, slot)
+        return cache, tokens[served:]
+
+    def _put_back(self, lent, cache):
+        """Lent rows back in their LRU slot, without ``insert()`` moving anything else."""
+        import mlx.core as mx
+
+        key, tokens, lent_cache, (cache_type, position, rows) = lent
+        lru = self._lru
+        # The allocation lent, so the charge and the spare rows are as before the turn. ``* 1``
+        # copies where ``mx.contiguous`` could share a grown buffer the held turn still writes.
+        for layer, source, n in zip(cache, lent_cache, rows):
+            layer.keys = source.keys[..., :n, :] * 1
+            layer.values = source.values[..., :n, :] * 1
+            layer.offset = len(tokens)
+        mx.eval([array for layer in cache for array in (layer.keys, layer.values)])
+        entry = type(lru).CacheEntry(cache, sum(layer.nbytes for layer in cache), cache_type)
+        lru._trie.add(key, tokens, entry)
+        lru._lru._lrus[cache_type].insert(position, (key, tokens))
+        lru._n_bytes += entry.nbytes
+        lru._n_bytes_by_type[cache_type] += entry.nbytes
+
+    def settle_lent(self):
+        """A turn that ended without its insert (Stop, close, exception) returns the lent rows."""
+        lent, self._lent = self._lent, None
+        if lent is not None:
+            try:
+                self._put_back(lent, lent[2])
+            except Exception as exc:
+                logger.debug("MLX prompt cache: lent entry dropped (%s)", exc)
 
     def _take_oversized(self, key, tokens):
         held, self._oversized = self._oversized, None
@@ -4094,10 +4155,24 @@ class _MLXPromptCacheHistory:
     def release_oversized(self):
         self._oversized = None
 
-    def fetch(self, model, key, tokens):
+    def fetch(
+        self,
+        model,
+        key,
+        tokens,
+        lend = False,
+    ):
+        self.settle_lent()
         held = self._take_oversized(key, tokens)
         if held is not None:
             return held
+        try:
+            lent = self._lend(key, list(tokens)) if lend else None
+        except (AttributeError, KeyError, ValueError, ImportError) as exc:
+            logger.debug("MLX prompt cache: entry not handed over (%s)", exc)
+            lent = None
+        if lent is not None:
+            return lent
         cache, rest = self._lru.fetch_nearest_cache(key, list(tokens))
         if cache is not None:
             if rest:
@@ -4137,8 +4212,18 @@ class _MLXPromptCacheHistory:
         tokens = tokens[:covered]
         if not tokens:
             return
+        if self._lent is not None and self._lent[2] is not cache:
+            self.settle_lent()
+        # The turn's own cache replaces the entry it was lent, as on the copy path.
+        lent, self._lent = self._lent, None
         self._newest = (key, tokens)
         if nbytes > self._max_bytes:
+            if lent is not None:
+                # Beside the held turn, the copy path keeps the lent prefix in the LRU.
+                try:
+                    self._put_back(lent, [type(layer)() for layer in cache])
+                except Exception as exc:
+                    logger.debug("MLX prompt cache: lent prefix not kept (%s)", exc)
             # In the LRU it would evict itself and every other conversation.
             logger.debug(
                 "MLX prompt cache: holding %.2f GB entry over the %.2f GB budget for its next turn",
@@ -4150,6 +4235,7 @@ class _MLXPromptCacheHistory:
         self._lru.insert_cache(key, tokens, cache)
 
     def resume_entries(self):
+        self.settle_lent()
         if self._newest is None:
             return []
         key, tokens = self._newest
@@ -6069,7 +6155,12 @@ class MLXInferenceBackend:
             logger.info("MLX VLM prompt cache: media block not prepared (%s)", exc)
             return None
 
-    def _prepare_prompt_cache(self, prompt, adapter_state):
+    def _prepare_prompt_cache(
+        self,
+        prompt,
+        adapter_state,
+        lend = False,
+    ):
         history = self._prompt_cache()
         if history is None:
             return prompt, None, None, None, 0
@@ -6078,7 +6169,7 @@ class MLXInferenceBackend:
             if not tokens:
                 return prompt, None, None, None, 0
             key = f"{self.active_model_name}|{adapter_state!r}"
-            cache, rest = history.fetch(self._model, key, tokens)
+            cache, rest = history.fetch(self._model, key, tokens, lend = lend)
         except Exception as exc:
             logger.debug("MLX prompt cache lookup failed: %s", exc)
             return prompt, None, None, None, 0
@@ -7975,7 +8066,7 @@ class MLXInferenceBackend:
                     cache_key,
                     prompt_tokens,
                     cached_n,
-                ) = self._prepare_prompt_cache(prompt, _adapter_state)
+                ) = self._prepare_prompt_cache(prompt, _adapter_state, lend = True)
             max_new_tokens = self._generation_limit(prompt, max_new_tokens, prompt_tokens)
             logger.info(
                 "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
@@ -8060,6 +8151,9 @@ class MLXInferenceBackend:
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
             finally:
+                if self._prompt_cache_history is not None:
+                    # Stop closes this stream before its insert: the lent rows go back now.
+                    self._prompt_cache_history.settle_lent()
                 # Latched here so a later cancel cannot rewrite the finish reason
                 if final_response is not None:
                     self.last_generation_stats = _build_generation_stats(
