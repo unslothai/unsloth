@@ -44,6 +44,8 @@ def _run(
     accum = 4,
     steps = 3,
     dropout = 0.1,
+    precision = "bf16",
+    **cfg_extra,
 ):
     """One CPU training run; returns (final LoRA tensors, per-call record of forward inputs, alive-at-forward counts)."""
     from PIL import Image
@@ -55,7 +57,7 @@ def _run(
         (data / f"img{i}.txt").write_text(f"a red tile {i}")
     monkeypatch.setattr("core.inference.diffusion_lora.loras_dir", lambda: tmp_path / "catalog")
     (tmp_path / "catalog").mkdir(exist_ok = True)
-    monkeypatch.setattr(dit, "_resolve_base_precision", lambda cfg, spec, device: "bf16")
+    monkeypatch.setattr(dit, "_resolve_base_precision", lambda cfg, spec, device: precision)
     monkeypatch.setattr(dit, "_assert_trusted_base_model", lambda *a, **k: None)
     monkeypatch.setitem(sys.modules, "unsloth_zoo", None)
     monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda *a, **k: 0)
@@ -152,6 +154,7 @@ def _run(
         lora_dropout = dropout,
         cache_variants = 1,
         seed = 0,
+        **cfg_extra,
     )
     dit.run_dit_lora_training(cfg, on_event = events.append)
     from safetensors.torch import load_file
@@ -291,3 +294,47 @@ def test_the_rerun_restarts_the_peak_the_cache_plan_reads(
     else:
         assert any("Ran out of GPU memory" in w for w in warnings)
         assert calls == ["pause", "resume"]
+
+
+@pytest.mark.allow_network
+def test_a_preview_drops_the_fp8_backward_copies_and_keeps_their_budget(
+    tmp_path, monkeypatch, tiny_pipe_dir
+):
+    import core.training.diffusion_frozen_fp8 as f8
+
+    # An fp8 run whose base stays fp32 on CPU: only the backward weight cache's bookkeeping is under test.
+    monkeypatch.setattr(dit, "_load_fp8_prequant_transformer", lambda *a, **k: None)
+    monkeypatch.setattr(dit, "_apply_fp8_training", lambda *a, **k: True)
+    orig_plan = f8.Fp8BackwardWeights.plan
+
+    def plan(self, nbytes):
+        orig_plan(self, nbytes)
+        # Stand in for the copies step 2's backward would make.
+        q = torch.zeros(8, 8)
+        self.entries[q.data_ptr()] = (q, q.t())
+        self.used = q.numel()
+
+    monkeypatch.setattr(f8.Fp8BackwardWeights, "plan", plan)
+    at_preview = []
+
+    def sample_round(plan_, step, *a, **k):
+        w = f8.BACKWARD_WEIGHTS
+        at_preview.append((step, len(w.entries), w.used, w.budget))
+
+    monkeypatch.setattr(dit, "run_sample_round", sample_round)
+    _run(
+        tmp_path,
+        monkeypatch,
+        tiny_pipe_dir,
+        budget = True,
+        accum = 1,
+        steps = 3,
+        precision = "fp8",
+        sample_every = 1,
+        sample_prompts = ("a red tile",),
+    )
+    planned = [r for r in at_preview if r[3] > 0]
+    assert planned, at_preview
+    # Every preview after the plan starts with no copies held, and the budget survives for the next backward.
+    assert all(n == 0 and used == 0 for _s, n, used, _b in planned), at_preview
+    assert not f8.BACKWARD_WEIGHTS.active and f8.BACKWARD_WEIGHTS.entries == {}
