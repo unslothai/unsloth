@@ -1239,6 +1239,9 @@ def replica_layout(
     mode = cfg_replica_placement_mode()
     if mode == "off" or cfg_parallel_mode() == "off" or selection is None:
         return None, None
+    if multigpu_mode() == "force" and mode != "force":
+        # UNSLOTH_DIFFUSION_MULTIGPU=force asked for a split even where one card holds the model: keep it
+        return None, None
     if selection.automatic and cfg_parallel_mode() != "force" and automatic_cfg_parallel_off():
         return None, None
     torch = _torch()

@@ -794,6 +794,32 @@ def test_wan5b_kill_switch_keeps_the_layer_split(monkeypatch):
     assert _recorded(d).chosen == "layer_split"
 
 
+@pytest.mark.parametrize("gpu_ids", [(0, 1), None], ids = ["explicit", "automatic"])
+def test_forced_multigpu_split_is_not_replaced_by_the_replica(monkeypatch, gpu_ids):
+    # UNSLOTH_DIFFUSION_MULTIGPU=force asks for a split even where one card holds the model: a guided load keeps the
+    # split it forced (companion here, layer split for Wan 5B) instead of the priced replica layout
+    monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
+    _priced(monkeypatch, need_mib = 3900, compute_s = 1.0, tokens = 4096)
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = True, steps = 20)
+    ids = None if gpu_ids is None else list(gpu_ids)
+    d = decide(
+        monkeypatch,
+        host,
+        _sizes(dit = 3900, te = 1600),
+        pipe = pipe,
+        gpu_ids = ids,
+        preload_split = False,
+        place = False,
+    )
+    assert d.plan.secondary_ordinal == 1
+    assert _recorded(d).chosen == "companion_split"
+    w = _wan5b(monkeypatch, gpu_ids = gpu_ids)
+    assert w.plan.layer_split is not None and w.plan.layer_split.cards == (0, 1)
+    assert _recorded(w).chosen == "layer_split"
+
+
 def test_wan5b_status_reports_the_replica_choice_and_its_fallback(monkeypatch):
     d = _wan5b(monkeypatch)
     p = _placement(d)
