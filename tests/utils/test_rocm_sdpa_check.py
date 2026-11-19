@@ -2,7 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """ROCm: AOTriton SDPA kernels that fail Unsloth's self-check on a GPU stay out of its attention (#18403)."""
 
+import ast
+import json
 import importlib
+import pathlib
+import signal
 import sys
 import types
 
@@ -157,6 +161,46 @@ def test_passing_device_and_cuda_builds_are_untouched(rocm, monkeypatch):
     assert seen[-1] == before
 
 
+def test_rerouted_xformers_call_skips_refused_kernels(rocm):
+    """Compiled plain-causal attention rerouted off xformers on ROCm calls _rerouted_sdpa."""
+    verdict, seen = rocm
+    verdict.update(flash = False)
+    Q, K, V = _qkv()
+    ad._rerouted_sdpa(Q, K, V, is_causal = True, enable_gqa = True)
+    assert seen == [(False, True, True)]
+
+
+def test_dispatch_has_no_unguarded_sdpa_call():
+    """Every SDPA call in the dispatch goes through its guarded scaled_dot_product_attention, so a
+    new direct torch call (or an alias of it) cannot run kernels the ROCm self-check refused."""
+    path = pathlib.Path(ad.__file__)
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+    def function_of(node):
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return node.name
+        return None
+
+    direct = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(
+            a.name == "scaled_dot_product_attention" for a in node.names
+        ):
+            direct.append((node.lineno, "import"))
+        if not (isinstance(node, ast.Attribute) and node.attr == "scaled_dot_product_attention"):
+            continue
+        parent = parents.get(node)
+        if isinstance(parent, ast.Attribute) and parent.attr == "__doc__":
+            continue  # reads the docstring, runs nothing
+        if function_of(node) == "scaled_dot_product_attention":
+            continue  # the guarded wrapper itself
+        direct.append((node.lineno, function_of(node)))
+    assert not direct, f"{path.name}: SDPA reached without the ROCm guard at {direct}"
+
+
 def test_caller_policy_of_only_refused_kernels_is_kept(rocm):
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -222,6 +266,71 @@ def test_verdict_refuses_failed_backends_once(fresh_verdicts, monkeypatch, capsy
     assert check.rocm_sdpa_verdict(0) is v and calls == [0]
 
 
+class _FakeChild:
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode, self._out = returncode, (stdout, stderr)
+
+    def communicate(self, timeout = None):
+        return self._out
+
+    def kill(self):
+        pass
+
+
+def _report(**fields):
+    report = {"backend": "flash", "ok": True, "ran": 8, "detail": [], **fields}
+    return "UNSLOTH_ROCM_SDPA_CHECK " + json.dumps(report) + "\n"
+
+
+_OOM_TRACE = "torch.OutOfMemoryError: HIP out of memory. Tried to allocate 140.00 MiB. GPU 0 has a total capacity of 15.92 GiB"
+
+
+@needs_check
+@pytest.mark.parametrize(
+    "child, usable",
+    [
+        # Resource exhaustion says nothing about the kernel: kept (inconclusive).
+        ((1, "", "Traceback ...\n" + _OOM_TRACE), True),
+        ((-signal.SIGKILL, "", ""), True),  # the kernel's out-of-memory killer
+        ((0, _report(ran = 3, out_of_memory = ["masked float16 hd128"]), ""), True),
+        # Kernel faults and wrong numbers stay refusals.
+        ((-signal.SIGABRT, "", "HIP error: an illegal memory access was encountered"), False),
+        ((1, "", "RuntimeError: HIP error: invalid argument"), False),
+        (
+            (0, _report(ok = False, detail = ["segments float16 hd128: worst error / bound 3.1"]), ""),
+            False,
+        ),
+        ((0, _report(ok = False, detail = ["x: bad"], out_of_memory = ["y"]), ""), False),
+        ((0, _report(), ""), True),
+    ],
+)
+def test_out_of_memory_check_is_inconclusive(fresh_verdicts, monkeypatch, capsys, child, usable):
+    monkeypatch.setattr(torch.version, "hip", "7.0.0")
+    monkeypatch.setattr(check, "_arch", lambda index: "gfx1200")
+    monkeypatch.setattr(check.subprocess, "Popen", lambda *a, **k: _FakeChild(*child))
+    v = check.rocm_sdpa_verdict(0)
+    assert (v["flash"], v["efficient"]) == (usable, usable), v
+    out = capsys.readouterr().out
+    assert ("failed a self-check" in out) == (not usable), out
+    if usable and child != (0, _report(), ""):
+        assert "could not finish" in out, out
+
+
+@needs_check
+def test_timeout_stays_a_refusal(fresh_verdicts, monkeypatch):
+    class Hung(_FakeChild):
+        def communicate(self, timeout = None):
+            if timeout is not None:
+                raise check.subprocess.TimeoutExpired("child", timeout)
+            return "", ""
+
+    monkeypatch.setattr(torch.version, "hip", "7.0.0")
+    monkeypatch.setattr(check, "_arch", lambda index: "gfx1200")
+    monkeypatch.setattr(check.subprocess, "Popen", lambda *a, **k: Hung(-signal.SIGKILL, "", ""))
+    v = check.rocm_sdpa_verdict(0)
+    assert (v["flash"], v["efficient"]) == (False, False), v
+
+
 @needs_check
 def test_child_script_compiles():
     compile(check._CHILD, "rocm_sdpa_check_child", "exec")
@@ -233,3 +342,13 @@ def test_child_passes_on_a_working_gpu():
     """The child's shapes, reference and tolerance accept kernels that are correct."""
     results = check._run_children(0)
     assert all(ok for ok, _ in results.values()), results
+
+
+@needs_check
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a GPU")
+def test_child_out_of_memory_is_inconclusive(monkeypatch):
+    """A child that cannot allocate its tensors (the model is resident) keeps both backends."""
+    starved = "import torch\ntorch.cuda.set_per_process_memory_fraction(1e-6, int(__import__('sys').argv[1]))\n"
+    monkeypatch.setattr(check, "_CHILD", starved + check._CHILD)
+    results = check._run_children(0)
+    assert all(ok is None for ok, _ in results.values()), results

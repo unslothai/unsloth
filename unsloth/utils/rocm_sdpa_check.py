@@ -9,7 +9,8 @@ experimental (RDNA: gfx11xx, gfx12xx) torch offers those kernels to every SDPA c
 then surfaces in an unrelated kernel as an illegal memory access. A fault poisons the HIP context,
 so the check runs in a child process: the GQA shapes Unsloth's attention sends (per-segment strided
 views, expanded K/V, a boolean block mask), forward and backward, against an fp32 reference.
-A backend that errors, faults, hangs or disagrees is not used by Unsloth's attention on that GPU.
+A backend that errors, faults, hangs or disagrees is not used by Unsloth's attention on that GPU;
+one whose check ran out of memory (the model is often resident already) is kept, with a warning.
 CDNA (gfx9xx) is AOTriton's release target and is trusted. UNSLOTH_ROCM_SDPA_CHECK=0 skips the check.
 """
 
@@ -17,6 +18,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -49,9 +52,26 @@ dtypes = [torch.float16] + ([torch.bfloat16] if torch.cuda.is_bf16_supported() e
 gen = torch.Generator().manual_seed(0)
 
 
-def reference(q, k, v, keep):
-    scores = (q @ k.transpose(-1, -2)) * q.shape[-1] ** -0.5
-    return scores.masked_fill(~keep, float("-inf")).softmax(-1) @ v
+# fp32 output and Q / K / V grads, one segment and head at a time: the block mask is block-diagonal,
+# so this is exact and needs (n, n) scores instead of (heads, T, T) plus their backward.
+def reference(q, k, v, grad):
+    q, k, v, grad = (x.detach().float() for x in (q, k, v, grad))
+    out, dq, dk, dv = torch.empty_like(q), torch.empty_like(q), torch.zeros_like(k), torch.zeros_like(v)
+    causal = torch.ones(max(lengths), max(lengths), dtype = torch.bool, device = device).tril_()
+    start = 0
+    for n in lengths:
+        rows = slice(start, start + n)
+        for h in range(heads):
+            kv = h // groups
+            qh, kh, vh = (x[0, i, rows].clone().requires_grad_() for x, i in ((q, h), (k, kv), (v, kv)))
+            scores = (qh @ kh.T) * q.shape[-1] ** -0.5
+            o = scores.masked_fill(~causal[:n, :n], float("-inf")).softmax(-1) @ vh
+            gq, gk, gv = torch.autograd.grad(o, (qh, kh, vh), grad[0, h, rows])
+            out[0, h, rows], dq[0, h, rows] = o.detach(), gq
+            dk[0, kv, rows] += gk
+            dv[0, kv, rows] += gv
+        start += n
+    return out, dq, dk, dv
 
 
 def block_mask():
@@ -75,15 +95,11 @@ def run(case, dtype, head_dim):
         for h in (heads, kv_heads, kv_heads)
     )
     grad = torch.randn(1, heads, total, head_dim, generator = gen).to(device, dtype)
-    keep = block_mask()
-    ref_in = [x.detach().float().requires_grad_() for x in (q, k, v)]
-    rq, rk, rv = ref_in[0], ref_in[1].repeat_interleave(groups, 1), ref_in[2].repeat_interleave(groups, 1)
-    ref = reference(rq, rk, rv, keep)
-    wants = (ref, *torch.autograd.grad(ref, ref_in, grad.float()))
+    wants = reference(q, k, v, grad)
     with sdpa_kernel([backend]):
         if case == "masked":
             ke, ve = (x.repeat_interleave(groups, 1).contiguous() for x in (k, v))
-            out = F.scaled_dot_product_attention(q.contiguous(), ke, ve, attn_mask = keep[None, None])
+            out = F.scaled_dot_product_attention(q.contiguous(), ke, ve, attn_mask = block_mask()[None, None])
         else:
             gqa = case == "segments_gqa"
             ke, ve = (k, v) if gqa else (x.repeat_interleave(groups, 1) for x in (k, v))
@@ -105,7 +121,19 @@ def run(case, dtype, head_dim):
     return worst <= 1.0, "worst error / bound %.3g" % worst
 
 
-ok, details, ran = True, [], 0
+# Running out of GPU (or host) memory says nothing about the kernel: the model is often resident
+# already. Such a case is inconclusive, never a refusal.
+_OOM = tuple(
+    e for e in (getattr(torch, "OutOfMemoryError", None), getattr(torch.cuda, "OutOfMemoryError", None)) if e
+) + (MemoryError,)
+
+
+def out_of_memory(error):
+    text = str(error)
+    return isinstance(error, _OOM) or "out of memory" in text.lower() or "hipErrorOutOfMemory" in text
+
+
+ok, details, ran, short = True, [], 0, []
 cases = ("segments", "segments_gqa") if name == "flash" else ("segments", "masked")
 for dtype in dtypes:
     for head_dim in (64, 128):
@@ -113,15 +141,22 @@ for dtype in dtypes:
             label = "%s %s hd%d" % (case, str(dtype).replace("torch.", ""), head_dim)
             try:
                 passed, why = run(case, dtype, head_dim)
-            except RuntimeError as error:
+            except Exception as error:
                 if "No available kernel" in str(error):
                     continue  # torch does not offer this backend here, so no call can reach it
-                passed, why = False, str(error).strip().splitlines()[0][:200]
+                if out_of_memory(error):
+                    short.append(label)
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+                    continue
+                passed, why = False, (str(error).strip().splitlines() or [repr(error)])[0][:200]
             ran += 1
             if not passed:
                 ok = False
                 details.append("%s: %s" % (label, why))
-print("UNSLOTH_ROCM_SDPA_CHECK " + json.dumps({"backend": name, "ok": ok, "ran": ran, "detail": details[:4]}), flush = True)
+print("UNSLOTH_ROCM_SDPA_CHECK " + json.dumps({"backend": name, "ok": ok, "ran": ran, "detail": details[:4], "out_of_memory": short}), flush = True)
 """
 
 
@@ -173,18 +208,44 @@ def _run_children(index):
             child.communicate()
             results[backend] = (False, f"timed out after {_CHECK_TIMEOUT_S}s")
             continue
-        line = next(
-            (l for l in stdout.splitlines() if l.startswith("UNSLOTH_ROCM_SDPA_CHECK ")),
-            None,
-        )
-        if line is None:
-            tail = (stderr or stdout).strip().splitlines()[-1:] or [""]
-            results[backend] = (False, f"exit code {child.returncode}: {tail[0][:200]}")
-            continue
-        report = json.loads(line.split(" ", 1)[1])
-        detail = "; ".join(report.get("detail") or []) or f"{report.get('ran', 0)} cases passed"
-        results[backend] = (bool(report.get("ok")), detail)
+        results[backend] = _child_result(child.returncode, stdout, stderr)
     return results
+
+
+# Resource exhaustion, not a kernel fault: torch / HIP allocator errors and host MemoryError.
+_OUT_OF_MEMORY = re.compile(
+    r"out of memory|hipErrorOutOfMemory|MemoryError|Cannot allocate memory", re.I
+)
+
+
+def _child_result(returncode, stdout, stderr):
+    """(ok, detail) of one finished child. ok is None (inconclusive, the backend is kept) when the
+    child ran out of memory: the model is often resident already, which says nothing about the kernel."""
+    stdout, stderr = stdout or "", stderr or ""
+    line = next(
+        (l for l in stdout.splitlines() if l.startswith("UNSLOTH_ROCM_SDPA_CHECK ")),
+        None,
+    )
+    if line is None:
+        tail = (stderr or stdout).strip().splitlines()[-1:] or [""]
+        detail = f"exit code {returncode}: {tail[0][:200]}"
+        if sys.platform != "win32" and returncode == -signal.SIGKILL:
+            # Not the timeout (that is handled before): the kernel's out-of-memory killer.
+            return None, f"killed (out of memory?), {detail}"
+        if _OUT_OF_MEMORY.search(stderr) or _OUT_OF_MEMORY.search(stdout):
+            return None, f"out of memory, {detail}"
+        return False, detail
+    report = json.loads(line.split(" ", 1)[1])
+    failed = report.get("detail") or []
+    if not report.get("ok"):
+        return False, "; ".join(failed)
+    short = report.get("out_of_memory") or []
+    if short:
+        return (
+            None,
+            f"out of memory in {len(short)} cases ({', '.join(short[:4])}), {report.get('ran', 0)} passed",
+        )
+    return True, f"{report.get('ran', 0)} cases passed"
 
 
 def rocm_sdpa_verdict(device_index = 0) -> dict:
@@ -205,9 +266,13 @@ def rocm_sdpa_verdict(device_index = 0) -> dict:
             verdict["source"] = "check"
             results = _run_children(index)
             details = []
+            unsure = []
             for backend, (ok, detail) in results.items():
-                # A check that could not start says nothing about the kernel: keep torch's choice.
+                # A check that could not start or ran out of memory says nothing about the kernel:
+                # keep torch's choice.
                 verdict[backend] = ok is not False
+                if ok is None:
+                    unsure.append(backend)
                 details.append(f"{backend}: {detail}")
             verdict["detail"] = " | ".join(details)
             refused = [b for b in ("flash", "efficient") if not verdict[b]]
@@ -216,6 +281,12 @@ def rocm_sdpa_verdict(device_index = 0) -> dict:
                     f"Unsloth: ROCm {arch or 'GPU'} {index}: AOTriton "
                     f"{' and '.join(refused)} attention failed a self-check, so Unsloth's attention "
                     f"will not use it ({verdict['detail']}). {ROCM_SDPA_CHECK_ENV}=0 skips the check."
+                )
+            if unsure:
+                print(
+                    f"Unsloth: ROCm {arch or 'GPU'} {index}: the AOTriton "
+                    f"{' and '.join(unsure)} attention self-check could not finish, so Unsloth keeps "
+                    f"using it unchecked ({verdict['detail']})."
                 )
     _VERDICTS[index] = verdict
     return verdict

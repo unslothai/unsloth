@@ -109,6 +109,8 @@ _XFORMERS_FP32_UNSUPPORTED = (
 
 
 def scaled_dot_product_attention(*args, **kwargs):
+    """The only SDPA entry point here (tests/utils/test_rocm_sdpa_check.py enforces it), so ROCm
+    kernels refused by rocm_sdpa_check stay out of every call."""
     # Resolved per call: context_parallel monkey patches torch.nn.functional.
     if _ROCM_SDPA_GUARD and args and isinstance(args[0], Tensor) and args[0].is_cuda:
         backends = _CUDNN_FREE_BACKENDS[_rocm_sdpa_index(args[0].device.index)]
@@ -310,9 +312,9 @@ def _rerouted_sdpa(*args, **kwargs):
     """Compiled xformers stand-in: avoid cuDNN's per-length planning."""
     backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
     if backends is None:
-        return F.scaled_dot_product_attention(*args, **kwargs)
+        return scaled_dot_product_attention(*args, **kwargs)
     with _sdpa_kernel(backends):
-        return F.scaled_dot_product_attention(*args, **kwargs)
+        return scaled_dot_product_attention(*args, **kwargs)
 
 
 # Module level: reading SDPBackend's attributes while traced breaks the graph.
@@ -445,8 +447,8 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
         backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
         if backends is not None:
             with _sdpa_kernel(backends):
-                return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
-    return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
+                return scaled_dot_product_attention(query, key, value, *args, **kwargs)
+    return scaled_dot_product_attention(query, key, value, *args, **kwargs)
 
 
 def _cudnn_free_index():
@@ -1709,7 +1711,7 @@ def _prepared_packed_attention(config, context, Q, K, V):
     if K.shape[1] != n_heads:
         K = K.repeat_interleave(n_heads // K.shape[1], dim = 1)
         V = V.repeat_interleave(n_heads // V.shape[1], dim = 1)
-    out = F.scaled_dot_product_attention(
+    out = scaled_dot_product_attention(
         Q, K, V, attn_mask = mask, scale = scale, dropout_p = sdpa_kwargs.get("dropout_p", 0.0)
     )
     return out.transpose(1, 2)
