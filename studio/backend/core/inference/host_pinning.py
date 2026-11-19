@@ -93,8 +93,14 @@ def consume_cuda_error() -> None:
         if _get_last_error is None:
             import ctypes
 
-            # torch loads the CUDA runtime globally, so the symbol resolves without naming the library
-            fn = ctypes.CDLL(None).cudaGetLastError
+            try:
+                # torch usually loads the CUDA runtime globally, so the symbol resolves without naming the library
+                fn = ctypes.CDLL(None).cudaGetLastError
+            except AttributeError:
+                # loaded RTLD_LOCAL: open the exact libcudart this process already mapped
+                with open("/proc/self/maps") as maps:
+                    path = next(ln.split()[-1] for ln in maps if "libcudart.so" in ln)
+                fn = ctypes.CDLL(path).cudaGetLastError
             fn.argtypes = []
             fn.restype = ctypes.c_int
             _get_last_error = fn
