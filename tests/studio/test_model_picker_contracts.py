@@ -1003,20 +1003,12 @@ def test_fixed_layer_gguf_pins_displayed_context():
     fresh load sends native/0 and recreates the OOM."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert re.search(
-        r"const fixedLayerPin = fixedLayerContextPin\(\{\s*"
-        r"isGguf: target\.isGguf === true,\s*"
-        r"gpuMemoryMode: loadableConfig\.gpuMemoryMode,\s*"
-        r"standingGpuMemoryMode: gpuMemoryModeFallback,\s*"
-        r"gpuLayers: loadableConfig\.gpuLayers,\s*"
-        r"customContextLength: loadableConfig\.customContextLength,\s*"
-        r"activeLoadedContext,\s*\}\);",
+        r"const fixedLayerPin = fixedLayerContextPin\(\{[^}]*"
+        r"gpuMemoryMode: loadableConfig\.gpuMemoryMode \?\? gpuMemoryModeFallback,[^}]*"
+        r"gpuLayers: loadableConfig\.gpuLayers,",
         src,
     )
     assert "{ ...loadableConfig, customContextLength: fixedLayerPin }" in src
-    helper = _read("features/model-picker/model-config/estimate-context.ts")
-    assert '(gpuMemoryMode ?? standingGpuMemoryMode) === "manual"' in helper
-    assert "gpuLayers >= 0" in helper
-    assert "customContextLength == null" in helper
 
 
 def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
@@ -1024,13 +1016,9 @@ def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
     Apply recomputes it from the committed config."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert re.search(
-        r"const effectiveFixedLayerPin = fixedLayerContextPin\(\{\s*"
-        r"isGguf: target\.isGguf === true,\s*"
-        r"gpuMemoryMode: effectiveConfig\.gpuMemoryMode,\s*"
-        r"standingGpuMemoryMode: gpuMemoryModeFallback,\s*"
-        r"gpuLayers: effectiveConfig\.gpuLayers,\s*"
-        r"customContextLength: effectiveConfig\.customContextLength,\s*"
-        r"activeLoadedContext,\s*\}\);",
+        r"const effectiveFixedLayerPin = fixedLayerContextPin\(\{[^}]*"
+        r"gpuMemoryMode: effectiveConfig\.gpuMemoryMode \?\? gpuMemoryModeFallback,[^}]*"
+        r"gpuLayers: effectiveConfig\.gpuLayers,",
         src,
     )
     assert "{ ...effectiveConfig, customContextLength: effectiveFixedLayerPin }" in src

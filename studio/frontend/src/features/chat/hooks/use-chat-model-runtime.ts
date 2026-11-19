@@ -197,6 +197,7 @@ import {
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker/model-config/per-model-config";
+import { fixedLayerContextPin } from "@/features/model-picker/model-config/estimate-context";
 import {
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
@@ -2314,16 +2315,14 @@ export function useChatModelRuntime() {
             // manual+pinned reload would send 0, which the backend's --fit off branch treats as the NATIVE
             // context, far larger than the sheet shows when the load was fit-sized, a likely OOM.
             // loadedContextLength is that resolved value; a model already at native reloads unchanged.
-            if (
-              isGguf &&
-              !switchingModelOrVariant &&
-              loadGpuMemoryMode === "manual" &&
-              loadGpuLayers >= 0 &&
-              loadCustomContextLength == null &&
-              (loadContextLength ?? 0) > 0
-            ) {
-              loadCustomContextLength = loadContextLength;
-            }
+            loadCustomContextLength =
+              fixedLayerContextPin({
+                isGguf: isGguf && !switchingModelOrVariant,
+                gpuMemoryMode: loadGpuMemoryMode,
+                gpuLayers: loadGpuLayers,
+                customContextLength: loadCustomContextLength,
+                activeLoadedContext: loadContextLength,
+              }) ?? loadCustomContextLength;
             // A GGUF native context can exceed maxSeqLength, so sizing on raw maxSeqLength could pass
             // /validate, unload, then have /load refuse it.
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({

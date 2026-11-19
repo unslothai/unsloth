@@ -7,34 +7,29 @@ export function resolveEstimateContext(customContextLength: number | null): numb
   return customContextLength && customContextLength > 0 ? customContextLength : 0;
 }
 
-/** The resident context performLoad keeps under Manual fixed layers (`--fit off` would launch at
- *  native), or null. An unset per-model mode is the standing preference, as in the load. */
+/** The resident context a same-model GGUF reload keeps on Auto under Manual fixed layers, where
+ *  `--fit off` would launch at the native context; null when it keeps none. */
 export function fixedLayerContextPin({
   isGguf,
   gpuMemoryMode,
-  standingGpuMemoryMode,
   gpuLayers,
   customContextLength,
   activeLoadedContext,
 }: {
   isGguf: boolean;
-  gpuMemoryMode: "auto" | "manual" | null | undefined;
-  standingGpuMemoryMode: "auto" | "manual";
+  gpuMemoryMode: "auto" | "manual";
   gpuLayers: number | null | undefined;
   customContextLength: number | null | undefined;
-  activeLoadedContext: number | null;
+  activeLoadedContext: number | null | undefined;
 }): number | null {
-  const fixedLayers =
-    (gpuMemoryMode ?? standingGpuMemoryMode) === "manual" &&
-    gpuLayers != null &&
-    gpuLayers >= 0;
-  return isGguf && fixedLayers && customContextLength == null
+  const fixedLayers = gpuMemoryMode === "manual" && gpuLayers != null && gpuLayers >= 0;
+  return isGguf &&
+    fixedLayers &&
+    customContextLength == null &&
+    activeLoadedContext != null &&
+    activeLoadedContext > 0
     ? activeLoadedContext
     : null;
-}
-
-export function resolveMlxEstimateContext(contextPin: number | null): number {
-  return contextPin && contextPin > 0 ? contextPin : 0;
 }
 
 export function resolveMlxServedWindow(

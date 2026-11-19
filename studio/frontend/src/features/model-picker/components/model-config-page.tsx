@@ -133,7 +133,6 @@ import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
   fixedLayerContextPin,
   resolveEstimateContext,
-  resolveMlxEstimateContext,
   resolveMlxServedWindow,
   shouldRequestMemoryEstimate,
 } from "../model-config/estimate-context";
@@ -3444,8 +3443,7 @@ export function ModelConfigPage({
   }, [resolvedIsDiffusion]);
   const fixedLayerPin = fixedLayerContextPin({
     isGguf: target.isGguf === true,
-    gpuMemoryMode: loadableConfig.gpuMemoryMode,
-    standingGpuMemoryMode: gpuMemoryModeFallback,
+    gpuMemoryMode: loadableConfig.gpuMemoryMode ?? gpuMemoryModeFallback,
     gpuLayers: loadableConfig.gpuLayers,
     customContextLength: loadableConfig.customContextLength,
     activeLoadedContext,
@@ -3473,7 +3471,7 @@ export function ModelConfigPage({
           cacheTypeKv: runtimeConfig.kvCacheDtype,
           maxSeqLength: target.isGguf
             ? null
-            : resolveMlxEstimateContext(savedContextPin(config)),
+            : resolveEstimateContext(savedContextPin(config)),
           mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
           mlxPleOffload: targetIsMlx ? (runtimeConfig.mlxPleOffload ?? null) : null,
           mlxExpertOffload: targetIsMlx ? (runtimeConfig.mlxExpertOffload ?? null) : null,
@@ -3873,8 +3871,7 @@ export function ModelConfigPage({
     // Recompute from effectiveConfig: the same-click GPU Layers draft was not yet committed.
     const effectiveFixedLayerPin = fixedLayerContextPin({
       isGguf: target.isGguf === true,
-      gpuMemoryMode: effectiveConfig.gpuMemoryMode,
-      standingGpuMemoryMode: gpuMemoryModeFallback,
+      gpuMemoryMode: effectiveConfig.gpuMemoryMode ?? gpuMemoryModeFallback,
       gpuLayers: effectiveConfig.gpuLayers,
       customContextLength: effectiveConfig.customContextLength,
       activeLoadedContext,
@@ -4046,7 +4043,7 @@ export function ModelConfigPage({
       return false;
     }
     keepSelection(target);
-    // The page stays mounted, so show a context fixedLayerContextPin stored (else it reads "Auto").
+    // The page stays mounted, so show the fixed-layer pin just saved (else it reads "Auto").
     // Not on a forget: that stored nothing, and pinning here would change the next load.
     // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
     if (

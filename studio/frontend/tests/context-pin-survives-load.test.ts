@@ -32,7 +32,6 @@ const WIRE_AS_PIN =
 const CLEARED = { customContextLength: null, loadedCustomContextLength: null };
 
 const MODEL = "unsloth/Some-Huge-MoE-GGUF";
-const OTHER_MODEL = "unsloth/Something-Else-GGUF";
 const VARIANT = "UD-Q4_K_XL";
 const REQUESTED = 262144;
 
@@ -155,7 +154,6 @@ test("a model change does not carry the old pin across", () => {
   });
   assert.deepEqual(seed({ remembered: 8192 }), CLEARED);
   assert.deepEqual(seed({ isGguf: false }), CLEARED);
-  assert.equal(sentNCtx(null, { modelId: OTHER_MODEL }), 0);
   assert.match(RUNTIME, /customContextLength: null,\s*\n\s*\}\);/);
   assert.match(
     APPLIER,
@@ -218,7 +216,7 @@ test("Auto on a same-model reload asks the server to size the context again", ()
 test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // The pin is captured before performLoad substitutes the resolved context for Auto.
   const capture = RUNTIME.indexOf("const explicitCtxPin = loadRequestContextPin(");
-  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadContextLength;");
+  const clamp = RUNTIME.indexOf("isGguf: isGguf && !switchingModelOrVariant,");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(

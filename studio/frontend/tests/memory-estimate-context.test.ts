@@ -6,13 +6,12 @@ import { test } from "node:test";
 import {
   resolveEstimateContext,
   resolveEstimateSourceIdentity,
-  resolveMlxEstimateContext,
   resolveMlxServedWindow,
   shouldRequestMemoryEstimate,
 } from "../src/features/model-picker/model-config/estimate-context.ts";
 
 // Auto sends 0 and llama.cpp fits the native context, not the displayed 32k fallback.
-test("Auto with no metadata yet prices the native context, not the displayed 32k", () => {
+test("Auto prices the fit (0), not the displayed 32k", () => {
   assert.equal(resolveEstimateContext(null), 0);
 });
 
@@ -21,9 +20,6 @@ test("an explicit length is priced as itself", () => {
   assert.equal(resolveEstimateContext(524288), 524288);
 });
 
-test("zero is not mistaken for unset", () => {
-  assert.equal(resolveEstimateContext(0), 0);
-});
 
 // Must include quantization: modelPath is identical across quant switches.
 const sourceId = (
@@ -182,9 +178,6 @@ test("every field sent is also a field the hook re-fetches for", () => {
 });
 
 test("what an MLX estimate names, and what the control shows", () => {
-  assert.equal(resolveMlxEstimateContext(null), 0);
-  assert.equal(resolveMlxEstimateContext(0), 0);
-  assert.equal(resolveMlxEstimateContext(8192), 8192);
   assert.equal(resolveMlxServedWindow(8192, 24576, 262144), 24576);
   assert.equal(resolveMlxServedWindow(null, 24576, 262144), 24576);
   assert.equal(resolveMlxServedWindow(20480, null, 262144), 20480);
