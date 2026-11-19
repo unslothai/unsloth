@@ -64,9 +64,18 @@ export function createRemoteHistorySync(
   // reading: revision an in-flight re-read was started for.
   const watchers = new Map<
     RemoteHistoryWatcher,
-    { threadId: string | null; revision: number | null; reading?: number }
+    {
+      threadId: string | null;
+      revision: number | null;
+      reading?: number;
+      // A baseline taken by a poll after the view loaded may already hold another device's write
+      // the view lacks; own writes skip the re-read only once a re-read has synced the view.
+      synced?: boolean;
+    }
   >();
   let historyRevision: number | null = null;
+  // Same for the sidebar: own writes skip its refresh only once a change event refreshed it.
+  let historySynced = false;
   const historySteps: OwnSteps = new Map();
   const threadSteps = new Map<string, OwnSteps>();
   // Bumped per own write: a poll sent before one may answer with counters it already passed.
@@ -93,13 +102,18 @@ export function createRemoteHistorySync(
       return;
     }
     const overtaken = ownWrites !== writesAtSend;
-    if (historyRevision !== null) {
+    if (historyRevision !== null && historySynced) {
       historyRevision = advance(historySteps, historyRevision);
     }
-    if (overtaken && historyRevision !== null && result.revision < historyRevision) {
+    if (
+      overtaken &&
+      historyRevision !== null &&
+      result.revision < historyRevision
+    ) {
       // Stale snapshot: an own write already moved past it.
     } else {
       if (historyRevision !== null && result.revision !== historyRevision) {
+        historySynced = true;
         deps.onHistoryChanged();
       }
       historyRevision = result.revision;
@@ -117,16 +131,23 @@ export function createRemoteHistorySync(
         watchers.set(watcher, { threadId: id, revision });
         continue;
       }
-      const own = advance(threadSteps.get(id), seen.revision);
+      const own = seen.synced
+        ? advance(threadSteps.get(id), seen.revision)
+        : seen.revision;
       if (own !== seen.revision) {
         seen = { ...seen, revision: own };
         watchers.set(watcher, seen);
       }
       if (seen.revision === revision) continue;
-      if (overtaken && revision < seen.revision) continue;
+      if (overtaken && revision < own) continue;
       if (watcher.isIdle && !watcher.isIdle()) continue;
       const before = seen.revision;
-      watchers.set(watcher, { threadId: id, revision, reading: revision });
+      watchers.set(watcher, {
+        threadId: id,
+        revision,
+        reading: revision,
+        synced: seen.synced,
+      });
       const applied = watcher.onThreadChanged?.();
       // Not awaited: a hung read must not stall the polls that drive the sidebar.
       void applied
@@ -137,6 +158,7 @@ export function createRemoteHistorySync(
           watchers.set(watcher, {
             threadId: id,
             revision: ok ? now.revision : before,
+            synced: ok || now.synced,
           });
         });
     }
@@ -159,6 +181,7 @@ export function createRemoteHistorySync(
         watchers.delete(watcher);
         if (watchers.size === 0) {
           historyRevision = null;
+          historySynced = false;
           historySteps.clear();
           threadSteps.clear();
         }
@@ -170,7 +193,7 @@ export function createRemoteHistorySync(
       if (watchers.size === 0) return;
       ownWrites++;
       addStep(historySteps, history);
-      if (historyRevision !== null) {
+      if (historyRevision !== null && historySynced) {
         historyRevision = advance(historySteps, historyRevision);
       }
       const open = new Set<string>();
@@ -187,7 +210,13 @@ export function createRemoteHistorySync(
       if (!steps) threadSteps.set(threadId, (steps = new Map()));
       addStep(steps, thread);
       for (const [watcher, seen] of watchers) {
-        if (seen.threadId !== threadId || seen.revision === null) continue;
+        if (
+          seen.threadId !== threadId ||
+          seen.revision === null ||
+          !seen.synced
+        ) {
+          continue;
+        }
         watchers.set(watcher, {
           ...seen,
           revision: advance(steps, seen.revision),

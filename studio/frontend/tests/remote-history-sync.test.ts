@@ -159,16 +159,35 @@ function ownWrite(
   return { threadId, thread, history };
 }
 
+// A poll's first baseline can count a write the freshly loaded view lacks; own writes are skipped
+// only once a re-read has synced the view. Drives one change from elsewhere and its re-read.
+async function syncOnce(
+  sync: ReturnType<typeof createRemoteHistorySync>,
+  setServer: (value: RemoteHistoryRevision) => void,
+  value: RemoteHistoryRevision,
+) {
+  setServer(value);
+  await sync.poll();
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
 test("this tab's own write is not read back as another device's", async () => {
-  const { sync, server, state } = harness({ revision: 10, threads: { a: 3 } });
+  const { sync, server, state } = harness({ revision: 9, threads: { a: 2 } });
   let recovered = 0;
   sync.watch({
     threadId: () => "a",
     onThreadChanged: () => {
       recovered += 1;
+      return Promise.resolve(true);
     },
   });
   await sync.poll();
+  await syncOnce(sync, (v) => (server.value = v), {
+    revision: 10,
+    threads: { a: 3 },
+  });
+  recovered = 0;
+  state.historyChanges = 0;
 
   sync.noteOwnWrite(ownWrite("a", [3, 5], [10, 12]));
   sync.noteOwnWrite(ownWrite("a", [5, 6], [12, 13]));
@@ -243,7 +262,7 @@ test("a remote write during this tab's run is recovered once it is idle", async 
 });
 
 test("own writes answered out of order or after the poll saw them stay quiet", async () => {
-  const { sync, server } = harness({ revision: 10, threads: { a: 3 } });
+  const { sync, server } = harness({ revision: 9, threads: { a: 2 } });
   let idle = true;
   let recovered = 0;
   sync.watch({
@@ -251,9 +270,15 @@ test("own writes answered out of order or after the poll saw them stay quiet", a
     isIdle: () => idle,
     onThreadChanged: () => {
       recovered += 1;
+      return Promise.resolve(true);
     },
   });
   await sync.poll();
+  await syncOnce(sync, (v) => (server.value = v), {
+    revision: 10,
+    threads: { a: 3 },
+  });
+  recovered = 0;
 
   sync.noteOwnWrite(ownWrite("a", [4, 5], [11, 12]));
   sync.noteOwnWrite(ownWrite("a", [3, 4], [10, 11]));
@@ -317,7 +342,7 @@ test("a failed re-read is retried even if this tab wrote meanwhile", async () =>
 });
 
 test("a poll answered after this tab's own write does not roll the baseline back", async () => {
-  let snapshot: RemoteHistoryRevision = { revision: 10, threads: { a: 3 } };
+  let snapshot: RemoteHistoryRevision = { revision: 9, threads: { a: 2 } };
   let release: (() => void) | null = null;
   let hold = false;
   let historyChanges = 0;
@@ -338,9 +363,16 @@ test("a poll answered after this tab's own write does not roll the baseline back
     isIdle: () => true,
     onThreadChanged: () => {
       recovered += 1;
+      return Promise.resolve(true);
     },
   });
   await sync.poll();
+  await syncOnce(sync, (v) => (snapshot = v), {
+    revision: 10,
+    threads: { a: 3 },
+  });
+  recovered = 0;
+  historyChanges = 0;
 
   // The poll reads the counters before the write lands and answers after its response.
   hold = true;
@@ -359,4 +391,36 @@ test("a poll answered after this tab's own write does not roll the baseline back
   await sync.poll();
   assert.equal(recovered, 1);
   assert.equal(historyChanges, 1);
+});
+
+test("a write from elsewhere the first poll already counted is read after this tab's own write", async () => {
+  // The view loaded at a: 3; another device wrote (a: 4) before this tab's first poll for the chat.
+  const { sync, server } = harness({ revision: 11, threads: { a: 4 } });
+  let recovered = 0;
+  sync.watch({
+    threadId: () => "a",
+    isIdle: () => true,
+    onThreadChanged: () => {
+      recovered += 1;
+      return Promise.resolve(true);
+    },
+  });
+  await sync.poll();
+  assert.equal(recovered, 0);
+
+  sync.noteOwnWrite(ownWrite("a", [4, 6], [11, 13]));
+  server.value = { revision: 13, threads: { a: 6 } };
+  await sync.poll();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    recovered,
+    1,
+    "the first own write after opening still re-reads, as before",
+  );
+
+  // Synced now: later own writes are skipped.
+  sync.noteOwnWrite(ownWrite("a", [6, 8], [13, 15]));
+  server.value = { revision: 15, threads: { a: 8 } };
+  await sync.poll();
+  assert.equal(recovered, 1);
 });
