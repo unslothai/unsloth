@@ -8003,15 +8003,15 @@ html[data-glass][data-glass-menus] .composer-run-settings [data-pinned-footer]::
   mask-image: linear-gradient(to bottom, transparent, #000 var(--run-settings-frost-fade));
 }
 html[data-glass] :is([data-glass-float], .aui-thread-scroll-to-bottom) {
-  -webkit-backdrop-filter: blur(calc(8px * var(--glass-strength, 1)));
-  backdrop-filter: blur(calc(8px * var(--glass-strength, 1)));
+  -webkit-backdrop-filter: blur(max(var(--glass-read-blur), calc(8px * var(--glass-strength, 1))));
+  backdrop-filter: blur(max(var(--glass-read-blur), calc(8px * var(--glass-strength, 1))));
 }
 html[data-glass] [data-glass-float] {
-  background-color: color-mix(in srgb, color-mix(in srgb, var(--popover), var(--foreground) 12%) 82%, transparent) !important;
+  background-color: color-mix(in srgb, color-mix(in srgb, var(--popover), var(--foreground) 12%) min(96%, calc(82% * var(--glass-opacity, 1))), transparent) !important;
   box-shadow: var(--glass-button-lift) !important;
 }
 html[data-glass] [data-glass-float]:hover {
-  background-color: color-mix(in srgb, color-mix(in srgb, var(--popover), var(--foreground) 18%) 88%, transparent) !important;
+  background-color: color-mix(in srgb, color-mix(in srgb, var(--popover), var(--foreground) 18%) min(96%, calc(88% * var(--glass-opacity, 1))), transparent) !important;
 }
 html[data-glass] {
   --glass-button-lift: inset 0 1px 0 rgb(255 255 255 / .1), 0 1px 3px rgb(0 0 0 / .14), 0 4px 12px -6px rgb(0 0 0 / .18);

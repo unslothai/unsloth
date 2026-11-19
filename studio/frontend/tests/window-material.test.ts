@@ -279,7 +279,9 @@ test("glass frosts the chat model controls and gives the account row the row hov
 test("glass frosts sticky bars in panels and popups, floating buttons, and softens shared shadows", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\] :is\(\[data-slot="chat-settings-panel"\], \[data-slot\$="popover-content"\][^)]*\) \.sticky \{\n  -webkit-backdrop-filter: blur\(12px\)/);
-	assert.match(css, /html\[data-glass\] :is\(\[data-glass-float\], \.aui-thread-scroll-to-bottom\) \{\n  -webkit-backdrop-filter: blur\(calc\(8px \* var\(--glass-strength, 1\)\)\);/);
+	assert.match(css, /html\[data-glass\] :is\(\[data-glass-float\], \.aui-thread-scroll-to-bottom\) \{\n  -webkit-backdrop-filter: blur\(max\(var\(--glass-read-blur\), calc\(8px \* var\(--glass-strength, 1\)\)\)\);/);
+	// Floating controls keep the readable floor and scale their fill with strength like every other glass surface.
+	assert.match(css, /html\[data-glass\] \[data-glass-float\] \{\n  background-color: color-mix\(in srgb, color-mix\(in srgb, var\(--popover\), var\(--foreground\) 12%\) min\(96%, calc\(82% \* var\(--glass-opacity, 1\)\)\), transparent\) !important;/);
 	assert.match(css, /html\.dark\[data-glass\] \{\n  --popup-shadow: 0 16px 40px -12px rgb\(0 0 0 \/ \.52\);/);
 	const pickers = readFileSync(new URL("../src/features/model-picker/components/model-selector/pickers.tsx", import.meta.url), "utf8");
 	assert.match(pickers, /data-glass-float=""\n\s*onClick=\{\(\) => \(ejectsAll/);
