@@ -54,6 +54,7 @@ function Invoke-BoundedPythonProbe {
     if ($Code -like "*HEALTHY=*") {
         # The runtime probe: a failing import exits non-zero. Healthy / Paired default to what a working install of
         # the recorded version gives; a state can override them (namespace package, API gone, a mismatched payload).
+        if ($script:State.Blocked) { return @{ Ok = $false; Output = ""; Error = $script:State.Blocked } }
         if (-not $script:State.Imports) { return @{ Ok = $false; Output = "" } }
         $healthy = if ($script:State.ContainsKey('Healthy')) { $script:State.Healthy } else { $true }
         $paired = if ($script:State.ContainsKey('Paired')) { $script:State.Paired } else { $healthy -and $script:State.Triton -match '^3\.8(\.|$)' }
@@ -71,7 +72,8 @@ function Fast-Install {
         $script:State.Triton = $script:InstallLeaves.Triton
         $script:State.Imports = $script:InstallLeaves.Imports
         foreach ($k in 'Healthy', 'Paired', 'Dists') { $script:State.Remove($k) }
-        foreach ($k in 'Readable', 'Healthy', 'Paired', 'Dists') {
+        $script:State.Remove('Blocked')
+        foreach ($k in 'Readable', 'Healthy', 'Paired', 'Dists', 'Blocked') {
             if ($script:InstallLeaves.ContainsKey($k)) { $script:State[$k] = $script:InstallLeaves[$k] }
         }
     }
@@ -256,6 +258,27 @@ $script:Offline = $true
 Set-Venv "2.11.0+rocm7.14.0" "3.9.0.post30"
 Check "UV_OFFLINE keeps the fast path" (-not (Test-RocmTritonPairingNeedsPass))
 $script:Offline = $false
+
+Write-Host "=== code integrity (Smart App Control) blocks rocm-sdk.exe ==="
+# AMD triton spawns rocm-sdk.exe on import and only catches FileNotFoundError, so a refused launcher fails the import.
+$sac = "OSError: [WinError 4551] An Application Control policy has blocked this file: 'rocm-sdk'"
+$blocked = @{ Blocked = $sac }
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Extra $blocked -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Blocked = $sac }
+Check "3.9 is still replaced and the manifest kept when both probes are blocked" ((Repaired $r) -and $r.Manifest -and $r.StackExit -eq 0 -and $r.Pending -eq 0)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra $blocked
+Check "a blocked probe on a 3.8 record is left alone" (Untouched $r)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Blocked = $sac }
+Check "a probe blocked only after a clean 3.8 install keeps the manifest" ((Repaired $r) -and $r.Manifest -and $r.Pending -eq 0)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.9.0.post30"; Imports = $true; Blocked = $sac }
+Check "a blocked probe never certifies a 3.9 the install left" ((Repaired $r) -and -not $r.Manifest -and $r.Pending -eq 0)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Blocked = "OSError: [WinError 1260] This program is blocked by group policy." }
+Check "WinError 1260 (AppLocker / group policy) counts as blocked" ((Repaired $r) -and $r.Manifest)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Imports $false -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Blocked = "ModuleNotFoundError: No module named 'triton._C'" }
+Check "an ordinary import error is not mistaken for a block" (-not $r.Manifest)
+Set-Venv "2.11.0+rocm7.14.0" "3.8.0.post29" -Extra $blocked
+Check "a blocked 3.8 keeps the fast path (no repair loop)" (-not (Test-RocmTritonPairingNeedsPass))
+Set-Venv "2.11.0+rocm7.14.0" "3.9.0.post30" -Extra $blocked
+Check "a blocked 3.9 still runs the pass" (Test-RocmTritonPairingNeedsPass)
 
 Write-Host "=== probe code (real Python) ==="
 $site = Join-Path ([System.IO.Path]::GetTempPath()) ("rocm_triton_probe_" + [guid]::NewGuid().ToString("N"))
