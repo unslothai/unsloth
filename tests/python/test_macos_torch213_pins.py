@@ -47,13 +47,11 @@ def test_macos_route_is_one_minor_with_its_torchvision():
 
 
 def test_macos_preservation_ceiling_matches_cu130():
-    # Both routes keep a resident 2.4 - 2.14 release; install_python_stack mirrors the cu130 one.
     assert _assignment("_MACOS_TORCH_CEILING") == _assignment("_CU130_TORCH_CEILING") == "2.15.0"
     assert _ips()._CU130_PRESERVE_TORCH_CEILING_MINOR == 15
 
 
 def test_generic_ceiling_is_unchanged():
-    # Linux / Windows CUDA, ROCm and CPU defaults stay below 2.12.
     assert _assignment("_TORCH_CEILING") == "2.12.0"
     assert _ips()._CUDA_TORCH_PKG_SPEC[0] == "torch>=2.4,<2.12.0"
 

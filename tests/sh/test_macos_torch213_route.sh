@@ -21,8 +21,7 @@ unset UNSLOTH_TORCH_UPGRADE
 
 VENV_DIR=$(mktemp -d)
 mkdir -p "$VENV_DIR/bin"
-# Answers the GIL probe with $2 (default gil-enabled), the version probe (-c) with $1, and runs
-# anything else (the PyPI gate) on a real python.
+# GIL probe -> $2, version probe -> $1, anything else -> real python3.
 _stub_python() {
     printf '#!/bin/sh\ncase "$2" in *Py_GIL_DISABLED*) echo %s; exit 0 ;; esac\nif [ "$1" = "-c" ]; then echo %s; else exec python3 "$@"; fi\n' "${2:-gil-enabled}" "$1" > "$VENV_DIR/bin/python"
     chmod +x "$VENV_DIR/bin/python"

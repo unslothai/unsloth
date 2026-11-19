@@ -4365,8 +4365,7 @@ TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"
 TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
 _CU130_TORCH_CEILING="2.15.0"
 _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
-# Apple Silicon: torch 2.13 is the first with a fused MPS (prefill) attention kernel, and mflux's pin
-# declares torch>=2.13. 2.15 has no cp310 wheel and no torchvision 0.30, so new installs take 2.13.
+# Apple Silicon: 2.13 is the first with fused MPS attention (mflux needs >=2.13); 2.15 lacks cp310/torchvision.
 _MACOS_TORCH_CEILING="2.15.0"
 _MACOS_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 
@@ -5945,8 +5944,7 @@ _cu130_torch213_platform() {
     [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
 }
 
-# The local half of the Apple Silicon route, as _cu130_torch213_platform: the default /cpu leaf on
-# arm64 macOS with a Python torch 2.13 has wheels for (3.10 - 3.14). It alone sets the preservation window.
+# /cpu leaf on arm64 macOS with a Python 2.13 has wheels for; alone sets the preservation window.
 _macos_torch213_platform() {
     [ "$(_torch_index_url_leaf "$1")" = "cpu" ] || { echo "no"; return; }
     [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] || { echo "no"; return; }
@@ -5954,7 +5952,6 @@ _macos_torch213_platform() {
     case "$_mtr_py" in 3.10|3.11|3.12|3.13|3.14) echo "yes" ;; *) echo "no" ;; esac
 }
 
-# Major macOS release, empty when unreadable.
 _macos_product_major() {
     _mpm=$(sw_vers -productVersion 2>/dev/null) || _mpm=""
     _mpm="${_mpm%%.*}"

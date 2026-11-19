@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MPS SDPA against a CPU reference at every image family's attention shape.
+"""MPS SDPA vs a CPU reference at each image family's attention shape.
 
-torch below 2.13 runs MPS SDPA through MPSGraph, which builds the full score matrix and returns
-wrong values past a size (pytorch#179352; Studio bounds only Qwen-Image-2.1, #13188). torch 2.13+
-runs a fused prefill kernel for the head dims in ``MPS_PREFILL_HEAD_DIMS``. The small cells run
-everywhere MPS exists; the large ones need GBs on an old torch, so they run on CI
-(``GITHUB_ACTIONS``) or with ``UNSLOTH_MPS_LARGE_ATTENTION=1`` (``0`` turns them off). Each cell
-emits one ``MPS-ATTN`` warning, so even a passing ``-q`` run's log carries the record.
+torch <2.13 MPSGraph SDPA is wrong past a size (pytorch#179352); 2.13+ uses a fused prefill kernel.
+Large cells run on CI or with UNSLOTH_MPS_LARGE_ATTENTION=1 (0 disables).
 """
 
 from __future__ import annotations
@@ -68,7 +64,6 @@ def _qkv(
 
 
 def _reference_rows(q, k, v, heads, rows):
-    """fp64 CPU attention for the chosen heads and query rows only (cheap at any size)."""
     q = q[:, heads][:, :, rows].double()
     scores = q @ k[:, heads].double().transpose(-1, -2) / math.sqrt(q.shape[-1])
     return torch.softmax(scores, dim = -1) @ v[:, heads].double()
@@ -176,7 +171,6 @@ def test_key_padding_mask_matches_cpu():
 
 @mps
 def test_prefill_engagement_follows_the_torch_version():
-    """2.13+ takes the prefill kernel (no score matrix); older torch materialises it."""
     heads, head_dim, text = FAMILIES["flux2-klein-4b"]
     tokens = _tokens(1024, text)
     q, k, v = _dev(*_qkv(heads, tokens, head_dim, torch.bfloat16))
