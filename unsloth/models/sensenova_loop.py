@@ -151,7 +151,12 @@ def _dequantized_state_dict(state_dict):
     return out
 
 
-def convert_sensenova_loop_checkpoint(checkpoint, output_dir = None, token = None, revision = None):
+def convert_sensenova_loop_checkpoint(
+    checkpoint,
+    output_dir = None,
+    token = None,
+    revision = None,
+):
     """(c), checkpoint side: store the token table as int8 plus a per-row bf16 scale.
 
     Rewrites ONLY the shard holding ``model.language_model.embed_tokens.weight`` (the
@@ -170,7 +175,6 @@ def convert_sensenova_loop_checkpoint(checkpoint, output_dir = None, token = Non
     """
     if not os.path.isdir(checkpoint):
         from huggingface_hub import snapshot_download
-
         checkpoint = snapshot_download(
             checkpoint,
             revision = revision,
@@ -288,7 +292,11 @@ def _patch_remote_build_for_int8(config):
     module._configure_text_model = _configure_text_model
 
 
-def _checkpoint_has_int8_embedding(model_name, token = None, revision = None):
+def _checkpoint_has_int8_embedding(
+    model_name,
+    token = None,
+    revision = None,
+):
     """Header-only check for the converted token table (the ``weight_scale`` key)."""
     try:
         if os.path.isdir(model_name):
@@ -299,7 +307,6 @@ def _checkpoint_has_int8_embedding(model_name, token = None, revision = None):
             single = os.path.join(model_name, "model.safetensors")
             if os.path.isfile(single):
                 from huggingface_hub import parse_safetensors_file_metadata
-
                 return _SCALE_KEY in parse_safetensors_file_metadata(single).tensors
             return False
         from huggingface_hub import get_safetensors_metadata
@@ -310,7 +317,12 @@ def _checkpoint_has_int8_embedding(model_name, token = None, revision = None):
         return False
 
 
-def prepare_sensenova_loop_int8_load(model_name, config, token = None, revision = None):
+def prepare_sensenova_loop_int8_load(
+    model_name,
+    config,
+    token = None,
+    revision = None,
+):
     """Set up the in-load int8 table when the checkpoint was converted (loader.py calls this).
 
     The remote build is patched to construct SenseNovaLoopInt8Embedding, whose parameter
@@ -326,7 +338,11 @@ def prepare_sensenova_loop_int8_load(model_name, config, token = None, revision 
     return True
 
 
-def verify_sensenova_loop_int8_build(checkpoint, token = None, revision = None):
+def verify_sensenova_loop_int8_build(
+    checkpoint,
+    token = None,
+    revision = None,
+):
     """CPU-only wiring check (no weights read, no GPU touched): run the converted-checkpoint
     prepare, build the model on the meta device with transformers' own init contexts, and
     return the ``embed_tokens`` class name.
@@ -342,9 +358,7 @@ def verify_sensenova_loop_int8_build(checkpoint, token = None, revision = None):
     config = AutoConfig.from_pretrained(
         checkpoint, token = token, revision = revision, trust_remote_code = True
     )
-    if not prepare_sensenova_loop_int8_load(
-        checkpoint, config, token = token, revision = revision
-    ):
+    if not prepare_sensenova_loop_int8_load(checkpoint, config, token = token, revision = revision):
         raise RuntimeError(
             f"Unsloth: {checkpoint} does not carry the int8 token table ({_SCALE_KEY} "
             "missing). Run convert_sensenova_loop_checkpoint first."
@@ -440,7 +454,11 @@ def _fix_mistral_regex(tokenizer):
     setattr(tokenizer, "fix_mistral_regex", True)
 
 
-def register_sensenova_loop(model, tokenizer = None, require_int8 = False):
+def register_sensenova_loop(
+    model,
+    tokenizer = None,
+    require_int8 = False,
+):
     """Install the SenseNova-Loop load-time fixes on a loaded model (idempotent).
 
     Called by the FastModel chain after the weights and tokenizer are in; the remote-code

@@ -3025,7 +3025,6 @@ class FastModel(FastBaseModel):
             # the post-load conversion fallback. Adapter loads skip the detection.
             if not is_peft:
                 from .sensenova_loop import prepare_sensenova_loop_int8_load
-
                 _sensenova_int8 = prepare_sensenova_loop_int8_load(
                     model_name,
                     model_config,
@@ -3599,7 +3598,6 @@ class FastModel(FastBaseModel):
             # Remote-code looped Qwen3.5: the int8 token table, the DynamicCache generation
             # default and the mistral-regex tokenizer fix; see models/sensenova_loop.py.
             from .sensenova_loop import register_sensenova_loop
-
             register_sensenova_loop(model, tokenizer, require_int8 = _sensenova_int8)
 
         if hasattr(model, "add_model_tags"):

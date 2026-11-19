@@ -30,7 +30,7 @@ def main():
         report["total_estimate_gib"] = round(module_sizes.get("", 0) / 1024**3, 3)
         report["top_leaf_modules"] = [
             [name, round(size / 1024**3, 3)]
-            for name, size in sorted(leaves.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            for name, size in sorted(leaves.items(), key = lambda kv: kv[1], reverse = True)[:5]
         ]
         buckets = {}
         for name, param in model.named_parameters():
@@ -41,8 +41,7 @@ def main():
             )
             buckets[size] = buckets.get(size, 0) + param.numel() * size
         report["bytes_per_element_gib"] = {
-            str(key): round(value / 1024**3, 3)
-            for key, value in sorted(buckets.items())
+            str(key): round(value / 1024**3, 3) for key, value in sorted(buckets.items())
         }
         if hf_quantizer is not None:
             budget = hf_quantizer.adjust_max_memory(
