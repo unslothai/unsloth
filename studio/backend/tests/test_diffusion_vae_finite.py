@@ -215,12 +215,17 @@ def test_fp32_from_the_start(monkeypatch, how):
     x = torch.randn(1, 3, 16, 16).to(torch.float16)
     with torch.no_grad():
         got = vae.decode(z, return_dict = False)[0]
-        enc = vae.encode(x).latent_dist.mean
+        dist = vae.encode(x).latent_dist
+        tup = vae.encode(x, return_dict = False)[0]
         want = ref.decode(z.float(), return_dict = False)[0]
         want_enc = ref.encode(x.float()).latent_dist.mean
     assert calls == [torch.float32] and vfin.STATS["retries"] == 0
     torch.testing.assert_close(got, want, rtol = 0, atol = 0)
-    torch.testing.assert_close(enc, want_enc, rtol = 0, atol = 0)
+    # Encoded in fp32, handed back in the VAE's 16-bit dtype (img2img feeds the latents to a 16-bit denoiser).
+    torch.testing.assert_close(dist.mean, want_enc.to(torch.float16), rtol = 0, atol = 0)
+    for d in (dist, tup):
+        assert {d.parameters.dtype, d.mean.dtype, d.std.dtype, d.var.dtype} == {torch.float16}
+        assert d.sample(generator = torch.Generator().manual_seed(0)).dtype == torch.float16
     assert {p.dtype for p in vae.parameters()} == {torch.float16}
 
 

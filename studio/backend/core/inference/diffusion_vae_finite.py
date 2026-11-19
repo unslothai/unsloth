@@ -95,6 +95,37 @@ def _first_dtype(module: Any) -> Any:
         return None
 
 
+def _cast_floats(
+    obj: Any,
+    dtype: Any,
+    depth: int = 0,
+) -> Any:
+    """``obj`` with its float tensors in ``dtype``, walking tuples, outputs and latent distributions in place."""
+    import torch
+
+    if torch.is_tensor(obj):
+        return obj.to(dtype) if obj.is_floating_point() else obj
+    if depth > 2:
+        return obj
+    if isinstance(obj, (tuple, list)):
+        return type(obj)(_cast_floats(v, dtype, depth + 1) for v in obj)
+    if isinstance(
+        obj, dict
+    ):  # diffusers BaseOutput is an OrderedDict that mirrors its fields as attributes
+        for k in list(obj.keys()):
+            v = _cast_floats(obj[k], dtype, depth + 1)
+            obj[k] = v
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        return obj
+    fields = getattr(obj, "__dict__", None)
+    if isinstance(fields, dict):  # DiagonalGaussianDistribution: parameters, mean, logvar, std, var
+        for k, v in list(fields.items()):
+            if torch.is_tensor(v) and v.is_floating_point():
+                fields[k] = v.to(dtype)
+    return obj
+
+
 def _sample_of(out: Any) -> Any:
     if isinstance(out, tuple):
         return out[0] if out else None
@@ -181,8 +212,11 @@ def install_finite_decode(
         def fp32_encode(x: Any, *args: Any, **kwargs: Any) -> Any:
             if not torch.is_tensor(x) or not x.is_floating_point() or _first_dtype(vae) not in half:
                 return encode(x, *args, **kwargs)
+            dtype = _first_dtype(vae)
             with fp32_keeping_storage(vae, encode_parts):
-                return encode(x.to(torch.float32), *args, **kwargs)
+                out = encode(x.to(torch.float32), *args, **kwargs)
+            # Arithmetic in fp32, latents handed back in the VAE's dtype: img2img feeds them to a 16-bit denoiser.
+            return _cast_floats(out, dtype)
 
         vae.encode = fp32_encode
     engaged = "fp32" if always else "retry"
