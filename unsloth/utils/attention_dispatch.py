@@ -950,7 +950,6 @@ def _sdpa_gqa_state(*args, no_cudnn = False):
     _rerouted_sdpa), whose enabled flags are part of the probe's cache key."""
     backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()] if no_cudnn else None
     if _ROCM_SDPA_GUARD:
-        # The call runs under the same narrowed backends (scaled_dot_product_attention).
         rocm = _rocm_sdpa_index_now(torch.device(args[0]).index)
         if rocm:
             backends = _CUDNN_FREE_BACKENDS[rocm]

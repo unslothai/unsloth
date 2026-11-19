@@ -6,8 +6,8 @@
 Unsloth sets TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 on import, so on archs AOTriton only lists as
 experimental (RDNA: gfx11xx, gfx12xx) torch offers those kernels to every SDPA call. On some of them
 (gfx1200 RX 9060 XT, #18403) they fail with hipErrorInvalidValue or corrupt memory, and the fault
-then surfaces in an unrelated kernel as an illegal memory access. A fault poisons the HIP context,
-so the check runs in a child process: the GQA shapes Unsloth's attention sends (per-segment strided
+then surfaces elsewhere as an illegal memory access. A fault poisons the HIP context, so the check
+runs in a child process: the GQA shapes Unsloth's attention sends (per-segment strided
 views, expanded K/V, a boolean block mask), forward and backward, against an fp32 reference.
 A backend that errors, faults, hangs or disagrees is not used by Unsloth's attention on that GPU;
 one whose check ran out of memory (the model is often resident already) is kept, with a warning.
@@ -219,8 +219,7 @@ _OUT_OF_MEMORY = re.compile(
 
 
 def _child_result(returncode, stdout, stderr):
-    """(ok, detail) of one finished child. ok is None (inconclusive, the backend is kept) when the
-    child ran out of memory: the model is often resident already, which says nothing about the kernel."""
+    """(ok, detail) of one finished child; ok is None (inconclusive, backend kept) on out-of-memory."""
     stdout, stderr = stdout or "", stderr or ""
     line = next(
         (l for l in stdout.splitlines() if l.startswith("UNSLOTH_ROCM_SDPA_CHECK ")),
@@ -230,7 +229,7 @@ def _child_result(returncode, stdout, stderr):
         tail = (stderr or stdout).strip().splitlines()[-1:] or [""]
         detail = f"exit code {returncode}: {tail[0][:200]}"
         if sys.platform != "win32" and returncode == -signal.SIGKILL:
-            # Not the timeout (that is handled before): the kernel's out-of-memory killer.
+            # The kernel's OOM killer (timeouts are handled earlier).
             return None, f"killed (out of memory?), {detail}"
         if _OUT_OF_MEMORY.search(stderr) or _OUT_OF_MEMORY.search(stdout):
             return None, f"out of memory, {detail}"
@@ -268,8 +267,7 @@ def rocm_sdpa_verdict(device_index = 0) -> dict:
             details = []
             unsure = []
             for backend, (ok, detail) in results.items():
-                # A check that could not start or ran out of memory says nothing about the kernel:
-                # keep torch's choice.
+                # Could not start or ran out of memory: keep torch's choice.
                 verdict[backend] = ok is not False
                 if ok is None:
                     unsure.append(backend)
