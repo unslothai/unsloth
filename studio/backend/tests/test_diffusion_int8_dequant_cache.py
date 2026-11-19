@@ -28,8 +28,6 @@ BF16 = torch.bfloat16
 
 
 class _Block(torch.nn.Module):
-    """Two LoRA linears and one untargeted linear (``ff``), all large enough for torchao to quantise."""
-
     def __init__(
         self,
         d = 64,
@@ -56,7 +54,6 @@ def _is_plain_linear(mod, fqn):
 
 
 def _model():
-    """The trainer's order: the LoRA attaches to the bf16 base, then torchao quantises the base linears."""
     torch.manual_seed(0)
     model = inject_adapter_in_model(
         LoraConfig(r = 8, lora_alpha = 16, target_modules = ["q", "o"], init_lora_weights = "gaussian"),
@@ -77,7 +74,6 @@ def _run(
     x,
     steps = 2,
 ):
-    """Forward + backward under bf16 autocast; the output, the input grad and the LoRA grads of each step."""
     out = []
     for _ in range(steps):
         xi = x.clone().requires_grad_(True)
@@ -105,7 +101,6 @@ def test_int8_parts_reads_torchao_weight_only_layouts():
     model = _model()
     assert fl._int8_parts(model.ff.weight) is not None
     assert fl._int8_parts(model.q.base_layer.weight) is not None
-    # A dense weight, an nf4-looking stand-in and None are not int8.
     assert fl._int8_parts(torch.nn.Linear(4, 4).weight) is None
     assert fl._int8_parts(None) is None
 
@@ -124,7 +119,6 @@ def test_int8_cache_is_bit_identical_to_torchao_forward_and_backward():
     st = cache.stats()
     assert st["int8_layers"] == 3 and st["nf4_layers"] == 0
     assert st["cached_layers"] == 3 and st["int8_exact"] is True
-    # Step 2 reads every weight from the cache.
     assert cache.hits >= 3
 
 
