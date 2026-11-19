@@ -377,6 +377,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.permissions.sectionTitle",
     "settings.sandbox.levelLabel",
     "settings.sandbox.levelRowLabel",
+    "settings.sandbox.trustedFoldersTitle",
     "settings.sandbox.toolsSection",
     "settings.sandbox.python",
     "settings.sandbox.terminal",
@@ -430,6 +431,8 @@ export function createSettingsSearchIndex({
       "settings.general.startup.launchAtLogin",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
       ...(menuBarIcon ? (["settings.general.startup.menuBarIcon"] as const) : []),
+      "settings.general.power.sectionTitle",
+      "settings.general.power.keepAwake",
       // Desktop only, like the row itself: DesktopRepairControl renders nothing without a
       // Tauri repair controller, so indexing it on the web build would scroll to a row
       // that is not there. Worth indexing at all because the capability message for a host
@@ -466,6 +469,7 @@ const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.general.mlWarmup.datasetsLabel",
   "settings.general.mlWarmup.mediaLabel",
   "settings.general.mlWarmup.quantizationLabel",
+  "settings.sandbox.trustedFoldersTitle",
   "settings.sandbox.toolsSection",
   "settings.sandbox.python",
   "settings.sandbox.terminal",
@@ -517,6 +521,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
     "settings.resources.modelMemory.mediaIdleUnloadKeywords",
   "settings.general.modelAutoSwitch.keepKv":
     "settings.general.modelAutoSwitch.keepKvKeywords",
+  // match "sleep" and "caffeinate", which the label omits.
+  "settings.general.power.keepAwake": "settings.general.power.keepAwakeKeywords",
   "settings.chat.memory.title": "settings.chat.memory.keywords",
   "settings.chat.memory.enable": "settings.chat.memory.keywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",

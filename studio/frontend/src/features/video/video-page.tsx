@@ -146,8 +146,11 @@ import {
 import {
   fitVideoSize,
   isPresetSize,
+  lockedVideoSize,
   snapVideoDim,
+  trainedSizeValue,
   videoDimOptions,
+  videoSizeAspect,
   videoSizeLimits,
 } from "./video-size";
 import {
@@ -223,6 +226,14 @@ import {
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
+import {
+  ATTENTION_SELECT_HINT,
+  INT8_ATTENTION_HINT,
+  INT8_ATTENTION_LABEL,
+  INT8_ATTENTION_OPTIONS,
+  int8AttentionSelection,
+  type Int8AttentionChoice,
+} from "@/lib/int8-attention";
 import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
@@ -311,7 +322,11 @@ import {
   getVideoStatus,
   loadVideoModel,
   unloadVideoModel,
+  fetchCosmosGuardrailStatus,
+  startCosmosGuardrailInstall,
 } from "./api";
+import { isGuardrailInstallRefusal, runGuardrailInstall } from "./cosmos-guardrail";
+import { isAccountOwner } from "@/features/auth";
 import { stopButtonLabel } from "@/features/images/lib/generation-stop";
 import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
@@ -778,7 +793,38 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
   }
+  if (isGuardrailInstallRefusal(text)) {
+    // Owner only: the install writes into Studio's own environment.
+    toast.error(COSMOS_GUARDRAIL_TITLE, {
+      description: text,
+      action: isAccountOwner()
+        ? { label: "Install guardrail", onClick: () => void installCosmosGuardrail() }
+        : undefined,
+    });
+    return;
+  }
   toast.error(text || fallback);
+}
+
+const COSMOS_GUARDRAIL_TITLE = "The Cosmos safety checker needs cosmos-guardrail";
+
+async function installCosmosGuardrail(): Promise<void> {
+  const id = "cosmos-guardrail-install";
+  toast.loading("Installing cosmos-guardrail", {
+    id,
+    description: "Adding NVIDIA's guardrail package to Studio's environment. Nothing already installed changes.",
+  });
+  try {
+    const result = await runGuardrailInstall(
+      startCosmosGuardrailInstall,
+      fetchCosmosGuardrailStatus,
+      (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    );
+    if (result.ok) toast.success("cosmos-guardrail installed", { id, description: result.message });
+    else toast.error("Could not install cosmos-guardrail", { id, description: result.message });
+  } catch (err) {
+    toast.error("Could not install cosmos-guardrail", { id, description: failureMessage(err) });
+  }
 }
 
 function AdvancedSelect({
@@ -1164,6 +1210,7 @@ type VideoLoadAdvanced = Pick<
   | "memory_mode"
   | "speed_mode"
   | "attention_backend"
+  | "int8_attention"
   | "transformer_cache"
   | "transformer_quant"
   | "family_override"
@@ -1306,6 +1353,11 @@ function VideoGenerator({
   const [aspect, setAspect] = useState(() => matchAspect(...FALLBACK_RESOLUTION_PRESETS[0]!).key);
   // Set once the user picks a size or restores a clip's recipe; a family's first-render size never replaces it.
   const resolutionChosen = useRef(false);
+  // Read by the family-change effect (declared later, so it runs after this one) without re-running it per size.
+  const resolutionIntentRef = useRef(resolutionIntent);
+  useEffect(() => {
+    resolutionIntentRef.current = resolutionIntent;
+  }, [resolutionIntent]);
   const [portrait, setPortrait] = useState(false);
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
@@ -1354,6 +1406,7 @@ function VideoGenerator({
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
+  const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
@@ -1765,7 +1818,7 @@ function VideoGenerator({
       if (!statusKnown) setPendingPresetFps({ fps: rate });
       else if (rate != null) setPickedFps(rate);
       setResolutionIntent(size);
-      const matched = matchAspect(size[0], size[1]);
+      const matched = videoSizeAspect(size[0], size[1], sizeLimits, ASPECT_RATIOS);
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
@@ -1866,10 +1919,14 @@ function VideoGenerator({
     );
     if (familyChanged && loadedFamily && applyFamilyDefault && !resolutionChosen.current) {
       // The family's first-render size (MiniMax-H3: the templates' 864x480), so a fresh page renders it.
-      const firstSize = familyFirstRenderResolution(status?.defaults, resolutionPresets);
+      const firstSize = familyFirstRenderResolution(
+        status?.defaults,
+        resolutionPresets,
+        resolutionIntentRef.current,
+      );
       if (firstSize) {
         setResolutionIntent(firstSize);
-        const matched = matchAspect(firstSize[0], firstSize[1]);
+        const matched = videoSizeAspect(firstSize[0], firstSize[1], sizeLimits, ASPECT_RATIOS);
         setAspect(matched.key);
         setPortrait(matched.portrait);
       }
@@ -1896,6 +1953,7 @@ function VideoGenerator({
     fps,
     loadedFamily,
     resolutionPresets,
+    sizeLimits,
     status?.defaults,
     videoPresets.storedRecipe,
   ]);
@@ -1963,6 +2021,8 @@ function VideoGenerator({
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const int8 = int8AttentionSelection(record.int8_attention);
+    if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -2526,7 +2586,7 @@ function VideoGenerator({
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
-      const matched = matchAspect(size[0], size[1]);
+      const matched = videoSizeAspect(size[0], size[1], sizeLimits, ASPECT_RATIOS);
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
@@ -2891,6 +2951,7 @@ function VideoGenerator({
     memoryMode,
     speedMode,
     attentionBackend,
+    int8Attention,
     transformerCache,
     transformerQuant,
     familyOverride,
@@ -2901,6 +2962,7 @@ function VideoGenerator({
     memoryMode,
     speedMode,
     attentionBackend,
+    int8Attention,
     transformerCache,
     transformerQuant,
     familyOverride,
@@ -2915,6 +2977,8 @@ function VideoGenerator({
         speed_mode: controls.speedMode === "auto" ? undefined : controls.speedMode,
         attention_backend:
           controls.attentionBackend === "auto" ? undefined : controls.attentionBackend,
+        // Always sent: the backend reads "auto" as no per-load override.
+        int8_attention: controls.int8Attention,
         transformer_cache:
           controls.transformerCache === "auto" ? undefined : controls.transformerCache,
         transformer_quant:
@@ -3019,6 +3083,7 @@ function VideoGenerator({
           memory_mode: advanced.memory_mode,
           speed_mode: advanced.speed_mode,
           attention_backend: advanced.attention_backend,
+          int8_attention: advanced.int8_attention,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
           family_override: advanced.family_override,
@@ -3814,7 +3879,7 @@ function VideoGenerator({
     setResolutionIntent(size);
     setMatchSource(false);
     if (keepAspect) return;
-    const matched = matchAspect(size[0], size[1]);
+    const matched = videoSizeAspect(size[0], size[1], sizeLimits, ASPECT_RATIOS);
     setAspect(matched.key);
     setPortrait(matched.portrait);
   };
@@ -3838,13 +3903,14 @@ function VideoGenerator({
     }
     applySize(w, snapVideoDim(w * ratioHW(key, isPortrait), sizeLimits), true);
   };
+  const lockedRatio = !sourceSized && aspect !== "custom" ? ASPECT_RATIOS[aspect] : undefined;
   const changeWidth = (v: number) => {
-    const locked = !sourceSized && aspect !== "custom";
-    applySize(v, locked ? snapVideoDim(v * ratioHW(aspect, portrait), sizeLimits) : shownSize[1], locked);
+    if (!lockedRatio) return applySize(v, shownSize[1], false);
+    applySize(...lockedVideoSize("width", v, lockedRatio, portrait, sizeLimits), true);
   };
   const changeHeight = (v: number) => {
-    const locked = !sourceSized && aspect !== "custom";
-    applySize(locked ? snapVideoDim(v / ratioHW(aspect, portrait), sizeLimits) : shownSize[0], v, locked);
+    if (!lockedRatio) return applySize(shownSize[0], v, false);
+    applySize(...lockedVideoSize("height", v, lockedRatio, portrait, sizeLimits), true);
   };
   const flipDimensions = () => {
     if (sourceSized) {
@@ -4003,7 +4069,7 @@ function VideoGenerator({
       <AdvancedSelect {...familySelect} badge={<ResolvedBadge status={status} controlKey="family_override" />} />
       <AdvancedSelect
         label="Memory"
-        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
+        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram also streams the text encoders and tiles the VAE decode (lowest VRAM, slowest)."
         badge={<ResolvedBadge status={status} controlKey="memory_mode" />}
         value={memoryMode}
         onValueChange={(v) => setMemoryMode(v as typeof memoryMode)}
@@ -4064,7 +4130,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint={ATTENTION_SELECT_HINT}
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -4075,6 +4141,14 @@ function VideoGenerator({
           ["flash3", "FlashAttention 3"],
           ["sage", "SageAttention (INT8)"],
         ]}
+      />
+      <AdvancedSelect
+        label={INT8_ATTENTION_LABEL}
+        hint={INT8_ATTENTION_HINT}
+        badge={<ResolvedBadge status={status} controlKey="int8_attention" />}
+        value={int8Attention}
+        onValueChange={(v) => setInt8Attention(v as Int8AttentionChoice)}
+        options={INT8_ATTENTION_OPTIONS}
       />
       {gpuChoices.length > 0 && (
         <AdvancedSelect
@@ -4881,7 +4955,7 @@ function VideoGenerator({
             hint="The sizes the loaded model was trained at, which give the best quality. Portrait sizes are marked."
           >
             <Select
-              value=""
+              value={trainedSizeValue(videoSize, sizeLimits, sourceSized)}
               onValueChange={(v) => {
                 const preset = resolutionPresets.find(([w, h]) => `${w}x${h}` === v);
                 if (preset) applySize(preset[0], preset[1]);

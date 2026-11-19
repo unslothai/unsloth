@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -245,6 +246,12 @@ def _reread_messages(
     return pending
 
 
+def _reader(revision: str) -> str:
+    # ":images" only says the file has image-only turns; it reads completed items like ":items".
+    tag = revision.partition(":")[2]
+    return "items" if tag == "images" else tag
+
+
 def _pending_messages(
     source: Source, transcript: Transcript, existing: bool, stored: list[dict]
 ) -> list[dict]:
@@ -262,8 +269,10 @@ def _pending_messages(
     elif revision in transcript.earlier:
         ends = transcript.earlier[revision]
         pending = transcript.messages[ends[min(turns, len(ends) - 1)] :]
-    elif revision.partition(":")[2] != transcript.revision.partition(":")[2]:
+    elif _reader(revision) != _reader(transcript.revision):
         pending = _reread_messages(transcript, turns, revision, stored)
+    elif revision.partition(":")[0] == transcript.revision.partition(":")[0]:
+        pending = transcript.messages[turns:]
     else:
         pending = transcript.messages[transcript.inherited :]
     # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
@@ -273,8 +282,12 @@ def _pending_messages(
     reseated = []
     for message in pending:
         parent = message.get("parentId")
-        while parent and parent not in present:
+        seen = set()
+        while parent and parent not in present and parent not in seen:
+            seen.add(parent)
             parent = by_id.get(parent, {}).get("parentId")
+        if parent in seen:
+            parent = None  # cycle: no surviving ancestor
         reseated.append({**message, "parentId": parent})
         present.add(message["id"])
     return reseated
@@ -368,7 +381,14 @@ def _import_project(
         }
     )
     before = (summary.new_chats, summary.messages)
-    imported = sum(_import_session(source, path, project_id, summary) for path in project.sessions)
+    imported = 0
+    for path in project.sessions:
+        try:
+            imported += _import_session(source, path, project_id, summary)
+        except sqlite3.Error:
+            raise  # storage failure, not a corrupt file
+        except Exception as exc:
+            summary.warnings.append(f"{path.name}: could not be imported ({exc}).")
     if studio_db.list_chat_threads(project_id = project_id):
         # updatedAt only moves when something landed, so a no-op click does not re-sort the sidebar.
         if (summary.new_chats, summary.messages) != before:

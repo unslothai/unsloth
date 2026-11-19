@@ -40,6 +40,31 @@ def _stack():
     return torch
 
 
+# Hang guard: the file runs in ~100 s on CPU.
+_TEST_TIMEOUT_S = 300
+pytestmark = pytest.mark.timeout(_TEST_TIMEOUT_S)
+
+
+@pytest.fixture(autouse = True)
+def _fail_fast_on_a_hang(request):
+    """Without pytest-timeout, faulthandler dumps stacks and exits on a hang."""
+    if request.config.pluginmanager.hasplugin("timeout"):
+        yield
+        return
+    import faulthandler
+
+    try:  # pytest's real stderr dup; fd 2 is the capture file
+        from _pytest.faulthandler import fault_handler_stderr_fd_key
+        fd = request.config.stash[fault_handler_stderr_fd_key]
+    except (ImportError, KeyError):
+        fd = sys.__stderr__.fileno()
+    faulthandler.dump_traceback_later(_TEST_TIMEOUT_S, exit = True, file = fd)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+
+
 @pytest.fixture(autouse = True)
 def _picture_one_at_its_own_size(monkeypatch):
     """Picture 1 keeps its own size here (the reference edit workflow's 4 MP rescale would make every CPU edit render
@@ -1681,7 +1706,7 @@ def test_the_plan_is_redone_for_a_local_text_encoder_folder(h3i, release, tmp_pa
     pipe.release()
 
 
-def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i):
+def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i, monkeypatch):
     args = {
         "vram_gb": 95.0,
         "host_gb": 177.0,
@@ -1696,11 +1721,18 @@ def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i):
     again = h3i.replan_for_encoder(plan, h3i.H3_IMAGE_TE_BF16_GB, args)
     assert again.placement == h3i.PLACE_DIT_RESIDENT and again.te_gb == h3i.H3_IMAGE_TE_BF16_GB
     assert h3i.replan_for_encoder(plan, h3i.H3_IMAGE_TE_INT8_GB + 0.5, args) is plan
-    small = dict(args, vram_gb = 6.0)
-    with pytest.raises(RuntimeError, match = "no placement fits"):
+    # 8 GB: the int8 encoder's parked stream layout fits, the bf16 one's layer window does not
+    small = dict(args, vram_gb = 8.0)
+    with pytest.raises(RuntimeError, match = "free GPU memory|no placement fits"):
         h3i.replan_for_encoder(
             h3i.plan_placement(te_gb = 27.2, **small), h3i.H3_IMAGE_TE_BF16_GB, small
         )
+    # the measured working set floors the stream tier at about 4.5 GB, the old pricing at 7.2 GB
+    with pytest.raises(RuntimeError, match = "free GPU memory"):
+        h3i.plan_placement(te_gb = 27.2, **dict(args, vram_gb = 4.0))
+    monkeypatch.setenv(h3i.MEASURED_WORKING_SET_ENV, "0")
+    with pytest.raises(RuntimeError, match = "free GPU memory"):
+        h3i.plan_placement(te_gb = 27.2, **dict(args, vram_gb = 6.0))
 
 
 def test_the_per_prompt_encoder_refuses_a_bf16_fallback(h3i, release, tmp_path, monkeypatch):

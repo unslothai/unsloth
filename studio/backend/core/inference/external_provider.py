@@ -95,6 +95,7 @@ _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
 _GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
+_GEMINI_DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
 _served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
@@ -1906,7 +1907,11 @@ class ExternalProviderClient:
         if top_p is not None:
             body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.
-        if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
+        if stream and (
+            self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS
+            # A custom server that reports a window is a llama-server or vLLM, which take the option.
+            or (self.provider_type == "custom" and self._known_served_window(model))
+        ):
             body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
             # Newer OpenAI models reject max_tokens; MiniMax counts thinking against it.
@@ -4532,6 +4537,10 @@ class ExternalProviderClient:
                     if isinstance(sig, str) and sig:
                         fc_part["thoughtSignature"] = sig
                     parts.append(fc_part)
+                # Gemini 3 400s when a step's first functionCall is unsigned; Gemini itself signs only that one.
+                _fc_parts = [p for p in parts if "functionCall" in p]
+                if _fc_parts and not any("thoughtSignature" in p for p in _fc_parts):
+                    _fc_parts[0]["thoughtSignature"] = _GEMINI_DUMMY_THOUGHT_SIGNATURE
             if role == "tool":
                 # Drop follow-up when its tool_call was dropped or replayed natively; else orphan functionResponse.
                 _tc_id_for_skip = msg.get("tool_call_id")
@@ -4937,6 +4946,11 @@ class ExternalProviderClient:
                 if _allowed:
                     _fcc["allowedFunctionNames"] = _allowed
                 body["toolConfig"] = {"functionCallingConfig": _fcc}
+        # Gemini 400s on hosted tools beside functionDeclarations unless this is set; Vertex rejects the field.
+        if function_declarations and any("functionDeclarations" not in t for t in tools_array):
+            from core.inference.providers import is_vertex_host
+            if not is_vertex_host(urlsplit(self.base_url or "").hostname):
+                body.setdefault("toolConfig", {})["includeServerSideToolInvocations"] = True
 
         # JSON mode only on tool-free turns: Gemini 400s on response mime type plus function calling.
         _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
@@ -7798,6 +7812,11 @@ class ExternalProviderClient:
             del _served_versions[stale]
         _served_versions[key] = (now + _SERVED_WINDOW_TTL_S, full)
         return full
+
+    def _known_served_window(self, model: str) -> Optional[int]:
+        key = (self.provider_type, self.base_url, self._credential_digest(), model)
+        cached = _served_windows.get(key)
+        return cached[1] if cached is not None and cached[0] > time.monotonic() else None
 
     async def served_context_window(self, model: str) -> Optional[int]:
         """cache served windows and missing results for one minute to limit silent-server reads."""

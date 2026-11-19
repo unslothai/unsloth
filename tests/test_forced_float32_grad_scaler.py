@@ -27,6 +27,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 TINY = os.environ.get(
     "UNSLOTH_TEST_TINY_GEMMA4", "trl-internal-testing/tiny-Gemma4ForConditionalGeneration"
 )
@@ -89,7 +91,7 @@ def _finite(x):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_forced_float32_float16_training_has_a_grad_scaler(tmp_path):
     on = _run(tmp_path, "float16")
     assert on["forced"], "a float16 Gemma-4 load must take the forced float32 path"
@@ -114,7 +116,7 @@ def test_forced_float32_float16_training_has_a_grad_scaler(tmp_path):
 
 @pytest.mark.gpu
 @pytest.mark.skipif(
-    not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+    not (has_real_cuda() and torch.cuda.is_bf16_supported()),
     reason = "needs a bfloat16 GPU",
 )
 def test_bfloat16_training_has_no_extra_grad_scaler(tmp_path):
@@ -187,7 +189,7 @@ _OPT_SCRIPT = textwrap.dedent(
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_forced_float32_grad_scaler_update_matches_float32_reference(tmp_path):
     script = tmp_path / "opt.py"
     script.write_text(_OPT_SCRIPT)
@@ -218,3 +220,22 @@ def test_forced_float32_grad_scaler_update_matches_float32_reference(tmp_path):
     over = res["overflow"]["on"]
     assert over["skipped"] and not any(over["delta"]), over
     assert over["scale"] == 2.0**39, over
+
+
+def test_forced_float32_init_scale_rule(monkeypatch):
+    import types
+
+    import unsloth.models.fsdp2_native as fsdp2_native
+    from unsloth.models._utils import _unsloth_forced_float32_init_scale
+
+    monkeypatch.delenv("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", raising = False)
+    one = types.SimpleNamespace(accelerator = types.SimpleNamespace(num_processes = 1))
+    assert _unsloth_forced_float32_init_scale(one) == 2.0**8
+    assert _unsloth_forced_float32_init_scale(types.SimpleNamespace()) == 2.0**8
+    two = types.SimpleNamespace(accelerator = types.SimpleNamespace(num_processes = 2))
+    monkeypatch.setattr(fsdp2_native, "_loss_scale_ranks", lambda trainer: 2)
+    assert _unsloth_forced_float32_init_scale(two) == 2.0**7
+    monkeypatch.setenv("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", "4096")
+    assert _unsloth_forced_float32_init_scale(two) == 4096.0
+    monkeypatch.setenv("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", "bogus")
+    assert _unsloth_forced_float32_init_scale(two) == 2.0**7

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import re
 import time
 import uuid
@@ -119,6 +120,10 @@ class LoadRequest(BaseModel):
     force_reload: bool = Field(
         False,
         description = "Start a fresh runtime even when the active settings already match",
+    )
+    use_saved_settings: bool = Field(
+        False,
+        description = "Take every load setting this request leaves unset from the model's saved launch settings",
     )
     alongside: bool = Field(
         False,
@@ -2925,6 +2930,13 @@ def _normalize_sandbox_level(value: Any) -> Any:
     return value
 
 
+def _canonical_tool_names(value: Optional[list[str]]) -> Optional[list[str]]:
+    # The curl guide published ``bash`` for the built-in shell tool, whose real name is ``terminal``.
+    if value is None:
+        return None
+    return ["terminal" if name == "bash" else name for name in value]
+
+
 _SANDBOX_LEVEL_DESCRIPTION = (
     "[x-unsloth] Sandbox level for the Python and Terminal tools. 'high' (default) runs them "
     "in the OS sandbox when it works and on software safeguards otherwise. 'low' runs them on "
@@ -3162,6 +3174,7 @@ class ChatCompletionRequest(BaseModel):
             "server-side tools are forwarded."
         ),
     )
+    _canonical_enabled_tools = field_validator("enabled_tools")(_canonical_tool_names)
     mcp_enabled: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
@@ -3285,7 +3298,7 @@ class ChatCompletionRequest(BaseModel):
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
-        25,
+        DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         ge = 0,
         description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
     )
@@ -3464,6 +3477,19 @@ class ChatCompletionRequest(BaseModel):
             'after" setting rather than the default. Anthropic and OpenAI server-side '
             "compaction then use it as given instead of capping it at 200k: it is still "
             "raised to the provider's floor and never exceeds context_window."
+        ),
+    )
+    compaction_mode: Optional[Literal["summary", "rolling", "checkpoint"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] How a cloud connection that does not compact server-side "
+            "compacts once compaction_threshold is passed, and on compact_context. "
+            "'summary' (the default) asks the same model to summarise the older turns. "
+            "'rolling' and 'checkpoint' make no summary call and drop whole oldest turns "
+            "into the thread's archive, where search_conversation and inline recall find "
+            "them: 'rolling' drops just enough on each request, 'checkpoint' resets to the "
+            "latest turn as a local model does, and only it honours compact_context. "
+            "Ignored by local engines and by Anthropic and OpenAI server-side compaction."
         ),
     )
     context_window: Optional[int] = Field(
@@ -3704,6 +3730,7 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         None,
         description = "[x-unsloth] List of enabled built-in tool names",
     )
+    _canonical_enabled_tools = field_validator("enabled_tools")(_canonical_tool_names)
     mcp_enabled: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Append tools from every enabled MCP server",
@@ -4548,10 +4575,11 @@ class AnthropicMessage(BaseModel):
                         else getattr(block, "source", None)
                     )
                     stype = source.get("type") if isinstance(source, dict) else None
-                    if stype not in ("text", "content"):
+                    pdf = stype == "base64" and source.get("media_type") == "application/pdf"
+                    if stype not in ("text", "content") and not pdf:
                         raise ValueError(
-                            f"unsupported document source type {stype!r}: only text and content "
-                            "documents can be read"
+                            f"unsupported document source type {stype!r}: only text, content "
+                            "and base64 PDF documents can be read"
                         )
         return data
 
@@ -4607,6 +4635,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
+    _canonical_enabled_tools = field_validator("enabled_tools")(_canonical_tool_names)
     thinking: Optional[AnthropicThinkingConfig] = None
     # These win over `thinking` when both are present.
     enable_thinking: Optional[bool] = None
@@ -4917,7 +4946,8 @@ class DiffusionLoadRequest(BaseModel):
         None,
         description = "Memory policy: auto (measured), fast (resident), balanced "
         "(stream the transformer, near-resident speed, moderate VRAM "
-        "cut), low_vram (offload every component, lowest VRAM, slower). "
+        "cut), low_vram (stream the transformer and text encoders block by block, tiled VAE "
+        "decode; lowest VRAM, slowest). "
         "Overrides cpu_offload when set.",
     )
     allow_oversized_load: bool = Field(
@@ -4929,7 +4959,9 @@ class DiffusionLoadRequest(BaseModel):
     )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
-        description = "Opt-in speed optims (default off -> bit-identical output): "
+        description = "Speed optims. Unset: off for a dense load, default for a GGUF load "
+        "(near-lossless compile profile). off: bit-identical output (a quantized transformer "
+        "still compiles). "
         "eager (channels_last + cudnn + attention + fused RMSNorm/AdaLayerNorm patches, "
         "NO torch.compile -> fast first image, no compile tax), "
         "default (also regional torch.compile where eligible), "
@@ -5026,6 +5058,16 @@ class DiffusionLoadRequest(BaseModel):
         "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
         "unavailable kernel falls back to the default.",
     )
+    int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
+        None,
+        description = "Studio's own INT8 attention kernel for this load. auto (the default, also when unset) "
+        "engages it where it is measured accurate and faster for this model and GPU (it passes the per-card "
+        "accuracy check against fp32 attention and wins a timed race against the selected attention); the "
+        "UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL environment switch still applies. on engages it wherever it "
+        "passes the accuracy check, over the env switch (attention_backend=unsloth_int8 is the same). off never "
+        "engages it on this load, over the env switch; it does not change an explicit attention_backend such as "
+        "sage. The status record reports what engaged under resolved.int8_attention.",
+    )
     transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(
         None,
         description = "Step caching. fbcache = First-Block-Cache: reuse the transformer tail "
@@ -5053,6 +5095,15 @@ class DiffusionLoadRequest(BaseModel):
         "to the one with the most free VRAM. Refused with a 400 when an index does not exist "
         "here; ignored on XPU / MPS / CPU, which have no applicator for a physical index.",
     )
+
+    @field_validator("int8_attention", mode = "before")
+    @classmethod
+    def _normalize_int8_attention(cls, value):
+        # Folded like attention_backend: the Literal above is validated after this; "" reads as unset.
+        if isinstance(value, str):
+            value = value.strip().lower()
+            return value or None
+        return value
 
     @field_validator("attention_backend", mode = "before")
     @classmethod
@@ -7546,7 +7597,8 @@ class VideoLoadRequest(BaseModel):
         None,
         description = "Memory policy: auto (measured), fast (resident), balanced "
         "(stream the transformer, near-resident speed, moderate VRAM cut), low_vram "
-        "(offload every component, lowest VRAM, slower).",
+        "(stream the transformer and text encoders block by block, tiled VAE decode; lowest "
+        "VRAM, slowest).",
     )
     allow_oversized_load: bool = Field(
         False,
@@ -7567,11 +7619,12 @@ class VideoLoadRequest(BaseModel):
     )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
-        description = "Opt-in speed optims (default off -> bit-identical output): "
+        description = "Speed optims. Unset: default for every video load, dense or GGUF (regional "
+        "torch.compile where eligible; output is close to, not bit-identical with, off). "
+        "off (bit-identical output; a quantized transformer still compiles), "
         "eager (channels_last + cudnn + attention + fused norm patches, NO torch.compile), "
         "default (also regional torch.compile where eligible), "
-        "max (also TF32 + fused QKV). GGUF video loads default to the near-lossless "
-        "compile profile.",
+        "max (also TF32 + fused QKV).",
     )
     attention_backend: Optional[
         Literal[
@@ -7597,6 +7650,16 @@ class VideoLoadRequest(BaseModel):
         "attention; unsloth_int8 is Studio's own INT8 attention kernel on the families with strided "
         "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
         "kernel falls back to the default.",
+    )
+    int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
+        None,
+        description = "Studio's own INT8 attention kernel for this load. auto (the default, also when unset) "
+        "engages it where it is measured accurate and faster for this model and GPU (it passes the per-card "
+        "accuracy check against fp32 attention and wins a timed race against the selected attention); the "
+        "UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL environment switch still applies. on engages it wherever it "
+        "passes the accuracy check, over the env switch (attention_backend=unsloth_int8 is the same). off never "
+        "engages it on this load, over the env switch; it does not change an explicit attention_backend such as "
+        "sage. The status record reports what engaged under resolved.int8_attention.",
     )
     transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(
         None,
@@ -7679,6 +7742,15 @@ class VideoLoadRequest(BaseModel):
                         f"duplicate LoRA id '{spec.id}'; list each adapter at most once"
                     )
                 seen.add(spec.id)
+        return value
+
+    @field_validator("int8_attention", mode = "before")
+    @classmethod
+    def _normalize_int8_attention(cls, value):
+        # Folded like attention_backend: the Literal above is validated after this; "" reads as unset.
+        if isinstance(value, str):
+            value = value.strip().lower()
+            return value or None
         return value
 
     @field_validator("attention_backend", mode = "before")

@@ -11,6 +11,7 @@ native transformers has no such channel, so this loop parses tool calls from the
 dispatches via ``core.inference.tools``.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import bisect
 import inspect
 import json
@@ -559,7 +560,7 @@ def run_safetensors_tool_loop(
     auto_heal_tool_calls: bool = True,
     deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
-    max_tool_iterations: int = 25,
+    max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
     thread_id: Optional[str] = None,

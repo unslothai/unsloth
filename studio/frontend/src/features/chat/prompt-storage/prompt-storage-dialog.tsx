@@ -21,6 +21,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { authFetch } from "@/features/auth";
+import {
+  SANDBOX_FILE_TOOLS,
+  isSandboxToolResult,
+  sandboxFilePath,
+} from "@/components/assistant-ui/sandbox-files";
 
 import { cn } from "@/lib/utils";
 import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
@@ -118,6 +124,7 @@ import {
   type NamedConversationHtml,
   buildConversationHtmlBody,
   buildConversationHtmlDocument,
+  isDataImage,
 } from "../utils/conversation-html";
 import { renderConversationPdf } from "../api/chat-export-api";
 import { planChatItemSources } from "../utils/project-source-plan";
@@ -606,15 +613,83 @@ async function loadConversationForHtml(
       : undefined;
   return {
     title: title ?? (thread?.title?.trim() || "Conversation"),
-    messages: messages.map((msg) => ({
-      role: String(msg.role ?? ""),
-      content: stripSearchImageTokens(
-        msg.role === "user" || msg.role === "system"
-          ? messageToText(msg)
-          : messageToMarkdown(msg),
-      ),
+    messages: await Promise.all(messages.map(async (msg) => {
+      const images: string[] = [];
+      const rest = {
+        content: takeDataImages(await withSandboxImages(msg.content), images),
+        attachments: msg.attachments?.map((attachment) => ({
+          content: takeDataImages(attachment?.content, images),
+        })),
+      };
+      return {
+        role: String(msg.role ?? ""),
+        content: stripSearchImageTokens(
+          msg.role === "user" || msg.role === "system"
+            ? messageToText(rest)
+            : messageToMarkdown(rest),
+        ),
+        images,
+      };
     })),
   };
+}
+
+async function withSandboxImages(content: unknown): Promise<unknown> {
+  if (!Array.isArray(content)) return content;
+  const parts = await Promise.all(
+    content.map(async (part) => {
+      const { type, toolName, result } = (part ?? {}) as Record<string, unknown>;
+      if (
+        type !== "tool-call" ||
+        typeof toolName !== "string" ||
+        !SANDBOX_FILE_TOOLS.has(toolName) ||
+        !isSandboxToolResult(result)
+      ) {
+        return [part];
+      }
+      const { sessionId, images } = result as { text: string; sessionId: string; images: unknown[] };
+      const pictures = await Promise.all(
+        images
+          .filter((name): name is string => typeof name === "string" && name.length > 0)
+          .map((name) => sandboxImageMarkdown(sessionId, name)),
+      );
+      return [part, ...pictures.map((text) => ({ type: "text", text }))];
+    }),
+  );
+  return parts.flat();
+}
+
+// marked overflows V8's fixed regexp backtrack stack on a data URL of about 8M characters.
+const MAX_INLINE_IMAGE_BYTES = 4 * 1024 * 1024;
+
+async function sandboxImageMarkdown(sessionId: string, name: string): Promise<string> {
+  const alt = name.replace(/[\\[\]]/g, "\\$&");
+  const blob = await authFetch(sandboxFilePath(sessionId, name))
+    .then((response) => (response.ok ? response.blob() : null))
+    .catch(() => null);
+  const src = blob && blob.size <= MAX_INLINE_IMAGE_BYTES ? await blobDataUrl(blob) : "";
+  return isDataImage(src) ? `![${alt}](${src})` : `[image: ${alt}]`;
+}
+
+function blobDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => resolve("");
+    reader.readAsDataURL(blob);
+  });
+}
+
+function takeDataImages(content: unknown, images: string[]): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.filter((part) => {
+    const { type, image } = (part ?? {}) as { type?: unknown; image?: unknown };
+    if (type !== "image" || typeof image !== "string" || !isDataImage(image)) {
+      return true;
+    }
+    images.push(image);
+    return false;
+  });
 }
 
 async function pdfBytes(title: string, body: string): Promise<Uint8Array> {

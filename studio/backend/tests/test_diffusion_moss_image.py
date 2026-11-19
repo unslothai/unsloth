@@ -421,7 +421,12 @@ def test_skip_layers_reach_the_transformer_as_a_tuple(pipelines, monkeypatch):
 def test_family_detects_both_repos_and_a_local_pipeline(tmp_path):
     from core.inference import diffusion_families as df
 
-    for repo in ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"):
+    for repo in (
+        "OpenMOSS-Team/MOSS-Image-SFT",
+        "OpenMOSS-Team/MOSS-Image-Base",
+        "lodestones/Kromoss",
+        "molbal/Kromoss-GGUF",
+    ):
         fam = df.detect_family(repo)
         assert fam is not None and fam.name == "moss-image", repo
     local = tmp_path / "f972bd4b4b9e"
@@ -429,6 +434,31 @@ def test_family_detects_both_repos_and_a_local_pipeline(tmp_path):
     (local / "model_index.json").write_text(json.dumps({"_class_name": "MOSSImagePipeline"}))
     fam = df.detect_family_for_pick(str(local))
     assert fam is not None and fam.name == "moss-image"
+
+
+@pytest.mark.parametrize(
+    "repo, filename",
+    [
+        ("molbal/Kromoss-GGUF", "kromoss-Q4_K_M.gguf"),
+        ("MolBal/KrOmOsS-GGUF", "KrOmOsS-Q4_K_M.gguf"),
+        ("lodestones/Kromoss", None),
+    ],
+)
+def test_a_kromoss_pick_resolves_the_moss_family(repo, filename, tmp_path):
+    from core.inference import diffusion_families as df
+
+    moss = df.detect_family("OpenMOSS-Team/MOSS-Image-SFT")
+    loose = tmp_path / "kromoss-Q4_K_M.gguf"
+    loose.write_bytes(b"")
+    for pick_repo, pick_file in ((repo, filename), (str(loose), None)):
+        fam = df.detect_family_for_pick(pick_repo, pick_file)
+        assert fam is moss, (pick_repo, pick_file)
+        assert df.detect_family_for_pick(pick_repo, pick_file, override = "moss-image") is fam
+    for bad_repo, bad_file in (
+        ("acme/notkromoss", "notkromoss-Q4_K_M.gguf"),
+        ("acme/kromoss-edit", "kromoss-edit-Q4_K_M.gguf"),
+    ):
+        assert df.detect_family_for_pick(bad_repo, bad_file) is None, bad_repo
 
 
 def test_family_row_defaults_and_trust():

@@ -8,6 +8,7 @@ from __future__ import annotations
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
 
+import contextlib
 import gc
 import hashlib
 import io
@@ -1031,6 +1032,22 @@ def _training_active() -> bool:
         return False
 
 
+def _lend_diffusion_training_vram(device: Optional[str], reason: str):
+    """A CUDA load while diffusion training runs: the trainer first gives back the GPU memory it keeps
+    only for speed (its nf4 dequant cache), and re-sizes it after the load. A no-op otherwise."""
+    if device != "cuda":
+        return contextlib.nullcontext()
+    try:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+
+        service = get_diffusion_training_service()
+        if not service.is_active():
+            return contextlib.nullcontext()
+        return service.lend_vram(reason)
+    except Exception:  # noqa: BLE001 -- coordination is best-effort; the load behaves as before
+        return contextlib.nullcontext()
+
+
 def _clear_device_cache(device: Optional[str], collect: bool = True) -> None:
     """collect=False only for a caller that just collected and dropped nothing since; a full gc pass costs about a second on a long-lived backend."""
     if collect:
@@ -1538,7 +1555,10 @@ class WhisperSttSidecar:
 
                 retry_on_cpu = False
                 try:
-                    candidate = self._build_model(str(snapshot_path), device, dtype, cancel_event)
+                    with _lend_diffusion_training_vram(device, "dictation model load"):
+                        candidate = self._build_model(
+                            str(snapshot_path), device, dtype, cancel_event
+                        )
                     self._raise_if_load_cancelled(cancel_event)
                 except SttLoadCancelledError:
                     raise

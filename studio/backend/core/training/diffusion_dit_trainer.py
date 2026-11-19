@@ -37,6 +37,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.training.diffusion_gc_budget import (
+    StepReplay,
+    enable_budgeted_checkpointing,
+    is_out_of_memory,
+)
 from core.training.diffusion_load_progress import report_model_load_progress
 from core._torchao_stub import is_stubbed, torch_is_rocm
 from core.training.diffusion_train_common import (
@@ -64,6 +69,8 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     bucket_groups,
     discover_image_caption_pairs,
+    dit_fp16_dense_reason,
+    dit_fp16_fallback,
     has_functional_torchao,
     flow_bf16_trainable,
     native_bf16_supported_xpu,
@@ -95,6 +102,7 @@ from core.training.diffusion_samples import (
     plan_samples,
     run_sample_round,
 )
+from core.training.diffusion_dit_fp16 import MAX_CONSECUTIVE_SKIPS as FP16_MAX_CONSECUTIVE_SKIPS
 from core.training.diffusion_train_extras import (
     BucketBatchSampler,
     LoRAEMA,
@@ -284,10 +292,14 @@ def _empty_device_cache(device) -> None:
 
 
 def _encoders_to_device(pipe, device) -> None:
-    """A QLoRA load leaves text encoders on CPU, so move them; a 4-bit encoder already placed is skipped."""
+    """A QLoRA load leaves text encoders on CPU, so move them; a 4-bit encoder already placed is skipped. Encoders
+    that do not fit in free VRAM stream their layers through the card instead (diffusion_te_stream)."""
+    from core.training.diffusion_te_stream import STREAMER_ATTR, place_text_encoders
+
+    place_text_encoders(pipe, device)
     for attr in ("text_encoder", "text_encoder_2", "text_encoder_3"):
         enc = getattr(pipe, attr, None)
-        if enc is None:
+        if enc is None or getattr(enc, STREAMER_ATTR, None) is not None:
             continue
         try:
             enc.to(device)
@@ -1809,6 +1821,141 @@ def _flux3_training_scheduler(cfg):
     return FlowMatchEulerDiscreteScheduler.from_config(shipped.config)
 
 
+# Same names as published MOSS LoRAs (Angais/MOSS-Image-PixelArt-16x16), so adapters are interchangeable.
+_MOSS_TARGETS = (
+    "proj.q",
+    "proj.k",
+    "proj.v",
+    "proj.o",
+    "proj.ffn_up_gate",
+    "proj.ffn_down",
+)
+# Dense under nf4: _MOSS_IMAGE_QUANT_KEEP plus latent in / out; bitsandbytes matches "<name>." so names are whole.
+_MOSS_NF4_KEEP = (
+    "text_embedder",
+    "time_embedding",
+    "shared_block_modulation",
+    "video_head_modulation",
+    "video_embedder",
+    "final_linear_video",
+)
+
+
+def _moss_load_conditioners(cfg, device, weight_dtype):
+    import torch
+    from core.inference.diffusion_moss_image import load_moss_image_pipeline
+
+    pipe = load_moss_image_pipeline(
+        cfg.base_model, torch.bfloat16, hf_token = cfg.hf_token, with_transformer = False
+    )
+    return pipe, pipe.vae
+
+
+def _moss_nf4_config():
+    cfg = _bnb_4bit_config()
+    cfg.llm_int8_skip_modules = list(_MOSS_NF4_KEEP)
+    return cfg
+
+
+def _moss_load_transformer(cfg, device, weight_dtype, base_precision):
+    import torch
+    from core.inference.diffusion_moss_image import MOSSImageTransformer
+
+    if base_precision == "nf4" and not repo_is_prequantized(cfg.base_model):
+        return MOSSImageTransformer.from_pretrained(
+            cfg.base_model,
+            subfolder = "transformer",
+            quantization_config = _moss_nf4_config(),
+            device_map = {"": device},
+            torch_dtype = torch.bfloat16,
+            token = cfg.hf_token,
+        )
+    return _load_dit_transformer(MOSSImageTransformer, cfg, device, base_precision)
+
+
+def _moss_encode_prompts(pipe, captions, device):
+    _encoders_to_device(pipe, device)
+    out = []
+    for cap in captions:
+        embeds, _mask = pipe.encode_prompt(cap, device = device)
+        out.append((embeds[0].cpu(),))
+    return out
+
+
+def _moss_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    """Right-padded ``(embeds, mask)``; mask is None for equal lengths (no host sync in the forward)."""
+    import torch
+
+    rows = [e[0].to(device = device, non_blocking = True).to(dtype = weight_dtype) for e in entries]
+    lengths = [int(r.shape[0]) for r in rows]
+    if len(set(lengths)) == 1:
+        return (torch.stack(rows), None)
+    embeds = torch.nn.utils.rnn.pad_sequence(rows, batch_first = True)
+    mask = (
+        torch.arange(embeds.shape[1], device = embeds.device)[None]
+        < torch.tensor(lengths, device = embeds.device)[:, None]
+    )
+    return (embeds, mask)
+
+
+def _moss_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    embeds, mask = embeds_batch
+    # Timestep is sigma * 1000, as MOSSImagePipeline passes it.
+    kwargs = {} if mask is None else {"encoder_attention_mask": mask}
+    return transformer(noisy, timesteps, encoder_hidden_states = embeds, return_dict = False, **kwargs)[
+        0
+    ]
+
+
+# Patchified 2x2 and batch-norm normalised, the inverse of MOSSImagePipeline.vae_decode.
+_moss_encode_latents = _flux2_encode_latents
+_moss_encode_latent_stats = _flux2_encode_latent_stats
+
+
+def _moss_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
+    """``transformer.*`` keys plus adapter metadata, as MOSSImagePipeline.load_lora_weights reads."""
+    import inspect
+
+    from diffusers.loaders import QwenImageLoraLoaderMixin
+
+    save = QwenImageLoraLoaderMixin.save_lora_weights
+    kwargs = {}
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
+    )
+
+
+def _moss_training_scheduler(cfg):
+    """Shift 5 baked into the sigmas: MOSSImageScheduler's table is unshifted, so training from it draws shift-1 noise."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    conf = FlowMatchEulerDiscreteScheduler.load_config(
+        cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+    )
+    return FlowMatchEulerDiscreteScheduler(
+        num_train_timesteps = int(conf.get("num_train_timesteps") or 1000),
+        shift = float(conf.get("shift") or 5.0),
+    )
+
+
 # Targets fully qualified: a bare to_q would also match audio and cross-modality attention, so keep audio out of the LoRA targets and the loss.
 _LTX2_TARGETS = (
     "attn1.to_q",
@@ -2332,6 +2479,25 @@ _SPECS: dict[str, _FamilySpec] = {
         training_scheduler = _flux3_training_scheduler,
         save_takes_metadata = True,
         timestep_density = "none",
+    ),
+    "moss-image": _FamilySpec(
+        family = "moss-image",
+        lora_targets = _MOSS_TARGETS,
+        # ComfyUI runs MOSS-Image in bf16 / fp32 only: its residual stream overflows fp16.
+        force_bf16 = True,
+        dense_bf16_gb = 10.2,
+        load_conditioners = _moss_load_conditioners,
+        load_transformer = _moss_load_transformer,
+        encode_prompts = _moss_encode_prompts,
+        encode_latents = _moss_encode_latents,
+        encode_latent_stats = _moss_encode_latent_stats,
+        collate = _moss_collate,
+        forward = _moss_forward,
+        save = _moss_save,
+        latent_shape = _flux2_latent_shape,
+        decode_latents = _flux2_decode_latents,
+        training_scheduler = _moss_training_scheduler,
+        save_takes_metadata = True,
     ),
     "flux.2-dev": _FamilySpec(
         family = "flux.2-dev",
@@ -2920,8 +3086,9 @@ def run_dit_lora_training(
         return True
 
     device = resolve_train_device()
+    fp16_amp = device == "cuda" and dit_fp16_fallback(spec.family)
     # is_bf16_supported() counts emulation on CUDA and XPU, so gate on NATIVE bf16.
-    if device == "cuda" and not flow_bf16_trainable():
+    if device == "cuda" and not fp16_amp and not flow_bf16_trainable():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."
@@ -2932,6 +3099,12 @@ def run_dit_lora_training(
             "support bf16 natively."
         )
     weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
+    if fp16_amp:
+        # Residual stream stays fp32; only autocast matmuls run fp16.
+        weight_dtype = torch.float32
+        mode = (cfg.base_precision or "nf4").strip().lower()
+        if mode not in ("nf4", "auto"):
+            raise ValueError(dit_fp16_dense_reason(mode))
 
     # A local FLUX.3 pipeline is modular (modular_model_index.json, no model_index.json).
     _assert_trusted_base_model(
@@ -2994,13 +3167,24 @@ def run_dit_lora_training(
             _check_stop,
             lambda: save_on_stop,
             identity,
+            fp16_amp = fp16_amp,
         )
     finally:
         _restore_perf_flags(perf_snap)
 
 
 def _train_dit(
-    cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_stop, _save_on_stop, identity
+    cfg,
+    spec,
+    pairs,
+    rng,
+    device,
+    weight_dtype,
+    on_event,
+    _check_stop,
+    _save_on_stop,
+    identity,
+    fp16_amp = False,
 ):
     """The body of ``run_dit_lora_training``, split out so the backend perf flags are
     snapshot/restored around it in exactly one place."""
@@ -3163,7 +3347,7 @@ def _train_dit(
     caption_embeds = _pin_caption_embeds(caption_embeds, device)
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
-    base_precision = _resolve_base_precision(cfg, spec, device)
+    base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
     _emit(
         on_event,
         "model_load_started",
@@ -3175,6 +3359,10 @@ def _train_dit(
     with report_model_load_progress(on_event):
         transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
     base_is_bnb = base_precision == "nf4"
+    fp16_report = None
+    if fp16_amp:
+        from core.training.diffusion_dit_fp16 import install_fp32_islands, prepare_fp16_base
+        fp16_report = prepare_fp16_base(transformer)
 
     transformer.requires_grad_(False)
     transformer.add_adapter(
@@ -3186,8 +3374,15 @@ def _train_dit(
             target_modules = list(use_lora_targets),
         )
     )
+    if fp16_amp:
+        # After the adapter, so the island wraps the PEFT layer.
+        fp16_report["fp32_islands"] = len(install_fp32_islands(transformer, spec.family, device))
+    gc_budget = None
     if cfg.gradient_checkpointing:
-        enable_diffusion_gradient_checkpointing(transformer)
+        # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+        gc_budget = enable_budgeted_checkpointing(transformer, device)
+        if gc_budget is None:
+            enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
@@ -3209,14 +3404,21 @@ def _train_dit(
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
 
     # A resume runs only the remaining steps, so the nf4 compile break-even is judged on those.
-    compiled = _maybe_compile_transformer(
-        transformer,
-        cfg,
-        base_is_bnb,
-        device,
-        on_event,
-        base_precision,
-        resume_steps_left(cfg, identity),
+    # fp32 islands are unmeasured under regional compile.
+    if fp16_amp:
+        _warn_fp16_compile_declined(cfg, on_event)
+    compiled = (
+        False
+        if fp16_amp
+        else _maybe_compile_transformer(
+            transformer,
+            cfg,
+            base_is_bnb,
+            device,
+            on_event,
+            base_precision,
+            resume_steps_left(cfg, identity),
+        )
     )
     # Compiled Qwen graphs need one fixed text length across steps.
     qwen_pad_to = None
@@ -3257,7 +3459,59 @@ def _train_dit(
         num_training_steps = cfg.train_steps,
     )
 
-    _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
+    scaler = torch.amp.GradScaler("cuda", enabled = fp16_amp)
+    from core.training.diffusion_lora_fast import (
+        Nf4DequantCache,
+        attach_training_hooks,
+        bucket_activation_scale,
+        cache_vram_handler,
+        set_vram_request_handler,
+        fast_lora_enabled,
+        fast_lora_stats,
+        install_fast_lora,
+        mark_lora_updated,
+        uninstall_fast_lora,
+    )
+
+    # Eager only: a compiled graph already fuses PEFT's casts. The dequant cache needs CUDA's free-memory probe.
+    dequant_cache = None
+    fast_lora_layers = 0
+    fast_lora_hooks = ()
+    if not compiled and device in ("cuda", "xpu") and fast_lora_enabled():
+        if _dequant_cache_wanted(base_is_bnb, device, fp16_amp):
+            dequant_cache = Nf4DequantCache()
+        fast_lora_layers = install_fast_lora(transformer, dequant_cache)
+        if fast_lora_layers:
+            # After each optimizer step: recast the bf16 masters; after step 1: size the dequant cache.
+            fast_lora_hooks = attach_training_hooks(
+                optimizer,
+                dequant_cache,
+                bucket_activation_scale(canvases),
+                lambda stats: _emit(on_event, "dequant_cache_planned", **stats),
+                lambda kind, stats: _emit(on_event, kind, **stats),
+            )
+            if dequant_cache is not None:
+                # Studio asks for this room back before another model loads on the card (lend_vram).
+                set_vram_request_handler(cache_vram_handler(dequant_cache))
+        else:
+            dequant_cache = None
+
+    _emit(
+        on_event,
+        "model_load_completed",
+        compiled = compiled,
+        base_precision = base_precision,
+        fast_lora_layers = fast_lora_layers,
+        **(
+            {
+                "mixed_precision": "fp16",
+                "fp16_islands": fp16_report["fp32_islands"],
+                "fp16_linear4bit": fp16_report["linear4bit_fp16"],
+            }
+            if fp16_amp
+            else {}
+        ),
+    )
     # Read the commit after the base is on disk: an earlier identity says unresolved, so resume cannot detect a moved repo. Record the repo actually fetched.
     identity = with_resolved_revision(identity, fetch_cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
@@ -3290,6 +3544,9 @@ def _train_dit(
         rng_streams = rng_streams,
     )
     resumed = restored.step if restored is not None else 0
+    skipped_steps = (
+        _restore_scaler(restored.progress, scaler) if fp16_amp and restored is not None else 0
+    )
     # Resuming from A into reused dir B: the bundles of B are foreign, and the first save must clear them or a higher-numbered one outranks this run.
     resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
     # The bundles already here when this run started, so a discard removes only what this run wrote.
@@ -3331,7 +3588,12 @@ def _train_dit(
             sampler = index_sampler,
             rng_streams = rng_streams,
             # The identity records the REQUESTED mode, which cannot tell nf4 from bf16 under "auto".
-            progress = {"running_loss": running_loss, "resolved_base_precision": base_precision},
+            progress = _resume_progress(
+                {"running_loss": running_loss, "resolved_base_precision": base_precision},
+                scaler,
+                skipped_steps,
+                fp16_amp,
+            ),
             # NOT discard_existing: a cancelled retrain would destroy the run being retrained.
             discard_existing = False,
             # A branched resume must not prune the higher-numbered checkpoints it did not write.
@@ -3340,7 +3602,7 @@ def _train_dit(
 
     # Reconciles the fp32 LoRA params with the bnb 4-bit base matmuls.
     autocast = (
-        torch.autocast(device_type = device, dtype = torch.bfloat16)
+        torch.autocast(device_type = device, dtype = torch.float16 if fp16_amp else torch.bfloat16)
         if device in ("cuda", "xpu")
         else nullcontext()
     )
@@ -3394,6 +3656,9 @@ def _train_dit(
             return
         t_round = time.time()
         parked = next(sample_vae.parameters()).device.type == "cpu"
+        if dequant_cache is not None:
+            # The preview needs the room; the following steps refill the cache.
+            dequant_cache.suspend()
         try:
             with isolated_sampling(device, compiled):
                 transformer.eval()
@@ -3407,6 +3672,11 @@ def _train_dit(
             sample_plan = None
         finally:
             transformer.train()
+            if dequant_cache is not None:
+                dequant_cache.resume()
+            if fast_lora_layers:
+                # A preview may swap EMA weights in and out of the LoRA masters.
+                mark_lora_updated()
             if parked:
                 sample_vae.to("cpu")
                 if device == "cuda":
@@ -3421,14 +3691,60 @@ def _train_dit(
     if sample_plan is not None and resumed < cfg.train_steps:
         _sample(resumed)
 
+    def _forward_backward(latents, noise, timesteps, sigmas, noisy, embeds):
+        with autocast:
+            model_pred = spec.forward(
+                transformer, noisy, timesteps, sigmas, embeds, cfg, device, weight_dtype
+            )
+            target = noise - latents
+            if bell_weights is None:
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+            else:
+                per = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                w_idx = (sigmas.flatten().float() * num_train_ts).long().clamp(0, num_train_ts - 1)
+                w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
+                loss = (per * w).mean()
+        if fp16_amp:
+            scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
+        else:
+            (loss / cfg.gradient_accumulation_steps).backward()
+        return loss
+
+    def _retry_fully_checkpointed():
+        # Partial gradients of the failed micro-step are already accumulated, so the whole step reruns from its inputs.
+        gc_budget.fall_back()
+        optimizer.zero_grad(set_to_none = True)
+        gc.collect()
+        _empty_device_cache(device)
+        _emit(
+            on_event,
+            "warning",
+            message = (
+                "Ran out of GPU memory while keeping block activations; every block is checkpointed "
+                "from this step on."
+            ),
+        )
+        acc = None
+        for loss in replay.replay(_forward_backward):
+            acc = accumulate_loss(acc, loss, cfg.gradient_accumulation_steps)
+        replay.clear()
+        return acc
+
+    # Host copies of the step's inputs and RNG states, only while a budgeted step could still need a rerun.
+    replay = StepReplay(device) if gc_budget is not None else None
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
-    for opt_step in range(resumed, cfg.train_steps):
+    consecutive_skips = 0
+    # while, not range: an fp16 overflow step applies no update and is not counted.
+    opt_step = resumed
+    while opt_step < cfg.train_steps:
         if stop_latched:
             stopped = True
             break
         optimizer.zero_grad(set_to_none = True)
         step_acc = None
+        if replay is not None:
+            replay.clear()
         for _ in range(cfg.gradient_accumulation_steps):
             idxs = index_sampler.next_batch(batch_size)
             if canvases is not None:
@@ -3479,35 +3795,63 @@ def _train_dit(
                 weight_dtype,
                 pad_to = qwen_pad_to,
             )
-            with autocast:
-                model_pred = spec.forward(
-                    transformer, noisy, timesteps, sigmas, embeds, cfg, device, weight_dtype
-                )
-                target = noise - latents
-                if bell_weights is None:
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
-                else:
-                    per = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
-                    w_idx = (
-                        (sigmas.flatten().float() * num_train_ts).long().clamp(0, num_train_ts - 1)
-                    )
-                    w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
-                    loss = (per * w).mean()
-            (loss / cfg.gradient_accumulation_steps).backward()
-            step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
+            inputs = (latents, noise, timesteps, sigmas, noisy, embeds)
+            if gc_budget is not None and not gc_budget.planned and canvases is not None:
+                # Bucketed runs: the plan is measured on this step's canvas and scaled to the largest bucket.
+                gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idxs))
+            if replay is not None and gc_budget.can_retry:
+                replay.record(inputs)
+            oom = False
+            try:
+                loss = _forward_backward(*inputs)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+                if replay is None or not gc_budget.can_retry or not is_out_of_memory(exc):
+                    raise
+                oom = True
+            if oom:
+                # Outside the except block so the failed graph dies with its traceback; drop every device reference
+                # to the step's micro-batches so the host-copy rerun has a clean step's memory.
+                inputs = latents = noise = timesteps = t_indices = sigmas = noisy = embeds = None
+                px = loss = step_acc = None
+                step_acc = _retry_fully_checkpointed()
+            else:
+                step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
 
+        if fp16_amp:
+            scaler.unscale_(optimizer)
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
             # Pre-clip norm: the UI's health signal.
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         step_loss = loss_value(step_acc)
-        optimizer.step()
-        lr_sched.step()
+        plan_now = gc_budget is not None and not gc_budget.planned
+        if plan_now:
+            fb_peak = torch.cuda.max_memory_allocated()
+            alloc_before_step = torch.cuda.memory_allocated()
+        if not _optimizer_update(optimizer, lr_sched, scaler, fp16_amp):
+            # Skipped update: LR schedule, EMA, step counter and checkpointing budget must not advance.
+            skipped_steps += 1
+            consecutive_skips += 1
+            if consecutive_skips >= FP16_MAX_CONSECUTIVE_SKIPS:
+                raise RuntimeError(_fp16_overflow_message(spec, consecutive_skips, step_loss))
+            if _check_stop():
+                stopped = True
+                break
+            continue
+        consecutive_skips = 0
+        if plan_now:
+            _plan_gc_budget(
+                gc_budget,
+                fb_peak,
+                alloc_before_step,
+                max(c[0] * c[1] for c in canvases) if canvases is not None else None,
+            )
         if ema is not None:
             ema.update(transformer)
 
         running_loss += step_loss
         done = opt_step + 1
+        opt_step = done
         now = time.time()
         # Rates count only the steps THIS process ran, so a resumed run does not divide by steps it never executed.
         ran_here = done - resumed
@@ -3526,6 +3870,11 @@ def _train_dit(
                 sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)
             else:
                 sps = round(ran_here * per_step / max(now - t_rate, 1e-6), 3)
+            extra_progress = (
+                {"grad_scale": scaler.get_scale(), "skipped_steps": skipped_steps}
+                if fp16_amp
+                else {}
+            )
             _emit(
                 on_event,
                 "progress",
@@ -3537,6 +3886,7 @@ def _train_dit(
                 grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
                 samples_per_second = sps,
                 peak_memory_gb = peak_gb or None,
+                **extra_progress,
             )
         stop_now = _check_stop()
         if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
@@ -3555,6 +3905,18 @@ def _train_dit(
         if stop_now:
             stopped = True
             break
+
+    if fast_lora_layers:
+        stats = fast_lora_stats()
+        if dequant_cache is not None:
+            stats["dequant"] = dequant_cache.stats()
+            set_vram_request_handler(None)
+            dequant_cache.release()
+        _emit(on_event, "fast_lora_stats", **stats)
+        for handle in fast_lora_hooks:
+            handle.remove()
+        # Saving and any later reuse of this transformer see PEFT's own modules again.
+        uninstall_fast_lora(transformer)
 
     lora_path: Optional[str] = None
     catalog_path: Optional[str] = None
@@ -3605,10 +3967,113 @@ def _train_dit(
         steps_run = done if cfg.train_steps else 0,
         wall_seconds = round(time.time() - t_start, 1),
         resumed_from_step = resumed or None,
+        **({"mixed_precision": "fp16", "skipped_steps": skipped_steps} if fp16_amp else {}),
         # Stop without saving discards the run, so its periodic checkpoints must not keep offering a resume.
         discarded = bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)
+
+
+FP16_COMPILE_DECLINED = (
+    "torch.compile is not used on the fp16 path (GPUs without bf16); compile_transformer='on' is "
+    "ignored and this run trains eager."
+)
+
+
+def _warn_fp16_compile_declined(cfg, on_event) -> bool:
+    """An explicit compile request on the fp16 path runs eager: say so (log + warning event), never raise."""
+    if str(getattr(cfg, "compile_transformer", None) or "auto").strip().lower() != "on":
+        return False
+    import logging
+
+    logging.getLogger(__name__).warning(FP16_COMPILE_DECLINED)
+    _emit(on_event, "warning", message = FP16_COMPILE_DECLINED)
+    return True
+
+
+def _dequant_cache_wanted(base_is_bnb, device, fp16_amp) -> bool:
+    """nf4 dequant cache on CUDA; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
+    (on a T4 both planned from step 1's free memory and step 2 OOMed)."""
+    from core.training.diffusion_lora_fast import dequant_cache_enabled
+    return (
+        base_is_bnb
+        and device == "cuda"
+        and not fp16_amp
+        and not torch_is_rocm()
+        and dequant_cache_enabled()
+    )
+
+
+def _optimizer_update(optimizer, lr_sched, scaler, fp16_amp) -> bool:
+    """One optimizer update; False when the fp16 GradScaler skipped it (the LR schedule then does not tick)."""
+    if not fp16_amp:
+        optimizer.step()
+        lr_sched.step()
+        return True
+    scale_before = scaler.get_scale()
+    scaler.step(optimizer)
+    scaler.update()
+    if scaler.get_scale() < scale_before:
+        return False
+    lr_sched.step()
+    return True
+
+
+def _resume_progress(progress: dict, scaler, skipped_steps: int, fp16_amp: bool) -> dict:
+    """fp16 adds loss-scaler state and skip count; bf16 unchanged."""
+    if not fp16_amp:
+        return progress
+    return {**progress, "grad_scaler": scaler.state_dict(), "skipped_steps": int(skipped_steps)}
+
+
+def _restore_scaler(progress: dict, scaler) -> int:
+    """Restore the backed-off scale (2**16 would overflow again); returns the skipped-step count."""
+    state = (progress or {}).get("grad_scaler")
+    if isinstance(state, dict) and state:
+        scaler.load_state_dict(state)
+    try:
+        return int((progress or {}).get("skipped_steps") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fp16_overflow_message(spec, skips, step_loss) -> str:
+    return (
+        f"{spec.family} fp16 training skipped {skips} steps in a row on non-finite gradients (last loss "
+        f"{step_loss!r}): loss scaling cannot fix an overflow in the forward itself. Train this family on a "
+        "bf16-capable GPU."
+    )
+
+
+def _plan_gc_budget(
+    gc_budget,
+    fb_peak,
+    alloc_before_step,
+    max_canvas_area = None,
+) -> None:
+    """After the first step: keep as many blocks' activations as the measured free memory allows. Never raises."""
+    import logging
+
+    import torch
+
+    log = logging.getLogger(__name__)
+    try:
+        # The optimizer's first step allocates its moments, which every later step carries.
+        projected = int(fb_peak) + max(0, torch.cuda.memory_allocated() - int(alloc_before_step))
+        free, total = torch.cuda.mem_get_info()
+        kept = gc_budget.plan(
+            projected, free, torch.cuda.memory_reserved(), total, max_canvas_area = max_canvas_area
+        )
+    except Exception as exc:  # noqa: BLE001 -- an optimisation only: every block stays checkpointed
+        gc_budget.fall_back()
+        log.info("gradient checkpointing budget not applied: %s", exc)
+        return
+    log.info(
+        "gradient checkpointing: keeping activations for %d of %d blocks (%.2f GiB)",
+        kept,
+        gc_budget.total_blocks,
+        gc_budget.kept_bytes / (1 << 30),
+    )
 
 
 def _make_optimizer(
@@ -3621,6 +4086,9 @@ def _make_optimizer(
 
 def _free_text_encoders(pipe) -> None:
     """Frees conditioning modules once embeddings are precomputed, so they do not sit in VRAM."""
+    from core.training.diffusion_te_stream import release_text_encoders
+
+    release_text_encoders(pipe)
     # A modular facade (FLUX.3) keeps the encoder alive in its block graph's pipeline; drop it (rebuilds on use).
     if getattr(pipe, "_modular", None) is not None:
         pipe._modular = None

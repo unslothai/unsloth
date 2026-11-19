@@ -15,6 +15,7 @@ if os.environ.get("UNSLOTH_TEST_RANKS_ON_GPU") != "1" and (
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
+import shutil  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -465,6 +466,15 @@ def _spawn(
 
 
 _CKPTS = {}
+_CKPT_DIRS = []
+
+
+@pytest.fixture(autouse = True, scope = "module")
+def _remove_checkpoints():
+    yield
+    _CKPTS.clear()
+    while _CKPT_DIRS:
+        shutil.rmtree(_CKPT_DIRS.pop(), ignore_errors = True)
 
 
 def _checkpoint(
@@ -475,6 +485,7 @@ def _checkpoint(
     key = (arch, nested, quant_storage)
     if key not in _CKPTS:
         directory = tempfile.mkdtemp(prefix = f"bnb4_{arch}_")
+        _CKPT_DIRS.append(directory)
         _CKPTS[key] = make_checkpoint(arch, directory, nested, quant_storage = quant_storage)
     return _CKPTS[key]
 

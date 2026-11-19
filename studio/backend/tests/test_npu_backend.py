@@ -1057,3 +1057,82 @@ def test_reloading_the_resident_model_restarts_it_in_lemond(npu):
     paths = [r["path"] for r in _requests(npu) if r["path"] in ("/v1/load", "/v1/unload")]
     assert paths == ["/v1/load", "/v1/unload", "/v1/load"]
     assert npu.is_loaded
+
+
+def test_the_name_the_app_shows_resolves_to_the_lemonade_id(npu):
+    npu.enable()
+    (npu._flm_binary().parent / "model_list.json").write_text(
+        json.dumps(
+            {
+                "model_path": "models",
+                "models": {
+                    "qwen3": {
+                        "0.6b": {
+                            "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2/resolve/v2"
+                        }
+                    }
+                },
+            }
+        )
+    )
+    for name in (
+        "Qwen3-0.6B-NPU2",
+        "qwen3-0.6b-npu2",
+        "FastFlowLM/Qwen3-0.6B-NPU2",
+        " fastflowlm/QWEN3-0.6B-NPU2 ",
+    ):
+        assert npu.model_path_for_name(name, start_runtime = False) == "lemonade:qwen3-0.6b-FLM"
+    # No repo on record, another owner, or not a display name at all.
+    for name in (
+        "Gemma3-4B-NPU2",
+        "someone/Qwen3-0.6B-NPU2",
+        "unsloth/Qwen3-0.6B-GGUF",
+        "qwen3-0.6b-FLM",
+    ):
+        assert npu.model_path_for_name(name, start_runtime = False) is None
+    by_id = {model.id: model for model in npu.catalog()}
+    assert by_id["qwen3-0.6b-FLM"].display_name == "Qwen3-0.6B-NPU2"
+    assert by_id["gemma3-4b-FLM"].display_name is None
+
+
+def test_a_display_name_starts_the_runtime_only_when_allowed(npu):
+    assert npu.can_run()
+    assert npu.model_path_for_name("Qwen3-0.6B-NPU2", start_runtime = False) is None
+    assert npu._server is None
+    assert not _requests(npu)
+
+
+def test_a_display_name_two_models_share_is_refused(npu, monkeypatch):
+    def _model(model_id):
+        return nb.NpuModel(
+            id = model_id,
+            checkpoint = "qwen3:0.6b",
+            size_gb = 0.66,
+            downloaded = True,
+            labels = ("chat",),
+            max_context_length = 40960,
+            hf_repo = "FastFlowLM/Qwen3-0.6B-NPU2",
+        )
+
+    monkeypatch.setattr(npu, "catalog", lambda: [_model("b-FLM"), _model("a-FLM")])
+    with pytest.raises(nb.NpuError, match = "lemonade:a-FLM, lemonade:b-FLM"):
+        npu.model_path_for_name("Qwen3-0.6B-NPU2", start_runtime = True)
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("Qwen3.6-35B-A3B-NPU2", True),
+        ("FastFlowLM/Qwen3.6-35B-A3B-NPU2", True),
+        ("fastflowlm/anything", True),
+        ("Qwen3-0.6B-npu", True),
+        ("lemonade:qwen3-0.6b-FLM", False),
+        ("unsloth/Qwen3-0.6B-NPU2", False),
+        ("FastFlowLM/a/b", False),
+        ("unsloth/Qwen3-0.6B-GGUF:Q4_K_M", False),
+        ("Qwen3-0.6B", False),
+        (None, False),
+    ],
+)
+def test_which_names_are_tried_as_npu_display_names(name, expected):
+    assert nb.looks_like_npu_display_name(name) is expected

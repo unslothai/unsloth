@@ -29,7 +29,7 @@ function rawEvent(
   options: {
     event?: "progress" | "heartbeat" | "complete" | "error";
     id?: number;
-    lineEnding?: "\n" | "\r\n";
+    lineEnding?: "\n" | "\r\n" | "\r";
   } = {},
 ): string {
   const lineEnding = options.lineEnding ?? "\n";
@@ -116,6 +116,27 @@ test("a completed stream releases its reader", async () => {
     onEvent: () => undefined,
   });
 
+  assert.equal(body.locked, false);
+});
+
+test("CR-only progress streams keep event names across byte-sized chunks", async () => {
+  const wire = event("job-1", 1, { lineEnding: "\r" }) +
+    event("job-1", 2, { lineEnding: "\r", event: "complete" });
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const byte of new TextEncoder().encode(wire)) {
+        controller.enqueue(Uint8Array.of(byte));
+      }
+      controller.close();
+    },
+  });
+  const received: string[] = [];
+  await consumeTrainingProgressStream({
+    body,
+    signal: new AbortController().signal,
+    onEvent: ({ event: name, payload }) => received.push(`${name}:${payload.step}`),
+  });
+  assert.deepEqual(received, ["progress:1", "complete:2"]);
   assert.equal(body.locked, false);
 });
 

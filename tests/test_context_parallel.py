@@ -1759,3 +1759,15 @@ def test_ring_keeps_efficient_attention_for_float32_models_only(dtype):
     manager = _manager()
     manager.attach_attention_hooks(model)
     assert manager._ring_float32 is (dtype == torch.float32)
+
+
+@pytest.mark.parametrize("backend", ["ring", "ulysses"])
+def test_position_bound_is_the_callers_before_alignment_padding(backend):
+    # LongRoPE picks its factors from this bound; the appended alignment positions are not the caller's.
+    manager = _manager(size = 4)
+    manager.backend = backend
+    inputs = {"input_ids": torch.ones(1, 6, dtype = torch.long)}
+    manager._prepare_inputs(inputs)
+    assert inputs["position_ids"].shape[1] == 8
+    assert int(inputs["position_ids"].max()) == 7
+    assert int(manager.position_bound) == 5

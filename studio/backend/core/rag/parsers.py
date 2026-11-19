@@ -7,6 +7,7 @@ deps are lazy so importing never fails on a missing one."""
 from __future__ import annotations
 
 import codecs
+import functools
 import logging
 import os
 import re
@@ -19,6 +20,18 @@ from html.parser import HTMLParser
 from . import config
 
 logger = logging.getLogger(__name__)
+
+# PyMuPDF shares one MuPDF context between threads, so two calls at once can crash the process.
+MUPDF_LOCK = threading.RLock()
+
+
+def mupdf_serialized(fn):
+    @functools.wraps(fn)
+    def locked(*args, **kwargs):
+        with MUPDF_LOCK:
+            return fn(*args, **kwargs)
+
+    return locked
 
 
 @dataclass(frozen = True)
@@ -150,7 +163,11 @@ def _html_hidden(tag: str, attrs) -> bool:
     # any value but until-found (still searchable) hides the subtree; CSS is not evaluated
     for name, value in attrs:
         if name == "hidden":
-            return (value or "").lower() != "until-found" and tag not in _HTML_HIDDEN_IGNORED
+            return (
+                (value or "").lower() != "until-found"
+                and tag not in _HTML_HIDDEN_IGNORED
+                and "tabpanel" not in (dict(attrs).get("role") or "").lower().split()
+            )
     return False
 
 
@@ -761,6 +778,7 @@ def _pdf_form_field_lines(page) -> list[str]:
     return list(fields.values())
 
 
+@mupdf_serialized
 def _pdf(
     source: str | bytes,
     want_images: bool,
@@ -850,6 +868,7 @@ def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[
     return pages, total_pages
 
 
+@mupdf_serialized
 def mupdf_document_text(path: str) -> str:
     """Paragraph text of a reflowable e-book only MuPDF reads (.mobi, .fb2)."""
     import pymupdf
@@ -916,6 +935,7 @@ def _figure_boxes(
     return keep
 
 
+@mupdf_serialized
 def pages_with_figures(
     path: str,
     *,
@@ -948,6 +968,7 @@ def pages_with_figures(
         doc.close()
 
 
+@mupdf_serialized
 def render_pdf_figure_tiles(
     path: str,
     page_numbers,
@@ -1017,6 +1038,7 @@ def render_pdf_figure_tiles(
         doc.close()
 
 
+@mupdf_serialized
 def render_pdf_pages(
     path: str,
     page_numbers,

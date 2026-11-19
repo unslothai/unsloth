@@ -33,6 +33,7 @@ import {
   notifyModelLifecycle,
   subscribeModelLifecycle,
 } from "@/lib/model-lifecycle-events";
+import { isTranslationHeldSlot } from "@/lib/translation-models";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 import {
   type TransferSample,
@@ -161,8 +162,8 @@ import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   resolveFitMaxSeqLength,
-  isReplayedLoadContext,
   unpinnedDefaultRequest,
   unpinnedLoadContext,
   resolveLoadMaxSeqLength,
@@ -196,6 +197,7 @@ import {
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker/model-config/per-model-config";
+import { fixedLayerContextPin } from "@/features/model-picker/model-config/estimate-context";
 import {
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
@@ -722,10 +724,11 @@ export async function syncInferenceStatusToStore(options?: {
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
     const selectionChanged = selectedCheckpoint !== selectedAtStart;
-    // Read a TTS-owned slot as empty so the eviction branch clears the stale chat pick.
+    // Read a TTS-owned or Translate-owned slot as empty so the eviction branch clears the stale chat pick.
     const chatActiveModel =
       statusRes.active_model &&
       !isSpeechOnlyStatus(statusRes) &&
+      !isTranslationHeldSlot(statusRes.active_model, selectedCheckpoint) &&
       !(statusLoading && options?.externalChatSlotLoad);
     if (
       chatActiveModel &&
@@ -1582,9 +1585,6 @@ export function useChatModelRuntime() {
                 ggufVariant,
                 isGguf: residentIsGguf,
                 customContextLength,
-                loadedContextLength: live.loadedContextLength,
-                currentCheckpoint: live.params.checkpoint,
-                activeGgufVariant: live.activeGgufVariant,
                 isMlx: isServedByMlx(
                   residentIsGguf,
                   platform.deviceType,
@@ -1597,8 +1597,6 @@ export function useChatModelRuntime() {
                         .maxSeqLength,
                 ),
                 defaultMaxSeqLength: live.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
-                presetSource: live.activePresetSource,
-                loadedContextPin: live.loadedCustomContextLength,
               });
             },
             parallelSlots: managedFlags?.defaultParallelSlots || null,
@@ -2128,7 +2126,6 @@ export function useChatModelRuntime() {
               (loadSwitchesModelOrVariant
                 ? DEFAULT_PER_MODEL_CONFIG.disableVision
                 : stateBeforeUnload.disableVision));
-          const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =
             pendingLoadConfig?.gpuMemoryMode ?? stateBeforeUnload.gpuMemoryMode;
@@ -2314,20 +2311,15 @@ export function useChatModelRuntime() {
               targetIsMlx,
               pinnedMaxSeqLength,
             );
-            // Pinning layers on the SAME model keeps the currently resolved context: with no explicit pin, a
-            // manual+pinned reload would send 0, which the backend's --fit off branch treats as the NATIVE
-            // context, far larger than the sheet shows when the load was fit-sized, a likely OOM.
-            // loadedContextLength is that resolved value; a model already at native reloads unchanged.
-            if (
-              isGguf &&
-              !switchingModelOrVariant &&
-              loadGpuMemoryMode === "manual" &&
-              loadGpuLayers >= 0 &&
-              loadCustomContextLength == null &&
-              (loadContextLength ?? 0) > 0
-            ) {
-              loadCustomContextLength = loadContextLength;
-            }
+            // After explicitCtxPin, so the kept resident context is not recorded as the user's.
+            loadCustomContextLength =
+              fixedLayerContextPin({
+                isGguf: isGguf && !switchingModelOrVariant,
+                gpuMemoryMode: loadGpuMemoryMode,
+                gpuLayers: loadGpuLayers,
+                customContextLength: loadCustomContextLength,
+                activeLoadedContext: loadContextLength,
+              }) ?? loadCustomContextLength;
             // A GGUF native context can exceed maxSeqLength, so sizing on raw maxSeqLength could pass
             // /validate, unload, then have /load refuse it.
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
@@ -2335,9 +2327,6 @@ export function useChatModelRuntime() {
               ggufVariant,
               isGguf,
               customContextLength: loadCustomContextLength,
-              loadedContextLength: loadContextLength,
-              currentCheckpoint,
-              activeGgufVariant: loadActiveGgufVariant,
               isMlx: targetIsMlx,
               pinnedMaxSeqLength,
               defaultMaxSeqLength: unpinnedDefaultRequest(
@@ -2345,8 +2334,6 @@ export function useChatModelRuntime() {
                 stateBeforeUnload.params.maxSeqLength,
                 DEFAULT_MAX_SEQ_LENGTH,
               ),
-              presetSource: loadActivePresetSource,
-              loadedContextPin: stateBeforeUnload.loadedCustomContextLength,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
@@ -2364,11 +2351,6 @@ export function useChatModelRuntime() {
               engine: isGguf ? "auto" : loadEngineFields.engine,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
-              max_seq_length_auto_derived: isReplayedLoadContext(
-                isGguf,
-                loadCustomContextLength,
-                loadMaxSeqLength,
-              ),
               load_in_4bit: loadEngineFields.engine === "auto" && loadIn4bitChoice,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
@@ -2667,6 +2649,7 @@ export function useChatModelRuntime() {
                   response: loadResponse,
                   modelId,
                   presetSource: useChatRuntimeStore.getState().activePresetSource,
+                  presetEditedKeys: useChatRuntimeStore.getState().presetEditedKeys,
                   loadedContextLength: loadedFields.loadedContextLength,
                 }),
                 ...(isGguf
@@ -2881,21 +2864,17 @@ export function useChatModelRuntime() {
             });
             noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             syncModelCapabilities(modelId, loadResponse);
-            const p = resolveQwenThinkingParams(
-              modelId,
-              nextReasoningEnabled,
+            const store = useChatRuntimeStore.getState();
+            const p = recommendedValuesForPick(
+              resolveQwenThinkingParams(modelId, nextReasoningEnabled),
+              store.activePresetSource,
+              store.presetEditedKeys,
             );
-            if (
-              p !== null &&
-              (loadResponse.supports_reasoning ?? false)
-            ) {
-              const store = useChatRuntimeStore.getState();
-              if (store.activePresetSource === "builtin-default") {
-                store.setParams({ ...store.params, ...p }, {
-                  fromModelDefaults: true,
-                  maxTokensCap: loadedContextCap,
-                });
-              }
+            if (p !== null && (loadResponse.supports_reasoning ?? false)) {
+              store.setParams({ ...store.params, ...p }, {
+                fromModelDefaults: true,
+                maxTokensCap: loadedContextCap,
+              });
             }
             await refresh({ signal: abortCtrl.signal });
             postLoadRefresh.needed = Boolean(

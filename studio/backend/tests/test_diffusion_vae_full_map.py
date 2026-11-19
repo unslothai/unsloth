@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.2-class VAEs decode a would-be-tiled latent with whole-map GroupNorm stats (diffusion_vae_strips.full_map_decode,
-torch fallback off CUDA): tiles cut from a large latent take their own stats and shift colour (2048 px FLUX.3 Klein:
-25.6 dB vs the untiled decode). CPU, tiny random VAEs."""
+"""KL VAEs on diffusers' Decoder (FLUX.2 / FLUX.3 and AutoencoderKL: FLUX.1, Z-Image, HiDream, Lumina-2, Chroma,
+SDXL) decode a would-be-tiled latent with whole-map GroupNorm stats (diffusion_vae_strips.full_map_decode, torch
+fallback off CUDA): tiles cut from a large latent take their own stats and shift colour (2048 px FLUX.3 Klein: 25.6 dB
+vs the untiled decode). Eligibility is read off the structure, so a new family on the same pieces qualifies. CPU, tiny
+random VAEs."""
 
 from __future__ import annotations
 
@@ -125,11 +127,99 @@ def test_an_untiled_decode_is_untouched(roomy):
     assert "_unsloth_vae_full_map_calls" not in vae.__dict__
 
 
-def test_other_vaes_keep_their_tiled_decode(roomy, monkeypatch):
-    """Only FLUX.2-class VAEs take the whole-map decode; AutoencoderKL's tiled decode is bit-identical to the one
-    without it (the kill switch is main's path)."""
+def _kl(post_quant: bool = True, seed: int = 0):
+    """AutoencoderKL as FLUX.1 / Z-Image / HiDream / Lumina-2 (no post_quant_conv) or SDXL (with one) build it."""
+    torch.manual_seed(seed)
+    vae = diffusers.AutoencoderKL(
+        down_block_types = ("DownEncoderBlock2D", "DownEncoderBlock2D"),
+        up_block_types = ("UpDecoderBlock2D", "UpDecoderBlock2D"),
+        block_out_channels = (32, 64),
+        latent_channels = 4,
+        norm_num_groups = 8,
+        sample_size = 64,
+        use_quant_conv = post_quant,
+        use_post_quant_conv = post_quant,
+    ).eval()
+    with torch.no_grad():
+        for m in vae.modules():
+            if isinstance(m, torch.nn.GroupNorm):
+                m.weight.uniform_(0.5, 1.5)
+                m.bias.uniform_(-0.5, 0.5)
+    return vae
+
+
+@pytest.mark.parametrize("post_quant", [False, True])
+@pytest.mark.parametrize("tile_budget", [None, 32 * 32])
+def test_tiled_autoencoder_kl_decode_matches_the_untiled_decode(
+    roomy, monkeypatch, post_quant, tile_budget
+):
+    """AutoencoderKL (FLUX.1, Z-Image, HiDream, Lumina-2, Chroma, SDXL) shares FLUX.2's Decoder, so the whole-map
+    decode is the untiled one there too; before, its tiles shifted colour the same way."""
+    if tile_budget:
+        monkeypatch.setattr(vt, "decode_tile_budget", lambda vae, z: tile_budget)
+    vae = _kl(post_quant)
+    assert strips.full_map_ok(vae)
+    vae.enable_tiling()
+    assert vt.install(vae)
+    z = _latent(c = 4)
+    ref = _decode(vae, z, tiled = False)
+    out = _decode(vae, z, tiled = True)
+    assert vae.__dict__.get("_unsloth_vae_full_map_calls") == 1
+    assert torch.allclose(out, ref, atol = 2e-5, rtol = 0), float((out - ref).abs().max())
+    if tile_budget:  # the low-memory tiles it replaces shift colour
+        monkeypatch.setenv(FULL_MAP_ENV, "0")
+        assert float((_decode(vae, z, tiled = True) - ref).abs().max()) > 1e-2
+
+
+def test_a_decoder_with_non_power_of_two_widths_decodes_the_whole_map(roomy, monkeypatch):
+    """MOSS-Image's FLUX.2-class VAE has a 96 / 192 / 384-channel decoder: the Triton primitives need power-of-two
+    channels, the torch fallback does not, so it still decodes the whole map (before, its tiles shifted colour)."""
+    monkeypatch.setattr(vt, "decode_tile_budget", lambda vae, z: 32 * 32)
+    cls = getattr(diffusers, "AutoencoderKLFlux2", None)
+    if cls is None:
+        pytest.skip("diffusers without AutoencoderKLFlux2")
     torch.manual_seed(0)
-    kl = diffusers.AutoencoderKL(
+    vae = cls(
+        in_channels = 3,
+        out_channels = 3,
+        down_block_types = ("DownEncoderBlock2D", "DownEncoderBlock2D"),
+        up_block_types = ("UpDecoderBlock2D", "UpDecoderBlock2D"),
+        block_out_channels = (32, 64),
+        decoder_block_out_channels = (24, 48),
+        layers_per_block = 1,
+        latent_channels = 8,
+        norm_num_groups = 8,
+        sample_size = 64,
+    ).eval()
+    with torch.no_grad():
+        for m in vae.modules():
+            if isinstance(m, torch.nn.GroupNorm):
+                m.weight.uniform_(0.5, 1.5)
+                m.bias.uniform_(-0.5, 0.5)
+    assert not strips.decoder_ok(vae.decoder) and strips.full_map_ok(vae)
+    vae.enable_tiling()
+    assert vt.install(vae)
+    z = _latent()
+    ref = _decode(vae, z, tiled = False)
+    out = _decode(vae, z, tiled = True)
+    assert vae.__dict__.get("_unsloth_vae_full_map_calls") == 1
+    assert torch.allclose(out, ref, atol = 2e-5, rtol = 0), float((out - ref).abs().max())
+
+
+def test_a_vae_whose_decode_differs_keeps_its_tiles(roomy, monkeypatch):
+    """Structure, not names: a KL VAE that does anything else between the latent and the decoder (here a scale) is not
+    reproduced by the strips, so it keeps its tiled decode bit for bit."""
+
+    class ScaledKL(diffusers.AutoencoderKL):
+        def _decode(
+            self,
+            z,
+            return_dict = True,
+        ):
+            return super()._decode(z * 2.0, return_dict = return_dict)
+
+    torch.manual_seed(0)
+    vae = ScaledKL(
         down_block_types = ("DownEncoderBlock2D", "DownEncoderBlock2D"),
         up_block_types = ("UpDecoderBlock2D", "UpDecoderBlock2D"),
         block_out_channels = (32, 64),
@@ -137,20 +227,99 @@ def test_other_vaes_keep_their_tiled_decode(roomy, monkeypatch):
         norm_num_groups = 8,
         sample_size = 64,
     ).eval()
-    assert not strips.full_map_ok(kl)
-    z = _latent(c = 4)
-    kl.enable_tiling()
-    vt.install(kl)
-    monkeypatch.setenv(vt.MAX_TILE_ENV, "32")
-    with_full_map = _decode(kl, z, tiled = True)
-    monkeypatch.setenv(FULL_MAP_ENV, "0")
-    assert torch.equal(_decode(kl, z, tiled = True), with_full_map)
-    monkeypatch.delenv(vt.MAX_TILE_ENV)
-    monkeypatch.delenv(FULL_MAP_ENV)
-    with_full_map = _decode(kl, z, tiled = True)
-    monkeypatch.setenv(FULL_MAP_ENV, "0")
-    assert torch.equal(_decode(kl, z, tiled = True), with_full_map)
-    assert "_unsloth_vae_full_map_calls" not in kl.__dict__
+    assert not strips.full_map_ok(vae)
+    assert strips.full_map_ok(_kl())  # the same pieces with the stock decode do
+
+
+def test_a_renamed_copy_of_the_kl_vae_qualifies(roomy):
+    """A new family whose VAE class is a copy of AutoencoderKL under another name (diffusers' "Copied from") gets the
+    whole-map decode without being listed anywhere."""
+
+    class NewFamilyVAE(diffusers.AutoencoderKL):
+        def _decode(
+            self,
+            z,
+            return_dict = True,
+        ):
+            if self.use_tiling and (
+                z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size
+            ):
+                return self.tiled_decode(z, return_dict = return_dict)
+
+            if self.post_quant_conv is not None:
+                z = self.post_quant_conv(z)
+
+            dec = self.decoder(z)
+
+            if not return_dict:
+                return (dec,)
+
+            return DecoderOutput(sample = dec)
+
+    from diffusers.models.autoencoders.vae import DecoderOutput  # noqa: F401 - the copied body's name
+
+    torch.manual_seed(0)
+    vae = NewFamilyVAE(
+        down_block_types = ("DownEncoderBlock2D", "DownEncoderBlock2D"),
+        up_block_types = ("UpDecoderBlock2D", "UpDecoderBlock2D"),
+        block_out_channels = (32, 64),
+        latent_channels = 4,
+        norm_num_groups = 8,
+        sample_size = 64,
+    ).eval()
+    assert strips.full_map_ok(vae)
+
+
+def _fixture_classes():
+    import json
+    from pathlib import Path
+
+    data = json.loads(
+        (Path(__file__).resolve().parent / "fixtures" / "vae_tile_configs.json").read_text(
+            encoding = "utf-8"
+        )
+    )["families"]
+    return {name: entry["config"] for name, entry in data.items()}
+
+
+# VAE classes the whole-map strips do not reproduce yet, with what they need; a family on any other class must qualify.
+NOT_YET_EXACT = {
+    "AutoencoderKLQwenImage": "causal Conv3d decoder with per-pixel RMS norm: needs the 3D strip decode",
+    "AutoencoderKLQwenImage21": "Qwen-Image family decoder: needs the 3D strip decode",
+    "AutoencoderKLHunyuanImage": "32x decoder with its own blocks: needs its strip decode",
+    "AutoencoderKLMiniMaxH3Image": "decodes with the release's own tiles (a ViT decoder trained at that tile)",
+    "AutoencoderKLMiniMaxH3": "decodes with the release's own tiles (a ViT decoder trained at that tile)",
+    "AutoencoderKLWan": "video VAE: needs the 3D strip decode",
+    "AutoencoderKLLTX2Video": "video VAE: needs the 3D strip decode",
+    "AutoencoderKLHunyuanVideo15": "video VAE: needs the 3D strip decode",
+}
+
+
+def test_every_family_vae_decodes_the_whole_map_or_says_why_not():
+    """Each family's real VAE config (the seam guard's pinned vae/config.json), built on the meta device: a class the
+    rule reads as eligible must be, and any other is listed in NOT_YET_EXACT with the reason. A new family on a
+    KL Decoder needs no entry anywhere; one on new pieces fails here until it is either reproduced or listed."""
+    seen = {}
+    for family, config in _fixture_classes().items():
+        name = config["_class_name"]
+        cls = getattr(diffusers, name, None)
+        if cls is None:
+            continue  # this diffusers has no such class: the family cannot load here either
+        kwargs = {k: v for k, v in config.items() if not k.startswith("_")}
+        try:
+            with torch.device("meta"):
+                vae = cls.from_config(kwargs)
+        except Exception as exc:  # noqa: BLE001
+            pytest.fail(f"{family}: {name} did not build from its pinned config: {exc}")
+        seen[family] = (name, strips.full_map_ok(vae))
+    assert seen, "no family VAE built"
+    for family, (name, ok) in seen.items():
+        assert ok or name in NOT_YET_EXACT, (family, name)
+        assert not (
+            ok and name in NOT_YET_EXACT
+        ), f"{name} now qualifies: drop it from NOT_YET_EXACT ({family})"
+    for name in ("AutoencoderKL", "AutoencoderKLFlux2"):
+        assert any(n == name and ok for n, ok in seen.values()), name
 
 
 @pytest.mark.parametrize("in_bias", [False, True])
