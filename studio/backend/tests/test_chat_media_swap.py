@@ -714,3 +714,20 @@ def test_cleanup_unloads_only_the_load_this_swap_admitted(monkeypatch):
     # Our model resident, or our own load failed half way: unloaded.
     assert _studio_image_unload(monkeypatch, admitted = True, status = ours) == 1
     assert _studio_image_unload(monkeypatch, admitted = True, status = {"loaded": False}) == 1
+
+
+def test_tool_description_unchanged_while_swap_is_off(monkeypatch):
+    """With the swap off, the schema text matches the one before the swap existed."""
+    from core.inference import generate_image_tool as tool
+
+    monkeypatch.setattr(swap, "swap_enabled", lambda: False)
+    off = tool.generate_image_schema({})["function"]["description"]
+    assert off == (
+        "Generate one image with the image model loaded in Unsloth Studio. Write the full prompt "
+        "yourself from the user's request: subject, setting, style, lighting and composition. Steps "
+        "and guidance follow the loaded model's own defaults; the size defaults to 1024x1024. It "
+        "never loads or unloads a model."
+    )
+    monkeypatch.setattr(swap, "swap_enabled", lambda: True)
+    on = tool.generate_image_schema({})["function"]["description"]
+    assert "never loads or unloads" not in on

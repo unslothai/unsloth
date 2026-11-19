@@ -38,6 +38,8 @@ _DESCRIPTION = (
     "yourself from the user's request: subject, setting, style, lighting and composition. Steps "
     "and guidance follow the loaded model's own defaults; the size defaults to 1024x1024."
 )
+# Kept while the opt-in swap is off, so the tool prompt every other chat sees is unchanged.
+_NO_SWAP_NOTE = " It never loads or unloads a model."
 
 # Even a no-limit chat gets a ceiling, so a stuck render cannot hold the turn forever.
 _MAX_WAIT_S = 900.0
@@ -86,7 +88,9 @@ def generate_image_schema(status: dict) -> dict:
             "type": "string",
             "description": "What the image should not show.",
         }
-    description = _DESCRIPTION
+    from core.inference.chat_media_swap import swap_enabled
+
+    description = _DESCRIPTION if swap_enabled() else _DESCRIPTION + _NO_SWAP_NOTE
     hint = status.get("prompt_hint")
     if hint:
         description += " " + str(hint)
