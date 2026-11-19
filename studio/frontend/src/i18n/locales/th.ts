@@ -932,7 +932,6 @@ export const th = {
     copy: "คัดลอก",
     addScheduledTask: "เพิ่มงานตามกำหนดเวลา…",
     compact: "ย่อการสนทนา",
-    compactQueued: "ขอให้ย่อการสนทนาในข้อความถัดไปแล้ว",
     compactEmpty: "ยังไม่มีอะไรให้ย่อ",
     compactUnsupported: "การย่อการสนทนาต้องใช้โมเดล GGUF หรือ MLX ที่รองรับเครื่องมือ",
   },

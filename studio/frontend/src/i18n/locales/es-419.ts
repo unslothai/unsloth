@@ -984,7 +984,6 @@ export const es419 = {
     copy: "Copiar",
     addScheduledTask: "Agregar tarea programada…",
     compact: "Compactar conversación",
-    compactQueued: "Se solicitó la compactación para el siguiente mensaje",
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported:
       "La compactación requiere un modelo GGUF o MLX compatible con herramientas",

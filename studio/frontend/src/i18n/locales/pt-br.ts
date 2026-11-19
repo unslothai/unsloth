@@ -881,7 +881,6 @@ export const ptBR = {
     copy: "Copiar",
     addScheduledTask: "Adicionar tarefa agendada…",
     compact: "Compactar conversa",
-    compactQueued: "A compactação foi solicitada para a próxima mensagem",
     compactEmpty: "Ainda não há nada para compactar",
     compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",
   },

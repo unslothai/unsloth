@@ -6036,6 +6036,8 @@ export function createOpenAIStreamAdapter(
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
       let compactionMarkers: CompactionMarker[] | undefined;
+      // A /compact whose summary failed already got the dropped warning; it stands for the no-op notice.
+      let droppedHistoryWarned = false;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -7457,42 +7459,26 @@ export function createOpenAIStreamAdapter(
                 // Stay silent when the fit returned the ORIGINAL messages; not `fits`, which is also false for
                 // a shortened prompt.
                 const reallyCompacted = promptWasShortened(chunk.context_truncated);
+                const noticeKind = reallyCompacted
+                  ? compactionNoticeKind(chunk.context_truncated)
+                  : null;
+                // The divider records every compaction; only dropped history also toasts.
                 if (
-                  reallyCompacted &&
+                  (noticeKind === "dropped" || noticeKind === "dropped-after-failed-summary") &&
                   resolvedThreadId &&
                   activeThreadId === resolvedThreadId &&
-                  !rollingContextNoticeThreads.has(resolvedThreadId)
+                  // An explicit /compact always hears what became of it.
+                  (compactNow || !rollingContextNoticeThreads.has(resolvedThreadId)) &&
+                  !droppedHistoryWarned
                 ) {
                   rollingContextNoticeThreads.add(resolvedThreadId);
-                  // Once per thread per page load; the durable record is the notice on the turn that compacted.
-                  const archived = contextTruncation?.archived_messages ?? 0;
-                  const noticeKind = compactionNoticeKind(chunk.context_truncated);
-                  if (noticeKind === "compacted" || noticeKind === "summarized-by-provider") {
-                    toast.info("This conversation was compacted", {
-                      description: archived
-                        ? "It got long, so older turns were removed from the model's " +
-                          "context. They are saved and searchable, and relevant parts are " +
-                          "brought back automatically."
-                        : contextTruncation?.summarized
-                          ? "The full conversation is still visible and saved. " +
-                            "The provider summarized older turns so the chat can continue."
-                          : "The full conversation is still visible and saved. " +
-                            "Unsloth removed complete older turns from this request so the chat can continue.",
-                      duration: 8000,
-                    });
-                  } else {
-                    // A cloud chat: say whether history was summarized or had to be dropped.
-                    const dropped = noticeKind !== "summarized";
-                    (dropped ? toast.warning : toast.info)(
-                      COMPACTION_NOTICE_LABEL[noticeKind],
-                      {
-                        description:
-                          `${COMPACTION_NOTICE_TEXT[noticeKind]} ` +
-                          "The full conversation is still visible and saved.",
-                        duration: 8000,
-                      },
-                    );
-                  }
+                  droppedHistoryWarned = true;
+                  toast.warning(COMPACTION_NOTICE_LABEL[noticeKind], {
+                    description:
+                      `${COMPACTION_NOTICE_TEXT[noticeKind]} ` +
+                      "The full conversation is still visible and saved.",
+                    duration: 8000,
+                  });
                 }
                 continue;
               }
@@ -9043,6 +9029,7 @@ export function createOpenAIStreamAdapter(
 
         if (
           compactNow &&
+          !droppedHistoryWarned &&
           !compactionMarkers?.some(
             (marker) =>
               marker.truncation.manual === true &&
