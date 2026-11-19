@@ -2245,6 +2245,20 @@ def _fields_extras_override(extras, carried: dict) -> set:
     return overridden
 
 
+def _resident_reload_payload(status: dict, payload: dict) -> dict:
+    carried = _resident_runtime_payload(status, payload)
+    # Extras are inherited server-side and shadow-stripped against sent fields, so a carried field would strip its group's flags.
+    for name in _fields_extras_override(status.get("requested_llama_extra_args"), carried):
+        carried.pop(name, None)
+    carried.pop("llama_extra_args", None)
+    # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
+    if {**payload, **carried}.get("gpu_memory_mode") != "manual":
+        carried.pop("tensor_split", None)
+    # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
+    carried.pop("n_parallel", None)
+    return carried
+
+
 def _names_another_quant(status: dict, load: LoadOptions) -> bool:
     """Whether the load asks for a different quant than the resident runs: another checkpoint, with saved settings of its own."""
     return bool(load.gguf_variant and _resident_variant(status)) and not _resident_serves_variant(
@@ -2547,19 +2561,12 @@ def _resolve_model(
             )
         if attach_public_id is not None or loaded_match is not None:
             # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
-            carried = _resident_runtime_payload(status_snapshot, payload) if same_checkpoint else {}
-            if attach_public_id is None:
-                # Extras are inherited server-side and shadow-stripped against sent fields, so a carried field would strip its group's flags.
-                for name in _fields_extras_override(
-                    status_snapshot.get("requested_llama_extra_args"), carried
-                ):
-                    carried.pop(name, None)
-                carried.pop("llama_extra_args", None)
-                # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
-                if {**payload, **carried}.get("gpu_memory_mode") != "manual":
-                    carried.pop("tensor_split", None)
-                # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
-                carried.pop("n_parallel", None)
+            if not same_checkpoint:
+                carried = {}
+            elif attach_public_id is None:
+                carried = _resident_reload_payload(status_snapshot, payload)
+            else:
+                carried = _resident_runtime_payload(status_snapshot, payload)
             payload.update(carried)
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
             if attach_public_id is not None and status_snapshot and inferred_differs:
