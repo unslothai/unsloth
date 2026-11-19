@@ -375,6 +375,30 @@ test("distilled checkpoints get their publishers' recipes, not their family's", 
   }
 });
 
+test("a base file in a Turbo / Flash folder or repo keeps the backend's recipe, not the distilled one", () => {
+  for (const [repo, file] of [
+    ["/home/me/.cache/anima-turbo", "anima-base-v1.0.safetensors"],
+    ["/home/me/.cache/anima-turbo", "anima-aesthetic-v1.1.safetensors"],
+    ["/models/chroma1-flash", "Chroma1-HD.safetensors"],
+  ]) {
+    assert.deepEqual(defaultsFor(defaultsKeyFor(repo, "auto", file)), { steps: 9, guidance: 0 }, `${repo} ${file}`);
+  }
+  // The file naming the distilled checkpoint, or a component file naming none, still gets it.
+  assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima", "auto", "anima-turbo-v1.1.safetensors")), {
+    steps: 10,
+    guidance: 1,
+  });
+  assert.deepEqual(
+    defaultsFor(defaultsKeyFor("/models/anima-turbo", "auto", "transformer/diffusion_pytorch_model.safetensors")),
+    { steps: 10, guidance: 1 },
+  );
+  assert.deepEqual(defaultsFor(defaultsKeyFor("lodestones/Chroma1-Flash", "auto", null)), { steps: 16, guidance: 1 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima-turbo", "auto", "my_merge.safetensors")), {
+    steps: 10,
+    guidance: 1,
+  });
+});
+
 test("Kromoss picks take the MOSS-Image recipe", () => {
   for (const id of ["lodestones/Kromoss", "molbal/Kromoss-GGUF", "kromoss-Q8_0.gguf"]) {
     assert.deepEqual(defaultsFor(id), { steps: 25, guidance: 2.5 }, id);

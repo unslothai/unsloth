@@ -2500,9 +2500,14 @@ def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, 
     return (row[1], row[2]) if row is not None else None
 
 
-def anima_turbo_named(*identifiers: Optional[str]) -> bool:
-    """Only asked of Anima loads, whose base repo key would otherwise give Turbo the base recipe."""
-    return any("turbo" in model_identity(i).lower() for i in identifiers if i)
+def anima_turbo_named(filename: Optional[str], repo_id: Optional[str] = None) -> bool:
+    """Only asked of Anima loads, whose base repo key would otherwise give Turbo the base recipe. A selected file
+    naming Anima or Turbo decides alone (a Turbo repo or folder can also hold the base / aesthetic files); a file
+    naming neither (a diffusers component, a renamed merge) leaves it to the repo / folder name."""
+    name = PurePosixPath((filename or "").replace("\\", "/")).name.lower()
+    if "turbo" in name or "anima" in name:
+        return "turbo" in name
+    return "turbo" in model_identity(repo_id).lower()
 
 
 _KREA2_RAW_KEYS = frozenset({"krea-2-raw", "krea-2-base", "krea2-raw", "krea2-base"})

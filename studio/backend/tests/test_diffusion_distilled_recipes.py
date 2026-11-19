@@ -107,3 +107,45 @@ def test_load_time_lookups_name_the_turbo_file_too():
     assert dmod._family_default_ids(_fam("anima"), None, "circlestone-labs/Anima") == (
         _fam("anima").base_repo,
     )
+
+
+@pytest.mark.parametrize(
+    "repo, gguf, want",
+    [
+        # A Turbo folder or repo around a base / aesthetic file: the selected file decides.
+        ("/home/me/.cache/anima-turbo", "anima-base-v1.0.safetensors", (30, 4.0)),
+        ("/home/me/.cache/anima-turbo", "anima-aesthetic-v1.1.safetensors", (30, 4.0)),
+        (
+            "someone/Anima-Turbo-Mix",
+            "split_files/diffusion_models/anima-base-v1.0.safetensors",
+            (30, 4.0),
+        ),
+        # A Turbo file in a base-named folder, and a file naming both base and Turbo (a merged AIO Turbo GGUF).
+        ("/models/anima-base", "anima-turbo-v1.1.safetensors", (10, 1.0)),
+        ("WeReCooking/Anima-v1.0-Turbo-AIO-Q4_K", "Anima-base-v1.0-Turbo-AIO-Q4_K.gguf", (10, 1.0)),
+        # A diffusers component file names no checkpoint: the repo does.
+        (
+            "vladmandic/Anima-1.0-Turbo",
+            "transformer/diffusion_pytorch_model.safetensors",
+            (10, 1.0),
+        ),
+        (
+            "circlestone-labs/Anima-Base-v1.0-Diffusers",
+            "transformer/diffusion_pytorch_model.safetensors",
+            (30, 4.0),
+        ),
+        # A file naming neither Anima nor Turbo (a renamed merge): the folder does.
+        ("/models/anima-turbo", "my_merge.safetensors", (10, 1.0)),
+        # Version dots in a file name are not an extension, and a Windows path names the same file.
+        ("/models/x", "Anima-1.0-Turbo", (10, 1.0)),
+        (
+            "C:\\models\\anima-turbo",
+            "C:\\models\\anima-turbo\\anima-base-v1.0.safetensors",
+            (30, 4.0),
+        ),
+    ],
+)
+def test_the_selected_anima_file_outranks_a_turbo_folder_or_repo(repo, gguf, want):
+    assert _status_recipe(repo, gguf, None, "anima") == want
+    ids = dmod._family_default_ids(_fam("anima"), gguf, repo)
+    assert df.default_generation_params(*ids, gguf, repo)[0] == want[0]
