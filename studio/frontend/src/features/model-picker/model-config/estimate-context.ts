@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The context to PRICE, not the displayed one: an unset length loads as 0 (native/fit), so pricing
- *  the 32k display fallback understates the KV cache. Import-free for node strip-types tests. */
-export function resolveEstimateContext(
-  customContextLength: number | null,
-  activeLoadedContext: number | null,
-  skipResidentFallback = false,
-): number {
-  if (skipResidentFallback) {
-    // An Auto GGUF load resolves to 0; pricing the resident context quotes the old fit.
-    return customContextLength && customContextLength > 0 ? customContextLength : 0;
-  }
-  return customContextLength ?? activeLoadedContext ?? 0;
+/** The context to PRICE: an unset length loads as 0 (native/fit), so neither the 32k display
+ *  fallback nor the resident's old fit is the figure. Import-free for node strip-types tests. */
+export function resolveEstimateContext(customContextLength: number | null): number {
+  return customContextLength && customContextLength > 0 ? customContextLength : 0;
 }
 
 /** The resident context performLoad keeps under Manual fixed layers (`--fit off` would launch at

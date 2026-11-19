@@ -3469,12 +3469,7 @@ export function ModelConfigPage({
           hfToken: hfToken || null,
           nativePathToken,
           // The context Load sends, not the displayed one (which shows 32,768 before the header).
-          nCtx: resolveEstimateContext(
-            runtimeConfig.customContextLength ?? null,
-            activeLoadedContext,
-            // resolveLoadMaxSeqLength sends 0 for every Auto GGUF load, so do not price the old fit.
-            target.isGguf === true,
-          ),
+          nCtx: resolveEstimateContext(runtimeConfig.customContextLength ?? null),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
           maxSeqLength: target.isGguf
             ? null

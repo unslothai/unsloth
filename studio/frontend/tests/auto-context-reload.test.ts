@@ -103,8 +103,6 @@ test("an inherited Manual mode with fixed layers prices the context Reload keeps
         customContextLength: config.customContextLength,
         activeLoadedContext,
       }) ?? config.customContextLength,
-      activeLoadedContext,
-      true,
     );
   const RESIDENT = 32768;
   // No per-model mode: performLoad applies the standing Manual preference and keeps the resident context.
@@ -128,6 +126,6 @@ test("the memory estimate prices the fit for every Auto GGUF load", () => {
   assert.doesNotMatch(CONFIG_PAGE, /activePresetSource/);
   assert.match(
     CONFIG_PAGE,
-    /resolveEstimateContext\(\s*runtimeConfig\.customContextLength \?\? null,\s*activeLoadedContext,\s*(?:\/\/[^\n]*\n\s*)?target\.isGguf === true,\s*\)/,
+    /resolveEstimateContext\(runtimeConfig\.customContextLength \?\? null\)/,
   );
 });

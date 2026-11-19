@@ -13,29 +13,16 @@ import {
 
 // Auto sends 0 and llama.cpp fits the native context, not the displayed 32k fallback.
 test("Auto with no metadata yet prices the native context, not the displayed 32k", () => {
-  assert.equal(resolveEstimateContext(null, null), 0);
+  assert.equal(resolveEstimateContext(null), 0);
 });
 
 test("an explicit length is priced as itself", () => {
-  assert.equal(resolveEstimateContext(8192, null), 8192);
-  assert.equal(resolveEstimateContext(524288, null), 524288);
-});
-
-test("the resident load's context is kept when reloading it", () => {
-  assert.equal(resolveEstimateContext(null, 40223), 40223);
-});
-
-test("a known native context is NOT quoted as the figure", () => {
-  // Not native: --fit can land below it, so 0 lets the estimate resolve it as the launch does.
-  assert.equal(resolveEstimateContext(null, null), 0);
-});
-
-test("an explicit length outranks the resident one", () => {
-  assert.equal(resolveEstimateContext(4096, 40223), 4096);
+  assert.equal(resolveEstimateContext(8192), 8192);
+  assert.equal(resolveEstimateContext(524288), 524288);
 });
 
 test("zero is not mistaken for unset", () => {
-  assert.equal(resolveEstimateContext(0, 40223), 0);
+  assert.equal(resolveEstimateContext(0), 0);
 });
 
 // Must include quantization: modelPath is identical across quant switches.
@@ -85,27 +72,8 @@ test("absent and null are the same, so an unset variant does not thrash the row"
   );
 });
 
-// The fit path sends a pin or 0, never the resident length.
-test("when the fit owns the context, the resident length is not sent", () => {
-  assert.equal(resolveEstimateContext(null, 40960, true), 0);
-});
-
-test("a positive pin survives the fit path, because Load sends it", () => {
-  assert.equal(resolveEstimateContext(8192, 40960, true), 8192);
-});
-
-test("a non-positive pin is still 0 under the fit path", () => {
-  assert.equal(resolveEstimateContext(0, 40960, true), 0);
-  assert.equal(resolveEstimateContext(-1, 40960, true), 0);
-});
-
-test("every other shape keeps the resident fallback", () => {
-  assert.equal(resolveEstimateContext(null, 40960, false), 40960);
-  assert.equal(resolveEstimateContext(null, 40960), 40960);
-});
-
-test("an Auto GGUF load prices the fit, not the resident context", () => {
-  assert.equal(resolveEstimateContext(null, 131072, true), 0);
+test("a non-positive pin is still 0", () => {
+  assert.equal(resolveEstimateContext(-1), 0);
 });
 
 const gguf = (classifiedIsDiffusion: boolean | undefined) =>
