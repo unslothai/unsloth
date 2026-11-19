@@ -5936,9 +5936,17 @@ class MLXInferenceBackend:
     def _budgets_reasoning(self) -> bool:
         return getattr(self, "_reasoning_budget", -1) >= 0
 
-    def _reasoning_budget_processor(self, prompt, markers):
-        """The load's reasoning budget for one templated reply; a raw prompt has no reasoning block."""
+    def _reasoning_budget_processor(
+        self,
+        prompt,
+        markers,
+        constraint = None,
+    ):
+        """The load's reasoning budget for one templated reply; a raw prompt has no reasoning block,
+        and a document-only grammar allows none."""
         if not isinstance(prompt, str) or not self._budgets_reasoning():
+            return None
+        if constraint is not None and not constraint.allows_reasoning:
             return None
         from core.inference.mlx_reasoning_budget import make_reasoning_budget_processor
 
@@ -7541,7 +7549,9 @@ class MLXInferenceBackend:
             grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
-            reasoning_budget = self._reasoning_budget_processor(prompt, reasoning_channel_markers),
+            reasoning_budget = self._reasoning_budget_processor(
+                prompt, reasoning_channel_markers, constraint
+            ),
         )
         recorded = token_logprobs = None
         if n_probs:
@@ -7867,7 +7877,9 @@ class MLXInferenceBackend:
             grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
-            reasoning_budget = self._reasoning_budget_processor(prompt, reasoning_channel_markers),
+            reasoning_budget = self._reasoning_budget_processor(
+                prompt, reasoning_channel_markers, constraint
+            ),
         )
 
         normalizer = (
@@ -8274,7 +8286,7 @@ class MLXInferenceBackend:
             grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
-            reasoning_budget = self._reasoning_budget_processor(prompt, markers),
+            reasoning_budget = self._reasoning_budget_processor(prompt, markers, constraint),
         )
         if processors:
             # Not the repetition_penalty shortcut: mlx-vlm would build it outside our narrowing
@@ -8447,7 +8459,7 @@ class MLXInferenceBackend:
             token_logprobs = []
         draft = self._speculative_draft
         # Not settle-able, so a budgeted reply decodes without the drafter.
-        budget = self._reasoning_budget_processor(prompt, vlm_reasoning_markers)
+        budget = self._reasoning_budget_processor(prompt, vlm_reasoning_markers, constraint)
         if (
             presence_penalty
             or frequency_penalty
@@ -9201,6 +9213,7 @@ class MLXInferenceBackend:
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)
         normalizer = make_reasoning_normalizer(markers) if markers is not None else None
+        budget = self._reasoning_budget_processor(prompt, markers)
         # Matched on the sampled deltas, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         sampled = ""
@@ -9232,6 +9245,7 @@ class MLXInferenceBackend:
                             **self._kv_quant_generate_kwargs(),
                             **self._kv_window_generate_kwargs(),
                             **self._prefill_step_kwargs(),
+                            **({"logits_processors": [budget]} if budget is not None else {}),
                         )
                     )
                 ) as responses:

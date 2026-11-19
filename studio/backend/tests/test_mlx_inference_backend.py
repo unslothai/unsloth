@@ -4932,11 +4932,13 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
     assert list(backend.generate_audio_input_response(**args)) == ["H", "e", "l"]
     assert calls["kwargs"]["audio"] == [audio] and calls["kwargs"]["temperature"] == 0.0
     assert calls["audios"] == 1 and backend.last_generation_stats is not None
-    assert "prefill_step_size" not in calls["kwargs"]
+    assert "prefill_step_size" not in calls["kwargs"] and "logits_processors" not in calls["kwargs"]
     backend._prefill_step = 8192
     list(backend.generate_audio_input_response(**args))
     assert calls["kwargs"]["prefill_step_size"] == 8192
-    backend._prefill_step = None
+    backend._prefill_step, backend._reasoning_budget_processor = None, lambda prompt, _m: prompt
+    list(backend.generate_audio_input_response(**args))
+    assert calls["kwargs"]["logits_processors"] == ["P<audio>"]
     assert calls["messages"][-1]["content"][1:] == [{"type": "text", "text": "what is said?"}]
 
     args["messages"] = [{"role": "user", "content": "  "}]
@@ -12929,6 +12931,9 @@ def test_a_reasoning_budget_runs_last_on_a_text_reply_and_a_change_reloads(monke
         list(backend.generate_chat_response(messages = [{"role": "user", "content": "p"}]))
     assert captured[0].get("logits_processors") in (None, [])
     assert captured[1]["logits_processors"][-1] is budget and made == [(3, "Wrap up.")]
+    # A document-only grammar forbids the closer a spent budget would force.
+    document = SimpleNamespace(allows_reasoning = False)
+    assert backend._reasoning_budget_processor("p", None, document) is None
 
     entry = {
         "mlx_kv_quant_requested": "auto",
