@@ -26,7 +26,7 @@ logger = structlog.get_logger(__name__)
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
 # uv's wording when --python names a path it will not install into, matched on the stable leading clause only: uv appends the offending path and has reworded the tail across releases.
 _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installation found"
-# Minimum versions unsloth-zoo requires on Apple Silicon (its pyproject darwin deps). mlx-vlm especially must be >=0.4.4: an older one still imports but breaks VLM Train/Export, so installing it would wrongly clear chat-only. mlx-lm's floor tracks unsloth-zoo, which needs GenerationBatch.Response and BatchGenerator.next_generated from 0.31.2; it read 0.22.0 here, which would have let a stack too old for batched generation clear the chat-only gate.
+# The oldest floors any published unsloth-zoo declares on Apple Silicon; _mlx_minimum raises them to the installed zoo's own floor. An older mlx-vlm still imports but breaks VLM Train/Export, so installing it would wrongly clear chat-only. mlx-lm's floor tracks unsloth-zoo, which needs GenerationBatch.Response and BatchGenerator.next_generated from 0.31.2; it read 0.22.0 here, which would have let a stack too old for batched generation clear the chat-only gate.
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
@@ -64,6 +64,21 @@ def _zoo_declared_specifier(package: str) -> str:
         if canonicalize_name(requirement.name) == wanted and str(requirement.specifier):
             return str(requirement.specifier)
     return ""
+
+
+def _mlx_minimum(name: str) -> str:
+    """The gate's floor, or the lower bound (an exact pin included) the installed zoo declares when higher: the --local overlay installs zoo with --no-deps, so nothing else lifts a stale stack to it."""
+    minimum = _MLX_MIN_VERSIONS[name]
+    declared = _zoo_declared_specifier(name)
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+        for spec in SpecifierSet(declared):
+            if spec.operator in (">=", "==", "~=") and Version(spec.version) > Version(minimum):
+                minimum = spec.version
+    except Exception:
+        pass
+    return minimum
 
 
 def _install_packages() -> tuple[str, ...]:
@@ -184,7 +199,8 @@ def _mlx_version_blockers() -> list[str]:
     except Exception as exc:
         return [f"the version check could not run ({type(exc).__name__}: {_one_line(exc)})"]
     blockers: list[str] = []
-    for name, minimum in _MLX_MIN_VERSIONS.items():
+    for name in _MLX_MIN_VERSIONS:
+        minimum = _mlx_minimum(name)
         try:
             installed = _dist_version(name)
         except PackageNotFoundError:
@@ -396,7 +412,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             "MLX self-heal produced an incomplete or too-old MLX stack "
             "(need %s); staying chat-only.",
             # The floors, not MLX_PACKAGES: the gate above tests the floors, so quoting the install pins would tell someone on a usable mlx 0.33 that they need exactly 0.32.3.
-            ", ".join(f"{name}>={ver}" for name, ver in _MLX_MIN_VERSIONS.items()),
+            ", ".join(f"{name}>={_mlx_minimum(name)}" for name in _MLX_MIN_VERSIONS),
         )
         return False
     return True

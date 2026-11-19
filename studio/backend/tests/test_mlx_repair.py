@@ -270,8 +270,8 @@ def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypa
     monkeypatch.setattr(mr.logger, "warning", lambda msg, *args, **kw: warnings.append(msg % args))
     assert mr.attempt_mlx_repair() is False
     (message,) = [w for w in warnings if "incomplete or too-old" in w]
-    for name, floor in mr._MLX_MIN_VERSIONS.items():
-        assert f"{name}>={floor}" in message
+    for name in mr._MLX_MIN_VERSIONS:
+        assert f"{name}>={mr._mlx_minimum(name)}" in message
     assert "==" not in message
 
 
@@ -309,7 +309,7 @@ def test_stack_unavailable_checks_versions_before_imports(monkeypatch):
     def _version(name):
         if name == "mlx":
             return "0.21.0"
-        return mr._MLX_MIN_VERSIONS[name]
+        return mr._mlx_minimum(name)
 
     def _import_module(_name):
         raise AssertionError("MLX modules must not import before versions pass")
@@ -322,7 +322,7 @@ def test_stack_unavailable_checks_versions_before_imports(monkeypatch):
 def test_stack_unavailable_when_companion_import_fails(monkeypatch):
     import importlib.metadata as metadata
 
-    monkeypatch.setattr(metadata, "version", lambda name: mr._MLX_MIN_VERSIONS[name])
+    monkeypatch.setattr(metadata, "version", lambda name: mr._mlx_minimum(name))
 
     def _import_module(name):
         if name == "mlx_vlm":
@@ -343,7 +343,7 @@ def test_stack_available_requires_runtime_imports_and_versions(monkeypatch):
         return object()
 
     monkeypatch.setattr(mr.importlib, "import_module", _import_module)
-    monkeypatch.setattr(metadata, "version", lambda name: mr._MLX_MIN_VERSIONS[name])
+    monkeypatch.setattr(metadata, "version", lambda name: mr._mlx_minimum(name))
 
     assert mr.mlx_stack_available() is True
     assert imported == list(mr._MLX_RUNTIME_IMPORTS)
