@@ -488,15 +488,13 @@ def _te_base_is_official(fam: Any, base: str) -> bool:
     )
 
 
-# The video families whose GGUF is a curated picker row (model-catalog.ts VIDEO_CATALOG gguf artifacts). On a CPU-only
-# torch those load only as that GGUF; the picker hides their other rows (host-artifact-policy ``cpu-only``), and
-# test_cpu_gguf_stays_native checks this set against the catalog so the two cannot drift.
+# Must match model-catalog.ts VIDEO_CATALOG gguf rows (checked by test_cpu_gguf_stays_native).
 CPU_GGUF_ONLY_VIDEO_REPOS = frozenset(
     {"unsloth/minimax-h3-gguf", "unsloth/ltx-2.5-gguf", "unsloth/ltx-2.3-gguf"}
 )
 
 
-# The ltx-2 family serves LTX-2.0 and LTX-2.3, but only 2.3 has a GGUF row: a 2.0 pick keeps its pipeline row.
+# ltx-2 serves 2.0 and 2.3; only 2.3 has a GGUF row.
 _LTX23_NAME = re.compile(r"ltx[-_.]?2[-_.]?3(?!\d)", re.IGNORECASE)
 
 
@@ -505,8 +503,7 @@ def refuse_cpu_dense_video_pick(
     kind: Optional[str],
     names: tuple = (),
 ) -> None:
-    """A non-GGUF pick of such a family on a CPU-only torch: refused, as the picker hides it. ``names``: the pick's
-    repo ids and file name. The developer kill switch UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK=1 lifts it."""
+    """Refuse a non-GGUF pick of such a family on CPU-only torch. ``names``: the pick's repo ids and file name."""
     repo = str(getattr(fam, "gguf_repo", None) or "").lower()
     if kind == "gguf" or repo not in CPU_GGUF_ONLY_VIDEO_REPOS:
         return

@@ -917,7 +917,6 @@ def select_and_activate_engine(
     binary = None
     server_binary = None
     incapable_build = False
-    # The record the refusal reads must be this selection's own probes and installs.
     clear_native_start_failure()
     if policy_eligible and fam_ok:
         # Once, so server and CLI cannot disagree.
@@ -977,7 +976,7 @@ def select_and_activate_engine(
             unlaunchable_cli: Optional[str] = None
             if binary and SdCppEngine(binary = binary).version() is None:
                 logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
-                # Records why (a Windows DLL load failure, a missing library, a signal) for the refusal.
+                # Records the failure reason for the refusal.
                 _server_binary_runnable(binary)
                 unlaunchable_cli = binary
                 binary = None
@@ -1045,7 +1044,7 @@ def select_and_activate_engine(
         reason = f"{reason}; UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} not honoured"
         logger.warning("image load stays on torch's device: %s", reason)
     if cpu_gguf_native_only(fam, model_kind, backend):
-        # First, so a CPU-only GGUF always gets the actionable reason, a LoRA or native pick included.
+        # Before lora_guard, so a CPU-only GGUF gets the actionable reason.
         raise ValueError(cpu_gguf_refusal(reason))
     lora_guard(choice)
     if requested == ENGINE_SD_CPP or native_gguf_only(fam, model_kind):
@@ -1061,10 +1060,9 @@ def native_gguf_only(fam: Optional[DiffusionFamily], model_kind: Optional[str]) 
     return model_kind == "gguf" and bool(getattr(fam, "native_transformer_files_only", False))
 
 
-# Developer kill switch for the CPU-only GGUF rule (cpu_gguf_native_only): "1" restores the diffusers route.
+# "1" lifts the CPU-only GGUF rule (restores the diffusers route).
 CPU_GGUF_DIFFUSERS_FALLBACK_ENV = "UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK"
 
-# Why a CPU-only GGUF pick did not get the native engine, beyond a failed start (those come from the probe record).
 _CPU_GGUF_DIFFUSERS_PICKED = "diffusers picked"
 _CPU_GGUF_DIFFUSERS_PINNED = "diffusers pinned"
 _CPU_GGUF_NATIVE_DISABLED = "native disabled"
@@ -1079,17 +1077,14 @@ def cpu_gguf_rule_enabled() -> bool:
 def cpu_gguf_native_only(
     fam: Optional[DiffusionFamily], model_kind: Optional[str], backend: Optional[str]
 ) -> bool:
-    """A GGUF load on a CPU-only torch of a family sd.cpp serves runs on sd.cpp only, whatever the engine pick. The Hub
-    plan stages the native files (GGUF + VAE + GGUF encoder); diffusers would fetch the dense bf16 encoder instead
-    (11.8 GB for FLUX.3 Klein against 7.2 GB) to run it on torch CPU. Only CPU_GGUF_DIFFUSERS_FALLBACK_ENV lifts it."""
+    """CPU-only torch GGUF of an sd.cpp family runs on sd.cpp only: diffusers would fetch the dense bf16 encoder."""
     if model_kind != "gguf" or backend != "cpu" or fam is None or not cpu_gguf_rule_enabled():
         return False
     return family_sd_cpp_supported(fam)
 
 
 def host_runs_gguf_native_only() -> bool:
-    """Host-level form for the Images page: a CPU-only torch (no family check; the Engine select only shows for a
-    natively mapped GGUF). Never raises."""
+    """Host-level form for the Images page (no family check). Never raises."""
     if not cpu_gguf_rule_enabled():
         return False
     try:
@@ -1108,10 +1103,7 @@ def _refuse_cpu_gguf_diffusers(
 
 
 def refuse_cpu_dense_image_pick(fam: Optional[DiffusionFamily], model_kind: Optional[str]) -> None:
-    """On a CPU-only torch a family with a GGUF / sd.cpp route loads only as a GGUF: its pipeline, single-file and
-    pre-quantized (FP8 / INT8 / NVFP4 / bnb) picks would run dense weights on torch CPU (FLUX.3 Klein's bf16 pipeline
-    is 20.3 GB), so they are refused here as the picker hides them (host-artifact-policy ``cpu-only``). Families with
-    no native route keep their rows; CPU_GGUF_DIFFUSERS_FALLBACK_ENV lifts the rule."""
+    """CPU-only torch: refuse dense picks of an sd.cpp family, matching the picker (host-artifact-policy ``cpu-only``)."""
     if fam is None or model_kind in (None, "", "gguf") or not cpu_gguf_rule_enabled():
         return
     if not family_sd_cpp_supported(fam):
@@ -1128,7 +1120,6 @@ def refuse_cpu_dense_image_pick(fam: Optional[DiffusionFamily], model_kind: Opti
 def _refuse_cpu_gguf_off_native(
     fam: Optional[DiffusionFamily], model_kind: Optional[str], forced: str, sd_cpp_pref: str
 ) -> None:
-    """The server's own diffusers routes (the engine pin, the native disable) are refused for a CPU-only GGUF too."""
     if forced == ENGINE_DIFFUSERS:
         _refuse_cpu_gguf_diffusers(fam, model_kind, _CPU_GGUF_DIFFUSERS_PINNED)
     elif sd_cpp_pref in _DISABLE_TOKENS and forced != ENGINE_SD_CPP:
@@ -1136,8 +1127,6 @@ def _refuse_cpu_gguf_off_native(
 
 
 def cpu_gguf_refusal(reason: str) -> str:
-    """The refusal for a CPU-only GGUF the native engine cannot serve: what failed, why (the start / install probe when
-    one ran), and the fix."""
     lead = "This device has no GPU PyTorch can use, so GGUF image models run only on the native engine (sd.cpp)."
     if reason == _CPU_GGUF_DIFFUSERS_PICKED:
         return f"{lead} The Diffusers engine is not available for them here; choose Auto or Native (sd.cpp)."
@@ -1344,7 +1333,7 @@ def predict_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
     if choice != ENGINE_SD_CPP and cpu_gguf_native_only(fam, model_kind, backend):
-        # The same refusal selection gives, so the plan never stages the dense diffusers set for it.
+        # Same refusal as selection, so the plan never stages the dense diffusers set.
         installed = native_binary_installed(gpu_ordinal = gpu_ordinal)
         raise ValueError(
             cpu_gguf_refusal(
@@ -1478,7 +1467,6 @@ def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "engine_forced": env_forced_engine(),
         "native_engine_eligible": native_eligible,
-        # A CPU-only torch runs GGUF images on sd.cpp only: the Images page hides the Diffusers engine choice.
         "gguf_diffusers_allowed": not host_runs_gguf_native_only(),
         "lora_via_native": lora_via_native,
     }

@@ -528,11 +528,7 @@ def _explicit_threads() -> Optional[int]:
     return None
 
 
-# Why the last sd.cpp start or install failed, so a refusal can name the fix. "dll": a Windows loader status (an
-# imported DLL is missing, the wrong build, or refused to initialise; the win-cpu-x64 build imports the MSVC runtime,
-# MSVCP140 / VCRUNTIME140 / VCOMP140, and ships none of it). "exec": cannot exec, a missing shared library (126/127)
-# or a signal death (SIGILL: the CPU lacks an instruction the build uses). "install": the prebuilt could not be
-# downloaded or extracted. A plain tuple swap, read by the router right after the probe it follows.
+# Last sd.cpp start / install failure, so a refusal can name the fix. win-cpu-x64 needs the MSVC runtime but ships none.
 NATIVE_FAILURE_DLL = "dll"
 NATIVE_FAILURE_EXEC = "exec"
 NATIVE_FAILURE_INSTALL = "install"
@@ -551,7 +547,6 @@ def note_native_start_failure(kind: str, detail: str) -> None:
 
 
 def last_native_start_failure() -> Optional[tuple[str, str]]:
-    """``(kind, detail)`` of the last failed sd.cpp start or install since ``clear_native_start_failure``, or None."""
     return _native_start_failure
 
 

@@ -3906,7 +3906,6 @@ export function ImagesPage({
     setEngineChoice(loadedEngine);
   }
   const engineForced = status?.engine_forced ?? null;
-  // A CPU-only host takes no Diffusers pick for a GGUF: a stored or selected one is sent as Auto.
   const engineStatus = status;
   const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced, status: engineStatus });
   useEffect(() => {

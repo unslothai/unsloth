@@ -78,7 +78,7 @@ export interface DiffusionStatus {
   engine_forced?: string | null;
   // A loaded GGUF the native sd.cpp engine can run (drives the Advanced Engine select).
   native_engine_eligible?: boolean;
-  // False on a CPU-only torch: GGUF image models run on sd.cpp only, so the Diffusers engine choice is hidden.
+  // False on CPU-only torch: Diffusers engine choice is hidden.
   gguf_diffusers_allowed?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
