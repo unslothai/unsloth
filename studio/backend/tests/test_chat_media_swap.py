@@ -299,8 +299,14 @@ def _patch_adapters(
     def make_image(subject, render):
         return FakeImage(log, chat = chat_box["chat"], block = block)
 
+    import core.inference.gpu_residency as residency
+    import core.inference.media_switch_backends as backends
+
     monkeypatch.setattr(swap, "StudioChat", make_chat)
     monkeypatch.setattr(swap, "StudioImage", make_image)
+    # Off on a GPU image device: the up-front swap, whatever this host or its settings say.
+    monkeypatch.setattr(residency, "current_policy", lambda: "off")
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: True)
     monkeypatch.setenv(swap.SWAP_MODEL_ENV, "unsloth/sdxl-turbo")
     from state import active_generations
 
@@ -578,3 +584,39 @@ def test_always_policy_refusal_leaves_chat_alone():
     assert result == "Error: image generation failed: Keep multiple models loaded is set to Always"
     assert chat.resident and chat.discarded == [KV]
     assert "chat.reload" not in [e[0] for e in log]
+
+
+@pytest.mark.parametrize(
+    "policy, on_gpu, beside",
+    [("off", True, False), ("fit", True, True), ("always", True, True), ("off", False, True)],
+)
+def test_tier_choice(monkeypatch, server_loop, policy, on_gpu, beside):
+    """Off swaps up front; When they fit / Always and a CPU image device try beside chat first."""
+    import core.inference.gpu_residency as residency
+    import core.inference.media_switch_backends as backends
+
+    log, box = Log(), {}
+    _patch_adapters(monkeypatch, log, box)
+    monkeypatch.setattr(residency, "current_policy", lambda: policy)
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: on_gpu)
+    seen = {}
+    real = swap.RoundTrip.run
+
+    async def spy(self):
+        seen["beside"] = self.beside_first
+        return await real(self)
+
+    monkeypatch.setattr(swap.RoundTrip, "run", spy)
+    if beside:
+        # The fake image load asserts chat is gone; beside chat it stays, so lift that check.
+        monkeypatch.setattr(FakeImage, "load", ArbiterImage.load)
+        monkeypatch.setattr(FakeImage, "fits", True, raising = False)
+    swap.run_in_tool(
+        loop = server_loop,
+        account = OWNER,
+        render = None,
+        cancel_event = None,
+        render_limit_s = 5,
+        stop_render = lambda: None,
+    )
+    assert seen["beside"] is beside

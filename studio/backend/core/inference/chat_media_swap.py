@@ -533,14 +533,18 @@ def run_in_tool(
     from core.inference.gpu_residency import current_policy
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
+    from core.inference.media_switch_backends import load_takes_the_gpu
+
     policy = current_policy()
+    # A CPU image device (sd.cpp or diffusers on the CPU) never takes chat's GPU: load it beside.
+    on_gpu = load_takes_the_gpu()
     trip = RoundTrip(
         chat = StudioChat(subject),
         media = StudioImage(subject, render),
         image_model = name,
         on_cancel = stop_render,
         hold_requests = inference_lifecycle_gate,
-        beside_first = policy in ("fit", "always"),
+        beside_first = policy in ("fit", "always") or not on_gpu,
     )
 
     async def _go():
