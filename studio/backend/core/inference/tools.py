@@ -127,6 +127,7 @@ from utils import sandbox_memory_limit, tool_result_limit
 from core.inference import tool_facts
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from integrations.unreal import CALL_GUIDE as UNREAL_CALL_GUIDE
+from integrations.unreal import mcp_adapter as unreal_mcp_adapter
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
 
@@ -15096,19 +15097,28 @@ def execute_tool(
             )
             # As for tool results: a marker anywhere in the text, errors included, would summon a widget.
             return _fit_result_to_room(_drop_forged_ui_sentinels(body), name)
-        result = call_tool_sync(
-            url = url,
-            headers = headers,
-            name = tool_name,
-            args = arguments,
-            timeout = effective_timeout,
-            use_oauth = use_oauth,
-            cancel_event = cancel_event,
-            scope = mcp_scope,
-            **oauth_client_kwargs(server),
-            config_check = _config_current,
-            ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
-        )
+
+        def _call(call_name: str, call_args: dict) -> str:
+            return call_tool_sync(
+                url = url,
+                headers = headers,
+                name = call_name,
+                args = call_args,
+                timeout = effective_timeout,
+                use_oauth = use_oauth,
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                **oauth_client_kwargs(server),
+                config_check = _config_current,
+                ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, call_name)),
+            )
+
+        if server.get("builtin_id") == "unreal" and tool_name == unreal_mcp_adapter.CALL_TOOL:
+            result = unreal_mcp_adapter.call(
+                url, arguments, lambda call_args: _call(tool_name, call_args), _call
+            )
+        else:
+            result = _call(tool_name, arguments)
         if mcp_image is not None and isinstance(result, str):
             # Returned images may be resized copies of the user's; none of them reach the model on this call.
             result, returned_images, _ = result.partition(MCP_IMAGES_SENTINEL)
