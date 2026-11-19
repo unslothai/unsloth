@@ -54,8 +54,7 @@ def strided_processor_class() -> Any:
         # the kernel's mode for this processor (diffusion_int8_attention.sink_mode), set with _unsloth_int8
         _unsloth_int8_sinks = 0
 
-        # diffusion_flux_convrot_fused._f3_block_ready accepts this class: a block whose Q / K / V and MLP input share
-        # one rotation + act quant hands its projections to unsloth_projected_attention
+        # read by diffusion_flux_convrot_fused._f3_block_ready (shared-quant blocks call unsloth_projected_attention)
         _unsloth_projected_attention = True
 
         def _unsloth_route(

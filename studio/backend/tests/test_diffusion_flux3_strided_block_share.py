@@ -57,7 +57,6 @@ def env(monkeypatch):
         v,
         mode = 0,
     ):
-        # [B, S, H, D] in and out, as the INT8 kernel
         calls["kernel"] += 1
         return F.scaled_dot_product_attention(
             q.permute(0, 2, 1, 3), k.permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)
@@ -113,7 +112,6 @@ def test_gate_accepts_the_strided_processor(env):
     for route in ("cudnn", "int8"):
         block = _block(f3.Flux3SingleTransformerBlock, route)
         assert fused._f3_block_ready(block)  # noqa: SLF001
-    # a processor of another kind still keeps the stock modules
     block = _block(f3.Flux3SingleTransformerBlock, "cudnn")
 
     class Other(f3.Flux3AttnProcessor):
