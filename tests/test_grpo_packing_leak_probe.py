@@ -175,3 +175,28 @@ def test_probe_restores_every_submodule_mode(kind):
     before = {name: m.training for name, m in model.named_modules()}
     _namespace()[PROBE](_trainer(), model)
     assert {name: m.training for name, m in model.named_modules()} == before
+
+
+def test_probe_restores_int4_quant_state_training():
+    # Int4PackedLinear.train() also syncs quant_state.training: the restore must go through it, or the probe's
+    # eval() leaves the packed layer's quantization state in inference mode for the rest of training.
+    import importlib.util
+
+    path = SOURCE_PATH.parent / "compressed_tensors_int4.py"
+    spec = importlib.util.spec_from_file_location("_probe_compressed_tensors_int4", path)
+    int4 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(int4)
+    model = _tiny("llama").train()
+    layer = int4.Int4PackedLinear.__new__(int4.Int4PackedLinear)  # as the loader builds its shells
+    torch.nn.Module.__init__(layer)
+    qs = SimpleNamespace(training = True, _fast = None)
+    layer.__dict__["_int4_quant_state"] = qs
+    model.model.layers[
+        1
+    ].int4_layer = layer  # not on the forward path: only the mode bookkeeping is under test
+    frozen = model.model.layers[0]
+    frozen.eval()
+    before = {name: m.training for name, m in model.named_modules()}
+    _namespace()[PROBE](_trainer(), model)
+    assert {name: m.training for name, m in model.named_modules()} == before
+    assert layer.training and qs.training is True

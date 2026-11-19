@@ -1866,9 +1866,11 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
             print(f"Unsloth: GRPO sequence packing leak probe could not run: {e!r}", flush = True)
         return None
     finally:
-        if was_training:
-            for module, training in was_training:
-                module.training = training
+        # Through each module's train(), not its flag: a module may sync state there (Int4PackedLinear sets its
+        # quant_state.training). modules() is parent-first, so each recursive call is then undone by the
+        # children's own, leaving every module in its saved mode.
+        for module, training in was_training or ():
+            module.train(training)
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
