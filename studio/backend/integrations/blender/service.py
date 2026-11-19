@@ -130,8 +130,8 @@ def _parents(path: str):
 def _own_blender(path) -> Optional[str]:
     """Anything on 127.0.0.1 can answer the bridge port and Studio later runs this path: the canonical path of an
     own blender* executable, else None (a symlink or a writable parent could be swapped after the check)."""
-    if not isinstance(path, str) or not os.path.isabs(path):
-        return None
+    if not hasattr(os, "getuid") or not isinstance(path, str) or not os.path.isabs(path):
+        return None  # no POSIX owner to check (Windows): never adopt a reported path
     try:
         real = os.path.realpath(path, strict = True)
         st = os.stat(real)
@@ -141,13 +141,12 @@ def _own_blender(path) -> Optional[str]:
         return None
     if not stat.S_ISREG(st.st_mode) or not os.access(real, os.X_OK):
         return None
-    if hasattr(os, "getuid"):
-        try:
-            chain = [st] + [os.stat(d) for d in _parents(os.path.dirname(real))]
-        except OSError:
-            return None
-        if not all(_not_plantable(item) for item in chain):
-            return None
+    try:
+        chain = [st] + [os.stat(d) for d in _parents(os.path.dirname(real))]
+    except OSError:
+        return None
+    if not all(_not_plantable(item) for item in chain):
+        return None
     return real
 
 

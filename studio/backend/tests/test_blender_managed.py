@@ -166,6 +166,7 @@ def test_long_blender_names_dispatch_with_approval(monkeypatch):
     call.assert_not_called()
 
 
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "path discovery needs POSIX ownership")
 @pytest.mark.asyncio
 async def test_a_connected_blender_off_path_has_its_executable_kept(monkeypatch, tmp_path):
     """An unpacked Linux tarball is not on PATH: CLI tools failed with "Blender executable not found"."""
@@ -269,3 +270,11 @@ async def test_probe_does_not_report_a_planted_executable(monkeypatch, tmp_path)
     monkeypatch.setattr(service.shutil, "which", lambda name: None)
     result = await service.probe(service.BlenderSettings())
     assert result.blender_ready and result.blender_path is None
+
+
+def test_no_reported_path_is_adopted_without_posix_ownership(monkeypatch, tmp_path):
+    real = tmp_path / "blender.exe"
+    real.write_text("")
+    real.chmod(0o755)
+    monkeypatch.delattr(service.os, "getuid", raising = False)
+    assert service._own_blender(str(real)) is None
