@@ -72,7 +72,11 @@ def test_only_on_linux_rocm(tmp_path, monkeypatch):
     monkeypatch.setattr(hardware, "_rocm_linux_amdgpu_cards", lambda: cards)
     monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.11.0+cu130")
     assert hardware.rocm_linux_kernel_free_mib(module = _module(0x0B, 12 * _GIB)) is None
+    # Radeon wheels from repo.radeon.com leave version.hip unset and carry the tag in __version__.
+    monkeypatch.setattr(torch, "__version__", "2.9.1+rocm7.2.1.lw.gitff65f5bc")
+    assert hardware.rocm_linux_kernel_free_mib(module = _module(0x0B, 12 * _GIB)) == 11 * 1024
     monkeypatch.setattr(torch.version, "hip", "7.2.26015", raising = False)
     monkeypatch.setattr(hardware.platform, "system", lambda: "Windows")
     assert hardware.rocm_linux_kernel_free_mib(module = _module(0x0B, 12 * _GIB)) is None

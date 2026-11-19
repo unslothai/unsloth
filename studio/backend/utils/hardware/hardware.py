@@ -4180,7 +4180,8 @@ def rocm_linux_kernel_free_mib(device: Any = None, *, module: Any = None) -> Opt
     try:
         import torch
 
-        if not getattr(torch.version, "hip", None):
+        # AMD SDK / Radeon wheels leave version.hip unset; the tag is in __version__.
+        if not (getattr(torch.version, "hip", None) or "rocm" in str(torch.__version__).lower()):
             return None
         mod = module if module is not None else torch.cuda
         index = mod.current_device() if device is None else device
