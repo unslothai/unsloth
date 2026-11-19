@@ -1344,8 +1344,6 @@ def _docx_superscripts(p) -> list:
     find = getattr(_docx_xpath, "superscripts", None)
     if find is None:
         from lxml import etree
-
-        # a note reference is a citation mark, not an exponent
         find = _docx_xpath.superscripts = etree.XPath(
             ".//w:r[w:rPr/w:vertAlign/@w:val = 'superscript']"
             "[not(w:footnoteReference | w:endnoteReference)]",
