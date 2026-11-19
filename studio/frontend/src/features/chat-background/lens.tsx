@@ -87,6 +87,7 @@ function Lens({
     const el = root.current;
     if (!el) return;
     const copies = [...el.querySelectorAll<HTMLElement>("[data-lens-copy]")];
+    const fillCopy = el.querySelector<HTMLElement>(".glass-lens-fill [data-lens-copy]");
     const wash = el.querySelector<HTMLElement>("[data-lens-wash]");
     const tint = el.querySelector<HTMLElement>("[data-lens-tint]");
     const workspace = wallpaper.parentElement;
@@ -95,7 +96,10 @@ function Lens({
       const w = wallpaper.getBoundingClientRect();
       const h = host.getBoundingClientRect();
       const opacity = getComputedStyle(wallpaper).opacity;
-      const fill = glassLayer(host) ?? getComputedStyle(host);
+      const glass = glassLayer(host);
+      const fill = glass ?? getComputedStyle(host);
+      // The copy takes the surface's own blur: menus and dialogs blur more than the shared --glass-blur.
+      const blur = glass ? glass.backdropFilter || glass.getPropertyValue("-webkit-backdrop-filter") : "";
       const key = [
         w.left,
         w.top,
@@ -108,6 +112,7 @@ function Lens({
         opacity,
         fill.backgroundColor,
         fill.backgroundImage,
+        blur,
       ].join();
       if (key === last) return;
       last = key;
@@ -120,6 +125,7 @@ function Lens({
         copy.style.transformOrigin = `${h.left - w.left + h.width / 2}px ${h.top - w.top + h.height / 2}px`;
         copy.style.transform = `scale(${scale})`;
       }
+      if (fillCopy) fillCopy.style.filter = blur;
       if (wash) {
         const fills: string[] = [];
         for (

@@ -229,7 +229,7 @@ test("resetting local preferences also resets the glass theme", () => {
 
 test("the lens refreshes its tint when the composer's fill changes", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
-	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*\]\.join\(\)/);
+	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*blur,\n\s*\]\.join\(\)/);
 });
 
 test("glass off writes no strength or tone to the page", () => {
@@ -530,7 +530,9 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	assert.match(lens, /observer\.observe\(document\.body, \{ childList: true \}\);/);
 	// The Desktop sidebar frame and layered panels draw their glass (and fill) on ::before.
 	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
-	assert.match(lens, /const fill = glassLayer\(host\) \?\? getComputedStyle\(host\);/);
+	assert.match(lens, /const fill = glass \?\? getComputedStyle\(host\);/);
+	// The copy blurs as much as the surface it sits in, not the shared --glass-blur.
+	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur;/);
 	// Outside the workspace the wash stops at <body>, whose opaque fill would hide the copy.
 	assert.match(lens, /node && node !== workspace && node !== document\.body;/);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
