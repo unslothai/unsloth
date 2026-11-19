@@ -97,9 +97,6 @@ class _Recorder(tr.EncoderResidency):
         return True
 
 
-# ---- the fit decision ---------------------------------------------------------------------------------------------
-
-
 def test_slack_is_the_planners_residency_slack():
     from core.inference.diffusion_memory import _resident_dit_slack_mib
     for total in (8_000, 16_000, 22_500, 81_000):
@@ -133,9 +130,6 @@ def test_unknown_peak_or_free_memory_keeps_the_placement():
     with patch.object(tr, "live_free_mib", return_value = None):
         assert r.after_encode(5_000)["action"] == "keep"
     assert r.moves == []
-
-
-# ---- the re-check per render --------------------------------------------------------------------------------------
 
 
 def test_streamed_encoders_return_only_when_they_and_the_render_fit():
@@ -227,9 +221,6 @@ def test_lora_forward_is_priced_on_top():
     pipe._unsloth_loras = ["a"]
     with patch("core.inference.diffusion_lora_memory.request_extra_mib", return_value = 700):
         assert tr.render_need_mib(pipe, width = 1024, height = 1024) == 2_700
-
-
-# ---- the streaming mechanics (CPU onload device) -------------------------------------------------------------------
 
 
 def _hooked(module):
@@ -419,9 +410,6 @@ def test_release_resident_groups_can_leave_the_denoiser_alone():
     assert seen and all(m is not dit for m in seen)
 
 
-# ---- install and kill switch --------------------------------------------------------------------------------------
-
-
 def _plan(kind = "discrete", device = "cuda"):
     return SimpleNamespace(
         device_memory = SimpleNamespace(is_unified = kind == "unified", device = device)
@@ -452,9 +440,6 @@ def test_placement_kind():
     pipe.text_encoder._unsloth_resident_room = 100
     assert tr._placement_kind(pipe, torch.device("cpu")) == tr.KIND_GROUPS
     assert tr._placement_kind(SimpleNamespace(components = {}), torch.device("cpu")) is None
-
-
-# ---- the lend path ------------------------------------------------------------------------------------------------
 
 
 def _engine(residency = None):
@@ -647,9 +632,6 @@ class TestFreeStepsLend:
         assert log == ["evict image"]
         _, log = self._run(need_mib = {0: 3_000}, busy = True)
         assert ("lend", 0) not in log
-
-
-# ---- wiring in the image engine -----------------------------------------------------------------------------------
 
 
 def _diffusion_source():

@@ -3,17 +3,10 @@
 
 """Text-encoder residency on a discrete CUDA card, re-decided per render.
 
-The load places the encoders from the planner's measured peaks: whole on the card (``plain``), or partly in resident
-offload groups (``groups``). This keeps that placement only while it still fits: after each prompt encode, the render's
-priced peak at its own size and batch (the learned / seeded peak the planner uses, plus what the measured placement
-reserved) and the planner's residency slack must fit in live free memory; when they do not (a bigger canvas, a batch,
-another process took VRAM), the encoders stream from the host before the denoise. Another Studio load on the card asks
-for the same room first (``lend``). The encoders come back before a later prompt's encode once they fit again.
-
-Streaming reuses the existing mechanisms: leaf-level group offload from the host (the VAE out-of-memory path's apply,
-the streamed-encoder tier's hooks) for ``plain`` encoders, ``release_resident_groups`` for ``groups``. The same weights
-run either way, so outputs are bit-identical. ``UNSLOTH_DIFFUSION_TE_RESIDENCY=0`` keeps the load's placement for the
-whole session, as before."""
+After each prompt encode the encoders stay on the card (whole, or in resident groups) only while the render's priced
+peak plus the planner's slack fits live free memory; otherwise they stream from the host before the denoise, and come
+back at a later encode once they fit. Same weights either way, so outputs are bit-identical.
+``UNSLOTH_DIFFUSION_TE_RESIDENCY=0`` keeps the load's placement for the whole session."""
 
 from __future__ import annotations
 
@@ -109,14 +102,8 @@ def render_need_mib(
     measured_activation: Any = None,
     tiled: bool = False,
 ) -> Optional[int]:
-    """MiB this render needs above the weights once the prompt is encoded (margin included). None when unpriced (the
-    placement then stands).
-
-    Encoders in resident groups: the planner's own quantity, its measured placement reserve plus what this request
-    needs beyond it (the decode is priced by the decode lend, which streams the same groups first). Whole-resident
-    encoders: the largest of that reserve, the learned / seeded peak for this family, quant and tier at this size and
-    batch, and the calibrated per-phase row the placement was sized from (denoise and decode scaled by pixels, a tiled
-    decode capped at its tile), plus a priced LoRA forward."""
+    """MiB this render needs above the weights once the prompt is encoded (margin included); None when unpriced
+    (the placement then stands)."""
     from .diffusion_memory import (
         DEFAULT_IMAGE_HEIGHT,
         DEFAULT_IMAGE_WIDTH,
@@ -228,7 +215,6 @@ class EncoderResidency:
         self.decisions: list[dict] = []
         self._lock = threading.RLock()
 
-    # ---- state ------------------------------------------------------------------------------------------------
     def _record(self, **entry: Any) -> dict:
         entry.setdefault("t", round(time.time(), 3))
         entry.setdefault("kind", self.kind)
@@ -267,7 +253,6 @@ class EncoderResidency:
             _placement(m, self.device) in ("plain", "torchao_resident") for m in modules.values()
         )
 
-    # ---- moves ------------------------------------------------------------------------------------------------
     def release(
         self,
         reason: str,
@@ -419,7 +404,6 @@ class EncoderResidency:
             self.released_mib = 0
             return True
 
-    # ---- decisions --------------------------------------------------------------------------------------------
     def restore_slack_mib(self, total_mib: int) -> int:
         """Kept free beside the encoders and the render's priced peak before streamed encoders come back: the release
         slack plus the decode lend's slack again, so a render at the edge does not move them every prompt."""
