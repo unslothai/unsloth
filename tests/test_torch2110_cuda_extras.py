@@ -201,7 +201,7 @@ def test_auto_install_selects_series(torch_version: str, series: str, cuda: str,
 @pytest.mark.parametrize(
     "torch_version, cuda, series",
     [
-        ("2.6.1+cu124", "12.4", "torch260"),
+        ("2.6.0+cu124", "12.4", "torch260"),
         ("2.7.0+cu118", "11.8", "torch270"),
         ("2.7.0+cu126", "12.6", "torch270"),
         ("2.7.0+cu128", "12.8", "torch270"),
