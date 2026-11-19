@@ -3,7 +3,11 @@
 
 """Run each image VAE decode in one expandable allocator segment (Linux CUDA, native allocator): its growing
 activations and cuDNN workspaces otherwise each map a new fixed segment (SDXL 1024^2: 11.3 -> 10.1 GiB reserved).
-UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off."""
+UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off.
+
+Denoise-phase-sized streamed placements use expandable segments for the whole load (``engage_streamed``): fixed
+segments cached ~1.9 GiB of churn (FLUX.3 Klein int8, L4 6 GiB), evicting resident blocks every render.
+UNSLOTH_DIFFUSION_STREAMED_EXPANDABLE=0 turns it off."""
 
 from __future__ import annotations
 
@@ -16,13 +20,17 @@ from typing import Any, Iterator, Optional
 from .rocm_bf16 import is_rocm_torch
 
 DECODE_EXPANDABLE_ENV = "UNSLOTH_DIFFUSION_DECODE_EXPANDABLE"
+STREAMED_EXPANDABLE_ENV = "UNSLOTH_DIFFUSION_STREAMED_EXPANDABLE"
 ENABLED_ATTR = "_unsloth_decode_expandable"
 _ALLOC_CONF_VARS = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")
 
 _lock = threading.Lock()
 _depth = 0
 _usable: Optional[bool] = None
-STATS = {"engaged": 0, "skipped": 0}
+_restore: Optional[str] = None
+# settings restored by release_streamed; None = not engaged
+_streamed: Optional[str] = None
+STATS = {"engaged": 0, "skipped": 0, "streamed": 0}
 
 
 def _env_off() -> bool:
@@ -79,21 +87,40 @@ def _setter(torch: Any) -> Any:
 
 
 def _decide(torch: Any) -> bool:
-    if not _platform_ok() or _allocator_configured():
-        return False
-    if is_rocm_torch(torch):
+    if not _platform_ok() or is_rocm_torch(torch):
         return False
     if _setter(torch) is None:
         return False
     try:
-        if torch.cuda.memory.get_allocator_backend() != "native":
-            return False
-        # Already on process-wide: switching it off after the decode would be wrong.
-        if any(seg.get("is_expandable") for seg in torch.cuda.memory_snapshot()):
-            return False
+        return torch.cuda.memory.get_allocator_backend() == "native"
     except Exception:  # noqa: BLE001
         return False
-    return True
+
+
+def _live_settings(torch: Any) -> Optional[str]:
+    """Live settings string (torch >= 2.6, runtime sets included) if expandable segments are off and nothing else is set."""
+    if _allocator_configured():
+        return None
+    try:
+        snap = torch.cuda.memory._snapshot()
+        live = snap["allocator_settings"]
+        last = live["PYTORCH_CUDA_ALLOC_CONF"]
+        if live["expandable_segments"] is not False or not isinstance(last, str):
+            return None
+        # Setting the flag resets max_split_size / roundup / gc threshold: a string setting any option is left alone.
+        if any(k != "expandable_segments" for k in _conf_keys(last)):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return last
+
+
+def _put_back(torch: Any, live: str) -> None:
+    """A set that does not name the flag leaves it as is, so switch it off first, then restore the exact string."""
+    setter = _setter(torch)
+    if "expandable_segments" not in _conf_keys(live):
+        setter("expandable_segments:False")
+    setter(live)
 
 
 def _torch() -> Any:
@@ -117,7 +144,7 @@ def _busy(torch: Any) -> bool:
 
 @contextlib.contextmanager
 def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
-    global _depth, _usable
+    global _depth, _usable, _restore
     if not vae.__dict__.get(ENABLED_ATTR, False) or _env_off() or not _cuda_tensor(z):
         yield
         return
@@ -129,10 +156,12 @@ def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
     with _lock:
         if _usable is None:
             _usable = _decide(torch)
-        if _usable:
+        live = _live_settings(torch) if _usable and _depth == 0 else None
+        if _usable and (_depth > 0 or live is not None):
             try:
                 if _depth == 0:
                     _setter(torch)("expandable_segments:True")
+                    _restore = live
                 _depth += 1
                 engaged = True
             except Exception:  # noqa: BLE001 - refused: never retry
@@ -149,9 +178,61 @@ def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
                 _depth -= 1
                 if _depth == 0:
                     try:
-                        _setter(torch)("expandable_segments:False")
+                        _put_back(torch, _restore or "")
                     except Exception:  # noqa: BLE001
                         _usable = False
+                    _restore = None
+
+
+def streamed_enabled() -> bool:
+    return os.environ.get(STREAMED_EXPANDABLE_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def engage_streamed() -> bool:
+    """Expandable segments until ``release_streamed`` (Linux CUDA, native allocator). True if engaged."""
+    global _usable, _streamed
+    if not streamed_enabled():
+        return False
+    torch = _torch()
+    if torch is None or _busy(torch):
+        return False
+    with _lock:
+        if _streamed is not None:
+            return True
+        if _usable is None:
+            _usable = _decide(torch)
+        if not _usable or _depth > 0:
+            return False
+        live = _live_settings(torch)
+        if live is None:
+            return False
+        try:
+            _setter(torch)("expandable_segments:True")
+        except Exception:  # noqa: BLE001 - refused: never retry
+            _usable = False
+            return False
+        _streamed = live
+        STATS["streamed"] += 1
+    return True
+
+
+def release_streamed() -> bool:
+    global _usable, _streamed
+    torch = _torch()
+    with _lock:
+        if _streamed is None or torch is None or _depth > 0:
+            return False
+        try:
+            _put_back(torch, _streamed)
+        except Exception:  # noqa: BLE001
+            _usable = False
+        _streamed = None
+    return True
 
 
 def enable(vae: Any) -> bool:
@@ -164,4 +245,14 @@ def enable(vae: Any) -> bool:
     return True
 
 
-__all__ = ["DECODE_EXPANDABLE_ENV", "ENABLED_ATTR", "STATS", "enable", "expandable_decode"]
+__all__ = [
+    "DECODE_EXPANDABLE_ENV",
+    "ENABLED_ATTR",
+    "STATS",
+    "STREAMED_EXPANDABLE_ENV",
+    "enable",
+    "engage_streamed",
+    "expandable_decode",
+    "release_streamed",
+    "streamed_enabled",
+]

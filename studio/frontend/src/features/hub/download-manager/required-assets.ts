@@ -56,3 +56,26 @@ export function checkpointFirst<T extends { checkpoint?: boolean }>(
     ...entries.filter((e) => e.checkpoint === false),
   ];
 }
+
+export interface ImageCheckpointFile {
+  filename: string;
+  bytes: number | null;
+}
+
+/** Reopening the card should show the active transfer, including a scoped job adopted after reload. */
+export function imageCheckpointSelection(
+  repoId: string,
+  files: readonly ImageCheckpointFile[] | undefined,
+  picked: string | undefined,
+  queued: string | undefined,
+  transferring: readonly string[] | undefined,
+) {
+  const active = files?.find((file) => transferring?.includes(file.filename)) ??
+    files?.find((file) => file.filename === queued);
+  const repoFilename = repoId.split("/").pop()?.toLowerCase() + ".safetensors";
+  const selected = active ??
+    files?.find((file) => file.filename === picked) ??
+    files?.find((file) => file.filename.toLowerCase() === repoFilename) ??
+    files?.[0];
+  return { active, selected };
+}

@@ -117,11 +117,14 @@ def _set_job(
 
 
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
-    if account_is_retired():
-        raise job_leases.JobLeaseLost("Account is retired")
     # An unlink stops a linked-folder document mid-embed, not after it (folder_sync imports this module).
     from . import folder_sync
 
+    # Before the checks below, so they see what happened during a chat. Never inside a write transaction.
+    if not conn.in_transaction:
+        folder_sync.wait_while_chat_busy()
+    if account_is_retired():
+        raise job_leases.JobLeaseLost("Account is retired")
     if folder_sync.is_cancel_requested(getattr(folder_sync._worker_state, "folder_id", None)):
         # Terminal, so the folder cleanup can prune the row with the document it discards.
         _set_job(conn, job_id, status = "failed", stage = "error", error = "Linked folder was removed")
@@ -205,8 +208,7 @@ class _EmbedQueue:
             self._cond.wait(left)
 
     def _take(self, key) -> list[tuple[_EmbedRequest, int, int]]:
-        # Shared out across requests, so a large document cannot hold back the others' progress and
-        # cancel checks (both run in on_progress) for its whole pass.
+        # Shared across requests: one document cannot stall others' progress or cancel checks.
         requests = [request for request in self._pending if request.key == key]
         room = max(1, _EMBED_BATCH)
         pieces = []
@@ -1038,9 +1040,7 @@ def job_events(job_id: str):
 
 
 def get_job_status(job_id: str) -> dict | None:
-    """Read the persisted ingestion job row (status / stage / progress / error), plus
-    the document's ``num_chunks`` so a client polling to completion learns the chunk
-    count (the SSE ``complete`` frame carries it, but the poll/reconcile path does not)."""
+    """Job row plus the document's ``num_chunks``, since the poll path cannot get the count from SSE."""
     conn = rag_db.get_connection()
     try:
         row = conn.execute(

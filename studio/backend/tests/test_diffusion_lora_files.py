@@ -390,8 +390,7 @@ def test_moss_and_anima_have_a_lora_loader():
 
 @pytest.mark.parametrize("use_stream", [False, True])
 def test_lokr_attached_under_group_offload_moves_with_its_group(tmp_path, use_stream):
-    """A LoKR attached at generate time to a group-offloaded transformer: the groups are rebuilt, so the factors onload
-    with their block, and again on unload."""
+    """LoKR attached under group offload: groups rebuild, so factors move with their block."""
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")
     from diffusers.hooks import apply_group_offloading
@@ -626,3 +625,15 @@ def test_the_folded_scale_covers_the_lora_b_bias(source):
     out = lf.normalize_lora(state, "krea-2", meta)
     assert torch.allclose(out[f"{stem}.lora_B.weight"], b * 4.0)
     assert torch.allclose(out[f"{stem}.lora_B.bias"], bias * 4.0)
+
+
+def test_kron_factor_pair_larger_than_any_layer_is_refused_before_multiplying():
+    # ~400 KB on disk, a 100000 x 100000 fp32 product (40 GB) once multiplied; meta tensors keep the test free.
+    a = torch.empty(100_000, 1, dtype = torch.bfloat16, device = "meta")
+    b = torch.empty(1, 100_000, dtype = torch.bfloat16, device = "meta")
+    for name in ("w1", "w2"):
+        parts = {"lokr_w1": torch.randn(2, 2), "lokr_w2": torch.randn(3, 3)}
+        parts.pop("lokr_" + name)
+        parts.update({f"lokr_{name}_a": a, f"lokr_{name}_b": b})
+        with pytest.raises(ValueError, match = "larger than any layer"):
+            lf._kron_factors(parts)

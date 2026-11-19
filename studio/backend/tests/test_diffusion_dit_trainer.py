@@ -49,22 +49,31 @@ def test_specs_cover_the_dit_families():
     assert set(_SPECS) == {
         "flux.1",
         "qwen-image",
+        "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
+        "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
     }
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
     assert "add_q_proj" in _SPECS["qwen-image"].lora_targets
     assert "add_q_proj" not in _SPECS["z-image"].lora_targets
+    # Qwen-Image-2.1 is single-stream: no added-kv projections to adapt.
+    assert "add_q_proj" not in _SPECS["qwen-image-2.1"].lora_targets
     assert "add_q_proj" not in _SPECS["krea-2"].lora_targets
     assert _SPECS["z-image"].force_bf16 is True
     assert _SPECS["qwen-image"].force_bf16 is True
     assert _SPECS["krea-2"].force_bf16 is True
     assert _SPECS["flux.2-klein"].force_bf16 is True
     assert _SPECS["flux.2-dev"].force_bf16 is True
+    # FLUX.3 has no added-kv projections either; the distilled Klein is a deploy target, never a trainer.
+    assert "add_q_proj" not in _SPECS["flux.3-klein-base"].lora_targets
+    assert _SPECS["flux.3-klein-base"].force_bf16 is True
 
 
 def test_flux2_specs_share_targets_and_split_conditioners():

@@ -46,11 +46,14 @@ def _torch_supports_context_parallel() -> bool:
     ) >= Version("2.7.0")
 
 
-def _ring_sdpa_backends():
-    # The math kernel is not ringed: it would attend over the local shard only.
+def _ring_sdpa_backends(efficient = False):
+    # The math kernel is not ringed: it would attend over the local shard only. The efficient kernel is ringed,
+    # but its load balanced backward returns wrong dq / dk in fp16 / bf16 (torch 2.14); float32 only.
     if SDPBackend is None:
         return None
-    backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+    backends = [SDPBackend.FLASH_ATTENTION]
+    if efficient:
+        backends.append(SDPBackend.EFFICIENT_ATTENTION)
     cudnn = getattr(SDPBackend, "CUDNN_ATTENTION", None)
     op = getattr(torch.ops.aten, "_scaled_dot_product_cudnn_attention", None)
     if cudnn is not None and op is not None:
@@ -65,6 +68,17 @@ def _ring_sdpa_backends():
         if isinstance(handled, dict) and op.default in handled:
             backends.append(cudnn)
     return backends
+
+
+def _compute_dtype(model):
+    config = getattr(model, "config", None)
+    for c in (getattr(config, "text_config", None), config):
+        dtype = getattr(c, "dtype", None) or getattr(c, "torch_dtype", None)
+        if isinstance(dtype, str):
+            dtype = getattr(torch, dtype, None)
+        if isinstance(dtype, torch.dtype):
+            return dtype
+    return getattr(model, "dtype", None)
 
 
 def _cp_replaced_functions():
@@ -111,14 +125,118 @@ def context_parallel_options(config) -> tuple:
     return size, backend, rotate_method
 
 
+# Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks, so
+# only these layer types and the window are exempt; chunked attention and softcap still refuse.
+# transformers >= 5.18 renames V3.2's "deepseek_sparse_attention" to "indexed_attention".
+_ULYSSES_OWN_MASK_LAYER_TYPES = {
+    "deepseek_v32": ("deepseek_sparse_attention", "indexed_attention"),
+    "deepseek_v4": (
+        "sliding_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+    ),
+}
+
+
+# Model types whose Ulysses mixers refuse packed batches, for a model ID string (no modules to walk yet).
+_ULYSSES_HYBRID_PACKING_MODEL_TYPES = {
+    "kimi_linear": "KimiDeltaAttention",
+    "kimi_k3": "KimiDeltaAttention",
+    "minimax": "MiniMaxLightningAttention",
+}
+
+
+def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
+    """Class name of the first module refusing packed batches, else None; a model ID uses config types."""
+    from .utils.ulysses_deepseek import (
+        DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+        DEEPSEEK_ULYSSES_MODEL_TYPES,
+    )
+    from .utils.ulysses_hybrid import is_ulysses_kimi_delta, is_ulysses_lightning
+
+    if not isinstance(model, torch.nn.Module):
+        for model_type in model_types or ():
+            if model_type in DEEPSEEK_ULYSSES_MODEL_TYPES:
+                return DEEPSEEK_ULYSSES_MODEL_TYPES[model_type]
+            if model_type in _ULYSSES_HYBRID_PACKING_MODEL_TYPES:
+                return _ULYSSES_HYBRID_PACKING_MODEL_TYPES[model_type]
+        return None
+    for module in model.modules():
+        if (
+            type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+            or is_ulysses_kimi_delta(module)
+            or is_ulysses_lightning(module)
+        ):
+            return type(module).__name__
+    return None
+
+
+def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
+    # Indexer weights get no gradient (discrete top-k); CP turns find_unused_parameters off, so DDP
+    # must ignore them
+    names = [
+        f"{attn_name}.{sub}.{p}"
+        for sub, module in attention.named_modules()
+        if sub.rsplit(".", 1)[-1] == "indexer"
+        for p, _ in module.named_parameters()
+    ]
+    if names:
+        ignored = set(getattr(model, "_ddp_params_and_buffers_to_ignore", ()))
+        model._ddp_params_and_buffers_to_ignore = sorted(ignored.union(names))
+
+
+def _keep_layer_out_of_block_compile(model, attn_name: str) -> None:
+    # Eager Ulysses is a graph break; if one fp32 MoE grouped_mm layer fails to compile the shared
+    # resume, V3.2 fp32 CP=2 raises CheckpointError (62 vs 61)
+    parent = attn_name.rpartition(".")[0]
+    if not parent:
+        return
+    from .models._block_compile import _OFF
+
+    model.get_submodule(parent).__dict__["_unsloth_block_mode"] = _OFF
+
+
 def _model_heads(model):
+    """Sorted (heads, kv heads) per attention layer kind; per_layer_config first since Gemma 4 global reads raise."""
     config = getattr(model, "config", None)
     text = getattr(config, "text_config", None) or config
-    heads = getattr(text, "num_attention_heads", None)
-    if not isinstance(heads, int):
-        return None, None
-    kv = getattr(text, "num_key_value_heads", None)
-    return heads, kv if isinstance(kv, int) and kv > 0 else heads
+    if not isinstance(getattr(text, "num_attention_heads", None), int):
+        return []
+    counts = set()
+    try:
+        # transformers >= 5.15 gives every config a per-layer view; its len() reads num_hidden_layers,
+        # which configs such as remote-code ChatGLM (num_layers) do not define.
+        layers = list(getattr(text, "per_layer_config", None) or ())
+    except (AttributeError, TypeError):
+        layers = []
+    for layer in layers or [text]:
+        heads = getattr(layer, "num_attention_heads", None)
+        heads = heads if isinstance(heads, int) else text.num_attention_heads
+        kv = getattr(layer, "num_key_value_heads", None)
+        counts.add((heads, kv if isinstance(kv, int) and kv > 0 else heads))
+    # Without a per-layer view (older Gemma 4 configs) the global layers' KV count sits beside the sliding
+    # one; a per-layer view already lists what every layer uses, and a config with no global layer uses none.
+    global_kv = getattr(text, "num_global_key_value_heads", None)
+    layer_types = getattr(text, "layer_types", None) or ()
+    if (
+        not layers
+        and isinstance(global_kv, int)
+        and global_kv > 0
+        and getattr(text, "attention_k_eq_v", False)
+        and (not layer_types or "full_attention" in layer_types)
+    ):
+        counts.add((text.num_attention_heads, global_kv))
+    return sorted(counts)
+
+
+def _ulysses_head_plans(
+    model,
+    size: int,
+    tp: int = 1,
+) -> None:
+    # Under tensor parallel each rank holds heads / tp of them (and kv heads / tp, or all when fewer).
+    for heads, kv in _model_heads(model):
+        ulysses_head_plan(heads // tp, kv // tp if kv % tp == 0 else kv, size)
 
 
 def resolve_cp_backend(
@@ -136,11 +254,8 @@ def resolve_cp_backend(
         return backend
     if rl:
         return "ulysses"
-    heads, kv = _model_heads(model)
-    if heads is None:
-        return "ulysses"
     try:
-        ulysses_head_plan(heads // tp, kv // tp if kv % tp == 0 else kv, size)
+        _ulysses_head_plans(model, size, tp)
     except ValueError:
         return "ring"
     return "ulysses"
@@ -164,7 +279,14 @@ def _unsupported_attention(
     for c in configs:
         if c is None:
             continue
+        own_mask = (
+            _ULYSSES_OWN_MASK_LAYER_TYPES.get(getattr(c, "model_type", None))
+            if backend == "ulysses"
+            else None
+        )
         layer_types = getattr(c, "layer_types", None)
+        if own_mask and layer_types:
+            layer_types = [t for t in layer_types if t not in own_mask]
         if layer_types and any(t not in allowed for t in layer_types):
             kinds = sorted({t for t in layer_types if t not in allowed})
             hint = (
@@ -175,14 +297,15 @@ def _unsupported_attention(
             return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
-        if not windows_ok and (
+        if not (own_mask or windows_ok) and (
             (isinstance(sliding_window, int) and sliding_window > 0)
             or getattr(c, "use_sliding_window", None) is True
         ):
             return "sliding window attention"
         if getattr(c, "attention_chunk_size", None):
             return "chunked attention"
-        if not windows_ok and getattr(c, "attn_logit_softcapping", None):
+        # DeepSeek's own forwards apply no softcap, so it refuses there even on the generic route.
+        if (own_mask or not windows_ok) and getattr(c, "attn_logit_softcapping", None):
             return "attention logit softcapping"
     return None
 
@@ -201,6 +324,40 @@ def _unregister_cp_sharding_rules() -> None:
 _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
 
 
+def _seq_len_rope(module) -> bool:
+    kinds = getattr(module, "rope_type", None)
+    kinds = kinds.values() if isinstance(kinds, dict) else (kinds,)
+    return any(kind in ("dynamic", "longrope") for kind in kinds)
+
+
+def _rope_over_full_positions(module) -> None:
+    """Dynamic/longrope RoPE needs max(position_ids): Ulysses shards append the full max, then drop
+    it; slicing full tables would keep them alive for backward"""
+    forward = module.forward
+
+    @functools.wraps(forward)
+    def full_positions_forward(x, position_ids, *args, **kwargs):
+        manager = get_cp_manager()
+        full = getattr(manager, "full_position_ids", None)
+        local = position_ids.shape[-1]
+        if (
+            not isinstance(full, torch.Tensor)
+            or full.ndim != 2
+            or full.shape != (position_ids.shape[0], local * manager.size)
+        ):
+            return forward(x, position_ids, *args, **kwargs)
+        start = manager.mesh.get_local_rank() * local
+        full = full.to(position_ids.device)
+        ids = torch.cat(
+            [full[:, start : start + local], full.max().expand(full.shape[0], 1)], dim = -1
+        )
+        cos, sin = forward(x, ids, *args, **kwargs)
+        return cos[:, :local], sin[:, :local]
+
+    module.forward = full_positions_forward
+    module._unsloth_cp_full_rope = True
+
+
 # Before the imports below: on the CPU route they bind this from the partially initialised module.
 def get_cp_manager() -> Optional["ContextParallelManager"]:
     return _ACTIVE_MANAGER
@@ -208,6 +365,10 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_deepseek import (
+    DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+    wrap_deepseek_attention_forward,
+)
 from .utils.ulysses_hybrid import (
     GATED_DELTA_ATTENTION_CLASSES,
     check_ulysses_mixer_heads,
@@ -307,10 +468,8 @@ def forget_expert_tokens(block) -> None:
 
 
 def start_expert_window(blocks) -> None:
-    """A new gradient window starts (before its first forward): forget the counts of experts whose
-    gradients are None now. zero_grad(set_to_none = True) clears them all, also after a step the
-    optimizer skipped (fp16 GradScaler overflow); with set_to_none = False the single-process run
-    keeps a zero gradient, which AdamW steps, so the count carries over."""
+    """Forget counts of experts whose grads are None; zero_grad(set_to_none = True) clears all, even
+    after a skipped fp16 step; with set_to_none = False counts carry over"""
     for block in blocks:
         seen = block.__dict__.get(_EXPERT_TOKENS)
         block.__dict__.pop(_EXPERT_STEPPED, None)
@@ -327,12 +486,8 @@ def start_expert_window(blocks) -> None:
 
 
 def drop_idle_expert_grads(blocks, group = None) -> int:
-    """Set .grad = None on experts (incl. their LoRA adapters) that no rank routed a real token to
-    since their gradient was last None. Under CP they ran on no tokens so DDP sees a gradient, but
-    the single-process run leaves them None, so AdamW must not decay them or advance their state.
-    One all-reduce and one host sync for all layers. Returns the number of experts dropped.
-    Acts only on blocks a context parallel forward counted since the last step: with CP off (the
-    optimizer reused by a trainer without it) no block is counted and every gradient is kept."""
+    """Set .grad = None on experts no rank routed real tokens to; only blocks a CP forward counted
+    since the last step, so with CP off every gradient is kept"""
     # Counted: a CP forward ran since the last step (it pops _EXPERT_STEPPED) and no non-CP forward
     # since (forget_expert_tokens). All CP peers run the same forwards, so they agree on the collective.
     blocks = [
@@ -371,10 +526,7 @@ def install_idle_expert_grad_hook(
     group = None,
     window = None,
 ) -> bool:
-    """Once per optimizer: a step pre-hook running drop_idle_expert_grads over model's every-expert
-    MoE blocks. It runs after backward (DDP reduction) and all gradient accumulation micro-steps.
-    ``window`` (the trainer's global_step, read per training_step) starts a new count window when it
-    changes: it advances even when GradScaler skips optimizer.step() and with it the pre-hook."""
+    """Step pre-hook after backward; count window advances even when GradScaler skips optimizer.step()."""
     while not isinstance(optimizer, torch.optim.Optimizer) or (
         # accelerate's AcceleratedOptimizer subclasses Optimizer but steps the one it wraps.
         isinstance(getattr(optimizer, "optimizer", None), torch.optim.Optimizer)
@@ -408,15 +560,23 @@ def install_idle_expert_grad_hook(
 
 
 def _optimizer_window(trainer):
-    # Trainer.state.global_step: constant over a step's gradient accumulation micro-batches, advanced
-    # once per optimizer step attempt (also one GradScaler skips).
+    # global_step is fixed across accumulation micro-batches and advances on each step attempt.
     return getattr(getattr(trainer, "state", None), "global_step", None)
+
+
+def _in_media_tower(name: str) -> bool:
+    # CP only takes text batches: vision / audio encoders (Gemma 4's towers name theirs self_attn too) never run.
+    return not _MEDIA_TOWER_NAMES.isdisjoint(name.split("."))
 
 
 def _attention_modules(model) -> list:
     if not hasattr(model, "named_modules"):
         return []
-    return [module for name, module in model.named_modules() if name.endswith("self_attn")]
+    return [
+        module
+        for name, module in model.named_modules()
+        if name.endswith("self_attn") and not _in_media_tower(name)
+    ]
 
 
 def _uses_unsloth_attention(model, rl = False) -> bool:
@@ -432,11 +592,15 @@ def _uses_unsloth_attention(model, rl = False) -> bool:
 
 def _generic_hf_attention(model) -> bool:
     """Every attention layer is a Hugging Face forward through ALL_ATTENTION_FUNCTIONS, so Ulysses can run the
-    model's own attention function (scaling, softcap, sliding window, sinks) after the exchange."""
+    model's own attention function (scaling, softcap, sliding window, sinks) after the exchange. DeepSeek V3.2 /
+    V4 attention gets its own Ulysses forward instead (utils/ulysses_deepseek.py) under the same model checks."""
     if not isinstance(model, torch.nn.Module) or _stateful_mixers(model):
         return False
     modules = _attention_modules(model)
-    return bool(modules) and all(is_hf_registry_attention(m) for m in modules)
+    return bool(modules) and all(
+        is_hf_registry_attention(m) or type(m).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+        for m in modules
+    )
 
 
 def _supports_context_parallel(
@@ -541,6 +705,7 @@ class ContextParallelManager:
         return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
+        self._ring_float32 = _compute_dtype(model) == torch.float32
         if any(
             isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
             for m in model.modules()
@@ -553,8 +718,22 @@ class ContextParallelManager:
                     wrap_ulysses_mixer_forward(module, get_cp_manager)
             # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
             generic = not _uses_unsloth_attention(model)
+            for name, module in model.named_modules() if generic else ():
+                if _in_media_tower(name):
+                    continue
+                if _seq_len_rope(module) and not getattr(module, "_unsloth_cp_full_rope", False):
+                    _rope_over_full_positions(module)
             for name, module in model.named_modules():
-                if name.endswith("self_attn") and (
+                if _in_media_tower(name):
+                    continue
+                if (
+                    name.endswith("self_attn")
+                    and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+                ):
+                    wrap_deepseek_attention_forward(module, get_cp_manager)
+                    _ddp_ignore_indexer(model, name, module)
+                    _keep_layer_out_of_block_compile(model, name)
+                elif name.endswith("self_attn") and (
                     type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
                     or (generic and is_hf_registry_attention(module))
                 ):
@@ -562,7 +741,7 @@ class ContextParallelManager:
                         module, module.config._attn_implementation, get_cp_manager
                     )
         for name, module in list(model.named_modules()):
-            if not name.endswith("self_attn"):
+            if not name.endswith("self_attn") or _in_media_tower(name):
                 continue
             if not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
@@ -654,7 +833,15 @@ class ContextParallelManager:
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
         pad = (-seq_len) % (self.size if ulysses else 2 * self.size)
         padded = self.__dict__.get("_padded_input_ids")
-        if not pad and padded is not None and padded[0]() is input_ids:
+        prepared = not pad and padded is not None and padded[0]() is input_ids
+        # Before alignment padding and sharding: LongRoPE picks its factors from the caller's positions.
+        positions = inputs.get("position_ids")
+        self.position_bound = (
+            positions[:, : padded[1] if prepared else seq_len].amax()
+            if isinstance(positions, torch.Tensor)
+            else None
+        )
+        if prepared:
             return  # prepared already (prediction_step, then apply): keep the real length
         self._padded_input_ids = None
         if pad:
@@ -679,9 +866,8 @@ class ContextParallelManager:
         return positions.lt(padded[1]).expand(input_ids.shape[0], -1).contiguous()
 
     def _note_real_tokens(self, local_ids, local) -> None:
-        # Keyed by the shard's token count, which is all the MoE dispatch sees. Graph-building forwards
-        # of one size are OR-ed (local None = all real): a pad token counted as real only keeps a zero
-        # gradient, while a real token counted as pad would drop a real one.
+        # Same-size forwards OR their masks: counting a pad as real is harmless, a real token as pad
+        # is not.
         if not isinstance(local_ids, torch.Tensor) or not torch.is_grad_enabled():
             return
         masks = self.__dict__.setdefault("_real_token_masks", {})
@@ -719,12 +905,11 @@ class ContextParallelManager:
         store[key] = lengths if seen is None else tuple(max(a, b) for a, b in zip(seen, lengths))
 
     def caller_pad_lengths(self, bsz: int, total: int) -> Optional[tuple]:
-        """Per row, how many leading tokens of the whole [bsz, total] sequence are the caller's real
-        tokens (the rest is right padding), or None when no row is padded. Set only for models whose
-        MoE counts expert usage (the remote shim): one process routes caller padding through the MoE
-        with its own activations (Kimi delta layers zero it, attention masks the padded keys), so the
-        Ulysses mixers reproduce them for the routes, and the expert counts, to match."""
-        return self.__dict__.get("_caller_pad_lengths", {}).get((bsz, total))
+        """Leading real tokens per row, None if unpadded; set only where MoE expert counts see
+        caller padding."""
+        store = self.__dict__.get("_caller_pad_lengths")
+        # Hashing the (bsz, total) key specialises a compiled layer's shard length: look up only when set.
+        return store.get((bsz, total)) if store else None
 
     @contextlib.contextmanager
     def _rotate_method_scope(self) -> Iterator[None]:
@@ -747,6 +932,7 @@ class ContextParallelManager:
     def _ulysses_shard(self, inputs: dict) -> None:
         # Contiguous shards; packed_seq_lengths stays global.
         rank = self.mesh.get_local_rank()
+        self.full_position_ids = inputs.get("position_ids")  # for _rope_over_full_positions
         self._note_caller_padding(inputs.get("attention_mask"))
         real = self._real_tokens(inputs.get("input_ids"))
         if real is not None:
@@ -778,6 +964,7 @@ class ContextParallelManager:
         finally:
             _ACTIVE_MANAGER = previous
             self.packed_seq_lengths = None
+            self.full_position_ids = None
 
     @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
@@ -809,7 +996,7 @@ class ContextParallelManager:
         sdpa = F.scaled_dot_product_attention
         dispatcher = getattr(DTensor, "_op_dispatcher", None)
         handlers = getattr(dispatcher, "_custom_op_handlers", None)
-        ring_backends = _ring_sdpa_backends()
+        ring_backends = _ring_sdpa_backends(self.__dict__.get("_ring_float32", False))
         registry = _cp_replaced_functions()
         wrappers = set(registry) if registry is not None else None
         raised = False
@@ -980,10 +1167,8 @@ def _release_accelerator_state(state) -> None:
 
 @contextlib.contextmanager
 def _cp_state_scope(self):
-    """A CP trainer's entry point (train / evaluate / predict / save_model): its mesh and parallelism config
-    sit on the shared AcceleratorState only while it runs, so a trainer without CP built in the same process
-    keeps the class's original methods and still sees the state it expects. Nested calls (train ->
-    save_model) restore only when the outermost one returns."""
+    """CP state sits on AcceleratorState only during the entry point; nested calls restore it only
+    when the outermost call returns"""
     depth = self.__dict__.get("_unsloth_cp_state_depth", 0)
     self._unsloth_cp_state_depth = depth + 1
     _install_accelerator_state(self)
@@ -1287,9 +1472,8 @@ def _positional_config_to_keyword(
     kwargs,
     require_args = True,
 ):
-    """(args, kwargs) with a positional trainer config passed as `args = ...` instead (every positional bound
-    to its name), so Unsloth's trainer wrapper rebuilds it with the cp values set as kwargs. Unchanged when the
-    signature cannot bind them."""
+    """Binds every positional to its name so the config can be rebuilt with cp values as kwargs;
+    unchanged if the signature cannot bind them"""
     import inspect
 
     try:
@@ -1462,6 +1646,19 @@ def _check_cp_runtime(self, size: int, backend: str) -> None:
         )
 
 
+# Config fields of n-gram lookup tables hashed from the tokens before each position (Qwen4Exp PLE, DeepSeek-V4.1
+# engram): a sequence shard would hash its first tokens without the previous shard's, so the rows would differ.
+_NGRAM_TABLE_CONFIG_KEYS = ("ple_layer_ids", "engram_layer_ids")
+
+
+def _ngram_table_blocker(config) -> Optional[str]:
+    for c in (config, getattr(config, "text_config", None)):
+        for key in _NGRAM_TABLE_CONFIG_KEYS:
+            if c is not None and getattr(c, key, None):
+                return key
+    return None
+
+
 def _check_cp_model(
     model,
     size: int,
@@ -1470,6 +1667,12 @@ def _check_cp_model(
     tp: int = 1,
 ) -> None:
     model_config = getattr(model, "config", None)
+    table = _ngram_table_blocker(model_config)
+    if table is not None:
+        raise NotImplementedError(
+            f"Unsloth: context parallelism does not support n-gram lookup tables ({table}): their hashes read "
+            "the tokens before each position, which a sequence shard boundary would cut off."
+        )
     # DPO / GRPO (allow_hybrids False) keep the Llama-style rule: their decoder hooks are not verified on
     # the generic path.
     generic = (
@@ -1485,10 +1688,7 @@ def _check_cp_model(
         )
     if backend == "ulysses":
         # Every rank raises here, before any collective.
-        heads, kv_heads = _model_heads(model)
-        if heads is not None:
-            # Under tensor parallel each rank holds heads / tp of them (and kv heads / tp, or all when fewer).
-            ulysses_head_plan(heads // tp, kv_heads // tp if kv_heads % tp == 0 else kv_heads, size)
+        _ulysses_head_plans(model, size, tp)
     if _stateful_mixers(model) and not allow_hybrids:
         raise NotImplementedError(
             "Unsloth: DPO / GRPO context parallelism does not support linear attention hybrids yet."
@@ -1522,7 +1722,7 @@ def _check_cp_model(
             "Unsloth: context parallelism supports Unsloth's fast attention (Llama-style, Qwen3, Mistral, Granite, "
             "Cohere) with either backend, and with Ulysses any Hugging Face attention model (attention through "
             "ALL_ATTENTION_FUNCTIONS, e.g. MiniMax-M2) and the Qwen3-Next / Qwen3.5 Gated DeltaNet, Kimi-Linear and "
-            "MiniMax-M1 Lightning hybrids."
+            "MiniMax-M1 Lightning hybrids, and DeepSeek V3.2 (DSA indexer) / V4 (compressed sink attention)."
         )
 
 
@@ -1608,10 +1808,8 @@ def _check_cp_trainer(
 
 
 def patch_sft_trainer(install_cp_methods: bool = False) -> None:
-    # Only __init__ is patched on the class. The CP wrappers are bound per trainer (types.MethodType) when it
-    # asks for CP, so trainers without CP, built before or after one with it, run the class's own methods:
-    # class wrappers slowed torch 2.10 LoRA steps by ~35% with CP off (gemma-4-E2B, L4 / A100).
-    # install_cp_methods = True binds them on every trainer (a test seam for trainers given a manager by hand).
+    # Only __init__ is patched on the class; CP wrappers bind per trainer since class wrappers
+    # slowed torch 2.10 LoRA ~35% with CP off; install_cp_methods=True binds all
     import trl
 
     trainer_cls = trl.SFTTrainer
@@ -1819,10 +2017,15 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         if not isinstance(shift_labels, torch.Tensor):
             with manager.apply(inputs):
                 return original_prediction_step(self, model, inputs, *args, **kwargs)
-        inputs["num_items_in_batch"] = shift_labels.ne(-100).sum().clamp_min(1)
+        # compute_loss returns this shard's token mean (TRL >= 1 ignores an inputs["num_items_in_batch"]
+        # key, older TRL leaves the model to average): weight it by the shard's share of the targets so
+        # the cp sum is the sequence's token mean. A shard without targets adds 0, even when its mean is 0 / 0.
+        count = shift_labels.ne(-100).sum().clamp_min(1)
         inputs.setdefault("use_cache", False)
         with manager.apply(inputs), torch.no_grad(), self.compute_loss_context_manager():
+            local = inputs["shift_labels"].ne(-100).sum()
             loss = self.compute_loss(model, inputs).detach()
+        loss = torch.where(local > 0, loss * local / count, torch.zeros_like(loss))
         dist.all_reduce(loss, group = manager.mesh.get_group())
         return loss, None, None
 
@@ -2513,8 +2716,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             self.gather_function = _cp_gather_for_metrics(self.accelerator, manager.size)
         return originals["evaluation_loop"](self, *args, **kwargs)
 
-    # Bound per trainer that enables CP (types.MethodType, as for SFT): trainers without CP keep the
-    # class's own methods.
+    # Bound per CP-enabling trainer, as for SFT; trainers without CP keep the class's methods.
     cp_methods = {
         "training_step": _step_wrapper("training_step"),
         "prediction_step": _step_wrapper("prediction_step"),
@@ -2538,3 +2740,8 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
     trainer_cls._unsloth_cp_methods = cp_methods
     trainer_cls.__init__ = patched_init
     trainer_cls.__unsloth_context_parallel__ = True
+
+
+# RL trainers patched while this module was still importing (see models/rl.py).
+for _trainer_cls, _kind in globals().pop("_DEFERRED_RL_TRAINERS", ()):
+    patch_rl_trainer(_trainer_cls, _kind)

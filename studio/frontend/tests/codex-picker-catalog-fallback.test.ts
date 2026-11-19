@@ -12,7 +12,6 @@ interface SubscriptionModels {
 }
 
 type Resolve = (
-  curated: string[],
   savedModels: string[],
   listed: SubscriptionModels | null,
 ) => { catalog: string[]; selected: string[] };
@@ -36,7 +35,6 @@ after(async () => {
 
 test("a plan catalog drives the picker and retires slugs it no longer lists", () => {
   const { catalog, selected } = resolveCodexPickerModels(
-    CURATED,
     ["gpt-5.4", "gpt-5.7-nova"],
     { models: [{ id: "gpt-5.7-nova" }], source: "subscription" },
   );
@@ -44,19 +42,34 @@ test("a plan catalog drives the picker and retires slugs it no longer lists", ()
   assert.deepEqual(selected, ["gpt-5.7-nova"]);
 });
 
-test("a curated fallback keeps every saved model selected", () => {
+test("an answer that is not the plan's catalog keeps every saved model selected", () => {
   const { catalog, selected } = resolveCodexPickerModels(
-    CURATED,
     ["gpt-5.4", "gpt-5.7-nova"],
     { models: CURATED.map((id) => ({ id })), source: "curated" },
   );
-  assert.ok(catalog.includes("gpt-5.7-nova"));
+  assert.deepEqual(catalog, ["gpt-5.4", "gpt-5.7-nova"]);
   assert.deepEqual(selected, ["gpt-5.4", "gpt-5.7-nova"]);
+});
+
+test("a connection with nothing saved starts with the models its plan lists", () => {
+  const listed: SubscriptionModels = {
+    models: [{ id: "gpt-5.7-nova" }, { id: "gpt-5.7-eos" }],
+    known: [{ id: "gpt-5.7-nova" }, { id: "gpt-5.7-eos" }, { id: "codex-auto-review" }],
+    source: "subscription",
+  };
+  assert.deepEqual(resolveCodexPickerModels([], listed), {
+    catalog: ["gpt-5.7-nova", "gpt-5.7-eos"],
+    selected: ["gpt-5.7-nova", "gpt-5.7-eos"],
+  });
+  assert.deepEqual(resolveCodexPickerModels([], null), { catalog: [], selected: [] });
+  assert.deepEqual(resolveCodexPickerModels([], { models: [], source: "curated" }), {
+    catalog: [],
+    selected: [],
+  });
 });
 
 test("an unreachable backend keeps every saved model selected", () => {
   const { selected } = resolveCodexPickerModels(
-    CURATED,
     ["gpt-5.4", "gpt-5.7-nova"],
     null,
   );
@@ -65,7 +78,6 @@ test("an unreachable backend keeps every saved model selected", () => {
 
 test("an empty plan catalog is not treated as an empty account", () => {
   const { selected } = resolveCodexPickerModels(
-    CURATED,
     ["gpt-5.4"],
     { models: [], source: "subscription" },
   );
@@ -148,7 +160,6 @@ test("a saved slug the plan still returns survives losing its picker slot", asyn
   const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
   const resolve = loaded.resolveCodexPickerModels as Resolve;
   const { catalog, selected } = resolve(
-    CURATED,
     ["gpt-5.7-nova"],
     {
       models: [{ id: "gpt-5.4" }],
@@ -164,7 +175,6 @@ test("a slug the plan no longer returns at all is retired", async () => {
   const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
   const resolve = loaded.resolveCodexPickerModels as Resolve;
   const { selected } = resolve(
-    CURATED,
     ["gpt-5.6-sol"],
     { models: [{ id: "gpt-5.4" }], known: [{ id: "gpt-5.4" }], source: "subscription" },
   );
@@ -193,7 +203,6 @@ test("a reauthorization answer retires nothing and describes nothing", async () 
   const resolve = loaded.resolveCodexPickerModels as Resolve;
   const capabilities = loaded.codexCapabilitiesWithPlanModels as Capabilities;
   const { selected } = resolve(
-    CURATED,
     ["gpt-5.4", "gpt-5.7-nova"],
     { models: CURATED.map((id) => ({ id })), source: "reauthorization_required" },
   );

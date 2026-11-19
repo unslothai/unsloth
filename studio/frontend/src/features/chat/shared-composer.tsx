@@ -13,6 +13,7 @@ import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 import { llamaServerLoadFields } from "./lib/load-request";
 import {
   clearedServerTuningState,
+  committedMlxServerTuningState,
   committedServerTuningState,
 } from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -38,6 +39,7 @@ import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import { ComputerUseMenuItem, ComputerUsePill } from "@/features/computer-use/lazy-composer-toggle";
 import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
@@ -94,12 +96,19 @@ import {
 } from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html-format";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
 import {
   composerDraftKey,
+  flushComposerDraft,
   latestDraft,
+  NEW_COMPARE_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   writeComposerDraft,
@@ -133,6 +142,8 @@ import { FolderAddIcon } from "@/lib/folder-icons";
 import { StopIcon } from "@/lib/media-control-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
+import { useChatProjectScope } from "./chat-project-scope";
+import { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { toast } from "@/lib/toast";
@@ -143,7 +154,10 @@ import {
   exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
 } from "./prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "./components/export-format-items";
 import {
   listPromptEntries,
   listPromptLists,
@@ -198,6 +212,7 @@ import {
 import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   resolveExplicitCtxPin,
   resolveFitMaxSeqLength,
   retainedContextPin,
@@ -210,10 +225,15 @@ import {
   providerModelSupportsVision,
 
   providerModelSupportsStudioTools,
+  isGeminiApiProviderType,
 } from "./external-providers";
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
+import {
+  COMPOSER_MIN_ROWS,
+  useComposerMaxRows,
+} from "@/hooks/use-composer-rows";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
@@ -279,7 +299,10 @@ export type CompareMessagePart =
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
-  appendMessage: (content: CompareMessagePart[]) => Promise<void>;
+  appendMessage: (
+    content: CompareMessagePart[],
+    model: CompareModelSelection | undefined,
+  ) => Promise<void>;
   startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
@@ -288,6 +311,19 @@ export interface CompareHandle {
 }
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
+// Built on call, like chatExportOptions, so an import cycle cannot leave an exporter undefined.
+function composerExportFormats() {
+  return [
+    { label: "Training JSONL", fn: exportConversationRawJsonl },
+    { label: "Message JSONL", fn: exportConversationMessagesJsonl },
+    { label: "CSV", fn: exportConversationCsv },
+    { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+    { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
+    { label: CONVERSATION_HTML_LABEL, fn: exportConversationHtml },
+    { label: CONVERSATION_PDF_LABEL, fn: exportConversationPdf },
+  ];
+}
+
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
@@ -439,6 +475,7 @@ export function RegisterCompareHandle({
 }): ReactElement | null {
   const handlesRef = useContext(CompareHandlesContext);
   const aui = useAui();
+  const projectScope = useChatProjectScope();
 
   useEffect(() => {
     if (!handlesRef) {
@@ -460,7 +497,16 @@ export function RegisterCompareHandle({
         aui
           .thread()
           .append({ role: "user", content, createdAt: new Date() } as never),
-      appendMessage: (content) => {
+      appendMessage: (content, model) => {
+        if (model?.id) {
+          claimThreadCreation(getThreadIds(), {
+            projectId: projectScope,
+            incognito: useChatRuntimeStore.getState().incognito,
+            modelId: model.id,
+            modelGgufVariant: model.ggufVariant ?? null,
+            createdAt: Date.now(),
+          });
+        }
         const count = aui.thread().getState().messages.length;
         aui.thread().append({
           role: "user",
@@ -519,7 +565,7 @@ export function RegisterCompareHandle({
     return () => {
       delete currentHandles[name];
     };
-  }, [handlesRef, name, aui]);
+  }, [handlesRef, name, aui, projectScope]);
 
   return null;
 }
@@ -616,6 +662,10 @@ async function waitForBackendLoadToSettle(): Promise<void> {
 }
 
 export function SharedComposer({
+  draftId,
+  pairSaved,
+  pairSubmitted,
+  onPairSubmitted,
   handlesRef,
   model1,
   model2,
@@ -626,6 +676,10 @@ export function SharedComposer({
   sendUnavailableReason,
   requireStableCheckpoint = false,
 }: {
+  draftId: string;
+  pairSaved?: boolean;
+  pairSubmitted: boolean;
+  onPairSubmitted: () => void;
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
@@ -648,48 +702,62 @@ export function SharedComposer({
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
   const incognito = useChatRuntimeStore((s) => s.incognito);
+  const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
+  const syncDraft = shareDraft && !incognito;
+  const unsentPair = pairSaved === false && !pairSubmitted;
+  const draftKey = composerDraftKey(unsentPair ? NEW_COMPARE_DRAFT_ID : draftId, shareDraft);
+  const draftScope = incognito ? null : draftKey;
   const [text, setText] = useState(() =>
-    useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
+    incognito ? "" : latestDraft(draftKey),
   );
   const [draftSource] = useState(() => Symbol("compare composer"));
   // Text that came from the chat composer, so it isn't published back.
   const remoteDraftRef = useRef<string | null>(null);
-  const unsavedDraftRef = useRef<string | null>(null);
-  const incognitoBeforeRef = useRef(incognito);
+  const unsavedDraftRef = useRef<{ key: string; text: string } | null>(null);
+  const draftScopeBeforeRef = useRef(draftScope);
+  const draftOwnerBeforeRef = useRef({ draftId, shareDraft, draftKey });
   useEffect(() => {
-    // Leaving a temporary chat (Compare can mount just before it resets) restores the saved draft.
-    if (incognitoBeforeRef.current !== incognito) {
-      incognitoBeforeRef.current = incognito;
-      if (!incognito) {
-        remoteDraftRef.current = latestDraft();
-        setText(remoteDraftRef.current);
+    if (draftScopeBeforeRef.current !== draftScope) {
+      draftScopeBeforeRef.current = draftScope;
+      const before = draftOwnerBeforeRef.current;
+      draftOwnerBeforeRef.current = { draftId, shareDraft, draftKey };
+      let next = incognito ? "" : latestDraft(draftKey);
+      if (!incognito && before.draftId === draftId && before.shareDraft === shareDraft && text) {
+        // Same pair, slot decided by its history: what was typed while it loaded wins.
+        writeComposerDraft(before.draftKey, "");
+        writeComposerDraft(draftKey, text);
+        next = text;
       }
+      if (!incognito && !shareDraft) stageComposerDraft(draftKey, next);
+      remoteDraftRef.current = next;
+      setText(next);
       return;
     }
     if (incognito || text === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
-    publishDraft(text, draftSource);
+    if (shareDraft) publishDraft(text, draftSource);
     // Emptied (a send, or cleared by hand): gone at once, so a reload can't bring back a sent prompt.
     if (text === "") {
-      writeComposerDraft(composerDraftKey(), "");
+      writeComposerDraft(draftKey, "");
       unsavedDraftRef.current = null;
       return;
     }
-    unsavedDraftRef.current = text;
+    unsavedDraftRef.current = { key: draftKey, text };
+    stageComposerDraft(draftKey, text);
     const timer = setTimeout(() => {
-      writeComposerDraft(composerDraftKey(), text);
+      writeComposerDraft(draftKey, text);
       unsavedDraftRef.current = null;
     }, 300);
     return () => clearTimeout(timer);
-  }, [text, incognito, draftSource]);
-  // Leaving Compare inside the debounce still saves what was typed.
+  }, [text, draftScope, draftKey, incognito, shareDraft, draftSource]);
   useEffect(
     () => () => {
       if (unsavedDraftRef.current !== null) {
-        writeComposerDraft(composerDraftKey(), unsavedDraftRef.current);
+        flushComposerDraft(unsavedDraftRef.current.key, unsavedDraftRef.current.text);
+        unsavedDraftRef.current = null;
       }
     },
-    [],
+    [draftScope],
   );
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
@@ -719,12 +787,13 @@ export function SharedComposer({
     [],
   );
   useEffect(() => {
-    if (incognito) return;
+    if (!syncDraft) return;
     return subscribeDraft(draftSource, (next) => {
+      unsavedDraftRef.current = null;
       remoteDraftRef.current = next;
       setCurrentText(next);
     });
-  }, [incognito, draftSource, setCurrentText]);
+  }, [syncDraft, draftSource, setCurrentText]);
   // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {
@@ -882,8 +951,7 @@ export function SharedComposer({
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
+  const exportThreadIds = [model1ThreadId, model2ThreadId].filter(
     (id): id is string => Boolean(id),
   );
   const lastOpenRouterChosenModel = useChatRuntimeStore(
@@ -998,7 +1066,7 @@ export function SharedComposer({
     selectedExternalProvider?.providerType,
   );
   // Gemini rejects codeExecution alongside image modalities.
-  const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
+  const isExternalGemini = isGeminiApiProviderType(selectedExternalProvider?.providerType);
   // The image or video model loaded in Unsloth, reached through generate_image / generate_video.
   const localImageToolHere = useChatRuntimeStore((s) =>
     localImageTool({ ...s, supportsBuiltinImageGeneration }),
@@ -1176,9 +1244,15 @@ export function SharedComposer({
     advanceQueue();
   }, [running, comparing]);
 
-  // The single composer's editor frame (12 rows, animated height), measured by hand: no autosize here.
+  // The single composer's editor frame (animated height), measured by hand: no autosize here.
   const inputId = useId();
-  const oneRowHeight = Math.round(40 * useUiSpaceScale());
+  const uiSpaceScale = useUiSpaceScale();
+  const minEditorHeight = Math.round(
+    (16 + 24 * COMPOSER_MIN_ROWS) * uiSpaceScale,
+  );
+  const maxRows = useComposerMaxRows(24 * uiSpaceScale);
+  const maxRowsRef = useRef(maxRows);
+  maxRowsRef.current = maxRows;
   const [editorHeight, setEditorHeight] = useState(40);
   const [editorRows, setEditorRows] = useState(1);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
@@ -1194,7 +1268,7 @@ export function SharedComposer({
     const lineHeight = parseFloat(styles.lineHeight) || 24;
     const paddingY =
       parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
-    const maxHeight = lineHeight * 12 + paddingY;
+    const maxHeight = lineHeight * maxRowsRef.current + paddingY;
     const content = ta.scrollHeight;
     const next = Math.min(content, maxHeight);
     ta.style.height = "";
@@ -1204,7 +1278,7 @@ export function SharedComposer({
     setEditorHeight(next);
     setEditorRows(Math.round((next - paddingY) / lineHeight));
   }, []);
-  useEffect(measureEditor, [text]);
+  useEffect(measureEditor, [text, maxRows]);
   // Width only: wrapping follows it, while the height is the frame's own animation.
   useEffect(() => {
     const editor = editorRef.current;
@@ -1545,6 +1619,11 @@ export function SharedComposer({
       });
     };
     const clearSubmittedDraft = () => {
+      if (unsentPair) {
+        unsavedDraftRef.current = null;
+        if (!shareDraft) writeComposerDraft(draftKey, "");
+      }
+      onPairSubmitted();
       setCurrentText("");
       setIsWritingExpanded(false);
       setPendingImages([]);
@@ -1842,6 +1921,7 @@ export function SharedComposer({
           ...llamaServerLoadFields(ownConfig, {
             isGguf: targetIsGguf,
             isDiffusion: resolvedIsDiffusion === true,
+            isMlx: targetIsMlx,
           }),
           // GGUF-only: a non-GGUF target must not inherit a hidden GGUF GPU pick. A manual DiffusionGemma
           // split keeps its layer count, or it is judged a full-GGUF occupant.
@@ -1990,14 +2070,16 @@ export function SharedComposer({
         );
         const paneState = useChatRuntimeStore.getState();
         const paneParams = paneState.params;
-        const paneQwenParams =
-          resp.supports_reasoning &&
-          paneState.activePresetSource === "builtin-default"
-            ? resolveQwenThinkingParams(
+        const paneQwenParams = resp.supports_reasoning
+          ? recommendedValuesForPick(
+              resolveQwenThinkingParams(
                 resp.model,
                 (resp.reasoning_always_on ?? false) || paneState.reasoningEnabled,
-              )
-            : null;
+              ),
+              paneState.activePresetSource,
+              paneState.presetEditedKeys,
+            )
+          : null;
         store.setParams(
           {
             ...mergeBackendRecommendedInference({
@@ -2005,6 +2087,7 @@ export function SharedComposer({
               response: resp,
               modelId: resp.model,
               presetSource: paneState.activePresetSource,
+              presetEditedKeys: paneState.presetEditedKeys,
               loadedContextLength: loadedContextFields(resp).loadedContextLength,
             }),
             ...paneQwenParams,
@@ -2040,11 +2123,11 @@ export function SharedComposer({
             ? (ownConfig.nParallel ?? null)
             : null;
         const committedNBatch =
-          targetIsGguf && !(resp.is_diffusion ?? false)
+          (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
             ? (ownConfig.nBatch ?? null)
             : null;
         const committedNUbatch =
-          targetIsGguf && !(resp.is_diffusion ?? false)
+          (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
             ? (ownConfig.nUbatch ?? null)
             : null;
         useChatRuntimeStore.setState({
@@ -2063,27 +2146,27 @@ export function SharedComposer({
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
           reasoningBudget:
-            targetIsGguf && !(resp.is_diffusion ?? false)
+            (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
               ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
               : -1,
           loadedReasoningBudget:
-            targetIsGguf && !(resp.is_diffusion ?? false)
+            (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
               ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
               : -1,
           reasoningBudgetMessage:
-            targetIsGguf && !(resp.is_diffusion ?? false)
+            (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
               ? (resp.reasoning_budget_message ??
                 ownConfig.reasoningBudgetMessage)
               : "",
           loadedReasoningBudgetMessage:
-            targetIsGguf && !(resp.is_diffusion ?? false)
+            (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
               ? (resp.reasoning_budget_message ??
                 ownConfig.reasoningBudgetMessage)
               : "",
-          loadedReasoningBudgetRequested: targetIsGguf && !resp.is_diffusion
+          loadedReasoningBudgetRequested: (targetIsGguf || targetIsMlx) && !resp.is_diffusion
             ? (resp.requested_reasoning_budget ?? ownConfig.reasoningBudget)
             : -1,
-          loadedReasoningBudgetMessageRequested: targetIsGguf && !resp.is_diffusion
+          loadedReasoningBudgetMessageRequested: (targetIsGguf || targetIsMlx) && !resp.is_diffusion
             ? (resp.requested_reasoning_budget_message ?? ownConfig.reasoningBudgetMessage)
             : "",
           nBatch: committedNBatch,
@@ -2092,7 +2175,9 @@ export function SharedComposer({
           loadedNUbatch: committedNUbatch,
           ...(targetIsGguf && !(resp.is_diffusion ?? false)
             ? committedServerTuningState(ownConfig)
-            : clearedServerTuningState()),
+            : targetIsMlx
+              ? committedMlxServerTuningState(ownConfig)
+              : clearedServerTuningState()),
           // The status applier is held off during the load, so record this pane's args now.
           loadedLlamaExtraArgs:
             resp.requested_llama_extra_args !== undefined
@@ -2159,8 +2244,8 @@ export function SharedComposer({
       const handle2 = handlesRef.current["model2"];
 
       await Promise.all([
-        handle1?.appendMessage(content),
-        handle2?.appendMessage(content),
+        handle1?.appendMessage(content, model1),
+        handle2?.appendMessage(content, model2),
       ]);
 
       const name1 = model1?.id ? compareModelDisplayName(model1.id) : "";
@@ -2526,6 +2611,7 @@ export function SharedComposer({
     // Compare runs no research, so the item has nothing to offer here.
     deepResearch: null,
     browserUse: <BrowserAgentMenuItem />,
+    computerUse: <ComputerUseMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
@@ -2630,36 +2716,25 @@ export function SharedComposer({
           collisionPadding={16}
           className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
-          {[
-            { label: "Training JSONL", fn: exportConversationRawJsonl },
-            { label: "Message JSONL", fn: exportConversationMessagesJsonl },
-            { label: "CSV", fn: exportConversationCsv },
-            { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
-            {
-              label: CONVERSATION_MARKDOWN_LABEL,
-              fn: exportConversationMarkdown,
-            },
-          ].map(({ label, fn }) => (
-            <DropdownMenuItem
-              key={label}
-              disabled={exportThreadIds.length === 0}
-              onSelect={() => {
-                if (!exportThreadIds.length) {
-                  toast.error("No conversation to export yet.");
-                  return;
+          <ExportFormatItems
+            options={composerExportFormats().map(({ label }) => ({ key: label, label }))}
+            subContentClassName="unsloth-plus-menu w-[calc(176px*var(--ui-space-scale,1))]"
+            onSelect={(label) => {
+              const fn = composerExportFormats().find((f) => f.label === label)?.fn;
+              if (!fn) return;
+              if (!exportThreadIds.length) {
+                toast.error("No conversation to export yet.");
+                return;
+              }
+              (async () => {
+                for (const id of exportThreadIds) {
+                  await fn(id);
                 }
-                (async () => {
-                  for (const id of exportThreadIds) {
-                    await fn(id);
-                  }
-                })().catch((error) => {
-                  if (!isDownloadCancelled(error)) toast.error("Export failed.");
-                });
-              }}
-            >
-              {label}
-            </DropdownMenuItem>
-          ))}
+              })().catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
+            }}
+          />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
@@ -2733,9 +2808,9 @@ export function SharedComposer({
           void addFiles(e.dataTransfer.files);
         }}
       >
-        {/* Gemini-style drop affordance, mirrored from the single composer. */}
+        {/* Gemini-style drop affordance, mirrored from the single composer; blurred only while shown (see thread.tsx). */}
         <div
-          className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
+          className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100 backdrop-blur-sm" : "opacity-0"}`}
         >
           <HugeiconsIcon
             icon={Attachment01Icon}
@@ -3020,6 +3095,7 @@ export function SharedComposer({
               <span>Tools</span>
             </button>
             <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
+            <ComputerUsePill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
             {showImagePill && (
               <button
                 type="button"
@@ -3075,7 +3151,7 @@ export function SharedComposer({
             className="unsloth-composer-editor"
             style={
               {
-                "--composer-editor-height": `${text.length === 0 ? oneRowHeight : Math.max(oneRowHeight, editorHeight)}px`,
+                "--composer-editor-height": `${text.length === 0 ? minEditorHeight : Math.max(minEditorHeight, editorHeight)}px`,
               } as CSSProperties
             }
           >

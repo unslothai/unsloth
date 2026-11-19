@@ -51,6 +51,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _area_matrix as areas  # noqa: E402
 import _has_lint as has_lint  # noqa: E402
+import _webkit_leg as webkit_leg  # noqa: E402
 from _css_culprit import explain, has_descendant, thread_anchor  # noqa: E402
 from _playwright_robust import chromium_launch_args  # noqa: E402
 
@@ -80,6 +81,8 @@ AREAS = os.environ.get("LONG_THREAD_AREAS", "auto")
 ONLY_AREAS = os.environ.get("LONG_THREAD_ONLY_AREAS") == "1"
 # Static lint of the built CSS for new non-subject :has() rules (tests/studio/_has_lint.py).
 HAS_LINT = os.environ.get("LONG_THREAD_HAS_LINT", "1") != "0"
+# WebKit leg (_webkit_leg.py): opt-in via LONG_THREAD_WEBKIT, since it needs WebKit installed.
+WEBKIT = os.environ.get("LONG_THREAD_WEBKIT", "0") == "1"
 HEALTHY = "healthy reference: 0.7-1.0 ms/key selector matching, 1.00x, 0.2 ms/key :has()"
 KEYS = "the quick "
 PRECHECK_KEYS = "ab"
@@ -321,14 +324,9 @@ def pin_down(
     base: str,
     budget_s: float = PIN_BUDGET_S,
 ) -> list[str]:
-    """Find the :has() rules whose removal makes the keystroke cheap, one fresh page per probe.
-
-    Untraced style recalc per key with every :has() rule on (E) and off (F). The cost is often not
-    additive: one rule makes the browser restyle a whole subtree and the other rules then pay for
-    it. So the search removes rules: bisect for a set whose removal brings the page back near F,
-    narrowed to single rules. For each rule found it reports the page without that rule and the
-    rule on its own. Up to three rules, time-boxed. Measurements, not a guess.
-    """
+    """Finds :has() rules whose removal makes a keystroke cheap, one fresh page per probe; costs
+    often not additive, so it bisects removal sets toward rules-off, narrows to single rules,
+    reports each (page without it; rule alone); at most three, time-boxed."""
     started = time.time()
     sheet = main_stylesheet(DIST)
     if sheet is None:
@@ -726,6 +724,19 @@ def finish_areas(runs, failures, details, started) -> int:
                     default = str,
                 )
             )
+    if WEBKIT:
+        if not (DIST / "index.html").exists():
+            failures.append(f"no app build at {DIST / 'index.html'} for the WebKit leg")
+        else:
+            try:
+                lines, fails, _ = webkit_leg.run(DIST)
+            except Exception as exc:  # noqa: BLE001 - a leg that cannot start is a failure, not a pass
+                lines, fails = (
+                    [],
+                    [f"the WebKit leg did not run: {type(exc).__name__}: {str(exc)[:300]}"],
+                )
+            extra += lines
+            failures += fails
     return report(runs, failures, details, started, extra)
 
 

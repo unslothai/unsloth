@@ -16,6 +16,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { videoMimeForName } from "@/lib/video-utils";
 import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
@@ -202,7 +203,7 @@ function SandboxMediaFigure({
   title: string;
   caption: string;
 }) {
-  const { ref, state } = useSandboxImage<HTMLDivElement>(url);
+  const { ref, state } = useSandboxImage<HTMLDivElement>(url, kind === "video" ? videoMimeForName(filename) : undefined);
   const loaded = state.status === "loaded" ? state.url : null;
   const handleDownload = () => {
     if (!loaded) return;
@@ -315,8 +316,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     (name): name is string => typeof name === "string" && name.length > 0,
   );
   const errorText = toolErrorText(result);
-  // Coerced for the same reason `prompt` is: these reach `.match`,
-  // `.toLowerCase` and `Array.join`, all of which throw on a non-string.
+  // Coerced like `prompt`: .match, .toLowerCase and Array.join throw on a non-string.
   const size = toolArgText(imageResult?.size);
   const quality = toolArgText(imageResult?.quality);
   const imageDimensions = parseImageSize(size);

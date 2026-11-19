@@ -32,6 +32,20 @@ def _normalize_dtype(dtype):
     return dtype
 
 
+def _normalize_gradient_checkpointing(value):
+    # get_peft_model asserts the value is True, False or "unsloth"; checked before the model loads.
+    text = str(value).strip().lower()
+    if text in {"", "unsloth", "mlx"}:
+        return "unsloth"
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no", "none", "off"}:
+        return False
+    raise ValueError(
+        f"Unsloth: --use_gradient_checkpointing must be unsloth, true or false, got {value!r}."
+    )
+
+
 def _prepare_device_map(is_mlx):
     if is_mlx:
         return None, False
@@ -112,7 +126,7 @@ def _iter_quantization_methods(quantization):
 
 
 def _save_or_push_model(model, tokenizer, args, is_mlx):
-    if not args.save_model:
+    if not (args.save_model or args.save_gguf or args.push_model or args.push_gguf):
         print("Warning: The model is not saved!")
         return
 
@@ -148,7 +162,8 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
         )
         return
 
-    model.save_pretrained_merged(args.save_path, tokenizer, save_method = args.save_method)
+    if args.save_model:
+        model.save_pretrained_merged(args.save_path, tokenizer, save_method = args.save_method)
     if args.push_model:
         model.push_to_hub_merged(args.hub_path, tokenizer, args.save_method, token = args.hub_token)
 
@@ -212,6 +227,7 @@ def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
 
 
 def run(args):
+    use_gradient_checkpointing = _normalize_gradient_checkpointing(args.use_gradient_checkpointing)
     import unsloth
     from unsloth import FastLanguageModel
     from datasets import load_dataset
@@ -253,7 +269,7 @@ def run(args):
         lora_alpha = args.lora_alpha,
         lora_dropout = args.lora_dropout,
         bias = args.bias,
-        use_gradient_checkpointing = args.use_gradient_checkpointing,
+        use_gradient_checkpointing = use_gradient_checkpointing,
         random_state = args.random_state,
         use_rslora = args.use_rslora,
         loftq_config = args.loftq_config,
@@ -387,7 +403,7 @@ if __name__ == "__main__":
         "--use_gradient_checkpointing",
         type = str,
         default = "unsloth",
-        help = "Use gradient checkpointing",
+        help = "Gradient checkpointing: unsloth, true or false",
     )
     lora_group.add_argument(
         "--random_state",

@@ -497,10 +497,7 @@ def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
 
 
 def test_download_plan_merges_asset_repos_that_share_one_fetch_repo(monkeypatch):
-    # Two upstream repos can resolve to ONE fetch repo (e.g. two mirrors of the same cached
-    # community repack). Synthetic repos: the mechanism is generic, and no image asset is a repack
-    # any more. Keying the swapped map by fetch repo therefore drops whichever landed first,
-    # taking its files out of the staged entry AND out of the footprint.
+    # Two upstream repos can resolve to one fetch repo; keying by it drops whichever landed first.
     import core.inference.sd_cpp_backend as S
 
     b = SdCppDiffusionBackend(engine = _FakeEngine())
@@ -693,9 +690,8 @@ def test_no_sd_cpp_asset_comes_from_a_community_repack():
 
 
 def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
-    # Every image sd-cli asset is an official upstream file at its upstream path (fetched through the
-    # ungated mirror, which keeps the same path, so the swap is an id change only) or an unsloth GGUF
-    # of the encoder model. A reorganised mirror would 404 sd-cli at load time.
+    # Image sd-cli assets are upstream files at their upstream path on the mirror, or an unsloth
+    # GGUF; a reorganised mirror would 404 sd-cli.
     from core.inference.diffusion_families import _FLUX1_SD_CPP_TEXT_ENCODERS, mirror_repo
 
     flux1 = [(r, f) for r, f, _k in _FLUX1_SD_CPP_TEXT_ENCODERS]
@@ -1339,8 +1335,7 @@ def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
 
 
 def test_offload_device_pin_is_probed_against_the_binary_it_is_given(monkeypatch):
-    # Rebuilt per binary: a deferred accelerator install replaces the build after the offload
-    # policy is computed, and the ggml names come from whichever one runs.
+    # A deferred install swaps the build after the offload policy, so probe the binary given.
     seen: list = []
 
     def _probe(binary, *_args):
@@ -1474,6 +1469,7 @@ def _run_server_load(
     family_override = None,
     gpu_ordinal = None,
     asset_paths = None,
+    **load_kw,
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -1508,6 +1504,7 @@ def _run_server_load(
         hf_token = None,
         _load_token = 1,
         gpu_ordinal = gpu_ordinal,
+        **load_kw,
     )
 
 
@@ -1548,6 +1545,108 @@ def test_cpu_torch_on_the_vulkan_build_offloads_by_default(monkeypatch, accelera
         assert b._state.offload_flags == ()
 
 
+def _mint_host(
+    monkeypatch,
+    tmp_path,
+    *,
+    ram_mib,
+    card_free_mib,
+    card = "AMD Radeon RX 9060 XT (RADV GFX1200)",
+):
+    # Linux Mint, RX 9060 XT 16 GB, 15 GB RAM, CPU torch, Vulkan sd.cpp: MiniMax-H3-Image Q4_K_M as cached there.
+    import core.inference.diffusion_small_host as small_host
+    import core.inference.video_minimax_h3 as h3
+
+    paths = {}
+    for name, mib in (("diffusion_model", 12132), ("llm", 17375), ("vae", 2229)):
+        f = tmp_path / f"{name}.bin"
+        with open(f, "wb") as fh:
+            fh.truncate(mib << 20)
+        paths[name] = str(f)
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "vulkan")
+    monkeypatch.setattr(bk, "sd_cpp_listed_device", lambda *_a, **_k: ("vulkan", card))
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (max(15 * 1024, ram_mib), ram_mib))
+    monkeypatch.setattr(
+        h3,
+        "amdgpu_vram_reading",
+        lambda *_a, **_k: (None, None)
+        if card_free_mib is None
+        else (card_free_mib << 20, 16_304 << 20),
+    )
+    return paths
+
+
+@pytest.mark.parametrize(
+    "ram_mib,card_free_mib,card,load_kw,offloads",
+    [
+        # RAM cannot hold the 31.0 GiB offload, the 16 GB card holds the 11.8 GiB DiT: auto-fit places the rest.
+        (12 * 1024, 15_800, "AMD Radeon RX 9060 XT (RADV GFX1200)", {}, False),
+        # Room in RAM: streaming stays the default for an unmeasured card (#13666).
+        (60 * 1024, 15_800, "AMD Radeon RX 9060 XT (RADV GFX1200)", {}, True),
+        # Even the DiT does not fit the card (just under it with the reserve, or an 8 GB card), or it cannot be read.
+        (12 * 1024, 13_600, "AMD Radeon RX 9060 XT (RADV GFX1200)", {}, True),
+        (12 * 1024, 7_800, "AMD Radeon RX 7600 (RADV NAVI33)", {}, True),
+        (12 * 1024, None, "AMD Radeon RX 9060 XT (RADV GFX1200)", {}, True),
+        # sysfs only answers for amdgpu, so another vendor's Vulkan device keeps the offload.
+        (12 * 1024, 15_800, "Intel(R) Arc(tm) A770 Graphics (DG2)", {}, True),
+        # An explicit offload ask is never overridden.
+        (12 * 1024, 15_800, "AMD Radeon RX 9060 XT (RADV GFX1200)", {"cpu_offload": True}, True),
+        (
+            12 * 1024,
+            15_800,
+            "AMD Radeon RX 9060 XT (RADV GFX1200)",
+            {"memory_mode": "low_vram"},
+            True,
+        ),
+    ],
+)
+def test_cpu_torch_vulkan_offload_respects_host_ram(
+    monkeypatch, tmp_path, ram_mib, card_free_mib, card, load_kw, offloads
+):
+    paths = _mint_host(
+        monkeypatch, tmp_path, ram_mib = ram_mib, card_free_mib = card_free_mib, card = card
+    )
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths, **load_kw)
+    assert b._state.device == "vulkan"
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
+    assert b.status()["cpu_offload"] is offloads
+
+
+@pytest.mark.parametrize("fraction,offloads", [(1.0, False), (0.95, True), (0.7, True)])
+def test_cpu_torch_offload_drop_keeps_the_vram_budget_reserve(
+    monkeypatch, tmp_path, fraction, offloads
+):
+    # sd.cpp's auto-fit takes no VRAM cap, so any lowered VRAM Budget keeps the offload.
+    import core.inference.diffusion_memory as dm
+
+    paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = 15_800)
+    monkeypatch.setattr(dm, "_vram_budget_fraction", lambda: fraction)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths)
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
+
+
+@pytest.mark.parametrize("gpu_ordinal,offloads", [(None, False), (0, False), (1, True)])
+def test_cpu_torch_cuda_offload_probes_the_pinned_card(
+    monkeypatch, tmp_path, gpu_ordinal, offloads
+):
+    # Card 0 holds the DiT, card 1 does not: the probe reads the card the load pins, not always card 0.
+    import core.inference.diffusion_device as dd
+
+    paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = None)
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cuda")
+    monkeypatch.setattr(
+        bk, "sd_cpp_listed_device", lambda *_a, **_k: ("cuda", "NVIDIA GeForce RTX 4080")
+    )
+    free = {0: 15_800, 1: 7_800}
+    monkeypatch.setattr(dd, "smi_free_total_mib", lambda ordinal: (free.get(ordinal), 16_376))
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths, gpu_ordinal = gpu_ordinal)
+    assert b._state.device == "cuda"
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
+
+
 @pytest.mark.parametrize("lands", [True, False])
 def test_cpu_torch_placement_follows_a_deferred_vulkan_install(monkeypatch, lands):
     # The deferred upgrade may land the Vulkan build or keep the resident CPU one; place for what runs.
@@ -1585,8 +1684,7 @@ def test_an_unowned_build_on_cpu_torch_places_by_its_device_listing(monkeypatch,
 
 @pytest.mark.parametrize("device,expected", [("cuda", "cpu"), ("xpu", "cpu"), ("mps", "mps")])
 def test_the_cpu_build_on_a_gpu_torch_places_on_cpu(monkeypatch, device, expected):
-    # The ladder can leave a CUDA / XPU torch on the CPU build; the macOS bundle is recorded cpu
-    # but renders on Metal.
+    # CUDA or XPU torch can land on the CPU build; macOS is recorded cpu but renders on Metal.
     monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cpu")
     b = SdCppDiffusionBackend()
     _run_server_load(monkeypatch, b, [], device = device)
@@ -2284,9 +2382,7 @@ def _synthetic_legacy_row(monkeypatch):
 def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirror(
     monkeypatch, tmp_path
 ):
-    """reuse repo-id-keyed legacy caches to avoid redownloads and keep offline loads working.
-
-    Synthetic mirror -> repack row: the mechanism is generic, and only video assets still have one."""
+    """Legacy repo-id caches are reused, so a cached community repack avoids redownloads."""
     from core.inference.diffusion_families import prefer_cached_legacy_source
     from core.inference.sd_cpp_backend import _fetch_repo_map
 
@@ -2317,12 +2413,7 @@ def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirro
 def test_a_repack_left_in_the_pre_change_cache_root_still_wins_over_the_mirror(
     monkeypatch, tmp_path
 ):
-    """Changing Unsloth's cache folder must not cost the user the repack they already hold.
-
-    The fetch passes reuse_other_cache_root, so a file cached only under huggingface_hub's
-    import-time root resolves through that root -- but only under the repo id it was filed as.
-    Picking the mirror because the LIVE root looks empty makes those bytes unreachable: several GB
-    re-download online, and offline the load fails. Synthetic mirror -> repack row, as above."""
+    """A repack left in the old cache root must win over the mirror, or its bytes become unreachable."""
     from core.inference.sd_cpp_backend import _fetch_repo_map
 
     repack, mirror = _synthetic_legacy_row(monkeypatch)
@@ -2835,8 +2926,7 @@ def test_a_deferred_cuda_upgrade_keeps_the_selected_card(monkeypatch):
 
 
 def test_the_arbiter_preflight_reads_the_cli_behind_an_unowned_server(monkeypatch):
-    # SD_SERVER_PATH names a build the installer does not own; the router can drop it and run
-    # the managed sd-cli, so that CLI's record is the answer.
+    # SD_SERVER_PATH is not installer-owned, so the managed sd-cli record is the answer.
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/custom/sd-server")
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/managed/sd-cli")
     records = {"/managed/sd-cli": "vulkan"}
@@ -2865,9 +2955,8 @@ def test_only_managed_cpu_binaries_count_as_cpu_only(monkeypatch):
 
 
 def test_a_t5_index_from_the_old_cache_root_gets_its_shards_beside_it(monkeypatch, tmp_path):
-    """After a cache-folder change the T5 index resolves from the old root while its shards land in the active one.
-    sd-cli reads the shards beside the index, so the load links them there instead of refusing a cache that holds
-    every file (an offline user could not repair it by re-downloading)."""
+    """After a cache move the T5 index resolves from the old root; its shards are linked beside it,
+    since sd-cli reads them there rather than refusing a cache holding every file."""
     import json
     from pathlib import Path
 
@@ -2904,9 +2993,8 @@ def test_a_t5_index_from_the_old_cache_root_gets_its_shards_beside_it(monkeypatc
 
 
 def test_a_cross_device_shard_copy_never_leaves_a_truncated_shard(monkeypatch, tmp_path):
-    """Across filesystems the hard link fails and the shard is copied. A copy cut off (full disk) must not leave a
-    file at the final name, since the existence check would accept it, and a short file left by an earlier copy is
-    replaced on the next load."""
+    """A cut-off copy (full disk) must not leave a short file at the final name, since the existence
+    check accepts it; an earlier short file is replaced on next load."""
     import json
     import os
     import shutil
@@ -3002,9 +3090,8 @@ def _png_bytes():
 
 @pytest.mark.parametrize("losses, recovers", [(1, True), (2, False)])
 def test_a_lost_vulkan_device_restarts_the_resident_server(monkeypatch, losses, recovers):
-    # The resident server stays up on a dead device after VK_ERROR_DEVICE_LOST: start the same build again
-    # (a fresh device) and retry the job once; a second loss in a row surfaces where no CPU rung applies (an Arc /
-    # ROCm host keeps Vulkan). Neither records a strike.
+    # After VK_ERROR_DEVICE_LOST, restart the server on a fresh device and retry once; a second loss
+    # surfaces only where no CPU rung applies; no strike.
     monkeypatch.setattr(bk, "_vulkan_cpu_rung_applies", lambda: False)
     events: list = []
     remaining = {"losses": losses}
@@ -3111,9 +3198,8 @@ def _repeated_device_loss_backend(
 
 
 def test_a_vulkan_device_lost_again_after_the_respawn_renders_this_load_on_cpu(monkeypatch):
-    # A host whose driver resets the card on every render (a Windows TDR on a slow iGPU) must not fail every request:
-    # the respawned server losing the device too moves this load alone to the CPU backend. Nothing is persisted, so
-    # the next load resolves the Vulkan build again.
+    # A driver that resets the card on every render (Windows TDR) must not fail every request; if
+    # the respawn also loses the device, only this load moves to CPU; nothing is persisted.
     b, events, persisted = _repeated_device_loss_backend(monkeypatch, losses = 2)
     images, _seeds = b._generate_server(b._state, **_gen_kwargs())
     assert len(images) == 1
@@ -3149,6 +3235,192 @@ def test_a_single_vulkan_device_loss_stays_on_vulkan(monkeypatch):
     assert b._cpu_backend_forced is False
     assert b._state.device == "vulkan"
     assert not persisted
+
+
+_VRAM_REFUSAL = (
+    "sd-server generation failed: generation_failed: generate_image returned no results\n"
+    "Last output:\n"
+    "[E] MOSS-Image segment 1/43 (moss_image.layers.0) failed during weight preparation --- ggml_runner.cpp:934\n"
+    "[E] diffusion model compute failed --- diffusion_engine.cpp:2729\n"
+    "[E] Diffusion model sampling failed --- diffusion_engine.cpp:2976\n"
+    "[E] sampling for image 1/1 failed after 0.09s --- image.cpp:1007"
+)
+
+
+_ALLOCATION_FAILURE = (
+    "sd-server generation failed: generation_failed: generate_image returned no results\n"
+    "Last output:\n"
+    "[E] ggml: ggml_backend_cuda_buffer_type_alloc_buffer: allocating 210.08 MiB on device 0: "
+    "cudaMalloc failed: out of memory\n"
+    "[E] ggml: alloc_tensor_range: failed to allocate CUDA0 buffer of size 220288512\n"
+    "[E] MOSS-Image segment 12/43 (moss_image.layers.11) failed during {stage} --- ggml_runner.cpp:934\n"
+    "[E] diffusion model compute failed --- diffusion_engine.cpp:2729"
+)
+
+
+def _vram_refusal_backend(
+    monkeypatch,
+    *,
+    refusals,
+    planned_free_mib = None,
+    restarted_plans = (),
+    error = _VRAM_REFUSAL,
+    max_vram_supported = True,
+    per_device_supported = True,
+    policy_flags = (),
+    device = "cuda",
+):
+    """CUDA load pinned to CUDA1 whose first ``refusals`` jobs fail with ``error``; ``restarted_plans`` are the
+    free-VRAM plans each replacement server reads in turn."""
+    events: list = []
+    remaining = {"refusals": refusals}
+    planned = {"CUDA1": 6666} if planned_free_mib is None else planned_free_mib
+    plans = [planned, *restarted_plans]
+
+    class _FakeServer:
+        lora_dir = None
+
+        def __init__(self, binary):
+            self.binary = binary
+            self.planned_free_vram_mib = dict(plans.pop(0) if len(plans) > 1 else plans[0])
+
+        def start(self, files, **kwargs):
+            events.append(
+                ("start", tuple(kwargs.get("extra_args") or ()), tuple(kwargs.get("offload") or ()))
+            )
+
+        def stop(self):
+            events.append(("stop",))
+
+        def is_alive(self):
+            return True
+
+        def img_gen(self, payload, **_kw):
+            if remaining["refusals"]:
+                remaining["refusals"] -= 1
+                raise RuntimeError(error)
+            return [_png_bytes()]
+
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = policy_flags, device = device)
+    object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server"))
+    object.__setattr__(b._state, "mode", "server")
+    monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
+    monkeypatch.setattr(
+        bk,
+        "sd_cpp_graph_cut_options",
+        lambda binary: frozenset({"--max-vram"}) if max_vram_supported else frozenset(),
+    )
+    monkeypatch.setattr(bk, "_layer_split_supported", lambda binary: per_device_supported)
+    return b, events
+
+
+def test_a_vram_refusal_restarts_once_under_half_the_planned_free_vram(monkeypatch):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 1)
+    flags = b._state.offload_flags
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    # Half of 6666 MiB, rounded down to 0.01 GiB.
+    assert [e for e in events if e[0] == "start"] == [("start", ("--max-vram", "3.25"), flags)]
+    assert b._state.vram_budget == "3.25"
+    assert b._state.device == "cuda" and b._state.offload_flags == flags
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert len([e for e in events if e[0] == "start"]) == 1
+
+
+def test_a_vram_refusal_budgets_each_visible_card_from_its_own_free_vram(monkeypatch):
+    b, events = _vram_refusal_backend(
+        monkeypatch, refusals = 1, planned_free_mib = {"CUDA0": 45979, "CUDA1": 5771}
+    )
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "CUDA0=22.45,CUDA1=2.81")]
+
+
+def test_a_vram_refusal_leaves_a_full_bystander_card_to_sd_cpp(monkeypatch):
+    b, events = _vram_refusal_backend(
+        monkeypatch, refusals = 1, planned_free_mib = {"CUDA0": 1800, "CUDA1": 6666}
+    )
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "CUDA1=3.25")]
+
+
+def test_a_second_vram_refusal_in_the_same_request_is_surfaced(monkeypatch):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 2)
+    with pytest.raises(RuntimeError, match = "failed during weight preparation"):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert len([e for e in events if e[0] == "start"]) == 1
+
+
+def test_a_load_recovers_once_another_application_frees_the_card(monkeypatch):
+    # The restart planned while the card was busy (466 MiB); the next request restarts under the first plan's budget.
+    b, events = _vram_refusal_backend(
+        monkeypatch,
+        refusals = 3,
+        restarted_plans = ({"CUDA1": 466}, {"CUDA1": 6666}),
+    )
+    with pytest.raises(RuntimeError, match = "failed during weight preparation"):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert b._state.vram_budget == "3.25"
+    assert b._state.server.planned_free_vram_mib == {"CUDA1": 466}
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "3.25")] * 2
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"planned_free_mib": {}},
+        {"planned_free_mib": {"CUDA1": 1800}},
+        {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 1800}},
+        {"planned_free_mib": {"CUDA0": 6666}},
+        {"max_vram_supported": False},
+        {"planned_free_mib": {"CUDA0": 45979, "CUDA1": 5771}, "per_device_supported": False},
+        {"device": "cpu"},
+        {"error": "sd-server generation failed: generation_failed: invalid sampler"},
+        {"error": _ALLOCATION_FAILURE.format(stage = "workspace allocation")},
+        {"error": _ALLOCATION_FAILURE.format(stage = "weight preparation")},
+        {
+            "error": _VRAM_REFUSAL.replace(
+                "Last output:\n",
+                "Last output:\n[E] ggml: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of "
+                "size 220288512\n",
+            )
+        },
+    ],
+    ids = [
+        "no_plan",
+        "below_floor",
+        "render_card_below_floor",
+        "render_card_not_planned",
+        "no_max_vram",
+        "no_per_device_budgets",
+        "cpu",
+        "other_error",
+        "workspace_allocation_failure",
+        "weight_staging_allocation_failure",
+        "host_allocation_failure",
+    ],
+)
+def test_a_vram_refusal_without_a_usable_budget_is_surfaced_unchanged(monkeypatch, kwargs):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 1, **kwargs)
+    with pytest.raises(RuntimeError):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert not [e for e in events if e[0] in ("start", "stop")]
+    assert b._state.vram_budget is None
+
+
+def test_a_device_loss_respawn_keeps_the_reduced_vram_budget(monkeypatch):
+    b, events = _vram_refusal_backend(monkeypatch, refusals = 0, device = "vulkan")
+    object.__setattr__(b._state, "vram_budget", "3.25")
+    server = b._respawn_server_after_device_loss(
+        b._state, "sd-server job failed: vk::Queue::submit: ErrorDeviceLost", threading.Event()
+    )
+    assert server is not None
+    assert [e[1] for e in events if e[0] == "start"] == [("--max-vram", "3.25")]
 
 
 @pytest.mark.parametrize("why", ["explicit_gpu", "no_cpu_rung", "fallback_disabled"])
@@ -3318,6 +3590,7 @@ def test_a_device_loss_retry_restages_the_loras_under_the_new_server(monkeypatch
         resolved,
         stage,
         real_files = False,
+        family = None,
     ):
         os.makedirs(stage, exist_ok = True)
         (Path(stage) / "adapter.gguf").write_bytes(b"x")
@@ -3637,3 +3910,40 @@ def test_an_unresolved_pin_judges_every_visible_card(monkeypatch, resolved, expe
     _run_server_load(monkeypatch, b, servers, device = "cuda", gpu_ordinal = 1)
     assert servers[-1].env == expected
     assert dict(b._state.child_env) == (expected or {})
+
+
+@pytest.mark.parametrize(
+    "smi_rows,mask,offloads",
+    [
+        (["16376, 576, [N/A]"], None, False),
+        (["16376, 576, Disabled"], None, False),
+        (["16376, 576, [N/A]", "16376, 576, [N/A]"], None, True),
+        (["16376, 576, Enabled"], None, True),
+        (["16376, 576, [N/A]"], "0", True),
+    ],
+)
+def test_cpu_torch_cuda_offload_reads_a_sole_card_from_nvidia_smi(
+    monkeypatch, tmp_path, smi_rows, mask, offloads
+):
+    # A CPU torch lists no CUDA devices, so the torch-ordered probe reads nothing; nvidia-smi answers for a sole card.
+    import core.inference.diffusion_device as dd
+
+    paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = None)
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cuda")
+    monkeypatch.setattr(
+        bk, "sd_cpp_listed_device", lambda *_a, **_k: ("cuda", "NVIDIA GeForce RTX 4080")
+    )
+    monkeypatch.setattr(dd, "smi_free_total_mib", lambda ordinal: (None, None))
+    bindir = tmp_path / "smi-bin"
+    bindir.mkdir()
+    smi = bindir / "nvidia-smi"
+    smi.write_text("#!/bin/sh\nprintf '%s\\n' " + " ".join(repr(r) for r in smi_rows) + "\n")
+    smi.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ.get("PATH", ""))
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths)
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads

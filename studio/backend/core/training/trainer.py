@@ -83,7 +83,7 @@ from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
-from utils.datasets.cells import csv_as_text_kwargs
+from utils.datasets.cells import cell_text, csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import (
     apply_completion_masking,
@@ -100,6 +100,7 @@ from utils.datasets.pretokenized import (
 )
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
+    EVAL_SPLITS,
     dataset_files_in_dir,
     ensure_dir,
     resolve_dataset_path,
@@ -116,7 +117,12 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
-from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_size_from_env
+from .dataset_bounds import (
+    bound_dataset_rows,
+    slice_dataset_rows,
+    world_size_env_report,
+    world_size_from_env,
+)
 
 logger = get_logger(__name__)
 
@@ -178,6 +184,16 @@ def _embedding_module_path(model, name: str):
     if module is None:
         return None
     return next((path for path, m in model.named_modules() if m is module and path), None)
+
+
+def _block_swap_engaged(trainer) -> Any:
+    """The run's offload_layers as the fork veto reads it. "auto" offloads nothing when the model fits, so it
+    counts only once a swapper is attached; a fixed count stands as asked."""
+    layers = getattr(trainer, "_offload_layers", 0)
+    if layers != "auto":
+        return layers
+    swapper = getattr(getattr(trainer, "model", None), "_unsloth_block_swap", None)
+    return layers if swapper is not None else 0
 
 
 def _tokenizer_blocks_map_workers(tokenizer) -> bool:
@@ -2341,6 +2357,17 @@ class UnslothTrainer:
         )
         self._audio_vlm_image_col = image_col
 
+        total = len(dataset)
+        dataset = dataset.filter(
+            lambda text: bool(cell_text(text).strip()), input_columns = [text_col]
+        )
+        if not len(dataset):
+            raise ValueError(f"Every transcript in the '{text_col}' column is blank.")
+        if len(dataset) < total:
+            self._record_warning(
+                f"Skipped {total - len(dataset):,} of {total:,} audio rows with a blank transcript."
+            )
+
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 16000))
         if image_col:
             dataset = prepare_audio_vlm_image_column(dataset, image_col)
@@ -2353,7 +2380,7 @@ class UnslothTrainer:
                 formatted["messages"].append(
                     audio_transcription_messages(
                         samples[audio_col][idx]["array"],
-                        str(samples[text_col][idx]),
+                        cell_text(samples[text_col][idx]),
                         image_slot_count(row_images),
                     )
                 )
@@ -3128,14 +3155,14 @@ class UnslothTrainer:
         return load_saved_dataset(UnslothTrainer._resolve_local_path(file_paths[0]))
 
     @staticmethod
-    def _resolve_local_files(file_paths: list) -> list[str]:
+    def _resolve_local_files(file_paths: list, splits: tuple[str, ...] = ("train",)) -> list[str]:
         """Resolve a list of local dataset paths to concrete file paths."""
         all_files: list[str] = []
         for dataset_file in file_paths:
             file_path_obj = UnslothTrainer._resolve_local_path(dataset_file)
 
             if file_path_obj.is_dir():
-                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj, splits))
             else:
                 all_files.append(str(file_path_obj))
         return all_files
@@ -3306,7 +3333,7 @@ class UnslothTrainer:
                     eval_all_files = (
                         []
                         if eval_saved is not None
-                        else self._resolve_local_files(local_eval_datasets)
+                        else self._resolve_local_files(local_eval_datasets, EVAL_SPLITS)
                     )
                     if eval_saved is not None:
                         eval_dataset = eval_saved
@@ -3624,11 +3651,9 @@ class UnslothTrainer:
                 dataset_slice_start is not None or dataset_slice_end is not None
             ):
                 total_rows = len(dataset)
-                start = dataset_slice_start if dataset_slice_start is not None else 0
-                end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
-                start = max(0, min(start, total_rows - 1))
-                end = max(start, min(end, total_rows - 1))
-                dataset = dataset.select(range(start, end + 1))
+                dataset, start, end = slice_dataset_rows(
+                    dataset, dataset_slice_start, dataset_slice_end
+                )
                 logger.info(
                     f"Sliced dataset to rows [{start}, {end}]: {len(dataset)} of {total_rows} rows\n"
                 )
@@ -3835,6 +3860,7 @@ class UnslothTrainer:
             logger.info(f"Dataset formatted successfully ({final_n} samples, {detected})\n")
 
             if has_separate_eval_source and eval_dataset is not None:
+                _raise_if_empty_train_split(eval_dataset, "in the eval split")
                 eval_n = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
                 logger.info(f"Formatting eval dataset ({eval_n} rows)...\n")
                 eval_info = format_and_template_dataset(
@@ -4159,6 +4185,9 @@ class UnslothTrainer:
                 max_steps = config_args.get("max_steps"),
                 grad_accum = config_args.get("gradient_accumulation_steps", 1),
                 resolved_max_steps_epochs = resolved_epochs,
+                offload_layers = _block_swap_engaged(self),
+                # The reading the dataset_num_proc veto used, so both fork sites agree.
+                host_memory = getattr(self, "_fork_host_memory", None),
             )
         except Exception as exc:  # noqa: BLE001 - a gating failure must not fail a run
             logger.warning(f"Online tokenization gating failed, using eager path: {exc}")
@@ -4682,6 +4711,17 @@ class UnslothTrainer:
                 f"[DEBUG] learning_rate from training_args: {lr_value} (type: {type(lr_value).__name__})\n"
             )
 
+            from utils.datasets.online_tokenization import (
+                host_memory_fork_veto,
+                host_memory_snapshot,
+            )
+
+            # A tokenizer pool forked off a trainer this size can OOM the host; UNSLOTH_DATASET_NUM_PROC still wins.
+            # One reading per run, shared with the online tokenization gate.
+            self._fork_host_memory = host_memory_snapshot()
+            fork_veto = host_memory_fork_veto(_block_swap_engaged(self), self._fork_host_memory)
+            if fork_veto:
+                logger.info(f"Tokenizing in process: {fork_veto}\n")
             config_args = {
                 "per_device_train_batch_size": training_args.get("batch_size", 2),
                 "gradient_accumulation_steps": training_args.get("gradient_accumulation_steps", 4),
@@ -4704,6 +4744,7 @@ class UnslothTrainer:
                         or self.is_audio_vlm
                         or self._cuda_audio_used
                         or _tokenizer_blocks_map_workers(self.tokenizer)
+                        or fork_veto
                     )
                     else None,
                     serial_as_none = False,
@@ -4880,6 +4921,17 @@ class UnslothTrainer:
                     vocab_size = vocab_size,
                     completion_only_loss = completion_only,
                 )
+            elif (
+                raw_text_mode
+                and config_args.get("packing")
+                and eval_dataset is not None
+                and eval_final_format != "raw_text"
+            ):
+                # Raw text packs wrapped, which would join a formatted eval split's examples across rows.
+                logger.info(
+                    "Formatted eval dataset beside raw text: eval sequence packing turned off\n"
+                )
+                config_args["eval_packing"] = False
 
             # Plain-text single-pass runs tokenize in DataLoader workers; other runs keep eager .map().
             self._online_prewarm_batches = 0
@@ -5015,12 +5067,16 @@ class UnslothTrainer:
                         trainer_kwargs["eval_dataset"] = eval_dataset
                     self.trainer = _UnslothCPTTrainer(**trainer_kwargs)
                 else:
+                    sft_args = SFTConfig(**config_args)
+                    if raw_text_mode and config_args.get("packing", False):
+                        sft_args.packing_strategy = "wrapped"
+                        logger.info("Raw-text packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": SFTConfig(**config_args),
+                        "args": sft_args,
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset

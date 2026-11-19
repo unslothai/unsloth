@@ -1525,6 +1525,31 @@ def clip_to_limit(text: str, count, limit: int | None) -> tuple[str, bool]:
     return text[:lo], True
 
 
+def clip_many_to_limit(texts, count, limit: int | None) -> list[tuple[str, bool]]:
+    """``clip_to_limit`` per text, bisecting every over-limit text in lockstep: one ``count.many`` per round."""
+    texts = list(texts)
+    if not limit or getattr(count, "many", None) is None or len(texts) < 2:
+        return [clip_to_limit(t, count, limit) for t in texts]
+    out = [(t, False) for t in texts]
+    bounds = {
+        i: [0, len(t)] for i, (t, n) in enumerate(zip(texts, _many(count, texts))) if n > limit
+    }
+    active = list(bounds)
+    while active:
+        mids = [(bounds[i][0] + bounds[i][1] + 1) // 2 for i in active]
+        for i, mid, n in zip(
+            active, mids, _many(count, [texts[i][:m] for i, m in zip(active, mids)])
+        ):
+            if n <= limit:
+                bounds[i][0] = mid
+            else:
+                bounds[i][1] = mid - 1
+        active = [i for i in active if bounds[i][0] < bounds[i][1]]
+    for i, (lo, _) in bounds.items():
+        out[i] = (texts[i][:lo], True)
+    return out
+
+
 def chunk_tokens(model_name: str | None = None) -> int:
     limit = max_tokens(model_name)
     return min(config.CHUNK_TOKENS, limit) if limit else config.CHUNK_TOKENS

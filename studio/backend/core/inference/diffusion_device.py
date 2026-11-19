@@ -118,17 +118,22 @@ def install_frame_pad_fix(
     return patched
 
 
+def mps_synchronize() -> None:
+    """A blocking read waits on the stream's serial queue; torch.mps.synchronize() (torch <= 2.13) commits
+    off it and aborts ("already committed command buffer") while another thread copies (pytorch#197836)."""
+    import torch
+    torch.zeros(1, device = "mps").cpu()
+
+
 def install_vae_sync(
     pipe: Any,
     target: DiffusionDeviceTarget,
     *,
     logger: Any = None,
 ) -> bool:
-    """Synchronise Metal after every VAE decoder / encoder call (one per tile or latent frame).
-
-    Metal cannot reuse a buffer until the queued work holding it completes, so an unsynchronised
-    tile loop accumulates every call's intermediates; ``empty_cache`` cannot return them.
-    """
+    """Synchronise Metal after every VAE decoder or encoder call (one per tile or latent frame):
+    Metal cannot reuse a buffer until queued work holding it completes, and empty_cache cannot
+    return the intermediates."""
     if target.device != "mps":
         return False
     vae = getattr(pipe, "vae", None)
@@ -139,11 +144,10 @@ def install_vae_sync(
     ]
     if not modules:
         return False
-    import torch
 
     def _sync(_module, _args, _output) -> None:
         try:
-            torch.mps.synchronize()
+            mps_synchronize()
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 
@@ -756,6 +760,11 @@ def diffusion_device_target_from_torch_device(
             ordinal = int(index) if index.isdigit() else None,
         )
     if device == "xpu":
+        try:
+            import torch
+            xpu = getattr(torch, "xpu", None)
+        except Exception:
+            xpu = None
         return DiffusionDeviceTarget(
             device = "xpu",
             dtype = dtype,
@@ -764,6 +773,10 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = True,
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
+            # float64_device() (VAE tiling blend weights) comes through here, not _xpu_target.
+            supports_float64 = _xpu_has_fp64(xpu, int(index) if index.isdigit() else None)
+            if xpu is not None
+            else True,
         )
     if device == "mps":
         return DiffusionDeviceTarget(
@@ -832,6 +845,21 @@ def _cuda_or_rocm_target(
     )
 
 
+# Arc A-series has no fp64 ("Required aspect fp64"); 0 skips the probe.
+XPU_FP64_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
+
+
+def _xpu_has_fp64(xpu: Any, index: Optional[int] = None) -> bool:
+    """True when the probe is off or unanswerable."""
+    if (os.environ.get(XPU_FP64_PROBE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return True
+    try:
+        idx = xpu.current_device() if index is None else index
+        return bool(getattr(xpu.get_device_properties(idx), "has_fp64", True))
+    except Exception:
+        return True
+
+
 def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
     bf16_ok = False
     xpu = getattr(torch, "xpu", None)
@@ -847,6 +875,7 @@ def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
         supports_model_cpu_offload = True,
         supports_default_torch_compile = False,
         supports_pinned_transfer = False,
+        supports_float64 = _xpu_has_fp64(xpu) if xpu is not None else True,
     )
 
 
@@ -871,13 +900,10 @@ _MPS_CAP_OS_RESERVE_FRAC = 0.10
 def mps_high_watermark_ratio(
     recommended_bytes: Optional[int], total_ram_bytes: Optional[int]
 ) -> Optional[float]:
-    """The MPS high watermark ratio (a multiple of the recommended working set) that caps Metal allocations at
-    physical RAM minus an OS reserve, never below the working set Apple recommends. None when either reading is
-    missing (no cap: the caller keeps the unbounded allocator).
-
-    torch's own default is 1.7x the working set, which is above physical RAM on every Apple Silicon Mac (the working
-    set is ~2/3 to 3/4 of RAM), so past RAM it swaps instead of raising; 0.0 removes the limit entirely. A finite cap
-    turns that into an "MPS backend out of memory" RuntimeError that the batch backoff and VAE tile retry handle."""
+    """Ratio capping Metal allocations at RAM minus an OS reserve, never below the recommended
+    working set; None if a reading is missing. torch's 1.7x default exceeds RAM and swaps; 0.0
+    removes the limit; a finite cap raises an out-of-memory RuntimeError that batch backoff and
+    VAE tile retry handle."""
     try:
         recommended = int(recommended_bytes or 0)
         total = int(total_ram_bytes or 0)

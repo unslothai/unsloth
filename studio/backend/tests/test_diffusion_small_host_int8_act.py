@@ -169,3 +169,27 @@ def test_forward_routes_by_dtype_rows_alignment_and_device(monkeypatch):
     off, _ = _layer(k = 256, n = 128, act_int8 = False)
     assert torch.equal(layer(x), off(x))
     assert calls == []
+
+
+def test_armed_layer_compiles_once_and_still_counts_eager_calls():
+    """Counting under a trace used to recompile per call (recompile limit, then eager fallback or fullgraph failure)."""
+    from torch._dynamo.testing import CompileCounter
+
+    layer, _ = _layer(k = 64, n = 64)
+    assert layer.act_int8
+    x = torch.randn(17, 64, dtype = torch.float16)
+    layer = layer.half()
+    before = sh.int8_act_counts()["dequant"]
+    with torch.no_grad():
+        ref = layer(x)
+    assert sh.int8_act_counts()["dequant"] == before + 1
+    counter = CompileCounter()
+    torch._dynamo.reset()
+    try:
+        fn = torch.compile(layer, backend = counter, fullgraph = True)
+        with torch.no_grad():
+            outs = [fn(x) for _ in range(12)]
+    finally:
+        torch._dynamo.reset()
+    assert counter.frame_count == 1
+    assert all(torch.equal(o, ref) for o in outs)

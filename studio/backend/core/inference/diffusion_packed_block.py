@@ -40,8 +40,7 @@ def packed_block_layers(model: Any) -> int:
 
 
 def fp8_casts(device: Any) -> bool:
-    """Whether float8 tensors cast on ``device`` (CPU / CUDA / ROCm); elsewhere nvfp4 scales go by table and mxfp8
-    layers are not kept packed."""
+    """float8 casts on CPU/CUDA/ROCm only; else nvfp4 uses a table; mxfp8 stays unpacked."""
     return getattr(device, "type", str(device).split(":")[0]) in ("cpu", "cuda")
 
 
@@ -263,6 +262,19 @@ def packed_block_linear_class():
                 self.compute_dtype,
             )
             return w if dtype is None or dtype == w.dtype else w.to(dtype)
+
+        def _apply(self, fn, *args, **kwargs):
+            # the packed buffers are integer, so a module-wide .to(dtype) / .half() / .float() leaves them as they
+            # are: the widen target follows the cast the way a dense Linear's weight would
+            out = super()._apply(fn, *args, **kwargs)
+            probe = fn(torch.empty(0, dtype = self.compute_dtype, device = self.weight_q.device))
+            if isinstance(probe, torch.Tensor) and probe.dtype in (
+                torch.bfloat16,
+                torch.float16,
+                torch.float32,
+            ):
+                self.compute_dtype = probe.dtype
+            return out
 
         @property
         def weight(self) -> Any:

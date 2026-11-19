@@ -127,10 +127,8 @@ COUNTER_MOVED = "prev => { const c = window.__findSmoke.counter(); return !!c &&
 
 
 def settled_counter(page) -> str | None:
-    """Wait for the typed query to settle and paint, then read its counter.
-
-    The first settled render can still show the previous query's results (the search runs in an
-    effect after it), so give that effect two more frames to land before reading."""
+    """Wait for the query to settle and paint; the first settled render can show the previous
+    results, so two more frames let the search effect land."""
     settle(page, COUNTED)
     frames(page)
     frames(page)
@@ -1062,8 +1060,7 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     loading.wait_for(state = "visible", timeout = 5000)
     field = loading.locator("input")
     field.dispatch_event("compositionstart", {"data": "u"})
-    # Observation window, not a readiness guess: the composition has to hold the loading input
-    # mounted for the whole entry delay, so the wait spans it.
+    # Observation window, not readiness: the input must stay mounted across the entry delay.
     page.wait_for_timeout(ENTRY_DELAY_MS + 500)
     check(
         engine,

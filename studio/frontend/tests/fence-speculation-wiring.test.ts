@@ -11,14 +11,17 @@ const MARKDOWN = readSrc("components/assistant-ui/markdown-text.tsx");
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
 const PLUGIN = readSrc("components/assistant-ui/code-plugin.ts");
 
-test("the speculator seeds the same cache key the demanded path reads, and only fences the main thread has warmed", () => {
-  assert.match(DEFER, /eligible: \(gate\) => grammarsWarmed\.has\(grammarOf\(gate\)\),/);
+test("the speculator seeds the same cache key the demanded path reads, once the worker answers or the main thread has warmed the grammar", () => {
+  assert.match(DEFER, /eligible: \(gate\) =>\s*highlightWorkerState\(\) === "ready" \|\| grammarsWarmed\.has\(grammarOf\(gate\)\),/);
   assert.match(DEFER, /enabled: \(\) =>\s*fenceMode\(\) !== "off" && highlightWorkerState\(\) !== "unavailable",/);
-  assert.match(DEFER, /busy: \(\) => streamActive\(\) \|\| highlightWorkerState\(\) === "stalled"\s*\|\| inputPointerHeld\(\) \|\| inputQuietIn\(\) > 0,/);
+  assert.match(DEFER, /busy: \(\) => streamActive\(\) \|\| highlightWorkerState\(\) === "stalled"\s*\|\| inputPointerHeld\(\) \|\| nonScrollInputQuietIn\(\) > 0,/, "a wheel or touch scroll does not hold speculation: the worker tokenizes, the main thread only posts and seeds");
+  assert.match(DEFER, /const fenceSpeculator = createFenceSpeculator<FenceGate>\(\{\s*idle: \(callback, timeout\) => scheduleIdleTask\(callback, timeout\),/, "nor does the idle slot it waits for");
   assert.match(DEFER, /maxChars: MAX_HIGHLIGHT_CHARS,\s*budgetChars: MAX_CACHED_CHARACTERS \/ 2,\s*budgetFences: MAX_FENCES \/ 2,/);
   assert.match(DEFER, /budgetFences: MAX_FENCES \/ 2,\s*maxInFlight: SPECULATION_IN_FLIGHT,/, "a few requests stay queued in the worker so speculation is not paced by main-thread idle slots");
   assert.match(DEFER, /const SPECULATION_IN_FLIGHT = 3;/);
-  assert.match(DEFER, /busy: \(\) => streamActive\(\) \|\| highlightWorkerState\(\) === "stalled"\s*\|\| inputPointerHeld\(\) \|\| inputQuietIn\(\) > 0,/, "a worker that is late pauses speculation instead of dropping every candidate, so it resumes on the ready message");
+  assert.match(DEFER, /maxDistance: \(\) => SPECULATION_VIEWPORTS \* window\.innerHeight,/, "only fences a quick scroll can reach are tokenized ahead, however long the chat");
+  assert.match(DEFER, /const SPECULATION_VIEWPORTS = 3;/);
+  assert.match(DEFER, /busy: \(\) => streamActive\(\) \|\| highlightWorkerState\(\) === "stalled"\s*\|\| inputPointerHeld\(\) \|\| nonScrollInputQuietIn\(\) > 0,/, "a worker that is late pauses speculation instead of dropping every candidate, so it resumes on the ready message");
   assert.match(DEFER, /fenceMode\(\) !== "off" && highlightWorkerState\(\) !== "unavailable",/, "only a worker that failed turns speculation off");
   assert.match(DEFER, /rect \?\?= gate\.node\.getBoundingClientRect\(\);/, "ranked by the fence itself, or by its row while the row is skipped");
   assert.equal(DEFER.includes("gate.anchor"), false);
@@ -31,7 +34,8 @@ test("the speculator seeds the same cache key the demanded path reads, and only 
 test("every gate joins and leaves the speculator with its registration, and a latch withdraws it first", () => {
   assert.match(DEFER, /scheduleGrammarWarm\(\);\s*fenceSpeculator\.add\(registered\);/);
   assert.match(DEFER, /fenceSpeculator\.remove\(registered\);\s*unreached\.delete\(registered\);/);
-  assert.match(DEFER, /unreached\.delete\(gate\);\s*fenceSpeculator\.remove\(gate\);\s*gate\.warm\(true\);/);
+  assert.match(DEFER, /unreached\.delete\(gate\);\s*fenceSpeculator\.remove\(gate\);\s*gate\.warm\(true, performance\.now\(\) - started < LATCH_INLINE_MS && gateInView\(gate\)\);/, "a latch tokenizes here only fences already on screen, inside its budget");
+  assert.match(DEFER, /warm: \(tokens, inView\) => warmRef\.current\(tokens, inView\),/, "the registered warm forwards on-screen, so a latched fence tokenizes inline");
   assert.match(DEFER, /latchNow\(arrived\);\s*fenceSpeculator\.rerank\(\);/);
   assert.match(PLUGIN, /const reachInto = \(fence: Fence, code: string\): number => \{\s*if \(fence\.result === null \|\| fence\.seeded\) return -1;/, "a seeded entry is an exact hit only, never a prefix anchor");
   assert.match(PLUGIN, /export const MAX_FENCES = 512;\s*export const MAX_CACHED_CHARACTERS = 512_000;/);

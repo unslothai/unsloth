@@ -69,9 +69,8 @@ def pauses_background_embedding(fn):
 
 
 def gated_async_client(*args, **kwargs):
-    """A per-request ``httpx.AsyncClient`` to a local engine (API passthroughs): background embedding stays paused
-    until it is ``aclose``d, or collected if a path never closes it. Built through ``httpx.AsyncClient`` at call
-    time, so a patched client class is honoured."""
+    """Per-request AsyncClient to a local engine (API passthroughs) keeps background embedding
+    paused until aclosed or collected; built at call time so a patched client class is honoured."""
     from core.rag.conversation_archive import hold_inference
 
     client = httpx.AsyncClient(*args, **kwargs)
@@ -80,8 +79,7 @@ def gated_async_client(*args, **kwargs):
     send = getattr(client, "send", None)
 
     async def gated_send(*send_args, **send_kwargs):
-        # The first request waits out the batch in flight (off the event loop); httpx routes every verb and
-        # stream() through send.
+        # Waits out any in-flight batch off the event loop; every httpx verb goes through send.
         from core.rag.conversation_archive import _pause_prewarm, prewarm_running
         if prewarm_running():
             import asyncio

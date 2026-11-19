@@ -17,7 +17,16 @@ _FP16_MAX = 65504.0
 RECIPES: dict[str, Optional[tuple[float, float]]] = {
     "native": None,
     "rescale_post_norm": (16.0, 128.0),
+    # FLUX.3 residual reaches ~1e7: whole stream at 1/1024, LayerNorm eps by 1/1024^2.
+    "rescale_residual": (1024.0, 1024.0),
+    # Undistilled Z-Image (bf16 L4, 1024px, CFG 3): to_k 1.2e6, attention to_out 2.9e6, FFN w2 5.3e7, so (16, 128)
+    # overflows to inf in the first noise_refiner block and the image decodes NaN. Selected per checkpoint below.
+    "rescale_post_norm_wide": (256.0, 4096.0),
 }
+
+# recipe -> (wider recipe, ffn_norm1 weight std above which a checkpoint needs it). The std of layers[n-2].ffn_norm1
+# separates the Z-Image checkpoints (fp16-safe below 0.42): Turbo 0.350, the undistilled base 0.565.
+_HEADROOM: dict[str, tuple[str, float]] = {"rescale_post_norm": ("rescale_post_norm_wide", 0.42)}
 
 
 def fp16_guard_disabled() -> bool:
@@ -40,6 +49,16 @@ _RECIPE_TOKENS: dict[str, tuple[str, ...]] = {
         "self.w2(",
         "self.w3(",
         "norm_q",
+    ),
+    "rescale_residual": (
+        "self.context_embedder(encoder_hidden_states)",
+        'self.x_embedders["image"](hidden_states)',
+        "return hidden_states + mod_gate * (attn_output + ff_output)",
+        "encoder_hidden_states = encoder_hidden_states + c_mod_gate * context_output",
+        "hidden_states = hidden_states + mod_gate * content_output",
+        "x = self.gate_fn(x[..., :half]) * x[..., half:]",
+        "return self.norm(hidden_states) * (1 + scale) + shift",
+        "attn.norm_q(query.float())",
     ),
 }
 _SUPPORTED: dict[tuple[str, str], bool] = {}
@@ -126,12 +145,43 @@ def _attention_post_hook(module, args, output):
     return None
 
 
-def _make_ffn_forward(inv: float):
+def _make_ffn_forward(inv: float, finite_out: bool = False):
+    if finite_out:
+        # Wide recipe: a stray w2 overflow saturates before ffn_norm2 instead of turning the whole token NaN.
+        def forward(self, x):
+            import torch.nn.functional as F
+            return _finite(self.w2(_finite(F.silu(self.w1(x)) * (self.w3(x) * inv))))
+
+        return forward
+
     def forward(self, x):
         import torch.nn.functional as F
         return self.w2(_finite(F.silu(self.w1(x)) * (self.w3(x) * inv)))
 
     return forward
+
+
+def _norm1_weight_std(root: Any) -> Optional[float]:
+    """Std of layers[n-2].ffn_norm1.weight (Turbo 0.350, base 0.565), or None when the model has no such norm."""
+    try:
+        layers = getattr(root, "layers", None)
+        if layers is None or len(layers) < 2:
+            return None
+        w = getattr(getattr(layers[len(layers) - 2], "ffn_norm1", None), "weight", None)
+        if w is None or w.numel() < 2 or w.device.type == "meta":
+            return None
+        return float(w.detach().float().std(unbiased = False))
+    except Exception:  # noqa: BLE001 - unreadable weight: keep the declared recipe
+        return None
+
+
+def resolve_checkpoint_recipe(root: Any, recipe: Optional[str]) -> Optional[str]:
+    """The declared recipe, widened when this checkpoint's activations need more fp16 headroom."""
+    wide = _HEADROOM.get(recipe) if recipe is not None else None
+    if wide is None:
+        return recipe
+    std = _norm1_weight_std(root)
+    return wide[0] if std is not None and std >= wide[1] else recipe
 
 
 def _block_sites(block: Any) -> Optional[tuple[Any, ...]]:
@@ -157,7 +207,128 @@ def _block_sites(block: Any) -> Optional[tuple[Any, ...]]:
     return attn, ffn, norms[0], norms[1]
 
 
-def _install_rescale_post_norm(root: Any, attn_scale: float, ffn_scale: float) -> int:
+def _scale_output_hook(inv: float):
+    def hook(module, args, output):
+        return output * inv
+
+    return hook
+
+
+def _scale_input_hook(inv: float):
+    def hook(module, args):
+        return (args[0] * inv, *args[1:]) if args else None
+
+    return hook
+
+
+def _compiling() -> bool:
+    try:
+        import torch
+        return bool(torch.compiler.is_compiling())
+    except Exception:  # noqa: BLE001 - no torch.compiler: eager
+        return False
+
+
+def _bias_free(*linears: Any) -> bool:
+    return all(lin is not None and getattr(lin, "bias", None) is None for lin in linears)
+
+
+def _residual_block_sites(block: Any) -> Optional[tuple[Any, ...]]:
+    """(norm, attn, act_fn) of a FLUX.3 mode / joint block, whose residual update is gate * (attn + ff)."""
+    norm, attn, ff = (getattr(block, n, None) for n in ("norm", "attn", "ff"))
+    if norm is None or attn is None or ff is None:
+        return None
+    to_out = getattr(attn, "to_out", None)
+    act = getattr(ff, "act_fn", None)
+    if to_out is None or act is None or not hasattr(ff, "linear_in"):
+        return None
+    try:
+        out_proj = to_out[0]
+    except (TypeError, IndexError):
+        return None
+    if not _bias_free(attn.to_q, attn.to_k, attn.to_v, out_proj, getattr(ff, "linear_out", None)):
+        return None
+    eps = [
+        getattr(m, "eps", None)
+        for m in (norm, getattr(attn, "norm_q", None), getattr(attn, "norm_k", None))
+    ]
+    if not all(isinstance(e, float) for e in eps):
+        return None
+    return norm, attn, act
+
+
+def _residual_entries(root: Any) -> Optional[list]:
+    """Modules that write the residual stream from the inputs (text and per-mode image projections)."""
+    ctx = getattr(root, "context_embedder", None)
+    xs = getattr(root, "x_embedders", None)
+    if ctx is None or xs is None or not callable(getattr(xs, "values", None)):
+        return None
+    return [ctx, *xs.values()]
+
+
+def _install_rescale_residual(root: Any, scale: float) -> int:
+    """Residual stream at 1/scale: exact via bias-free projections, scale-invariant norms, eps / scale^2."""
+    if root.__dict__.get(_MARK) is not None:
+        return root.__dict__[_MARK][1]
+    entries = _residual_entries(root)
+    final = getattr(getattr(root, "norm_out", None), "norm", None)
+    if (
+        entries is None
+        or not _bias_free(*entries)
+        or not isinstance(getattr(final, "eps", None), float)
+    ):
+        return 0
+    found = [(b, sites) for b in root.modules() if (sites := _residual_block_sites(b)) is not None]
+    if not found:
+        return 0
+    inv = 1.0 / scale
+    eps_scaled = [final]
+    handles = []
+    for _block, (norm, attn, act) in found:
+        eps_scaled += [norm, attn.norm_q, attn.norm_k]
+        handles.append(attn.register_forward_pre_hook(_attention_pre_hook(inv), with_kwargs = True))
+        handles.append(act.register_forward_hook(_scale_output_hook(inv)))
+    for norm in eps_scaled:
+        _scale_eps(norm, inv * inv)
+    # Re-hook whatever sits in the entry slot per call (e.g. a later LoRA wrapper) so the stream is scaled once.
+    entry_hooks: dict[int, Any] = {}
+
+    def sync_entries(
+        module,
+        args,
+        kwargs = None,
+    ):
+        if _compiling():
+            return None
+        current = _residual_entries(root) or []
+        ids = {id(m) for m in current}
+        for key in [k for k in entry_hooks if k not in ids]:
+            entry_hooks.pop(key).remove()
+        for m in current:
+            if id(m) not in entry_hooks:
+                entry_hooks[id(m)] = m.register_forward_pre_hook(_scale_input_hook(inv))
+        return None
+
+    sync_entries(root, ())
+    handles.append(root.register_forward_pre_hook(sync_entries))
+
+    def undo():
+        for handle in (*handles, *entry_hooks.values()):
+            handle.remove()
+        entry_hooks.clear()
+        for norm in eps_scaled:
+            _scale_eps(norm, scale * scale)
+
+    root.__dict__[_MARK] = (undo, len(found))
+    return len(found)
+
+
+def _install_rescale_post_norm(
+    root: Any,
+    attn_scale: float,
+    ffn_scale: float,
+    finite_out: bool = False,
+) -> int:
     import types
 
     sites = 0
@@ -174,11 +345,15 @@ def _install_rescale_post_norm(root: Any, attn_scale: float, ffn_scale: float) -
         _scale_eps(attn.norm_k, a_inv * a_inv)
         _scale_eps(attn_norm2, a_inv * a_inv)
         _scale_eps(ffn_norm2, f_inv * f_inv)
-        handles = (
-            attn.register_forward_pre_hook(_attention_pre_hook(a_inv), with_kwargs = True),
-            attn.register_forward_hook(_attention_post_hook),
-        )
-        ffn.forward = types.MethodType(_make_ffn_forward(f_inv), ffn)
+        norm1 = getattr(block, "attention_norm1", None) if finite_out else None
+        if norm1 is not None:
+            # Wide recipe: scale attention_norm1's output, ahead of the adaLN multiply (scale_msa reaches 5.4e4 in
+            # the base checkpoint, so norm1(x) * scale_msa itself overflows before an attention pre-hook sees it).
+            scale_in = norm1.register_forward_hook(_scale_output_hook(a_inv))
+        else:
+            scale_in = attn.register_forward_pre_hook(_attention_pre_hook(a_inv), with_kwargs = True)
+        handles = (scale_in, attn.register_forward_hook(_attention_post_hook))
+        ffn.forward = types.MethodType(_make_ffn_forward(f_inv, finite_out), ffn)
         block.__dict__[_MARK] = (attn_scale, ffn_scale, handles)
         sites += 1
     return sites
@@ -201,8 +376,17 @@ def install_fp16_guard(
         return 0
     if not callable(getattr(root, "named_modules", None)):
         return 0
-    attn_scale, ffn_scale = scales
-    sites = _install_rescale_post_norm(root, attn_scale, ffn_scale)
+    recipe = resolve_checkpoint_recipe(root, recipe)
+    attn_scale, ffn_scale = RECIPES[recipe]
+    if recipe == "rescale_residual":
+        sites = _install_rescale_residual(root, attn_scale)
+    else:
+        sites = _install_rescale_post_norm(
+            root,
+            attn_scale,
+            ffn_scale,
+            finite_out = recipe == "rescale_post_norm_wide",
+        )
     if logger is not None:
         if sites:
             logger.info(
@@ -228,6 +412,10 @@ def remove_fp16_guard(root: Any) -> int:
     for _name, block in root.named_modules():
         mark = block.__dict__.pop(_MARK, None)
         if mark is None:
+            continue
+        if callable(mark[0]):
+            mark[0]()
+            removed += mark[1]
             continue
         attn_scale, ffn_scale, handles = mark
         for handle in handles:

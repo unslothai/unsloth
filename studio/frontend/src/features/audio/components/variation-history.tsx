@@ -7,6 +7,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { AudioGalleryClip } from "../api";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import { variationLabel } from "../music/variation-groups";
+import {
+  CLIP_ROW,
+  CLIP_ROW_ICON,
+  CLIP_ROW_TILE,
+  CLIPS_TITLE_INSET,
+} from "./clips-card";
 
 export function VariationGroupRow({
   clips,
@@ -27,26 +33,31 @@ export function VariationGroupRow({
       aria-expanded={open}
       onClick={onToggle}
       className={cn(
-        "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui-13 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        selected && !open && "bg-muted",
+        CLIP_ROW,
+        "w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        selected && !open && "bg-wash-3",
       )}
     >
-      <HugeiconsIcon
-        icon={open ? ChevronDownStandardIcon : ChevronRightStandardIcon}
-        className="size-3.5 shrink-0 text-muted-foreground"
-      />
-      <span className="min-w-0 flex-1 truncate">{first.prompt}</span>
-      <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground">
-        {variationLabel(clips.length)}
+      <span className={CLIP_ROW_TILE}>
+        <HugeiconsIcon
+          icon={open ? ChevronDownStandardIcon : ChevronRightStandardIcon}
+          strokeWidth={1.75}
+          className={CLIP_ROW_ICON}
+        />
       </span>
-      <span
-        title={first.model}
-        className="max-w-[30%] shrink-0 truncate text-ui-11p5 text-muted-foreground"
-      >
-        {audioModelLabel(first.model)}
-      </span>
-      <span className="shrink-0 text-ui-11p5 text-muted-foreground">
-        {formatClipDuration(first.duration_s)}
+      <span className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pe-4 ps-2">
+        <span className="grid min-w-0 flex-1 gap-0.5">
+          <span title={first.prompt} className="truncate text-ui-13">
+            {first.prompt}
+          </span>
+          <span title={first.model} className="truncate text-ui-11p5 text-muted-foreground">
+            {variationLabel(clips.length)} · {audioModelLabel(first.model)}
+          </span>
+        </span>
+        {/* Plain, not CLIP_ROW_DURATION: this row has no menu to make room for. */}
+        <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+          {formatClipDuration(first.duration_s)}
+        </span>
       </span>
     </button>
   );
@@ -65,9 +76,9 @@ export function VariationChips({
   return (
     <fieldset
       aria-label="Variations"
-      className="m-0 flex min-w-0 flex-wrap items-center gap-1 border-0 p-0"
+      className={cn("m-0 flex min-w-0 flex-wrap items-center gap-1 border-0 p-0", CLIPS_TITLE_INSET)}
     >
-      <span className="mr-1 text-ui-11p5 text-muted-foreground">
+      <span className="me-1.5 text-ui-12 text-muted-foreground">
         {variationLabel(siblings.length)}
       </span>
       {siblings.map((clip, index) => {
@@ -77,13 +88,14 @@ export function VariationChips({
             key={clip.id}
             type="button"
             aria-pressed={current}
+            title={`Variation ${index + 1}`}
             aria-label={`Variation ${index + 1} of ${siblings.length}`}
             onClick={() => onSelect(clip.id)}
             className={cn(
               "flex size-[calc(24px*var(--ui-space-scale,1))] items-center justify-center rounded-full font-mono text-ui-11p5 tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               current
                 ? "bg-action text-background"
-                : "bg-muted text-muted-foreground hover:text-foreground",
+                : "bg-wash-8 text-muted-foreground hover:text-foreground",
             )}
           >
             {index + 1}

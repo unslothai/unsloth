@@ -174,8 +174,7 @@ def test_failure_raises_runtime_error(monkeypatch):
 
 
 def test_causal_only_install_failure_is_not_fatal(monkeypatch):
-    # LFM2 wants causal-conv1d but falls back to torch; a failed install must
-    # not block the load (best-effort, mirrors training).
+    # A failed causal-conv1d install is not fatal, since LFM2 falls back to torch.
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
     ssm_runtime.ensure_ssm_runtime("LiquidAI/LFM2-1.2B")  # no raise
 
@@ -340,8 +339,7 @@ def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
 
 
 def test_install_kernel_heartbeats_through_the_import_check(monkeypatch):
-    # The first torch import can be quiet long enough to trip the inactivity
-    # deadline, so keep heartbeats running through it.
+    # A quiet first torch import can trip the inactivity deadline, so heartbeats keep running.
     import threading
     import time
 
@@ -589,8 +587,7 @@ def test_windows_rejected_wheel_is_removed_not_source_built(monkeypatch):
 
 
 def test_wheel_installed_but_not_importable_falls_back_to_source(monkeypatch):
-    # top and under the lock: not importable; after wheel: still not importable (ABI mismatch)
-    # -> source build; after source build: importable.
+    # A wheel that is still not importable (ABI mismatch) must fall back to a source build.
     states = iter([False, False, False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
@@ -643,8 +640,7 @@ def test_hip_source_build_requires_hipcc(monkeypatch):
 
 
 def test_source_build_reinstalls_to_replace_broken_wheel(monkeypatch):
-    # Reached only when not importable (possibly a broken wheel at the pinned version);
-    # the source build must reinstall so it replaces it instead of no-opping.
+    # The source build must reinstall over a broken pinned wheel instead of no-opping.
     states = iter([False, False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
@@ -835,8 +831,7 @@ def _write_config(directory: Path, config: dict) -> Path:
 
 
 def test_renamed_local_checkpoint_resolves_causal_conv1d_from_its_config(tmp_path):
-    """A local LFM2 checkpoint whose folder has no allowlisted substring must
-    still be detected, so the availability hook is installed for it."""
+    """A local LFM2 checkpoint with no allowlisted folder substring must still be detected."""
     checkpoint = _write_config(
         tmp_path / "my-model",
         {"model_type": "lfm2", "architectures": ["Lfm2ForCausalLM"]},

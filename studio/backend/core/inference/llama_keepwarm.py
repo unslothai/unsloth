@@ -384,6 +384,16 @@ _current_response_scope: contextvars.ContextVar = contextvars.ContextVar(
 )
 
 
+def current_request_counted() -> bool:
+    """Whether the request this context serves is in the in-flight count (an external-provider chat drops out)."""
+    scope = _current_response_scope.get()
+    return (
+        isinstance(scope, dict)
+        and bool(scope.get(_TRACKED_SCOPE_KEY))
+        and not scope.get(_UNTRACKED_SCOPE_KEY)
+    )
+
+
 def set_current_response_scope(scope) -> None:
     _current_response_scope.set(scope if isinstance(scope, dict) else None)
 
@@ -698,9 +708,13 @@ def restore_kv_resume(backend, manifest) -> None:
             identity = getattr(backend, "_gguf_file_identity", None)
             same_gguf = callable(identity) and identity(current) == manifest.get("gguf_stat")
         if same_gguf:
-            # Nor the same file: launch overrides can invalidate KV numerics.
-            fingerprint = getattr(backend, "_slot_launch_fingerprint", None)
-            same_gguf = callable(fingerprint) and manifest.get("launch") == fingerprint()
+            # Doubles without slot_resume_fits compare the launch strictly.
+            fits = getattr(backend, "slot_resume_fits", None)
+            if callable(fits):
+                same_gguf = bool(fits(manifest))
+            else:
+                fingerprint = getattr(backend, "_slot_launch_fingerprint", None)
+                same_gguf = callable(fingerprint) and manifest.get("launch") == fingerprint()
         if same_gguf and binary and binary == getattr(backend, "_slot_save_binary", None):
             logger.info("Restoring saved slot KV onto the reloaded model")
             backend.restore_slots_for_resume(manifest)

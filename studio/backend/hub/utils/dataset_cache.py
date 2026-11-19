@@ -92,8 +92,7 @@ def _label_tokens(text: str) -> set[str]:
 
 
 def split_label_matches(text: str, split: str) -> bool:
-    """Match a split name against a file path's tokens, expanding split aliases
-    (validation/valid/val, eval) so cached and remote selection agree."""
+    """Split aliases (validation/valid/val, eval) expand so cache and remote selection agree."""
     normalized = split.strip().lower()
     if not normalized:
         return False

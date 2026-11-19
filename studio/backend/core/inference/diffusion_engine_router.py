@@ -236,9 +236,8 @@ def _reachable_intel_arc_render_node() -> bool:
 
 
 def _vulkan_gpu_for_cpu_torch() -> bool:
-    """True when torch is CPU-only but the host has a GPU the Vulkan sd.cpp build can render on:
-    an AMD card (Vega, RDNA1 and Polaris get no ROCm wheel) or an Intel Arc. Never beside NVIDIA,
-    which Vulkan could enumerate first, nor under a mask Vulkan does not read (#13666)."""
+    """CPU-only torch with a GPU Vulkan sd.cpp can use (AMD, Intel Arc, or Intel once llama.cpp
+    backend is Vulkan); never beside NVIDIA or under a mask Vulkan does not read (13666)."""
     if not sd_cpp_vulkan_fallback_enabled():
         return False
     if (sys.platform, platform.machine().lower()) not in _VULKAN_SD_CPP_PLATFORMS:
@@ -255,13 +254,24 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     if any(d.get("vendor") == "nvidia" for d in devices) or _nvidia_adapter_present():
         return False
 
+    from utils.prebuilt.llama_backend import environment_backend_override
+
+    # A non-Arc iGPU can render slower than the CPU build, so only an explicit Vulkan request takes it.
+    vulkan_requested = (
+        environment_backend_override(
+            os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"), os.environ.get("UNSLOTH_FORCE_VULKAN")
+        )
+        == "vulkan"
+    )
+
     def _renders(device: dict) -> bool:
         if device.get("vendor") == "amd":
             return True
         if device.get("vendor") != "intel":
             return False
-        # Arc only: a UHD iGPU renders slower than the CPU build. Linux carries the PCI class,
-        # the Windows registry only the name.
+        if vulkan_requested:
+            return True
+        # Linux carries the PCI class, the Windows registry only the name.
         if "xpu_class" in device:
             return device.get("xpu_class") is True
         return "arc" in str(device.get("name") or "").lower().replace("(tm)", " ").split()
@@ -298,9 +308,8 @@ _VENDOR_ICD_NEEDLES = {"amd": ("radeon", "radv", "amd"), "intel": ("intel",)}
 
 
 def _hardware_vulkan_driver(vendors) -> bool:
-    """Whether the loader, under its active filters, would load a driver for one of ``vendors``.
-    Windows registers drivers in ways the manifest walk may not read, so an empty walk there is no
-    evidence."""
+    """Whether the loader, under its active filters, would load a driver for one of vendors; Windows
+    registers drivers the manifest walk may not read, so an empty walk there is no evidence."""
     try:
         from utils.hardware.amd import _loadable_icd_manifests, _vulkan_icd_manifest_paths
 
@@ -377,8 +386,8 @@ def _cuda_gpu_for_cpu_torch() -> bool:
 
 def image_install_accelerator(backend: str) -> str:
     """The sd.cpp build the IMAGE engine wants: the off-torch card's when one is set, else torch's,
-    else Vulkan for a CPU torch beside an AMD or Arc GPU, or CUDA beside an NVIDIA card llama.cpp
-    already renders on. Video keeps ``_install_accelerator_for``, since torch places its loads."""
+    else Vulkan for an eligible AMD or Intel GPU, or CUDA beside an NVIDIA card llama.cpp already
+    renders on. Video keeps ``_install_accelerator_for``, since torch places its loads."""
     off_torch = off_torch_sd_cpp_device(backend)
     if off_torch is not None:
         return off_torch.accelerator
@@ -419,10 +428,6 @@ def mlx_mode() -> str:
     if raw in _ENABLE_TOKENS:
         return MLX_FORCE
     return MLX_OFF
-
-
-def _mlx_requested() -> bool:
-    return mlx_mode() != MLX_OFF
 
 
 def _mlx_host_refusal() -> Optional[str]:

@@ -32,9 +32,8 @@ def test_h3_measured_diffusers_memory_estimates():
 
 
 def test_the_host_floor_tracks_the_components_the_load_holds():
-    """The VRAM floor is rebuilt from the engaged components; the host floor has to be too, or an
-    80 GB device running the int8 conditioner and the int8 denoiser clears the VRAM check at 55 GB
-    and is then told it needs 150 GB of system RAM for 47.5 GB of weights."""
+    """Host floor must track engaged components like the VRAM floor; else an 80 GB card running int8
+    parts passes VRAM at 55 GB, then needs 150 GB RAM for 47.5 GB of weights."""
     from core.inference.video_minimax_h3 import (
         H3_TEXT_ENCODER_BF16_GB,
         H3_TRANSFORMER_BF16_GB,
@@ -583,3 +582,43 @@ def test_a_parent_folder_keyword_does_not_pick_the_video_defaults():
         default_video_generation_params("/data/x/ltx-2-19b-distilled/model.gguf", fallback = (7, 7.0))
         != plain
     )
+
+
+# The size a fresh Video page renders first. 768x512 is the page's fallback and LTX-2's card default.
+_FIRST_RENDER_SIZES = {
+    "wan2.2-ti2v-5b": (1280, 704),
+    "wan2.2-t2v-a14b": (1280, 720),
+    "wan2.1-t2v-1.3b": (832, 480),
+    "wan2.1-t2v-14b": (832, 480),
+    "hunyuanvideo-1.5": (848, 480),
+    "hunyuanvideo-1.5-720p": (1280, 720),
+}
+
+
+@pytest.mark.parametrize("name, size", sorted(_FIRST_RENDER_SIZES.items()))
+def test_a_fresh_video_page_starts_at_the_reference_size(name, size):
+    from core.inference import video as video_mod
+
+    fam = detect_video_family("", override = name)
+    # Without it the page kept 768x512 (or fitted it to a nearby untrained size).
+    assert video_mod._ui_default_resolution(fam) == list(size)
+    assert size in fam.resolution_presets
+
+
+def test_every_video_family_first_renders_a_trained_size():
+    from core.inference import video as video_mod
+    from core.inference import video_families as vf
+    for fam in vf._FAMILIES:
+        first = video_mod._ui_default_resolution(fam)
+        size = tuple(first) if first else (768, 512)
+        assert size in fam.resolution_presets, fam.name
+
+
+def test_hunyuanvideo15_480p_first_size_is_the_pipelines_own_default():
+    pytest.importorskip("diffusers.pipelines.hunyuan_video1_5.image_processor")
+    from diffusers.pipelines.hunyuan_video1_5.image_processor import HunyuanVideo15ImageProcessor
+
+    processor = HunyuanVideo15ImageProcessor(vae_scale_factor = 16)
+    for name, target in (("hunyuanvideo-1.5", 640), ("hunyuanvideo-1.5-720p", 960)):
+        height, width = processor.calculate_default_height_width(9, 16, target)
+        assert _FIRST_RENDER_SIZES[name] == (width, height)

@@ -735,3 +735,54 @@ def test_cancel_during_stream_admission_exits_tracker(monkeypatch):
             await asyncio.gather(task, return_exceptions = True)
 
     asyncio.run(scenario())
+
+
+def _screenshot_history(calls: int) -> list[dict]:
+    import base64
+    import io
+    import json as _json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    history = [{"role": "user", "content": "go"}]
+    for index in range(calls):
+        buffer = io.BytesIO()
+        Image.new("RGB", (16 + index, 16)).save(buffer, format = "PNG")
+        image = {"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}
+        history += [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"c{index}",
+                        "type": "function",
+                        "function": {"name": "computer", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": f"c{index}",
+                "content": "ok\n" + mcp_images.SENTINEL + _json.dumps([image]),
+            },
+        ]
+    return history
+
+
+def test_a_compacting_chat_prices_and_replays_every_tool_picture():
+    """#18231: a compacting GGUF chat keeps every tool picture, so admission must charge them all
+    and the replay must restore them all; a non-compacting one keeps the cap."""
+    history = _screenshot_history(12)
+    compacting = SimpleNamespace(context_overflow = "truncate_oldest")
+    strict = SimpleNamespace(context_overflow = "error")
+
+    assert inference._mcp_replay_uncapped(compacting) is True
+    assert inference._mcp_replay_uncapped(strict) is False
+    _messages, uncapped = inference._openai_llama_admission_messages_for_estimate(
+        history, uncapped = True
+    )
+    _messages, capped = inference._openai_llama_admission_messages_for_estimate(history)
+    assert (uncapped, capped) == (12, inference._MCP_MAX_TOTAL_MODEL_IMAGES)

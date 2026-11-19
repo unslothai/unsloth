@@ -353,6 +353,194 @@ def test_minimax_evidence_ids_are_real_parity_cases():
             assert set(ids) <= set(parity.MODEL_CASES), (cell.name, ids)
 
 
+@pytest.mark.parametrize("family", ["deepseek_v2", "deepseek_v3", "deepseek_v32", "deepseek_v4"])
+@pytest.mark.parametrize(
+    "mode, expert_lora",
+    [("full", False), ("lora", False), ("lora", True)],
+    ids = ["full", "lora", "lora+experts"],
+)
+def test_deepseek_moe_under_cp_follows_its_gloo_evidence(family, mode, expert_lora):
+    # tests/test_ulysses_deepseek_reference.py::test_deepseek_cp_matches_fp64_reference: cp 2 / 4, dp 2 x cp 2,
+    # HF checkpointing, sdpa and eager (V4: eager). Unsloth's checkpoint, FSDP2 x cp and the router loss stay refused.
+    kw = dict(
+        trainer = "sft",
+        family = family,
+        moe = True,
+        mode = mode,
+        expert_lora = expert_lora,
+        cp = 2,
+        cp_backend = "ulysses",
+        torch = (2, 13),
+        attention = "eager",
+    )
+    for extra in ({}, {"memory": "gc"}, {"attention": "sdpa"}, {"dp": 2}, {"cp": 4}):
+        if family == "deepseek_v4" and extra.get("attention") == "sdpa":
+            continue
+        query = caps.Query(**{**kw, **extra})
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "test_deepseek_cp_matches_fp64_reference" in cell.parity, (
+            extra,
+            cell,
+        )
+        caps.check(query)
+    refused = [
+        ({"memory": "unsloth_offload"}, "Unsloth checkpoint"),
+        ({"fsdp2": True}, "fsdp2_cp"),
+        ({"router_aux_loss": True}, "router auxiliary loss"),
+        ({"compile": "block"}, "no numeric parity"),
+        ({"mode": "qlora"}, "4-bit experts"),
+    ]
+    if family == "deepseek_v4":
+        refused.append(({"attention": "sdpa"}, "no numeric parity"))
+    for extra, match in refused:
+        with pytest.raises(NotImplementedError, match = match):
+            caps.check(caps.Query(**{**kw, **extra}))
+
+
+def test_deepseek_evidence_ids_are_real_parity_cases():
+    import re
+
+    parity = pytest.importorskip("tests.test_ulysses_deepseek_reference")
+    named = 0
+    for cell in caps.CELLS:
+        if cell.parity and "test_deepseek_cp_matches_fp64_reference[" in cell.parity:
+            ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+            assert set(ids) <= set(parity.CASES), (cell.name, ids)
+            named += 1
+    assert named >= 12
+
+
+@pytest.mark.parametrize(
+    "mode, expert_lora",
+    [("full", False), ("lora", False), ("lora", True)],
+    ids = ["full", "lora", "lora+experts"],
+)
+def test_gemma4_moe_under_cp_follows_its_gloo_evidence(mode, expert_lora):
+    kw = dict(
+        trainer = "sft",
+        family = "gemma4",
+        moe = True,
+        windowed = True,
+        mode = mode,
+        expert_lora = expert_lora,
+        cp = 2,
+        cp_backend = "ulysses",
+        torch = (2, 13),
+        attention = "sdpa",
+    )
+    for extra in ({}, {"memory": "gc"}, {"attention": "eager"}, {"dp": 2}, {"cp": 4}):
+        query = caps.Query(**{**kw, **extra})
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "test_gemma4_cp_matches_fp64_reference" in cell.parity, (
+            extra,
+            cell,
+        )
+        caps.check(query)
+    for extra, match in (
+        ({"memory": "unsloth_offload"}, "Unsloth checkpoint"),
+        ({"fsdp2": True}, "fsdp2_cp"),
+        ({"router_aux_loss": True}, "router auxiliary loss"),
+        ({"compile": "block"}, "no numeric parity"),
+        ({"mode": "qlora"}, "4-bit experts"),
+        ({"multimodal": True}, "bidirectional"),
+        ({"multimodal": True, "memory": "gc"}, "bidirectional"),
+    ):
+        with pytest.raises(NotImplementedError, match = match):
+            caps.check(caps.Query(**{**kw, **extra}))
+
+
+def test_gemma4_evidence_ids_are_real_parity_cases():
+    import re
+
+    parity = pytest.importorskip("tests.test_ulysses_gemma4")
+    named = 0
+    for cell in caps.CELLS:
+        if cell.parity and "test_gemma4_cp_matches_fp64_reference[" in cell.parity:
+            ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+            assert set(ids) <= set(parity.CASES), (cell.name, ids)
+            assert all(parity.CASES[i]["kind"] == "moe" for i in ids), (cell.name, ids)
+            named += 1
+    assert named >= 3
+
+
+@pytest.mark.parametrize(
+    "mode, expert_lora",
+    [("full", False), ("lora", False), ("lora", True)],
+    ids = ["full", "lora", "lora+experts"],
+)
+def test_gpt_oss_moe_under_cp_follows_its_gloo_evidence(mode, expert_lora):
+    kw = dict(
+        trainer = "sft",
+        family = "gpt_oss",
+        moe = True,
+        windowed = True,
+        direct_params = True,
+        mode = mode,
+        expert_lora = expert_lora,
+        cp = 2,
+        cp_backend = "ulysses",
+        torch = (2, 13),
+        attention = "eager",
+    )
+    for extra in ({}, {"memory": "gc"}, {"dp": 2}, {"cp": 4}):
+        query = caps.Query(**{**kw, **extra})
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "test_gpt_oss_cp_matches_fp64_reference" in cell.parity, (
+            extra,
+            cell,
+        )
+        caps.check(query)
+    for extra, match in (
+        ({"memory": "unsloth_offload"}, "Unsloth checkpoint"),
+        ({"fsdp2": True}, "fsdp2_cp"),
+        ({"router_aux_loss": True}, "router auxiliary loss"),
+        ({"compile": "block"}, "no numeric parity"),
+        ({"attention": "sdpa"}, "no numeric parity"),
+        ({"mode": "qlora"}, "4-bit experts"),
+        ({"cp": 1, "tp": 2}, "sinks"),
+    ):
+        with pytest.raises(NotImplementedError, match = match):
+            caps.check(caps.Query(**{**kw, **extra}))
+
+
+def test_gpt_oss_evidence_ids_are_real_parity_cases():
+    import re
+
+    parity = pytest.importorskip("tests.test_ulysses_gpt_oss")
+    named = 0
+    for cell in caps.CELLS:
+        if cell.parity and "test_gpt_oss_cp_matches_fp64_reference[" in cell.parity:
+            ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+            assert set(ids) <= set(parity.CASES), (cell.name, ids)
+            lora = {parity.CASES[i].get("lora") for i in ids}
+            assert len(lora) == 1, (cell.name, ids)
+            assert {"lora": "dense", "lora+experts": "experts"}.get(
+                cell.name.split(" x ")[1]
+            ) in lora
+            named += 1
+    assert named == 3
+
+
+def test_gpt_oss_pp_evidence_ids_are_real_parity_cases():
+    import re
+
+    parity = pytest.importorskip("tests.test_pp_moe_aux_off_gloo")
+    named = 0
+    for cell in caps.CELLS:
+        if (
+            cell.parity
+            and "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation[" in cell.parity
+        ):
+            assert " x aux off x pp" in cell.name and "gpt_oss" in cell.name, cell.name
+            ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+            assert set(ids) <= set(parity.CELLS), (cell.name, ids)
+            assert all(parity.CELLS[i].get("lora") for i in ids), (cell.name, ids)
+            experts = {bool(parity.CELLS[i].get("experts")) for i in ids}
+            assert experts == {"lora+experts" in cell.name}, (cell.name, ids)
+            named += 1
+    assert named == 3  # lora, lora+experts, qlora
+
+
 def test_unsloth_checkpoint_keeps_an_unverified_moe_row_refused_under_strict(
     clean_env, monkeypatch
 ):
@@ -487,3 +675,63 @@ def test_qwen3_moe_qlora_pp_keeps_its_refusal_with_the_micro_batch_evidence():
     with pytest.raises(NotImplementedError, match = "UNSLOTH_PP_MICROBATCHES=1") as e:
         caps.check(query)
     assert "qwen3_moe x qlora x aux on x pp" in str(e.value)
+
+
+def test_gemma4_moe_lora_under_pp_follows_its_gloo_evidence():
+    kw = dict(trainer = "sft", family = "gemma4", moe = True, mode = "lora", pp = 2, pp_schedule = "1f1b")
+    for extra in (
+        {},
+        {"multimodal": True},
+    ):  # the Trainer path trains a multimodal checkpoint on text
+        query = caps.Query(**{**kw, **extra})
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "gemma4_moe" in cell.parity, (extra, cell)
+        caps.check(query)
+    for extra in ({"expert_lora": True}, {"router_aux_loss": True}):
+        assert caps.cell_status(caps.Query(**{**kw, **extra}))[0] != "supported", extra
+
+
+@pytest.mark.parametrize("memory", ["none", "gc", "unsloth_offload"])
+@pytest.mark.parametrize("expert_lora", [False, True])
+def test_deepseek_v41_lora_under_pp_follows_its_gloo_evidence(memory, expert_lora):
+    import re
+
+    # Release config keeps a vision_config; attention is windowed and eager.
+    kw = dict(
+        trainer = "sft",
+        family = "deepseek_v41",
+        moe = True,
+        mode = "lora",
+        multimodal = True,
+        windowed = True,
+        attention = "eager",
+        pp = 2,
+        pp_schedule = "gpipe",
+        memory = memory,
+        expert_lora = expert_lora,
+    )
+    status, cell = caps.cell_status(caps.Query(**kw))
+    assert status == "supported", cell
+    caps.check(caps.Query(**kw))
+    parity = pytest.importorskip("tests.test_parallel_deepseek_v41_gloo")
+    ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+    assert set(ids) <= set(parity.CELLS) and any("gc" in i for i in ids), ids
+    assert all(parity.CELLS[i]["mode"] == "pp" for i in ids)
+    for extra in (
+        {"mode": "qlora"},
+        {"mode": "full"},
+        {"attention": "sdpa"},
+        {"memory": "unsloth_gc"},
+        {"router_aux_loss": True},
+        {"cp": 2},
+    ):
+        assert caps.cell_status(caps.Query(**{**kw, **extra}))[0] != "supported", extra
+
+
+def test_native_port_attention_is_not_the_fast_kernels():
+    native = type("DeepseekV41Attention", (torch.nn.Module,), {"forward": lambda self, x: x})
+    native.forward.__module__ = "unsloth.models.deepseek_v41.modeling"
+    fast = type("LlamaAttention", (torch.nn.Module,), {"forward": lambda self, x: x})
+    fast.forward.__module__ = "unsloth.models.llama"
+    assert not caps._kernels(torch.nn.Sequential(native()))
+    assert caps._kernels(torch.nn.Sequential(fast()))

@@ -6,7 +6,8 @@ export const VIDEO_ACCEPT =
   "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/3gpp2,video/ogg,video/mp2t,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.3g2,.ogv,.m2ts";
 
 // Matches _MAX_VIDEO_B64_CHARS in the backend so the composer does not accept a refused clip.
-const MAX_VIDEO_SIZE_MB = 64;
+// Its base64 (~341M chars) stays under V8's 2^29 - 24 string length limit.
+const MAX_VIDEO_SIZE_MB = 256;
 export const MAX_VIDEO_SIZE = MAX_VIDEO_SIZE_MB * 1024 * 1024;
 export const MAX_VIDEO_SIZE_LABEL = `${MAX_VIDEO_SIZE_MB}MB`;
 
@@ -39,8 +40,11 @@ const VIDEO_MIME_RE = /^video\//i;
 
 /** The request builder drops non-^video/ parts, so trust the extension if the type is not video. */
 export function videoMimeForFile(file: File): string {
-  if (VIDEO_MIME_RE.test(file.type)) return file.type;
-  const name = file.name.toLowerCase();
+  return VIDEO_MIME_RE.test(file.type) ? file.type : videoMimeForName(file.name);
+}
+
+export function videoMimeForName(fileName: string): string {
+  const name = fileName.toLowerCase();
   for (const [ext, mime] of Object.entries(VIDEO_MIME_BY_EXTENSION)) {
     if (name.endsWith(ext)) return mime;
   }

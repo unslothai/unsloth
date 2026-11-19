@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .parsers import mupdf_serialized
+
 # Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN to recover a unique match.
 MAX_ANCHOR_WORDS = 12
 MIN_ANCHOR_WORDS = 4
@@ -186,6 +188,7 @@ def _regions_for_match(
         return []
 
 
+@mupdf_serialized
 def pdf_regions_for_chunks(pdf_path: Path, pages: list, chunks: list) -> list[list[dict[str, Any]]]:
     """Region rects per chunk (parallel to ``chunks``), keyed off each chunk's
     ``source_page_index`` / ``page_char_start`` / ``page_char_end``. Non-PDFs and

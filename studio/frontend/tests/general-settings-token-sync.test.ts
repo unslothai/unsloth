@@ -185,6 +185,10 @@ function generalTab(initialToken: string) {
       loadCloseToTray: noop,
       updateCloseToTray: noop,
     },
+    "../api/keep-awake": {
+      loadKeepAwake: noop,
+      updateKeepAwake: noop,
+    },
     "../api/tray-icon": {
       loadTrayIconVisible: noop,
       updateTrayIconVisible: noop,

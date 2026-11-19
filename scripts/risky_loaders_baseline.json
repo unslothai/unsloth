@@ -11,14 +11,6 @@
   ],
   "entries": [
     {
-      "file": "unsloth/models/float8_training.py",
-      "rule": "dynamic-import",
-      "sink": "spec_from_file_location",
-      "digest": "78b864cf6acb1555",
-      "count": 1,
-      "reason": "Standalone import fallback loads only unsloth/kernels/fp8_lora.py beside this shipped module, from __file__; no model metadata or caller input selects the module name or path."
-    },
-    {
       "file": "scripts/prequant_probe.py",
       "rule": "unsafe-deserialize",
       "sink": "torch.load",
@@ -99,6 +91,14 @@
       "reason": "Imports a name from the constant _TORCHAO_INTMM_MODULES tuple (torchao's safe_int_mm homes); never a model, request or download name."
     },
     {
+      "file": "studio/backend/core/inference/diffusion_minimax_h3_image.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
+      "count": 1,
+      "reason": "Loads only the two vendored diffusers model files shipped in studio/backend/vendor/diffusers_minimax_h3_image, by a path built from __file__ and a literal module name; no model metadata or caller input selects the module name or path."
+    },
+    {
       "file": "studio/backend/core/inference/diffusion_prequant.py",
       "rule": "dynamic-import",
       "sink": "__import__",
@@ -153,6 +153,14 @@
       "digest": "59e72c01edb14c86",
       "count": 1,
       "reason": "install_rope only imports a name already in _ROPE_FNS, which is built from the fixed _MODULES tuple of two diffusers Flux transformer modules."
+    },
+    {
+      "file": "studio/backend/core/inference/diffusion_sage_hub.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "382035b607a2dab9",
+      "count": 1,
+      "reason": "Imports the SageAttention build the kernels package would load: the constant kernels-community/sage-attention repo at a version tag, a build directory picked from this torch, every file checked against the build's sha256 digests, and builds that declare Python dependencies refused."
     },
     {
       "file": "studio/backend/core/inference/diffusion_torchao_patches.py",
@@ -217,6 +225,14 @@
       "digest": "df424636e7148b98",
       "count": 2,
       "reason": "Loader is _FrontmatterLoader, a yaml.SafeLoader subclass that only adds a merge-key pair budget; no Python object construction."
+    },
+    {
+      "file": "studio/backend/core/inference/video_cosmos3.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "e0a86e3c9895326a",
+      "count": 1,
+      "reason": "Imports GUARDRAIL_PACKAGE, the module constant 'cosmos_guardrail', only after guardrail_installed() confirmed it is installed; no user-controlled module name."
     },
     {
       "file": "studio/backend/core/inference/video_wan_fused.py",
@@ -475,6 +491,14 @@
       "reason": "Iterates fixed packaging / pip._vendor.packaging module names."
     },
     {
+      "file": "studio/install_python_stack.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "86a4baabc0246936",
+      "count": 1,
+      "reason": "Loads studio/install_hnsw_prebuilt.py from the fixed sibling path HNSW_INSTALLER (derived from __file__); no caller or Hub input selects the module name or path."
+    },
+    {
       "file": "unsloth/__init__.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -667,12 +691,12 @@
       "reason": "Fallback when this file is loaded on its own: loads unsloth/precision/__init__.py from the sibling directory of the shipped package, a fixed path, never a user-supplied one."
     },
     {
-      "file": "unsloth/models/fsdp2_save.py",
-      "rule": "unsafe-deserialize",
-      "sink": "pickle.loads",
-      "digest": "bf2d3c412d57fd50",
+      "file": "unsloth/models/float8_training.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
       "count": 1,
-      "reason": "_share_from_writer: unpickles only what the export's writer rank stored under an unsloth_fsdp2_export_* key in the job's own default c10d store; a party able to write that store already controls the job's collectives."
+      "reason": "Standalone import fallback loads only unsloth/kernels/fp8_lora.py beside this shipped module, from __file__; no model metadata or caller input selects the module name or path."
     },
     {
       "file": "unsloth/models/loader.py",
@@ -718,6 +742,14 @@
       "file": "unsloth/models/rl.py",
       "rule": "dynamic-import",
       "sink": "import_module",
+      "digest": "8a43c55c018acccf",
+      "count": 1,
+      "reason": "TRL's async GRPO trainer module, from a fixed tuple of two literal names (trl.trainer.async_grpo_trainer, trl.experimental.async_grpo.async_grpo_trainer), not external input."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
       "digest": "fe73e10b8cc4e18a",
       "count": 1,
       "reason": "Prefix-bounded to trl.trainer.<config module>; name comes from the installed TRL trainer classes."
@@ -737,14 +769,6 @@
       "digest": "9a08f32d1af83ea3",
       "count": 1,
       "reason": "Reached only after the trust_remote_code gate in _resolve_module_class raises for an untrusted non sentence_transformers class."
-    },
-    {
-      "file": "unsloth/models/tp_replica.py",
-      "rule": "unsafe-deserialize",
-      "sink": "pickle.loads",
-      "digest": "bf2d3c412d57fd50",
-      "count": 1,
-      "reason": "Reads the result rank 0 published to this job's own torch.distributed c10d store (the same trust boundary as broadcast_object_list); no file or network payload from outside the process group."
     },
     {
       "file": "unsloth/save.py",
@@ -809,6 +833,14 @@
       "digest": "59e72c01edb14c86",
       "count": 1,
       "reason": "Module-level __getattr__ for the lazily loaded command names: the module name comes only from the literal _LAZY_ATTRIBUTES table of unsloth_cli.commands.* modules, and an unknown name raises AttributeError before any import."
+    },
+    {
+      "file": "unsloth_cli/_npu.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "20120c388ba71a53",
+      "count": 1,
+      "reason": "npu_detected() loads Studio's own studio/backend/utils/hardware/npu.py from a fixed path next to this package (Path(__file__).parents[1]); no user, network or checkpoint input chooses the file, and any failure returns False."
     },
     {
       "file": "unsloth_cli/_studio_deps.py",

@@ -86,6 +86,7 @@ def _make_backend(
 ):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._port = port
+    inst._stdout_lines = []
     # __new__ skips __init__; _auth_headers reads this for --api-key servers.
     inst._api_key = api_key
     inst._effective_context_length = effective_ctx
@@ -271,9 +272,8 @@ _CAPS_NONE = {"supports_kv_unified": False, "supports_fit_ctx": False}
 
 
 def test_kv_unified_added_for_multi_slot():
-    """Explicit --parallel N disables llama-server's auto-slots kv-unified
-    default, splitting -c into per-slot windows of -c/N; Unsloth must restore
-    the shared pool so one request can use the full advertised context."""
+    """Explicit --parallel N disables the auto-slots kv-unified default, splitting -c into -c/N
+    windows; Unsloth must restore the shared pool so one request gets the full context."""
     flags = LlamaCppBackend._ctx_integrity_flags(4, False, False, 98304, 98304, _CAPS_ALL)
     assert "--kv-unified" in flags
 

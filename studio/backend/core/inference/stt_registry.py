@@ -51,6 +51,8 @@ def load(
     engine: str,
     request_cancel_event: Optional[threading.Event] = None,
     device: Optional[str] = None,
+    *,
+    context_length: Optional[int] = None,
     **options,
 ) -> None:
     """Make ``model`` resident on ``engine``, then release every idle other engine.
@@ -65,6 +67,9 @@ def load(
     sidecar raises, before anything is released: a 409 for a model that is not
     downloaded must not cost the user the engine they were already using.
     """
+    # This option belongs to the llama.cpp ASR sidecar; other engines do not accept it.
+    if engine == "mtmd" and context_length is not None:
+        options["context_length"] = context_length
     others = [name for name in STT_ENGINES if name != engine]
     with _load_lock:
         # Release other engines before allocating only once the checkpoint is on disk, so a switch

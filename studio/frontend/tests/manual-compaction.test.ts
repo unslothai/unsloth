@@ -26,6 +26,7 @@ import {
   appendCompactionMarker,
   type CompactionMarker,
   compactionAnchorToolCallId,
+  compactionNoticeKind,
   type ContextTruncation,
 } from "../src/features/chat/utils/context-truncation.ts";
 import {
@@ -187,7 +188,20 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   assert.match(submit, /resumesThought\(\{/);
   assert.match(submit, /!runtime\.supportsTools \|\|/);
   assert.match(submit, /runtime\.incognito \|\| isThreadIncognito\(referenceThreadId\)/);
+  // A cloud model skips the local gate: it summarizes rather than starting a checkpoint.
+  assert.match(
+    submit,
+    /!isExternalModelId\(runtime\.params\.checkpoint\) &&\s+\(!runtime\.supportsTools \|\|/,
+  );
   const adapter = await readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(
+    adapter,
+    /\(isGgufForCompaction \|\| isMlxForCompaction \|\| isNpuForCompaction \|\|\s+isCloudForCompaction\);/,
+  );
+  assert.match(
+    adapter,
+    /autoCompactTokens: externalProvider\.autoCompactTokens,\n\s+compactNow,\n\s+\}\),/,
+  );
   assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\) &&/);
   assert.match(adapter, /compactNow,\n\s+\}\),/);
   // Only a reset started by this request counts; a replayed manual epoch is not one.
@@ -195,7 +209,7 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
     adapter,
     /marker\.truncation\.manual === true &&\s+marker\.truncation\.checkpoint_started === true/,
   );
-  assert.match(adapter, /compactNow &&\n\s+!compactionMarkers\?\.some\(/);
+  assert.match(adapter, /compactNow &&\n\s+!droppedHistoryWarned &&\n\s+!compactionMarkers\?\.some\(/);
   assert.match(adapter, /"This chat was not compacted"/);
 });
 
@@ -322,7 +336,9 @@ function compactMenu(threadId: string) {
       });
       return supported;
     },
+    isNpuModelId: (value: string) => value.startsWith("lemonade:"),
     requestThreadCompaction,
+    isExternalModelId: (id: string) => id.startsWith("external::"),
     hasPreStreamRunReservation,
     liveThreadRunning,
     toast: { info: (text: string) => notices.push(text) },
@@ -336,7 +352,8 @@ test("the compact button queues the same one-shot request for the selected chat"
     const menu = compactMenu(id);
     menu.click();
     menu.click();
-    assert.deepEqual(menu.notices, ["chatMenu.compactQueued", "chatMenu.compactQueued"]);
+    // The queued rule in the thread confirms it, so the menu raises no toast.
+    assert.deepEqual(menu.notices, []);
     assert.equal(takeThreadCompactionRequest("another-chat"), false);
     assert.equal(takeThreadCompactionRequest(id), true);
     assert.equal(takeThreadCompactionRequest(id), false);
@@ -360,6 +377,17 @@ test("the compact button does not queue empty, hidden, unsupported or busy chats
   }
 });
 
+test("the compact button works on a cloud model, which needs neither tools nor a local runtime", () => {
+  const menu = compactMenu("cloud-chat");
+  menu.runtime.params.checkpoint = "external::provider-1::vendor/model";
+  menu.runtime.loadedIsGguf = false;
+  menu.runtime.supportsTools = false;
+  menu.unsupported();
+  menu.click();
+  assert.deepEqual(menu.notices, []);
+  assert.equal(takeThreadCompactionRequest("cloud-chat"), true);
+});
+
 test("the compact button requires tool capability for both local backends", () => {
   for (const mlx of [false, true]) {
     const menu = compactMenu(`tools-${mlx}`);
@@ -372,8 +400,22 @@ test("the compact button requires tool capability for both local backends", () =
     menu.runtime.supportsTools = true;
     menu.click();
     assert.equal(takeThreadCompactionRequest(menu.menu.item.id), true);
-    assert.deepEqual(menu.notices, ["chatMenu.compactUnsupported", "chatMenu.compactQueued"]);
+    assert.deepEqual(menu.notices, ["chatMenu.compactUnsupported"]);
   }
+});
+
+test("the compact button queues for a tool-capable NPU model", () => {
+  const menu = compactMenu("npu-chat");
+  menu.unsupported();
+  menu.runtime.loadedIsGguf = false;
+  menu.runtime.params.checkpoint = "lemonade:qwen3-0.6b-FLM";
+  menu.click();
+  assert.equal(takeThreadCompactionRequest("npu-chat"), true);
+  assert.deepEqual(menu.notices, []);
+  assert.match(
+    readSrc("components/assistant-ui/thread.tsx"),
+    /\}\) \|\| isNpuModelId\(runtime\.params\.checkpoint\)/,
+  );
 });
 
 test("the compact button waits for its accepted send's preflight to release", () => {
@@ -416,7 +458,7 @@ test("the compact button waits for its accepted send's preflight to release", ()
       menu.click();
       assert.equal(takeThreadCompactionRequest(id), true);
       assert.equal(takeThreadCompactionRequest(siblingId), false);
-      assert.deepEqual(menu.notices, ["chatMenu.compactQueued"]);
+      assert.deepEqual(menu.notices, []);
     } finally {
       releasePreStreamRunReservation(token);
       releasePreStreamRunReservation(sibling);
@@ -539,4 +581,42 @@ test("the compact menu item binds its action, icon and busy state", () => {
   assert.equal(disabled({ item: { type: "single" } }, true), true);
   assert.equal(disabled({ item: { type: "compare" } }, false), true);
   assert.equal(expression(item.openingElement, "icon"), "CollapseIcon");
+});
+
+test("a queued compaction reads as queued, can be cancelled, and is announced", () => {
+  const divider = readSrc("components/assistant-ui/compaction-divider.tsx");
+  // Never the finished label before the request has run, on either backend.
+  assert.match(divider, /label=\{cloud \? "Summarizes on next message" : "Compacts on next message"\}/);
+  assert.match(divider, /data-compaction-pending=\{pending \? "true" : undefined\}/);
+  assert.match(divider, /border-dashed/);
+  // Plain text: the finished marker keeps the hover details, the queued one opens nothing.
+  assert.match(divider, /\{pending \? \(\s*<span\s+data-slot="compaction-divider-label"/);
+  assert.doesNotMatch(divider, /Your next message (is sent|starts)/);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(thread, /onCancel=\{\(\) => useCompactRequestStore\.getState\(\)\.clear\(threadId\)\}/);
+  // Brought into view only when a request arrives, not on every mount or thread switch.
+  assert.match(thread, /<span role="status" className="sr-only">/);
+  // Anchored on whatever message ends the shown branch, a prompt whose reply failed included,
+  // and hidden while a run is live so it never claims a request the run already took.
+  assert.match(thread, /\(\{ thread, message \}\) => message\.isLast && !thread\.isRunning,/);
+  assert.doesNotMatch(thread, /message\.isLast && message\.role === "assistant",\s*\);\s*const cloud/);
+  assert.match(thread, /\{requested && idle\n/);
+  assert.match(thread, /!previous\.requested\[threadId\] &&\s*!aui\.thread\(\)\.getState\(\)\.isRunning/);
+  assert.match(thread, /<PendingCompactionStatus threadId=\{threadId\} \/>/);
+});
+
+test("a /compact whose summary failed raises the dropped warning, not a second no-op notice", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  // The explicit request is told even after the once-per-thread warning was spent.
+  assert.match(
+    adapter,
+    /\(compactNow \|\| !rollingContextNoticeThreads\.has\(resolvedThreadId\)\) &&\s*!droppedHistoryWarned/,
+  );
+  assert.match(adapter, /droppedHistoryWarned = true;\s*toast\.warning\(COMPACTION_NOTICE_LABEL\[noticeKind\]/);
+  assert.match(adapter, /compactNow &&\s*!droppedHistoryWarned &&\s*!compactionMarkers\?\.some\(/);
+  // The failed summary is a dropped kind, and it never carries the manual checkpoint the no-op check reads.
+  assert.equal(
+    compactionNoticeKind({ dropped_messages: 4, fits: true, summary_failed: true }),
+    "dropped-after-failed-summary",
+  );
 });

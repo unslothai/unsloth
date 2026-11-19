@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import html
 import itertools
 import operator
 import re
@@ -74,15 +73,55 @@ def _style_hides_element(style: str) -> bool:
     return False
 
 
+def _has_role(attr_dict: dict, role: str) -> bool:
+    value = attr_dict.get("role")
+    return bool(value) and role in value.lower().split()
+
+
 def _is_hidden_element(attr_dict: dict) -> bool:
-    """Any present hidden attribute counts, even hidden=false, since presence means not rendered; aria-hidden=true and inline hiding styles count too"""
+    """Any present hidden attribute counts, even hidden=false, except until-found and tab panels, which tabbed docs ship
+    hidden (Headless UI adds display:none too); aria-hidden=true and inline hiding styles count too"""
+    tab_panel_shipped_hidden = False
     if "hidden" in attr_dict:
-        return True
+        hidden = (attr_dict["hidden"] or "").strip().lower()
+        tab_panel_shipped_hidden = _has_role(attr_dict, "tabpanel")
+        if hidden != "until-found" and not tab_panel_shipped_hidden:
+            return True
     aria_hidden = attr_dict.get("aria-hidden")
     if aria_hidden and aria_hidden.strip().lower() == "true":
         return True
     style = attr_dict.get("style")
-    return bool(style) and _style_hides_element(style)
+    return bool(style) and not tab_panel_shipped_hidden and _style_hides_element(style)
+
+
+_MATH_INVISIBLE = {0x2061: " ", 0x2062: None, 0x2063: None, 0x2064: None}
+_MATH_SPECIALS = re.compile(r"[{}%#&_$]")
+_MATH_SCRIPTS = {"msup": "^", "msub": "_", "munder": "_"}
+
+
+def _mathml_tex(tag: str, parts: list[str]) -> str:
+    if tag in ("annotation-xml", "mphantom"):
+        return ""
+    if tag == "mtext":
+        text = "".join(parts)
+        return f"\\text{{{text}}}" if text.strip() else " "
+    if tag == "mfrac" and len(parts) == 2:
+        return f"\\frac{{{parts[0]}}}{{{parts[1]}}}"
+    if tag == "msqrt":
+        return f"\\sqrt{{{''.join(parts)}}}"
+    if tag == "mroot" and len(parts) == 2:
+        return f"\\sqrt[{parts[1]}]{{{parts[0]}}}"
+    if tag in _MATH_SCRIPTS and len(parts) == 2:
+        return f"{parts[0]}{_MATH_SCRIPTS[tag]}{{{parts[1]}}}"
+    if tag == "mover" and len(parts) == 2:
+        return f"\\overset{{{parts[1]}}}{{{parts[0]}}}"
+    if tag in ("msubsup", "munderover") and len(parts) == 3:
+        return f"{parts[0]}_{{{parts[1]}}}^{{{parts[2]}}}"
+    if tag == "mtr":
+        return " & ".join(parts)
+    if tag == "mtable":
+        return " \\\\ ".join(parts)
+    return "".join(parts)
 
 
 def _span_attr(attr_dict: dict, name: str) -> int:
@@ -353,6 +392,11 @@ _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 _WHITESPACE_RUN = re.compile(r"\s+")
+# browsers collapse only ASCII whitespace, so text indented with &nbsp; or &emsp; keeps its indent
+_COLLAPSIBLE_RUN = re.compile(r"[ \t\n\r\f]+")
+# a space run holding a kept Unicode space; the lookbehind starts it only at a run's first char, keeping it linear
+_KEPT_SPACE_RUN = re.compile(r"(?<![^\S\n])[ \t\r\f\v]*[^\S \t\n\r\f\v][^\S\n]*")
+_KEPT_SPACE = re.compile(r"[^\S \t\n\r\f\v]")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -422,6 +466,7 @@ _SITE_LINK_MARKER_TAIL = re.compile(r"\x00[0-9a-f]+:\d+:[se]\x00$")
 # parts a base lookup reads back: enough for delimiters and link markers, bounded on hostile pages
 _SUP_BASE_SCAN_PARTS = 8
 _SUP_BASE_SCAN_CHARS = 128
+_SUP_BASE_ENDS = ")]}|）］｝"
 # a caret binds one token: a signed number or one letter goes bare, anything longer in parentheses
 _BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
 # split cents: $19<sup>99</sup> is a price, not an exponent
@@ -469,6 +514,66 @@ def _visible_tail(text: str) -> str:
         if trimmed == text:
             return text
         text = trimmed
+
+
+def _note_reference(attr_dict: dict) -> bool:
+    return (
+        any(
+            token in _FOOTNOTE_CLASSES
+            or any(
+                part == "fn" or part.startswith(_FOOTNOTE_CLASS_PREFIXES)
+                for part in _CLASS_PART_SPLIT.split(token)
+            )
+            for token in (attr_dict.get("class") or "").lower().split()
+        )
+        or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
+    )
+
+
+def _sup_exponent(base: str, raw: str, shown: str, after_price: int) -> str | None:
+    visible = shown.strip(_MD_DELIMITERS)
+    if (
+        not visible
+        or "\n" in visible
+        or visible[0] == "["
+        # $19<sup>.99</sup> / €19<sup>,99</sup> are split cents; 10<sup>.5</sup> with no currency is a power
+        or (visible[0] in ".," and after_price)
+        or not any(c.isalnum() for c in visible)
+        or visible.lower() in _PLAIN_SUFFIXES
+        or (
+            len(_last_word(base)) > 1
+            and _CITATION_LIST.fullmatch(visible)
+            and ("–" in visible or not _THOUSANDS.fullmatch(visible))
+        )
+        or (base[-1] == "2" and visible.lower() in _SECOND_SUFFIXES)
+        or (
+            (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
+            and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
+        )
+        or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
+        # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
+        or (len(visible) == after_price and visible.isdigit())
+    ):
+        return None
+    # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
+    bare = _BARE_EXPONENT.fullmatch(visible) or (
+        visible.startswith("(") and visible.endswith(")") and visible.count("(") == 1
+    )
+    return f"^{raw}" if bare else f"^({raw})"
+
+
+def _raise_superscript(parts: list[str], start: int) -> None:
+    before = parts[max(start - _SUP_BASE_SCAN_PARTS, 0) : start]
+    # the joined tail: Word splits runs mid-word, and the citation rule reads the whole last word
+    base = "".join(part[-_SUP_BASE_SCAN_CHARS:] for part in before)[-_SUP_BASE_SCAN_CHARS:]
+    if not base or not (base[-1].isalnum() or base[-1] in _SUP_BASE_ENDS):
+        return
+    after_price = _MarkdownRenderer._after_price(before) if base[-1].isdigit() else 0
+    joined = "".join(parts[start:])
+    raw = joined.strip()
+    exponent = _sup_exponent(base, raw, raw, after_price)
+    if exponent is not None:
+        parts[start:] = [exponent + joined[len(joined.rstrip()) :]]
 
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
@@ -810,6 +915,166 @@ class _TitleButtonScan:
 # (len, hash) of recent pages -> their title buttons, so main-content passes over one page scan it once
 _TITLE_BUTTON_CACHE: dict[tuple[int, int], frozenset[tuple[int, int]]] = {}
 _TITLE_BUTTON_CACHE_SIZE = 4
+_TabLabels = tuple[dict[str, str], dict[str, str], dict[tuple[int, int], str]]
+_TAB_LABEL_CACHE: dict[tuple[int, int], _TabLabels] = {}
+_MAX_TAB_LABEL_CHARS = 80
+# what the renderer skips, except buttons, which sphinx-tabs uses as tabs
+_TAB_LABEL_SKIP = _SKIP_TAGS - {"button"}
+_TAB_PANEL = re.compile(r"tabpanel", re.IGNORECASE)
+_TAB_PANEL_PAIRING = re.compile(r"aria-labelledby|aria-controls|tablist", re.IGNORECASE)
+
+
+class _TabLabelScan(HTMLParser):
+    """Tab text by id for aria-labelledby; panel_labels by panel id for a tab's aria-controls; order_labels by panel
+    start-tag position for Headless UI and Docusaurus, which pair panels with tabs only by order and may have no ids."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs = True)
+        self.labels: dict[str, str] = {}
+        self.panel_labels: dict[str, str] = {}
+        self.order_labels: dict[tuple[int, int], str] = {}
+        self._slot_labels: list[str] = []
+        self._tab_slot = -1
+        self._open: list[str] = []
+        # per-tag _open indices, so an end tag that matches nothing costs O(1) rather than a stack walk
+        self._open_at: dict[str, list[int]] = {}
+        self._muted_at = -1  # _open index of the outermost skipped or hidden element
+        self._tab_at = -1  # _open index of the tab being read
+        self._tab_id = ""
+        self._tab_controls = ""
+        self._tab_selected = False
+        self._selected_panels: set[str] = set()
+        self._parts: list[str] = []
+        self._list_at = -1  # _open index of the tablist being read
+        self._list_tabs: list[int] = []
+        self._list_explicit = False
+        self._closed_list: tuple[int, list[int]] | None = None
+        # (wrapper _open index, tab slots, (panel position, has aria-labelledby)), innermost last
+        self._groups: list[tuple[int, list[int], list[tuple[tuple[int, int], bool]]]] = []
+
+    def _finish_tab(self) -> None:
+        # capped here too, so joining many long labels per panel stays linear
+        label = " ".join("".join(self._parts).split())[:_MAX_TAB_LABEL_CHARS]
+        if label and self._tab_id:
+            self.labels.setdefault(self._tab_id, label)
+        if self._tab_slot >= 0:
+            self._slot_labels[self._tab_slot] = label
+        # a panel several tabs control shows the selected one's content; with none selected it is ambiguous
+        for panel_id in self._tab_controls.split():
+            if panel_id in self._selected_panels:
+                continue
+            if self._tab_selected:
+                self._selected_panels.add(panel_id)
+                self.panel_labels[panel_id] = label
+            else:
+                self.panel_labels[panel_id] = "" if panel_id in self.panel_labels else label
+        self._tab_at = -1
+        self._tab_slot = -1
+        self._parts = []
+
+    def _pop_to(self, i: int) -> None:
+        if 0 <= self._tab_at and i <= self._tab_at:
+            self._finish_tab()
+        if 0 <= self._list_at and i <= self._list_at:
+            if not self._list_explicit:
+                self._closed_list = (self._list_at, self._list_tabs)
+            self._list_at = -1
+        if self._closed_list and i < self._closed_list[0]:
+            self._closed_list = None
+        while self._groups and self._groups[-1][0] >= i:
+            self._finish_group()
+        for tag in self._open[i:]:
+            self._open_at[tag].pop()
+        del self._open[i:]
+        if self._muted_at >= i:
+            self._muted_at = -1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # an omitted </li> or </p> ends the element at a sibling that closes it, a tab included
+        while self._open and tag in _IMPLICIT_CLOSERS.get(self._open[-1], ()):
+            self._pop_to(len(self._open) - 1)
+        # order-paired panels live in the element right after the tablist
+        if self._closed_list:
+            if tag not in _VOID_TAGS:
+                self._groups.append((len(self._open), self._closed_list[1], []))
+            self._closed_list = None
+        attr_dict = dict(attrs)
+        if tag in _VOID_TAGS:
+            # a void tab still takes its slot
+            if self._take_slot(attr_dict, len(self._open) - 1):
+                self._start_tab(attr_dict, len(self._open))
+                self._finish_tab()
+            return
+        self._open_at.setdefault(tag, []).append(len(self._open))
+        self._open.append(tag)
+        if self._muted_at < 0 and (tag in _TAB_LABEL_SKIP or _is_hidden_element(attr_dict)):
+            self._muted_at = len(self._open) - 1
+        if self._list_at < 0 and _has_role(attr_dict, "tablist"):
+            self._list_at = len(self._open) - 1
+            self._list_tabs = []
+            self._list_explicit = False
+        if self._take_slot(attr_dict, len(self._open) - 2):
+            self._start_tab(attr_dict, len(self._open) - 1)
+
+    def _start_tab(self, attr_dict: dict, at: int) -> None:
+        self._tab_at = at
+        self._tab_slot = self._list_tabs[-1] if self._list_at >= 0 and self._list_tabs else -1
+        self._tab_id = attr_dict.get("id") or ""
+        self._tab_controls = attr_dict.get("aria-controls") or ""
+        self._tab_selected = (attr_dict.get("aria-selected") or "").strip().lower() == "true"
+
+    def _take_slot(self, attr_dict: dict, parent: int) -> bool:
+        """Count a tab in the open tablist, or a panel in the innermost group's wrapper; True for a tab to read."""
+        if self._tab_at >= 0:
+            return False
+        if _has_role(attr_dict, "tab"):
+            if self._list_at >= 0:
+                self._list_tabs.append(len(self._slot_labels))
+                self._slot_labels.append("")
+                self._list_explicit |= bool((attr_dict.get("aria-controls") or "").strip())
+            return True
+        if self._groups and self._groups[-1][0] == parent and _has_role(attr_dict, "tabpanel"):
+            linked = bool((attr_dict.get("aria-labelledby") or "").strip())
+            self._groups[-1][2].append((self.getpos(), linked))
+        return False
+
+    def _finish_group(self) -> None:
+        _, slots, panels = self._groups.pop()
+        # order pairs only when every tab has its panel (else labels after a gap shift) and no panel names its tab
+        if len(panels) == len(slots) and not any(linked for _, linked in panels):
+            for slot, (pos, _) in zip(slots, panels):
+                if self._slot_labels[slot]:
+                    self.order_labels[pos] = self._slot_labels[slot]
+
+    def handle_endtag(self, tag: str) -> None:
+        # stray end tags, and the </img> HTMLParser sends after <img/>, match nothing and are ignored
+        positions = self._open_at.get(tag)
+        if positions:
+            self._pop_to(positions[-1])
+
+    def handle_data(self, data: str) -> None:
+        if self._tab_at >= 0 and self._muted_at < 0 and len(self._parts) < 64:
+            self._parts.append(data)
+
+    def close(self) -> None:
+        super().close()
+        while self._groups:
+            self._finish_group()
+
+
+def _tab_labels(source_html: str, key: tuple[int, int]) -> _TabLabels:
+    labels = _TAB_LABEL_CACHE.get(key)
+    if labels is None:
+        labels = ({}, {}, {})
+        if _TAB_PANEL.search(source_html) and _TAB_PANEL_PAIRING.search(source_html):
+            scan = _TabLabelScan()
+            scan.feed(source_html)
+            scan.close()
+            labels = (scan.labels, scan.panel_labels, scan.order_labels)
+        if len(_TAB_LABEL_CACHE) >= _TITLE_BUTTON_CACHE_SIZE:
+            _TAB_LABEL_CACHE.clear()
+        _TAB_LABEL_CACHE[key] = labels
+    return labels
 
 
 class _MarkdownRenderer(HTMLParser):
@@ -829,10 +1094,14 @@ class _MarkdownRenderer(HTMLParser):
         site_links: SiteLinks | None = None,
         page_span_limit: int | None = None,
     ):
-        super().__init__(convert_charrefs = False)
+        # charrefs must decode inside their text run: decoded apart, they left <pre> and gained a stray ';' (#17199)
+        super().__init__(convert_charrefs = True)
         self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
+        self.tab_labels: dict[str, str] = {}  # tab id -> its text, from _TabLabelScan
+        self.panel_labels: dict[str, str] = {}
+        self.order_labels: dict[tuple[int, int], str] = {}
         self._title_scan: _TitleButtonScan | None = None
         self._site_links = site_links
         self._out: list[str] = []
@@ -844,6 +1113,11 @@ class _MarkdownRenderer(HTMLParser):
         self._skip_html_at: list[int] = []
         self._skip_html_integration: list[bool] = []
         self._form_pointer: bool = False
+        # one list per skipped element of the formula being read: the TeX of its children so far
+        self._math: list[list[str]] | None = None
+        self._math_tex: str = ""
+        self._math_tex_at: int = -1
+        self._math_block: bool = False
 
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
@@ -878,14 +1152,17 @@ class _MarkdownRenderer(HTMLParser):
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
+        self._link_depth: int = -1
         self._link_seq: int = 0
         # a link wrapping a heading emits after the mark pops, so the tee is told to treat it so
         self._link_had_heading: bool = False
         self._link_heading_parts: list[str] = []
         self._emit_as_heading: bool = False
         self._replaying: bool = False
-        # Credited only at </a>: an <a> left open adopts body prose, which is not furniture.
+        # Credited only at </a> or a nested <a>: an <a> left open adopts body prose, which is not furniture.
         self._link_header_chars: int = 0
+        self._link_open_state: tuple = ()
+        self._closed_link_for: bool = False
 
         self._list_stack: list[str] = []  # "ul" or "ol"
         self._ol_counter: list[int] = []
@@ -960,6 +1237,8 @@ class _MarkdownRenderer(HTMLParser):
             if frame is not None and self._site_links is not None
             else text
         )
+        if frame is not None:
+            measured = _fold_kept_spaces(measured)
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(measured.strip())
@@ -1001,7 +1280,7 @@ class _MarkdownRenderer(HTMLParser):
             part = _visible_tail(part)
             if part:
                 base = part[-1]
-                return part if base.isalnum() or base in ")]}|）］｝" else ""
+                return part if base.isalnum() or base in _SUP_BASE_ENDS else ""
         return ""
 
     @staticmethod
@@ -1036,36 +1315,9 @@ class _MarkdownRenderer(HTMLParser):
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
-        visible = shown.strip(_MD_DELIMITERS)
-        if (
-            not visible
-            or "\n" in visible
-            or visible[0] == "["
-            # $19<sup>.99</sup> / €19<sup>,99</sup> are split cents; 10<sup>.5</sup> with no currency is a power
-            or (visible[0] in ".," and after_price)
-            or not any(c.isalnum() for c in visible)
-            or visible.lower() in _PLAIN_SUFFIXES
-            or (
-                len(_last_word(base)) > 1
-                and _CITATION_LIST.fullmatch(visible)
-                and ("–" in visible or not _THOUSANDS.fullmatch(visible))
-            )
-            or (base[-1] == "2" and visible.lower() in _SECOND_SUFFIXES)
-            or (
-                (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
-                and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
-            )
-            or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
-            # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
-            or (len(visible) == after_price and visible.isdigit())
-        ):
+        exponent = _sup_exponent(base, raw, shown, after_price)
+        if exponent is None:
             return
-        # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
-        token = shown.strip(_MD_DELIMITERS)
-        bare = _BARE_EXPONENT.fullmatch(token) or (
-            token.startswith("(") and token.endswith(")") and token.count("(") == 1
-        )
-        exponent = f"^{raw}" if bare else f"^({raw})"
         exponent += joined[len(joined.rstrip()) :]
         target[start:] = [exponent]
         # headings are teed into these copies; a stale one renders "E=mc2" or skews the prose gate
@@ -1091,15 +1343,13 @@ class _MarkdownRenderer(HTMLParser):
         self._emit_replay(f"\n\n{fence}\n{raw}\n{fence}\n\n")
 
     def _drain_blockquote(self) -> None:
-        """Pop the innermost quote and emit it prefixed. Not used by ``flush_pending``,
-        which re-nests into the parent stack instead of emitting."""
+        """Pop the innermost quote and emit it prefixed; flush_pending re-nests it instead."""
         prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
         if prefixed:
             self._emit_replay("\n\n" + prefixed + "\n\n")
 
     def _emit_replay(self, text: str) -> None:
-        """Emit a flushed buffer's own output, which must not be teed as a heading
-        a second time (the raw text was teed when it entered the buffer)."""
+        """Flushed buffer output is not teed again; the raw text was teed on entry."""
         was, self._replaying = self._replaying, True
         try:
             self._emit(text)
@@ -1259,6 +1509,30 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row = []
         self._row_has_th = False
 
+    def _link_output_state(self) -> tuple:
+        frame = self._header_stack[-1] if self._header_stack else None
+        quote = self._bq_stack[-1] if self._bq_stack else None
+        row = self._current_row if self._in_table else None
+        cell = self._cell_seq if self._in_cell else -1
+        return (
+            frame,
+            len(self._heading_marks),
+            quote,
+            row,
+            cell,
+            self._table_depth(),
+            len(self._sup_starts),
+            self._inline_code_depth,
+        )
+
+    def _link_routes_unchanged(self) -> bool:
+        # buffers compare by identity: two empty quotes or rows are equal lists but different targets
+        now = self._link_output_state()
+        return all(
+            saved is cur or (not isinstance(saved, list) and saved == cur)
+            for saved, cur in zip(self._link_open_state, now)
+        ) and len(self._link_open_state) == len(now)
+
     # Link text helper: normalize whitespace so block content in <a> stays single-line.
     def _finish_link(self) -> None:
         text = re.sub(r"\s+", " ", "".join(self._link_text_parts)).strip()
@@ -1316,20 +1590,39 @@ class _MarkdownRenderer(HTMLParser):
                     break
             if close_at is None:
                 break
+            closed = self._open_tags[close_at]
             self._truncate_open_tags(close_at)
+            if closed == "p" and tag != "p" and self._in_link and self._link_depth > close_at:
+                # a block opened inside <p><a> stays linked: browsers reopen the anchor inside it
+                self._link_depth = close_at - 1
+            closes_header = self._finish_link_unless_header_closes(close_at)
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= close_at:
                 self._heading_marks.pop()
             self._close_header_frames(close_at)
+            if closes_header:
+                self._finish_link_closed_at(close_at)
+
+    def _finish_link_unless_header_closes(self, index: int) -> bool:
+        """Finish while heading marks still tee the title; a closing header frame drains first, or the link lands inside it."""
+        closes_header = bool(self._header_stack) and self._header_stack[-1].depth >= index
+        if not closes_header:
+            self._finish_link_closed_at(index)
+        return closes_header
+
+    def _finish_link_closed_at(self, index: int) -> None:
+        if self._in_link and self._link_depth >= index:
+            if self._header_stack:
+                self._header_stack[-1].link_chars += self._link_header_chars
+            self._finish_link()
 
     def _close_header_frames(
         self,
         depth: int,
         own_tag: bool = False,
     ) -> None:
-        """Judge and emit every buffered header at or below *depth*. Only the
-        innermost frame can be the one its own ``</header>`` closed."""
+        """Emit buffered headers at or below depth; own-tag closes only the innermost frame."""
         closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
             self._finalize_nested_buffers(self._header_stack[-1])
@@ -1387,6 +1680,8 @@ class _MarkdownRenderer(HTMLParser):
         if not self._header_stack or self._heading_marks:
             return
         frame = self._header_stack[-1]
+        if not text.isascii():
+            text = _WHITESPACE_RUN.sub(" ", text)
         chars = len(text.strip())
         frame.text_chars += chars
         # anchors without usable hrefs render as prose
@@ -1429,7 +1724,24 @@ class _MarkdownRenderer(HTMLParser):
         encoding = (attrs.get("encoding") or "").strip().lower()
         return tag == "annotation-xml" and encoding in {"text/html", "application/xhtml+xml"}
 
+    def _close_math(self, index: int) -> None:
+        for position in range(len(self._skip_tags) - 1, index - 1, -1):
+            tex = _mathml_tex(self._skip_tags[position], self._math.pop())
+            if position == self._math_tex_at:
+                self._math_tex_at = -1
+                if tex.strip():
+                    self._math_tex = tex
+            elif position:
+                self._math[-1].append(tex)
+            else:
+                tex = " ".join((self._math_tex or tex).translate(_MATH_INVISIBLE).split())
+                self._math = None
+                if tex:
+                    self._emit(f"\n\n$${tex}$$\n\n" if self._math_block else f"${tex}$")
+
     def _truncate_skip_tags(self, index: int) -> None:
+        if self._math is not None:
+            self._close_math(index)
         for position, name in enumerate(self._skip_tags[index:], start = index):
             self._skip_at[name].pop()
             self._skip_ns_at[(self._skip_namespaces[position], name)].pop()
@@ -1440,6 +1752,8 @@ class _MarkdownRenderer(HTMLParser):
         del self._skip_html_integration[index:]
 
     def _clear_skip_tags(self) -> None:
+        if self._math is not None:
+            self._close_math(0)
         self._skip_tags.clear()
         self._skip_at.clear()
         self._skip_ns_at.clear()
@@ -1471,7 +1785,7 @@ class _MarkdownRenderer(HTMLParser):
                 or (_is_aria_heading(attr_dict) if aria_heading is None else aria_heading)
             ):
                 self._heading_marks.append(len(self._open_tags) - 1)
-                if self._in_link:
+                if self._in_link or self._closed_link_for:
                     self._link_had_heading = True
             if (
                 self._strip_header
@@ -1525,6 +1839,8 @@ class _MarkdownRenderer(HTMLParser):
         i = -1 if tag in _VOID_TAGS else _innermost_index(self._open_tags, tag)
         if i >= 0:
             self._truncate_open_tags(i)
+            # an explicit </a> finishes in _close_rendered_tag
+            closes_header = tag != "a" and self._finish_link_unless_header_closes(i)
             while self._hidden_marks and self._hidden_marks[-1] >= i:
                 self._hidden_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= i:
@@ -1532,6 +1848,8 @@ class _MarkdownRenderer(HTMLParser):
             # _close_header_frames' own loop test
             if self._header_stack and self._header_stack[-1].depth >= i:
                 self._close_header_frames(i, own_tag = tag == "header")
+            if closes_header:
+                self._finish_link_closed_at(i)
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
             if self._scope_depth == 0 and self._scope_seg_start is not None:
@@ -1669,6 +1987,11 @@ class _MarkdownRenderer(HTMLParser):
                 self._skip_html_integration.append(
                     self._is_html_integration_point(tag, namespace, attr_dict)
                 )
+                if self._math is not None:
+                    self._math.append([])
+                    encoding = (attr_dict.get("encoding") or "").strip().lower()
+                    if tag == "annotation" and encoding == "application/x-tex":
+                        self._math_tex_at = position
             return
 
         if tag == "form" and self._form_pointer:
@@ -1683,6 +2006,10 @@ class _MarkdownRenderer(HTMLParser):
             self._prepare_table_start(tag)
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
+            if tag == "math" and not self._text_suppressed() and not _is_hidden_element(attr_dict):
+                self._math = [[]]
+                self._math_tex = (attr_dict.get("alttext") or "").strip()
+                self._math_block = (attr_dict.get("display") or "").strip().lower() == "block"
             self._skip_tags.append(tag)
             self._skip_at = {tag: [0]}
             namespace = self._html_start_namespace(tag)
@@ -1696,8 +2023,49 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag == "form":
             self._form_pointer = True
-        if not self._enter_tag(tag, attr_dict, hidden, aria_heading):
+        # a nested <a> implicitly closes the open one, even when hidden, when its text still routes where
+        # the link opened; <pre> text skips the link buffer
+        if (
+            tag == "a"
+            and self._in_link
+            and not self._in_pre
+            and not self._link_had_heading
+            and self._link_routes_unchanged()
+        ):
+            if self._header_stack:
+                self._header_stack[-1].link_chars += self._link_header_chars
+            self._finish_link()
+            # the closing anchor still records its own heading as one inside a link, as before
+            self._closed_link_for = True
+        entered = self._enter_tag(tag, attr_dict, hidden, aria_heading)
+        if self._closed_link_for:
+            self._closed_link_for = False
+            # a suppressed anchor never becomes the link, so its heading must not carry to the next one
+            if not entered:
+                self._link_had_heading = False
+        if not entered:
             return
+
+        # every panel is read, so name each by its tab rather than leave the model to count tabs
+        if (
+            (self.tab_labels or self.panel_labels or self.order_labels)
+            and not (self._in_pre or self._in_table)
+            and _has_role(attr_dict, "tabpanel")
+        ):
+            ids = dict.fromkeys((attr_dict.get("aria-labelledby") or "").split())
+            panel_id = attr_dict.get("id") or ""
+            # capped, so a repeated id cannot multiply the page; aria-labelledby, then aria-controls (even an
+            # ambiguous one), outrank order
+            if ids:
+                label = " ".join(self.tab_labels[i] for i in ids if i in self.tab_labels)[
+                    :_MAX_TAB_LABEL_CHARS
+                ]
+            elif panel_id in self.panel_labels:
+                label = self.panel_labels[panel_id]
+            else:
+                label = self.order_labels.get(self.getpos(), "")
+            if label:
+                self._emit(f"\n\n**{label}**\n\n")
 
         if tag in _HEADING_TAGS:
             level = int(tag[1])
@@ -1708,8 +2076,10 @@ class _MarkdownRenderer(HTMLParser):
             self._link_text_parts = []
             self._link_heading_parts = []
             self._in_link = True
+            self._link_depth = len(self._open_tags) - 1
             self._link_seq += 1
             self._link_header_chars = 0
+            self._link_open_state = self._link_output_state()
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
@@ -1719,17 +2089,7 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "sup":
             target = self._emit_target()
-            reference = (
-                any(
-                    token in _FOOTNOTE_CLASSES
-                    or any(
-                        part == "fn" or part.startswith(_FOOTNOTE_CLASS_PREFIXES)
-                        for part in _CLASS_PART_SPLIT.split(token)
-                    )
-                    for token in (attr_dict.get("class") or "").lower().split()
-                )
-                or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
-            )
+            reference = _note_reference(attr_dict)
             # past the cap nothing is tracked, so the stack stays bounded on hostile pages
             if len(self._sup_starts) < _MAX_SUP_DEPTH:
                 self._sup_starts.append(
@@ -2018,6 +2378,15 @@ class _MarkdownRenderer(HTMLParser):
         if self._title_scan is not None:
             self._title_scan.data(data)
         if self._skip_tags or self._hidden_marks or self._text_suppressed():
+            if self._math is None:
+                return
+            if len(self._skip_tags) - 1 == self._math_tex_at:
+                self._math[-1].append(data)
+            elif (
+                self._skip_namespaces[-1] == "math"
+                and self._skip_tags[-1] in _MATHML_TEXT_INTEGRATION_POINTS
+            ):
+                self._math[-1].append(_MATH_SPECIALS.sub(r"\\\g<0>", data))
             return
         if self._in_pre:
             self._count_header_text(data)
@@ -2028,38 +2397,21 @@ class _MarkdownRenderer(HTMLParser):
             self._count_header_text(data)
             self._emit(data)
             return
-        # Collapse all whitespace (including newlines) per HTML rules.
-        text = _WHITESPACE_RUN.sub(" ", data)
+        # Collapse ASCII whitespace (including newlines) per HTML rules.
+        text = _COLLAPSIBLE_RUN.sub(" ", data)
         # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
-        # Suppress whitespace-only nodes between table elements (source indentation).
-        if self._in_table and not self._in_cell and not text.strip():
+        # Drop whitespace-only nodes between table elements, except a caption's &nbsp; (Javadoc tab separators).
+        if (
+            self._in_table
+            and not self._in_cell
+            and not text.strip()
+            and not (self._open_at.get("caption") and not text.isascii())
+        ):
             return
         # Source indentation between <li> and its first block must not end the marker line.
         if self._li_marker_pending and not text.strip():
             return
-        self._emit(text)
-
-    def handle_entityref(self, name: str) -> None:
-        if self._record is not None:
-            self._record.append((3, name))
-        text = html.unescape(f"&{name};")
-        if self._title_scan is not None:
-            self._title_scan.data(text)
-        if self._text_suppressed():
-            return
-        self._count_header_text(text)
-        self._emit(text)
-
-    def handle_charref(self, name: str) -> None:
-        if self._record is not None:
-            self._record.append((4, name))
-        text = html.unescape(f"&#{name};")
-        if self._title_scan is not None:
-            self._title_scan.data(text)
-        if self._text_suppressed():
-            return
-        self._count_header_text(text)
         self._emit(text)
 
     def replay(self, events: list) -> None:
@@ -2071,15 +2423,16 @@ class _MarkdownRenderer(HTMLParser):
             elif kind == 0:
                 tag, attrs, self.lineno, self.offset = arg
                 start(tag, list(attrs))
-            elif kind == 1:
-                end(arg)
-            elif kind == 3:
-                self.handle_entityref(arg)
             else:
-                self.handle_charref(arg)
+                end(arg)
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
+        if self._math is not None:
+            # an annotation cut off mid-source must not override alttext or the MathML
+            if self._math_tex_at >= 0:
+                self._math[self._math_tex_at].clear()
+            self._close_math(0)
         # Headers first: a frame emits into the enclosing link or cell, which must still be open.
         self._flush_header_frames()
 
@@ -2189,9 +2542,7 @@ def _line_is_boilerplate(line: str) -> bool:
 
 
 def _fence_state(line: str, fence: int) -> int:
-    """Fence width after *line*, 0 outside a block. Every pass over rendered text
-    must agree with ``_fence_for``: a block opened with a longer fence is closed
-    only by a run at least as long, so a literal ``` inside it is content."""
+    """Fence width after a line, 0 outside a block; every pass must agree with _fence_for."""
     stripped = line.strip()
     if len(stripped) < 3 or stripped.count("`") != len(stripped):
         return fence
@@ -2224,8 +2575,8 @@ def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> 
 
 class _TokenLog:
     """Handler calls of one document, recorded by the first fed pass and replayed by later ones.
-    Sound only while the renderer overrides just these five handlers and reads parser state only
-    via ``getpos()`` in ``handle_starttag``."""
+    Sound only while the renderer overrides just ``handle_starttag``, ``handle_endtag`` and
+    ``handle_data`` and reads parser state only via ``getpos()`` in ``handle_starttag``."""
 
     __slots__ = ("events", "armed")
 
@@ -2256,6 +2607,7 @@ def _new_renderer(
             page_span_limit = 2 * len(source_html),
         )
         renderer.title_buttons = title_buttons
+        renderer.tab_labels, renderer.panel_labels, renderer.order_labels = tab_labels
         renderer._title_scan = scan
         if tokens is None:
             renderer.feed(source_html)
@@ -2271,6 +2623,7 @@ def _new_renderer(
         return renderer
 
     key = (len(source_html), hash(source_html))
+    tab_labels = _tab_labels(source_html, key)
     known = _TITLE_BUTTON_CACHE.get(key)
     if known is not None:
         return build(known, None)
@@ -2337,6 +2690,7 @@ def _select_main_scope_render(
         )
         if site_links is not None:
             scored = site_links.clean(scored)
+        scored = _fold_kept_spaces(scored)
         visible = _visible_chars(scored)
         prose = visible - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
@@ -2384,8 +2738,17 @@ def _render_main_document(
     return _visible_chars(scored), rendered
 
 
+def _fold_kept_spaces(text: str) -> str:
+    """Scoring view of *text*: a space run holding U+00A0 or another kept Unicode space is layout
+    padding, so it counts as one space, while pure ASCII runs (code indentation) stay as rendered."""
+    if text.isascii() or not _KEPT_SPACE.search(text):
+        return text
+    return _KEPT_SPACE_RUN.sub(" ", text)
+
+
 def _visible_chars(text: str) -> int:
     """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
+    text = _fold_kept_spaces(text)
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
@@ -2393,18 +2756,14 @@ _BACKTICK_RUN = re.compile(r"`+")
 
 
 def _fence_for(raw: str) -> str:
-    """Fence long enough to survive backticks in *raw*, as CommonMark requires:
-    a literal ``` line inside the block would otherwise close it early."""
+    """Must outrun backtick runs in raw (CommonMark), or a literal fence line closes it early."""
     if "`" not in raw:
         return "```"
     return "`" * max(3, max(map(len, _BACKTICK_RUN.findall(raw))) + 1)
 
 
 def _visible_len(line: str) -> int:
-    """Length of *line* without Markdown link destinations. A tracking URL is not
-    prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
-    characters off 4 and displaced the article. Linear: once a destination fails to
-    close, the rest are answered from one table instead of a rescan each."""
+    """Visible length without Markdown link destinations: a tracking URL is not prose; scan is linear."""
     if "[" not in line and "\\" not in line:
         return len(line)
     total, i, n = 0, 0, len(line)
@@ -2448,9 +2807,7 @@ def _visible_len(line: str) -> int:
 
 
 def _destination_ends(line: str) -> dict:
-    """End of the destination scan from each reachable position, for scans that close. All scans
-    step over the same positions, so a scan from p closes where the paren-depth prefix sum first
-    drops below its value at p."""
+    """Where a scan from each position closes: the paren-depth prefix sum first drops below its start."""
     steps: list[int] = []
     sums: list[int] = []
     depth, k, n = 0, 0, len(line)
@@ -2482,6 +2839,15 @@ _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
 _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 # absent text = no generated span cells, so a pass needs no span-free scoring re-render
 _SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
+_NOSCRIPT_TAG = re.compile(r"<(/?)noscript\b", re.IGNORECASE)
+# html.unescape raises past int()'s digit limit (never below 640), leading zeros included.
+_LONG_DECIMAL_REF = re.compile(r"&#([0-9]{641,})")
+
+
+def _short_decimal_ref(match: re.Match[str]) -> str:
+    """Leading zeros dropped; 8+ digits give U+FFFD, as html.unescape does past U+10FFFF."""
+    digits = match.group(1).lstrip("0") or "0"
+    return "&#" + (digits if len(digits) < 8 else "65533")
 
 
 def html_to_markdown(
@@ -2493,6 +2859,7 @@ def html_to_markdown(
 ) -> str:
     """convert HTML to Markdown; main_content prefers a dominant article or main subtree, site_links records same-site links without changing output, and max_span_chars limits generated table cells."""
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
+    source_html = _LONG_DECIMAL_REF.sub(_short_decimal_ref, source_html)
     span_limit = 2 * len(source_html)
     if max_span_chars is not None:
         span_limit = min(span_limit, max_span_chars)
@@ -2535,4 +2902,16 @@ def html_to_markdown(
             rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)
+    if not rendered.strip() and _NOSCRIPT_TAG.search(source_html):
+        # read whole: scoped, a link card's <article> inside one post would stand in for the thread
+        exposed = _NOSCRIPT_TAG.sub(r"<\1div", source_html)
+        if main_content:
+            visible, fallback = _render_main_document(exposed, site_links, span_limit)
+        else:
+            fallback = _render(exposed, None, site_links = site_links, span_char_limit = span_limit)
+            visible = _visible_chars(
+                site_links.clean(fallback) if site_links is not None else fallback
+            )
+        if visible >= _MIN_MAIN_CONTENT_CHARS:
+            rendered = fallback
     return site_links.finish(rendered) if site_links is not None else rendered
