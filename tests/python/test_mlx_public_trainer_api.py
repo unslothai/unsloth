@@ -1400,3 +1400,17 @@ def test_mlx_torch_cuda_compatibility_shim():
     batch = BatchEncoding({"input_ids": tensor})
     assert batch.to("cuda") is batch
     assert batch.to(device = "cuda") is batch
+
+
+def test_mlx_torch_cuda_current_memory_never_exceeds_peak():
+    _import_mlx_unsloth()
+    torch = pytest.importorskip("torch")
+    import mlx.core as mx
+
+    held = mx.ones((64 * 1024,))
+    mx.eval(held)
+    assert 0 < torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
+    assert torch.cuda.max_memory_allocated() >= mx.get_peak_memory()
+
+    torch.cuda.reset_peak_memory_stats()
+    assert 0 < torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
