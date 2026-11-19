@@ -2167,10 +2167,30 @@ def _ltx25_start_encoder(cfg, device):
         local_files_only = False,
         device = worker_device,
         dtype = "bfloat16",
-        resident = worker_device != "cpu",
+        resident = _ltx25_worker_resident(worker_device, te_quant),
         te_quant = te_quant,
         base_repo = base,
     )
+
+
+def _ltx25_worker_resident(worker_device: str, te_quant) -> bool:
+    """Keep Gemma 4 on the card only when it fits beside what this process already holds there (the connectors). A
+    resident worker never falls back on an out of memory; a non-resident one onloads whole, streams layers or encodes
+    on the CPU, per encode, by the room it reads then."""
+    kind = str(worker_device).split(":", 1)[0]
+    if kind not in ("cuda", "xpu"):
+        return False
+    import torch
+
+    from core.inference.video_ltx25 import LTX25_TE_BF16_GB, LTX25_TE_INT8_GB
+    from core.inference.video_ltx25_te_worker import ENCODE_MARGIN_MIB, WORKER_CONTEXT_MIB
+
+    try:
+        free, _total = getattr(torch, kind).mem_get_info(torch.device(worker_device))
+    except Exception:  # noqa: BLE001 -- unreadable: let the worker judge each encode
+        return False
+    weights_mib = int((LTX25_TE_INT8_GB if te_quant else LTX25_TE_BF16_GB) * 1e9) >> 20
+    return (int(free) >> 20) >= weights_mib + ENCODE_MARGIN_MIB + WORKER_CONTEXT_MIB
 
 
 def _current_index(device) -> int:

@@ -336,6 +336,7 @@ def test_the_worker_encodes_like_the_video_page(monkeypatch):
     )
     cfg = types.SimpleNamespace(base_model = PACK, hf_token = "tok")
     monkeypatch.setattr(dit, "_current_index", lambda device: 3)
+    monkeypatch.setattr(dit, "_ltx25_worker_resident", lambda device, quant: device != "cpu")
     assert dit._ltx25_start_encoder(cfg, "cuda") == "client"
     assert seen["te_quant"] == "int8" and seen["resident"] is True and seen["device"] == "cuda:3"
     assert seen["repo"] == PACK and seen["base_repo"] == PACK and seen["hf_token"] == "tok"
@@ -839,3 +840,48 @@ def test_ltx_lora_save_keeps_a_non_default_alpha(family, tmp_path):
     with safe_open(str(tmp_path / DEFAULT_LORA_FILENAME), "pt") as f:
         meta = json.loads(f.metadata()["lora_adapter_metadata"])
     assert meta["transformer.r"] == 4 and meta["transformer.lora_alpha"] == 8
+
+
+@pytest.mark.parametrize(
+    ("free_gib", "te_quant", "resident"),
+    [
+        (
+            15.5,
+            "int8",
+            False,
+        ),  # L4 / 4090 after the 6.34 GB connectors: the worker must keep its fallbacks
+        (40.0, "int8", True),
+        (40.0, None, True),
+        (24.0, None, False),  # bf16 Gemma 4 (22.8 GiB) never fits a 24 GB card beside anything
+    ],
+)
+def test_the_worker_is_resident_only_when_the_encoder_fits(
+    monkeypatch, free_gib, te_quant, resident
+):
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda device = None: (int(free_gib * 2**30), 80 * 2**30)
+    )
+    assert dit._ltx25_worker_resident("cuda:0", te_quant) is resident
+    assert dit._ltx25_worker_resident("cpu", te_quant) is False
+
+
+def test_an_unreadable_card_leaves_the_worker_non_resident(monkeypatch):
+    def boom(device = None):
+        raise RuntimeError("no reading")
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", boom)
+    assert dit._ltx25_worker_resident("cuda:0", "int8") is False
+
+
+def test_a_card_without_room_starts_a_non_resident_worker(monkeypatch):
+    import core.inference.video_ltx25 as v25
+
+    seen = {}
+    monkeypatch.setattr(v25, "start_text_encoder", lambda **kw: seen.update(kw) or "client")
+    monkeypatch.setattr(
+        v25, "ltx25_te_prequant_sources", lambda quant, base: {"text_encoder": object()}
+    )
+    monkeypatch.setattr(dit, "_current_index", lambda device: 0)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (15 * 2**30, 22 * 2**30))
+    dit._ltx25_start_encoder(types.SimpleNamespace(base_model = PACK, hf_token = None), "cuda")
+    assert seen["te_quant"] == "int8" and seen["resident"] is False
