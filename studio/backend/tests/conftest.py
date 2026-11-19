@@ -278,7 +278,6 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 def _forget_rosetta_verdict(monkeypatch):
     # A test that fakes an x86_64 Mac would otherwise cache this host's sysctl answer for later tests.
     from utils.hardware import hardware as hw
-
     monkeypatch.setattr(hw, "_ROSETTA", None)
 
 

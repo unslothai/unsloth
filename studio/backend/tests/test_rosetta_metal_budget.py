@@ -31,7 +31,12 @@ GIB = 1024**3
 MIB = 1024**2
 
 
-def _mac(monkeypatch, machine, rosetta, working_set = int(10.67 * GIB)):
+def _mac(
+    monkeypatch,
+    machine,
+    rosetta,
+    working_set = int(10.67 * GIB),
+):
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setattr(platform, "machine", lambda: machine)
     monkeypatch.setattr(hw, "_ROSETTA", rosetta)
