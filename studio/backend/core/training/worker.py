@@ -3232,6 +3232,13 @@ def _resolve_mlx_max_grad_norm(value):
     return value
 
 
+_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL = (
+    "Audio dataset training on Apple Silicon needs an audio-input model such as "
+    "Gemma 3n or Gemma 4; text-to-speech and speech-recognition checkpoints are not "
+    "supported on MLX yet."
+)
+
+
 def _run_mlx_training(
     event_queue,
     stop_queue,
@@ -3324,6 +3331,20 @@ def _run_mlx_training(
     is_dataset_audio = bool(config.get("is_dataset_audio", False)) and not (
         is_cpt or config.get("format_type") == "raw"
     )
+    from utils.models import detect_audio_type
+
+    audio_type = (
+        detect_audio_type(
+            model_load_name,
+            hf_token,
+            local_files_only = model_local_only,
+            revision = model_revision,
+        )
+        if is_dataset_audio
+        else None
+    )
+    if audio_type not in (None, "audio_vlm"):
+        raise ValueError(_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL)
     use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
     # Before the download/load below: unlike the CUDA path, this needs none of the model.
     # A continued adapter keeps its own targets, and CPT builds its adapter from target_modules alone.
@@ -3486,11 +3507,7 @@ def _run_mlx_training(
     model._is_vlm_model = is_vlm
     if is_dataset_audio and not is_vlm:
         # zoo trains audio only as input to an audio-capable vision-language model.
-        raise ValueError(
-            "Audio dataset training on Apple Silicon needs an audio-input model such as "
-            "Gemma 3n or Gemma 4; text-to-speech and speech-recognition checkpoints are not "
-            "supported on MLX yet."
-        )
+        raise ValueError(_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL)
     vision_image_size = config.get("vision_image_size")
     # DeepSeek OCR uses a coupled preset tuple; skip resize like the Torch path.
     _model_name_lower = str(config.get("model_name", "")).lower()
