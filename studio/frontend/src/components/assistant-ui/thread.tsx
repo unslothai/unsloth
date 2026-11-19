@@ -3288,7 +3288,6 @@ const Composer: FC<{
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
   const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
-  // A new chat reserves two rows; inside a conversation the empty composer is one.
   const minEditorHeight = Math.round(
     (16 + 24 * (threadEmpty ? COMPOSER_MIN_ROWS : 1)) * uiSpaceScale,
   );
