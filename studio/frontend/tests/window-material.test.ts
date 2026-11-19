@@ -523,9 +523,10 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 		".tooltip-rich",
 		"[data-glass-float]",
 		".aui-thread-scroll-to-bottom",
-		'[data-wallpaper-route="page"] .elevated-card',
 	])
 		assert.ok(LENS_HOSTS.includes(host), host);
+	// A card grid would clone the wallpaper twice per card.
+	assert.doesNotMatch(LENS_HOSTS, /elevated-card|library-card/);
 	// Every surface the Glass menus blur reaches (menus, pickers, toasts) is a lens host too.
 	const glassCss = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	for (const rule of [

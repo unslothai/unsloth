@@ -52,7 +52,8 @@ export const LENS_SCALE: Record<LensMode, number> = {
 export function sanitizeLens(value: unknown): LensMode {
 	return LENS_MODES.includes(value as LensMode) ? (value as LensMode) : "off";
 }
-/** Every glass surface the lens can draw into; lens.tsx skips those without a backdrop filter at the moment. */
+/** Every glass surface the lens can draw into; lens.tsx skips those without a backdrop filter at the moment.
+ * Not page cards: a grid would clone the wallpaper twice per card. */
 export const LENS_HOSTS = [
 	".unsloth-composer-surface",
 	".unsloth-files-panel",
@@ -80,8 +81,6 @@ export const LENS_HOSTS = [
 	".tooltip-rich",
 	"[data-glass-float]",
 	".aui-thread-scroll-to-bottom",
-	'[data-wallpaper-route="page"] .elevated-card',
-	'[data-wallpaper-route="page"] .library-card',
 ].join(", ");
 // Off draws nothing: without GPU rendering, WebKitGTK repaints each wallpaper copy and its filter on every frame.
 export function lensDrawn(material: WindowMaterial, lens: LensMode): boolean {
