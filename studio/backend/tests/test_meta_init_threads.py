@@ -76,7 +76,8 @@ def test_a_block_does_not_leak_into_another_thread():
         t.join()
 
 
-def test_nesting_and_buffers_behave_like_accelerate():
+def test_innermost_device_wins_and_buffers_follow_accelerate():
+    # Stock accelerate raises "Cannot copy out of meta tensor" on the inner block; the innermost device wins here.
     import torch
     import torch.nn as nn
     from accelerate import init_empty_weights, init_on_device
