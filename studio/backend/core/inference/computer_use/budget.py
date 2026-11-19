@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import math
-from typing import Callable, Optional
+import sys
+from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
@@ -37,6 +38,27 @@ def _log_once(message: str, *args) -> None:
     if key not in _logged:
         _logged.add(key)
         logger.info(message, *args)
+
+
+def affords_precision(context: Optional[int]) -> bool:
+    return bool(context) and context // _MOST_OF_CONTEXT >= PRECISE
+
+
+def screenshot_images_kwargs(processor: Any) -> dict:
+    """Per-call options giving an image processor that fills a token budget (Gemma 4's
+    ``max_soft_tokens``) its smallest supported budget of at least PRECISE; {} for one whose
+    tokens follow the image's size."""
+    image_processor = getattr(processor, "image_processor", None)
+    if getattr(image_processor, "max_soft_tokens", None) is None:
+        return {}
+    # The supported budgets sit beside the base class (Gemma 4 Unified subclasses it elsewhere).
+    modules = (sys.modules.get(cls.__module__) for cls in type(image_processor).__mro__)
+    allowed = next(
+        (m._SUPPORTED_SOFT_TOKENS for m in modules if hasattr(m, "_SUPPORTED_SOFT_TOKENS")), None
+    )
+    if not allowed:
+        return {}
+    return {"max_soft_tokens": min((v for v in allowed if v >= PRECISE), default = max(allowed))}
 
 
 def grid(aspect: float, tokens: int) -> Optional[tuple[int, int]]:

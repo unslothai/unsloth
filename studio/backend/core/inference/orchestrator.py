@@ -2225,6 +2225,7 @@ class InferenceOrchestrator:
 
     # Bumped at publish, not load start, so a same-model reload mid-install is detected.
     load_generation: int = 0
+    _image_token_counts: tuple = (None, None)
     # Cleared at each publish; only an explicit UI load sets it, pinning the model against idle unload.
     _loaded_by_user_action: bool = False
 
@@ -3099,6 +3100,62 @@ class InferenceOrchestrator:
         if error:
             raise RuntimeError(error)
         return int(resp["input_tokens"]), resp.get("model")
+
+    @property
+    def context_length(self) -> Optional[int]:
+        return (self.models.get(self.active_model_name) or {}).get("context_length")
+
+    def image_tokens(
+        self,
+        width: int,
+        height: int,
+        timeout: float = 30.0,
+    ) -> Optional[int]:
+        """Prompt tokens a computer-use screenshot of this size costs the loaded model, cached per
+        load; None while busy or when the worker cannot count it."""
+        if getattr(self, "_managed_engine", None) is not None or self.active_model_name is None:
+            return None
+        generation, counts = self._image_token_counts
+        if generation != self.load_generation:
+            counts = {}
+            self._image_token_counts = (self.load_generation, counts)
+        if (width, height) in counts:
+            return counts[(width, height)]
+        if not self._gen_lock.acquire(blocking = False):
+            return None
+        try:
+            with contextlib.ExitStack() as held:
+                # Reserved before the idle check, so a dispatched chat cannot slip in ahead of the count.
+                try:
+                    held.enter_context(self._reserve_worker("a screenshot is being sized"))
+                except RuntimeError:
+                    return None
+                with self._mailbox_lock:
+                    if self._mailboxes:
+                        return None
+                request_id = str(uuid.uuid4())
+                read_one, _drain, release_mailbox = self._direct_reader(request_id)
+                try:
+                    self._send_cmd(
+                        {
+                            "type": "image_tokens",
+                            "request_id": request_id,
+                            "width": width,
+                            "height": height,
+                        }
+                    )
+                    resp = self._await_reply(
+                        read_one, request_id, "image_tokens_response", "image tokens", timeout
+                    )
+                finally:
+                    release_mailbox()
+        finally:
+            self._gen_lock.release()
+        if resp is None or resp.get("error"):
+            return None
+        tokens = resp.get("tokens")
+        counts[(width, height)] = tokens if type(tokens) is int else None
+        return counts[(width, height)]
 
     def compact_chat_context(
         self,

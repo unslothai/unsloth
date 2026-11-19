@@ -170,6 +170,7 @@ def _vision_probe(chat_template = _CHATML_WITH_TOOLS):
         def __call__(self, *args, **_kwargs):
             if args:
                 seen["images"] = args[0]
+            seen["images_kwargs"] = _kwargs.get("images_kwargs")
             return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
 
     class Model:
@@ -229,6 +230,51 @@ def test_vision_tools_turn_keeps_the_system_message():
     )
     rendered = json.dumps(seen.get("messages"), ensure_ascii = False)
     assert "SENTINEL_RULE" in rendered
+
+
+def test_only_a_screenshot_turn_lifts_a_soft_token_processor_to_the_screenshot_budget(monkeypatch):
+    torch = pytest.importorskip("torch")
+    module = types.ModuleType("fake_gemma4_image_processing")
+    module._SUPPORTED_SOFT_TOKENS = (70, 140, 280, 560, 1120, 2240)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    image_processor = type("P", (), {"__module__": module.__name__, "max_soft_tokens": 280})()
+    backend, seen = _vision_probe()
+    processor = backend.models["vision-tools"]["processor"]
+    processor.image_processor = image_processor
+    turn = [{"role": "user", "content": "click Train"}]
+    for computer_use, lifted in ((True, {"max_soft_tokens": 1120}), (False, None)):
+        _drain(backend, messages = turn, computer_use = computer_use)
+        assert seen["images_kwargs"] == lifted, computer_use
+
+    def count(
+        *,
+        text,
+        images = None,
+        images_kwargs = None,
+        **_k,
+    ):
+        soft = (images_kwargs or {}).get("max_soft_tokens", 280)
+        return {"input_ids": torch.zeros((1, len(text) + soft * len(images or ())))}
+
+    processor.apply_chat_template = lambda turn, **_k: "template"
+    type(processor).__call__ = lambda self, **kwargs: count(**kwargs)
+    assert backend.image_tokens(1008, 560) == 1120
+    processor.image_processor = None
+    assert backend.image_tokens(1008, 560) is None
+    processor.image_processor = image_processor
+
+    def vision_path(
+        *_a,
+        computer_use = False,
+        **_k,
+    ):
+        seen["forwarded"] = computer_use
+        yield from ()
+
+    backend._generate_vision_response = vision_path
+    backend.models["vision-tools"]["is_vision"] = True
+    list(backend.generate_chat_response(turn, "", image = object(), computer_use = True))
+    assert seen["forwarded"] is True
 
 
 def test_vision_tool_loop_followup_still_renders():

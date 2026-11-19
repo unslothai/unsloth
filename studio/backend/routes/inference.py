@@ -36400,6 +36400,7 @@ async def produce_openai_chat_completions(
             supports_vision = bool(_sf_model_info.get("is_vision")),
             checkpoint_fitted = _sf_fit_overflow is not None,
             ui_events = _ui_events,
+            engine = backend,
             encoder = functools.partial(
                 _loaded_model_type, backend.active_model_name, _sf_model_info
             ),
@@ -44541,6 +44542,7 @@ async def _mlx_count_chat_tokens(
                 mcp_allowed = False,
                 supports_vision = bool(entry.get("is_vision")),
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                engine = backend,
                 encoder = functools.partial(_loaded_model_type, active, entry),
             )
         ) + _mcp_tools
