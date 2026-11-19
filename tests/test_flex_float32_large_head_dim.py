@@ -124,5 +124,11 @@ def test_float32_large_head_dim_route_falls_back_to_sdpa(cards):
 def test_explicit_flex_and_override_keep_flex(cards, monkeypatch):
     cards(B200)
     assert _resolve(_gemma3_vlm(), torch.float32, requested = "flex_attention") == "flex_attention"
+    # Above head_dim 256 the explicit request goes through the flash fallback, which must still keep flex.
+    config = _attention("llama", 512)
+    assert (
+        _resolve(config, torch.float32, supports_sdpa = True, requested = "flex_attention")
+        == "flex_attention"
+    )
     monkeypatch.setenv(_utils._FLEX_LARGE_HEAD_DIM_ENV_VAR, "1")
     assert _resolve(_gemma3_vlm(), torch.float32) == "flex_attention"
