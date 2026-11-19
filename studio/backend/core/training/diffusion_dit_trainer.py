@@ -3722,6 +3722,10 @@ def _train_dit(
         optimizer.zero_grad(set_to_none = True)
         gc.collect()
         _empty_device_cache(device)
+        # Bank the failed attempt's peak for the report, then restart the allocator peak: step 1's dequant cache plan
+        # reads it, and the failed attempt's near-full peak would plan the cache to nothing for the whole run.
+        train_peak.pause()
+        train_peak.resume()
         _emit(
             on_event,
             "warning",

@@ -227,3 +227,32 @@ def test_the_failed_micro_batch_is_released_before_the_replay(
     # noisy latents, timesteps, sigmas, embeddings and the partial output of the failed forward: all freed.
     assert _run.failed_refs >= 4
     assert _run.failed_alive_at_replay == [0]
+
+
+@pytest.mark.allow_network
+@pytest.mark.parametrize("oom_at", [None, 2])
+def test_the_rerun_restarts_the_peak_the_cache_plan_reads(
+    oom_at, tmp_path, monkeypatch, tiny_pipe_dir
+):
+    # Step 1's dequant cache plan reads the allocator peak: after a failed attempt it must be the rerun's own peak.
+    calls = []
+    real = dit.TrainingPeakMemory
+
+    class Recorder(real):
+        def pause(self):
+            calls.append("pause")
+            super().pause()
+
+        def resume(self):
+            calls.append("resume")
+            super().resume()
+
+    monkeypatch.setattr(dit, "TrainingPeakMemory", Recorder)
+    _lora, _losses, _rec, _alive, warnings, _b = _run(
+        tmp_path, monkeypatch, tiny_pipe_dir, budget = True, oom_at = oom_at
+    )
+    if oom_at is None:
+        assert calls == []
+    else:
+        assert any("Ran out of GPU memory" in w for w in warnings)
+        assert calls == ["pause", "resume"]
