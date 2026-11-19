@@ -168,6 +168,21 @@ def test_rounded_provenance_survives_a_device_move(scheme, monkeypatch):
     assert any(k.endswith("down_proj.base_layer") for k in marked)
 
 
+@pytest.mark.parametrize("scheme", ["int4", "int8"])
+def test_rounding_again_after_a_device_move_is_a_no_op(scheme, monkeypatch):
+    # round_frozen_qat_weights after model.cpu() / .to(): same rounded values in new storage, so nothing is
+    # rounded a second time (int8 fake quant is not idempotent); an edited weight is still re-rounded.
+    x = torch.randn(4, DIM)
+    model = _model(scheme, monkeypatch, "1")
+    expected = _out(model, x)
+    model._apply(lambda t: t.clone())
+    assert qr.round_frozen_qat_weights(model) == 0
+    assert torch.equal(_out(model, x), expected)
+    with torch.no_grad():
+        _base(model, "up_proj").weight.add_(1e-3)
+    assert qr.round_frozen_qat_weights(model) == 1
+
+
 def test_marked_rounded_state_dict_keeps_tensors_unchanged(monkeypatch):
     # The marker rides in the state dict's per module metadata: no new keys, so exports read the same tensors.
     model = _model("int8", monkeypatch, "1")

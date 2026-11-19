@@ -170,7 +170,23 @@ def _rewritten(quantizer, weight):
     if not isinstance(record, _RoundRecord) or record.state is None:
         quantizer.__dict__[_RECORD] = _RoundRecord(state)
         return False
-    return state != record.state
+    return state != record.state and not _same_rounded_values(record, weight, state)
+
+
+def _same_rounded_values(record, weight, state):
+    """A weight with new storage or version (a device move: model.cpu(), .to()) that still holds the values
+    it was rounded to; adopts the new state when so. False without a rounding checksum to compare."""
+    if record.checksum is None:
+        return False
+    try:
+        now = _checksum(weight)
+    except Exception:
+        return False
+    if list(now) != list(record.checksum[1]):
+        return False
+    record.state = state
+    record.checksum = (state, now)
+    return True
 
 
 def _unround(quantizer):
@@ -231,18 +247,12 @@ def _mark_rounded(module, state_dict, prefix, local_metadata):
     if state is None or not isinstance(record, _RoundRecord):
         return
     # A reset record (a copy or unpickled model) adopts the tensor it holds, which is already rounded.
-    if record.state is not None and record.state != state:
-        # New storage or version: a device move (model.cpu(), .to()) keeps the rounded values, an edit does not.
-        if record.checksum is None:
-            return
-        try:
-            now = _checksum(weight)
-        except Exception:
-            return
-        if list(now) != list(record.checksum[1]):
-            return  # rewritten since it was rounded
-        record.state = state
-        record.checksum = (state, now)
+    if (
+        record.state is not None
+        and record.state != state
+        and not _same_rounded_values(record, weight, state)
+    ):
+        return  # rewritten since it was rounded (a device move keeps the rounded values, an edit does not)
     try:
         if record.checksum is None or record.checksum[0] != state:
             record.checksum = (state, _checksum(weight))
