@@ -220,16 +220,38 @@ def test_an_upright_photo_stays_upright_after_shrinking(rag_home, monkeypatch):
     assert height > width and width * height <= rag_routes._IMAGE_MAX_PIXELS
 
 
+def _scan(doc, rect = None):
+    import pymupdf
+
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
+    pix.clear_with(200)
+    page = doc.new_page()
+    page.insert_image(rect or page.rect, pixmap = pix)
+    return page
+
+
 def _typed_and_scanned_pdf() -> bytes:
     import pymupdf
 
     doc = pymupdf.open()
     doc.new_page().insert_text((72, 100), "Typed first page.")
-    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
-    pix.clear_with(200)
-    scan = doc.new_page()
-    scan.insert_image(scan.rect, pixmap = pix)
+    _scan(doc)
     return doc.tobytes()
+
+
+def _scanned_pdf() -> bytes:
+    import pymupdf
+
+    doc = pymupdf.open()
+    _scan(doc)
+    _scan(doc)
+    return doc.tobytes()
+
+
+def _no_ocr(monkeypatch):
+    from core.rag import captioner, pdf_ocr
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: None)
+    monkeypatch.setattr(pdf_ocr, "ocr_pages", lambda path, pages: {})
 
 
 def test_scanned_pdf_pages_are_read(rag_home, monkeypatch):
@@ -245,6 +267,7 @@ def test_scanned_pdf_pages_are_read(rag_home, monkeypatch):
         _upload("contract.pdf", _typed_and_scanned_pdf()), subject = "owner"
     )
     assert result["text"] == "Typed first page.\n\nscanned words"
+    assert "warning" not in result
     assert seen == [[2]]
     assert _uploads_left() == []
 
@@ -256,19 +279,35 @@ def test_scanned_pdf_pages_fall_back_to_tesseract(rag_home, monkeypatch):
     monkeypatch.setattr(
         pdf_ocr, "ocr_pages", lambda path, pages: {n: "tesseract words" for n in pages}
     )
+    result = rag_routes.extract_text(_upload("scan.pdf", _scanned_pdf()), subject = "owner")
+    assert result["text"] == "tesseract words\n\ntesseract words"
+
+
+def test_unread_scanned_pages_are_named_beside_the_typed_text(rag_home, monkeypatch):
+    _no_ocr(monkeypatch)
     result = rag_routes.extract_text(
         _upload("contract.pdf", _typed_and_scanned_pdf()), subject = "owner"
     )
-    assert result["text"] == "Typed first page.\n\ntesseract words"
+    assert result["text"] == "Typed first page."
+    assert "page 2 of contract.pdf" in result["warning"]
+    assert _uploads_left() == []
 
 
-def test_unreadable_scanned_pdf_pages_are_not_dropped(rag_home, monkeypatch):
-    from core.rag import captioner, pdf_ocr
+def test_a_figure_page_keeps_its_caption_without_ocr(rag_home, monkeypatch):
+    import pymupdf
 
-    monkeypatch.setattr(captioner, "vision_endpoint", lambda: None)
-    monkeypatch.setattr(pdf_ocr, "ocr_pages", lambda path, pages: {})
+    _no_ocr(monkeypatch)
+    doc = pymupdf.open()
+    _scan(doc, pymupdf.Rect(36, 36, 576, 650)).insert_text((72, 700), "Figure 1: Loss curves.")
+    result = rag_routes.extract_text(_upload("paper.pdf", doc.tobytes()), subject = "owner")
+    assert result["text"] == "Figure 1: Loss curves."
+    assert "page 1" in result["warning"]
+
+
+def test_a_pdf_of_unreadable_scans_is_refused(rag_home, monkeypatch):
+    _no_ocr(monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        rag_routes.extract_text(_upload("contract.pdf", _typed_and_scanned_pdf()), subject = "owner")
+        rag_routes.extract_text(_upload("scan.pdf", _scanned_pdf()), subject = "owner")
     assert exc.value.status_code == 422
-    assert "page 2" in exc.value.detail and "contract.pdf" in exc.value.detail
+    assert "pages 1, 2 of scan.pdf" in exc.value.detail
     assert _uploads_left() == []

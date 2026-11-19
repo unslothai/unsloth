@@ -1069,15 +1069,15 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
     finally:
         _remove_stored_upload(stored_path)
+    warning = None
     if unread:
         pages_label = ", ".join(map(str, unread[:20]))
         if len(unread) > 20:
             pages_label += f" and {len(unread) - 20} more"
-        raise HTTPException(
-            status_code = 422,
-            detail = f"Could not read scanned page{'s' if len(unread) > 1 else ''} {pages_label} of "
+        warning = (
+            f"Could not read scanned page{'s' if len(unread) > 1 else ''} {pages_label} of "
             f"{filename}. Reading scanned pages needs a vision model loaded in Chat, or Tesseract OCR "
-            f"installed, and covers at most {config.OCR_MAX_PAGES} pages.",
+            f"installed, and covers at most {config.OCR_MAX_PAGES} pages."
         )
     # Capped page by page: joining everything first would hold a huge extraction several times over.
     parts: list[bytes] = []
@@ -1099,7 +1099,13 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         parts.append(chunk)
         room -= len(chunk)
     text = b"".join(parts).decode("utf-8", errors = "ignore")
-    return {"filename": filename, "text": text, "truncated": truncated}
+    # Refused only when the unread scans were all there was; otherwise the text loads with the warning.
+    if warning and not text.strip():
+        raise HTTPException(status_code = 422, detail = warning)
+    result = {"filename": filename, "text": text, "truncated": truncated}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 @router.post("/search")
