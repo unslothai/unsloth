@@ -772,30 +772,6 @@ def rms_norm_act(
                 rh, rw = reflect_pad
                 y = F.pad(y, (rw, rw, rh, rh, 0, 0), mode = "reflect")
             return y.contiguous(memory_format = torch.channels_last_3d)
-        if front and y.dim() == 5:
-            # cat([cache, y]) + front zero frames + the zero halo + channels-last, as one buffer (values unchanged)
-            ph, pw = zero_pad if zero_pad is not None else (0, 0)
-            t = y.shape[2]
-            out = torch.empty(
-                (b, y.shape[1], front + t, h + 2 * ph, w + 2 * pw),
-                dtype = y.dtype,
-                device = y.device,
-                memory_format = torch.channels_last_3d,
-            ).zero_()
-            if cache is not None:
-                cache = cache[:, :, -front:]
-                n_cache = cache.shape[2]
-                out[:, :, front - n_cache : front, ph : ph + h, pw : pw + w].copy_(
-                    cache.to(y.dtype)
-                )
-            out[:, :, front:, ph : ph + h, pw : pw + w].copy_(y)
-            del y
-            if not tail:
-                return out
-            tail_t = out[:, :, -tail:, ph : ph + h, pw : pw + w].clone(
-                memory_format = torch.channels_last_3d
-            )
-            return out, tail_t
         if front:
             n_cache = 0
             if cache is not None:
