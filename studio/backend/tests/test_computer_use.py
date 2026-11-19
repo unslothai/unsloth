@@ -322,6 +322,18 @@ def test_without_room_or_a_size_responsive_encoder_the_default_stays(count, cont
     assert screen.fit_size(2560, 1440, ImageBudget(count, lambda: context)) == default
 
 
+@pytest.mark.parametrize(
+    "pixels, tokens",
+    [((3840, 2160), 4096), ((1920, 1080), 2048), ((1024, 768), 1100), ((3024, 1964), 4096)],
+)
+def test_a_screenshot_is_never_upscaled_past_the_precision_floor(pixels, tokens):
+    budget = ImageBudget(QWEN, lambda: 131072)
+    size = screen.fit_size(*pixels, budget, pixels)
+    assert 0.92 * tokens <= QWEN(*size) <= tokens
+    if tokens > 1100:
+        assert size[0] <= pixels[0] + 32 and size[1] <= pixels[1] + 32
+
+
 def test_the_size_follows_a_context_that_shrank_and_zoom_is_sent_as_counted():
     from PIL import Image
 

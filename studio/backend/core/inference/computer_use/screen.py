@@ -39,8 +39,9 @@ def fit_size(
     width: float,
     height: float,
     budget: "Optional[ImageBudget]" = None,
+    pixels: Optional[tuple[int, int]] = None,
 ) -> tuple[int, int]:
-    sized = budget.size(width, height) if budget is not None else None
+    sized = budget.size(width, height, pixels) if budget is not None else None
     if sized is not None:
         return sized
     scale = min(1.0, MAX_EDGE / max(width, height, 1))
@@ -107,7 +108,7 @@ def take(
     except Exception:  # noqa: BLE001 - the pixels are still compared without it
         windows = None
     full = backend.capture(display)
-    size = fit_size(display.width, display.height, budget)
+    size = fit_size(display.width, display.height, budget, tuple(full.size))
     image = full.resize(size, Image.Resampling.LANCZOS, reducing_gap = 2.0)
     frame = Frame(display, size[0], size[1], windows = windows)
     # Kept without the pointer: comparing two screens must not see the pointer having moved.

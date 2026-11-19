@@ -109,13 +109,19 @@ class ImageBudget:
             self._cell = found
         return self._cell
 
-    def size(self, width: float, height: float) -> Optional[tuple[int, int]]:
-        """The screenshot size for a display of this shape, or None to keep the default."""
+    def size(
+        self,
+        width: float,
+        height: float,
+        pixels: Optional[tuple[int, int]] = None,
+    ) -> Optional[tuple[int, int]]:
+        """The screenshot size for a display of this shape, or None to keep the default. With the
+        capture's `pixels`, no more cells than they fill unless that is under the precision floor."""
         aspect = width / max(height, 1)
         context = self._context()
         if not context:
             return None
-        key = (round(aspect, 3), context)
+        key = (round(aspect, 3), context, pixels)
         if key in self._sizes:
             return self._sizes[key]
         cells = self._cell_size()
@@ -136,6 +142,10 @@ class ImageBudget:
                 return None
             precise = min(cap, PRECISE)
             target = min(cap, COST_CEILING, max(precise, context // _AIM_OF_CONTEXT))
+            if pixels:
+                # Upscaling past the capture adds tokens, not detail.
+                native = (pixels[0] // cell) * (pixels[1] // cell) + wrapper
+                target = min(target, max(precise, native))
             shape = grid(aspect, target - wrapper)
             if context // _MOST_OF_CONTEXT < precise:
                 _log_once(
