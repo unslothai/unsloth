@@ -10,7 +10,6 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useShortcutLabel } from "@/features/settings/hooks/use-shortcut";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -74,26 +73,10 @@ function subscribe(listener: () => void): () => void {
 }
 
 const FEATURES = [
-  {
-    icon: GridViewIcon,
-    title: "Every model in one place",
-    body: "Favorites, Discover, On Device and Connected models, with a tab per maker and connection.",
-  },
-  {
-    icon: Download01Icon,
-    title: "One pick to download and run",
-    body: "Discover shows models suited to this device. Choose a quant and it downloads and loads.",
-  },
-  {
-    icon: Brain03Icon,
-    title: "Reasoning beside the model",
-    body: "Set the effort level, turn thinking on or off, and switch quantizations.",
-  },
-  {
-    icon: StarIcon,
-    title: "Favorites and Run settings",
-    body: "Star models, drag them into order, and tune Run settings without leaving the picker.",
-  },
+  { icon: GridViewIcon, label: "Every model in one place" },
+  { icon: Download01Icon, label: "Download in one pick" },
+  { icon: Brain03Icon, label: "Reasoning built in" },
+  { icon: StarIcon, label: "Favorites and settings" },
 ] as const;
 
 const MOCK_ROWS = [
@@ -122,7 +105,6 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
   const dismissed = useSyncExternalStore(subscribe, readDismissed, () => true);
   const [open, setOpen] = useState(false);
   const openPickerOnClose = useRef(false);
-  const shortcut = useShortcutLabel("openModelPicker");
 
   // Chat only: Translate browses, and Compare and the API page own their selection.
   if (!source || source.browseOnly || source.selection) {
@@ -152,15 +134,11 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                   ["--glow-strength" as string]: "16%",
                 }}
               />
-              <span className="relative flex min-w-0 flex-1 flex-col items-start gap-1.5">
-                <NewBadge />
-                <span className="font-heading font-semibold text-[0.975rem] text-foreground tracking-[-0.01em]">
+              <span className="relative flex min-w-0 flex-1 flex-col items-start gap-1">
+                <span className="font-heading font-semibold text-base text-foreground tracking-[-0.01em]">
                   Meet the new model picker
                 </span>
-                <span className="text-muted-foreground text-xs leading-relaxed">
-                  Pick, download and tune models right from the composer.
-                </span>
-                <span className="mt-0.5 inline-flex items-center gap-1 font-medium text-primary text-xs">
+                <span className="inline-flex items-center gap-1 font-medium text-primary text-xs">
                   Learn more
                   <HugeiconsIcon
                     icon={ArrowRight01Icon}
@@ -188,7 +166,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
       )}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="gap-0 p-3 pb-6 sm:max-w-[calc(35rem*var(--ui-space-scale,1))]"
+          className="content-start gap-0 p-3 pb-6 sm:max-w-[calc(35rem*var(--ui-space-scale,1))]"
           onCloseAutoFocus={(event) => {
             if (!openPickerOnClose.current) {
               return;
@@ -200,23 +178,13 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
           }}
         >
           <DialogHero />
-          <div className="mt-6 flex flex-col items-center gap-2.5 px-4 text-center">
-            <NewBadge label="New in Studio" />
+          <div className="mt-7 flex flex-col items-center gap-2.5 px-4 text-center">
+            <NewBadge />
             <DialogTitle className="text-balance font-heading font-semibold text-[1.65rem] leading-tight tracking-[-0.02em]">
               Meet the new model picker
             </DialogTitle>
-            <DialogDescription className="max-w-[calc(26rem*var(--ui-space-scale,1))] text-balance leading-relaxed">
-              Click the model chip in the composer to switch models, quants and
-              reasoning without leaving the chat
-              {shortcut ? (
-                <>
-                  , or press{" "}
-                  <kbd className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-foreground text-xs ring-1 ring-border/60">
-                    {shortcut}
-                  </kbd>
-                </>
-              ) : null}
-              .
+            <DialogDescription className="text-balance">
+              Models, quants and reasoning, right in the composer.
             </DialogDescription>
             <Button
               variant="primary"
@@ -236,26 +204,21 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               />
             </Button>
           </div>
-          <ul className="mt-6 grid gap-2 px-3 sm:grid-cols-2">
+          <ul className="mt-7 grid grid-cols-2 gap-2 px-3 sm:grid-cols-4">
             {FEATURES.map((feature) => (
               <li
-                key={feature.title}
-                className="flex items-start gap-3 rounded-2xl bg-muted/50 p-3.5 ring-1 ring-border/40"
+                key={feature.label}
+                className="flex flex-col items-center gap-2.5 rounded-2xl bg-muted/50 px-2 py-4 text-center ring-1 ring-border/40"
               >
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                <span className="flex size-9 items-center justify-center rounded-xl bg-primary/12 text-primary">
                   <HugeiconsIcon
                     icon={feature.icon}
                     strokeWidth={1.9}
-                    className="size-4"
+                    className="size-4.5"
                   />
                 </span>
-                <span className="flex min-w-0 flex-col gap-0.5">
-                  <span className="font-medium text-foreground text-sm">
-                    {feature.title}
-                  </span>
-                  <span className="text-muted-foreground text-xs leading-relaxed">
-                    {feature.body}
-                  </span>
+                <span className="text-balance font-medium text-foreground text-xs leading-snug">
+                  {feature.label}
                 </span>
               </li>
             ))}
@@ -266,10 +229,10 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
   );
 };
 
-const NewBadge: FC<{ label?: string }> = ({ label = "New" }) => (
+const NewBadge: FC = () => (
   <span className="inline-flex items-center gap-1 rounded-full bg-primary/12 px-2 py-0.5 font-semibold text-primary text-ui-11 tracking-wide">
     <HugeiconsIcon icon={SparklesIcon} strokeWidth={2} className="size-3" />
-    {label}
+    New
   </span>
 );
 
