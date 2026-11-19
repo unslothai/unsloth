@@ -71,7 +71,7 @@ def _head_parameters(model):
     return ids
 
 
-def _plan(model, stacks):
+def _plan(model, stacks, heads):
     """(stack, k) when the first k layers of one stack, and everything feeding them, hold nothing trainable."""
     trainable = {id(p) for p in model.parameters() if p.requires_grad}
     if not trainable:
@@ -87,10 +87,12 @@ def _plan(model, stacks):
                 upper.update(ids)
         if not k:
             continue
-        if not trainable.issubset(upper | _head_parameters(model)):
+        if not trainable.issubset(upper | heads):
             return None
-        first = stack[k]
-        if not (getattr(first, "gradient_checkpointing", False) and first.training):
+        # Only checkpointing makes the frozen layers replay; a layer kept out of it (checkpoint_skip_layers) is fine.
+        if not stack[k].training or not any(
+            getattr(layer, "gradient_checkpointing", False) for layer in stack
+        ):
             return None
         if any(getattr(layer, "_compiled_call_impl", None) is not None for layer in stack[:k]):
             return None  # hooks would sit inside a compiled call
@@ -162,9 +164,12 @@ def install_frozen_prefix_skip(model):
         outer = model_ref()
         if outer is None:
             return None
+        if getattr(outer, "_unsloth_block_swap", None) is not None:
+            return None  # block swap streams the frozen blocks around their checkpoint replay
         if state["stacks"] is None:
             state["stacks"] = _decoder_stacks(outer)
-        plan = _plan(outer, state["stacks"])
+            state["heads"] = _head_parameters(outer)
+        plan = _plan(outer, state["stacks"], state["heads"])
         if plan is None:
             return None
         stack, k = plan

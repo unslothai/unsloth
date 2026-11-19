@@ -138,3 +138,30 @@ def test_inputs_embeds_that_require_grad_keep_their_gradient():
     model(inputs_embeds = embeds).logits.sum().backward()
     assert embeds.grad is not None and embeds.grad.abs().sum() > 0
     assert fp.FROZEN_PREFIX_STATS == before
+
+
+def test_first_trainable_layer_outside_checkpointing_still_matches(monkeypatch):
+    # checkpoint_skip_layers can leave the first trainable layer unchecked while the rest replay.
+    def build():
+        model = _model([2, 3])
+        model.base_model.model.model.layers[2].gradient_checkpointing = False
+        return model
+
+    monkeypatch.setenv("UNSLOTH_FROZEN_PREFIX_SKIP", "0")
+    base = _step(build())
+    monkeypatch.setenv("UNSLOTH_FROZEN_PREFIX_SKIP", "1")
+    head = _step(build())
+    _assert_same(base, head)
+    assert head[2][:2] == [1, 1] and base[2][:2] == [2, 2]
+
+
+def test_no_checkpointing_or_block_swap_is_untouched():
+    model = _model([2, 3])
+    model.gradient_checkpointing_disable()
+    before = dict(fp.FROZEN_PREFIX_STATS)
+    _step(model)
+    assert fp.FROZEN_PREFIX_STATS == before
+    model = _model([2, 3])
+    model._unsloth_block_swap = object()
+    assert _step(model)[2] == [2] * LAYERS
+    assert fp.FROZEN_PREFIX_STATS == before
