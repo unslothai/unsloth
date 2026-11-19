@@ -695,3 +695,23 @@ def test_live_free_memory_uses_the_planners_trusted_reading():
         with patch.object(hardware, "rocm_windows_free_is_untrusted", return_value = True):
             # capped at what this process has not reserved, plus its reusable cache
             assert tr.live_free_mib("cuda:0") == (4_000 + 1_000, 24_000)
+
+
+def test_a_resident_load_whose_quantized_encoder_can_stream_renders_under_no_grad():
+    """torchao encoder weights cannot move under inference_mode; a resident load that may stream or restore them per
+    render takes the no_grad render mode, as offloaded quant loads already do. Plain encoders keep inference_mode."""
+    from core.inference import diffusion as d
+
+    quant = pytest.importorskip("torchao.quantization")
+    plain = _pipe()
+    state = SimpleNamespace(offload_policy = d.OFFLOAD_NONE, pipe = plain, transformer_quant = "int8")
+    assert d._torchao_render_needs_no_grad(state) is False  # no residency check installed
+    setattr(plain, tr.ATTR, tr.EncoderResidency(plain, "cpu", tr.KIND_PLAIN))
+    assert d._torchao_render_needs_no_grad(state) is False  # plain encoder weights
+
+    encoder = torch.nn.Sequential(torch.nn.Linear(32, 32))
+    quant.quantize_(encoder, quant.Int8WeightOnlyConfig())
+    quantized = _pipe(encoder)
+    setattr(quantized, tr.ATTR, tr.EncoderResidency(quantized, "cpu", tr.KIND_PLAIN))
+    state = SimpleNamespace(offload_policy = d.OFFLOAD_NONE, pipe = quantized)
+    assert d._torchao_render_needs_no_grad(state) is True

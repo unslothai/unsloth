@@ -53,6 +53,17 @@ def _encoders(pipe: Any) -> dict[str, Any]:
     }
 
 
+def _holds_subclass_weights(module: Any) -> bool:
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+    except Exception:  # noqa: BLE001
+        return False
+    return any(
+        is_traceable_wrapper_subclass(p.data if hasattr(p, "data") else p)
+        for p in module.parameters()
+    )
+
+
 def slack_mib(total_mib: int) -> int:
     """The planner's residency slack (``_resident_dit_slack_mib``): 10% of the card, at least 1 GiB."""
     from .diffusion_memory import _RESIDENT_DIT_SLACK_FRACTION, _RESIDENT_DIT_SLACK_MIN_MIB
@@ -205,6 +216,11 @@ class EncoderResidency:
         self.names = tuple(_encoders(pipe))
         self.mib = sum(_nbytes(m) for m in _encoders(pipe).values()) >> 20
         self.streamed = False
+        # torchao / tensor-subclass encoder weights cannot move under inference_mode (aliasing check): renders that may
+        # stream or restore them run under no_grad (diffusion._torchao_render_needs_no_grad).
+        self.moves_need_grad_mode = any(
+            _holds_subclass_weights(m) for m in _encoders(pipe).values()
+        )
         self._restore_groups: Optional[Callable[..., None]] = None
         self.released_mib = 0
         self.releases = 0
