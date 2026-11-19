@@ -8259,8 +8259,7 @@ if ($ROCmIndexUrl) {
         $_rocmKeptActive = $false
     }
     if ($torchInstallExit -ne 0) {
-        # A supported AMD GPU whose ROCm wheels did not install is a failed GPU install, not a CPU one:
-        # falling through installed the newest CPU torch and exited 0, so the app ran on CPU. Stop, say why.
+        # A supported AMD GPU without ROCm wheels is a failed GPU install: stop and say why, never fall to CPU.
         $_rocmReason = (@((Redact-InstallOutput $output) -split '\r?\n' |
             Where-Object { $_.Trim() }) | Select-Object -Last 6) -join " | "
         if (-not $_rocmReason) { $_rocmReason = "no installer output captured (see the uv output above)" }

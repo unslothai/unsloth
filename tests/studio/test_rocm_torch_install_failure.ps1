@@ -1,13 +1,9 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# setup.ps1 on a supported AMD GPU (gfx1151): when the ROCm torch trio does not install, setup must fail loudly
-# with the arch, the index and the reason, and must NOT fall through to a CPU torch and report success. It used to
-# print one yellow warning and install the newest CPU torch from the CPU index (2.15.0+cpu), so a Strix Halo box
-# ended up on CPU after an install that exited 0. UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1 keeps a CPU install as an
-# explicit choice, bounded to the supported torch window and labelled as not a GPU install. The successful ROCm
-# install and the plain CPU route must be unchanged. The torch install block is cut out of setup.ps1 and run
-# against stubs. ASCII only: Windows PowerShell 5.1 reads a BOM-less script in the ANSI code page.
+# A failed ROCm torch install on a supported AMD GPU must stop setup (it used to install CPU torch and exit 0);
+# UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1 opts into a bounded CPU install. Runs setup.ps1's torch block against stubs.
+# ASCII only: Windows PowerShell 5.1 reads a BOM-less script in the ANSI code page.
 # Run: pwsh -NoProfile -File tests/studio/test_rocm_torch_install_failure.ps1
 
 $ErrorActionPreference = "Stop"
