@@ -2276,6 +2276,8 @@ class AudioCppModel:
     # False for a spec family whose one option list serves several tasks (LFM2.5 Audio: asr, tts,
     # s2s): the runtime refuses another task's option, so only what the user set is sent.
     fills_option_defaults: bool = True
+    # Variants are the runtime spec's multi-file packages, each keyed and downloaded as a whole.
+    spec_packaged: bool = field(default = False, hash = False, compare = False)
 
     def __post_init__(self) -> None:
         if not self.spec_options and self.options:
@@ -2906,6 +2908,7 @@ def _resolve_uncached(
         from_hub = from_hub,
         unloadable = tuple(unloadable),
         fills_option_defaults = family in FAMILIES or not _spans_tasks(contract or embedded),
+        spec_packaged = packaged is not None and not policy.package,
     )
     return model.with_variant(chosen)
 
@@ -3005,6 +3008,33 @@ def package_variant_files(names: Iterable[str]) -> Optional[dict[str, tuple[str,
         }
         if found:
             return found
+    return _spec_package_files(present)
+
+
+_spec_primaries_cache: list[tuple[dict, frozenset[str]]] = []
+
+
+def _spec_package_files(present: set) -> Optional[dict[str, tuple[str, ...]]]:
+    """The runtime spec packages a repo's listing holds in full, keyed as resolve() keys them."""
+    specs = runtime_specs()
+    if not _spec_primaries_cache or _spec_primaries_cache[0][0] is not specs:
+        primaries = frozenset(
+            p.primary
+            for spec in specs.values()
+            for p in spec_packages.spec_packages(spec)
+            if p.primary and len(p.files) > 1
+        )
+        _spec_primaries_cache[:] = [(specs, primaries)]
+    if present.isdisjoint(_spec_primaries_cache[0][1]):
+        return None
+    listing = [RepoFile(name, 0) for name in present]
+    for spec in specs.values():
+        umbrella = AUDIO_CPP_REPO.lower()
+        repos = {p.repo for p in spec_packages.spec_packages(spec) if p.repo.lower() != umbrella}
+        for repo in sorted(repos - {""}):
+            variants = spec_package_variants(spec, repo, "", listing)
+            if variants:
+                return {v.key: tuple(f.path for f in v.files) for v in variants}
     return None
 
 

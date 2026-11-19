@@ -163,6 +163,32 @@ def test_xtts_q8_package_is_clone_only_at_its_q8_root(hub, monkeypatch):
     assert model.variant.root == "q8_0"
 
 
+def test_picker_and_download_plan_offer_whole_spec_packages(hub, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from hub.services.models import gguf_variants as gv
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
+
+    q4 = tuple(p.replace("q8_0", "q4_k_m") for p in XTTS_Q8[:2]) + ("q4_k_m/mel_norms.bin",)
+    listing = {path: 10 for path in XTTS_Q8 + q4}
+    _use_specs(monkeypatch)
+    _listing(monkeypatch, XTTS_REPO, listing)
+    _put(_snapshot(hub, XTTS_REPO), XTTS_Q8[0], _gguf_bytes(arch = "xtts"))
+    monkeypatch.setattr(gv.account_access, "managed_account", lambda: False)
+
+    answer = asyncio.run(gv._audio_cpp_variants_answer(XTTS_REPO, None, True)).response
+    rows = {row.quant: row.filename for row in answer.variants}
+    # Packages, never their vocoder GGUF as a model of its own.
+    assert rows == {"Q8_0": XTTS_Q8[0], "Q4_K_M": q4[0]}
+    plans = build_gguf_variant_plans(
+        [SimpleNamespace(rfilename = n, size = 10, lfs = {"sha256": n}) for n in listing]
+    )
+    assert set(plan_for_variant(plans, "Q8_0").target_filenames) == set(XTTS_Q8)
+    assert set(plan_for_variant(plans, "Q4_K_M").target_filenames) == set(q4)
+    assert acm.resolve(XTTS_REPO, network = False).spec_packaged
+
+
 def test_a_partly_downloaded_package_is_not_a_downloaded_model(hub, monkeypatch):
     # One GGUF of the three (a lone file fetched from the Model Hub page) is no model yet.
     _use_specs(monkeypatch)
