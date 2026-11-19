@@ -499,6 +499,10 @@ if _IS_MLX:
         fn = _mlx_memory_fn(name)
         return int(fn()) if fn is not None else 0
 
+    def _mlx_peak_memory_bytes():
+        # mx.reset_peak_memory zeroes the peak, where torch resets it to current usage.
+        return max(_mlx_memory_bytes("get_peak_memory"), _mlx_memory_bytes("get_active_memory"))
+
     def get_gpu_memory_stats():
         """Return MLX device stats, peak memory, and total memory in GiB."""
         import mlx.core as mx
@@ -507,7 +511,7 @@ if _IS_MLX:
         total = info.get("memory_size") or info.get("max_recommended_working_set_size") or 0
         stats = _UnslothDeviceStats(info.get("device_name", "Apple GPU"), total)
         max_memory = _bytes_to_gb(total) or 1.0
-        return stats, _bytes_to_gb(_mlx_memory_bytes("get_peak_memory")), max_memory
+        return stats, _bytes_to_gb(_mlx_peak_memory_bytes()), max_memory
 
     def clear_gpu_memory():
         """Clear MLX's cached GPU memory for compatibility cleanup helpers."""
@@ -564,8 +568,8 @@ if _IS_MLX:
                 return get_device_properties(device).name
 
             def max_memory_reserved(device = None):
-                """MLX peak memory in exact bytes (not via the GiB-rounded stats, which can drop below memory_reserved)."""
-                return _mlx_memory_bytes("get_peak_memory")
+                """MLX peak memory in exact bytes, never below memory_reserved."""
+                return _mlx_peak_memory_bytes()
 
             def empty_cache():
                 """Clear MLX cache through torch.cuda.empty_cache()."""
