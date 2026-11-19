@@ -1806,7 +1806,8 @@ export function ImagesPage({
   const initialReadySent = useRef(false);
   const imageInfoStamp = useLibrarySettingsStore((state) => state.imageInfoStamp);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
-  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
+  // `load: "next"` waits for a staged load to start (planning / companion downloads bump no sequence) and binds to it then.
+  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number | "next"; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
@@ -4042,6 +4043,7 @@ export function ImagesPage({
       // Read BEFORE the start request: a Cancel's unload can reach the backend first and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      if (pendingRecalledGeneration.current?.load === "next") pendingRecalledGeneration.current.load = startLoad;
       // An older pick's Load anyway prompt would retry a model this load supersedes.
       dismissLoadAnyway();
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
@@ -4833,7 +4835,10 @@ export function ImagesPage({
     const opts = { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId, baseRepo: l.baseRepo };
     // An engine change reads the other engine's companion files: plan and stage them first.
     if (reapplyChangesEngine(engineChoice, status)) {
-      void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
+      void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true).then((started) => {
+        // A stage that never loads must not leave a Generate waiting for some later load.
+        if (!started && pendingRecalledGeneration.current?.load === "next") pendingRecalledGeneration.current = null;
+      });
       return true;
     }
     const files = pickComponentFiles({ repoId: l.repoId, kind: l.kind, filename: l.filename });
@@ -4865,7 +4870,7 @@ export function ImagesPage({
         );
         pendingRecalledGeneration.current = {
           model,
-          load: loadSeq.current + 1,
+          load: "next",
           workflow,
           allowOversized: oversizedOnce.current,
         };
@@ -6174,10 +6179,11 @@ export function ImagesPage({
   useEffect(() => {
     const pending = pendingRecalledGeneration.current;
     if (!pending) return;
-    if (!active || pending.load !== loadSeq.current) {
+    if (!active || (pending.load !== "next" && pending.load !== loadSeq.current)) {
       pendingRecalledGeneration.current = null;
       return;
     }
+    if (pending.load === "next") return;
     if (busy !== null || !status?.loaded) return;
     pendingRecalledGeneration.current = null;
     const tab = WORKFLOW_TABS.find(

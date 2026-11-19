@@ -103,3 +103,20 @@ test("the Images page routes Generate, Queue, Compare and refusals through the r
   const api = readSrc("features/images/api.ts");
   assert.match(api, /isLoraReloadRefusal\(response\.status, response\.headers\.get\(MEMORY_REFUSAL_HEADER\)\)/);
 });
+
+test("Reload and generate survives a staged engine reload and binds to the load when it starts", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  // Planning / companion downloads bump no load sequence, so the request waits as "next" ...
+  const reload = page.slice(page.indexOf("const reloadWithLoras = useCallback("));
+  assert.match(reload.slice(0, reload.indexOf("reapplyLoad(true)")), /load: "next"/);
+  // ... the pending effect keeps it instead of clearing it on a sequence mismatch ...
+  assert.match(page, /pending\.load !== "next" && pending\.load !== loadSeq\.current/);
+  // ... handleLoad binds it to the load it starts ...
+  assert.match(
+    page,
+    /const startLoad = \+\+loadSeq\.current;\n\s*if \(pendingRecalledGeneration\.current\?\.load === "next"\) pendingRecalledGeneration\.current\.load = startLoad;/,
+  );
+  // ... and a stage that never loads drops it.
+  const reapply = page.slice(page.indexOf("const reapplyLoad = useCallback("));
+  assert.match(reapply.slice(0, reapply.indexOf("const handleReapply")), /!started && pendingRecalledGeneration\.current\?\.load === "next"/);
+});
