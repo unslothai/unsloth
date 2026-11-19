@@ -1813,3 +1813,25 @@ test("hiding the star on small screens never strands Favorite", () => {
   }
   assert.match(picker, /\[actionClass, npuOffer \? TOUCH_DOTS : TOUCH_IN_MENU\]/);
 });
+
+test("a measured MLX download size decides its fit warning, not the per-parameter estimate", async () => {
+  const { hfModelFitsDevice } = await import(
+    "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+  );
+  // 27B at 0.4 B/param estimates ~11 GB; the UD-4bit repo's files are 26 GB.
+  const repo = { id: "unsloth/Qwen3.6-27B-UD-MLX-4bit", totalParams: 27e9 };
+  const gpu = {
+    memoryTotalGb: 16,
+    systemRamAvailableGb: 16,
+    budgetKnown: true,
+  };
+  assert.equal(hfModelFitsDevice(repo, gpu), true);
+  assert.equal(
+    hfModelFitsDevice({ ...repo, curatedSizeBytes: 26e9 }, gpu),
+    false,
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /curatedSizeBytes: mlx \? bytes : undefined,/);
+});

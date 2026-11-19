@@ -2763,12 +2763,16 @@ export function ComposerModelPicker({
       }
       const id = r.id.toLowerCase();
       const bytes = hubSizes.get(id);
+      // An MLX repo loads its files as they are: the measured size outranks the 0.4 B/param
+      // estimate hfModelFitsDevice otherwise prefers. Safetensors keep the transformers rule.
+      const mlx = isMlxId(r.id, hasMlxCardTag(r));
       const fits = bytes
         ? searchRowFitsDevice(
             {
               id: r.id,
               totalParams: r.totalParams,
               estimatedSizeBytes: bytes,
+              curatedSizeBytes: mlx ? bytes : undefined,
               quantMethod: r.quantMethod,
             },
             {
