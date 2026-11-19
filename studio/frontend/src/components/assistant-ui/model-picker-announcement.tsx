@@ -25,6 +25,7 @@ import {
 } from "@/features/hub";
 import { useHubFeed } from "@/features/hub/hooks/use-hub-feed";
 import { browserAccountKey } from "@/lib/account-transition";
+import { BulbIcon } from "@/lib/bulb-icon";
 import {
   ChevronDownStandardIcon,
   ChevronLeftStandardIcon,
@@ -34,12 +35,11 @@ import {
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
 import {
-  Brain03Icon,
   Cancel01Icon,
   CloudIcon,
+  DashboardCircleIcon,
   Download01Icon,
   FilterMailIcon,
-  GridViewIcon,
   MoreVerticalIcon,
   Navigation05Icon,
   PlusSignIcon,
@@ -109,11 +109,22 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+const featureIcon = (icon: typeof StarIcon) => (
+  <HugeiconsIcon icon={icon} strokeWidth={1.9} className="size-4.5" />
+);
+
+// The bulb is the composer's own thinking glyph, not a hugeicon.
 const FEATURES = [
-  { icon: GridViewIcon, label: "All your models in one list" },
-  { icon: Settings01Icon, label: "Run settings for each model" },
-  { icon: Brain03Icon, label: "Adjust thinking effort easily" },
-  { icon: StarIcon, label: "Star the ones you use most" },
+  {
+    icon: featureIcon(DashboardCircleIcon),
+    label: "Find and switch models fast",
+  },
+  { icon: featureIcon(Settings01Icon), label: "Run settings for each model" },
+  {
+    icon: <BulbIcon className="size-4.5" />,
+    label: "Adjust thinking effort easily",
+  },
+  { icon: featureIcon(StarIcon), label: "Star the ones you use most" },
 ] as const;
 
 const USE_STEPS = [
@@ -169,7 +180,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                 setPage(0);
                 setOpen(true);
               }}
-              className="relative flex w-full items-center gap-4 overflow-hidden rounded-[calc(22px*var(--ui-space-scale,1))] py-5 pr-3 pl-5 text-left bg-white shadow-[var(--composer-shadow)] dark:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="glass-float-surface relative flex w-full items-center gap-4 overflow-hidden rounded-[calc(22px*var(--ui-space-scale,1))] py-5 pr-3 pl-5 text-left bg-white shadow-[var(--composer-shadow)] dark:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span className="relative flex min-w-0 flex-1 flex-col items-start gap-1">
                 <span className="font-heading font-semibold text-base text-foreground tracking-[-0.01em]">
@@ -195,7 +206,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               type="button"
               onClick={dismiss}
               aria-label="Dismiss"
-              className="absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full text-muted-foreground bg-white shadow-[var(--composer-shadow)] dark:bg-card transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="glass-float-surface absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full text-muted-foreground bg-white shadow-[var(--composer-shadow)] dark:bg-card transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <HugeiconsIcon
                 icon={Cancel01Icon}
@@ -262,14 +273,10 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                 {FEATURES.map((feature) => (
                   <li
                     key={feature.label}
-                    className="flex items-center gap-2.5 rounded-full bg-muted/50 py-3 pr-4 pl-4"
+                    className="flex items-center gap-2.5 rounded-full bg-muted dark:bg-muted/50 py-3 pr-4 pl-4"
                   >
                     <span className="flex shrink-0 items-center justify-center text-primary">
-                      <HugeiconsIcon
-                        icon={feature.icon}
-                        strokeWidth={1.9}
-                        className="size-4.5"
-                      />
+                      {feature.icon}
                     </span>
                     <span className="font-medium text-foreground text-sm leading-snug">
                       {feature.label}
@@ -289,7 +296,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                   Four ways to use the model picker.
                 </DialogDescription>
               </div>
-              <ol className="mt-6 flex flex-col gap-2.5 rounded-[calc(22px*var(--ui-space-scale,1))] bg-muted/50 px-5 py-4 text-sm">
+              <ol className="mt-6 flex flex-col gap-2.5 rounded-[calc(22px*var(--ui-space-scale,1))] bg-muted dark:bg-muted/50 px-5 py-4 text-sm">
                 {USE_STEPS.map((step, index) => (
                   <li key={step} className="flex items-baseline gap-3">
                     <span className="w-3 shrink-0 font-semibold text-primary">
@@ -371,7 +378,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
 };
 
 const NewBadge: FC = () => (
-  <span className="inline-flex items-center gap-1 rounded-full bg-primary/12 px-2 py-0.5 font-semibold text-primary text-ui-11 tracking-wide">
+  <span className="inline-flex items-center gap-1 rounded-full bg-primary/12 px-2 py-0.5 font-bold text-primary text-ui-11 uppercase tracking-wide">
     <HugeiconsIcon icon={SparklesIcon} strokeWidth={2} className="size-3" />
     New
   </span>
@@ -515,10 +522,12 @@ const DialogHero: FC = () => {
           Ask anything
         </span>
         <div className="flex items-center gap-1.5 text-muted-foreground">
-          <HugeiconsIcon
-            icon={PlusSignIcon}
-            className="size-4.5 shrink-0 stroke-[1.75px]"
-          />
+          <span className="flex size-7 shrink-0 items-center justify-center text-foreground">
+            <HugeiconsIcon
+              icon={PlusSignIcon}
+              className="size-4.5 stroke-[1.75px]"
+            />
+          </span>
           <span className="flex-1" />
           <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-muted-foreground/10 py-1.5 pr-3 pl-2 font-medium text-foreground text-sm">
             <LogoDot src={chosen.logo} className="size-4" />
@@ -578,7 +587,7 @@ const DialogHero: FC = () => {
             <div
               key={row.name}
               className={cn(
-                "flex items-center gap-2 rounded-lg px-2 py-1.5 text-foreground text-ui-11",
+                "flex items-center gap-2 rounded-full px-2.5 py-1.5 text-foreground text-ui-11",
                 index === 0 && "bg-muted-foreground/10",
               )}
             >
@@ -600,6 +609,8 @@ const DialogHero: FC = () => {
 const MOCK_SURFACE =
   "flex shrink-0 flex-col gap-2 rounded-xl bg-white p-2 shadow-[var(--composer-shadow)] dark:bg-card";
 
+const EFFORT_STOPS = [0, 0.25, 0.5, 0.75, 1];
+
 const EffortMock: FC = () => (
   <div className="flex flex-col gap-1.5 px-2 pb-1">
     <div className="flex items-center justify-between text-ui-11">
@@ -608,9 +619,23 @@ const EffortMock: FC = () => (
       </span>
       <span className="text-foreground">Medium</span>
     </div>
-    <div className="relative h-1.5 rounded-full bg-muted">
-      <span className="absolute inset-y-0 left-0 w-1/2 rounded-full bg-primary" />
-      <span className="absolute top-1/2 left-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[var(--composer-shadow)]" />
+    {/* The real slider at half size: a 9px track, level dots, a 12px knob. */}
+    <div className="relative h-3">
+      <span className="composer-effort-track absolute inset-x-0 top-[1.5px] h-[9px] rounded-full" />
+      <span className="composer-effort-fill absolute top-[1.5px] left-0 h-[9px] w-[calc(50%+4.5px)] rounded-full" />
+      {EFFORT_STOPS.map((stop) =>
+        stop === 0.5 ? null : (
+          <span
+            key={stop}
+            style={{ left: `calc(4.5px + ${stop} * (100% - 9px))` }}
+            className={cn(
+              "absolute top-1/2 size-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full",
+              stop < 0.5 ? "composer-effort-dot-on" : "composer-effort-dot-off",
+            )}
+          />
+        ),
+      )}
+      <span className="composer-effort-thumb absolute top-0 left-1/2 size-3 -translate-x-1/2 rounded-full" />
     </div>
   </div>
 );
@@ -626,7 +651,7 @@ const FoldHero: FC = () => {
       <div
         className={cn(MOCK_SURFACE, "w-[calc(216px*var(--ui-space-scale,1))]")}
       >
-        <div className="flex items-center gap-2 rounded-lg bg-muted-foreground/10 px-2 py-1.5 text-foreground text-ui-11">
+        <div className="flex items-center gap-2 rounded-full bg-muted-foreground/10 py-1 pr-1 pl-2.5 text-foreground text-ui-11">
           <LogoDot src={model.logo} className="size-4" />
           <span className="min-w-0 flex-1 truncate">{model.name}</span>
           <span className="size-1.5 shrink-0 rounded-full bg-primary" />
@@ -646,9 +671,9 @@ const FoldHero: FC = () => {
         className="size-5 shrink-0 text-muted-foreground max-sm:rotate-90"
       />
       <div
-        className={cn(MOCK_SURFACE, "w-[calc(230px*var(--ui-space-scale,1))]")}
+        className={cn(MOCK_SURFACE, "w-[calc(250px*var(--ui-space-scale,1))]")}
       >
-        <div className="flex items-center gap-3 px-2 pt-1 text-muted-foreground">
+        <div className="flex items-center gap-3 pl-2 text-muted-foreground">
           <HugeiconsIcon
             icon={StarIcon}
             strokeWidth={1.75}
@@ -673,7 +698,7 @@ const FoldHero: FC = () => {
             className="size-3.5"
           />
           <span className="flex-1" />
-          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted-foreground/15">
+          <span className="flex size-6 shrink-0 -translate-y-0.5 items-center justify-center rounded-full bg-muted-foreground/15">
             <HugeiconsIcon
               icon={ChevronUpStandardIcon}
               strokeWidth={2}
@@ -681,12 +706,25 @@ const FoldHero: FC = () => {
             />
           </span>
         </div>
+        <div className="flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1.5 text-muted-foreground text-ui-11">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            strokeWidth={1.75}
+            className="size-3"
+          />
+          <span className="flex-1">Search on device models</span>
+          <HugeiconsIcon
+            icon={FilterMailIcon}
+            strokeWidth={1.75}
+            className="size-3"
+          />
+        </div>
         <div className="flex flex-col">
           {rows.map((row, index) => (
             <div
               key={row.name}
               className={cn(
-                "flex items-center gap-2 rounded-lg px-2 py-1.5 text-foreground text-ui-11",
+                "flex items-center gap-2 rounded-full px-2.5 py-1.5 text-foreground text-ui-11",
                 index === 0 && "bg-muted-foreground/10",
               )}
             >
@@ -694,6 +732,7 @@ const FoldHero: FC = () => {
               <span className="min-w-0 flex-1 truncate">{row.name}</span>
               {index === 0 ? (
                 <>
+                  <span className="size-1.5 shrink-0 rounded-full bg-primary" />
                   <HugeiconsIcon
                     icon={MoreVerticalIcon}
                     strokeWidth={2}
