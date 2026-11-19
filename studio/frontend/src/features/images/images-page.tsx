@@ -220,6 +220,7 @@ import {
   isNativeEngineStatus,
   formatResolvedValue,
   isDenseQuantKind,
+  loadedTransformerPrecisionLabel,
   isPrecisionRefusal,
   denoiserPlacement,
   memoryRecipeValue,
@@ -409,6 +410,8 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import { LORA_RELOAD_ACTION, LORA_RELOAD_TITLE, LoraReloadRefusalError, loraReloadReason } from "./lib/lora-reload";
+import { generateGate } from "./lib/generate-gate";
 import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
   AUTOMATIC_SCHEDULE,
@@ -2227,6 +2230,9 @@ export function ImagesPage({
   const lastLoadSig = useRef<string | null>(null);
   // `{ prev }` distinguishes "revert to null" from "nothing pending"; also carries the recipe.
   const quantRevert = useRef<PickRevert | null>(null);
+  // Mirrors quantRevert != null: a pick is planning, downloading or loading, so the resident model is on its way out
+  // and Generate stays off (busy is not set while a pick plans or downloads).
+  const [pickInFlight, setPickInFlight] = useState(false);
   // Staging does not set `busy`, so a second pick can overwrite quantRevert meanwhile.
   const stagedQuantRevert = useRef<PickRevert | null>(null);
   const pickSeq = useRef(0);
@@ -2384,6 +2390,7 @@ export function ImagesPage({
     if (quantRevert.current) {
       revertPick(quantRevert.current);
       quantRevert.current = null;
+      setPickInFlight(quantRevert.current !== null);
     }
   }, [dismissLoadToast, pickGuard, pickToast, revertPick]);
 
@@ -2397,6 +2404,8 @@ export function ImagesPage({
   // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
   // Not on first load or unload (a restore can precede the load), so track it in a ref.
   const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
+  // An INT8 / FP8 build that did not bake this selection: Generate reloads with it first instead of a refused run.
+  const loraReload = loraCapable ? loraReloadReason(status, loras) : null;
   const loraOffNote = external ? null : loraUnavailableNote(status);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   const bakedLorasOnLoad = useRef(false);
@@ -2457,7 +2466,7 @@ export function ImagesPage({
     setLoras([]);
     toast.info("LoRA selection cleared", {
       description:
-        "This quantized load bakes adapters in at load time. Pick them, then load again.",
+        "This quantized build takes LoRAs only when it loads. Pick them again and Generate reloads the model with them.",
     });
   }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
@@ -3605,6 +3614,7 @@ export function ImagesPage({
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
+        setPickInFlight(quantRevert.current !== null);
         setPendingModelDefaults(null);
         lastLoadRevert.current = null;
         return;
@@ -3620,6 +3630,7 @@ export function ImagesPage({
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         if (lastLoadRevert.current) {
           lastLoad.current = lastLoadRevert.current.prev;
@@ -3644,6 +3655,7 @@ export function ImagesPage({
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         if (lastLoadRevert.current) {
           lastLoad.current = lastLoadRevert.current.prev;
@@ -4278,6 +4290,7 @@ export function ImagesPage({
         if (quantRevert.current && quantRevert.current === owned) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
       });
@@ -4328,6 +4341,7 @@ export function ImagesPage({
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         revertPick(quantRevert.current);
         quantRevert.current = null;
+        setPickInFlight(quantRevert.current !== null);
       }
       stagedQuantRevert.current = null;
       startQueuedDownload();
@@ -4556,6 +4570,7 @@ export function ImagesPage({
           if (ownRevert && quantRevert.current === ownRevert) {
             revertPick(ownRevert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
           toast.error(error.message);
           return true;
@@ -4676,6 +4691,7 @@ export function ImagesPage({
         onResolved: (filename) => {
           if (downloadOnly) return;
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(quantHint ?? filename);
           applyImageModelDefaults(repoId, effectiveFamilyOverride, false, filename);
         },
@@ -4683,6 +4699,7 @@ export function ImagesPage({
           if (!downloadOnly && quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         },
         load: (filename) =>
@@ -4745,6 +4762,7 @@ export function ImagesPage({
       : (quantRevert.current ?? { prev: quant, steps, guidance });
     if (revert) {
       quantRevert.current = revert;
+      setPickInFlight(quantRevert.current !== null);
       setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
       applyImageModelDefaults(
         wanted,
@@ -4757,6 +4775,7 @@ export function ImagesPage({
       if (!started && revert && token !== undefined && pickGuard.holds(token) && quantRevert.current === revert) {
         revertPick(revert);
         quantRevert.current = null;
+        setPickInFlight(quantRevert.current !== null);
       }
     });
   }, [
@@ -4805,24 +4824,67 @@ export function ImagesPage({
     });
   }, [routedItem, navigateSelf, loadGallery, loadMore, pickImage]);
 
-  // Reload the current model with the current advanced options.
-  const handleReapply = useCallback(() => {
+  // Reload the current model with the current advanced options. `keepLoras` carries the LoRA selection into the load
+  // even when the resident model is not the one this page last loaded (an INT8 / FP8 build bakes it there).
+  const reapplyLoad = useCallback((keepLoras: boolean): boolean => {
     // Against the current status: another client may have replaced the model this page last loaded.
     const l = reapplyTarget(lastLoad.current, status);
-    if (!l) return;
+    if (!l) return false;
     const opts = { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId, baseRepo: l.baseRepo };
     // An engine change reads the other engine's companion files: plan and stage them first.
     if (reapplyChangesEngine(engineChoice, status)) {
       void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
-      return;
+      return true;
     }
     const files = pickComponentFiles({ repoId: l.repoId, kind: l.kind, filename: l.filename });
     void handleLoad(l.repoId, opts, {
-      ...currentLoadAdvanced(l.repoId),
+      ...currentLoadAdvanced(l.repoId, true, keepLoras),
       text_encoder_file: files.textEncoderFiles?.length ? files.textEncoderFiles : undefined,
       vae_file: files.vaeFile || undefined,
     });
+    return true;
   }, [currentLoadAdvanced, engineChoice, handleLoad, loadOrStage, pickComponentFiles, status]);
+  const handleReapply = useCallback(() => {
+    reapplyLoad(false);
+  }, [reapplyLoad]);
+
+  // The resident INT8 / FP8 build takes LoRAs only at load: reload it with the selection baked in (the Reapply path,
+  // with its load toast and progress), then run the Generate that asked for it.
+  const reloadWithLoras = useCallback(
+    (thenGenerate: boolean) => {
+      if (busy !== null || !status?.loaded || !status.repo_id) return;
+      const kind = status.model_kind;
+      const resumable =
+        kind === "pipeline" || ((kind === "gguf" || kind === "single_file") && Boolean(status.gguf_filename));
+      if (thenGenerate && resumable) {
+        const model = withEngagedFamily(
+          lastLoad.current && matchesRememberedModel(lastLoad.current, status)
+            ? lastLoad.current
+            : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
+          status,
+        );
+        pendingRecalledGeneration.current = {
+          model,
+          load: loadSeq.current + 1,
+          workflow,
+          allowOversized: oversizedOnce.current,
+        };
+      }
+      if (!reapplyLoad(true)) {
+        pendingRecalledGeneration.current = null;
+        toast.error(LORA_RELOAD_TITLE, { description: "Load the model again with the LoRAs selected." });
+        return;
+      }
+      toast.info("Reloading the model with your LoRAs", {
+        id: "images-lora-reload",
+        description:
+          thenGenerate && resumable
+            ? "Quantized builds take LoRAs only when they load. Generate runs once the model is ready."
+            : "Quantized builds take LoRAs only when they load.",
+      });
+    },
+    [busy, status, workflow, reapplyLoad],
+  );
 
   // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
   // reloads from its status, which names the checkpoint.
@@ -4849,6 +4911,7 @@ export function ImagesPage({
     if (quantRevert.current) {
       revertPick(quantRevert.current);
       quantRevert.current = null;
+      setPickInFlight(quantRevert.current !== null);
     }
   }, [revertPick]);
 
@@ -4863,6 +4926,7 @@ export function ImagesPage({
         if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         pickGuard.cancel();
         pickToast.dismissAll();
@@ -4889,6 +4953,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(null);
           applyImageModelDefaults(id, nextFamilyOverride);
         }
@@ -4901,6 +4966,7 @@ export function ImagesPage({
             if (!started && revert && stillOwnsPick()) {
               revertPick(revert);
               quantRevert.current = null;
+              setPickInFlight(quantRevert.current !== null);
             }
           });
         return;
@@ -4911,6 +4977,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(meta.ggufVariant);
           applyImageModelDefaults(id, nextFamilyOverride, false, meta.ggufFilename);
         }
@@ -4923,6 +4990,7 @@ export function ImagesPage({
           if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         });
         return;
@@ -4947,6 +5015,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(filename);
           applyImageModelDefaults(id, nextFamilyOverride, false, filename);
         }
@@ -4954,6 +5023,7 @@ export function ImagesPage({
           if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         });
         return;
@@ -4969,6 +5039,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(filename);
           applyImageModelDefaults(id, nextFamilyOverride);
         }
@@ -4976,6 +5047,7 @@ export function ImagesPage({
           if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         });
         return;
@@ -5002,6 +5074,7 @@ export function ImagesPage({
         : (quantRevert.current ?? { prev: quant, steps, guidance });
       if (revert) {
         quantRevert.current = revert;
+        setPickInFlight(quantRevert.current !== null);
         setQuant(null);
         applyImageModelDefaults(id, nextFamilyOverride);
       }
@@ -5009,6 +5082,7 @@ export function ImagesPage({
         if (!started && revert && stillOwnsPick()) {
           revertPick(revert);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
       });
     },
@@ -5060,6 +5134,7 @@ export function ImagesPage({
       setPageMode("create");
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
+      setPickInFlight(quantRevert.current !== null);
       setQuant(null);
       applyImageModelDefaults(args.baseRepo, "auto", true);
       // Sent with the load: an int8 / fp8 build takes adapters only at load time and refuses one picked after.
@@ -5076,6 +5151,7 @@ export function ImagesPage({
           if (quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         }
       });
@@ -5449,6 +5525,19 @@ export function ImagesPage({
 
   // toQueue: the runs go to the server queue instead of running here.
   const handleGenerate = useCallback(async (toQueue = false) => {
+    // A model switch in flight replaces the resident model; the backend refuses the run meanwhile (409).
+    if (!external && quantRevert.current) {
+      toast.info("Finish switching models first", { description: "Generate turns back on once the new model has loaded." });
+      return;
+    }
+    // Compare, Vary and Queue land here too: none of them can run a selection the build did not bake.
+    if (!external && loraReload) {
+      toast.error(LORA_RELOAD_TITLE, {
+        description: loraReload,
+        action: { label: LORA_RELOAD_ACTION, onClick: () => reloadWithLoras(false) },
+      });
+      return;
+    }
     const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
     oversizedOnce.current = false;
     const vary = sdCaps?.variation_seed ? varyOnce.current : null;
@@ -5814,6 +5903,13 @@ export function ImagesPage({
           description: `${msg} To run the grid anyway, turn on "${ALLOW_OVERSIZED_LABEL}" and generate it again.`,
           duration: 20_000,
         });
+      } else if (report && err instanceof LoraReloadRefusalError) {
+        // The build bakes LoRAs at load time (or merged them into weights it streams): offer that reload.
+        toast.error(LORA_RELOAD_TITLE, {
+          description: msg,
+          duration: 20_000,
+          action: { label: LORA_RELOAD_ACTION, onClick: () => reloadWithLoras(false) },
+        });
       } else if (offerAnyway) {
         toast.error(MEMORY_REFUSAL_TITLE, {
           description: msg,
@@ -5843,7 +5939,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
+  }, [external, loraReload, reloadWithLoras, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -5924,6 +6020,17 @@ export function ImagesPage({
   );
   const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
   const canQueue = !external && Boolean(status?.loaded);
+  const generateButton = generateGate({
+    busy,
+    presetsHydrated: imagePresets.hydrated,
+    loaded: Boolean(status?.loaded),
+    canRecallModel: Boolean(rememberedModel),
+    external: Boolean(external),
+    switching: pickInFlight,
+    loraReload,
+    queueWaiting,
+    canQueue,
+  });
   const compareSdControls = sdCaps;
   const compareContext = useMemo<CompareContext>(
     () => ({
@@ -5959,6 +6066,10 @@ export function ImagesPage({
     if (busy !== null || !imagePresets.hydrated) return;
     if (external) {
       await handleGenerate();
+      return;
+    }
+    if (status?.loaded && loraReload) {
+      reloadWithLoras(true);
       return;
     }
     if (status?.loaded) {
@@ -6022,7 +6133,9 @@ export function ImagesPage({
     handleGenerate,
     handleLoad,
     imagePresets.hydrated,
+    loraReload,
     prompt,
+    reloadWithLoras,
     rememberedModel,
     status,
     workflow,
@@ -6445,6 +6558,9 @@ export function ImagesPage({
                 externalModels={externalModels}
                 value={(external && externalModelId) || selectorModelId}
                 loadedModelIdOverride={selectorModelId}
+                loadedPrecisionOverride={
+                  !external && busy !== "unloading" ? loadedTransformerPrecisionLabel(status) : null
+                }
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -7480,6 +7596,11 @@ export function ImagesPage({
                 {HELD_BY_OTHER_ACCOUNT_NOTICE}
               </p>
             )}
+            {generateButton.notice && (
+              <p role="status" data-testid="images-generate-notice" className="w-full text-center text-ui-11 leading-snug text-muted-foreground">
+                {generateButton.notice}
+              </p>
+            )}
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
@@ -7503,10 +7624,10 @@ export function ImagesPage({
                 <Button variant="primary"
                   className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   // Jobs still waiting: a new one lines up behind them instead of jumping the queue.
-                  onClick={queueWaiting && canQueue ? handleQueue : handleGenerateWithRecall}
-                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
+                  onClick={generateButton.action === "queue" ? handleQueue : handleGenerateWithRecall}
+                  disabled={generateButton.disabled}
                 >
-                  {queueWaiting && canQueue ? "Queue" : "Generate"}
+                  {generateButton.label}
                 </Button>
                 {canVary && (
                   <Tooltip>
