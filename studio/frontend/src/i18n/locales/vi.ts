@@ -3398,6 +3398,9 @@ export const vi = {
         pickerOrgs: "Chọn tổ chức",
         pickerOrgsDescription:
           "Chọn những tổ chức có bộ lọc trong trình chọn mô hình, thay vì các tổ chức được gợi ý từ mô hình của bạn.",
+        pickerOrgsInTabBar: "Tổ chức trên thanh thẻ",
+        pickerOrgsInTabBarDescription:
+          "Hiển thị bộ lọc tổ chức cạnh Yêu thích, Khám phá và Trên thiết bị thay vì trên một hàng riêng.",
         fitOnDeviceOnly: "Chỉ hiện mô hình vừa với máy",
         fitOnDeviceOnlyDescription:
           "Ẩn các mô hình quá lớn so với bộ nhớ GPU và RAM của thiết bị này trong trình chọn mô hình và Hub. Mô hình đã tải xuống vẫn hiển thị.",

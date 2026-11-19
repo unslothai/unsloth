@@ -1815,6 +1815,7 @@ export function ComposerModelPicker({
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   const showMemoryBar = useChatRuntimeStore((s) => s.showMemoryBar);
   const pickerOrgs = useChatRuntimeStore((s) => s.pickerOrgs);
+  const orgsInTabBar = useChatRuntimeStore((s) => s.pickerOrgsInTabBar);
   const loadFreesResident =
     !keepModelsLoaded &&
     typeof checkpoint === "string" &&
@@ -2618,6 +2619,24 @@ export function ComposerModelPicker({
           (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
           DEVICE_TAB)
         : RECOMMENDED_TAB);
+  const showOrgs = orgTabs.length > 0 && orgFilterApplies(viewed);
+  const orgButtons = orgTabs.map((t) => {
+    const org = t.value.slice(MAKER_PREFIX.length);
+    return (
+      <TabButton
+        key={t.value}
+        tab={t}
+        toggle={true}
+        shown={orgFilter === org}
+        onSelect={() => setOrgPick(orgFilter === org ? null : org)}
+        dragging={draggingOrg ? draggingTab : null}
+        onDragTab={setDraggingTab}
+        drop={tabDrop}
+        onDropTarget={setTabDrop}
+        onDropTab={moveTab}
+      />
+    );
+  });
   useEffect(() => {
     setOnRecommended(viewed === RECOMMENDED_TAB);
   }, [viewed]);
@@ -5516,6 +5535,15 @@ export function ComposerModelPicker({
                     onDropTab={moveTab}
                   />
                 ))}
+                {showOrgs && orgsInTabBar ? (
+                  <div
+                    role="group"
+                    aria-label="Filter by organization"
+                    className="ml-1 flex shrink-0 items-center gap-1 border-l border-border pl-2"
+                  >
+                    {orgButtons}
+                  </div>
+                ) : null}
               </div>
               {(!pane || pane.loaded) &&
               (chosenEjectable || loadedModels.length > 0) &&
@@ -5574,7 +5602,7 @@ export function ComposerModelPicker({
                 </Hint>
               ) : null}
             </div>
-            {orgTabs.length > 0 && orgFilterApplies(viewed) ? (
+            {showOrgs && !orgsInTabBar ? (
               <div
                 ref={setOrgStrip}
                 role="group"
@@ -5582,25 +5610,7 @@ export function ComposerModelPicker({
                 className="composer-tab-strip flex shrink-0 items-center gap-1 overflow-x-auto"
                 onWheel={wheelSideways}
               >
-                {orgTabs.map((t) => {
-                  const org = t.value.slice(MAKER_PREFIX.length);
-                  return (
-                    <TabButton
-                      key={t.value}
-                      tab={t}
-                      toggle={true}
-                      shown={orgFilter === org}
-                      onSelect={() =>
-                        setOrgPick(orgFilter === org ? null : org)
-                      }
-                      dragging={draggingOrg ? draggingTab : null}
-                      onDragTab={setDraggingTab}
-                      drop={tabDrop}
-                      onDropTarget={setTabDrop}
-                      onDropTab={moveTab}
-                    />
-                  );
-                })}
+                {orgButtons}
               </div>
             ) : null}
             <div className="mt-2 flex h-[calc(32px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full bg-muted pr-2 pl-3">

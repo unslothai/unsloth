@@ -3415,6 +3415,9 @@ export const cs = {
         pickerOrgs: "Vybrat organizace",
         pickerOrgsDescription:
           "Vyberte, které organizace mají ve výběru modelu filtr, místo těch, které navrhuje podle vašich modelů.",
+        pickerOrgsInTabBar: "Organizace v liště karet",
+        pickerOrgsInTabBarDescription:
+          "Zobrazit filtry organizací vedle Oblíbených, Objevovat a V zařízení místo na vlastním řádku.",
         fitOnDeviceOnly: "Zobrazovat jen modely, které se vejdou",
         fitOnDeviceOnlyDescription:
           "Ve výběru modelu a v centru modelů skrýt modely, které jsou pro paměť GPU a RAM tohoto zařízení příliš velké. Stažené modely zůstanou viditelné.",

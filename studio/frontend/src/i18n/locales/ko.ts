@@ -3144,6 +3144,9 @@ export const ko = {
         pickerOrgs: "조직 선택",
         pickerOrgsDescription:
           "모델 선택기에서 필터를 표시할 조직을 고릅니다. 보유한 모델을 바탕으로 제안되는 조직 대신 사용됩니다.",
+        pickerOrgsInTabBar: "탭 표시줄에 조직 표시",
+        pickerOrgsInTabBarDescription:
+          "조직 필터를 별도 줄 대신 즐겨찾기, 탐색, 기기 옆에 표시합니다.",
         fitOnDeviceOnly: "맞는 모델만 표시",
         fitOnDeviceOnlyDescription:
           "이 기기의 GPU 메모리와 RAM보다 큰 모델을 모델 선택기와 Hub에서 숨깁니다. 다운로드한 모델은 계속 표시됩니다.",

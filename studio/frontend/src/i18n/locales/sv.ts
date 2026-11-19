@@ -3314,6 +3314,9 @@ export const sv = {
         pickerOrgs: "Välj organisationer",
         pickerOrgsDescription:
           "Välj vilka organisationer som får ett filter i modellväljaren, i stället för dem den föreslår utifrån dina modeller.",
+        pickerOrgsInTabBar: "Organisationer i flikraden",
+        pickerOrgsInTabBarDescription:
+          "Visa organisationsfilter bredvid Favoriter, Upptäck och På enheten i stället för på en egen rad.",
         fitOnDeviceOnly: "Visa bara modeller som får plats",
         fitOnDeviceOnlyDescription:
           "Döljer modeller som är för stora för enhetens GPU-minne och RAM i modellväljaren och Hub. Hämtade modeller visas fortfarande.",

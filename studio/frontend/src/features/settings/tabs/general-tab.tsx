@@ -187,6 +187,7 @@ const PREFS_KEYS: string[] = [
   // file. A test pins this literal against the store's constant.
   "unsloth_chat_show_memory_bar",
   "unsloth_chat_picker_orgs",
+  "unsloth_chat_picker_orgs_in_tab_bar",
   "unsloth_models_fit_on_device_only",
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",

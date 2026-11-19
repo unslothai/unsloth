@@ -3137,6 +3137,9 @@ export const ja = {
         pickerOrgs: "組織を選択",
         pickerOrgsDescription:
           "モデル選択で絞り込みを表示する組織を選びます。お使いのモデルから提案される組織の代わりに使われます。",
+        pickerOrgsInTabBar: "タブバーに組織を表示",
+        pickerOrgsInTabBarDescription:
+          "組織フィルターを専用の行ではなく、お気に入り・発見・デバイス上の横に表示します。",
         fitOnDeviceOnly: "収まるモデルのみ表示",
         fitOnDeviceOnlyDescription:
           "このデバイスの GPU メモリと RAM に収まらないモデルを、モデル選択と Hub で非表示にします。ダウンロード済みのモデルは引き続き表示されます。",

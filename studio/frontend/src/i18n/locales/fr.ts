@@ -3190,6 +3190,9 @@ export const fr = {
         pickerOrgs: "Choisir les organisations",
         pickerOrgsDescription:
           "Choisissez les organisations qui ont un filtre dans le sélecteur de modèles, au lieu de celles qu'il propose à partir de vos modèles.",
+        pickerOrgsInTabBar: "Organisations dans la barre d’onglets",
+        pickerOrgsInTabBarDescription:
+          "Afficher les filtres d’organisation à côté de Favoris, Découvrir et Sur l’appareil plutôt que sur leur propre ligne.",
         fitOnDeviceOnly: "Afficher uniquement les modèles compatibles",
         fitOnDeviceOnlyDescription:
           "Masque dans le sélecteur de modèles et le Hub les modèles trop volumineux pour la mémoire GPU et la RAM de cet appareil. Les modèles téléchargés restent visibles.",

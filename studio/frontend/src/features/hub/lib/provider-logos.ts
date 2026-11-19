@@ -232,6 +232,16 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 	},
 
 	{
+		id: "amd",
+		name: "AMD",
+		logoPath: "/hub/profile/logo/amd.png",
+		treatment: "mono-theme",
+		background: "transparent",
+		prefixes: [],
+		owners: ["amd"],
+	},
+
+	{
 		id: "fastflowlm",
 		name: "FastFlowLM",
 		logoPath: "/hub/profile/logo/fastflowlm.png",

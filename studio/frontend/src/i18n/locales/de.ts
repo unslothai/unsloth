@@ -3194,6 +3194,9 @@ export const de = {
         pickerOrgs: "Organisationen auswählen",
         pickerOrgsDescription:
           "Wähle, welche Organisationen in der Modellauswahl einen Filter erhalten, statt der, die sie anhand deiner Modelle vorschlägt.",
+        pickerOrgsInTabBar: "Organisationen in der Tab-Leiste",
+        pickerOrgsInTabBarDescription:
+          "Organisationsfilter neben Favoriten, Entdecken und Auf dem Gerät anzeigen statt in einer eigenen Zeile.",
         fitOnDeviceOnly: "Nur passende Modelle anzeigen",
         fitOnDeviceOnlyDescription:
           "Blendet in der Modellauswahl und im Hub Modelle aus, die für den GPU-Speicher und RAM dieses Geräts zu groß sind. Heruntergeladene Modelle bleiben sichtbar.",

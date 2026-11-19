@@ -3185,6 +3185,9 @@ export const es = {
         pickerOrgs: "Elegir organizaciones",
         pickerOrgsDescription:
           "Elige qué organizaciones tienen un filtro en el selector de modelos, en lugar de las que sugiere a partir de tus modelos.",
+        pickerOrgsInTabBar: "Organizaciones en la barra de pestañas",
+        pickerOrgsInTabBarDescription:
+          "Muestra los filtros de organización junto a Favoritos, Descubrir y En el dispositivo en lugar de en su propia fila.",
         fitOnDeviceOnly: "Mostrar solo modelos que caben",
         fitOnDeviceOnlyDescription:
           "Oculta en el selector de modelos y en el Hub los modelos demasiado grandes para la memoria de GPU y la RAM de este dispositivo. Los modelos descargados siguen visibles.",

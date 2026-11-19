@@ -3234,6 +3234,9 @@ export const he = {
         pickerOrgs: "בחירת ארגונים",
         pickerOrgsDescription:
           "בחרו לאילו ארגונים יהיה מסנן בבורר המודלים, במקום אלה שהוא מציע לפי המודלים שלכם.",
+        pickerOrgsInTabBar: "ארגונים בסרגל הלשוניות",
+        pickerOrgsInTabBarDescription:
+          "הצג את מסנני הארגונים ליד מועדפים, גילוי ובמכשיר במקום בשורה נפרדת.",
         fitOnDeviceOnly: "הצג רק מודלים שמתאימים",
         fitOnDeviceOnlyDescription:
           "הסתר בבורר המודלים וב-Hub מודלים גדולים מדי לזיכרון ה-GPU וה-RAM של מכשיר זה. מודלים שהורדו נשארים גלויים.",

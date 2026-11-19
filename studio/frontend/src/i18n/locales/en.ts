@@ -3173,6 +3173,9 @@ export const en = {
         pickerOrgs: "Choose organizations",
         pickerOrgsDescription:
           "Pick which organizations get a filter in the model picker, instead of the ones it suggests from your models.",
+        pickerOrgsInTabBar: "Organizations in the tab bar",
+        pickerOrgsInTabBarDescription:
+          "Show organization filters next to Favorites, Discover and On Device instead of on their own row.",
         fitOnDeviceOnly: "Only show models that fit",
         fitOnDeviceOnlyDescription:
           "Hide models too large for this device's GPU memory and RAM in the model picker and Hub. Downloaded models stay visible.",

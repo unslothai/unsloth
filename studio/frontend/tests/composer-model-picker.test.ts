@@ -150,8 +150,15 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
   );
   // Makers sit on their own row, under the sources, as toggles.
   assert.match(picker, /\{sourceTabs\.map\(\(t\) => \(/);
-  assert.match(picker, /aria-label="Filter by organization"[\s\S]{0,200}?\{orgTabs\.map/);
+  assert.match(picker, /const orgButtons = orgTabs\.map\(/);
+  assert.match(picker, /aria-label="Filter by organization"[\s\S]{0,200}?\{orgButtons\}/);
   assert.match(picker, /aria-pressed=\{toggle \? shown : undefined\}/);
+  // Settings can put the org filters back in the source tab bar instead of their own row.
+  assert.match(picker, /\{showOrgs && orgsInTabBar \? \(\s+<div\s+role="group"\s+aria-label="Filter by organization"/);
+  assert.match(picker, /\{showOrgs && !orgsInTabBar \? \(\s+<div\s+ref=\{setOrgStrip\}/);
+  const runtime = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(runtime, /pickerOrgsInTabBar: loadBool\(CHAT_PICKER_ORGS_IN_TAB_BAR_KEY, false\),/);
+  assert.match(readSrc("features/settings/tabs/general-tab.tsx"), /"unsloth_chat_picker_orgs_in_tab_bar",/);
   // An overflowing org row scrolls on a mouse wheel and fades its clipped ends, like the sources row.
   assert.match(
     picker,
@@ -183,6 +190,7 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
   const logos = readSrc("features/hub/lib/provider-logos.ts");
   assert.match(logos, /id: "fastflowlm",[\s\S]{0,240}?owners: \["FastFlowLM"\]/);
   assert.equal(ownerOrgId("FastFlowLM"), "fastflowlm");
+  assert.match(logos, /id: "amd",[\s\S]{0,200}?owners: \["amd"\]/);
   assert.match(rowOrgBody, /MAKER_BY_ID\.get\(ownerOrgId\(parts\.owner\)\)/);
 });
 

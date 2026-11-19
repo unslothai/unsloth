@@ -3435,6 +3435,9 @@ export const pl = {
         pickerOrgs: "Wybierz organizacje",
         pickerOrgsDescription:
           "Wybierz, które organizacje mają filtr w selektorze modeli, zamiast tych, które proponuje na podstawie Twoich modeli.",
+        pickerOrgsInTabBar: "Organizacje na pasku kart",
+        pickerOrgsInTabBarDescription:
+          "Pokazuj filtry organizacji obok Ulubionych, Odkrywaj i Na urządzeniu zamiast w osobnym wierszu.",
         fitOnDeviceOnly: "Pokazuj tylko mieszczące się modele",
         fitOnDeviceOnlyDescription:
           "Ukrywaj w wyborze modelu i centrum modele zbyt duże dla pamięci GPU i RAM tego urządzenia. Pobrane modele pozostają widoczne.",

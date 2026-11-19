@@ -378,6 +378,12 @@ export function ChatTab() {
   );
   const pickerOrgs = useChatRuntimeStore((state) => state.pickerOrgs);
   const setPickerOrgs = useChatRuntimeStore((state) => state.setPickerOrgs);
+  const pickerOrgsInTabBar = useChatRuntimeStore(
+    (state) => state.pickerOrgsInTabBar,
+  );
+  const setPickerOrgsInTabBar = useChatRuntimeStore(
+    (state) => state.setPickerOrgsInTabBar,
+  );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
   );
@@ -970,6 +976,18 @@ export function ChatTab() {
             aria-label={t("settings.chat.modelSelection.pickerOrgs")}
             checked={pickerOrgs !== null}
             onCheckedChange={(on) => setPickerOrgs(on ? [] : null)}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerOrgsInTabBar")}
+          description={t(
+            "settings.chat.modelSelection.pickerOrgsInTabBarDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerOrgsInTabBar")}
+            checked={pickerOrgsInTabBar}
+            onCheckedChange={setPickerOrgsInTabBar}
           />
         </SettingsRow>
       </SettingsSection>
