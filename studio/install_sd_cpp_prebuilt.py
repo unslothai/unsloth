@@ -101,6 +101,7 @@ def _raw_install_record(root: Path) -> Optional[str]:
 # Memoised together with the accelerator or not at all, or a serverless install looks server-capable.
 _INSTALLED_SHIPS_SERVER_MEMO: dict[str, bool] = {}
 _INSTALLED_PIN_MEMO: dict[str, tuple[Optional[str], Optional[str]]] = {}
+_INSTALLED_CUDA_SMS_MEMO: dict[str, tuple[Optional[list], Optional[str]]] = {}
 
 
 def installed_ships_server(root: Path) -> Optional[bool]:
@@ -124,10 +125,10 @@ def _write_install_record(
     klass = accelerator_class(accelerator)
     # The pin this install was for; a fallback tag never equals it.
     rec: dict = {"accelerator": klass, "repo": repo, "tag": tag, "requested_tag": _pinned_tag()}
-    if asset:
-        rec["asset"] = asset
-    # Only a per-GPU-family pick records its SMs: a GPU it does not serve makes the install stale.
+    # Only a per-GPU-family pick records its asset and SMs (a GPU it does not serve makes the install
+    # stale); a pre-split install writes the same record as before.
     if cuda_sms:
+        rec["asset"] = asset
         rec["cuda_sms"] = list(cuda_sms)
     if ships_server is not None:
         rec["ships_server"] = ships_server
@@ -141,6 +142,7 @@ def _write_install_record(
         snapshot = _raw_install_record(root)
         _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, snapshot)
         _INSTALLED_PIN_MEMO[str(root)] = (rec["requested_tag"], snapshot)
+        _INSTALLED_CUDA_SMS_MEMO[str(root)] = (rec.get("cuda_sms"), snapshot)
         print(
             f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
             f"remembering {klass} for this process only",
@@ -149,6 +151,7 @@ def _write_install_record(
     else:
         _INSTALLED_ACCELERATOR_MEMO.pop(str(root), None)
         _INSTALLED_PIN_MEMO.pop(str(root), None)
+        _INSTALLED_CUDA_SMS_MEMO.pop(str(root), None)
 
 
 def _repo() -> str:
@@ -171,12 +174,20 @@ def install_is_stale(root: Path) -> bool:
 def _cuda_coverage_is_stale(root: Path) -> bool:
     rec = read_install_record(root)
     sms = rec.get("cuda_sms")
+    memo = _INSTALLED_CUDA_SMS_MEMO.get(str(root))
+    if memo is not None:
+        raw = _raw_install_record(root)
+        if raw is None or raw == memo[1]:
+            rec, sms = {"accelerator": "cuda", "asset": None}, memo[0]
+        else:
+            _INSTALLED_CUDA_SMS_MEMO.pop(str(root), None)
     if rec.get("accelerator") != "cuda" or not isinstance(sms, list) or not sms:
         return False
-    # The visible GPUs, not every physical one: when no bundle covers a masked card, the selection
-    # falls back to a visible-only bundle, and checking the hidden card would reinstall it forever.
-    physical, visible = host_cuda_sms()
-    missing = [sm for sm in (visible or physical) if sm not in {str(v) for v in sms}]
+    # The visible GPUs only: when no bundle covers a masked card the selection falls back to a
+    # visible-only bundle, and checking the hidden card would reinstall it forever. None visible
+    # (an empty or unmatched mask) is unknown, not stale.
+    _physical, visible = host_cuda_sms()
+    missing = [sm for sm in visible if sm not in {str(v) for v in sms}]
     if missing:
         print(
             f"sd-cli: installed {rec.get('asset') or 'CUDA bundle'} has no kernels for sm_{',sm_'.join(missing)}; "
@@ -351,7 +362,10 @@ def cuda_bundles_from_manifest(manifest: Any, *, system: str, machine: str) -> l
         if raw.get("os") != os_token or raw.get("arch") != arch_token:
             continue
         name, line, klass = raw.get("name"), raw.get("runtime_line"), raw.get("coverage_class")
-        sms = _core.normalize_compute_caps(raw.get("supported_sms") or [])
+        raw_sms, raw_ptx = raw.get("supported_sms"), raw.get("ptx_sms") or []
+        if not (isinstance(raw_sms, list) and isinstance(raw_ptx, list)):
+            continue
+        sms = _core.normalize_compute_caps(raw_sms)
         min_sm, max_sm, rank = raw.get("min_sm"), raw.get("max_sm"), raw.get("rank")
         if not (isinstance(name, str) and isinstance(line, str) and isinstance(klass, str) and sms):
             continue
@@ -366,7 +380,7 @@ def cuda_bundles_from_manifest(manifest: Any, *, system: str, machine: str) -> l
                 supported_sms = sms,
                 min_sm = min_sm,
                 max_sm = max_sm,
-                ptx_sms = _core.normalize_compute_caps(raw.get("ptx_sms") or []),
+                ptx_sms = _core.normalize_compute_caps(raw_ptx),
             )
         )
     return out
@@ -1238,6 +1252,8 @@ def _resolve_repo_asset(
         return None, None
     names = [a["name"] for a in (release.get("assets") or [])]
     chosen = None
+    # Only this resolution's family pick may record SMs; a name-based pick of the same asset records none.
+    _SELECTED_CUDA_SMS.clear()
     if accelerator_class(accelerator) == "cuda":
         chosen = _resolve_cuda_bundle(
             release,
@@ -1367,8 +1383,8 @@ def install(
         _verify_sha256(archive, asset.get("digest"))
         if repacked is not None:
             _tar_gz_to_zip(archive, repacked)
-            archive.unlink(missing_ok = True)
             archive = repacked
+            (target / chosen).unlink(missing_ok = True)
         # Probe before touching the tree so a refused bundle never sweeps a working one.
         if _should_verify(chosen):
             _verify_bundle_starts(

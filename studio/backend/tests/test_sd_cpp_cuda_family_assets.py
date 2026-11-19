@@ -438,6 +438,62 @@ def test_a_visible_only_fallback_is_not_stale_for_the_masked_card(monkeypatch, t
     assert sdmod.install_is_stale(tmp_path) is True
 
 
+def test_a_malformed_coverage_field_is_skipped_not_raised():
+    m = _manifest()
+    for a in m["assets"]:
+        if a.get("coverage_class") == "older":
+            a["supported_sms"] = 75
+        if a.get("coverage_class") == "newer":
+            a["ptx_sms"] = 100
+    assert _pick(["75"], manifest = m) == [L("cuda12", "portable")]
+
+
+def test_a_name_based_pick_records_no_sms_from_an_earlier_resolution(monkeypatch):
+    m = _manifest()
+    _route(monkeypatch, _release(_names(m)), m, ["75", "120"])
+    _rel, chosen = sdmod._resolve_repo_asset("r", TAG, "cuda", None, cuda_major = "12")
+    assert chosen == L("cuda12", "portable") and sdmod._SELECTED_CUDA_SMS
+    _route(monkeypatch, _release(_names(m)), None, ["75", "120"])
+    _rel, again = sdmod._resolve_repo_asset("r", TAG, "cuda", None, cuda_major = "12")
+    assert again == chosen and sdmod._SELECTED_CUDA_SMS == {}
+
+
+def test_a_pre_split_install_writes_the_same_record_as_before(tmp_path):
+    sdmod._write_install_record(
+        tmp_path, accelerator = "cuda", repo = "r", tag = TAG, asset = "x.zip", cuda_sms = None
+    )
+    assert "asset" not in sdmod.read_install_record(tmp_path)
+
+
+def test_no_visible_gpu_is_not_coverage_stale(monkeypatch, tmp_path):
+    """An empty or unmatched mask (a short UUID) sees no GPU: unknown, so never a reinstall loop."""
+    stem = f"sd-{TAG}-linux-x64-cuda12-older"
+    _install_split(monkeypatch, tmp_path, _tar_bundle(stem))
+    monkeypatch.setattr(sdmod, "host_cuda_sms", lambda: (["61", "120"], []))
+    assert sdmod.install_is_stale(tmp_path) is False
+
+
+def test_an_unwritable_record_keeps_the_new_coverage(monkeypatch, tmp_path):
+    stem = f"sd-{TAG}-linux-x64-cuda12-older"
+    _install_split(monkeypatch, tmp_path, _tar_bundle(stem))
+
+    def _deny(*a, **k):
+        raise PermissionError("read-only record")
+
+    monkeypatch.setattr(sdmod.json, "dump", _deny)
+    sdmod._write_install_record(
+        tmp_path, accelerator = "cuda", repo = "r", tag = TAG, asset = "n", cuda_sms = ["86", "120"]
+    )
+    monkeypatch.setattr(sdmod, "host_cuda_sms", lambda: (["120"], ["120"]))
+    try:
+        # The file still names the older bundle; this process installed one that serves sm_120.
+        assert sdmod.install_is_stale(tmp_path) is False
+    finally:
+        sdmod._INSTALLED_CUDA_SMS_MEMO.clear()
+        sdmod._INSTALLED_PIN_MEMO.clear()
+        sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+
+
 def test_a_pre_split_record_is_never_coverage_stale(monkeypatch, tmp_path):
     (tmp_path / sdmod.INSTALL_RECORD).write_text(
         json.dumps({"accelerator": "cuda", "repo": "r", "tag": TAG, "requested_tag": TAG})
