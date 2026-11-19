@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import json
+import os
 import sqlite3
 from unittest.mock import AsyncMock
 
@@ -172,7 +173,11 @@ async def test_a_connected_blender_off_path_has_its_executable_kept(monkeypatch,
     monkeypatch.setattr(
         service, "list_tools_async", AsyncMock(return_value = [{"name": "execute_blender_code"}])
     )
-    executable = str(tmp_path / "blender-5.3.0-linux-x64" / "blender")
+    executable = tmp_path / "blender-5.3.0-linux-x64" / "blender"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o755)
+    executable = str(executable)
     monkeypatch.setattr(service, "_bridge_version", AsyncMock(return_value = executable))
     monkeypatch.setattr(service.shutil, "which", lambda name: None)
     from integrations import installed
@@ -191,3 +196,36 @@ async def test_a_connected_blender_off_path_has_its_executable_kept(monkeypatch,
     assert (
         await service.probe(service.BlenderSettings())
     ).blender_path is None  # on PATH: "blender" works
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
+@pytest.mark.parametrize("case", ["world_writable", "not_blender", "missing", "relative"])
+def test_a_reported_executable_that_could_be_planted_is_not_kept(tmp_path, case):
+    """Anything listening on the bridge port can report a path, and Studio later runs it."""
+    path = tmp_path / ("tool" if case == "not_blender" else "blender")
+    if case != "missing":
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o777 if case == "world_writable" else 0o755)
+    reported = "blender" if case == "relative" else str(path)
+    assert service._own_blender(reported) is False
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    if case == "not_blender":
+        return
+    assert service._own_blender(str(path)) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
+async def test_probe_does_not_report_a_planted_executable(monkeypatch, tmp_path):
+    planted = tmp_path / "blender"
+    planted.write_text("#!/bin/sh\n")
+    planted.chmod(0o777)
+    monkeypatch.setattr(service, "ensure_runtime", lambda: None)
+    monkeypatch.setattr(
+        service, "list_tools_async", AsyncMock(return_value = [{"name": "execute_blender_code"}])
+    )
+    monkeypatch.setattr(service, "_bridge_version", AsyncMock(return_value = str(planted)))
+    monkeypatch.setattr(service.shutil, "which", lambda name: None)
+    result = await service.probe(service.BlenderSettings())
+    assert result.blender_ready and result.blender_path is None

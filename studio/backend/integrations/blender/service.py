@@ -3,7 +3,9 @@
 
 import asyncio
 import json
+import os
 import shutil
+import stat
 import sys
 
 from core.inference.mcp_client import (
@@ -92,6 +94,24 @@ async def _bridge_version(port):
         await writer.wait_closed()
 
 
+def _own_blender(path) -> bool:
+    """A path the Blender bridge reported, which Studio will later run: anything on 127.0.0.1 can answer that port, so
+    keep only an executable named blender* that another account could not have planted."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return False
+    if not os.path.basename(path).lower().startswith("blender"):
+        return False
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return False
+    if not stat.S_ISREG(st.st_mode) or not os.access(path, os.X_OK):
+        return False
+    if hasattr(os, "getuid") and (st.st_uid not in (0, os.getuid()) or st.st_mode & 0o022):
+        return False
+    return True
+
+
 async def probe(
     settings: BlenderSettings,
     *,
@@ -127,11 +147,7 @@ async def probe(
             note_connected("blender")
             # The CLI tools start Blender themselves; "blender" on PATH is missing for an unpacked Linux tarball, so
             # report the running Blender's own executable for the settings to keep.
-            if (
-                not settings.blender_path
-                and not shutil.which("blender")
-                and isinstance(binary, str)
-            ):
+            if not settings.blender_path and not shutil.which("blender") and _own_blender(binary):
                 result.blender_path = binary
         except Exception:
             result.blender_ready = False
