@@ -625,13 +625,15 @@ const EffortMock: FC = () => (
     </div>
     {/* The real slider at half size: a 9px track, level dots, a 12px knob. */}
     <div className="relative h-3">
-      <span className="composer-effort-track absolute inset-x-0 top-[1.5px] h-[9px] rounded-full" />
-      <span className="composer-effort-fill absolute top-[1.5px] left-0 h-[9px] w-[calc(50%+4.5px)] rounded-full" />
+      <span className="composer-effort-track absolute inset-x-0 top-[calc(1.5px*var(--ui-space-scale,1))] h-[calc(9px*var(--ui-space-scale,1))] rounded-full" />
+      <span className="composer-effort-fill absolute top-[calc(1.5px*var(--ui-space-scale,1))] left-0 h-[calc(9px*var(--ui-space-scale,1))] w-[calc(50%+4.5px*var(--ui-space-scale,1))] rounded-full" />
       {EFFORT_STOPS.map((stop) =>
         stop === 0.5 ? null : (
           <span
             key={stop}
-            style={{ left: `calc(4.5px + ${stop} * (100% - 9px))` }}
+            style={{
+              left: `calc(4.5px * var(--ui-space-scale, 1) + ${stop} * (100% - 9px * var(--ui-space-scale, 1)))`,
+            }}
             className={cn(
               "absolute top-1/2 size-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full",
               stop < 0.5 ? "composer-effort-dot-on" : "composer-effort-dot-off",
