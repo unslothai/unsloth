@@ -23,7 +23,6 @@ export function AdvancedDisclosure({
   classNames,
 }: {
   flush?: boolean;
-  /** A page whose rail has its own rhythm adjusts the section's spacing here. */
   classNames?: { root?: string; body?: string; description?: string };
   open: boolean;
   onOpenChange: (open: boolean) => void;

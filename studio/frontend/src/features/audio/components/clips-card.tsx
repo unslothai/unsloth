@@ -23,12 +23,9 @@ export const CLIP_ICON_COLUMN = "size-[calc(40px*var(--ui-space-scale,1))]";
 /** The expanded top row (player, transcript, stems): tinted, on the same 40px column and title edge as the rows. */
 export const CLIPS_TOP_ROW = "grid w-full gap-2.5 rounded-xl bg-wash-6 p-3";
 
-/** The round play control on a top row: a raised neutral disc, so the one filled dark button on the page stays Generate. */
 export const CLIP_PLAY_BUTTON =
   "shrink-0 rounded-full border-transparent bg-background text-foreground shadow-sm hover:bg-background hover:text-foreground dark:bg-wash-12 dark:hover:bg-wash-18 [&_svg]:fill-current [&_svg.lucide-play]:ml-0.5";
 
-/** Rows under the top row: a 36px tile centred on the 40px column, the title on the top row's title edge,
- *  and the duration on the edge the top row's icons end on. */
 export const CLIP_ROW =
   "group relative flex items-center gap-1 rounded-lg ps-3 transition-colors hover:bg-wash-3 hover:[--clip-row-duration:0] has-[[aria-haspopup=menu]:focus-visible]:[--clip-row-duration:0] has-[[aria-expanded=true]]:[--clip-row-duration:0]";
 
@@ -40,14 +37,12 @@ export const CLIP_ROW_ICON = "size-[calc(18px*var(--ui-space-scale,1))]";
 export const CLIP_ROW_SELECT =
   "flex min-w-0 flex-1 items-center gap-3 py-2.5 pe-4 ps-2 text-left pointer-coarse:pe-10";
 
-/** The row menu appears over the duration, so the durations keep one right edge. The row sets the property:
- *  a style after a :has() is not allowed here (tests/has-subject-after.test.ts). */
+/** The row sets the property: a style after a :has() is not allowed here (tests/has-subject-after.test.ts). */
 export const CLIP_ROW_DURATION =
   "shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground opacity-[var(--clip-row-duration,1)] transition-opacity pointer-coarse:opacity-100!";
 
 export const CLIP_ROW_MENU = "absolute inset-y-0 end-2.5 flex items-center";
 
-/** The pin sits on the tile's corner, as it does on an image tile. */
 export const CLIP_ROW_PIN = "start-[calc(38px*var(--ui-space-scale,1))] top-1";
 
 export const CLIPS_TITLE_INSET = "ps-[calc(52px*var(--ui-space-scale,1))]";
@@ -58,7 +53,6 @@ export const CLIPS_LIST =
 export const CLIPS_HEADER_LINK =
   "me-1 inline-flex shrink-0 items-center gap-1.5 rounded-full text-ui-12 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-/** The header's delete-everything action. It names what it deletes and asks first: the files are gone for good. */
 export function ClipsDeleteAll({
   noun,
   onConfirm,
@@ -145,7 +139,7 @@ export function ClipsCard({
   count?: number | null;
   countMore?: boolean;
   action?: ReactNode;
-  /** Nothing to list yet: no header, and the card fills the pane so its empty state sits centred. */
+  /** Nothing to list yet: no header. */
   bare?: boolean;
   children: ReactNode;
 }) {
@@ -180,8 +174,6 @@ export function ClipsCard({
   );
 }
 
-/** The output pane with nothing in it: one icon, what will appear, how to get it, and the next step.
- *  Centred like the Images and Video canvases. */
 export function ClipsCardEmpty({
   icon,
   title,
@@ -199,7 +191,6 @@ export function ClipsCardEmpty({
         <HugeiconsIcon icon={icon} strokeWidth={1.5} className="size-12" aria-hidden="true" />
       ) : null}
       <div className="grid max-w-[46ch] gap-1">
-        {/* The pane's heading while it has no "Clips" header of its own. */}
         {title ? (
           <h2 className="text-sm font-medium text-balance text-foreground">{title}</h2>
         ) : null}

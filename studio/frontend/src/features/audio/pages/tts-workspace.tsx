@@ -135,7 +135,6 @@ export function BlockerNote({
       </p>
     );
   }
-  // Quiet on purpose: the note explains a disabled button, so Generate stays the only loud thing here.
   const link =
     "h-auto p-0 text-ui-11p5 font-normal text-muted-foreground underline underline-offset-2 decoration-foreground/25 hover:text-foreground";
   return (
@@ -291,8 +290,6 @@ export function TtsRailFields({
       {/* Always shown: where the model loads is an advanced choice on every audio page. */}
       <AdvancedDisclosure
         flush={true}
-        // The description belongs to the heading, so it sits close under it and the fields start a step below;
-        // the footer's own padding is the gap to Generate.
         classNames={{
           root: "gap-1 pb-0",
           body: "gap-5",

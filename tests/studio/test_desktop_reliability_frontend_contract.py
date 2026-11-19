@@ -2111,7 +2111,6 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
-    # The rail is divided from the preview, as on Images and Video.
     assert "@[50rem]:border-r @[50rem]:border-border/60" in header
     # The media model picker shares Chat's control height (scaled in index.css), see _MEDIA_PICKER_CLASS.
     assert _MEDIA_PICKER_CLASS in header

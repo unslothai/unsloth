@@ -11,7 +11,6 @@ export const TTS_MAX_TOKENS = 8192;
 export const TTS_PROMPT_CONTEXT_RESERVE = 2048;
 export const AUDIO_DEVICE_KEY = "unsloth_audio_device";
 
-/** Starter sentences for an empty "what to say" box, on Text to speech and Clone. */
 export const SPEECH_TEXT_EXAMPLES = [
   { label: "Phone greeting", text: "Thanks for calling. How can I help you today?" },
   {

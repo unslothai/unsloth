@@ -28,7 +28,6 @@ export function VariationGroupRow({
   const first = clips[0];
   if (!first) return null;
   return (
-    // The same columns as a clip row: tile, title over a muted line, duration.
     <button
       type="button"
       aria-expanded={open}

@@ -236,7 +236,7 @@ export function transcribeSwitches(
         : {
             checked: false,
             disabled: true,
-            // No model list here: the catalog grows, and the link beside the hint offers one that works.
+            // No model names: the catalog grows.
             hint: "This model returns plain text. Timestamps need a model that supports them.",
             suggestSpeakersModel: true,
           };

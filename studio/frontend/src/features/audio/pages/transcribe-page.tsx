@@ -159,7 +159,6 @@ export function TranscribeRail({
   const speakerAccent = useAudioTranscribeStore((state) => state.speakerAccent);
   // A saved language the model no longer lists falls back to Auto rather than vanishing.
   const languageValue = transcribeLanguageFor(language, languages) || AUTO;
-  // Before a model is picked every option carries the same "pick a model" line: say it once.
   const sharedHint =
     switches.accent.hint === switches.timestamps.hint &&
     switches.timestamps.hint === switches.speakers.hint

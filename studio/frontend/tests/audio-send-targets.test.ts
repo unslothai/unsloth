@@ -70,7 +70,6 @@ test("stems go to Clone, Convert, Music and Transcribe under the names the clip 
       ["transcribe", "Transcribe"],
     ],
   );
-  // Saving a voice is not a page, so it is not a Send to destination.
   assert.equal(STEM_SAVE_VOICE_TARGET.workflow, "voice");
 });
 

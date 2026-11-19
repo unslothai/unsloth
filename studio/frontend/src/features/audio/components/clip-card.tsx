@@ -79,7 +79,6 @@ export function ClipCard({
   peaks: readonly number[] | null;
   onDownload: (() => void) | null;
   menu?: ReactNode;
-  /** The switch between takes of one run, under the title. */
   variations?: ReactNode;
   status?: string;
   focusOnMount?: boolean;
@@ -121,7 +120,6 @@ export function ClipCard({
         <div
           className={cn(
             "grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between",
-            // A custom player brings its own play disc, so the title keeps the column it has on every other card.
             player && CLIPS_TITLE_INSET,
           )}
         >
@@ -137,7 +135,6 @@ export function ClipCard({
             {status ? ` · ${status}` : ""}
           </p>
         </div>
-        {/* One cluster, pulled out so its icons end on the edge the waveform's time ends on. */}
         <div className="-me-1 flex shrink-0 items-center">
           <Button
             variant="ghost"

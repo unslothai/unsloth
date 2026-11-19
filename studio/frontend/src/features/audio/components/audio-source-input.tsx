@@ -451,7 +451,6 @@ export function AudioSourceInput({
             </button>
           ) : null}
           {tab === "record" || recording ? (
-            // The Upload tab's box as one button: mic on top, a line under it. Pressing it starts, pressing again stops.
             <>
             <button
               type="button"

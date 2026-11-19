@@ -78,7 +78,6 @@ export function Waveform({
   size?: "default" | "lg";
   /** The host draws its own play button through `controlRef` (the clip card's header). */
   hidePlay?: boolean;
-  /** "end" puts the time on the row's trailing edge, for a card whose other content ends there. */
   timeAlign?: "start" | "end";
 }) {
   const large = size === "lg";

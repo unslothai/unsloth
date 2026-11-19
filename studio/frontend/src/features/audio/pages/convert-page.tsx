@@ -368,7 +368,6 @@ function useSourceSide(clip: AudioGalleryClip | null): {
     const original = sourceId
       ? sourceFileUrl({ kind, id: sourceId, name: "", durationS: null })
       : null;
-    // The URL that answered, so the bars can be drawn from it.
     let fileUrl = original ?? (savedUrl as string);
     const fetchSide = (): Promise<Blob> =>
       original

@@ -4,7 +4,6 @@
 import { useId } from "react";
 import { Button } from "@/components/ui/button";
 
-/** An empty page's shortcut to a model that runs it: up to three catalog picks, one click to load. */
 export function RecommendedModelPicks({
   models,
   onPick,
@@ -23,7 +22,6 @@ export function RecommendedModelPicks({
       <div
         role="group"
         className="flex flex-wrap justify-center gap-2"
-        // Named by the visible caption, so the two cannot drift apart.
         aria-labelledby={captionId}
       >
         {picks.map((model) => (

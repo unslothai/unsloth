@@ -166,7 +166,6 @@ export function StemMixer({
             </span>
           </p>
         </div>
-        {/* One cluster, ending on the edge the stem rows' download icons end on. */}
         <div className="-me-1 flex shrink-0 items-center">
           <Button
             type="button"

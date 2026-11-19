@@ -38,7 +38,6 @@ export function ABCompare({
   side: ABSideId;
   onSideChange: (side: ABSideId) => void;
   ariaLabel: string;
-  /** The play button, so a fresh clip can take focus. */
   playerRef?: Ref<HTMLButtonElement>;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -141,7 +140,6 @@ export function ABCompare({
       />
       </div>
       {src ? (
-        // The clip card's own row: play disc, bars, time. One hidden element plays whichever side is shown.
         <div className="flex items-center gap-3 pe-1">
           <Button
             ref={playerRef}

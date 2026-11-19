@@ -8,7 +8,6 @@ export interface PromptExample {
   text: string;
 }
 
-/** One line under a prompt: example picks while it is empty, the hint (when there is one) once it has text. */
 export function PromptExamples({
   label,
   examples,

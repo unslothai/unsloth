@@ -405,7 +405,6 @@ export function TranscriptGallery({
           .map((record) => (
           <div
             key={record.id}
-            // The clip rows' own columns, so a transcript list reads like every other Audio list.
             className={CLIP_ROW}
           >
             <span aria-hidden="true" className={CLIP_ROW_TILE}>

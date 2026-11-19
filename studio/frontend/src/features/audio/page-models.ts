@@ -182,15 +182,13 @@ export function pageModels<T extends PageModelRow>(
     .map(({ row }) => row);
 }
 
-// Small and fast, expressive, and the one the Speak hint names for conversations.
 const RECOMMENDED_SPEAK_MODELS = [
   "Kokoro-82M-GGUF",
   "Chatterbox-Turbo-GGUF",
   "VibeVoice-1.5B-GGUF",
 ];
 
-/** The picks an empty output pane shows: up to three GGUF models the audio runtime loads, never a
- *  Safetensors checkpoint. Speak and Music name theirs; the other pages take the top of their list. */
+/** Up to three GGUF picks the audio runtime loads, never a Safetensors checkpoint. */
 export function emptyStateModels<T extends PageModelRow>(
   page: AudioWorkflowId,
   rows: readonly T[],

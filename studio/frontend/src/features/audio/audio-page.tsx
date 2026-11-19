@@ -2002,7 +2002,6 @@ export function AudioPage({
               ]}
             />
           </div>
-          {/* The chat header's right inset, as on Images and Video. */}
           <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
             {connection || (mode === "transcribe" && transcribeConnection) ? null : (
               <UseViaApiButton
@@ -2018,8 +2017,7 @@ export function AudioPage({
           </MediaHeaderActions>
         </div>
       </div>
-      {/* Settings rail + output pane, the Images and Video shell: structural borders run edge to edge and
-          spacing belongs inside each pane. Below 50rem the panes stack and the page scrolls as one column. */}
+      {/* Below 50rem the panes stack and the page scrolls as one column. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="audio-settings"

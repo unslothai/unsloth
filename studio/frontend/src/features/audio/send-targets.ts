@@ -47,7 +47,6 @@ export function clipSendTargets(
   return targets.filter((id) => id !== current || id === "edit");
 }
 
-/** The pages a stem can go to, under the names every other Send to menu uses. */
 export const STEM_SEND_TARGETS: readonly SendTarget[] = [
   { id: "clone", workflow: "clone", label: "Clone" },
   { id: "convert", workflow: "convert", label: "Convert" },
@@ -55,7 +54,6 @@ export const STEM_SEND_TARGETS: readonly SendTarget[] = [
   { id: "transcribe", workflow: "transcribe", label: "Transcribe" },
 ];
 
-/** Not a page: it sits in the run's own menu, beside Send to, as it does on a clip. */
 export const STEM_SAVE_VOICE_TARGET: SendTarget = {
   id: "voice",
   workflow: "voice",

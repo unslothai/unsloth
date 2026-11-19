@@ -272,7 +272,6 @@ function downloadGroup(group: SeparationGroup) {
 }
 
 /** keyed by group so each mixer starts from its own clock. */
-/** What a stem is called on the page it goes to: the track's name without its extension, then the stem. */
 function stemSendName(title: string, role: string | null | undefined): string {
   return `${title.replace(/\.[a-z0-9]{2,4}$/i, "")} - ${stemLabel(role ?? "")}`;
 }
@@ -476,7 +475,6 @@ export function SeparateOutput({
       }
       noun="clip"
       leadingItems={
-        // One stem becomes the voice, so the item opens the run's stems.
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <HugeiconsIcon icon={FloppyDiskIcon} strokeWidth={1.75} className="size-icon" />
