@@ -54,12 +54,12 @@ def resolve_server(row: dict) -> dict:
     }
 
 
-def catalog_item(row = None):
+def catalog_item(row = None, detect: bool = True):
     reason = unavailable_reason()
     settings = settings_for(row)
     return McpBuiltinResponse(
         **settings.model_dump(),
-        installed = is_installed("blender", settings.blender_path),
+        installed = is_installed("blender", settings.blender_path) if detect else None,
         server_id = row["id"] if row else None,
         is_enabled = bool(row and row["is_enabled"]),
         available = reason is None,

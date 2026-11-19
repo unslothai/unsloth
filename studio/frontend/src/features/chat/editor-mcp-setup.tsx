@@ -23,6 +23,7 @@ import {
   updateMcpServer,
 } from "./api/mcp-servers-api";
 import { EDITOR_MCP } from "./editor-mcp-catalog";
+import { openInstallGuide } from "./mcp-install-guide";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
 /** Epic's Unreal MCP can build a level but not save it; this installs Unsloth's save tools into the project. */
@@ -57,10 +58,11 @@ function UnrealToolsInstaller() {
   );
 }
 
-export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
+export function EditorMcpSetup({ editorId, servers, onBusyChange, onClose }: {
   editorId: EditorMcpId;
   servers: McpServerConfig[];
   onBusyChange: (busy: boolean) => void;
+  onClose?: () => void;
 }) {
   const copy = EDITOR_MCP[editorId];
   const [config, setConfig] = useState<McpBuiltinConfig | null>(null);
@@ -80,7 +82,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
   const refresh = useCallback(async (wait = true) => {
     const current = ++generation.current;
     try {
-      const rows = await listMcpBuiltins(wait);
+      const rows = await listMcpBuiltins(wait, editorId);
       if (generation.current !== current) return;
       const row = rows.find((item) => item.builtin_id === editorId);
       if (!row) throw new Error(`${copy.name} MCP is not available from this Unsloth backend.`);
@@ -190,7 +192,12 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
       {!config?.is_enabled && <p className="text-sm leading-relaxed text-muted-foreground">
         Unsloth connects to the MCP server that the {copy.name} add-on runs on this computer. Nothing is downloaded.
       </p>}
-      {config?.installed === false && !config.is_enabled && <p className="text-xs leading-relaxed text-muted-foreground">{copy.name} was not found on this computer. Open Setup help below to install it.</p>}
+      {config?.installed === false && !config.is_enabled && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs leading-relaxed text-muted-foreground">{copy.name} was not found on this computer.</p>
+          <Button size="sm" variant="outline" onClick={() => openInstallGuide(copy.guide, onClose)}>Guide to Install</Button>
+        </div>
+      )}
       {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom {copy.name} server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
       {config && !config.is_enabled && (
         <div className="flex items-start gap-3">
