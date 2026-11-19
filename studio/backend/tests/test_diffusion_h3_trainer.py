@@ -796,28 +796,27 @@ def test_int8_training_applies_h3s_small_m_guards():
     body = dit_src.split("def _int8_quantize_base", 1)[1].split("\ndef ", 1)[0]
     # training keeps the baked list: the streamed-inference text-stream scope never reaches it
     assert 'exclude_tokens_for_scheme("int8", family, baked = True)' in body
-    assert 'apply_small_m_padding(transformer, "int8", family)' in body
 
 
-def test_int8_quantize_base_pads_the_families_small_m_linears(monkeypatch):
-    # Padding pass with the family must run AFTER quantize_, which reparents the Linears.
-    import torch.nn as nn
+def test_int8_quantize_base_runs_a_weight_only_h3_base_at_one_row():
+    """Weight-only int8 never calls torch._int_mm, so H3's pad tokens must not wrap (the pad refuses weight-only)."""
+    import torch
 
+    pytest.importorskip("torchao")
     from core.training import diffusion_dit_trainer as dit
 
-    order: list = []
-    fake_ao = types.ModuleType("torchao.quantization")
-    fake_ao.Int8WeightOnlyConfig = lambda: "int8cfg"
-    fake_ao.quantize_ = lambda model, cfg, filter_fn = None: order.append("quantize")
-    monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
-    monkeypatch.setitem(sys.modules, "torchao.quantization", fake_ao)
-    monkeypatch.setattr(
-        "core.inference.diffusion_transformer_quant.apply_small_m_padding",
-        lambda transformer, scheme, family, **kw: order.append(("pad", scheme, family)),
-    )
+    class _Base(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.context_embedder = torch.nn.Linear(512, 512, dtype = torch.bfloat16)
+            self.proj = torch.nn.Linear(512, 512, dtype = torch.bfloat16)
 
-    dit._int8_quantize_base(nn.Linear(4, 4), "minimax-h3")
-    assert order == ["quantize", ("pad", "int8", "minimax-h3")]
+    base = _Base()
+    dit._int8_quantize_base(base, "minimax-h3")
+    assert type(base.context_embedder) is torch.nn.Linear
+    assert hasattr(base.context_embedder.weight, "__tensor_flatten__"), "quantized"
+    out = base.context_embedder(torch.randn(1, 512, dtype = torch.bfloat16))
+    assert out.shape == (1, 512)
 
 
 def test_a_non_default_lora_alpha_survives_the_export(tmp_path):

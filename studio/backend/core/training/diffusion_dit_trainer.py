@@ -428,7 +428,6 @@ def _int8_quantize_base(
     a host-resident base moves to it one module at a time as it quantizes (peak = int8 base + one bf16 Linear)."""
     from core.inference.diffusion_transformer_quant import (
         _quiet_config,
-        apply_small_m_padding,
         exclude_tokens_for_scheme,
         make_filter_fn,
     )
@@ -443,8 +442,8 @@ def _int8_quantize_base(
         ),
         **({} if device is None else {"device": device}),
     )
-    # After quantize_: the helper reparents the Linears it wraps. Not best-effort: a raise leaves the base quantized but not safely runnable.
-    apply_small_m_padding(transformer, "int8", family)
+    # No small-M padding: that guards torch._int_mm (W8A8), which a weight-only Linear never calls, and the pad
+    # refuses a Linear with no per-row activation quant (every weight-only one), which failed minimax-h3 at load.
     if device is not None:
         # quantize_ moves every module it visits; this catches anything outside its walk (root params / buffers).
         transformer.to(device)
