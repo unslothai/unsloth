@@ -26,7 +26,7 @@ from torch import Tensor
 import torch.nn.functional as F
 from packaging.version import Version
 
-from ..device_type import DEVICE_TYPE
+from ..device_type import DEVICE_TYPE, hip_visible_archs
 from ..models._utils import *
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
@@ -520,6 +520,32 @@ def _backend_for_device(
 
 SDPA_HAS_GQA = "enable_gqa" in (F.scaled_dot_product_attention.__doc__ or "")
 
+# ROCm's gfx1200 SDPA kernels currently reject the non-contiguous per-segment views used by
+# packed attention and have regressed when GQA is selected through ``_fused_sdp_choice``.  Keep
+# the packed path (it is the only way to fit long contexts on a 16 GB card), but make its inputs
+# contiguous and expand K/V.  The opt-out is useful for testing newer ROCm/PyTorch combinations.
+_ROCM_GFX1200_DEVICES = frozenset(
+    i
+    for i, arch in enumerate(hip_visible_archs())
+    if str(arch).split(":", 1)[0].strip().lower() == "gfx1200"
+)
+
+
+def rocm_gfx1200_requires_expanded_gqa(device) -> bool:
+    """Whether a device needs the gfx1200 ROCm SDPA compatibility route."""
+    if (
+        DEVICE_TYPE != "hip"
+        or os.environ.get("UNSLOTH_ALLOW_ROCM_GFX1200_SDPA", "0") == "1"
+    ):
+        return False
+    index = getattr(device, "index", None)
+    if index is None:
+        try:
+            index = torch.cuda.current_device()
+        except Exception:
+            return False
+    return index in _ROCM_GFX1200_DEVICES
+
 # Packed SDPA runs per segment: a dense (T, T) mask + enable_gqa leaves only the math kernel.
 _SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lower() not in (
     "0",
@@ -935,6 +961,8 @@ def _sdpa_takes_gqa(
         return False
     if not Q.is_cuda:
         return True
+    if rocm_gfx1200_requires_expanded_gqa(Q.device):
+        return False
     needs_grad = torch.is_grad_enabled() and any(
         t is not None and t.requires_grad for t in (Q, K, V)
     )
@@ -1086,7 +1114,11 @@ def _sdpa_packed_segments(
         end = start + n * length
 
         def split(x):
-            return x[0, :, start:end].unflatten(1, (n, length)).transpose(0, 1)
+            out = x[0, :, start:end].unflatten(1, (n, length)).transpose(0, 1)
+            if rocm_gfx1200_requires_expanded_gqa(Q.device):
+                # ROCm gfx1200's fused SDPA path currently rejects these strided segment views.
+                out = out.contiguous()
+            return out
 
         kwargs = dict(sdpa_kwargs)
         windowed = sliding_window is not None and length > sliding_window
