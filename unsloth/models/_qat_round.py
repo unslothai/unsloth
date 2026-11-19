@@ -9,7 +9,10 @@ Skipped: non-LoRA Linears, activation / nvfp4 / mxfp8 schemes, trainable, residu
 subclass, offloaded CPU and memory-shared (tied) weights. UNSLOTH_QAT_ROUND_INPLACE=0 disables.
 A rounded weight that is later rewritten (load_state_dict, or any in place write that bumps its version,
 or a new tensor) gets its quantizer back on load_state_dict and on the next call here, and is rounded
-again when still eligible. Writes through .data (PEFT merge / unmerge, vLLM's fold / restore) are kept."""
+again when still eligible. Writes through .data (PEFT merge / unmerge, vLLM's fold / restore) are kept.
+state_dict() marks a rounded weight in the module's state dict metadata with a checksum of its values (no new
+keys, so exports read the same tensors; torch.save keeps it, safetensors drops it), and a load whose weight still
+matches that checksum (another prepared model's state_dict) keeps it as is instead of rounding it again."""
 
 import heapq
 import os
@@ -26,6 +29,9 @@ _FLAG = "_unsloth_qat_rounded"
 _RECORD = "_unsloth_qat_round_record"
 _HOOK = "_unsloth_qat_round_load_hook"
 _SAME = "_unsloth_qat_round_same_load"
+_META = "unsloth_qat_rounded"  # state dict metadata key: checksum of this module's rounded weight
+_PRIME = (1 << 31) - 1
+_CHUNK = 1 << 22
 _STATS = {"rounded": 0, "bytes": 0, "skipped": {}}
 _PLAIN_TENSOR_TYPES = (torch.Tensor, torch.nn.Parameter)
 
@@ -115,14 +121,39 @@ def _weight_state(weight):
     return (weight.data_ptr(), None if weight.is_inference() else weight._version)
 
 
+def _checksum(weight):
+    """Exact, device independent checksum of a tensor's bits: position weighted sum mod 2**31 - 1."""
+    with torch.no_grad():
+        flat = weight.detach().contiguous().reshape(-1)
+        size = flat.element_size()
+        if size == 2:
+            flat = flat.view(torch.int16)
+        elif size == 4:
+            flat = flat.view(torch.int32)
+        elif size == 1:
+            flat = flat.view(torch.uint8)
+        total = 0
+        for start in range(0, flat.numel(), _CHUNK):
+            part = flat[start : start + _CHUNK].to(torch.int64).remainder_(_PRIME)
+            mult = torch.arange(
+                start + 1, start + 1 + part.numel(), device = part.device, dtype = torch.int64
+            )
+            mult.mul_(2654435761).remainder_(_PRIME)
+            # Each product < 2**62 and each chunk sums < 2**53: no int64 overflow.
+            total += int(part.mul_(mult).remainder_(_PRIME).sum())
+        return (str(weight.dtype), tuple(weight.shape), total % _PRIME)
+
+
 class _RoundRecord:
     """The rounded weight's state. A copy or unpickled model holds a new tensor that is already rounded,
-    so the record is reset there and adopts that tensor at its next check instead of flagging a change."""
+    so the record is reset there and adopts that tensor at its next check instead of flagging a change.
+    checksum: (state, _checksum) of the rounded weight, computed at its first state_dict()."""
 
-    __slots__ = ("state",)
+    __slots__ = ("state", "checksum")
 
     def __init__(self, state = None):
         self.state = state
+        self.checksum = None
 
     def __deepcopy__(self, memo):
         return _RoundRecord()
@@ -172,15 +203,47 @@ def _round_into(module, quantizer, weight):
             else:
                 module._register_load_state_dict_pre_hook(_before_load, with_module = True)
             module.register_load_state_dict_post_hook(_after_load)
+            register_save = getattr(module, "register_state_dict_post_hook", None)
+            if register_save is not None:  # torch >= 2.5
+                register_save(_mark_rounded)
+            else:
+                module._register_state_dict_hook(_mark_rounded)
             module.__dict__[_HOOK] = True
         except Exception:
             pass
     return True
 
 
-def _before_load(module, state_dict, prefix, *args):
+def _mark_rounded(module, state_dict, prefix, local_metadata):
+    """state_dict hook on a rounded module: mark its weight as rounded while it still holds the rounded values."""
+    quantizer = module._modules.get("weight_fake_quantizer")
+    if quantizer is None or not quantizer.__dict__.get(_FLAG, False):
+        return
+    record = quantizer.__dict__.get(_RECORD)
+    weight = module._parameters.get("weight")
+    state = _weight_state(weight)
+    if state is None or not isinstance(record, _RoundRecord):
+        return
+    # A reset record (a copy or unpickled model) adopts the tensor it holds, which is already rounded.
+    if record.state is not None and record.state != state:
+        return  # rewritten since it was rounded
+    try:
+        if record.checksum is None or record.checksum[0] != state:
+            record.checksum = (state, _checksum(weight))
+        local_metadata[_META] = record.checksum[1]
+    except Exception:
+        pass
+
+
+def _before_load(
+    module,
+    state_dict,
+    prefix,
+    local_metadata = None,
+    *args,
+):
     """load_state_dict pre hook on a rounded module: note the weight's state and whether the incoming
-    weight is the rounded one it already holds."""
+    weight is already rounded (marked so by the state_dict that produced it, or the rounded one it holds)."""
     module.__dict__.pop(_SAME, None)
     quantizer = module._modules.get("weight_fake_quantizer")
     if quantizer is None or not quantizer.__dict__.get(_FLAG, False):
@@ -189,10 +252,16 @@ def _before_load(module, state_dict, prefix, *args):
     weight = module._parameters.get("weight")
     if not isinstance(incoming, torch.Tensor) or not isinstance(weight, torch.Tensor):
         return  # no weight in this load (adapter only)
+    marker = local_metadata.get(_META) if isinstance(local_metadata, dict) else None
     try:
-        same = incoming.shape == weight.shape and torch.equal(
-            incoming.to(device = weight.device, dtype = weight.dtype), weight
-        )
+        same = incoming.shape == weight.shape
+        if same:
+            incoming = incoming.to(device = weight.device, dtype = weight.dtype)
+            # The rounded weight state_dict() marked, unchanged since (any edit or replacement changes the
+            # checksum), or the rounded values this module already holds.
+            same = (
+                isinstance(marker, (tuple, list)) and list(_checksum(incoming)) == list(marker)
+            ) or torch.equal(incoming, weight)
     except Exception:
         same = False
     module.__dict__[_SAME] = (bool(same), _weight_state(weight))
@@ -210,7 +279,7 @@ def _after_load(module, incompatible_keys):
     if state == before:
         return  # not written (for example a failed shape check)
     if same:
-        # Reloading the rounded values themselves (a checkpoint of this model): still on the grid. int8 /
+        # Rounded values (another prepared model's state_dict, or this model's own): already on the grid. int8 /
         # cactus fake quant is not idempotent, so rounding them again would move them.
         quantizer.__dict__[_RECORD] = _RoundRecord(state)
         return

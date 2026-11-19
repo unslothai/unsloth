@@ -40,10 +40,15 @@ class _Block(torch.nn.Module):
         return self.down_proj(torch.relu(self.up_proj(x)))
 
 
-def _model(scheme, monkeypatch, mode):
+def _model(
+    scheme,
+    monkeypatch,
+    mode,
+    seed = 0,
+):
     monkeypatch.setenv("UNSLOTH_QAT_ROUND_INPLACE", mode)
     monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
-    torch.manual_seed(0)
+    torch.manual_seed(seed)
     model = peft.get_peft_model(
         _Block(),
         peft.LoraConfig(r = 8, lora_alpha = 8, target_modules = ["up_proj", "down_proj"]),
@@ -116,3 +121,43 @@ def test_unchanged_weights_stay_rounded(monkeypatch):
     clone.load_state_dict(model.state_dict())
     assert torch.equal(_out(clone, x), before)
     assert _base(clone).weight_fake_quantizer.enabled is False
+
+
+@pytest.mark.parametrize("scheme", ["int4", "int8"])
+@pytest.mark.parametrize("through_disk", [False, True])
+def test_load_state_dict_of_another_rounded_model(scheme, through_disk, monkeypatch):
+    # The source's base weights are already rounded and differ from the destination's: rounding them again
+    # would move int8 weights (not idempotent), so the destination must reproduce the source exactly.
+    import io
+
+    x = torch.randn(4, DIM)
+    source = _model(scheme, monkeypatch, "1", seed = 1)
+    destination = _model(scheme, monkeypatch, "1", seed = 2)
+    expected = _out(source, x)
+    assert not torch.equal(_out(destination, x), expected)
+    state = source.state_dict()
+    if through_disk:
+        buffer = io.BytesIO()
+        torch.save(state, buffer)
+        buffer.seek(0)
+        state = torch.load(buffer, weights_only = True)
+    destination.load_state_dict(state)
+    for name in ("up_proj", "down_proj"):
+        assert torch.equal(_base(destination, name).weight, _base(source, name).weight)
+        assert _base(destination, name).weight_fake_quantizer.enabled is False
+    assert torch.equal(_out(destination, x), expected)
+    assert qr.round_frozen_qat_weights(destination) == 0
+    assert torch.equal(_out(destination, x), expected)
+
+
+def test_marked_rounded_state_dict_keeps_tensors_unchanged(monkeypatch):
+    # The marker rides in the state dict's per module metadata: no new keys, so exports read the same tensors.
+    model = _model("int8", monkeypatch, "1")
+    ref = _model("int8", monkeypatch, "0")
+    state = model.state_dict()
+    assert list(state) == list(ref.state_dict())
+    marked = [k for k, v in state._metadata.items() if qr._META in v]
+    assert sorted(marked) == sorted(
+        k[: -len(".weight")] for k in state if k.endswith("base_layer.weight")
+    )
+    assert not any(qr._META in v for v in ref.state_dict()._metadata.values())
