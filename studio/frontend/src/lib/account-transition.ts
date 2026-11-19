@@ -65,7 +65,6 @@ export const ACCOUNT_CHROME_KEYS = new Set([
   "unsloth_settings_active_tab",
   "unsloth_loaded_models_collapsed",
   "unsloth_loaded_models_dismissed",
-  "unsloth_model_picker_intro_dismissed",
   "unsloth-rag-preview-width",
   "unsloth_window_material",
 ]);
@@ -76,6 +75,7 @@ export const ACCOUNT_CHROME_PREFIXES = [
 export const ACCOUNT_KEYED_PREFIXES = [
   "unsloth_scheduled_tasks_seen:",
   "unsloth_scheduled_tasks_unseen:",
+  "unsloth_model_picker_intro_dismissed:",
 ] as const;
 /** Per-tab flags about the browser session, not the account. Never add content. */
 export const ACCOUNT_SESSION_CHROME_KEYS = new Set([USER_STOPPED_KEY]);

@@ -4,27 +4,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ACCOUNT_CHROME_KEYS } from "../src/lib/account-transition.ts";
+import { ACCOUNT_KEYED_PREFIXES } from "../src/lib/account-transition.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
-const KEY = "unsloth_model_picker_intro_dismissed";
+const PREFIX = "unsloth_model_picker_intro_dismissed:";
+const SOURCE = "components/assistant-ui/model-picker-announcement.tsx";
 
-test("the announcement owns the dismissal key", async () => {
-  const source = await readSrcAsync(
-    "components/assistant-ui/model-picker-announcement.tsx",
-  );
-  assert.ok(source.includes(`"${KEY}"`));
+test("the dismissal is stored per account", async () => {
+  const source = await readSrcAsync(SOURCE);
+  assert.ok(source.includes(`"${PREFIX}"`));
+  assert.ok(source.includes("browserAccountKey()"));
 });
 
-test("Reset preferences brings the card back", async () => {
+test("a dismissal survives signing out and back in", () => {
+  assert.ok((ACCOUNT_KEYED_PREFIXES as readonly string[]).includes(PREFIX));
+});
+
+test("Reset preferences does not bring a closed card back", async () => {
   const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
-  const start = source.indexOf("const PREFS_KEYS");
-  const keys = source.slice(start, source.indexOf("];", start));
-  assert.ok(keys.includes(`"${KEY}"`), `${KEY} missing from PREFS_KEYS`);
+  assert.ok(!source.includes("unsloth_model_picker_intro_dismissed"));
 });
 
-test("a dismissal survives switching accounts", () => {
-  assert.ok(ACCOUNT_CHROME_KEYS.has(KEY));
+test("only the X dismisses: opening the picker leaves the card", async () => {
+  const source = await readSrcAsync(SOURCE);
+  const uses = source.match(/\bdismiss\b(?!ed)/g) ?? [];
+  // The definition and the X's onClick, nothing else.
+  assert.equal(uses.length, 2);
+  assert.ok(source.includes("onClick={dismiss}"));
 });
 
 test("the welcome screen mounts it under the composer", async () => {

@@ -10,16 +10,22 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_STORED_EVENT,
+} from "@/features/auth";
+import { browserAccountKey } from "@/lib/account-transition";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
 import {
   Brain03Icon,
   Cancel01Icon,
   CloudIcon,
-  Compass01Icon,
   Download01Icon,
-  FilterHorizontalIcon,
+  FilterMailIcon,
   GridViewIcon,
+  Navigation05Icon,
   PlusSignIcon,
   Search01Icon,
   SparklesIcon,
@@ -27,20 +33,24 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowUpIcon, MicIcon } from "lucide-react";
+import { ArrowUpIcon } from "lucide-react";
 import { type FC, useRef, useState, useSyncExternalStore } from "react";
 
-// Literal copies live in Reset preferences (general-tab.tsx) and ACCOUNT_CHROME_KEYS.
-export const MODEL_PICKER_ANNOUNCEMENT_DISMISSED_KEY =
-  "unsloth_model_picker_intro_dismissed";
+// Per account, so each user on a shared browser gets the card once. Listed in
+// ACCOUNT_KEYED_PREFIXES so sign-ins keep it, and kept out of Reset preferences:
+// only the X dismisses it, for good.
+export const MODEL_PICKER_INTRO_DISMISSED_PREFIX =
+  "unsloth_model_picker_intro_dismissed:";
+
+function dismissedKey(): string {
+  return MODEL_PICKER_INTRO_DISMISSED_PREFIX + browserAccountKey();
+}
 
 const listeners = new Set<() => void>();
 
 function readDismissed(): boolean {
   try {
-    return (
-      localStorage.getItem(MODEL_PICKER_ANNOUNCEMENT_DISMISSED_KEY) === "true"
-    );
+    return localStorage.getItem(dismissedKey()) === "true";
   } catch {
     return true;
   }
@@ -48,7 +58,7 @@ function readDismissed(): boolean {
 
 function dismiss(): void {
   try {
-    localStorage.setItem(MODEL_PICKER_ANNOUNCEMENT_DISMISSED_KEY, "true");
+    localStorage.setItem(dismissedKey(), "true");
   } catch {
     // storage unavailable
   }
@@ -61,16 +71,20 @@ function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   const onStorage = (event: StorageEvent) => {
     if (
-      event.key === MODEL_PICKER_ANNOUNCEMENT_DISMISSED_KEY ||
-      event.key === null
+      event.key === null ||
+      event.key.startsWith(MODEL_PICKER_INTRO_DISMISSED_PREFIX)
     ) {
       listener();
     }
   };
   window.addEventListener("storage", onStorage);
+  window.addEventListener(AUTH_SESSION_STORED_EVENT, listener);
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, listener);
   return () => {
     listeners.delete(listener);
     window.removeEventListener("storage", onStorage);
+    window.removeEventListener(AUTH_SESSION_STORED_EVENT, listener);
+    window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, listener);
   };
 }
 
@@ -84,7 +98,7 @@ const FEATURES = [
 const MOCK_ROWS = [
   { logo: "/hub/profile/logo/qwen.png", name: "Qwen3-14B", quant: "Q4_K_M" },
   {
-    logo: "/hub/profile/logo/google.png",
+    logo: "/provider-logos/google-g.svg",
     name: "gemma-4-E4B-it",
     quant: "UD-Q4_K_XL",
     active: true,
@@ -169,7 +183,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               return;
             }
             openPickerOnClose.current = false;
-            // The card is gone by now; focus belongs to the picker's search instead.
+            // Focus belongs to the picker's search, not back on the card.
             event.preventDefault();
             source.onOpenChange(true);
           }}
@@ -189,7 +203,6 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               className="mt-2 gap-1"
               onClick={() => {
                 openPickerOnClose.current = true;
-                dismiss();
                 setOpen(false);
               }}
             >
@@ -241,7 +254,7 @@ const LogoDot: FC<{ src: string; className?: string }> = ({
     src={publicAssetUrl(src)}
     alt=""
     draggable={false}
-    className={cn("shrink-0 rounded-full bg-white object-contain", className)}
+    className={cn("shrink-0 object-contain", className)}
   />
 );
 
@@ -285,28 +298,72 @@ const CardArt: FC = () => (
 );
 
 /** The composer, its model chip, and the picker it opens, drawn with live theme colours. */
-/** The composer with its chip open, styled like the real picker and composer. */
+/** The composer with its chip open, drawn with the real picker's and composer's icons and surfaces. */
 const DialogHero: FC = () => (
   <div
     aria-hidden="true"
-    className="relative h-[calc(300px*var(--ui-space-scale,1))] overflow-hidden rounded-[calc(20px*var(--ui-space-scale,1))] bg-muted/50"
+    className="relative mx-auto mt-2 h-[calc(232px*var(--ui-space-scale,1))] w-full max-w-[calc(400px*var(--ui-space-scale,1))]"
   >
-    <div className="absolute top-5 right-6 flex w-[calc(264px*var(--ui-space-scale,1))] flex-col gap-2 rounded-2xl bg-white p-2 shadow-[var(--composer-shadow)] max-sm:w-[calc(236px*var(--ui-space-scale,1))] dark:bg-card">
+    <div className="absolute inset-x-0 bottom-1 flex flex-col gap-3 rounded-[calc(22px*var(--ui-space-scale,1))] bg-white px-3 pt-3 pb-2.5 shadow-[var(--composer-shadow)] dark:bg-card">
+      <span className="px-1.5 text-muted-foreground text-xs">Ask anything</span>
+      <div className="flex items-center gap-1.5 text-muted-foreground">
+        <HugeiconsIcon
+          icon={PlusSignIcon}
+          className="size-4.5 shrink-0 stroke-[1.75px]"
+        />
+        <span className="flex-1" />
+        <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-muted-foreground/10 py-1 pr-2.5 pl-1.5 font-medium text-foreground text-xs">
+          <LogoDot src="/provider-logos/google-g.svg" className="size-3.5" />
+          <span className="min-w-0 truncate">gemma-4-E4B-it</span>
+          <span className="shrink-0 text-muted-foreground">Thinking</span>
+        </span>
+        <MicIcon className="mx-1 size-4.5 shrink-0" />
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          <ArrowUpIcon className="size-4 stroke-2" />
+        </span>
+      </div>
+    </div>
+
+    <div className="absolute top-0 right-10 z-10 flex w-[calc(264px*var(--ui-space-scale,1))] max-w-[calc(100%-2.5rem)] flex-col gap-2 rounded-2xl bg-white p-2 shadow-[var(--popup-shadow)] dark:bg-card">
       <div className="flex items-center gap-3.5 px-2 pt-1 text-muted-foreground">
-        <HugeiconsIcon icon={StarIcon} className="size-3.5" />
-        <HugeiconsIcon icon={Compass01Icon} className="size-3.5" />
+        <HugeiconsIcon
+          icon={StarIcon}
+          strokeWidth={1.75}
+          className="size-3.5"
+        />
+        <HugeiconsIcon
+          icon={Navigation05Icon}
+          strokeWidth={1.75}
+          className="size-3.5"
+        />
         <span className="relative text-foreground">
-          <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+          <HugeiconsIcon
+            icon={Download01Icon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
           <span className="absolute inset-x-0 -bottom-1.5 h-0.5 rounded-full bg-primary" />
         </span>
-        <HugeiconsIcon icon={CloudIcon} className="size-3.5" />
-        <LogoDot src="/hub/profile/logo/google.png" className="size-3.5" />
+        <HugeiconsIcon
+          icon={CloudIcon}
+          strokeWidth={1.75}
+          className="size-3.5"
+        />
+        <LogoDot src="/provider-logos/google-g.svg" className="size-3.5" />
         <LogoDot src="/hub/profile/logo/qwen.png" className="size-3.5" />
       </div>
       <div className="flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1.5 text-muted-foreground text-ui-11">
-        <HugeiconsIcon icon={Search01Icon} className="size-3" />
+        <HugeiconsIcon
+          icon={Search01Icon}
+          strokeWidth={1.75}
+          className="size-3"
+        />
         <span className="flex-1">Search on device models</span>
-        <HugeiconsIcon icon={FilterHorizontalIcon} className="size-3" />
+        <HugeiconsIcon
+          icon={FilterMailIcon}
+          strokeWidth={1.75}
+          className="size-3"
+        />
       </div>
       <div className="flex flex-col">
         {MOCK_ROWS.map((row) => (
@@ -322,32 +379,11 @@ const DialogHero: FC = () => (
             {"active" in row && row.active ? (
               <span className="size-1.5 rounded-full bg-primary" />
             ) : null}
-            <span className="rounded-full bg-muted px-1.5 font-mono text-muted-foreground text-ui-11">
+            <span className="rounded-md bg-muted px-1.5 font-mono text-muted-foreground text-ui-11">
               {row.quant}
             </span>
-            <HugeiconsIcon
-              icon={StarIcon}
-              className="size-3 text-muted-foreground/60"
-            />
           </div>
         ))}
-      </div>
-    </div>
-
-    <div className="absolute inset-x-6 bottom-6 flex flex-col gap-3 rounded-[calc(22px*var(--ui-space-scale,1))] bg-white px-3 pt-3 pb-2.5 shadow-[var(--composer-shadow)] dark:bg-card">
-      <span className="px-1.5 text-muted-foreground text-xs">Ask anything</span>
-      <div className="flex items-center gap-1.5 text-muted-foreground">
-        <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-        <span className="flex-1" />
-        <span className="flex items-center gap-1.5 rounded-full bg-muted-foreground/10 py-1 pr-2.5 pl-1.5 font-medium text-foreground text-xs min-w-0 whitespace-nowrap">
-          <LogoDot src="/hub/profile/logo/google.png" className="size-3.5" />
-          <span className="min-w-0 truncate">gemma-4-E4B-it</span>
-          <span className="shrink-0 text-muted-foreground">Thinking</span>
-        </span>
-        <MicIcon className="mx-1 size-4" />
-        <span className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground">
-          <ArrowUpIcon className="size-4 stroke-2" />
-        </span>
       </div>
     </div>
   </div>
