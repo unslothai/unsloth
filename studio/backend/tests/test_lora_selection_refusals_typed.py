@@ -65,7 +65,8 @@ def test_lora_refusals_are_typed(filename, function):
     assert (
         not plain
     ), f"{filename}:{function} still refuses a LoRA selection with a plain ValueError: {plain}"
-    assert "LoraSelectionError" in _raised_names(fn)
+    # LoraReloadRequiredError is the LoraSelectionError subclass for refusals a reload resolves.
+    assert {"LoraSelectionError", "LoraReloadRequiredError"} & set(_raised_names(fn))
 
 
 def test_the_typed_refusal_is_still_a_value_error():
