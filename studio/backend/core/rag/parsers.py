@@ -163,7 +163,11 @@ def _html_hidden(tag: str, attrs) -> bool:
     # any value but until-found (still searchable) hides the subtree; CSS is not evaluated
     for name, value in attrs:
         if name == "hidden":
-            return (value or "").lower() != "until-found" and tag not in _HTML_HIDDEN_IGNORED
+            return (
+                (value or "").lower() != "until-found"
+                and tag not in _HTML_HIDDEN_IGNORED
+                and "tabpanel" not in (dict(attrs).get("role") or "").lower().split()
+            )
     return False
 
 

@@ -344,10 +344,10 @@ test("the picker opens with its list unless the user collapsed it", () => {
   assert.doesNotMatch(picker, /<Popover[^>]*\bmodal\b/);
   assert.match(picker, /localStorage\.getItem\(EXPANDED_KEY\) !== "false"/);
   assert.match(picker, /useState\(readExpanded\)/);
-  assert.match(picker, /onClick=\{\(\) => setExpanded\(false\)\}/);
+  assert.match(picker, /onClick=\{\(\) => toggleExpanded\(false\)\}/);
 });
 
-test("each load starts collapsed, keeps the user's choice per model, and an eject forgets it", () => {
+test("a load opens as the user last left a loaded picker, and an eject expands", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
@@ -358,17 +358,20 @@ test("each load starts collapsed, keeps the user's choice per model, and an ejec
   );
   assert.match(
     picker,
-    /\(fresh \? undefined : readModelExpanded\(\)\[residentKey\]\) \?\? false/,
+    /setExpanded\(useChatRuntimeStore\.getState\(\)\.pickerExpandLoaded\);/,
   );
   assert.match(
     picker,
-    /if \(residentKeyRef\.current\) \{\s+writeModelExpanded\(residentKeyRef\.current, next\);/,
+    /if \(residentKeyRef\.current\) \{\s+useChatRuntimeStore\.getState\(\)\.setPickerExpandLoaded\(next\);/,
   );
+  assert.match(picker, /const expand = \(\) => \{\s+toggleExpanded\(true\);/);
+  assert.match(picker, /onClick=\{\(\) => toggleExpanded\(false\)\}/);
+  assert.doesNotMatch(picker, /MODEL_EXPANDED_KEY/);
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.match(
-    picker,
-    /writeModelExpanded\(prev, null\);\s+setExpanded\(true\);/,
+    store,
+    /pickerExpandLoaded: loadBool\(PICKER_EXPAND_LOADED_KEY, false\)/,
   );
-  assert.match(picker, /Math\.max\(0, keys\.length - MODEL_EXPANDED_MAX\)/);
 });
 
 test("On Device sections follow the header picker's buckets and order", () => {
@@ -1130,7 +1133,7 @@ test("an interrupted quant counts as a variant, so the row names no quant", () =
   // A click folds both open, as for two whole quants.
   assert.match(
     picker,
-    /if \(!row\.favoriteQuant && variantCount\(row\) > 1\) \{\s+setFoldedQuants/,
+    /if \(!row\.favoriteQuant && variantCount\(row\) > 1\) \{\s+setQuantsOpenByRow/,
   );
 });
 
@@ -1238,7 +1241,7 @@ test("Only models that fit judges MLX and safetensors results by the checkpoint 
   assert.match(picker, /searchRowFitsDevice\(\s*\{\s*id: r\.id,/);
   assert.match(
     picker,
-    /const checkpointFits = hubCheckpointFits\.get\(row\.id\.toLowerCase\(\)\);\s*if \(checkpointFits !== undefined\) \{\s*return checkpointFits;/,
+    /if \(hubCheckpointFits\.has\(row\.id\.toLowerCase\(\)\)\) \{[^}]*return !hubCheckpointFit\.has\(row\.id\.toLowerCase\(\)\);/,
   );
 });
 
@@ -1572,7 +1575,7 @@ test("an open on-device quant list asks the Hub for updates, as the header picke
   );
   assert.match(
     picker,
-    /expandQuantizations !== foldedQuants\.has\(row\.key\) &&\s*updatesReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
+    /quantsOpenFor\(row\.key\) &&\s*updatesReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
   );
   assert.match(
     picker,
@@ -1624,7 +1627,7 @@ test("a pinned-quant row reads its repo's disk state, opens its own Run settings
   );
   assert.match(
     picker,
-    /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*foldedQuants,\s*expandQuantizations,\s*quantsEpoch,\s*\]\);/,
+    /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*expandQuantizations,\s*quantsOpenByRow,\s*quantsEpoch,\s*\]\);/,
   );
 });
 
@@ -1808,4 +1811,81 @@ test("hiding the star on small screens never strands Favorite", () => {
     assert.match(menu, /pin=\{\s+canStar\s+\?/);
   }
   assert.match(picker, /\[actionClass, npuOffer \? TOUCH_DOTS : TOUCH_IN_MENU\]/);
+});
+
+test("a measured MLX download size decides its fit warning, not the per-parameter estimate", async () => {
+  const { hfModelFitsDevice } = await import(
+    "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+  );
+  // 27B at 0.4 B/param estimates ~11 GB; the UD-4bit repo's files are 26 GB.
+  const repo = { id: "unsloth/Qwen3.6-27B-UD-MLX-4bit", totalParams: 27e9 };
+  const gpu = {
+    memoryTotalGb: 16,
+    systemRamAvailableGb: 16,
+    budgetKnown: true,
+  };
+  assert.equal(hfModelFitsDevice(repo, gpu), true);
+  assert.equal(
+    hfModelFitsDevice({ ...repo, curatedSizeBytes: 26e9 }, gpu),
+    false,
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /curatedSizeBytes: mlx \? bytes : undefined,/);
+});
+
+test("the Show full model list switch applies to an already loaded picker", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const expandLoaded = useChatRuntimeStore\(\(s\) => s\.pickerExpandLoaded\);\s+useEffect\(\(\) => \{\s+if \(residentKeyRef\.current\) \{\s+setExpanded\(expandLoaded\);/,
+  );
+});
+
+test("a failed repo size listing is not cached, so it can retry", () => {
+  const sizes = readSrc(
+    "components/assistant-ui/composer-model-picker/hub-repo-size.ts",
+  );
+  assert.match(
+    sizes,
+    /\.then\(\(bytes\) => \{\s+sizes\.set\(key, bytes\);[\s\S]*?\}\)\s+\/\/[^\n]*\n\s+\.catch\(\(\) => null\)\s+\.finally\(\(\) => inflight\.delete\(key\)\);/,
+  );
+});
+
+test("the fit-only filter and the row warning share the measured verdict", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /if \(hubCheckpointFits\.has\(row\.id\.toLowerCase\(\)\)\) \{[^}]*return !hubCheckpointFit\.has\(row\.id\.toLowerCase\(\)\);/,
+  );
+  assert.match(
+    picker,
+    /hubResults\.flatMap\(\(r\) => \(r\.isGguf \? \[\] : \[r\.id\]\)\)/,
+  );
+  assert.ok(
+    picker.indexOf("const hubCheckpointFit = useMemo") <
+      picker.indexOf("const foundRows = useMemo"),
+  );
+});
+
+test("each model remembers its own quant list; others follow the setting, on by default", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /quantsOpenByRow\.get\(key\) \?\? expandQuantizations/);
+  assert.match(
+    picker,
+    /const open = next\.get\(row\.key\) \?\? expandQuantizations;[\s\S]*?next\.set\(row\.key, !open\);\s+writeQuantsOpen\(next\);/,
+  );
+  assert.doesNotMatch(picker, /setExpandQuantizations\(/);
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(
+    store,
+    /expandQuantizations: loadBool\(CHAT_EXPAND_QUANTIZATIONS_KEY, true\)/,
+  );
 });

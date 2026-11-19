@@ -143,7 +143,9 @@ def _bench_int8pack_vs_dense(layer: Any, dtype: Any, device: Any) -> tuple:
     scale = layer.weight_scale.view(torch.float32).to(device).to(dtype).contiguous()
     w = (w_q.to(dtype) * scale.unsqueeze(1)).contiguous()
     x = torch.randn(_INT8PACK_PROBE_ROWS, layer.in_features, dtype = dtype, device = device)
-    sync = torch.mps.synchronize if device.type == "mps" else (lambda: None)
+    from .diffusion_device import mps_synchronize
+
+    sync = mps_synchronize if device.type == "mps" else (lambda: None)
     kernel = lambda: torch._weight_int8pack_mm(x, w_q, scale)
     dense = lambda: torch.nn.functional.linear(x, w)
     kernel()

@@ -5644,9 +5644,10 @@ def patch_trl_async_grpo():
                 # nearly idle; let the engine batch as many as it can schedule.
                 config.max_inflight_tasks = server.max_num_seqs
         # TRL unfreezes a VLM's whole text model and LM head; under LoRA that is full fine-tuning of the base (and,
-        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set.
+        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set. By name:
+        # native FSDP2 shards inside Trainer.__init__, replacing every parameter with a new DTensor one.
         trainable = (
-            {id(p) for p in model.parameters() if p.requires_grad}
+            {name for name, p in model.named_parameters() if p.requires_grad}
             if isinstance(model, torch.nn.Module) and hasattr(model, "peft_config")
             else None
         )
@@ -5667,8 +5668,8 @@ def patch_trl_async_grpo():
                 restore_requires_grad()
                 restore_text_config()
             if trainable is not None:
-                for p in model.parameters():
-                    if p.requires_grad and id(p) not in trainable:
+                for name, p in model.named_parameters():
+                    if p.requires_grad and name not in trainable:
                         p.requires_grad_(False)
             if server is not None:
                 if not getattr(self, "_lora_sync", False):

@@ -169,7 +169,12 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
-from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
+from .diffusion_families import (
+    ANIMA_TURBO_KEY,
+    MINIMAX_H3_IMAGE_FAMILY_NAME,
+    MOSS_IMAGE_FAMILY_NAME,
+    anima_turbo_named,
+)
 from .diffusion_anima import (
     ANIMA_COMPONENT_FOLDERS,
     ANIMA_COMPONENTS,
@@ -2141,13 +2146,19 @@ _NATIVE_ONLY_FIRST_BUILD = {
 }
 
 
-def _family_default_ids(fam: Any) -> tuple:
+def _family_default_ids(
+    fam: Any,
+    filename: Optional[str] = None,
+    repo_id: Optional[str] = None,
+) -> tuple:
     """Ids ahead of the file / repo names in the defaults lookup: FLUX.3's file names cannot tell its variants apart,
     and a bare "anima" matches Animagine XL files while a local folder never names Anima's base repo."""
     if is_flux3_family(fam):
         return (fam.name,)
     if is_anima_family(fam):
-        return (fam.base_repo,)
+        return ((ANIMA_TURBO_KEY,) if anima_turbo_named(filename, repo_id) else ()) + (
+            fam.base_repo,
+        )
     if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
         # Its 6 steps / guidance 1 are fixed by the checkpoint (PDD heads), whatever the folder is called.
         return (fam.name,)
@@ -2164,7 +2175,7 @@ def _generation_defaults_for(
     """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
     schnell), so the Images form can match it."""
     try:
-        identifiers = _family_default_ids(family) + (
+        identifiers = _family_default_ids(family, gguf_filename, repo_id) + (
             gguf_filename,
             content_variant_hint(repo_id, gguf_filename),
             repo_id,
@@ -4567,8 +4578,9 @@ class DiffusionBackend:
                     gate = self._unload_fence_clear if fenced_by_unload else self._teardown_drained
                     if gate.wait(timeout = 0.1):
                         break
-            from hub.services.models.account_access import media_generation_slot
             try:
+                # Inside the try so an import failure still releases the held slot.
+                from hub.services.models.account_access import media_generation_slot
                 with media_generation_slot("diffusion"):
                     yield
             finally:
@@ -11254,7 +11266,7 @@ class DiffusionBackend:
                     static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
-                            *_family_default_ids(fam),
+                            *_family_default_ids(fam, gguf_filename, repo_id),
                             gguf_filename,
                             content_variant_hint(repo_id, gguf_filename),
                             repo_id,
@@ -11687,7 +11699,7 @@ class DiffusionBackend:
                         )
                         try:
                             plan_steps, _ = default_generation_params(
-                                *_family_default_ids(fam),
+                                *_family_default_ids(fam, gguf_filename, repo_id),
                                 gguf_filename,
                                 content_variant_hint(repo_id, gguf_filename),
                                 repo_id,
@@ -16831,6 +16843,20 @@ class DiffusionBackend:
             state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
         )
         speed_optims = int8_gemm_live(state.pipe, speed_optims)
+        attention_backend = state.attention_backend
+        try:
+            from core.inference.diffusion_int8_attention import live_backend
+            attention_backend = live_backend(state.pipe, state.attention_backend)
+        except Exception:  # noqa: BLE001 - the load-time value stays
+            pass
+        if (
+            attention_backend != state.attention_backend
+            and isinstance(resolved, dict)
+            and isinstance(resolved.get("attention_backend"), dict)
+        ):
+            entry = dict(resolved["attention_backend"])
+            entry["value"] = attention_backend or "native"
+            resolved = {**resolved, "attention_backend": entry}
         lora_gate = dict(
             engine = "diffusers",
             family = state.family.name,
@@ -16873,7 +16899,7 @@ class DiffusionBackend:
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": _reported_transformer_quant(state),
             **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
-            "attention_backend": state.attention_backend,
+            "attention_backend": attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),

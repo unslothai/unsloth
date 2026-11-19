@@ -4355,6 +4355,22 @@ def _vlm_prepared_inputs(model, processor, prompt, images, **media):
     )
 
 
+class _ProcessorWithImagesKwargs:
+    """The loaded processor with per-request image options, which mlx-vlm's ``prepare_inputs``
+    drops unless the processor's own signature names them."""
+
+    def __init__(self, processor, images_kwargs):
+        self._processor, self._images_kwargs = processor, images_kwargs
+        self.__signature__ = inspect.signature(processor)
+
+    def __call__(self, *args, **kwargs):
+        merged = {**self._images_kwargs, **(kwargs.pop("images_kwargs", None) or {})}
+        return self._processor(*args, images_kwargs = merged, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._processor, name)
+
+
 def _vlm_generate_kwargs(inputs):
     """Prepared inputs as ``stream_generate`` kwargs, which then skips its own preparation."""
     inputs = dict(inputs)
@@ -6947,6 +6963,7 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         images = None,
+        computer_use = False,
     ) -> int:
         """Prompt tokens this model would receive for these messages. Renders and tokenizes exactly
         as generation does."""
@@ -6969,7 +6986,8 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
-            return self._count_prompt_tokens(prompt, images)
+            with self._screenshot_processor(computer_use):
+                return self._count_prompt_tokens(prompt, images)
 
         render_result = self._render_text_prompt(
             full_messages,
@@ -6990,6 +7008,31 @@ class MLXInferenceBackend:
             )
             return len(expanded["input_ids"][0])
         return self._count_prompt_tokens(render_result.prompt)
+
+    def image_tokens(self, width, height) -> int:
+        """Prompt tokens one computer-use screenshot of this size adds under the screenshot budget."""
+        from PIL import Image
+
+        turn = [{"role": "user", "content": "."}]
+        blank = Image.new("RGB", (width, height), "white")
+        with_image = self.count_chat_tokens(turn, images = [blank], computer_use = True)
+        return with_image - self.count_chat_tokens(turn)
+
+    @contextmanager
+    def _screenshot_processor(self, computer_use):
+        """Serve this request's processor calls under the screenshot image budget."""
+        from core.inference.computer_use.budget import screenshot_images_kwargs
+
+        images_kwargs = screenshot_images_kwargs(self._processor) if computer_use else {}
+        if not images_kwargs:
+            yield
+            return
+        processor = self._processor
+        self._processor = _ProcessorWithImagesKwargs(processor, images_kwargs)
+        try:
+            yield
+        finally:
+            self._processor = processor
 
     def generate_chat_response(
         self,
@@ -7022,6 +7065,7 @@ class MLXInferenceBackend:
         # Unrestricted mode uses an EMPTY tools list, so bool(tools) cannot detect the protocol
         tool_protocol_active = None,
         videos = None,
+        computer_use = False,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -7133,7 +7177,9 @@ class MLXInferenceBackend:
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
             )
-        yield from stream
+        # Both streams are lazy, so every processor call they make runs inside the scope.
+        with self._screenshot_processor(computer_use):
+            yield from stream
 
     def _vocab_size(self):
         """The model's token-id range, as llama-server's ``n_vocab`` bounds a prompt's ids."""

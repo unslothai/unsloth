@@ -228,6 +228,7 @@ def test_rdna_explicit_int8_reason_covers_every_family_with_the_same_gates(rocm,
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
     monkeypatch.setitem(tq._FAMILY_SCHEME_DENY, "toy-family", frozenset({tq.TQ_INT8}))
     assert tq.rdna_explicit_int8_reason(_target(), "toy-family") is None
+    _compile_probe(monkeypatch, False)
     monkeypatch.setattr(tq._sys, "platform", "win32")
     assert tq.rdna_explicit_int8_reason(_target(), "flux.3-klein") is None
 
@@ -243,12 +244,77 @@ def test_rdna_auto_w8a8_ships_only_for_the_measured_families():
     assert set(tq._FAMILY_RDNA_AUTO_W8A8) == {"qwen-image", "qwen-image-2.1"}
 
 
-def test_rdna_auto_w8a8_reason_is_linux_only(rocm, monkeypatch):
+def _compile_probe(monkeypatch, verdict):
+    """Stub the ROCm regional compile probe; returns the list of ordinals it was asked about."""
+    from core.inference import diffusion_rocm_compile as rc
+
+    asked: list = []
+
+    def probe(device = None):
+        asked.append(device)
+        if isinstance(verdict, BaseException):
+            raise verdict
+        return verdict
+
+    monkeypatch.setattr(rc, "rocm_block_compile_works", probe)
+    return asked
+
+
+@pytest.mark.parametrize("platform", ["win32", "cygwin"])
+@pytest.mark.parametrize(
+    "verdict,expect", [(True, True), (False, False), (RuntimeError("probe"), False)]
+)
+def test_rdna_tiers_off_linux_follow_the_compile_probe(
+    rocm, monkeypatch, platform, verdict, expect
+):
+    # Windows ROCm: the compiled RDNA int8 tiers engage only once the regional compile probe passed on this card.
     monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
     monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
+    monkeypatch.setattr(tq._sys, "platform", platform)
+    asked = _compile_probe(monkeypatch, verdict)
+    target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, ordinal = 0)
+    assert (tq.rdna_auto_w8a8_reason(target, "toy-family") == "measured") is expect
+    assert (tq.rdna_explicit_int8_reason(target, "flux.3-klein") is not None) is expect
+    assert (tq.rdna_explicit_w8a8_reason(target, "flux.3-klein") is not None) is expect
+    assert asked and set(asked) == {0}
+
+
+def test_rdna_tiers_off_linux_check_the_cheap_gates_before_probing(rocm, monkeypatch):
+    # A host whose RDNA kernels are not ready (or the kill switch) never pays for the compile probe.
     monkeypatch.setattr(tq._sys, "platform", "win32")
+    asked = _compile_probe(monkeypatch, True)
+    monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: False)
     assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
+    assert tq.rdna_explicit_int8_reason(_target(), "toy-family") is None
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, "0")
+    assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
+    assert tq.rdna_explicit_int8_reason(_target(), "toy-family") is None
+    assert asked == []
+
+
+def test_rdna_tiers_on_linux_never_run_the_probe_at_decision_time(rocm, monkeypatch):
+    # Linux keeps its measured behaviour: the probe still runs when the compile tier engages, not here.
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.setattr(tq._sys, "platform", "linux")
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
+    asked = _compile_probe(monkeypatch, False)
+    assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") == "measured"
+    assert tq.rdna_explicit_int8_reason(_target(), "toy-family") is not None
+    assert asked == []
+
+
+def test_rdna_compile_probe_kill_switch_keeps_windows_eager(rocm, monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.setattr(tq._sys, "platform", "win32")
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
+    monkeypatch.setenv(rc.ENV, "0")
+    assert tq.rdna_explicit_int8_reason(_target(), "flux.3-klein") is None
 
 
 def test_rdna_auto_w8a8_reason_is_rocm_only(nvidia, monkeypatch):
