@@ -3452,7 +3452,10 @@ def _train_dit(
                 optimizer,
                 dequant_cache,
                 bucket_activation_scale(canvases),
-                lambda stats: _emit(on_event, "dequant_cache_planned", **stats),
+                # With a gc budget, _plan_after_first_step reports the plan once that budget is reserved.
+                None
+                if gc_budget is not None
+                else (lambda stats: _emit(on_event, "dequant_cache_planned", **stats)),
                 lambda kind, stats: _emit(on_event, kind, **stats),
             )
             if dequant_cache is not None:
@@ -3658,6 +3661,9 @@ def _train_dit(
     def _retry_fully_checkpointed():
         # Partial gradients of the failed micro-step are already accumulated, so the whole step reruns from its inputs.
         gc_budget.fall_back()
+        if dequant_cache is not None:
+            # No block keeps activations now: the cache may regrow into that room as live memory allows.
+            dequant_cache.reserve(0, from_plan = True)
         optimizer.zero_grad(set_to_none = True)
         gc.collect()
         _empty_device_cache(device)
@@ -3771,11 +3777,13 @@ def _train_dit(
         optimizer.step()
         lr_sched.step()
         if plan_now:
-            _plan_gc_budget(
+            _plan_after_first_step(
                 gc_budget,
+                dequant_cache,
                 fb_peak,
                 alloc_before_step,
                 max(c[0] * c[1] for c in canvases) if canvases is not None else None,
+                lambda stats: _emit(on_event, "dequant_cache_planned", **stats),
             )
         if ema is not None:
             ema.update(transformer)
@@ -3897,13 +3905,42 @@ def _train_dit(
     return str(out_dir)
 
 
+def _plan_after_first_step(
+    gc_budget,
+    dequant_cache,
+    fb_peak,
+    alloc_before_step,
+    max_canvas_area = None,
+    on_cache_planned = None,
+) -> None:
+    """Both step-1 planners share one figure: free memory after step 1, which the dequant cache already sized itself
+    from in the optimizer hook (still empty, as step 1 caches nothing). Kept activations save more time per byte, so
+    they plan first and the cache keeps what is left of its plan; a pinned cache budget is held out of the gc plan."""
+    _plan_gc_budget(
+        gc_budget,
+        fb_peak,
+        alloc_before_step,
+        max_canvas_area,
+        held_bytes = dequant_cache.budget
+        if dequant_cache is not None and dequant_cache.pinned
+        else 0,
+    )
+    if dequant_cache is None:
+        return
+    dequant_cache.reserve(gc_budget.kept_bytes if gc_budget.keep else 0, from_plan = True)
+    if on_cache_planned is not None:
+        on_cache_planned(dequant_cache.stats())
+
+
 def _plan_gc_budget(
     gc_budget,
     fb_peak,
     alloc_before_step,
     max_canvas_area = None,
+    held_bytes = 0,
 ) -> None:
-    """After the first step: keep as many blocks' activations as the measured free memory allows. Never raises."""
+    """After the first step: keep as many blocks' activations as the measured free memory allows, less
+    ``held_bytes`` another planner fills from step 2 on (a pinned dequant cache). Never raises."""
     import logging
 
     import torch
@@ -3912,6 +3949,7 @@ def _plan_gc_budget(
     try:
         # The optimizer's first step allocates its moments, which every later step carries.
         projected = int(fb_peak) + max(0, torch.cuda.memory_allocated() - int(alloc_before_step))
+        projected += max(0, int(held_bytes))
         free, total = torch.cuda.mem_get_info()
         kept = gc_budget.plan(
             projected, free, torch.cuda.memory_reserved(), total, max_canvas_area = max_canvas_area
