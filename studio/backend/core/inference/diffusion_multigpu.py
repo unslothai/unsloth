@@ -1042,6 +1042,24 @@ REPLICA_LAYOUT_UNSPLITTABLE: dict[str, str] = {
 }
 
 
+# Classes whose guidance split runs only while no denoiser block streams: a streamed one-card plan keeps both branches
+# on the primary, so the replica would sit idle.
+STREAMED_REPLICA_REFUSED = {
+    "ZImageTransformer2DModel": "Z-Image splits guidance only while no group-offload block streams, and this one-card "
+    "plan streams the denoiser: the replica would sit idle",
+}
+
+
+def _plan_streams_denoiser(plan: Any, sizes: Mapping[str, tuple[int, str]]) -> bool:
+    """Whether the one-card ``plan`` streams part of the denoiser under group offload."""
+    if getattr(plan, "offload_policy", None) != "group" or not bool(
+        getattr(plan, "stream_transformer", True)
+    ):
+        return False
+    dit = int(sizes.get("transformer", (0, "dit"))[0] or _denoiser_mib(dict(sizes)))
+    return dit - int(getattr(plan, "resident_transformer_mib", None) or 0) > 0
+
+
 def replica_layout_refusal(denoiser: Any) -> Optional[str]:
     """Why a guided step of ``denoiser``'s class cannot run its branches on two cards, else None."""
     name = type(denoiser).__name__
@@ -1264,6 +1282,8 @@ def replica_layout(
     policy = getattr(plan, "offload_policy", None)
     if policy not in ("none", "group"):
         return None, f"the one-card plan pages the denoiser per call ('{policy}')"
+    if type(denoiser).__name__ in STREAMED_REPLICA_REFUSED and _plan_streams_denoiser(plan, sizes):
+        return None, STREAMED_REPLICA_REFUSED[type(denoiser).__name__]
     from .diffusion_bg_compile import load_time_enabled as bg_compile_enabled
 
     if bg_compile_enabled():

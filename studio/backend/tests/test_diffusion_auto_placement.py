@@ -882,6 +882,24 @@ def test_heavy_stream_on_the_primary_keeps_the_layer_split(monkeypatch):
     assert "predicted slower" in reasons["cfg_replica"]
 
 
+class ZImageTransformer2DModel(WanTransformer3DModel):
+    pass
+
+
+def test_streamed_zimage_plan_keeps_the_split_its_replica_could_not_use(monkeypatch):
+    # Z-Image splits guidance only while no group-offload block streams: a streamed one-card plan would leave the
+    # replica idle, so the split stays
+    d = _wan5b(monkeypatch, cls = ZImageTransformer2DModel)
+    assert d.plan.layer_split is not None and d.plan.layer_split.cards == (0, 1)
+    recorded = _recorded(d)
+    assert recorded.chosen == "layer_split"
+    reasons = {c.kind: c.reason for c in recorded.rejected}
+    assert (
+        "Z-Image splits guidance only while no group-offload block streams"
+        in reasons["cfg_replica"]
+    )
+
+
 def test_unpriced_card_keeps_the_layer_split(monkeypatch):
     d = _wan5b(monkeypatch)
     monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: None)
