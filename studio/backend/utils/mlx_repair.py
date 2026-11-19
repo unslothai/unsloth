@@ -411,7 +411,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         logger.warning(
             "MLX self-heal produced an incomplete or too-old MLX stack "
             "(need %s); staying chat-only.",
-            # The floors, not MLX_PACKAGES: the gate above tests the floors, so quoting the install pins would tell someone on a usable mlx 0.33 that they need exactly 0.32.3.
+            # The floors, not MLX_PACKAGES: the gate above tests the floors, so quoting the install pins would tell someone on a usable newer mlx that they need the exact pin.
             ", ".join(f"{name}>={_mlx_minimum(name)}" for name in _MLX_MIN_VERSIONS),
         )
         return False

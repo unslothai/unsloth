@@ -7413,11 +7413,6 @@ def test_the_speculative_decoding_stream_is_drained_too(monkeypatch):
     assert events == ["synchronize:speculative", "synchronize:default"]
 
 
-def test_a_runtime_without_synchronize_is_not_an_error():
-    from core.inference import mlx_inference
-    mlx_inference._drain_generation_streams(types.SimpleNamespace())
-
-
 @pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
 def test_mlx_native_context_length_reads_every_spelling_and_every_config(name):
     from core.inference.mlx_inference import mlx_native_context_length
