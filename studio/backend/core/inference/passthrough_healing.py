@@ -328,7 +328,9 @@ def _parse_minimax_m3_block(
     if not block.startswith(_MINIMAX_M3_OPEN):
         return out
     pos = len(_MINIMAX_M3_OPEN)
-    while (invoke := _MINIMAX_M3_INVOKE_RE.match(block, _WS_RE.match(block, pos).end())) is not None:
+    while (
+        invoke := _MINIMAX_M3_INVOKE_RE.match(block, _WS_RE.match(block, pos).end())
+    ) is not None:
         args: dict = {}
         pos = invoke.end()
         while True:

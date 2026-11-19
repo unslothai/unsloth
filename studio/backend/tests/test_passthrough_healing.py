@@ -1981,7 +1981,10 @@ _M3_EDIT_TOOL = {
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"oldText": {"type": "string"}, "newText": {"type": "string"}},
+                        "properties": {
+                            "oldText": {"type": "string"},
+                            "newText": {"type": "string"},
+                        },
                     },
                 },
                 "replaceAll": {"type": "boolean"},
@@ -1996,7 +1999,11 @@ _M3_EDIT_TOOL = {
 class TestMinimaxM3:
     """MiniMax-M3 namespaces every tag and expands object and array arguments into elements (#18481)."""
 
-    def _heal(self, text, tools = (_M3_EDIT_TOOL,)):
+    def _heal(
+        self,
+        text,
+        tools = (_M3_EDIT_TOOL,),
+    ):
         allowed = tuple(t["function"]["name"] for t in tools)
         return _heal_native("minimax_m3", text, allowed, list(tools))
 
@@ -2028,7 +2035,9 @@ class TestMinimaxM3:
         # The tail the reporter saw relayed raw: a text value, then the call's and block's closers.
         args = _m3("path", "notes.md") + _m3("oldText", "x")
         args += _m3("newText", f"{_M3_NS} reload the session to pick up the new MCP server\n")
-        tools = [_client_tool("edit", {k: {"type": "string"} for k in ("path", "oldText", "newText")})]
+        tools = [
+            _client_tool("edit", {k: {"type": "string"} for k in ("path", "oldText", "newText")})
+        ]
         calls, relayed = self._heal(_m3_block(("edit", args)), tools)
         assert [name for name, _args in calls] == ["edit"] and relayed == ""
 

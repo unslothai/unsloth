@@ -43350,7 +43350,9 @@ async def _responses_stream(
                 StreamToolCallHealer(
                     _allowed_tools,
                     body.get("tools"),
-                    native = None if upstream is not None else llama_server_native_format(llama_backend),
+                    native = None
+                    if upstream is not None
+                    else llama_server_native_format(llama_backend),
                 )
                 if _allowed_tools
                 else None
