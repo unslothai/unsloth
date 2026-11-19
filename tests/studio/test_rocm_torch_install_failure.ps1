@@ -89,6 +89,7 @@ try {
     Check "setup fails instead of continuing" ([bool]$r.Failed)
     Check "the failure names the arch" ($r.Failed -match 'gfx1151')
     Check "the failure carries the uv reason" ($r.Failed -match 'Connection refused')
+    Check "the failure message names the opt-in (Desktop shows only this line)" ($r.Failed -match 'UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1')
     Check "no CPU torch is installed" ((CpuInstalls $r).Count -eq 0)
     Check "an [ERROR] line names the arch" (HasLine $r '^\[ERROR\] AMD ROCm PyTorch could not be installed for gfx1151')
     Check "the index is printed" (HasLine $r 'index:\s+https://repo\.amd\.com/rocm/whl-multi-arch')

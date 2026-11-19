@@ -8262,7 +8262,7 @@ if ($ROCmIndexUrl) {
         # A supported AMD GPU without ROCm wheels is a failed GPU install: stop and say why, never fall to CPU.
         $_rocmReason = (@((Redact-InstallOutput $output) -split '\r?\n' |
             Where-Object { $_.Trim() }) | Select-Object -Last 6) -join " | "
-        if (-not $_rocmReason) { $_rocmReason = "no installer output captured (see the uv output above)" }
+        if (-not $_rocmReason) { $_rocmReason = "installer output was streamed above, not captured" }
         $_rocmWanted = (@($_rocmTrio) -join " ")
         Write-StudioLine ""
         Write-StudioLine "[ERROR] AMD ROCm PyTorch could not be installed for $ROCmGfxArch (exit code $torchInstallExit)." -ForegroundColor Red
@@ -8279,7 +8279,8 @@ if ($ROCmIndexUrl) {
             Write-StudioLine "        This machine needs ROCm PyTorch, so setup stops here instead of installing a CPU build." -ForegroundColor Red
             Write-StudioLine "        Check the network or proxy for the index above and re-run the installer." -ForegroundColor Red
             Write-StudioLine "        To accept CPU-only PyTorch anyway, set UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1 and re-run." -ForegroundColor Red
-            Exit-SetupFailure "AMD ROCm PyTorch install failed for $ROCmGfxArch (exit code $torchInstallExit): $_rocmReason"
+            # Desktop shows only this line, so it carries the opt-in too.
+            Exit-SetupFailure "AMD ROCm PyTorch install failed for $ROCmGfxArch (exit code $torchInstallExit): $_rocmReason. Re-run once the index is reachable, or set UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1 to accept CPU-only PyTorch."
         }
     } else {
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
