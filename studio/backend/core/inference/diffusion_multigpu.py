@@ -2956,6 +2956,14 @@ class CfgParallelRouter:
         inner = self.inner
         return (inner if inner is not None else self.orig_forward)(*args, **kwargs)
 
+    def _arm(self, args: tuple, kwargs: dict) -> None:
+        """AdaLN precompute rows for a source call on inputs other than the outer call's (a batch half): the pre-hook
+        armed the whole batch."""
+        module = self.module_ref()
+        if module is not None and "_unsloth_adaln" in module.__dict__:
+            from .diffusion_adaln_precompute import arm_call
+            arm_call(module, args, kwargs)
+
     def _primary_noting(self, sig: Optional[tuple], args: tuple, kwargs: dict) -> Any:
         sig = self._signature(args, kwargs) if sig is None else sig
         job = self._pair_job
@@ -3095,10 +3103,16 @@ class CfgParallelRouter:
             ]
         except TypeError as exc:
             return self._skip_split(f"unsplittable input ({exc})")
+
         # inside the denoiser's own call: its root hooks already wrap the whole batch, so run_pair need not refuse them
-        res = self.run_pair(lambda: self._primary_noting(None, a0, k0), a1, k1, inside_call = True)
+        def first_half() -> Any:
+            self._arm(a0, k0)
+            return self._primary_noting(None, a0, k0)
+
+        res = self.run_pair(first_half, a1, k1, inside_call = True)
         if res is None:
             self._skip_split(f"pair not run ({self.disabled_reason or 'replica unavailable'})")
+            self._arm(args, kwargs)  # the caller runs the whole batch: its rows, not a half's
         # run_pair forgets the step: keep this one's latent so the next call is read as a new step
         self.prev_latent = latent
         self.branch = 0
@@ -3106,6 +3120,7 @@ class CfgParallelRouter:
             return None
         first, second = res
         if second is None:
+            self._arm(a1, k1)
             second = self._primary(*a1, **k1)
         if joins_all:
             try:

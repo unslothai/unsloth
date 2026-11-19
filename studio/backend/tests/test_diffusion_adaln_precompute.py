@@ -770,3 +770,39 @@ def test_modulation_weights_pin_through_the_packed_arena(monkeypatch):
     assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
     assert sum(seen) == mod_bytes and ap.summary(model)["host_gib"] == round(mod_bytes / 2**30, 3)
     assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+
+
+def test_multigpu_batch_split_arms_each_half(monkeypatch):
+    """A distilled batch of 2 on a multi-GPU router splits along the batch: the source half runs past
+    ``model.__call__``, after the pre-hook armed the full batch, so it must arm its own half's rows (and so must the
+    source-side retry of the second half and the whole-batch fallback)."""
+    from core.inference import diffusion_multigpu as mg
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MULTIGPU_ALL", raising = False)
+    calls = _flux_calls(torch.float32, batch = 2, steps = 4)
+    for (
+        kw
+    ) in calls:  # a new latent each step, as a sampler makes: one call per step, no guidance pair
+        kw["hidden_states"] = kw["hidden_states"].clone()
+    ref = _run(_flux(), calls)
+    model = _flux()
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    router = mg.CfgParallelRouter(
+        model,
+        primary = "cpu",
+        secondary = "cpu",
+        replica_factory = lambda: mg.build_replica(model, torch.device("cpu")),
+    )
+    model.forward = router
+    with torch.no_grad():
+        out = [model(**kw)[0].clone() for kw in calls]
+    assert router.stats["batch_splits"] == len(calls) - 1, router.stats
+    for a, b in zip(ref, out):
+        torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
+
+    # the replica refuses: the second half retries on the source, with its own rows
+    monkeypatch.setattr(router, "run_pair", lambda primary_call, a, k, **kw: (primary_call(), None))
+    with torch.no_grad():
+        again = [model(**kw)[0].clone() for kw in calls]
+    for a, b in zip(ref, again):
+        torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
