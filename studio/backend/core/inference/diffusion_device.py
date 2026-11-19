@@ -119,9 +119,8 @@ def install_frame_pad_fix(
 
 
 def mps_synchronize() -> None:
-    """Wait for queued Metal work via a blocking read, which runs on the stream's serial queue.
-    torch.mps.synchronize() commits off that queue (torch <= 2.13, pytorch#197836) and aborts with
-    "commit an already committed command buffer" while another thread copies off the device."""
+    """A blocking read waits on the stream's serial queue; torch.mps.synchronize() (torch <= 2.13) commits
+    off it and aborts ("already committed command buffer") while another thread copies (pytorch#197836)."""
     import torch
     torch.zeros(1, device = "mps").cpu()
 
