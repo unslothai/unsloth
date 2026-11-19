@@ -40,11 +40,7 @@ export function castOf(scene: ChatScene, characters: Record<string, Character>):
     .filter((character): character is Character => Boolean(character));
 }
 
-/**
- * Who speaks in this run. An explicit request or a turn marker names them; a lone character always
- * answers; otherwise the group plans its replies to the user's message, seeded by that message so a
- * retry keeps the same speaker.
- */
+/** This run's speaker: an explicit request or turn marker, else the group's plan seeded by the user message so a retry keeps it. */
 export function resolveSpeaker(input: {
   scene: ChatScene;
   cast: Character[];
@@ -56,14 +52,14 @@ export function resolveSpeaker(input: {
   const ids = new Set(cast.map((c) => c.id));
   if (input.requested && ids.has(input.requested)) return { speakerId: input.requested };
   const last = messages[messages.length - 1];
-  const lastMeta = roleplayMetaOf(last as never);
+  const lastMeta = roleplayMetaOf(last);
   if (lastMeta?.kind === "turn" && ids.has(lastMeta.speakerId)) return { speakerId: lastMeta.speakerId };
   // Only the first member's greeting hangs under the opening; retrying it keeps it theirs.
   if (cast.length === 1 || lastMeta?.kind === "opening") return { speakerId: cast[0].id };
   const muted = new Set(scene.cast.filter((m) => m.muted).map((m) => m.characterId));
   let lastSpeakerId: string | null = null;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const meta = roleplayMetaOf(messages[i] as never);
+    const meta = roleplayMetaOf(messages[i]);
     if (meta?.kind === "reply") {
       lastSpeakerId = meta.speakerId;
       break;
@@ -87,7 +83,7 @@ export function nextInRound(messages: readonly MessageLike[], scene: ChatScene):
   let start = messages.length - 1;
   while (start >= 0) {
     const message = messages[start];
-    if (message.role === "user" && !roleplayMetaOf(message as never)) break;
+    if (message.role === "user" && !roleplayMetaOf(message)) break;
     start -= 1;
   }
   if (start < 0) return null;
@@ -95,11 +91,11 @@ export function nextInRound(messages: readonly MessageLike[], scene: ChatScene):
   // A stopped round stays over, even after a reply someone asked for by hand.
   if (round.some(endedEarly)) return null;
   const firstReply = round.find((m) => m.role === "assistant");
-  const plan = roundPlanOf(firstReply as never);
+  const plan = roundPlanOf(firstReply);
   if (!plan) return null;
   const spoken = new Set<string>();
   for (const message of round) {
-    const meta = roleplayMetaOf(message as never);
+    const meta = roleplayMetaOf(message);
     if (meta?.kind === "reply") spoken.add(meta.speakerId);
   }
   const present = new Set(scene.cast.filter((m) => !m.muted).map((m) => m.characterId));

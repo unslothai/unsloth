@@ -3,11 +3,7 @@
 
 import type { Character, ChatScene, Persona, RoleplayMessageMeta } from "./types";
 
-/**
- * Who a chat speaks as. Only a new chat (no scene yet) takes the default persona: a saved chat keeps its
- * own pick, and one saved without a persona keeps the account's name, so making a default later does
- * not rename the user in chats already under way. Null means the account.
- */
+/** A new chat takes the default persona; a saved chat keeps its pick (null = the account), so a later default doesn't rename it. */
 export function pickPersona(scene: ChatScene | null, personas: Persona[]): Persona | null {
   const fallback = personas.find((p) => p.isDefault) ?? null;
   if (!scene) return fallback;
@@ -16,10 +12,7 @@ export function pickPersona(scene: ChatScene | null, personas: Persona[]): Perso
   return personas.find((p) => p.id === scene.personaId) ?? fallback;
 }
 
-type MessageLike = {
-  role?: string;
-  metadata?: { custom?: Record<string, unknown> } | Record<string, unknown> | null;
-};
+type MessageLike = { role?: string; metadata?: unknown };
 
 /** The roleplay record on a thread message (`metadata.custom.roleplay`) or a stored one (`metadata.roleplay`). */
 export function roleplayMetaOf(message: MessageLike | null | undefined): RoleplayMessageMeta | null {
@@ -47,11 +40,15 @@ export function roleplayMetaOf(message: MessageLike | null | undefined): Rolepla
   }
 }
 
-/** The opening turn and turn markers are bookkeeping: they reach the model but never the screen. */
-export function isHiddenRoleplayTurn(message: MessageLike | null | undefined): boolean {
-  if (message?.role !== "user") return false;
+/** Which bookkeeping turn a user message is (the opening, or a turn marker); they reach the model but never the screen. */
+export function hiddenRoleplayTurnKind(message: MessageLike | null | undefined): "opening" | "turn" | null {
+  if (message?.role !== "user") return null;
   const kind = roleplayMetaOf(message)?.kind;
-  return kind === "opening" || kind === "turn";
+  return kind === "opening" || kind === "turn" ? kind : null;
+}
+
+export function isHiddenRoleplayTurn(message: MessageLike | null | undefined): boolean {
+  return hiddenRoleplayTurnKind(message) !== null;
 }
 
 /** The planned speakers for a group round, stamped on its first reply. */
@@ -62,10 +59,7 @@ export function roundPlanOf(message: MessageLike | null | undefined): string[] |
   return Array.isArray(plan) && plan.every((id) => typeof id === "string") ? (plan as string[]) : null;
 }
 
-/**
- * A refreshed library that keeps each unchanged record, and the whole map when nothing changed, so a
- * refetch does not re-render every message and portrait that reads the store.
- */
+/** Keeps unchanged records (and the map itself) so a refetch doesn't re-render readers. */
 export function mergeCharacters(
   previous: Record<string, Character>,
   list: readonly Character[],

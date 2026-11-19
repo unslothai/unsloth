@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Lorebook regex keys come from imported cards and run on every send, and a JS RegExp can backtrack
- * for minutes. This compiles a key to a Thompson NFA, whose search is linear in the text. Each
- * character class or escape is still checked by a one-character RegExp, so its meaning matches JS.
- * Backreferences and lookaround have no linear form: such a key compiles to null and is skipped.
- */
+// Card regex keys run on every send and a JS RegExp can backtrack for minutes, so keys compile to a
+// Thompson NFA (linear in the text). Backreferences and lookaround have no linear form: null, skipped.
+
+import { escapeRegExp } from "../../../lib/escape-regexp.ts";
 
 type Inst =
   | { op: "char"; test: (ch: string) => boolean }
@@ -29,6 +27,13 @@ const MAX_REPEAT = 100;
 
 class Unsupported extends Error {}
 
+/** NFA steps left to spend; shared so one prompt's keys together stay bounded. */
+export type StepBudget = { left: number };
+
+const QUANTIFIER_AHEAD = /^(?:[*+?]|\{\d+(?:,\d*)?\})/;
+const HEX2 = /^[0-9a-fA-F]{2}/;
+const HEX4 = /^[0-9a-fA-F]{4}/;
+
 function charTest(source: string, flags: string): (ch: string) => boolean {
   const re = new RegExp(`^(?:${source})$`, flags);
   return (ch) => re.test(ch);
@@ -38,6 +43,7 @@ function parse(pattern: string, flags: string): Node {
   const charFlags = flags.replace(/[gmy]/g, "");
   const unicode = flags.includes("u");
   let pos = 0;
+  const namedGroups = /\(\?<[^=!]/.test(pattern);
 
   function escapeAt(): string {
     // pattern[pos] is the backslash; returns the escape's source and moves past it.
@@ -45,18 +51,15 @@ function parse(pattern: string, flags: string): Node {
     pos += 1;
     const ch = pattern[pos];
     if (ch === undefined) throw new Unsupported();
-    if (/[1-9]/.test(ch) || ch === "k") throw new Unsupported();
-    if ((ch === "p" || ch === "P") && pattern[pos + 1] === "{") {
+    if (/[1-9]/.test(ch) || (ch === "k" && (unicode || namedGroups))) throw new Unsupported();
+    // Without u, a malformed \x, \u or \p is just its letter (Annex B), so only the letter is consumed.
+    if (unicode && (ch === "p" || ch === "P" || ch === "u") && pattern[pos + 1] === "{") {
       const end = pattern.indexOf("}", pos);
       if (end < 0) throw new Unsupported();
       pos = end + 1;
-    } else if (ch === "x") pos += 3;
-    else if (ch === "u" && pattern[pos + 1] === "{") {
-      const end = pattern.indexOf("}", pos);
-      if (end < 0) throw new Unsupported();
-      pos = end + 1;
-    } else if (ch === "u") pos += 5;
-    else if (ch === "c") pos += 2;
+    } else if (ch === "x" && HEX2.test(pattern.slice(pos + 1))) pos += 3;
+    else if (ch === "u" && HEX4.test(pattern.slice(pos + 1))) pos += 5;
+    else if (ch === "c" && /[A-Za-z]/.test(pattern[pos + 1] ?? "")) pos += 2;
     else pos += 1;
     return pattern.slice(start, pos);
   }
@@ -96,6 +99,11 @@ function parse(pattern: string, flags: string): Node {
         pos += 2;
         return { t: "assert", kind: next };
       }
+      // Without u, \c before a non-letter is a literal backslash and the c reads on as itself.
+      if (next === "c" && !unicode && !/[A-Za-z]/.test(pattern[pos + 2] ?? "")) {
+        pos += 1;
+        return { t: "char", test: charTest("\\\\", charFlags) };
+      }
       return { t: "char", test: charTest(escapeAt(), charFlags) };
     }
     if (ch === "^" || ch === "$") {
@@ -106,10 +114,11 @@ function parse(pattern: string, flags: string): Node {
       pos += 1;
       return { t: "char", test: charTest(".", charFlags) };
     }
+    if (QUANTIFIER_AHEAD.test(pattern.slice(pos)) || (unicode && /[{}\]]/.test(ch))) throw new Unsupported();
     // In u mode a literal is a whole code point, as the text is read.
     const literal = unicode ? String.fromCodePoint(pattern.codePointAt(pos)!) : ch;
     pos += literal.length;
-    return { t: "char", test: charTest(literal.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"), charFlags) };
+    return { t: "char", test: charTest(escapeRegExp(literal), charFlags) };
   }
 
   function quantifier(): { min: number; max: number } | null {
@@ -138,7 +147,7 @@ function parse(pattern: string, flags: string): Node {
     while (pos < pattern.length && pattern[pos] !== "|" && pattern[pos] !== ")") {
       const node = atom();
       const range = quantifier();
-      if (range && node.t === "assert") throw new Unsupported();
+      if (range && (node.t === "assert" || QUANTIFIER_AHEAD.test(pattern.slice(pos)))) throw new Unsupported();
       items.push(range ? { t: "repeat", node, ...range } : node);
     }
     return { t: "seq", items };
@@ -220,7 +229,7 @@ const WORD = /[A-Za-z0-9_]/;
 const LINE_END = /[\n\r\u2028\u2029]/;
 
 /** A tester for a lorebook regex key that runs in linear time, or null when the key needs backtracking. */
-export function linearRegex(source: string, flags: string): ((text: string) => boolean) | null {
+export function linearRegex(source: string, flags: string): ((text: string, steps?: StepBudget) => boolean) | null {
   let program: Inst[];
   try {
     program = compile(parse(source, flags));
@@ -230,7 +239,7 @@ export function linearRegex(source: string, flags: string): ((text: string) => b
   const multiline = flags.includes("m");
   const sticky = flags.includes("y");
   const unicode = flags.includes("u");
-  return (text) => {
+  return (text, steps = { left: Infinity }) => {
     const chars = unicode ? Array.from(text) : text.split("");
     const holds = (kind: "^" | "$" | "b" | "B", at: number) => {
       const before = chars[at - 1];
@@ -240,7 +249,7 @@ export function linearRegex(source: string, flags: string): ((text: string) => b
       const edge = WORD.test(before ?? "") !== WORD.test(after ?? "");
       return kind === "b" ? edge : !edge;
     };
-    let mark = new Int32Array(program.length).fill(-1);
+    const mark = new Int32Array(program.length).fill(-1);
     let current: number[] = [];
     let next: number[] = [];
     // Follows jumps and zero-width steps from pc; true once a thread reaches match.
@@ -264,6 +273,9 @@ export function linearRegex(source: string, flags: string): ((text: string) => b
       // Search: a new thread starts at every position, or only at the start for a sticky key.
       if ((!sticky || at === 0) && add(current, 0, at, at)) return true;
       if (at === chars.length) break;
+      // Out of budget counts as no match: the key is skipped, not the prompt.
+      steps.left -= current.length + 1;
+      if (steps.left < 0) return false;
       next = [];
       const ch = chars[at];
       for (const pc of current) {
@@ -272,7 +284,6 @@ export function linearRegex(source: string, flags: string): ((text: string) => b
       }
       current = next;
     }
-    mark = new Int32Array(0);
     return false;
   };
 }

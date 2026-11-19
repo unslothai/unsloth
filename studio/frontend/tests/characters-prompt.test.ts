@@ -5,13 +5,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildCharacterPrompt,
+  buildImpersonationMessages,
   nudgeText,
   shapeReplayMessage,
   stripSpeakerPrefix,
   type PromptCharacter,
 } from "../src/features/characters/prompt/build.ts";
 import { activateLorebook, parseKeyList } from "../src/features/characters/prompt/lorebook.ts";
-import { applyMacros } from "../src/features/characters/prompt/macros.ts";
+import { applyMacros, applyNameMacros } from "../src/features/characters/prompt/macros.ts";
+import { hiddenRoleplayTurnKind } from "../src/features/characters/meta.ts";
 import { tidyRoleplayDisplay } from "../src/features/characters/prompt/display.ts";
 import { nextInRound, resolveSpeaker, textOf } from "../src/features/characters/prompt/round.ts";
 import { mentionedIds, planReplies, seededRandom, shortName } from "../src/features/characters/prompt/speakers.ts";
@@ -282,7 +284,7 @@ test("a card's own wrapper tags are hidden on screen so the block inside renders
   assert.equal(tidyRoleplayDisplay("a <b>bold</b> line"), "a <b>bold</b> line");
 });
 
-test("review fixes: opening retries keep the first member, notes skip a trailing reply, code keeps its tags", () => {
+test("opening retries keep the first member, notes skip a trailing reply, code keeps its tags", () => {
   const cast = [member("a", "Ann"), member("b", "Bo")];
   const scene: ChatScene = {
     threadId: "t",
@@ -528,7 +530,170 @@ test("a card's regex keys share one matching budget per prompt", () => {
   const started = performance.now();
   const fired = activateLorebook(lore, [text]);
   const elapsed = performance.now() - started;
-  assert.equal(fired.fired.filter((f) => String(f.id).startsWith("r")).length, 128);
+  const regexFired = fired.fired.filter((f) => String(f.id).startsWith("r")).length;
+  assert.ok(regexFired > 0 && regexFired < 400, `${regexFired} regex keys fired`);
   assert.ok(fired.fired.some((f) => f.id === "word"));
-  assert.ok(elapsed < 5_000, `took ${elapsed} ms`);
+  assert.ok(elapsed < 1_000, `took ${elapsed} ms`);
+});
+
+test("the regex budget counts matching work, not keys", () => {
+  // Few keys, each one heavy: a key-count cap let 200 of these take seconds.
+  const entries = Array.from({ length: 200 }, (_, i) =>
+    entry({ id: `h${i}`, keys: [`/(?:.?){100}A${i}/s`], content: `lore ${i}` }),
+  );
+  const started = performance.now();
+  activateLorebook(book(entries), ["x".repeat(16_000)]);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 1_000, `took ${elapsed} ms`);
+});
+
+test("keys and names in scripts without spaces fire inside a sentence; a card can turn whole words off", () => {
+  assert.equal(activateLorebook(book([entry({ keys: ["東京"], content: "Tokyo" })]), ["私は東京に行く"]).fired.length, 1);
+  const loose = entry({ keys: ["elf"], content: "Elves", extensions: { match_whole_words: false } });
+  assert.equal(activateLorebook(book([loose]), ["an elfish grin"]).fired.length, 1);
+  assert.equal(activateLorebook(book([entry({ keys: ["elf"], content: "Elves" })]), ["an elfish grin"]).fired.length, 0);
+  const cast = [{ id: "x", name: "小明", talkativeness: 0.5, muted: false }];
+  assert.deepEqual(mentionedIds("你好小明今天怎么样", cast), ["x"]);
+});
+
+test("recursive scanning lets fired lore trigger more lore, unless an entry opts out", () => {
+  const entries = [
+    entry({ id: "a", keys: ["castle"], content: "The castle has a dragon." }),
+    entry({ id: "b", keys: ["dragon"], content: "The dragon sleeps." }),
+    entry({ id: "c", keys: ["sleeps"], content: "Nobody wakes it.", extensions: { exclude_recursion: true } }),
+  ];
+  const ids = (on: boolean) => activateLorebook(book(entries, { recursive_scanning: on }), ["We reach the castle."]).fired.map((f) => f.id);
+  assert.deepEqual(ids(false), ["a"]);
+  assert.deepEqual(ids(true), ["a", "b"]);
+});
+
+test("over budget, higher priority stays; what stays is placed by insertion order", () => {
+  const lore = book(
+    [
+      entry({ id: "low", keys: ["x"], content: "L".repeat(40), insertion_order: 1, priority: 1 }),
+      entry({ id: "high", keys: ["x"], content: "H".repeat(40), insertion_order: 2, priority: 9 }),
+      entry({ id: "mid", keys: ["x"], content: "M".repeat(4), insertion_order: 0, priority: 5 }),
+    ],
+    { token_budget: 12 },
+  );
+  assert.deepEqual(activateLorebook(lore, ["x"]).fired.map((f) => f.id), ["mid", "high"]);
+});
+
+test("one lore budget covers the whole cast", () => {
+  const member = (id: string) =>
+    character({ id, name: id, characterBook: book([entry({ constant: true, content: "x".repeat(2000) })], { token_budget: 1024 }) });
+  const built = buildCharacterPrompt({
+    cast: [member("A"), member("B"), member("C")],
+    speakerId: "A",
+    persona: { name: "Pat", description: "" },
+    scene: {},
+    history: [{ role: "user", text: "hi" }],
+    now: NOW,
+  });
+  assert.equal(built.lore.fired.length, 2, "1024 tokens fit two 500-token entries, not one per member");
+});
+
+test("a reply from before the chat had a cast keeps one author whoever speaks", () => {
+  const mira = character({ id: "m", name: "Mira" });
+  const bo = character({ id: "b", name: "Bo" });
+  const history = [
+    { role: "user" as const, text: "hello" },
+    { role: "assistant" as const, text: "Hi, I'm Mira." },
+    { role: "user" as const, text: "and you?" },
+  ];
+  const as = (speakerId: string) =>
+    buildCharacterPrompt({ cast: [mira, bo], speakerId, persona: { name: "Pat", description: "" }, scene: {}, history, now: NOW });
+  assert.equal(as("b").texts[1], "Mira: Hi, I'm Mira.");
+  assert.deepEqual(as("b").texts.slice(0, 2), as("m").texts.slice(0, 2));
+});
+
+test("names that read like macros are inserted as written", () => {
+  const ctx = { char: "{{random::A::B}}", user: "{{trim}}", now: NOW, random: () => 0.9 };
+  assert.equal(applyMacros("<BOT> waves", ctx), "{{random::A::B}} waves");
+  assert.equal(applyMacros("hi <USER> there", ctx), "hi {{trim}} there");
+  assert.equal(applyNameMacros("{{char}} and {{user}}", "{{user}}", "Pat"), "{{user}} and Pat");
+});
+
+test("the system block rolls and dates the same on every send of a chat", () => {
+  const card = character({ id: "m", name: "Mira", description: "Mood: {{random::calm::wild::sly}}, {{pick::a::b::c}}, at {{isotime}}." });
+  const build = (now: Date, history: { role: "user" | "assistant"; text: string }[]) =>
+    buildCharacterPrompt({ cast: [card], speakerId: "m", persona: { name: "Pat", description: "" }, scene: {}, history, now, startedAt: NOW, seed: "thread-1" });
+  const first = build(new Date(2026, 10, 4, 9, 6), [{ role: "user", text: "hi" }]);
+  const later = build(new Date(2026, 10, 5, 18, 0), [{ role: "user", text: "hi" }, { role: "assistant", text: "yo" }, { role: "user", text: "again" }]);
+  assert.equal(first.system, later.system);
+  assert.match(first.system, /at 09:05\./);
+});
+
+test("regex keys read legacy escapes as JS does and reject a quantifier with nothing to repeat", () => {
+  const fires = (key: string, text: string) => activateLorebook(book([entry({ keys: [key], content: "c" })]), [text]).fired.length;
+  assert.equal(fires("/\\xyz/", "xyz"), 1);
+  assert.equal(fires("/\\p{L}/", "p{L}"), 1);
+  assert.equal(fires("/a**/", "a*"), 0);
+});
+
+test("one at a time hands on past a muted last speaker; a broken talkativeness is ignored", () => {
+  const member = (id: string, muted = false, talkativeness = 0.5) => ({ id, name: id, talkativeness, muted });
+  const manual = planReplies({ cast: [member("a"), member("b", true), member("c")], order: "manual", userText: "", lastSpeakerId: "b", seed: "x" });
+  assert.deepEqual(manual, ["c"]);
+  const seen = new Set<string>();
+  for (let i = 0; i < 40; i += 1) {
+    const plan = planReplies({ cast: [member("a", false, NaN), member("b", false, NaN), member("c", false, NaN)], order: "natural", userText: "", lastSpeakerId: null, seed: `s${i}` });
+    seen.add(plan[0]);
+  }
+  assert.ok(seen.size > 1, "NaN no longer always picks the last member");
+});
+
+test("display keeps code fences by length, indented code, and ordinary HTML", () => {
+  assert.equal(tidyRoleplayDisplay("````\n```\n<stats>\n````"), "````\n```\n<stats>\n````");
+  assert.equal(tidyRoleplayDisplay("    <stats>\n    x"), "    <stats>\n    x");
+  assert.equal(tidyRoleplayDisplay("<center>\nhi\n</center>"), "<center>\nhi\n</center>");
+});
+
+test("writing the user's line drops the character's final instructions and nudges", () => {
+  const mira = character({ id: "m", name: "Mira", postHistoryInstructions: "Mira answers in rhyme." });
+  const bo = character({ id: "b", name: "Bo" });
+  const prompt = buildImpersonationMessages({
+    cast: [mira, bo],
+    persona: { name: "Pat", description: "" },
+    scene: {},
+    history: [{ role: "user", text: "hi" }],
+    now: NOW,
+  });
+  const last = prompt.messages[prompt.messages.length - 1].content;
+  assert.doesNotMatch(last, /rhyme|Write the next reply only as/);
+  assert.match(last, /Write Pat's next message now/);
+});
+
+test("a persona named like a character is told apart in turns and stop strings", () => {
+  const rin = character({ id: "r", name: "Rin" });
+  const bo = character({ id: "b", name: "Bo" });
+  const built = buildCharacterPrompt({
+    cast: [rin, bo],
+    speakerId: "r",
+    persona: { name: "Rin", description: "A traveller." },
+    scene: {},
+    history: [{ role: "user", text: "hello {{user}}" }],
+    now: NOW,
+  });
+  assert.equal(built.user, "Rin (you)");
+  assert.match(built.texts[0], /^Rin \(you\): hello Rin/);
+  assert.deepEqual(built.stop, ["\nRin (you):", "\nBo:"]);
+  assert.ok(built.sections.some((section) => section.label === "Rin (you)"));
+});
+
+test("speaker prefixes: short names, headings, and a quote that belongs to the line", () => {
+  assert.equal(stripSpeakerPrefix("Mara: Hello.", "Mara Quill"), "Hello.");
+  assert.equal(stripSpeakerPrefix("**Mara**: Hello.", "Mara Quill"), "Hello.");
+  assert.equal(stripSpeakerPrefix("## Mara Quill\nHello.", "Mara Quill"), "Hello.");
+  assert.equal(stripSpeakerPrefix('"Mara: Hello there."', "Mara"), '"Hello there."');
+  assert.equal(stripSpeakerPrefix('"Mara: "Hi," she says.', "Mara"), '"Hi," she says.');
+  assert.equal(stripSpeakerPrefix("## Mara's diary\nDay one.", "Mara"), "## Mara's diary\nDay one.");
+});
+
+test("hidden roleplay turns report their kind", () => {
+  const meta = (kind: string) => ({ custom: { roleplay: { kind, speakerId: "a" } } });
+  assert.equal(hiddenRoleplayTurnKind({ role: "user", metadata: meta("opening") }), "opening");
+  assert.equal(hiddenRoleplayTurnKind({ role: "user", metadata: meta("turn") }), "turn");
+  assert.equal(hiddenRoleplayTurnKind({ role: "assistant", metadata: meta("turn") }), null);
+  assert.equal(hiddenRoleplayTurnKind({ role: "user", metadata: {} }), null);
 });

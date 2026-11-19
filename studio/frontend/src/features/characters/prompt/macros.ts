@@ -19,8 +19,8 @@ function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-// Trimmed first: \s* on both sides of a long whitespace run backtracks polynomially.
 function roll(spec: string, random: () => number): string {
+  // Trimmed first: \s* on both sides of a long whitespace run backtracks polynomially.
   const match = /^(\d*)d(\d+)\s*([+-]\s*\d+)?$/i.exec(spec.trim());
   if (!match) {
     const sides = Number.parseInt(spec, 10);
@@ -52,28 +52,30 @@ function stripComments(text: string): string {
   }
 }
 
+// Stands for {{trim}} until the end; stripped from inserted names so a name cannot fake one.
+const TRIM = "\u0000";
+
 export function applyMacros(text: string, context: MacroContext): string {
   if (!text) return "";
   const now = context.now ?? new Date();
   const random = context.random ?? Math.random;
   const group = context.group ?? [context.char];
-  // Names go in through callbacks: as replacement strings, "$&" or "$'" in a name would expand.
-  let out = stripComments(text)
-    .replace(/<BOT>/gi, () => context.char)
-    .replace(/<USER>/gi, () => context.user);
-  out = out.replace(/\{\{([^{}]*)\}\}/g, (whole, inner: string) => {
+  // One pass, so a name that reads like a macro is inserted as written, never expanded.
+  const literal = (value: string) => value.replaceAll(TRIM, "");
+  const out = stripComments(literal(text)).replace(/<BOT>|<USER>|\{\{([^{}]*)\}\}/gi, (whole, inner: string | undefined) => {
+    if (inner === undefined) return literal(whole.toUpperCase() === "<BOT>" ? context.char : context.user);
     const raw = inner.trim();
     const lower = raw.toLowerCase();
     switch (lower) {
       case "char":
-        return context.char;
+        return literal(context.char);
       case "user":
-        return context.user;
+        return literal(context.user);
       case "original":
-        return context.original ?? "";
+        return literal(context.original ?? "");
       case "group":
       case "charifnotgroup":
-        return lower === "charifnotgroup" && group.length <= 1 ? context.char : group.join(", ");
+        return literal(lower === "charifnotgroup" && group.length <= 1 ? context.char : group.join(", "));
       case "time":
         return now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
       case "date":
@@ -87,8 +89,9 @@ export function applyMacros(text: string, context: MacroContext): string {
       case "newline":
         return "\n";
       case "noop":
+        return "";
       case "trim":
-        return whole;
+        return TRIM;
       default:
         break;
     }
@@ -97,25 +100,26 @@ export function applyMacros(text: string, context: MacroContext): string {
       const name = raw.slice(0, colon).trim().toLowerCase();
       const rest = raw.slice(colon + 1);
       if (name === "random" || name === "pick") {
-        const options = choices(rest).map((option) => option.trim());
+        const options = choices(rest).map((option) => literal(option.trim()));
         return options.length ? options[Math.floor(random() * options.length)] : "";
       }
       if (name === "roll") return roll(rest, random);
     }
-    return whole;
+    return literal(whole);
   });
   // Split rather than /\s*{{trim}}\s*/g, which is quadratic on a long whitespace run.
-  const pieces = out.split(/\{\{\s*trim\s*\}\}/i);
-  const trimmed = pieces
+  const pieces = out.split(TRIM);
+  return pieces
     .map((piece, index) => {
       const start = index > 0 ? piece.trimStart() : piece;
       return index < pieces.length - 1 ? start.trimEnd() : start;
     })
     .join("");
-  return trimmed.replace(/\{\{\s*noop\s*\}\}/gi, "");
 }
 
 /** Only the name macros, for text that must read the same on every send. */
 export function applyNameMacros(text: string, char: string, user: string): string {
-  return text.replace(/\{\{\s*char\s*\}\}|<BOT>/gi, () => char).replace(/\{\{\s*user\s*\}\}|<USER>/gi, () => user);
+  return text.replace(/\{\{\s*(char|user)\s*\}\}|<(BOT|USER)>/gi, (_whole, braced: string | undefined, angled: string | undefined) =>
+    /^(char|bot)$/i.test(braced ?? angled ?? "") ? char : user,
+  );
 }

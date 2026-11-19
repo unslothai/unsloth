@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { escapeRegExp } from "../../../lib/escape-regexp.ts";
+
 const JINJA_REF_RE = /{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}/g;
 const JINJA_EXPR_RE = /{{\s*([^{}]+?)\s*}}/g;
 const SIMPLE_JINJA_EXPR_RE = /^[a-zA-Z_][a-zA-Z0-9_.]*$/;
@@ -17,10 +19,6 @@ function isValidNestedReference(expr: string, validSet: Set<string>): boolean {
   }
   const root = parts[0];
   return validSet.has(root) && NESTED_REFERENCE_ROOTS.has(root);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function extractRefs(template: string): string[] {

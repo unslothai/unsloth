@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { escapeRegExp } from "../../../lib/escape-regexp.ts";
 import { findCodeBlockRegions, isInRegion } from "../../../lib/latex.ts";
 
 export const SEARCH_IMAGES_MARKER = "\n__WEB_IMAGES__:";
@@ -114,10 +115,6 @@ export function stripSearchImageTokens(text: string): string {
     /\n\n[ \t]*\[\[img:[0-9a-f]{12}\]\][ \t]*(?=\n\n|\n?$)|\[\[img:[0-9a-f]{12}\]\]/g,
     (match, offset: number) => (isInRegion(offset, codeRegions) ? match : ""),
   );
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function tokenPlacedOutsideCode(

@@ -17,6 +17,8 @@ export interface LorebookEntry {
   /** V3: every key is a regex even without /slashes/. */
   use_regex?: boolean;
   insertion_order: number;
+  /** CCv2: over the token budget, lower priority goes first. */
+  priority?: number;
   position: LorebookPosition;
   depth: number;
   selective_logic: LorebookLogic;
@@ -137,8 +139,7 @@ export interface CharacterChatSummary {
 export type RoleplayMessageMeta =
   | { kind: "opening" }
   | { kind: "turn"; speakerId: string }
-  | { kind: "reply"; speakerId: string; speakerName: string; greeting?: number }
-  | { kind: "user"; personaId: string | null; personaName: string };
+  | { kind: "reply"; speakerId: string; speakerName: string; greeting?: number };
 
 /** A persona as a chat uses it: a stored persona, or the account's own name when there is none. */
 export interface ResolvedPersona {

@@ -3,7 +3,7 @@
 
 import type { ThreadMessage } from "@assistant-ui/react";
 import { getAuthToken } from "@/features/auth";
-import { loginDisplayName } from "@/features/profile/hooks/use-effective-profile";
+import { addressNameOf, loginDisplayName } from "@/features/profile/hooks/use-effective-profile";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { decodeJwtSubject } from "@/features/profile/utils/jwt-subject";
 import { getCharacter } from "./api";
@@ -74,13 +74,7 @@ export function resolvePersona(scene: ChatScene | null, personas: Persona[]): Re
 
 /** The account speaking as itself, under the name the app addresses it by. */
 export function profilePersona(): ResolvedPersona {
-  const profile = useUserProfileStore.getState();
-  // Same order the app uses to address the user: nickname, first name, then the login.
-  const name =
-    profile.nickname.trim() ||
-    profile.displayName.trim().split(/\s+/)[0] ||
-    loginDisplayName(decodeJwtSubject(getAuthToken())) ||
-    "User";
+  const name = addressNameOf(useUserProfileStore.getState(), loginDisplayName(decodeJwtSubject(getAuthToken()))) || "User";
   return { id: null, name, description: "", hasAvatar: false, avatarRev: 0 };
 }
 
@@ -175,11 +169,17 @@ export async function prepareCharacterRun(args: {
   });
   if (!speaker) return null;
   const chat = messages.filter((m) => m.role === "user" || m.role === "assistant");
+  const stamp = (message: ThreadMessage | undefined) =>
+    message?.createdAt instanceof Date && !Number.isNaN(message.createdAt.getTime()) ? message.createdAt : undefined;
   const built = buildCharacterPrompt({
     cast: cast.map(toPromptCharacter),
     speakerId: speaker.speakerId,
     persona: { name: persona.name, description: persona.description },
     scene: scene.settings,
+    // Pinned to the chat's first and latest messages, so a re-send builds the same text.
+    seed: threadId,
+    startedAt: stamp(chat[0]),
+    now: stamp(chat[chat.length - 1]),
     history: chat.map((m) => ({
       role: m.role as "user" | "assistant",
       text: textOf(m),
@@ -193,7 +193,7 @@ export async function prepareCharacterRun(args: {
     if (!byId.has(message.id)) return message;
     const thread = message as unknown as ThreadMessage;
     const meta = roleplayMetaOf(thread);
-    const name = replyNameOf(meta, cast, built.speaker.name);
+    const name = replyNameOf(meta, cast, cast[0].name);
     const recorded = meta?.kind === "reply" ? meta.speakerName || name : name;
     return shapeReplayMessage(thread, byId.get(message.id)!, name, built.named, recorded) as unknown as M;
   };

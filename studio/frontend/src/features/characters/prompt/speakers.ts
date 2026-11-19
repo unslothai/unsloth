@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { escapeRegExp } from "../../../lib/escape-regexp.ts";
 import type { ReplyOrder } from "../types";
+import { wordSource } from "./lorebook.ts";
 
 export interface SpeakerCandidate {
   id: string;
@@ -45,9 +47,8 @@ export function shortName(name: string): string {
   return word || name.trim();
 }
 
-function escape(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+const talkOf = (member: SpeakerCandidate) =>
+  Number.isFinite(member.talkativeness) ? Math.max(0, Math.min(1, member.talkativeness)) : 0.5;
 
 /** Members named in the text, in the order they are first named: full name, short name, surname, or a title only they hold. */
 export function mentionedIds(text: string, cast: SpeakerCandidate[]): string[] {
@@ -68,23 +69,18 @@ export function mentionedIds(text: string, cast: SpeakerCandidate[]): string[] {
       if (index >= 0 && (at === -1 || index < at)) at = index;
     };
     for (const name of loose) {
-      see(new RegExp(`(?<![\\p{L}\\p{N}_])${escape(name)}(?![\\p{L}\\p{N}_])`, "iu").exec(text)?.index ?? -1);
+      see(new RegExp(wordSource(name), "iu").exec(text)?.index ?? -1);
     }
     for (const title of all.filter((word) => isTitle(word) && titleCount.get(word) === 1)) {
       // Capitalized and not possessive: "Captain," calls him, "the captain's coat" does not.
-      see(new RegExp(`(?<![\\p{L}\\p{N}_])${escape(title)}(?![\\p{L}\\p{N}_'\u2019])`, "u").exec(text)?.index ?? -1);
+      see(new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegExp(title)}(?![\\p{L}\\p{N}_'\u2019])`, "u").exec(text)?.index ?? -1);
     }
     if (at >= 0) found.push({ id: member.id, at });
   }
   return found.sort((a, b) => a.at - b.at).map((entry) => entry.id);
 }
 
-/**
- * Who answers a user message, in order.
- * natural: members named in the message first, then each other member by a talkativeness roll, at least one.
- * list: every unmuted member in cast order.
- * manual ("one at a time"): exactly one, the first named member or else the member after the last speaker.
- */
+/** Who answers a user message: natural (named first, then a talkativeness roll), list (all unmuted), manual (one). */
 export function planReplies(input: {
   cast: SpeakerCandidate[];
   order: ReplyOrder;
@@ -101,14 +97,19 @@ export function planReplies(input: {
   if (input.order === "list") return active.map((member) => member.id);
   if (input.order === "manual") {
     if (mentioned.length) return [mentioned[0]];
-    const last = active.findIndex((member) => member.id === input.lastSpeakerId);
-    return [active[(last + 1) % active.length].id];
+    // Counted in the full cast, so a muted last speaker still hands on to whoever sits after them.
+    const last = input.cast.findIndex((member) => member.id === input.lastSpeakerId);
+    for (let step = 1; step <= input.cast.length; step += 1) {
+      const member = input.cast[(last + step) % input.cast.length];
+      if (!member.muted) return [member.id];
+    }
+    return [active[0].id];
   }
   // Named members answer, else one by talkativeness; at most one extra voice chimes in.
   const canFollow = (member: SpeakerCandidate) => input.allowSelfReplies || member.id !== input.lastSpeakerId;
   const pickWeighted = (pool: SpeakerCandidate[]): SpeakerCandidate | null => {
     if (pool.length === 0) return null;
-    const weights = pool.map((member) => Math.max(0.05, Math.min(1, member.talkativeness)));
+    const weights = pool.map((member) => Math.max(0.05, talkOf(member)));
     let roll = random() * weights.reduce((sum, weight) => sum + weight, 0);
     for (let i = 0; i < pool.length; i += 1) {
       roll -= weights[i];
@@ -125,6 +126,6 @@ export function planReplies(input: {
   const joinChance = mentioned.length ? 0.25 : 0.5;
   const rest = active.filter((member) => !queue.includes(member.id));
   const extra = pickWeighted(rest);
-  if (extra && queue.length < 2 && random() < Math.min(1, extra.talkativeness) * joinChance) queue.push(extra.id);
+  if (extra && queue.length < 2 && random() < talkOf(extra) * joinChance) queue.push(extra.id);
   return queue;
 }

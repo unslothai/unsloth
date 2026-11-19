@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { escapeRegExp } from "../../../lib/escape-regexp.ts";
 import type { DepthPrompt, Lorebook, RoleplayMessageMeta, SceneSettings } from "../types";
-import { activateLorebook, type ActivatedLore } from "./lorebook.ts";
+import { activateLorebook, loreBudget, type ActivatedLore } from "./lorebook.ts";
 import { applyMacros, applyNameMacros } from "./macros.ts";
+import { seededRandom, shortName } from "./speakers.ts";
 
-/**
- * Static text sits in one leading system message so the llama.cpp prompt cache keeps it; per-turn
- * text rides late user turns (the backend merges system messages, strict templates reject later ones).
- */
+// Card text sits in one leading system message so the prompt cache can reuse it while the cast and
+// fired lore stay the same; per-turn text rides late user turns (strict templates reject later system turns).
 
 export interface PromptCharacter {
   id: string;
@@ -35,7 +35,14 @@ export interface BuildInput {
   persona: { name: string; description: string };
   scene: SceneSettings;
   history: HistoryEntry[];
+  /** Per-turn text ({{time}} in a note) reads this. */
   now?: Date;
+  /** System-block text reads this instead, so its {{time}} and {{date}} hold still for the chat. */
+  startedAt?: Date;
+  /** Seeds {{random}}, {{pick}} and {{roll}}, so the system block rolls the same on every send of a chat. */
+  seed?: string;
+  /** The turn asks for the user's line: no post-history instructions, no character nudge at the end. */
+  forUser?: boolean;
 }
 
 export interface PromptSection {
@@ -57,6 +64,8 @@ export interface BuiltPrompt {
   sections: PromptSection[];
   /** History is written with speaker names: a group, or a chat that was one. */
   named: boolean;
+  /** The user's name as turns and stop strings write it; "Rin (you)" when a character is also Rin. */
+  user: string;
 }
 
 export const SOLO_FRAME =
@@ -72,42 +81,49 @@ export const GROUP_FRAME =
   "Leave {{user}}'s words, thoughts and actions to {{user}}.";
 
 /** "Write my reply": the same prompt plus a user turn asking for the persona's line. */
-export function buildImpersonationMessages(input: Omit<BuildInput, "speakerId">): {
+export function buildImpersonationMessages(input: Omit<BuildInput, "speakerId" | "forUser">): {
   system: string;
   messages: { role: "user" | "assistant"; content: string }[];
   stop: string[];
+  user: string;
 } {
   const cast = input.cast;
-  const built = buildCharacterPrompt({ ...input, speakerId: cast[0]?.id ?? "" });
-  const user = input.persona.name || "User";
+  const built = buildCharacterPrompt({ ...input, speakerId: cast[0]?.id ?? "", forUser: true });
+  const user = built.user;
   const messages = input.history
     .map((entry, index) => ({ role: entry.role, content: built.texts[index] }))
     .filter((_message, index) => built.sent[index]);
-  // Group nudges ask a character to speak; this turn asks for the user instead.
   const last = messages[messages.length - 1];
-  if (last?.role === "user") {
-    const groupNudge = /\n*\[Write the next reply only as [^\]]*\.\]$/;
-    last.content = last.content.replace(groupNudge, "");
-  }
   const ask =
     `[Write ${user}'s next message now: only what ${user} says and does, a few sentences in ${user}'s own voice ` +
     `and in the style ${user} has used so far. Do not narrate the world or write for any other character.]`;
   if (last?.role === "user") last.content = `${last.content}\n\n${ask}`.trim();
   else messages.push({ role: "user", content: ask });
   const stop = cast.map((member) => `\n${member.name}:`);
-  return { system: built.system, messages, stop };
+  return { system: built.system, messages, stop, user };
 }
 
 export function nudgeText(name: string): string {
   return `[Write the next reply only as ${name}.]`;
 }
 
-/** A reply without the "Name:" a model sometimes starts with, which the chat already shows. */
+/** A reply without the "Name:" or "## Name" a model sometimes starts with, which the chat already shows. */
 export function stripSpeakerPrefix(text: string, name: string): string {
-  if (!name) return text;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Also "**Name:**" and a stray opening quote before the name ("Name: "Hi"), which models produce.
-  return text.replace(new RegExp(`^\\s*["“]?(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*:(?:\\*\\*)?\\s*`, "i"), "");
+  const full = name.trim();
+  if (!full) return text;
+  const names = [...new Set([full, shortName(full)])]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
+    .join("|");
+  const heading = new RegExp(`^\\s*#{1,6}[ \\t]*(?:\\*\\*)?(?:${names})(?:\\*\\*)?[ \\t]*:?[ \\t]*\\n+`, "i").exec(text);
+  if (heading) return text.slice(heading[0].length);
+  // Also "**Name:**", "**Name**:" and a quote opened before the name ("Mira: Hello.").
+  const label = new RegExp(`^\\s*(["“]?)(?:\\*\\*)?(?:${names})(?:\\*\\*)?\\s*:(?:\\*\\*)?\\s*`, "i").exec(text);
+  if (!label) return text;
+  const body = text.slice(label[0].length);
+  // That quote belongs to the line unless the line opens its own.
+  return label[1] && !/^["“]/.test(body) ? `${label[1]}${body}` : body;
 }
 
 export function replayedReply(text: string, name: string, group: boolean, recorded = name): string {
@@ -150,79 +166,96 @@ export function shapeReplayMessage<M extends { role: string; content: unknown }>
   return { ...message, content };
 }
 
-function exampleBlock(raw: string, char: string, user: string, now: Date, group: string[]): string {
-  const text = applyMacros(raw, { char, user, now, group }).replace(/\r\n/g, "\n");
-  const blocks = text
+function exampleBlock(raw: string, expand: (value: string) => string): string {
+  const blocks = expand(raw)
+    .replace(/\r\n/g, "\n")
     .split(/<START>/i)
     .map((block) => block.trim())
     .filter(Boolean);
   return blocks.join("\n\n---\n\n");
 }
 
-function characterSection(character: PromptCharacter, context: { user: string; now: Date; group: string[] }): string {
-  const macro = (value: string) =>
-    applyMacros(value, { char: character.name, user: context.user, now: context.now, group: context.group }).trim();
+function characterSection(character: PromptCharacter, expand: (value: string) => string): string {
   const parts: string[] = [];
-  const description = macro(character.description);
+  const description = expand(character.description).trim();
   if (description) parts.push(description);
-  const personality = macro(character.personality);
+  const personality = expand(character.personality).trim();
   if (personality) parts.push(`${character.name}'s personality: ${personality}`);
   return parts.join("\n\n");
 }
 
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
 export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
   const now = input.now ?? new Date();
-  const cast = input.cast.length ? input.cast : [];
+  const systemNow = input.startedAt ?? now;
+  const cast = input.cast;
   const speaker = cast.find((c) => c.id === input.speakerId) ?? cast[0];
   if (!speaker) throw new Error("A character chat needs at least one character.");
   const group = cast.length > 1;
   const names = cast.map((c) => c.name);
-  const user = input.persona.name || "User";
-  const macro = (value: string, char = speaker.name, original?: string) =>
-    applyMacros(value, { char, user, now, group: names, original });
+  const history = input.history;
+  const persona = input.persona.name || "User";
+  const spoken = new Map<string, string>();
+  for (const entry of history) if (entry.meta?.kind === "reply") spoken.set(entry.meta.speakerId, entry.meta.speakerName);
+  // A persona sharing a character's name would read as that character in turns and stop strings.
+  const user = [...names, ...spoken.values()].some((name) => sameName(name, persona)) ? `${persona} (you)` : persona;
+  // In a group these must not name whoever is speaking, or the system block would change every turn.
+  const steadyChar = group ? cast[0].name : speaker.name;
+  const seed = input.seed ?? "";
+  // System text rolls once per chat; per-turn text once per turn, so a retry reads the same.
+  const expand = (value: string, options: { char?: string; original?: string; turn?: boolean } = {}) =>
+    applyMacros(value, {
+      char: options.char ?? speaker.name,
+      user,
+      now: options.turn ? now : systemNow,
+      group: names,
+      original: options.original,
+      random: seededRandom(`${seed}\u0001${options.turn ? history.length : "system"}\u0001${value}`),
+    });
 
-  const recent = [...input.history]
+  const recent = [...history]
     .reverse()
     .filter((entry) => entry.meta?.kind !== "opening" && entry.meta?.kind !== "turn")
     .map((entry) => entry.text);
   const lore: ActivatedLore = { before: [], after: [], atDepth: [], fired: [] };
+  // One budget for the whole cast, or each member's book would add its own.
+  const budget = loreBudget(cast.map((member) => member.characterBook));
   for (const member of cast) {
-    const activated = activateLorebook(member.characterBook, recent);
-    lore.before.push(...activated.before.map((t) => macro(t, member.name)));
-    lore.after.push(...activated.after.map((t) => macro(t, member.name)));
-    lore.atDepth.push(...activated.atDepth.map((d) => ({ ...d, content: macro(d.content, member.name) })));
+    const activated = activateLorebook(member.characterBook, recent, budget);
+    lore.before.push(...activated.before.map((t) => expand(t, { char: member.name })));
+    lore.after.push(...activated.after.map((t) => expand(t, { char: member.name })));
+    lore.atDepth.push(...activated.atDepth.map((d) => ({ ...d, content: expand(d.content, { char: member.name, turn: true }) })));
     lore.fired.push(...activated.fired);
   }
 
   const sections: PromptSection[] = [];
-  const defaultFrame = macro(group ? GROUP_FRAME : SOLO_FRAME);
+  const defaultFrame = expand(group ? GROUP_FRAME : SOLO_FRAME);
   const override = speaker.systemPrompt.trim() && !group ? speaker.systemPrompt : "";
   sections.push({
     label: "Instructions",
-    text: override ? macro(override, speaker.name, defaultFrame).trim() : defaultFrame,
+    text: override ? expand(override, { original: defaultFrame }).trim() : defaultFrame,
   });
   if (lore.before.length) sections.push({ label: "Lore", text: lore.before.join("\n\n") });
   for (const member of cast) {
-    const body = characterSection(member, { user, now, group: names });
+    const body = characterSection(member, (value) => expand(value, { char: member.name }));
     if (body) sections.push({ label: member.name, text: body });
   }
   if (lore.after.length) sections.push({ label: "More lore", text: lore.after.join("\n\n") });
-  // In a group these must not name whoever is speaking, or the system block would change every turn.
-  const steadyChar = group ? cast[0].name : speaker.name;
-  const personaText = macro(input.persona.description, steadyChar).trim();
-  if (personaText) sections.push({ label: `${user} (you)`, text: personaText });
+  const personaText = expand(input.persona.description, { char: steadyChar }).trim();
+  if (personaText) sections.push({ label: user === persona ? `${user} (you)` : user, text: personaText });
   const sceneOverride = input.scene.scenario?.trim();
   const scenario = sceneOverride
-    ? macro(sceneOverride, steadyChar)
+    ? expand(sceneOverride, { char: steadyChar })
     : cast
-        .map((member) => macro(member.scenario, member.name).trim())
+        .map((member) => expand(member.scenario, { char: member.name }).trim())
         .filter(Boolean)
         .filter((value, index, all) => all.indexOf(value) === index)
         .join("\n\n");
   if (scenario) sections.push({ label: "Scenario", text: scenario });
   const examples = cast
     .map((member) => {
-      const block = exampleBlock(member.mesExample, member.name, user, now, names);
+      const block = exampleBlock(member.mesExample, (value) => expand(value, { char: member.name }));
       return block ? (group ? `${member.name}:\n${block}` : block) : "";
     })
     .filter(Boolean);
@@ -236,22 +269,20 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     .map((section, index) => (index === 0 ? section.text : `## ${section.label}\n${section.text}`))
     .join("\n\n");
 
-  const history = input.history;
   // An unanswered hidden turn (no greeting) would put two user turns in a row, which strict templates reject.
   const sent = history.map(
     (entry, index) =>
       !(entry.meta?.kind === "opening" || entry.meta?.kind === "turn") || history[index + 1]?.role !== "user",
   );
-  const spoken = new Map<string, string>();
-  for (const entry of history) if (entry.meta?.kind === "reply") spoken.set(entry.meta.speakerId, entry.meta.speakerName);
   // A chat that was a group keeps its history attributed after its other members leave.
   const named = group || history.some((entry) => entry.meta?.kind === "turn") || [...spoken.keys()].some((id) => id !== speaker.id);
   const nameOf = (id: string | undefined, fallback: string) =>
     cast.find((c) => c.id === id)?.name ?? (id ? spoken.get(id) : undefined) ?? fallback;
+  // An untagged reply (from before the chat had a cast) keeps one author, not whoever speaks now.
   const nextReplyName = (index: number): string | null => {
     const next = history[index + 1];
     if (next?.role === "assistant" && next.meta?.kind === "reply") return nameOf(next.meta.speakerId, next.meta.speakerName);
-    if (next?.role === "assistant") return speaker.name;
+    if (next?.role === "assistant") return steadyChar;
     return null;
   };
   const parts: string[][] = history.map((entry, index) => {
@@ -261,11 +292,11 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     if (meta?.kind === "turn") return [nudgeText(nameOf(meta.speakerId, speaker.name))];
     if (meta?.kind === "opening") return [entry.text.trim() || "[Start a new chat]"];
     if (entry.role === "assistant") {
-      const name = replyNameOf(meta, cast, speaker.name);
+      const name = replyNameOf(meta, cast, steadyChar);
       return [replayedReply(entry.text, name, named, meta?.kind === "reply" ? meta.speakerName || name : name)];
     }
     // Names only: a re-rolled {{random}} or a fresh {{time}} would rewrite old turns on every send.
-    const text = applyNameMacros(entry.text, steadyChar, user).trim();
+    const text = applyNameMacros(entry.text, steadyChar, persona).trim();
     const lines = [named ? `${user}: ${text}` : text];
     const answeredBy = !last && named ? nextReplyName(index) : null;
     if (answeredBy) lines.push(nudgeText(answeredBy));
@@ -275,9 +306,9 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
   // Notes at a depth attach to the nearest user turn at or above that depth.
   const injections: { depth: number; text: string }[] = [];
   const note = input.scene.authorsNote;
-  if (note?.text?.trim()) injections.push({ depth: note.depth ?? 4, text: macro(note.text) });
+  if (note?.text?.trim()) injections.push({ depth: note.depth ?? 4, text: expand(note.text, { turn: true }) });
   if (speaker.depthPrompt?.prompt.trim()) {
-    injections.push({ depth: speaker.depthPrompt.depth, text: macro(speaker.depthPrompt.prompt) });
+    injections.push({ depth: speaker.depthPrompt.depth, text: expand(speaker.depthPrompt.prompt, { turn: true }) });
   }
   injections.push(...lore.atDepth.map((entry) => ({ depth: entry.depth, text: entry.content })));
   const noted = history.map(() => false);
@@ -297,13 +328,13 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
   if (history.length && history[history.length - 1].role === "user") {
     const lastParts = parts[history.length - 1];
     const post = speaker.postHistoryInstructions.trim();
-    if (post) lastParts.push(macro(post, speaker.name, ""));
+    if (post && !input.forUser) lastParts.push(expand(post, { original: "", turn: true }));
     const lastIsMarker = history[history.length - 1].meta?.kind === "turn";
     if (lastIsMarker) {
-      // The nudge stays last, after any notes that landed on the marker.
+      // The nudge stays last, after any notes that landed on the marker; a turn for the user drops it.
       const nudge = lastParts.shift();
-      if (nudge) lastParts.push(nudge);
-    } else if (named) {
+      if (nudge && !input.forUser) lastParts.push(nudge);
+    } else if (named && !input.forUser) {
       lastParts.push(nudgeText(speaker.name));
     }
   }
@@ -311,10 +342,10 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
 
   const stop = [`\n${user}:`];
   if (named) {
-    const others = new Set([...cast.map((c) => c.name), ...spoken.values()]);
+    const others = new Set([...names, ...spoken.values()]);
     others.delete(speaker.name);
     for (const name of others) stop.push(`\n${name}:`);
   }
 
-  return { system, texts, sent, noted, stop, speaker, lore, sections, named };
+  return { system, texts, sent, noted, stop, speaker, lore, sections, named, user };
 }
