@@ -13,6 +13,7 @@ from collections.abc import Iterable
 import fnmatch
 import functools
 import hashlib
+import io
 from html.parser import HTMLParser
 import json
 import math
@@ -35,6 +36,7 @@ import shlex
 import posixpath
 import shutil
 import ssl
+import tokenize
 import stat
 from stat import S_ISREG
 import subprocess
@@ -48,7 +50,12 @@ from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
-from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .browser_agent import (
+    BROWSER_TOOL_NAMES,
+    execute_browser_tool,
+    is_browser_tool,
+    workspace_path_of,
+)
 from .computer_use import execute_computer_tool, is_computer_tool
 from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
@@ -119,6 +126,7 @@ from core.inference.providers import _metadata_host as _provider_metadata_host
 from utils import sandbox_memory_limit, tool_result_limit
 from core.inference import tool_facts
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
+from integrations.unreal import CALL_GUIDE as UNREAL_CALL_GUIDE
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
 
@@ -5062,6 +5070,9 @@ def _token_command_base(token: str) -> str:
 @functools.lru_cache(maxsize = 64)
 def _parse_python(code: str):
     """Parses each snippet once; the tree is only read, so the source-keyed cache cannot go stale."""
+    # The interpreter skips one leading UTF-8 BOM in the script file; parse what it runs.
+    if code.startswith("\ufeff"):
+        code = code[1:]
     try:
         return ast.parse(code), None
     except SyntaxError as exc:
@@ -6915,8 +6926,9 @@ _TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal", "edit_file"})
 def has_text_only_provisional_card(name: str) -> bool:
     """True when streaming this tool's arguments before approval shows only text. A large code
     payload takes a minute or more to write, and suppressing the card until the call completes
-    leaves the chat blank the whole time. Nothing runs before the decision either way."""
-    return name in _TEXT_PREVIEW_TOOLS
+    leaves the chat blank the whole time. Nothing runs before the decision either way. MCP calls
+    qualify too: an editor script (Unreal, Blender, Godot) is just as long, and the card is text."""
+    return name in _TEXT_PREVIEW_TOOLS or name.startswith(MCP_TOOL_PREFIX)
 
 
 def _web_search_fetches_url(name: str, arguments: dict) -> bool:
@@ -6924,9 +6936,14 @@ def _web_search_fetches_url(name: str, arguments: dict) -> bool:
     return name == "web_search" and bool(str(arguments.get("url", "") or "").strip())
 
 
+def _browser_opens_workspace_file(name: str, arguments: dict) -> bool:
+    """browser_navigate onto a workspace file hands its bytes to the model, so it asks like a read."""
+    return name == "browser_navigate" and workspace_path_of(arguments.get("url")) is not None
+
+
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts for anything that can mutate state or run code; unknown tools fail closed."""
-    if _web_search_fetches_url(name, arguments):
+    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
@@ -9601,7 +9618,7 @@ def _python_is_high_risk(code: str) -> bool:
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts only for sensitive actions (credentials, privilege, destructive, network exfil); unknown tools fail closed; hard blocks still apply."""
-    if _web_search_fetches_url(name, arguments):
+    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
@@ -10474,7 +10491,7 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
             # Written here, not read back from the workdir copy: a sandboxed call could have replaced that file.
             path = os.path.join(private, os.path.basename(argv[-1]))
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w", encoding = "utf-8") as f:
+            with os.fdopen(fd, "w", encoding = _python_source_encoding(script) or "utf-8") as f:
                 f.write(script)
             argv = (*argv[:-1], path)
             # The script's own folder stays off sys.path too (CPython >= 3.11).
@@ -14594,6 +14611,8 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         seen_names.add(name)
         tool_facts.note_mcp_tool(name, tool, studio = is_studio_tools(server.get("url") or ""))
         description = tool.get("description") or ""
+        if server.get("builtin_id") == "unreal" and raw_name == "call_tool":
+            description = description.rstrip() + "\n" + UNREAL_CALL_GUIDE.strip()
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name
             # The alias is the only name the model may emit; the description carries the real name.
@@ -21966,15 +21985,49 @@ def _check_signal_escape_patterns(code: str):
     }
 
 
+def _nested_python_payload(command: str) -> "str | None":
+    """The literal program of a `python -c PROGRAM` argv the code launches, else None."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if len(argv) < 2:
+        return None
+    name = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if not name.startswith(("python", "pypy")) or _inline_code_flag_spec(name) is None:
+        return None
+    for i, arg in enumerate(argv[1:], 1):
+        if not arg.startswith("-") or arg in ("-", "--", "-m"):
+            # A script path, stdin or a module runs, not an inline program.
+            return None
+        attached = _short_flag_arg(arg, "c")
+        if attached is not None:
+            if attached:
+                return attached
+            return argv[i + 1] if i + 1 < len(argv) else None
+    return None
+
+
 def _check_code_safety(
     code: str,
     *,
     host_approved: bool = False,
     analysis: "tuple | None" = None,
+    _depth: int = 0,
 ) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
     safe, info = analysis or _check_signal_escape_patterns(code)
+    # A literal `python -c PROGRAM` the code launches runs PROGRAM unscreened; screen it the same way.
+    if _depth < 3 and not info.get("error"):
+        for command in info.get("shell_commands", ()):
+            payload = _nested_python_payload(command)
+            if payload:
+                nested = _check_code_safety(payload, host_approved = host_approved, _depth = _depth + 1)
+                if nested is not None:
+                    return nested
     if not safe:
         # Let SyntaxError through so the child reports a normal traceback.
         if info.get("error"):
@@ -23878,6 +23931,31 @@ def _timed_out_result(
     return result
 
 
+def _python_source_encoding(code: str) -> "str | None":
+    """Encoding to write the python tool's script in, so the child decodes exactly the analysed str.
+
+    ast.parse(str) ignores a PEP 263 `# coding:` line the interpreter honours on the file, so a
+    cookie like utf_7 would run source the screen never saw. Written in the declared encoding, the
+    file decodes back to the same str; None when that cannot hold."""
+    try:
+        data = code.encode("utf-8")
+        declared = tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    except (UnicodeError, SyntaxError, LookupError):
+        # The write or the child's own decode fails with an ordinary error, as before.
+        return "utf-8"
+    if declared in ("utf-8", "utf-8-sig"):
+        return "utf-8"
+    try:
+        data = code.encode(declared)
+        if tokenize.detect_encoding(io.BytesIO(data).readline)[0] != declared:
+            return None
+        if data.decode(declared) != code:
+            return None
+    except (UnicodeError, SyntaxError, LookupError):
+        return None
+    return declared
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -23900,6 +23978,13 @@ def _python_exec(
         code, _guard_workdir
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
+
+    source_encoding = _python_source_encoding(code)
+    if source_encoding is None:
+        return (
+            "Error: the code's `# coding:` line would make Python run different source than "
+            "was written. Remove the coding line and run it again."
+        )
 
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
@@ -23941,7 +24026,7 @@ def _python_exec(
         _scratch_name = os.path.basename(tmp_path)
         with _scratch_lock:
             _active_scratch.add(_scratch_name)
-        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        with os.fdopen(fd, "w", encoding = source_encoding) as f:
             f.write(code)
 
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)

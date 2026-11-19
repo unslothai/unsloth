@@ -9,6 +9,7 @@ import { type ViteDevServer, createServer } from "vite";
 
 let vite: ViteDevServer;
 let ConnectionModelList: (props: Record<string, unknown>) => unknown;
+let fadeScrollEdges: (list: unknown) => (() => void) | undefined;
 
 before(async () => {
   vite = await createServer({
@@ -28,7 +29,7 @@ before(async () => {
       },
     },
   });
-  ({ ConnectionModelList } = await vite.ssrLoadModule(
+  ({ ConnectionModelList, fadeScrollEdges } = await vite.ssrLoadModule(
     "/src/features/chat/connection-model-list.tsx",
   ));
 });
@@ -86,6 +87,14 @@ test("open fold: unticked older models follow the header, ticked ones stay above
   assert.match(html, /aria-expanded="true"[^>]*>Older models · 1</);
 });
 
+test("the header pins to both list edges and Tab scrolls rows clear of it", () => {
+  const grouped = render({ models: ["fresh-model"], showOlder: false });
+  assert.match(grouped, /<ul[^>]*scroll-py-12/);
+  assert.match(grouped, /data-fold-header="true"[^>]*sticky top-0 bottom-0/);
+  const flat = render({ models: ["old-model"], query: "old", showOlder: false });
+  assert.doesNotMatch(flat, /scroll-py-12/);
+});
+
 test("a search shows matches flat, with no fold header", () => {
   const html = render({
     models: ["old-model"],
@@ -94,4 +103,38 @@ test("a search shows matches flat, with no fold header", () => {
   });
   assert.deepEqual(listOrder(html), ["old-model"]);
   assert.doesNotMatch(html, /Older models/);
+});
+
+test("the header pins to either list edge with no fade over it", () => {
+  (globalThis as { MutationObserver?: unknown }).MutationObserver ??= class {
+    observe() {}
+    disconnect() {}
+  };
+  // A 100px window onto 400px of rows; the header is 20px tall.
+  const fade = (headerTop: number | null) => {
+    const attrs = new Set<string>();
+    const style: Record<string, string> = {};
+    const header = {
+      getBoundingClientRect: () => ({ top: headerTop!, bottom: headerTop! + 20 }),
+      toggleAttribute: (name: string, on: boolean) =>
+        on ? attrs.add(name) : attrs.delete(name),
+    };
+    fadeScrollEdges({
+      scrollTop: 150,
+      clientHeight: 100,
+      scrollHeight: 400,
+      getBoundingClientRect: () => ({ top: 0, bottom: 100 }),
+      querySelector: () => (headerTop === null ? null : header),
+      style: { setProperty: (name: string, value: string) => (style[name] = value) },
+      addEventListener() {},
+    });
+    const [top, bottom] = [/^linear-gradient\(to bottom, (\S+) 0/, /, (\S+) 100%\)$/].map(
+      (edge) => style["-webkit-mask-image"].match(edge)?.[1] === "transparent",
+    );
+    return { top, bottom, stuck: attrs.has("data-stuck") };
+  };
+  assert.deepEqual(fade(null), { top: true, bottom: true, stuck: false });
+  assert.deepEqual(fade(40), { top: true, bottom: true, stuck: false });
+  assert.deepEqual(fade(0), { top: false, bottom: true, stuck: true });
+  assert.deepEqual(fade(80), { top: true, bottom: false, stuck: true });
 });

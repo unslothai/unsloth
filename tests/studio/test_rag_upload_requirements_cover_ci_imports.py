@@ -7,6 +7,7 @@ missing wheel as a packaging failure) needs that module pinned there, at studio.
 
 import ast
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -70,3 +71,75 @@ def test_every_ci_only_rag_import_is_pinned_for_the_upload_harness():
 
 def test_the_hnsw_catalog_pins_are_read():
     assert _hnsw_catalog_pins() == {"usearch": "2.26.6", "numkong": "7.8.6"}
+
+
+# Import names whose wheel is published under another name.
+_DISTRIBUTIONS = {
+    "PIL": "pillow",
+    "bs4": "beautifulsoup4",
+    "docx": "python-docx",
+    "fitz": "pymupdf",
+    "yaml": "pyyaml",
+}
+_LOCAL_ROOTS = (ROOT / "studio/backend", ROOT / "studio/backend/tests", ROOT / "tests/_shared")
+
+
+def _harness_tests():
+    # What rag_upload_ci.py hands its pytest run.
+    tests = sorted((ROOT / "studio/backend/tests").glob("test_rag_*.py"))
+    return [*tests, ROOT / "studio/backend/tests/test_conversation_archive.py"]
+
+
+def _is_local(module):
+    return any((r / module).is_dir() or (r / f"{module}.py").is_file() for r in _LOCAL_ROOTS)
+
+
+def _optional_import_nodes(tree):
+    """Imports inside `try: ... except ImportError` (or ModuleNotFoundError) are allowed to be absent."""
+    optional = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try) and any(
+            isinstance(h.type, ast.Name) and h.type.id in ("ImportError", "ModuleNotFoundError")
+            for h in node.handlers
+        ):
+            for stmt in node.body:
+                optional.update(id(n) for n in ast.walk(stmt))
+    return optional
+
+
+def _third_party_imports(path):
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    optional = _optional_import_nodes(tree)
+    found = set()
+    for node in ast.walk(tree):
+        if id(node) in optional:
+            continue
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            names = [node.module]
+        else:
+            continue
+        for name in names:
+            top = name.split(".")[0]
+            if top not in sys.stdlib_module_names and not _is_local(top):
+                found.add(top)
+    return found
+
+
+def test_the_import_scan_reads_function_local_imports():
+    # Control: test_rag_extract_text.py builds its upload fixtures with PIL inside a helper.
+    assert "PIL" in _third_party_imports(ROOT / "studio/backend/tests/test_rag_extract_text.py")
+
+
+def test_every_rag_harness_import_is_installed_by_the_upload_requirements():
+    """Any import a harness test makes, at module level or inside a function, needs its wheel in
+    the venv: #18293 built PIL images at collection time and the whole file failed to collect."""
+    upload = _pins(UPLOAD_REQS)
+    missing = sorted(
+        f"{test.name}: {module}"
+        for test in _harness_tests()
+        for module in _third_party_imports(test)
+        if re.sub(r"[-_.]+", "-", _DISTRIBUTIONS.get(module, module)).lower() not in upload
+    )
+    assert not missing, f"not in {UPLOAD_REQS.name}: {missing}"

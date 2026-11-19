@@ -835,6 +835,14 @@
       "reason": "Module-level __getattr__ for the lazily loaded command names: the module name comes only from the literal _LAZY_ATTRIBUTES table of unsloth_cli.commands.* modules, and an unknown name raises AttributeError before any import."
     },
     {
+      "file": "unsloth_cli/_npu.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "20120c388ba71a53",
+      "count": 1,
+      "reason": "npu_detected() loads Studio's own studio/backend/utils/hardware/npu.py from a fixed path next to this package (Path(__file__).parents[1]); no user, network or checkpoint input chooses the file, and any failure returns False."
+    },
+    {
       "file": "unsloth_cli/_studio_deps.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",

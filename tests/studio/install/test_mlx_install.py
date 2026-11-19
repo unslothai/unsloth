@@ -57,6 +57,12 @@ def _run_to_extras(
         "_ensure_cpu_torch": None,
         "_ensure_xpu_triton": None,
         "run": None,
+        # No-torch updates resolve the unsloth / unsloth-zoo pair against the package index;
+        # keep these install-ordering cases offline (the resolver has its own tests).
+        "_no_torch_pair": ("2026.11.1", "2026.11.1", 0),
+        # The runner's own certifi / pip versions would otherwise decide whether a real install runs
+        # (no uv on PATH: FileNotFoundError); the floor has its own tests in test_ca_trust_floor.py.
+        "_trust_floor_specs": [],
         # Off macOS the floor would skip every case; it has its own tests.
         "_mlx_pins_are_installable": mlx_installable,
     }.items():
@@ -318,7 +324,7 @@ def test_pin_floor_is_revisited_whenever_the_pins_move():
     assert _repair_specs() == {
         "mlx": "==0.32.4",
         "mlx-lm": ">=0.31.3,<=0.32.2",
-        "mlx-vlm": ">=0.4.4,<=0.7.12",
+        "mlx-vlm": ">=0.4.4,<=0.8.0",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 
