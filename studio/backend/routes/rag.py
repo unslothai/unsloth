@@ -985,20 +985,19 @@ _IMAGE_MAX_PIXELS = int(8.5 * 11 * config.OCR_DPI**2)
 _IMAGE_DECODE_MAX_PIXELS = 50_000_000
 
 
-def _image_png(path: str) -> bytes:
+def _image_png(opened) -> bytes:
     """Native pixels, never rescaled by the file's DPI tag (PyMuPDF does, and cannot open WebP)."""
     import io
 
     from PIL import Image, ImageOps
 
-    with Image.open(path) as opened:
-        width, height = opened.size
-        if width * height > _IMAGE_DECODE_MAX_PIXELS:
-            raise ValueError(f"the image is too large ({width} x {height} pixels)")
-        scale = min(1.0, (_IMAGE_MAX_PIXELS / (width * height)) ** 0.5)
-        size = (max(1, int(width * scale)), max(1, int(height * scale)))
-        opened.thumbnail(size, Image.Resampling.LANCZOS)
-        rgba = ImageOps.exif_transpose(opened).convert("RGBA")
+    width, height = opened.size
+    if width * height > _IMAGE_DECODE_MAX_PIXELS:
+        raise ValueError(f"the image is too large ({width} x {height} pixels)")
+    scale = min(1.0, (_IMAGE_MAX_PIXELS / (width * height)) ** 0.5)
+    size = (max(1, int(width * scale)), max(1, int(height * scale)))
+    opened.thumbnail(size, Image.Resampling.LANCZOS)
+    rgba = ImageOps.exif_transpose(opened).convert("RGBA")
     # On white like PyMuPDF, or dark text on a transparent PNG turns black on black.
     image = Image.new("RGB", rgba.size, "white")
     image.paste(rgba, mask = rgba.getchannel("A"))
@@ -1008,21 +1007,32 @@ def _image_png(path: str) -> bytes:
     return out.getvalue()
 
 
-def _image_text(path: str) -> str:
-    """The loaded vision model reads the image, else local Tesseract; "" when neither can."""
+def _image_text(path: str) -> tuple[str, list[int]]:
+    """The loaded vision model reads each page, else local Tesseract; returns the text and unread pages."""
     import tempfile
+
+    from PIL import Image
 
     from core.rag import captioner, pdf_ocr
 
-    png = _image_png(path)
-    text = captioner.ocr_pages({1: png}).get(1, "")
-    if text:
-        return text
+    with Image.open(path) as opened:
+        # TIFF frames are pages; GIF and WebP frames are animation.
+        count = opened.n_frames if opened.format == "TIFF" else 1
+        pngs = {}
+        for number in range(1, min(count, config.OCR_MAX_PAGES) + 1):
+            opened.seek(number - 1)
+            pngs[number] = _image_png(opened)
+    texts = captioner.ocr_pages(pngs)
     with tempfile.TemporaryDirectory() as tmp:
         normalized = os.path.join(tmp, "image.png")
-        with open(normalized, "wb") as handle:
-            handle.write(png)
-        return pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
+        for number in sorted(pngs.keys() - texts.keys()):
+            with open(normalized, "wb") as handle:
+                handle.write(pngs[number])
+            text = pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
+            if text:
+                texts[number] = text
+    text = "\n\n".join(texts[number] for number in sorted(texts))
+    return text, [number for number in range(1, count + 1) if number not in texts]
 
 
 def _scanned_page_text(path: str, pages: list) -> tuple[dict[int, str], list[int]]:
@@ -1042,6 +1052,17 @@ def _scanned_page_text(path: str, pages: list) -> tuple[dict[int, str], list[int
     return texts, [number for number in scanned if number not in texts]
 
 
+def _unread_pages_warning(filename: str, unread: list[int]) -> str:
+    pages_label = ", ".join(map(str, unread[:20]))
+    if len(unread) > 20:
+        pages_label += f" and {len(unread) - 20} more"
+    return (
+        f"Could not read scanned page{'s' if len(unread) > 1 else ''} {pages_label} of "
+        f"{filename}. Reading scanned pages needs a vision model loaded in Chat, or Tesseract OCR "
+        f"installed, and covers at most {config.OCR_MAX_PAGES} pages."
+    )
+
+
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
 @router.post("/extract-text")
 def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
@@ -1050,7 +1071,7 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
     stored_path, filename, _digest = _save_upload(file, _IMAGE_TEXT_EXTS)
     if os.path.splitext(filename)[1].lower() in _IMAGE_TEXT_EXTS:
         try:
-            text = _image_text(stored_path)
+            text, unread = _image_text(stored_path)
         except Exception as exc:
             raise HTTPException(
                 status_code = 422, detail = f"{filename} could not be read: {exc}"
@@ -1063,7 +1084,10 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
                 detail = f"No text could be read from {filename}. Reading images needs a vision "
                 "model loaded in Chat, or Tesseract OCR installed.",
             )
-        return {"filename": filename, "text": text, "truncated": False}
+        result = {"filename": filename, "text": text, "truncated": False}
+        if unread:
+            result["warning"] = _unread_pages_warning(filename, unread)
+        return result
     try:
         pages = parsers.parse(stored_path)
         scanned_text, unread = _scanned_page_text(stored_path, pages)
@@ -1074,16 +1098,7 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
     finally:
         _remove_stored_upload(stored_path)
-    warning = None
-    if unread:
-        pages_label = ", ".join(map(str, unread[:20]))
-        if len(unread) > 20:
-            pages_label += f" and {len(unread) - 20} more"
-        warning = (
-            f"Could not read scanned page{'s' if len(unread) > 1 else ''} {pages_label} of "
-            f"{filename}. Reading scanned pages needs a vision model loaded in Chat, or Tesseract OCR "
-            f"installed, and covers at most {config.OCR_MAX_PAGES} pages."
-        )
+    warning = _unread_pages_warning(filename, unread) if unread else None
     # Capped page by page: joining everything first would hold a huge extraction several times over.
     parts: list[bytes] = []
     room = _EXTRACT_TEXT_MAX_BYTES

@@ -220,6 +220,50 @@ def test_an_upright_photo_stays_upright_after_shrinking(rag_home, monkeypatch):
     assert height > width and width * height <= rag_routes._IMAGE_MAX_PIXELS
 
 
+def _tiff_pages(*shades: int) -> bytes:
+    from PIL import Image
+
+    pages = [Image.new("L", (40, 30), shade) for shade in shades]
+    out = io.BytesIO()
+    pages[0].save(out, "TIFF", save_all = True, append_images = pages[1:])
+    return out.getvalue()
+
+
+def _shade(png: bytes) -> str:
+    from PIL import Image
+    return f"shade {Image.open(io.BytesIO(png)).getpixel((0, 0))[0]}"
+
+
+def test_every_page_of_a_tiff_is_read(rag_home, monkeypatch):
+    from core.rag import captioner
+
+    monkeypatch.setattr(
+        captioner, "ocr_pages", lambda pngs: {n: _shade(png) for n, png in pngs.items()}
+    )
+    result = rag_routes.extract_text(_upload("fax.tif", _tiff_pages(10, 120, 250)), subject = "owner")
+    assert result["text"] == "shade 10\n\nshade 120\n\nshade 250"
+    assert "warning" not in result
+    assert _uploads_left() == []
+
+
+def test_tiff_pages_past_the_cap_are_named(rag_home, monkeypatch):
+    from core.rag import captioner, pdf_ocr
+
+    def tesseract(path, pages):
+        with open(path, "rb") as handle:
+            return {1: _shade(handle.read())}
+
+    monkeypatch.setattr(captioner, "ocr_pages", lambda pngs: {})
+    monkeypatch.setattr(pdf_ocr, "ocr_pages", tesseract)
+    monkeypatch.setattr(rag_routes.config, "OCR_MAX_PAGES", 2)
+    result = rag_routes.extract_text(
+        _upload("scan.tiff", _tiff_pages(10, 120, 250)), subject = "owner"
+    )
+    assert result["text"] == "shade 10\n\nshade 120"
+    assert "page 3 of scan.tiff" in result["warning"]
+    assert _uploads_left() == []
+
+
 def _scan(doc, rect = None):
     import pymupdf
 
