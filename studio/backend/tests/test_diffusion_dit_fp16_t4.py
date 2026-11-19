@@ -187,7 +187,6 @@ def test_inf_grad_skips_update_and_schedule_then_recovers():
         sched.last_epoch == 0 and sched.get_last_lr()[0] == lr0
     ), "the LR schedule must not tick on a skip"
     assert scaler.get_scale() == 2.0**15
-    # A finite step applies, ticks the schedule once, keeps the scale.
     opt.zero_grad(set_to_none = True)
     scaler.scale(w.sum()).backward()
     scaler.unscale_(opt)
@@ -279,7 +278,6 @@ def test_prepare_fp16_base_sets_compute_dtype_upcasts_and_islands(monkeypatch):
         m.time_embed.compute_dtype is torch.float16
         and m.blocks[0].proj.compute_dtype is torch.float16
     )
-    # The island's quantized matmul computes fp32.
     assert m.blocks[1].proj.compute_dtype is torch.float32
     assert all(p.dtype is torch.float32 for p in m.parameters())
     with torch.autocast("cpu", dtype = torch.bfloat16):
@@ -512,7 +510,6 @@ def test_fast_lora_leaves_fp32_islands_in_fp32(monkeypatch):
         for p in m.parameters()
         if p.requires_grad
     )
-    # Uninstall restores the patched layers and keeps the islands.
     fl.uninstall_fast_lora(m)
     assert m.proj_out._unsloth_fp32_island and "forward" in m.proj_out.__dict__
     assert "forward" not in m.lin.__dict__

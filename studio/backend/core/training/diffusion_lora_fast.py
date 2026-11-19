@@ -191,8 +191,7 @@ def _lora_linear_classes():
 
 
 def _is_fp32_island(mod) -> bool:
-    # An fp16 run's fp32 island (diffusion_dit_fp16) wraps this module's forward; patching on top would run it
-    # under fp16 autocast. Modules inside the island keep the fast path, which sees autocast off and falls back.
+    # Patching an fp32 island root (diffusion_dit_fp16) would run it under fp16 autocast.
     return bool(mod.__dict__.get("_unsloth_fp32_island", False))
 
 

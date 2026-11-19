@@ -3827,8 +3827,7 @@ def _train_dit(
             fb_peak = torch.cuda.max_memory_allocated()
             alloc_before_step = torch.cuda.memory_allocated()
         if not _optimizer_update(optimizer, lr_sched, scaler, fp16_amp):
-            # Skipped update: LR schedule, EMA and step counter must not advance. The checkpointing budget waits for
-            # an applied step, since a skipped one allocates no optimizer moments.
+            # Skipped update: LR schedule, EMA, step counter and checkpointing budget must not advance.
             skipped_steps += 1
             consecutive_skips += 1
             if consecutive_skips >= FP16_MAX_CONSECUTIVE_SKIPS:
@@ -3974,10 +3973,8 @@ def _train_dit(
 
 
 def _dequant_cache_wanted(base_is_bnb, device, fp16_amp) -> bool:
-    """nf4 dequant cache on CUDA; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget.
-
-    On a T4 both plan from step 1's free memory, so step 2 ran out of memory and fell back to checkpointing every block
-    (2.98 s/step against 2.27 with the budget alone)."""
+    """nf4 dequant cache on CUDA; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
+    (on a T4 both planned from step 1's free memory and step 2 OOMed)."""
     from core.training.diffusion_lora_fast import dequant_cache_enabled
     return (
         base_is_bnb
