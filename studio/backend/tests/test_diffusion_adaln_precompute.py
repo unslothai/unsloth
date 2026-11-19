@@ -675,3 +675,40 @@ def test_cfg_replica_copy_takes_the_real_modules():
     # the source keeps the lever and its output
     assert ap.installed(model)
     assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+
+
+def test_layerwise_cast_modulation_layers_stay_live():
+    """Studio's small-host dense route layerwise-casts every Linear (a diffusers hook binds ``forward`` to the
+    module): a device clone of such a layer would compute with the host original on a GPU call, so it stays live."""
+    from core.inference.diffusion_small_host import prepare_streamed_encoder_
+
+    model = _flux().to(torch.bfloat16)
+    prepare_streamed_encoder_(model, torch.float32)
+    calls = _flux_calls(torch.float32)
+    ref = _run(model, calls)
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON, offloaded = True) is False
+    assert not any(isinstance(m, ap.AdaLNTable) for m in model.modules())
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+
+
+def test_hook_bound_clone_would_read_the_host_original():
+    """Why: the clone of a hook-bound Linear keeps the original's bound ``forward``, so its own weights are ignored."""
+    from diffusers.hooks import apply_layerwise_casting
+
+    lin = torch.nn.Linear(8, 4)
+    apply_layerwise_casting(lin, storage_dtype = torch.bfloat16, compute_dtype = torch.float32)
+    clone = ap._device_clone(lin, torch.device("cpu"))
+    clone._parameters["weight"] = torch.nn.Parameter(torch.zeros(4, 8), requires_grad = False)
+    clone._parameters["bias"] = torch.nn.Parameter(torch.zeros(4), requires_grad = False)
+    assert clone(torch.ones(1, 8)).abs().sum() > 0
+    assert ap._hook_bound(lin) and not ap._hook_bound(torch.nn.Linear(8, 4))
+
+
+def test_small_host_route_declines():
+    from core.inference.diffusion_small_host import SMALL_HOST_ATTR
+
+    model = _flux()
+    pipe = _keep(_Pipe(torch.linspace(1000.0, 30.0, 4)))
+    setattr(pipe, SMALL_HOST_ATTR, {"reason": "dense load does not fit", "components": {}})
+    assert ap.install(model, pipe, requested = ap.MODE_ON, offloaded = True) is False
+    assert not any(isinstance(m, ap.AdaLNTable) for m in model.modules())

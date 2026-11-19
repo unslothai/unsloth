@@ -667,6 +667,21 @@ def _pipe_loras(pipe: Any) -> bool:
     )
 
 
+def _small_host(pipe: Any) -> bool:
+    from .diffusion_small_host import SMALL_HOST_ATTR
+    return bool(getattr(pipe, SMALL_HOST_ATTR, None))
+
+
+def _hook_bound(module: Any) -> bool:
+    """A module (or submodule) whose ``forward`` is an instance attribute: diffusers hooks (layerwise casting, group
+    offload) and Accelerate hooks bind it to that module, so a ``_device_clone`` would still run on the original's
+    host weights."""
+    return any(
+        "forward" in sub.__dict__ or "_diffusers_hook" in sub.__dict__ or "_hf_hook" in sub.__dict__
+        for sub in module.modules()
+    )
+
+
 def installed(model: Any) -> bool:
     st = getattr(model, "__dict__", {}).get(STATE_ATTR)
     return st is not None and st.active
@@ -686,6 +701,10 @@ def install(
     if reason is None and pipe is not None and _pipe_loras(pipe):
         # baked into the weights before quantisation and re-merged in place later: the modules must stay in the tree
         reason = "LoRA adapters are baked into this load"
+    if reason is None and pipe is not None and _small_host(pipe):
+        # the route keeps the denoiser memory-mapped or int8 in pageable / file-backed memory on a host short of RAM:
+        # pinning the modulation weights would add page-locked RAM the route chose not to take
+        reason = "the small-host route keeps the denoiser memory-mapped or int8 off pinned memory"
     if reason is not None:
         if logger is not None:
             logger.info("diffusion.adaln_precompute: off (%s)", reason)
@@ -703,14 +722,17 @@ def install(
     import copy
 
     # A layer whose output depends on the step beyond its input (NVFP4 per-step protection runs protected steps at
-    # another precision) stays live: a precomputed row would ignore the step's mode.
+    # another precision) stays live: a precomputed row would ignore the step's mode. So does a hook-bound layer
+    # (_hook_bound): its device clone would compute with the host original.
+    def _stays_live(mod: Any) -> bool:
+        return _hook_bound(mod) or any(
+            getattr(m, "protect", None) is not None for m in mod.modules()
+        )
+
     live = [
         name
         for name, parent, attr, _kind in sites
-        if any(
-            getattr(m, "protect", None) is not None
-            for m in (parent._modules.get(attr) or getattr(parent, attr)).modules()
-        )
+        if _stays_live(parent._modules.get(attr) or getattr(parent, attr))
     ]
     if live:
         sites = [site for site in sites if site[0] not in set(live)]
