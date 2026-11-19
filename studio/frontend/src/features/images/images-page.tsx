@@ -4972,7 +4972,7 @@ export function ImagesPage({
         if (revert) {
           quantRevert.current = revert;
           setQuant(filename);
-          applyImageModelDefaults(id, nextFamilyOverride);
+          applyImageModelDefaults(id, nextFamilyOverride, false, filename);
         }
         void loadOrStage(dir, { kind: "single_file", filename }, meta.source, token).then((started) => {
           if (!started && revert && stillOwnsPick()) {

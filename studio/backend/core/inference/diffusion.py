@@ -169,7 +169,12 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
-from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
+from .diffusion_families import (
+    ANIMA_TURBO_KEY,
+    MINIMAX_H3_IMAGE_FAMILY_NAME,
+    MOSS_IMAGE_FAMILY_NAME,
+    anima_turbo_named,
+)
 from .diffusion_anima import (
     ANIMA_COMPONENT_FOLDERS,
     ANIMA_COMPONENTS,
@@ -2154,13 +2159,19 @@ def _h3_image_attention_engaged(levers: Any) -> Optional[str]:
     return picks.get("checkpoint_attention") or picks.get("attention")
 
 
-def _family_default_ids(fam: Any) -> tuple:
+def _family_default_ids(
+    fam: Any,
+    filename: Optional[str] = None,
+    repo_id: Optional[str] = None,
+) -> tuple:
     """Ids ahead of the file / repo names in the defaults lookup: FLUX.3's file names cannot tell its variants apart,
     and a bare "anima" matches Animagine XL files while a local folder never names Anima's base repo."""
     if is_flux3_family(fam):
         return (fam.name,)
     if is_anima_family(fam):
-        return (fam.base_repo,)
+        return ((ANIMA_TURBO_KEY,) if anima_turbo_named(filename, repo_id) else ()) + (
+            fam.base_repo,
+        )
     if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
         # Its 6 steps / guidance 1 are fixed by the checkpoint (PDD heads), whatever the folder is called.
         return (fam.name,)
@@ -2177,7 +2188,7 @@ def _generation_defaults_for(
     """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
     schnell), so the Images form can match it."""
     try:
-        identifiers = _family_default_ids(family) + (
+        identifiers = _family_default_ids(family, gguf_filename, repo_id) + (
             gguf_filename,
             content_variant_hint(repo_id, gguf_filename),
             repo_id,
@@ -11268,7 +11279,7 @@ class DiffusionBackend:
                     static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
-                            *_family_default_ids(fam),
+                            *_family_default_ids(fam, gguf_filename, repo_id),
                             gguf_filename,
                             content_variant_hint(repo_id, gguf_filename),
                             repo_id,
@@ -11701,7 +11712,7 @@ class DiffusionBackend:
                         )
                         try:
                             plan_steps, _ = default_generation_params(
-                                *_family_default_ids(fam),
+                                *_family_default_ids(fam, gguf_filename, repo_id),
                                 gguf_filename,
                                 content_variant_hint(repo_id, gguf_filename),
                                 repo_id,
