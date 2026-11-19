@@ -21,6 +21,7 @@ The orchestration (``RoundTrip``) only sees two small adapters, so it is tested 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import threading
 import time
@@ -136,6 +137,10 @@ class RoundTrip:
     on_cancel: Optional[Callable[[], None]] = None
     # When the render began: the tool's own timeout covers the render, not the swap around it.
     render_started: Optional[float] = None
+    # Held from the KV save until the image model is gone, so a chat request that arrives meanwhile
+    # (another tab, the next message after a Stop) waits for chat to come back instead of finding
+    # no model. Released before the reload, which takes the same gate itself.
+    hold_requests: Optional[Callable[[], Any]] = None
 
     def stop(self) -> None:
         self.cancel.set()
@@ -181,6 +186,20 @@ class RoundTrip:
             )
         if self.cancel.is_set():
             return ERR_STOPPED
+        gate = contextlib.AsyncExitStack()
+        if self.hold_requests is not None:
+            try:
+                await gate.enter_async_context(self.hold_requests())
+            except asyncio.CancelledError:
+                if self.cancel.is_set():
+                    return ERR_STOPPED
+                raise
+        try:
+            return await self._run_held(snap, gate, total)
+        finally:
+            await gate.aclose()
+
+    async def _run_held(self, snap: ChatSnapshot, gate, total: float) -> str:
         try:
             kv = await self._step("chat_kv_saved", self.chat.save_kv(snap, self.cancel.is_set))
         except Exception as exc:  # noqa: BLE001 - without it the follow-up reprocesses the prompt
@@ -219,6 +238,7 @@ class RoundTrip:
                     await self._step("image_unloaded", self.media.unload())
                 except Exception as exc:  # noqa: BLE001 - chat reload evicts it anyway
                     logger.warning("chat image swap: image unload failed: %s", exc)
+            await gate.aclose()
             if unloaded:
                 await self._restore(snap, kv)
             else:
@@ -484,11 +504,14 @@ def run_in_tool(
         # Another chat is streaming from the same llama-server: unloading it would end that one.
         return "Error: another chat is generating on this model. Try again when it finishes."
     subject = getattr(account, "username", None) or "unsloth"
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+
     trip = RoundTrip(
         chat = StudioChat(subject),
         media = StudioImage(subject, render),
         image_model = name,
         on_cancel = stop_render,
+        hold_requests = inference_lifecycle_gate,
     )
 
     async def _go():

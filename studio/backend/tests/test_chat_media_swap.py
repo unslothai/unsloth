@@ -466,3 +466,52 @@ def test_default_image_model_order(monkeypatch):
     assert swap.default_image_model() == "set/in-settings"
     monkeypatch.setenv(swap.SWAP_MODEL_ENV, "env/model")
     assert swap.default_image_model() == "env/model"
+
+
+def test_request_gate_held_until_image_is_gone():
+    """New chat requests wait while chat is away; the gate is free again before the reload,
+    which takes it itself."""
+    import contextlib
+
+    log = Log()
+    held = {"now": False}
+
+    @contextlib.asynccontextmanager
+    async def gate():
+        held["now"] = True
+        log.add("gate.enter")
+        try:
+            yield
+        finally:
+            held["now"] = False
+            log.add("gate.exit")
+
+    chat = FakeChat(log)
+    media = FakeImage(log, chat = chat)
+    seen = {}
+    for name in ("load", "generate", "unload"):
+        real = getattr(media, name)
+
+        def wrap(
+            *a,
+            _real = real,
+            _name = name,
+        ):
+            seen[_name] = held["now"]
+            return _real(*a)
+
+        setattr(media, name, wrap)
+    real_reload = chat.reload
+
+    async def reload(snap, kv):
+        seen["reload"] = held["now"]
+        await real_reload(snap, kv)
+
+    chat.reload = reload
+    trip = _trip(chat, media, hold_requests = gate)
+    assert asyncio.run(trip.run()).startswith("Generated")
+    assert seen == {"load": True, "generate": True, "unload": True, "reload": False}
+    kinds = [e[0] for e in log]
+    assert kinds.index("gate.enter") < kinds.index("chat.save_kv")
+    assert kinds.index("image.unload") < kinds.index("gate.exit") < kinds.index("chat.reload")
+    assert kinds.count("gate.exit") == 1
