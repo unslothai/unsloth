@@ -264,6 +264,27 @@ def test_tiff_pages_past_the_cap_are_named(rag_home, monkeypatch):
     assert _uploads_left() == []
 
 
+def test_an_oversized_tiff_page_is_named_and_the_rest_read(rag_home, monkeypatch):
+    from PIL import Image
+
+    from core.rag import captioner
+
+    monkeypatch.setattr(
+        captioner, "ocr_pages", lambda pngs: {n: _shade(png) for n, png in pngs.items()}
+    )
+    monkeypatch.setattr(rag_routes, "_IMAGE_DECODE_MAX_PIXELS", 40 * 30)
+    pages = [
+        Image.new("L", size, shade)
+        for size, shade in (((40, 30), 10), ((80, 60), 120), ((40, 30), 250))
+    ]
+    out = io.BytesIO()
+    pages[0].save(out, "TIFF", save_all = True, append_images = pages[1:])
+    result = rag_routes.extract_text(_upload("big.tif", out.getvalue()), subject = "owner")
+    assert result["text"] == "shade 10\n\nshade 250"
+    assert "page 2 of big.tif" in result["warning"]
+    assert _uploads_left() == []
+
+
 def _scan(doc, rect = None):
     import pymupdf
 

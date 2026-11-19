@@ -1020,8 +1020,12 @@ def _image_text(path: str) -> tuple[str, list[int]]:
         count = opened.n_frames if opened.format == "TIFF" else 1
         pngs = {}
         for number in range(1, min(count, config.OCR_MAX_PAGES) + 1):
-            opened.seek(number - 1)
-            pngs[number] = _image_png(opened)
+            try:
+                opened.seek(number - 1)
+                pngs[number] = _image_png(opened)
+            except Exception:
+                if count == 1:
+                    raise
     texts = captioner.ocr_pages(pngs)
     with tempfile.TemporaryDirectory() as tmp:
         normalized = os.path.join(tmp, "image.png")
