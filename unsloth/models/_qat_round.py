@@ -6,7 +6,10 @@
 Bitwise equal to per-call fake quant for the trainer, and vLLM (which shares the storage) now samples
 the same weights. Disk-based exports are unchanged; in-memory merges now hold the rounded base.
 Skipped: non-LoRA Linears, activation / nvfp4 / mxfp8 schemes, trainable, residual-init, DoRA,
-subclass, offloaded CPU and memory-shared (tied) weights. UNSLOTH_QAT_ROUND_INPLACE=0 disables."""
+subclass, offloaded CPU and memory-shared (tied) weights. UNSLOTH_QAT_ROUND_INPLACE=0 disables.
+A rounded weight that is later rewritten (load_state_dict, or any in place write that bumps its version,
+or a new tensor) gets its quantizer back on load_state_dict and on the next call here, and is rounded
+again when still eligible. Writes through .data (PEFT merge / unmerge, vLLM's fold / restore) are kept."""
 
 import heapq
 import os
@@ -20,6 +23,9 @@ __all__ = [
 
 _ENV = "UNSLOTH_QAT_ROUND_INPLACE"
 _FLAG = "_unsloth_qat_rounded"
+_RECORD = "_unsloth_qat_round_record"
+_HOOK = "_unsloth_qat_round_load_hook"
+_SAME = "_unsloth_qat_round_same_load"
 _STATS = {"rounded": 0, "bytes": 0, "skipped": {}}
 _PLAIN_TENSOR_TYPES = (torch.Tensor, torch.nn.Parameter)
 
@@ -102,6 +108,125 @@ def _skip(reason):
     _STATS["skipped"][reason] = _STATS["skipped"].get(reason, 0) + 1
 
 
+def _weight_state(weight):
+    """(data_ptr, version) of the weight as rounded; inference tensors carry no version counter."""
+    if not isinstance(weight, torch.Tensor):
+        return None
+    return (weight.data_ptr(), None if weight.is_inference() else weight._version)
+
+
+class _RoundRecord:
+    """The rounded weight's state. A copy or unpickled model holds a new tensor that is already rounded,
+    so the record is reset there and adopts that tensor at its next check instead of flagging a change."""
+
+    __slots__ = ("state",)
+
+    def __init__(self, state = None):
+        self.state = state
+
+    def __deepcopy__(self, memo):
+        return _RoundRecord()
+
+    def __reduce__(self):
+        return (_RoundRecord, ())
+
+
+def _rewritten(quantizer, weight):
+    """True if a rounded weight has since been replaced or written in place (a version bump)."""
+    record = quantizer.__dict__.get(_RECORD)
+    state = _weight_state(weight)
+    if not isinstance(record, _RoundRecord) or record.state is None:
+        quantizer.__dict__[_RECORD] = _RoundRecord(state)
+        return False
+    return state != record.state
+
+
+def _unround(quantizer):
+    """Back to per call fake quantization of whatever the weight now holds (the behaviour before rounding)."""
+    quantizer.enabled = True
+    quantizer.__dict__[_FLAG] = False
+    quantizer.__dict__.pop(_RECORD, None)
+
+
+def _round_into(module, quantizer, weight):
+    """Write quantizer(weight) into weight in place and switch the quantizer off; False if shapes differ."""
+    with torch.no_grad():
+        rounded = quantizer(weight)
+        if rounded.dtype != weight.dtype or rounded.shape != weight.shape:
+            _skip("output_mismatch")
+            return False
+        if weight.is_inference():
+            with torch.inference_mode():
+                weight.copy_(rounded)
+        else:
+            weight.copy_(rounded)
+        del rounded
+    quantizer.enabled = False
+    quantizer.__dict__[_FLAG] = True
+    quantizer.__dict__[_RECORD] = _RoundRecord(_weight_state(weight))
+    if not module.__dict__.get(_HOOK, False):
+        try:
+            register_pre = getattr(module, "register_load_state_dict_pre_hook", None)
+            if register_pre is not None:  # torch >= 2.5
+                register_pre(_before_load)
+            else:
+                module._register_load_state_dict_pre_hook(_before_load, with_module = True)
+            module.register_load_state_dict_post_hook(_after_load)
+            module.__dict__[_HOOK] = True
+        except Exception:
+            pass
+    return True
+
+
+def _before_load(module, state_dict, prefix, *args):
+    """load_state_dict pre hook on a rounded module: note the weight's state and whether the incoming
+    weight is the rounded one it already holds."""
+    module.__dict__.pop(_SAME, None)
+    quantizer = module._modules.get("weight_fake_quantizer")
+    if quantizer is None or not quantizer.__dict__.get(_FLAG, False):
+        return
+    incoming = state_dict.get(prefix + "weight")
+    weight = module._parameters.get("weight")
+    if not isinstance(incoming, torch.Tensor) or not isinstance(weight, torch.Tensor):
+        return  # no weight in this load (adapter only)
+    try:
+        same = incoming.shape == weight.shape and torch.equal(
+            incoming.to(device = weight.device, dtype = weight.dtype), weight
+        )
+    except Exception:
+        same = False
+    module.__dict__[_SAME] = (bool(same), _weight_state(weight))
+
+
+def _after_load(module, incompatible_keys):
+    """load_state_dict post hook on a rounded module: a loaded new weight is fake quantized again."""
+    info = module.__dict__.pop(_SAME, None)
+    quantizer = module._modules.get("weight_fake_quantizer")
+    if info is None or quantizer is None or not quantizer.__dict__.get(_FLAG, False):
+        return
+    same, before = info
+    weight = module._parameters.get("weight")
+    state = _weight_state(weight)
+    if state == before:
+        return  # not written (for example a failed shape check)
+    if same:
+        # Reloading the rounded values themselves (a checkpoint of this model): still on the grid. int8 /
+        # cactus fake quant is not idempotent, so rounding them again would move them.
+        quantizer.__dict__[_RECORD] = _RoundRecord(state)
+        return
+    _unround(quantizer)
+    # The same storage written in place keeps every eligibility check that passed before (shape, device,
+    # not shared); a new tensor is left to per call fake quant until round_frozen_qat_weights runs again.
+    if (
+        _enabled()
+        and before is not None
+        and type(weight) in _PLAIN_TENSOR_TYPES
+        and not weight.requires_grad
+        and weight.data_ptr() == before[0]
+    ):
+        _round_into(module, quantizer, weight)
+
+
 def round_frozen_qat_weights(model):
     """Write fake_quant(W) into every eligible frozen base weight and switch its quantizer off. Idempotent."""
     if not _enabled():
@@ -122,8 +247,12 @@ def round_frozen_qat_weights(model):
     candidates = []
     for name, module in model.named_modules():
         quantizer = module._modules.get("weight_fake_quantizer")
-        if quantizer is None or quantizer.__dict__.get(_FLAG, False):
+        if quantizer is None:
             continue
+        if quantizer.__dict__.get(_FLAG, False):
+            if not _rewritten(quantizer, module._parameters.get("weight")):
+                continue
+            _unround(quantizer)  # rewritten since it was rounded: check and round it again
         if not getattr(quantizer, "enabled", True):
             continue
         # Plain Linears convert from memory, where a rounded int8 / cactus weight would requantize differently.
@@ -166,19 +295,8 @@ def round_frozen_qat_weights(model):
         if (id(module), "weight") in shared:
             _skip("shared_memory")
             continue
-        with torch.no_grad():
-            rounded = quantizer(weight)
-            if rounded.dtype != weight.dtype or rounded.shape != weight.shape:
-                _skip("output_mismatch")
-                continue
-            if weight.is_inference():
-                with torch.inference_mode():
-                    weight.copy_(rounded)
-            else:
-                weight.copy_(rounded)
-            del rounded
-        quantizer.enabled = False
-        quantizer.__dict__[_FLAG] = True
+        if not _round_into(module, quantizer, weight):
+            continue
         count += 1
         nbytes += weight.numel() * weight.element_size()
 
