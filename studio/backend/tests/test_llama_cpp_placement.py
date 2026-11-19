@@ -3019,7 +3019,14 @@ def test_the_igpu_fit_headroom_survives_the_per_device_margin(tmp_path, monkeypa
     ), cmd
 
 
-def _vulkan_carve_out_igpu_backend(tmp_path, monkeypatch, *, carve_out_mib, row_free_mib):
+def _vulkan_carve_out_igpu_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    carve_out_mib,
+    row_free_mib,
+    used_mib = 0,
+):
     """#18001: Radeon 780M on Windows with a 16 GiB carve-out; Vulkan reads 23161 MiB free."""
     monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
     backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, row_free_mib, 0)])
@@ -3033,26 +3040,42 @@ def _vulkan_carve_out_igpu_backend(tmp_path, monkeypatch, *, carve_out_mib, row_
     monkeypatch.setattr(
         LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(lambda *_a, **_k: carve_out)
     )
+    used = None if used_mib is None else used_mib * 1024 * 1024
+    monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_used_bytes", staticmethod(lambda: used))
     return backend, gguf
 
 
 @pytest.mark.parametrize(
-    "carve_out_mib, row_free_mib, headroom",
+    "carve_out_mib, row_free_mib, used_mib, headroom",
     [
-        (16 * 1024, 22137, 23161 - 16 * 1024),
-        (512, 22137, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
-        (96 * 1024, 120 * 1024, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
-        (None, 22137, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
-        (24 * 1024, 22137, 0),
+        (16 * 1024, 22137, 300, 23161 - (16 * 1024 - 300)),
+        (16 * 1024, 14336, 8 * 1024, 15360 - 8 * 1024),
+        (512, 22137, 300, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (96 * 1024, 120 * 1024, 300, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (None, 22137, 300, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (16 * 1024, 22137, None, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (24 * 1024, 22137, 0, 0),
     ],
-    ids = ["780m-16g-carve-out", "auto-carve-out", "strix-halo-96g", "unreadable", "all-carve-out"],
+    ids = [
+        "780m-16g-carve-out",
+        "carve-out-half-occupied",
+        "auto-carve-out",
+        "strix-halo-96g",
+        "unreadable-carve-out",
+        "unreadable-usage",
+        "all-carve-out",
+    ],
 )
 def test_the_paging_headroom_never_starves_the_carve_out(
-    tmp_path, monkeypatch, carve_out_mib, row_free_mib, headroom
+    tmp_path, monkeypatch, carve_out_mib, row_free_mib, used_mib, headroom
 ):
     """A flat 15 GiB margin left a 780M's fit 7 GiB of its 16 GiB carve-out."""
     backend, gguf = _vulkan_carve_out_igpu_backend(
-        tmp_path, monkeypatch, carve_out_mib = carve_out_mib, row_free_mib = row_free_mib
+        tmp_path,
+        monkeypatch,
+        carve_out_mib = carve_out_mib,
+        row_free_mib = row_free_mib,
+        used_mib = used_mib,
     )
     logged = _override_log(monkeypatch)
 
@@ -3066,9 +3089,10 @@ def test_the_paging_headroom_never_starves_the_carve_out(
         assert len(margins) == 1, cmd
         return
     assert len(margins) == 2 and margins[-1] == margins[0] + headroom, cmd
-    if carve_out_mib == 16 * 1024:
-        # llama.cpp fits into its raw free reading minus the last margin.
-        assert carve_out_mib - 1024 <= row_free_mib + 1024 - margins[-1] <= carve_out_mib
+    if carve_out_mib == 16 * 1024 and used_mib is not None:
+        # llama.cpp fits into its raw free reading minus the last margin: the free carve-out.
+        fits = row_free_mib + 1024 - margins[-1]
+        assert carve_out_mib - used_mib - 1024 <= fits <= carve_out_mib - used_mib
 
 
 def test_the_paging_headroom_cap_reads_only_a_lone_windows_vulkan_igpu(monkeypatch):
@@ -3078,6 +3102,7 @@ def test_the_paging_headroom_cap_reads_only_a_lone_windows_vulkan_igpu(monkeypat
     monkeypatch.setattr(
         LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(lambda *_a, **_k: 16 * _GiB)
     )
+    monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_used_bytes", staticmethod(lambda: 0))
     assert headroom([(0, 22137)], {0}) == 23161 - 16 * 1024
     assert headroom([(0, 22137)], set()) == full
     assert headroom([(0, 22137), (1, 8000)], {0}) == full
@@ -3101,6 +3126,26 @@ def test_the_paging_headroom_cap_reads_only_a_lone_windows_vulkan_igpu(monkeypat
     cmd = ["-m", "x.gguf", "--fit-target", "512", *pair]
     withdrawn = LlamaCppBackend._withdraw_paged_headroom(cmd, added, pair, headroom_mib = 6777)
     assert withdrawn == (["-m", "x.gguf", "--fit-target", "512"], {0: 512.0})
+
+
+def test_the_igpu_dedicated_usage_is_read_for_the_carve_out_adapter(monkeypatch):
+    import utils.hardware.hardware as hw
+
+    luid = (0x1 << 32) | 0xAD4C
+    records = {luid: {"name": "AMD Radeon 780M Graphics", "dedicated_memory_bytes": 16 * _GiB}}
+    samples = [
+        ("luid_0x00000001_0x0000AD4C_phys_0", 2 * _GiB),
+        ("luid_0x00000000_0x00001111_phys_0", 5 * _GiB),
+    ]
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda *_a, **_k: records)
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *_a: samples)
+    assert LlamaCppBackend._igpu_dedicated_used_bytes() == 2 * _GiB
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *_a: None)
+    assert LlamaCppBackend._igpu_dedicated_used_bytes() is None
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *_a: samples)
+    two = {luid: records[luid], luid + 1: records[luid]}
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda *_a, **_k: two)
+    assert LlamaCppBackend._igpu_dedicated_used_bytes() is None
 
 
 def test_a_retry_off_the_igpu_withdraws_the_paging_headroom():

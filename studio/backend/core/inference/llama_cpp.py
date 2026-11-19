@@ -16208,9 +16208,9 @@ class LlamaCppBackend:
     def _paged_fit_headroom_mib(
         detected_gpus: Iterable[tuple], vulkan_igpu_ids: Collection[int]
     ) -> float:
-        """The paging headroom, capped at what a lone Vulkan iGPU reads above its carve-out.
+        """The paging headroom, capped at what a lone Vulkan iGPU reads above its free carve-out.
         The headroom keeps the fit out of shared memory; a flat 15 GiB also starves a carve-out
-        smaller than that (#18001)."""
+        smaller than that (#18001). Unreadable carve-out or usage keeps the flat headroom."""
         rows = list(detected_gpus or ())
         if (
             not _paged_load_needs_fit_headroom()
@@ -16226,9 +16226,36 @@ class LlamaCppBackend:
             carve_out = None
         if not carve_out or carve_out <= 0:
             return _IGPU_PAGED_FIT_HEADROOM_MIB
+        used = LlamaCppBackend._igpu_dedicated_used_bytes()
+        if used is None:
+            return _IGPU_PAGED_FIT_HEADROOM_MIB
         # Rows carry free less _IGPU_HOST_RESERVE_MIB; llama.cpp's fitter reads the raw free.
-        shared_mib = int(rows[0][1]) + _IGPU_HOST_RESERVE_MIB - carve_out / (1024 * 1024)
+        carve_out_free_mib = max(0, carve_out - used) / (1024 * 1024)
+        shared_mib = int(rows[0][1]) + _IGPU_HOST_RESERVE_MIB - carve_out_free_mib
         return float(min(_IGPU_PAGED_FIT_HEADROOM_MIB, max(0, math.ceil(shared_mib))))
+
+    @staticmethod
+    def _igpu_dedicated_used_bytes() -> Optional[int]:
+        """Dedicated Usage of the lone AMD adapter whose carve-out was read, or None."""
+        try:
+            from utils.hardware.hardware import (
+                _AMD_PCI_VENDOR_ID,
+                _parse_adapter_luid,
+                _rocm_windows_perf_counter_vram_by_adapter,
+                _windows_amd_adapter_records_by_luid,
+            )
+
+            records = _windows_amd_adapter_records_by_luid(
+                _AMD_PCI_VENDOR_ID, distinguish_failure = True
+            )
+            if not records or len(records) != 1:
+                return None
+            (luid,) = records
+            samples = _rocm_windows_perf_counter_vram_by_adapter("Dedicated Usage")
+            used = [b for name, b in samples or () if _parse_adapter_luid(name) == luid]
+        except Exception:  # noqa: BLE001 -- unreadable usage keeps the measured headroom
+            return None
+        return int(sum(used)) if used else None
 
     @staticmethod
     def _margins_with_paged_headroom(
