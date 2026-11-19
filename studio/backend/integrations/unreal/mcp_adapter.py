@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Smooths the calling conventions of Epic's Unreal MCP plugin, which exposes its ~50 toolsets through three meta-tools
-(list_toolsets, describe_toolset, call_tool). Models trip on the same few things every time:
-
-- passing the dotted name ``<toolset>.<tool>`` (as describe_toolset prints it) as ``tool_name`` with no ``toolset_name``;
-- leaving out optional parameters, which Epic's server still rejects ("needs a default value",
-  "is required by the function input schema" for a parameter the schema does not list as required);
-- guessing tool or toolset names, which Epic answers with "Unknown tool X" and no list of the real ones.
-
-The first is rewritten before the call; the second is filled from the toolset's own schema (its declared default,
-else null) and retried once; the third gets the real names appended to the error so the next call can use them.
-"""
+"""Epic's Unreal MCP hides ~50 toolsets behind call_tool. Models pass the dotted ``<toolset>.<tool>`` as tool_name
+(rewritten), omit optional parameters Epic still rejects (filled from the schema, retried once), and guess names
+(real names appended to the error)."""
 
 import json
 import re
@@ -42,7 +34,6 @@ Describe = Callable[
 
 
 def prepare(arguments: dict) -> dict:
-    """Rewrites a dotted tool_name into toolset_name + tool_name; leaves anything else as it was."""
     if not isinstance(arguments, dict):
         return arguments
     tool = arguments.get("tool_name")
@@ -148,7 +139,6 @@ def repair(
 
 
 def call(url: str, arguments: dict, invoke: Callable[[dict], str], describe: Describe) -> str:
-    """Runs one Unreal call_tool through the fixes above: rewrite, call, then at most one schema-filled retry."""
     arguments = prepare(arguments)
     result = invoke(arguments)
     retry, hint = repair(url, arguments, result, describe)

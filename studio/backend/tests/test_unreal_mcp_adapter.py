@@ -62,8 +62,6 @@ def _fresh_caches():
 
 
 class _Server:
-    """Stands in for the editor: answers like Epic's plugin and records what it was sent."""
-
     def __init__(self, answers):
         self.answers = list(answers)
         self.calls, self.meta = [], []

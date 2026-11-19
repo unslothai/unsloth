@@ -15101,7 +15101,6 @@ def execute_tool(
             )
 
         if server.get("builtin_id") == "unreal" and tool_name == unreal_mcp_adapter.CALL_TOOL:
-            # Epic's meta-tool conventions trip models; see integrations/unreal/mcp_adapter.py.
             result = unreal_mcp_adapter.call(
                 url, arguments, lambda call_args: _call(tool_name, call_args), _call
             )
