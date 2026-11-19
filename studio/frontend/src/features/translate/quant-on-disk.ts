@@ -24,8 +24,7 @@ async function readQuant(
   }
 }
 
-/** True / false for the quant on disk, null when unknown. The local listing answers from disk alone;
- *  the remote one is a live Hub listing, asked only when the disk does not show the quant complete. */
+/** Quant on disk: true / false, null when unknown. Hub asked only if disk does not show it complete. */
 export async function quantOnDisk(
   quant: string,
   list: (localOnly: boolean) => Promise<readonly VariantRow[]>,

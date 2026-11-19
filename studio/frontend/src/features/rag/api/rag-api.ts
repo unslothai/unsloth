@@ -93,8 +93,7 @@ async function ragUpload(
   return json as DocumentUploadResult;
 }
 
-/** Not gated on sqlite-vec, so its status says nothing about RAG availability. With `maxChars` only
- *  that many leading characters are kept, so scanned pages past them are not OCR'd. */
+/** Not gated on sqlite-vec. Scanned pages past `maxChars` are not OCR'd. */
 export async function extractDocumentText(
   file: File,
   beforeRetry?: () => void,

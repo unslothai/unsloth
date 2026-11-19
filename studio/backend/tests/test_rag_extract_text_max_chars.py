@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/api/rag/extract-text max_chars: Translate keeps only its first characters, so scanned pages past
-them are never OCR'd, while the composer (no max_chars) reads every page as before."""
+"""/api/rag/extract-text max_chars: scanned pages past it are not OCR'd; without it every page is."""
 
 import io
 

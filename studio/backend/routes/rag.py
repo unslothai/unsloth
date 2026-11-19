@@ -1048,8 +1048,7 @@ def _scanned_page_text(
     pages: list,
     max_chars: int | None = None,
 ) -> tuple[dict[int, str], list[int], int]:
-    """OCR text by page, the scanned pages left unread, and how many pages the answer keeps. With
-    *max_chars*, pages are read in order and a page past that many characters is never OCR'd."""
+    """OCR text by page, unread scanned pages, and pages kept; pages past *max_chars* are never OCR'd."""
     from core.rag import captioner, parsers, pdf_ocr
 
     scanned = [page.page_number for page in pages if page.needs_ocr]

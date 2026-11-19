@@ -38,8 +38,7 @@ def ocr_pages(
     *,
     until = None,
 ) -> dict[int, str]:
-    """OCRs only the requested pages via PyMuPDF's Tesseract, which must already have its language data.
-    ``until(number, out)`` returning True stops before that page."""
+    """OCR the requested pages; ``until(number, out)`` returning True stops before that page."""
     if not page_numbers:
         return {}
     import pymupdf

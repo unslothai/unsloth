@@ -61,7 +61,6 @@ test("five translations cost no Hub listing once each model's state is known", a
     }),
   };
   const known: Record<string, boolean | undefined> = {};
-  // The page's check: on open and after every run.
   for (let pause = 0; pause <= 5; pause++) {
     for (const id of ["1.8B", "7B"] as const) {
       const onDisk = await quantOnDisk("q4_k_m", listers[id].list, {
