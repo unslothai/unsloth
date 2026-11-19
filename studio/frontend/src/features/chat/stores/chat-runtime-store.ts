@@ -260,11 +260,13 @@ function loadResearchModelTimeoutSeconds(): number {
   }
 }
 
-function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
+function loadResearchWebsitePolicy(
+  stored = readStorageValue(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY),
+): ResearchWebsitePolicy {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_WEBSITE_POLICY;
   try {
     const parsed = JSON.parse(
-      window.localStorage.getItem(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) || "{}",
+      stored || "{}",
     ) as Partial<ResearchWebsitePolicy>;
     return {
       allowedDomains: Array.isArray(parsed.allowedDomains)
@@ -283,12 +285,14 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   }
 }
 
-function loadResearchMcpSources(): ResearchMcpSource[] {
+function loadResearchMcpSources(
+  stored = readStorageValue(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY),
+): ResearchMcpSource[] {
   if (typeof window === "undefined") return [];
   try {
     return normalizeResearchMcpSources(
       JSON.parse(
-        window.localStorage.getItem(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY) || "[]",
+        stored || "[]",
       ),
     );
   } catch {
@@ -570,7 +574,11 @@ function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
 const CROSS_WINDOW_SETTINGS = [
   [CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, "researchWebsitePolicy", loadResearchWebsitePolicy],
   [CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY, "researchMcpSources", loadResearchMcpSources],
-  [CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, "researchModelTimeoutSeconds", loadResearchModelTimeoutSeconds],
+  [
+    CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
+    "researchModelTimeoutSeconds",
+    (raw: string) => (isSupportedResearchModelTimeout(Number(raw)) ? Number(raw) : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS),
+  ],
 ] as const;
 
 // Edits only: a settings load also rewrites the value keys, with whatever the server had when it answered.
@@ -898,7 +906,7 @@ function persistSetting(key: string, raw: string): void {
     }
     writeStorageValue(key, raw);
     if (CROSS_WINDOW_SETTINGS.some(([crossKey]) => crossKey === key)) {
-      writeStorageValue(CROSS_WINDOW_EDIT_KEY, JSON.stringify({ key, nonce: Math.random() }));
+      writeStorageValue(CROSS_WINDOW_EDIT_KEY, JSON.stringify({ key, raw, nonce: Math.random() }));
     }
   };
   if (
@@ -6548,19 +6556,20 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
   window.addEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
   window.addEventListener("storage", (event) => {
     if (event.key !== CROSS_WINDOW_EDIT_KEY || !event.newValue) return;
-    let edit: { key?: unknown };
+    let edit: { key?: unknown; raw?: unknown };
     try {
       edit = JSON.parse(event.newValue);
     } catch {
       return;
     }
     const match = CROSS_WINDOW_SETTINGS.find(([key]) => key === edit.key);
-    if (!match) return;
-    const [, field, load] = match;
+    if (!match || typeof edit.raw !== "string") return;
+    const [, field, parse] = match;
     // Counts as an edit here too, so an older settings GET still in flight cannot write it back.
     scalarSettingMutationVersions[field] += 1;
     useChatRuntimeStore.setState((state) => ({
-      [field]: load(),
+      // The record's own value: by now another window's settings load may have recached the old one.
+      [field]: parse(edit.raw as string),
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
     }));
   });

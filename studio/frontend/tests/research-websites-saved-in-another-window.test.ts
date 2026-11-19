@@ -27,7 +27,7 @@ async function settled(): Promise<void> {
 function writeFromAnotherWindow(key: string, value: unknown): void {
   const raw = typeof value === "number" ? String(value) : JSON.stringify(value);
   localStorageFake.set(key, raw);
-  const newValue = JSON.stringify({ key, nonce: Math.random() });
+  const newValue = JSON.stringify({ key, raw, nonce: Math.random() });
   localStorageFake.set(CROSS_WINDOW_EDIT_KEY, newValue);
   fireWindowEvent("storage", { key: CROSS_WINDOW_EDIT_KEY, newValue });
 }
@@ -58,6 +58,7 @@ test("a site blocked in another window stays blocked when this window saves its 
 
   const edit = JSON.parse(localStorageFake.get(CROSS_WINDOW_EDIT_KEY) ?? "null");
   assert.equal(edit?.key, CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY);
+  assert.equal(edit?.raw, localStorageFake.get(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY));
 
   const sent = settingsHttp.puts.filter((put) => "researchWebsitePolicy" in put);
   assert.deepEqual(sent.at(-1)?.researchWebsitePolicy, {

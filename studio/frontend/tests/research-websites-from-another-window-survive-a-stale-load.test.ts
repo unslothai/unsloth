@@ -21,7 +21,7 @@ const policy = (...blockedDomains: string[]) => ({ allowedDomains: [], blockedDo
 function editInAnotherWindow(value: unknown): void {
   const raw = JSON.stringify(value);
   localStorageFake.set(KEY, raw);
-  const newValue = JSON.stringify({ key: KEY, nonce: Math.random() });
+  const newValue = JSON.stringify({ key: KEY, raw, nonce: Math.random() });
   localStorageFake.set(CROSS_WINDOW_EDIT_KEY, newValue);
   fireWindowEvent("storage", { key: CROSS_WINDOW_EDIT_KEY, newValue });
 }
@@ -44,4 +44,16 @@ test("another window caching an older server value is not taken as an edit", () 
   localStorageFake.set(KEY, stale);
   fireWindowEvent("storage", { key: KEY, newValue: stale });
   assert.deepEqual(useChatRuntimeStore.getState().researchWebsitePolicy, policy("reddit.com", "pinterest.com"));
+});
+
+test("an edit is taken from its record even after another window recached the old value", () => {
+  const raw = JSON.stringify(policy("reddit.com", "pinterest.com", "quora.com"));
+  localStorageFake.set(KEY, JSON.stringify(policy("reddit.com")));
+  const newValue = JSON.stringify({ key: KEY, raw, nonce: Math.random() });
+  localStorageFake.set(CROSS_WINDOW_EDIT_KEY, newValue);
+  fireWindowEvent("storage", { key: CROSS_WINDOW_EDIT_KEY, newValue });
+  assert.deepEqual(
+    useChatRuntimeStore.getState().researchWebsitePolicy,
+    policy("reddit.com", "pinterest.com", "quora.com"),
+  );
 });
