@@ -10,10 +10,12 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  ChevronDownStandardIcon,
+  ChevronRightStandardIcon,
+} from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
-  ArrowRight01Icon,
   Brain03Icon,
   Cancel01Icon,
   CloudIcon,
@@ -122,7 +124,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
             <button
               type="button"
               onClick={() => setOpen(true)}
-              className="group relative flex w-full items-center gap-4 overflow-hidden rounded-[calc(22px*var(--ui-space-scale,1))] py-5 pr-3 pl-5 text-left bg-white shadow-[var(--composer-shadow)] dark:bg-card transition-transform duration-200 hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="relative flex w-full items-center gap-4 overflow-hidden rounded-[calc(22px*var(--ui-space-scale,1))] py-5 pr-3 pl-5 text-left bg-white shadow-[var(--composer-shadow)] dark:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span className="relative flex min-w-0 flex-1 flex-col items-start gap-1">
                 <span className="font-heading font-semibold text-base text-foreground tracking-[-0.01em]">
@@ -131,9 +133,9 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                 <span className="inline-flex items-center gap-1 font-medium text-primary text-xs">
                   Learn more
                   <HugeiconsIcon
-                    icon={ArrowRight01Icon}
+                    icon={ChevronRightStandardIcon}
                     strokeWidth={2}
-                    className="size-3.5 transition-transform duration-200 group-hover:translate-x-0.5"
+                    className="size-3.5"
                   />
                 </span>
               </span>
@@ -141,7 +143,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               <MascotImg
                 src="Sloth emojis/sloth magnify final.png"
                 aria-hidden="true"
-                className="pointer-events-none absolute right-3 bottom-0 h-[calc(80px*var(--ui-space-scale,1))] w-auto translate-y-[14%] transition-transform duration-300 group-hover:translate-y-[6%]"
+                className="pointer-events-none absolute right-3 bottom-0 h-[calc(80px*var(--ui-space-scale,1))] w-auto translate-y-[14%]"
               />
             </button>
             <button
@@ -161,7 +163,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
       )}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="content-start gap-0 p-3 pb-6 sm:max-w-[calc(35rem*var(--ui-space-scale,1))]"
+          className="content-start gap-0 p-6 sm:max-w-[calc(35rem*var(--ui-space-scale,1))]"
           onCloseAutoFocus={(event) => {
             if (!openPickerOnClose.current) {
               return;
@@ -184,7 +186,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
             <Button
               variant="primary"
               size="hero"
-              className="group mt-2 gap-1.5"
+              className="mt-2 gap-1"
               onClick={() => {
                 openPickerOnClose.current = true;
                 dismiss();
@@ -193,26 +195,26 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
             >
               Open model picker
               <HugeiconsIcon
-                icon={ArrowRight01Icon}
+                icon={ChevronRightStandardIcon}
                 strokeWidth={2}
-                className="size-4 transition-transform duration-200 group-hover:translate-x-0.5"
+                className="size-4"
               />
             </Button>
           </div>
-          <ul className="mt-7 grid grid-cols-2 gap-2 px-3 sm:grid-cols-4">
+          <ul className="mt-7 grid grid-cols-2 gap-2.5">
             {FEATURES.map((feature) => (
               <li
                 key={feature.label}
-                className="flex flex-col items-center gap-2.5 rounded-2xl bg-muted/50 px-2 py-4 text-center"
+                className="flex items-center gap-3 rounded-2xl bg-muted/50 p-3.5"
               >
-                <span className="flex size-9 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
                   <HugeiconsIcon
                     icon={feature.icon}
                     strokeWidth={1.9}
                     className="size-4.5"
                   />
                 </span>
-                <span className="text-balance font-medium text-foreground text-xs leading-snug">
+                <span className="font-medium text-foreground text-sm leading-snug">
                   {feature.label}
                 </span>
               </li>
@@ -249,7 +251,7 @@ const CardArt: FC = () => (
     aria-hidden="true"
     className="relative block h-[calc(92px*var(--ui-space-scale,1))] w-[calc(140px*var(--ui-space-scale,1))] shrink-0"
   >
-    <span className="absolute top-1 left-0 flex w-[calc(118px*var(--ui-space-scale,1))] -rotate-3 flex-col gap-0.5 rounded-xl bg-muted p-1.5 transition-transform duration-300 group-hover:-rotate-1">
+    <span className="absolute top-1 left-0 flex w-[calc(118px*var(--ui-space-scale,1))] -rotate-3 flex-col gap-0.5 rounded-xl bg-muted p-1.5">
       {MOCK_ROWS.map((row) => (
         <span
           key={row.name}
@@ -286,14 +288,14 @@ const CardArt: FC = () => (
 const DialogHero: FC = () => (
   <div
     aria-hidden="true"
-    className="relative h-[calc(236px*var(--ui-space-scale,1))] overflow-hidden rounded-[calc(20px*var(--ui-space-scale,1))] bg-muted/50"
+    className="relative h-[calc(272px*var(--ui-space-scale,1))] overflow-hidden rounded-[calc(20px*var(--ui-space-scale,1))] bg-muted/50"
   >
     <MascotImg
       src="Sloth emojis/UnSloth Sparkling large.png"
-      className="absolute bottom-[calc(64px*var(--ui-space-scale,1))] left-8 size-24 max-sm:right-5 max-sm:left-auto max-sm:size-16"
+      className="absolute bottom-[calc(76px*var(--ui-space-scale,1))] left-10 size-28 max-sm:right-5 max-sm:left-auto max-sm:size-16"
     />
 
-    <div className="absolute top-7 right-16 flex w-[calc(250px*var(--ui-space-scale,1))] max-sm:right-auto max-sm:left-4 max-sm:w-[calc(224px*var(--ui-space-scale,1))] flex-col gap-1.5 rounded-2xl p-2 bg-white shadow-[var(--composer-shadow)] dark:bg-card">
+    <div className="absolute top-9 right-14 flex w-[calc(250px*var(--ui-space-scale,1))] max-sm:right-auto max-sm:left-6 max-sm:w-[calc(224px*var(--ui-space-scale,1))] flex-col gap-1.5 rounded-2xl p-2 bg-white shadow-[var(--composer-shadow)] dark:bg-card">
       <div className="flex items-center gap-3 px-1.5 pt-0.5 text-muted-foreground">
         <HugeiconsIcon icon={StarIcon} className="size-3.5" />
         <HugeiconsIcon icon={Compass01Icon} className="size-3.5" />
@@ -339,7 +341,7 @@ const DialogHero: FC = () => (
       </div>
     </div>
 
-    <div className="absolute inset-x-4 bottom-4 flex h-[calc(52px*var(--ui-space-scale,1))] items-end justify-between rounded-2xl px-3.5 pb-2.5 bg-white shadow-[var(--composer-shadow)] dark:bg-card">
+    <div className="absolute inset-x-6 bottom-6 flex h-[calc(52px*var(--ui-space-scale,1))] items-end justify-between rounded-2xl px-3.5 pb-2.5 bg-white shadow-[var(--composer-shadow)] dark:bg-card">
       <span className="absolute top-2.5 left-4 text-muted-foreground text-xs">
         Ask anything
       </span>
@@ -349,7 +351,7 @@ const DialogHero: FC = () => (
         gemma-4-E4B-it
         <span className="text-muted-foreground">Thinking</span>
         <HugeiconsIcon
-          icon={ArrowDown01Icon}
+          icon={ChevronDownStandardIcon}
           strokeWidth={2}
           className="size-3 text-muted-foreground"
         />
