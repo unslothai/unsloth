@@ -179,6 +179,7 @@ export const id = {
       add: "Tambah",
       cancel: "Batal",
       removeSite: "Hapus {site}",
+      hostOnly: "Hanya host ini, bukan subdomainnya",
       permissionsNote:
         "Hanya situs yang memiliki izin sendiri yang muncul di sini. Tindakan mencakup proses masuk, pengiriman formulir, dan tombol untuk membeli, mengirim, atau menghapus.",
       siteInvalid: "Masukkan situs seperti example.com atau *.example.com.",

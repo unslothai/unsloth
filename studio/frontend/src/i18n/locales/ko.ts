@@ -173,6 +173,7 @@ export const ko = {
       add: "추가",
       cancel: "취소",
       removeSite: "{site} 삭제",
+      hostOnly: "이 호스트만 해당 (하위 도메인 제외)",
       permissionsNote: "별도 권한이 있는 사이트만 여기에 표시됩니다. 작업이란 로그인, 양식 제출, 구매·전송·삭제를 하는 버튼을 말합니다.",
       siteInvalid: "example.com 또는 *.example.com 같은 사이트를 입력하세요.",
     },

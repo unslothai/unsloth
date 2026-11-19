@@ -171,6 +171,7 @@ export const sv = {
       add: "Lägg till",
       cancel: "Avbryt",
       removeSite: "Ta bort {site}",
+      hostOnly: "Endast den här värden, inte dess underdomäner",
       permissionsNote: "Här visas bara webbplatser med egna behörigheter. Åtgärder är inloggningar, formulär som skickas och knappar som köper, skickar eller tar bort.",
       siteInvalid: "Ange en webbplats som example.com eller *.example.com.",
     },

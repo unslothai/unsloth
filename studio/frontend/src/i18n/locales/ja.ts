@@ -174,6 +174,7 @@ export const ja = {
       add: "追加",
       cancel: "キャンセル",
       removeSite: "{site} を削除",
+      hostOnly: "このホストのみ (サブドメインは含まない)",
       permissionsNote: "独自の権限を持つサイトだけがここに表示されます。操作とは、サインイン、フォーム送信、購入・送信・削除を行うボタンのことです。",
       siteInvalid: "example.com や *.example.com のようにサイトを入力してください。",
     },

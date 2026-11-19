@@ -173,6 +173,7 @@ export const zhCN = {
       add: "添加",
       cancel: "取消",
       removeSite: "移除 {site}",
+      hostOnly: "仅此主机，不含其子域名",
       permissionsNote: "这里只显示有单独权限的网站。操作指登录、提交表单，以及购买、发送或删除的按钮。",
       siteInvalid: "请输入网站，例如 example.com 或 *.example.com。",
     },

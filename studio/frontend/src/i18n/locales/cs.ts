@@ -179,6 +179,7 @@ export const cs = {
       add: "Přidat",
       cancel: "Zrušit",
       removeSite: "Odebrat {site}",
+      hostOnly: "Pouze tento hostitel, ne jeho subdomény",
       permissionsNote:
         "Zobrazují se zde jen weby s vlastními oprávněními. Akce jsou přihlášení, odeslání formulářů a tlačítka, která nakupují, odesílají nebo mažou.",
       siteInvalid: "Zadejte web, například example.com nebo *.example.com.",

@@ -173,6 +173,7 @@ export const de = {
       add: "Hinzufügen",
       cancel: "Abbrechen",
       removeSite: "{site} entfernen",
+      hostOnly: "Nur dieser Host, nicht seine Subdomains",
       permissionsNote: "Hier erscheinen nur Websites mit eigenen Berechtigungen. Aktionen sind Anmeldungen, Formularübermittlungen und Schaltflächen, die kaufen, senden oder löschen.",
       siteInvalid: "Gib eine Website wie example.com oder *.example.com ein.",
     },

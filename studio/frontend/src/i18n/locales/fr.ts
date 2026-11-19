@@ -173,6 +173,7 @@ export const fr = {
       add: "Ajouter",
       cancel: "Annuler",
       removeSite: "Retirer {site}",
+      hostOnly: "Cet hôte uniquement, pas ses sous-domaines",
       permissionsNote: "Seuls les sites avec leurs propres autorisations apparaissent ici. Les actions sont les connexions, les envois de formulaires et les boutons qui achètent, envoient ou suppriment.",
       siteInvalid: "Saisissez un site comme example.com ou *.example.com.",
     },

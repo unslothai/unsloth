@@ -173,6 +173,7 @@ export const ptBR = {
       add: "Adicionar",
       cancel: "Cancelar",
       removeSite: "Remover {site}",
+      hostOnly: "Somente este host, não seus subdomínios",
       permissionsNote: "Só aparecem aqui os sites com permissões próprias. Ações são logins, envios de formulários e botões que compram, enviam ou excluem.",
       siteInvalid: "Digite um site como example.com ou *.example.com.",
     },
