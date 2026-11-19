@@ -166,9 +166,17 @@ test("the composer's two-row floor is two rows at any size", () => {
   assert.equal(clamps.length, 1, "a 40px composer clamp is still fixed");
   const frames = CSS.match(/calc\(64px \* var\(--ui-space-scale, 1\)\)/g) ?? [];
   assert.equal(frames.length, 2, "the editor frame fallback is not two rows");
+  assert.match(
+    readSrc("components/assistant-ui/thread.tsx"),
+    /\(16 \+ 24 \* \(threadEmpty \? COMPOSER_MIN_ROWS : 1\)\) \* uiSpaceScale/,
+    "a conversation's composer is not one row",
+  );
+  assert.match(
+    readSrc("features/chat/shared-composer.tsx"),
+    /\(16 \+ 24 \* COMPOSER_MIN_ROWS\) \* uiSpaceScale/,
+  );
   for (const file of ["components/assistant-ui/thread.tsx", "features/chat/shared-composer.tsx"]) {
     const src = readSrc(file);
-    assert.match(src, /\(16 \+ 24 \* COMPOSER_MIN_ROWS\) \* uiSpaceScale/, file);
     assert.doesNotMatch(src, /Math\.max\(40, editorHeight\)/, file);
   }
 });
