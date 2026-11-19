@@ -147,7 +147,13 @@ def test_the_llama_cpp_profile_carries_the_flag_from_a_gguf_template():
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._chat_template = MISTRAL_TEMPLATE
     backend._chat_template_override = None
-    backend._markup_tokens = ["[INST]", "[/INST]", "[TOOL_CALLS]", "[TOOL_RESULTS]", "[/TOOL_RESULTS]"]
+    backend._markup_tokens = [
+        "[INST]",
+        "[/INST]",
+        "[TOOL_CALLS]",
+        "[TOOL_RESULTS]",
+        "[/TOOL_RESULTS]",
+    ]
     markup = backend.markup_profile
     assert markup.nine_char_tool_call_ids
     out = neutralize_control_markup_in_messages(_exchange(LONG_ID), None, markup)
@@ -155,7 +161,9 @@ def test_the_llama_cpp_profile_carries_the_flag_from_a_gguf_template():
 
 
 def test_a_named_template_is_judged_by_the_body_that_renders():
-    chatml = "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
+    chatml = (
+        "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
+    )
     named = {"default": chatml, "tool_use": MISTRAL_TEMPLATE}
     tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
     assert model_markup(named, tools = tools).nine_char_tool_call_ids

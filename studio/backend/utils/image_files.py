@@ -32,7 +32,11 @@ def sniff_image_type(data: bytes) -> Optional[str]:
     return None
 
 
-def atomic_write_bytes(path: Path, data: bytes, prefix: str = ".upload-") -> None:
+def atomic_write_bytes(
+    path: Path,
+    data: bytes,
+    prefix: str = ".upload-",
+) -> None:
     fd, tmp = tempfile.mkstemp(dir = path.parent, prefix = prefix)
     try:
         with os.fdopen(fd, "wb") as handle:

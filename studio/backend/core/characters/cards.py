@@ -94,7 +94,9 @@ def _json_loads(text: str):
         raise
     except (ValueError, RecursionError) as exc:
         # A 5000-digit integer or JSON nested thousands deep.
-        raise CardError("The card's JSON is nested too deeply or has a number too long to read.") from exc
+        raise CardError(
+            "The card's JSON is nested too deeply or has a number too long to read."
+        ) from exc
 
 
 @dataclass
@@ -329,7 +331,6 @@ def _name_hue(name: str) -> int:
 
 def _hsl_to_rgb(h: float, s: float, light: float) -> tuple[int, int, int]:
     import colorsys
-
     r, g, b = colorsys.hls_to_rgb(h / 360, light, s)
     return round(r * 255), round(g * 255), round(b * 255)
 
@@ -483,7 +484,9 @@ _CARD_TEXT_KEYS = (
 
 
 def normalize_card(
-    card: dict, fallback_name: str = "", warnings: Optional[list[str]] = None
+    card: dict,
+    fallback_name: str = "",
+    warnings: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """The editable fields; anything cut to fit a limit is noted in *warnings*."""
     if not isinstance(card, dict):
@@ -492,7 +495,12 @@ def normalize_card(
     # A named lorebook would otherwise import as an empty character.
     if "entries" in card and data is card and not any(card.get(key) for key in _CARD_TEXT_KEYS):
         raise CardError("This file is a lorebook, not a character card.")
-    def fit(value: Any, label: str, limit: int = MAX_FIELD_CHARS) -> str:
+
+    def fit(
+        value: Any,
+        label: str,
+        limit: int = MAX_FIELD_CHARS,
+    ) -> str:
         return _clip(_text(value, None), limit, label, warnings)
 
     name = _text(data.get("name") or card.get("name") or card.get("char_name"), None).strip()
@@ -539,7 +547,9 @@ def normalize_card(
         depth_prompt = None
     book = data.get("character_book")
     greetings = [
-        _text(g, None) for g in _as_list(data.get("alternate_greetings")) if isinstance(g, str) and g.strip()
+        _text(g, None)
+        for g in _as_list(data.get("alternate_greetings"))
+        if isinstance(g, str) and g.strip()
     ]
     if len(greetings) > MAX_GREETINGS and warnings is not None:
         warnings.append(f"Kept the first {MAX_GREETINGS} of {len(greetings)} alternate greetings.")
@@ -547,19 +557,25 @@ def normalize_card(
     if any(len(g) > MAX_FIELD_CHARS for g in greetings):
         greetings = [g[:MAX_FIELD_CHARS] for g in greetings]
         if warnings is not None:
-            warnings.append(f"Shortened alternate greetings longer than {MAX_FIELD_CHARS:,} characters.")
+            warnings.append(
+                f"Shortened alternate greetings longer than {MAX_FIELD_CHARS:,} characters."
+            )
     fields = {
         "name": _clip(name, MAX_SHORT_CHARS, "name", warnings),
         "description": fit(data.get("description") or card.get("char_persona"), "description"),
         "personality": fit(data.get("personality"), "personality"),
         "scenario": fit(data.get("scenario") or card.get("world_scenario"), "scenario"),
         "first_mes": fit(data.get("first_mes") or card.get("char_greeting"), "greeting"),
-        "mes_example": fit(data.get("mes_example") or card.get("example_dialogue"), "example messages"),
+        "mes_example": fit(
+            data.get("mes_example") or card.get("example_dialogue"), "example messages"
+        ),
         "system_prompt": fit(data.get("system_prompt"), "system prompt"),
         "post_history_instructions": fit(
             data.get("post_history_instructions"), "post-history instructions"
         ),
-        "creator_notes": fit(data.get("creator_notes") or card.get("creatorcomment"), "creator notes"),
+        "creator_notes": fit(
+            data.get("creator_notes") or card.get("creatorcomment"), "creator notes"
+        ),
         "creator": fit(data.get("creator"), "creator", MAX_SHORT_CHARS),
         "character_version": fit(data.get("character_version"), "version", MAX_SHORT_CHARS),
         "alternate_greetings": greetings,
@@ -769,9 +785,15 @@ def _export_book(book: dict) -> dict:
         if "depth" in entry and (position == "at_depth" or "depth" in ext):
             ext["depth"] = entry["depth"]
         logic = entry.get("selective_logic")
-        if isinstance(logic, str) and logic in _LOGIC_CODE and (logic != "and_any" or "selectiveLogic" in ext):
+        if (
+            isinstance(logic, str)
+            and logic in _LOGIC_CODE
+            and (logic != "and_any" or "selectiveLogic" in ext)
+        ):
             ext["selectiveLogic"] = _LOGIC_CODE[logic]
-        if isinstance(entry.get("case_sensitive"), bool) and (entry["case_sensitive"] or "case_sensitive" in ext):
+        if isinstance(entry.get("case_sensitive"), bool) and (
+            entry["case_sensitive"] or "case_sensitive" in ext
+        ):
             ext["case_sensitive"] = entry["case_sensitive"]
         out = {**entry, "extensions": ext}
         if position == "at_depth":

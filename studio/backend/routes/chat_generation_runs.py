@@ -115,7 +115,6 @@ class CreateChatGenerationRun(BaseModel):
     assistantRoleplay: Optional[AssistantRoleplay] = None
 
 
-
 def _normalized_key(key: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(key).casefold())
 

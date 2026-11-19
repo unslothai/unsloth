@@ -139,7 +139,9 @@ def test_reading_a_portrait_does_not_recreate_the_folder(client):
 
 def test_a_portrait_is_served_as_the_type_its_bytes_say(client):
     character = _character(client)
-    assert client.put(f"/api/characters/{character['id']}/avatar", content = _png()).status_code == 200
+    assert (
+        client.put(f"/api/characters/{character['id']}/avatar", content = _png()).status_code == 200
+    )
     gif = b"GIF89a" + b"\x00" * 20
     db.write_image("characters", character["id"], gif)
     response = client.get(f"/api/characters/{character['id']}/avatar")

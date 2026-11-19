@@ -15,13 +15,22 @@ from core.characters import cards
 V2 = {"spec": "chara_card_v2", "spec_version": "2.0", "data": {"name": "Mira", "description": "d"}}
 
 
-def _image(fmt: str = "PNG", size = (8, 8), **save) -> bytes:
+def _image(
+    fmt: str = "PNG",
+    size = (8, 8),
+    **save,
+) -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", size, (200, 30, 30)).save(buffer, fmt, **save)
     return buffer.getvalue()
 
 
-def _with_chunk(png: bytes, key: bytes, body: bytes, kind: bytes = b"tEXt") -> bytes:
+def _with_chunk(
+    png: bytes,
+    key: bytes,
+    body: bytes,
+    kind: bytes = b"tEXt",
+) -> bytes:
     return png[:-12] + cards._png_chunk(kind, key + b"\x00" + body) + png[-12:]
 
 
@@ -53,7 +62,9 @@ def _entry(**overrides) -> dict:
 
 
 def _reimported_entry(card: dict) -> dict:
-    return cards.parse_card_file(json.dumps(card).encode(), "a.json").fields["character_book"]["entries"][0]
+    return cards.parse_card_file(json.dumps(card).encode(), "a.json").fields["character_book"][
+        "entries"
+    ][0]
 
 
 @pytest.mark.parametrize("build", [cards.build_card_v2, cards.build_card_v3])
@@ -71,14 +82,18 @@ def test_lorebook_logic_and_case_edits_survive_export_and_reimport(build):
 
 def test_lorebook_edits_survive_a_png_round_trip():
     entry = _entry(selective_logic = "and_all", case_sensitive = True)
-    png = cards.export_png({"name": "A", "description": "d", "characterBook": {"entries": [entry]}}, None)
+    png = cards.export_png(
+        {"name": "A", "description": "d", "characterBook": {"entries": [entry]}}, None
+    )
     again = cards.parse_card_file(png, "a.png").fields["character_book"]["entries"][0]
     assert (again["selective_logic"], again["case_sensitive"]) == ("and_all", True)
 
 
 def test_a_depth_entry_exports_a_spec_position_and_reimports_at_depth():
     entry = _entry(position = "at_depth", depth = 2)
-    exported = cards.build_card_v3({"name": "A", "description": "d", "characterBook": {"entries": [entry]}})
+    exported = cards.build_card_v3(
+        {"name": "A", "description": "d", "characterBook": {"entries": [entry]}}
+    )
     out = exported["data"]["character_book"]["entries"][0]
     assert out["position"] in ("before_char", "after_char")
     assert out["extensions"]["position"] == 4
@@ -88,12 +103,23 @@ def test_a_depth_entry_exports_a_spec_position_and_reimports_at_depth():
 def test_a_sillytavern_world_file_keeps_its_top_level_placement_and_logic():
     world = {
         "entries": {
-            "0": {"uid": 0, "key": ["k"], "content": "c", "selectiveLogic": 2, "position": 4, "depth": 1},
+            "0": {
+                "uid": 0,
+                "key": ["k"],
+                "content": "c",
+                "selectiveLogic": 2,
+                "position": 4,
+                "depth": 1,
+            },
             "1": {"uid": 1, "key": ["j"], "content": "c", "position": 1, "disable": True},
         }
     }
     first, second = cards.normalize_book(world)["entries"]
-    assert (first["position"], first["selective_logic"], first["depth"]) == ("at_depth", "not_any", 1)
+    assert (first["position"], first["selective_logic"], first["depth"]) == (
+        "at_depth",
+        "not_any",
+        1,
+    )
     assert (second["position"], second["enabled"]) == ("after_char", False)
 
 
@@ -165,7 +191,9 @@ def test_a_damaged_charx_is_always_a_card_error():
 
 def test_raw_utf8_json_in_a_text_chunk_is_not_mojibake():
     raw = json.dumps({"name": "Zoë", "description": "café"}, ensure_ascii = False).encode()
-    assert cards.parse_card_file(_with_chunk(_image(), b"chara", raw), "a.png").fields["name"] == "Zoë"
+    assert (
+        cards.parse_card_file(_with_chunk(_image(), b"chara", raw), "a.png").fields["name"] == "Zoë"
+    )
 
 
 @pytest.mark.parametrize("extra", [1, 2, 3])
@@ -219,9 +247,15 @@ def test_an_imported_portrait_over_the_avatar_limit_is_dropped(monkeypatch):
 def test_a_charx_whose_icon_does_not_decode_says_so():
     v3 = {
         "spec": "chara_card_v3",
-        "data": {"name": "A", "description": "d", "assets": [{"type": "icon", "name": "main", "uri": "embeded://i.png"}]},
+        "data": {
+            "name": "A",
+            "description": "d",
+            "assets": [{"type": "icon", "name": "main", "uri": "embeded://i.png"}],
+        },
     }
-    parsed = cards.parse_card_file(_charx(json.dumps(v3), {"i.png": b"\x89PNG\r\n\x1a\nbroken"}), "a.charx")
+    parsed = cards.parse_card_file(
+        _charx(json.dumps(v3), {"i.png": b"\x89PNG\r\n\x1a\nbroken"}), "a.charx"
+    )
     assert parsed.avatar is None
     assert any("picture could not be read" in warning for warning in parsed.warnings)
 
@@ -245,5 +279,7 @@ def test_a_v1_card_exports_only_v2_data_keys():
     parsed = cards.parse_card_file(json.dumps(v1).encode(), "a.json")
     character = {**cards.character_fields(parsed), "card": parsed.card}
     data = cards.build_card_v2(character)["data"]
-    assert not {"creatorcomment", "avatar", "chat", "create_date", "talkativeness", "fav"} & set(data)
+    assert not {"creatorcomment", "avatar", "chat", "create_date", "talkativeness", "fav"} & set(
+        data
+    )
     assert data["creator_notes"] == "note"

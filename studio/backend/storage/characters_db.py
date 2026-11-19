@@ -467,7 +467,11 @@ def chat_title(names: list[str]) -> str:
 
 
 def _opening_messages(
-    thread_id: str, characters: list[dict], speaker_name: str, greetings: Optional[dict], created: int
+    thread_id: str,
+    characters: list[dict],
+    speaker_name: str,
+    greetings: Optional[dict],
+    created: int,
 ) -> tuple[list[dict], list[str], str]:
     def message(parent_id: Optional[str], role: str, text: str, roleplay: dict) -> dict:
         nonlocal created
@@ -572,9 +576,11 @@ def create_character_chat(
             ).fetchone()
             if known != len(requested):
                 raise LookupError("character")
-            if persona and conn.execute(
-                "SELECT 1 FROM personas WHERE id = ?", (persona["id"],)
-            ).fetchone() is None:
+            if (
+                persona
+                and conn.execute("SELECT 1 FROM personas WHERE id = ?", (persona["id"],)).fetchone()
+                is None
+            ):
                 raise PersonaNotFound(persona["id"])
             for position, character in enumerate(characters):
                 conn.execute(
@@ -668,9 +674,12 @@ def update_chat_scene(
         # Only adding a cast makes a plain chat a character chat.
         if scene is None and not add:
             return None
-        if persona_set and persona_id and conn.execute(
-            "SELECT 1 FROM personas WHERE id = ?", (persona_id,)
-        ).fetchone() is None:
+        if (
+            persona_set
+            and persona_id
+            and conn.execute("SELECT 1 FROM personas WHERE id = ?", (persona_id,)).fetchone()
+            is None
+        ):
             raise PersonaNotFound(persona_id)
         now = now_ms()
         stored = _loads(scene["settings_json"], {}) if scene else {}
