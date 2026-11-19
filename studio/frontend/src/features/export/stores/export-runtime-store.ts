@@ -186,6 +186,8 @@ interface ExportRuntimeState {
   quantIndex: number;
   stage: string | null;
   logLines: ExportLogEntry[];
+  /** Lines trimmed off the head of `logLines` this run, so `logBase + i` is a stable row key. */
+  logBase: number;
   lastSeq: number | null;
   connected: boolean;
   /** POST response lost to a tunnel timeout; settling via /api/export/status. */
@@ -210,6 +212,8 @@ interface ExportRuntimeActions {
   runExport: (params: RunExportParams) => Promise<void>;
   requestCancel: () => Promise<void>;
   appendLog: (entry: ExportLogEntry, seq?: number) => void;
+  /** appendLog over several SSE events in one store update; same per-event seq dedupe. */
+  appendLogBatch: (items: ExportLogStreamItem[]) => void;
   appendLogs: (entries: ExportLogPollEntry[]) => void;
   setConnected: (value: boolean) => void;
   applyBackendStatus: (status: ExportStatus) => void;
@@ -217,6 +221,44 @@ interface ExportRuntimeActions {
 }
 
 export type ExportRuntimeStore = ExportRuntimeState & ExportRuntimeActions;
+
+export interface ExportLogStreamItem {
+  entry: ExportLogEntry;
+  seq?: number;
+}
+
+// Applies stream items in order with appendLog's rules: skip a numbered item at or below
+// lastSeq, keep the newest MAX_LOG_LINES, and bump logBase by the lines trimmed.
+function applyStreamItems(
+  state: ExportRuntimeState,
+  items: readonly ExportLogStreamItem[],
+): Partial<ExportRuntimeState> | null {
+  let lastSeq = state.lastSeq;
+  let stage = state.stage;
+  const fresh: ExportLogEntry[] = [];
+  for (const { entry, seq } of items) {
+    if (typeof seq === "number" && lastSeq !== null && seq <= lastSeq) {
+      continue;
+    }
+    fresh.push(entry);
+    if (typeof seq === "number") lastSeq = seq;
+    if (entry.stream === "status") stage = entry.line;
+  }
+  if (fresh.length === 0) return null;
+  return { ...trimLogLines(state, fresh), lastSeq, stage };
+}
+
+function trimLogLines(
+  state: ExportRuntimeState,
+  fresh: ExportLogEntry[],
+): Pick<ExportRuntimeState, "logLines" | "logBase"> {
+  const merged = state.logLines.concat(fresh);
+  const drop = Math.max(0, merged.length - MAX_LOG_LINES);
+  return {
+    logLines: drop > 0 ? merged.slice(drop) : merged,
+    logBase: state.logBase + drop,
+  };
+}
 
 const initialState: ExportRuntimeState = {
   phase: "idle",
@@ -228,6 +270,7 @@ const initialState: ExportRuntimeState = {
   quantIndex: 0,
   stage: null,
   logLines: [],
+  logBase: 0,
   lastSeq: null,
   connected: false,
   reconnecting: false,
@@ -245,27 +288,12 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
 
   setConnected: (value) => set({ connected: value }),
 
+  // SSE and the poll fallback both feed logs, so dedupe by seq.
   appendLog: (entry, seq) =>
-    set((state) => {
-      // SSE and the poll fallback both feed logs, so dedupe by seq.
-      if (
-        typeof seq === "number" &&
-        state.lastSeq !== null &&
-        seq <= state.lastSeq
-      ) {
-        return state;
-      }
-      const next =
-        state.logLines.length >= MAX_LOG_LINES
-          ? state.logLines.slice(state.logLines.length - MAX_LOG_LINES + 1)
-          : state.logLines.slice();
-      next.push(entry);
-      return {
-        logLines: next,
-        lastSeq: typeof seq === "number" ? seq : state.lastSeq,
-        stage: entry.stream === "status" ? entry.line : state.stage,
-      };
-    }),
+    set((state) => applyStreamItems(state, [{ entry, seq }]) ?? state),
+
+  appendLogBatch: (items) =>
+    set((state) => applyStreamItems(state, items) ?? state),
 
   appendLogs: (entries) =>
     set((state) => {
@@ -275,20 +303,17 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           : entries.filter((e) => e.seq > (state.lastSeq as number));
       if (fresh.length === 0) return state;
 
-      const merged = state.logLines.concat(
+      const trimmed = trimLogLines(
+        state,
         fresh.map((e) => ({ stream: e.stream, line: e.line, ts: e.ts })),
       );
-      const next =
-        merged.length > MAX_LOG_LINES
-          ? merged.slice(merged.length - MAX_LOG_LINES)
-          : merged;
 
       let stage = state.stage;
       for (const e of fresh) {
         if (e.stream === "status") stage = e.line;
       }
       return {
-        logLines: next,
+        ...trimmed,
         lastSeq: fresh[fresh.length - 1].seq,
         stage,
       };
@@ -382,6 +407,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       quantIndex: 0,
       stage: null,
       logLines: [],
+      logBase: 0,
       lastSeq: null,
       connected: false,
       reconnecting: false,

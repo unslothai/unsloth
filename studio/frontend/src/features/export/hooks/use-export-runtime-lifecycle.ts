@@ -8,7 +8,10 @@ import {
   getExportStatus,
   streamExportLogs,
 } from "../api/export-api";
-import { useExportRuntimeStore } from "../stores/export-runtime-store";
+import {
+  type ExportLogStreamItem,
+  useExportRuntimeStore,
+} from "../stores/export-runtime-store";
 
 const STATUS_POLL_INTERVAL_MS = 5000;
 // Idle: only catches a run started in another tab, so slow and skipped while hidden.
@@ -32,6 +35,19 @@ export function useExportRuntimeLifecycle(): void {
     let statusTimer: ReturnType<typeof setTimeout> | null = null;
 
     const store = useExportRuntimeStore;
+
+    // One network chunk carries many SSE log events, parsed synchronously; queue them and
+    // flush once in a microtask so the chunk costs one store update instead of one per line.
+    let pendingLogs: ExportLogStreamItem[] = [];
+    const flushLogs = () => {
+      const items = pendingLogs;
+      pendingLogs = [];
+      if (items.length > 0) store.getState().appendLogBatch(items);
+    };
+    const queueLog = (item: ExportLogStreamItem) => {
+      if (pendingLogs.length === 0) queueMicrotask(flushLogs);
+      pendingLogs.push(item);
+    };
 
     const clearReconnect = () => {
       if (reconnectTimer) {
@@ -112,7 +128,7 @@ export function useExportRuntimeLifecycle(): void {
           onOpen: () => store.getState().setConnected(true),
           onEvent: (event) => {
             if (event.event === "log" && event.entry) {
-              store.getState().appendLog(event.entry, event.id ?? undefined);
+              queueLog({ entry: event.entry, seq: event.id ?? undefined });
             }
           },
         });
