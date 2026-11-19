@@ -1256,6 +1256,7 @@ class ToolLoopController:
         duplicate_noop_limit: int = 2,
         session_id: str | None = None,
         thread_id: str | None = None,
+        loaded_mcp_tools: Collection[str] = (),
     ) -> None:
         self._session_id = session_id
         self._thread_id = thread_id
@@ -1265,6 +1266,12 @@ class ToolLoopController:
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
+        if self._mcp_search:
+            # Matched to this message or run on an earlier turn: callable as if searched, so the
+            # declared tools, and the prompt prefix they head, stay put.
+            self._allowed_tool_names.update(
+                name for name in loaded_mcp_tools if _mcp_tool_spec(name) is not None
+            )
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools

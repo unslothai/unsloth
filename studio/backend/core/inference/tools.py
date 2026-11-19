@@ -13856,8 +13856,9 @@ _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds; its
-# ranked tools hold until a message's best match is listable and not among them.
+# A thread keeps the MCP tools its first request listed: the tool block heads the prompt, so a change there makes
+# llama-server re-read the whole chat. Tools a later message ranks best arrive as a search the turn ran, after the
+# message, and tools the thread ran stay callable.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -13867,10 +13868,13 @@ _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
+# Filled by the listing with the latest message's matches (mcp_match_exchange). A dict set per request,
+# so the listing can fill it from a task or thread that runs in a copy of the request's context.
+_MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
-# (account, thread) -> (held ranked tools, the last listing's order).
-_MCP_HELD_THREADS: "OrderedDict[tuple, tuple[list[str], list[str]]]" = OrderedDict()
+# (account, thread) -> the MCP tools the thread lists, in order.
+_MCP_HELD_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -13899,6 +13903,7 @@ def set_mcp_listing_context_tokens(
     _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
     _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
     _MCP_LISTING_REMEMBER.set(bool(remember))
+    _MCP_LISTING_MATCHES.set({})
     last_user = next(
         (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
     )
@@ -14100,24 +14105,52 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
-def _mcp_held(by_name: dict) -> tuple[list[str], list[str]]:
+def _mcp_held(by_name: dict) -> list[str] | None:
+    """The thread's listed tools still in the catalog, or None before its first listing."""
     key = _mcp_thread_key()
     if key is None:
-        return [], []
+        return None
     with _MCP_LOADED_LOCK:
-        ranked, listed = _MCP_HELD_THREADS.get(key, ((), ()))
-    return [n for n in ranked if n in by_name], list(listed)
+        listed = _MCP_HELD_THREADS.get(key)
+    return None if listed is None else [n for n in listed if n in by_name]
 
 
-def _mcp_hold(ranked: list[str], listed: list[str]) -> None:
+def _mcp_hold(listed: list[str]) -> None:
     key = _mcp_thread_key()
     if key is None or not _MCP_LISTING_REMEMBER.get():
         return
     with _MCP_LOADED_LOCK:
         _MCP_HELD_THREADS.pop(key, None)
-        _MCP_HELD_THREADS[key] = (ranked, listed)
+        _MCP_HELD_THREADS[key] = listed
         while len(_MCP_HELD_THREADS) > _MCP_LOADED_THREADS_MAX:
             _MCP_HELD_THREADS.popitem(last = False)
+
+
+def _mcp_ran(by_name: dict) -> list[str]:
+    """The tools the thread ran, newest first."""
+    return [name for name in reversed(_mcp_loaded_names()) if name in by_name]
+
+
+def _mcp_best(specs: list[dict]) -> list[str]:
+    """The tools ranked best for the latest message."""
+    ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
+    return ranked[:_MCP_TOOL_PRELOAD]
+
+
+def _mcp_fill(listing: list[dict], names: list[str], by_name: dict, ctx: int) -> list[dict]:
+    """``listing`` plus each of ``names`` that fits the preload share left after it."""
+    chosen = list(listing)
+    left = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
+        json.dumps(listing, separators = (",", ":")), ctx
+    )
+    for name in names:
+        if by_name[name] in chosen:
+            continue
+        cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
+        if cost <= left:
+            chosen.append(by_name[name])
+            left -= cost
+    return chosen
 
 
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
@@ -14168,41 +14201,60 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         search = _mcp_tool_search_spec(catalog, max_chars)
     listing = [search]
     listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
-    # Opt-in: a fixed tool block keeps the prompt cache warm across topic changes.
+    # Opt-in: only the search tool and the pinned tools, never a preload.
     if os.environ.get("UNSLOTH_STUDIO_MCP_SEARCH_ONLY") == "1":
         return listing
-    room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
-        json.dumps(listing, separators = (",", ":")), ctx
-    )
-    ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
-    ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
-    ranked = ranked[:_MCP_TOOL_PRELOAD]
+    held = _mcp_held(by_name)
+    if held is None:
+        wanted = list(dict.fromkeys(_mcp_ran(by_name) + _mcp_best(specs)))
+        names = [spec["function"]["name"] for spec in _mcp_fill(listing, wanted, by_name, ctx)[1:]]
+    else:
+        # A newly pinned tool goes last and stays, so the block changes once for it, not on every image or forced turn.
+        names = list(dict.fromkeys(held + [spec["function"]["name"] for spec in listing[1:]]))
+    _mcp_hold(names)
+    _mcp_note_matches(specs, by_name, listing[0], names, ctx)
+    return listing[:1] + [by_name[name] for name in names]
 
-    def filled(names: list[str]) -> list[dict]:
-        chosen = list(listing)
-        left = room
-        for name in dict.fromkeys(ran + names):
-            if by_name[name] in chosen:
-                continue
-            cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
-            if cost <= left:
-                chosen.append(by_name[name])
-                left -= cost
-        return chosen
 
-    held, listed_before = _mcp_held(by_name)
-    chosen = filled(held)
-    held = [name for name in held if by_name[name] in chosen]
-    if ranked and (not held or by_name[ranked[0]] not in chosen):
-        fresh = filled(ranked)
-        # A best match too big to list is not worth dropping the held tools for.
-        if not held or by_name[ranked[0]] in fresh:
-            chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
-    # Listed tools keep their places, new ones go last: a reorder in the tool block reprocesses the whole chat.
-    names = [spec["function"]["name"] for spec in chosen[1:]]
-    order = list(dict.fromkeys([name for name in listed_before if name in names] + names))
-    _mcp_hold(held, order)
-    return chosen[:1] + [by_name[name] for name in order]
+def _mcp_note_matches(
+    specs: list[dict], by_name: dict, search: dict, listed: list[str], ctx: int
+) -> None:
+    """Record the tools ranked best for this message that the thread's listing leaves out, for the turn to add
+    as a search after the message, and the names a call may use beyond the listing: those plus the tools the
+    thread ran, which stay callable without their schemas being sent again."""
+    box = _MCP_LISTING_MATCHES.get()
+    if box is None or _mcp_thread_key() is None:
+        return
+    best = [name for name in _mcp_best(specs) if name not in listed]
+    matches = _mcp_fill([search], best, by_name, ctx)[1:]
+    names = [spec["function"]["name"] for spec in matches]
+    names += [name for name in _mcp_ran(by_name) if name not in listed]
+    box.update(matches = matches, names = list(dict.fromkeys(names)))
+
+
+def mcp_match_exchange(messages: list[dict], tools) -> dict | None:
+    """The tools this request's listing matched to the latest message, as a mcp_tool_search exchange shaped like
+    the forced knowledge-base search: the schemas reach the model as a tool result after the message, and the UI
+    shows and replays it as a search the turn ran. ``names`` is what the tool loop should accept beyond the
+    listing: the matches and the tools the thread ran."""
+    tool_names = {(t.get("function") or {}).get("name") for t in tools or [] if isinstance(t, dict)}
+    box = _MCP_LISTING_MATCHES.get() or {}
+    if MCP_TOOL_SEARCH_NAME not in tool_names or not messages or messages[-1].get("role") != "user":
+        return None
+    matches, names = box.get("matches") or [], list(box.get("names") or [])
+    if not matches and not names:
+        return None
+    exchange = {"events": [], "messages": []}
+    if matches:
+        exchange = build_synthetic_search_exchange(
+            tool_name = MCP_TOOL_SEARCH_NAME,
+            call_prefix = "mcp_auto_",
+            status_label = "Finding MCP tools",
+            query = _mcp_summary(_last_user_text(messages), _MCP_TOOL_SEARCH_SUMMARY_CHARS),
+            text = _mcp_search_result(matches),
+            sources = None,
+        )
+    return {**exchange, "names": names}
 
 
 def _runs_local_mcp(server: dict) -> bool:
@@ -15602,15 +15654,20 @@ def build_synthetic_search_exchange(
     status_label: str,
     query: str,
     text: str,
-    sources: list[dict],
+    sources: list[dict] | None,
 ) -> dict:
-    """Renders a forced retrieval as a normal tool exchange: messages for the model, events for the UI."""
+    """Renders a forced retrieval as a normal tool exchange: messages for the model, events for the UI.
+    ``sources`` None sends no source map, for a tool whose replay does not strip one."""
     import json as _json
     import uuid as _uuid
 
     call_id = call_prefix + _uuid.uuid4().hex[:12]
     args = {"query": query}
-    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    full_result = (
+        text
+        if sources is None
+        else text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    )
     # Local and round-less: the client replays it as its own exchange.
     provenance = {"source": "local"}
     events = [
