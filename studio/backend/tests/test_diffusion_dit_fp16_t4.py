@@ -573,3 +573,48 @@ def test_dequant_cache_stays_off_on_the_fp16_path(monkeypatch):
     monkeypatch.setattr(dit, "torch_is_rocm", lambda: True)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE")
     assert not dit._dequant_cache_wanted(True, "cuda", False)
+
+
+@pytest.mark.parametrize(
+    "mode, warned", [("on", True), ("ON ", True), ("auto", False), ("off", False), (None, False)]
+)
+def test_fp16_path_reports_a_declined_compile_request(mode, warned, caplog):
+    # Old clients may still send compile_transformer='on'; the fp16 path runs eager, so it must say so, not raise.
+    events = []
+    cfg = type("Cfg", (), {"compile_transformer": mode})()
+    with caplog.at_level("WARNING", logger = dit.__name__):
+        assert dit._warn_fp16_compile_declined(cfg, events.append) is warned
+    msgs = [e["message"] for e in events if e["type"] == "warning"]
+    logged = [r.getMessage() for r in caplog.records if r.name == dit.__name__]
+    if warned:
+        assert len(msgs) == 1 and "compile_transformer='on' is ignored" in msgs[0]
+        assert logged == msgs
+    else:
+        assert msgs == [] and logged == []
+
+
+def test_declined_compile_warning_runs_only_on_the_fp16_path():
+    # bf16 cards never reach it: the call sits under `if fp16_amp:` right before the compile decision.
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(dit._train_dit).lstrip())
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "fp16_amp":
+            hits += [
+                ast.unparse(n)
+                for n in node.body
+                if isinstance(n, ast.Expr) and "_warn_fp16_compile_declined" in ast.unparse(n)
+            ]
+    assert hits == ["_warn_fp16_compile_declined(cfg, on_event)"]
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_warn_fp16_compile_declined"
+    ]
+    assert len(calls) == 1
+    src = inspect.getsource(dit._train_dit)
+    assert src.index("_warn_fp16_compile_declined(cfg, on_event)") < src.index(
+        "_maybe_compile_transformer("
+    )

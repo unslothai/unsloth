@@ -3405,6 +3405,8 @@ def _train_dit(
 
     # A resume runs only the remaining steps, so the nf4 compile break-even is judged on those.
     # fp32 islands are unmeasured under regional compile.
+    if fp16_amp:
+        _warn_fp16_compile_declined(cfg, on_event)
     compiled = (
         False
         if fp16_amp
@@ -3970,6 +3972,23 @@ def _train_dit(
         discarded = bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)
+
+
+FP16_COMPILE_DECLINED = (
+    "torch.compile is not used on the fp16 path (GPUs without bf16); compile_transformer='on' is "
+    "ignored and this run trains eager."
+)
+
+
+def _warn_fp16_compile_declined(cfg, on_event) -> bool:
+    """An explicit compile request on the fp16 path runs eager: say so (log + warning event), never raise."""
+    if str(getattr(cfg, "compile_transformer", None) or "auto").strip().lower() != "on":
+        return False
+    import logging
+
+    logging.getLogger(__name__).warning(FP16_COMPILE_DECLINED)
+    _emit(on_event, "warning", message = FP16_COMPILE_DECLINED)
+    return True
 
 
 def _dequant_cache_wanted(base_is_bnb, device, fp16_amp) -> bool:
