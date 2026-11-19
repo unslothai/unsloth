@@ -487,7 +487,7 @@ if _IS_MLX:
 
     is_bf16_supported = is_bfloat16_supported
 
-    def _mlx_fn(name):
+    def _mlx_memory_fn(name):
         import mlx.core as mx
 
         fn = getattr(mx, name, None)
@@ -496,8 +496,8 @@ if _IS_MLX:
         return fn if callable(fn) else None
 
     def _mlx_memory_bytes(name):
-        getter = _mlx_fn(name)
-        return int(getter()) if getter else 0
+        fn = _mlx_memory_fn(name)
+        return int(fn()) if fn is not None else 0
 
     def _mlx_peak_memory_bytes():
         # mx.reset_peak_memory zeroes the peak, where torch resets it to current usage.
@@ -517,8 +517,10 @@ if _IS_MLX:
         """Clear MLX's cached GPU memory for compatibility cleanup helpers."""
         import mlx.core as mx
 
-        clear_cache = _mlx_fn("clear_cache")
-        if clear_cache:
+        clear_cache = getattr(mx, "clear_cache", None)
+        if clear_cache is None and hasattr(mx, "metal"):
+            clear_cache = getattr(mx.metal, "clear_cache", None)
+        if callable(clear_cache):
             # Generation runs on its own streams, which a bare mx.synchronize() does not wait on. Best effort:
             # synchronizing a stream bound on another thread raises (mlx 0.31.2 thread-local encoders).
             _synchronize = getattr(mx, "synchronize", None)
@@ -566,7 +568,7 @@ if _IS_MLX:
                 return get_device_properties(device).name
 
             def max_memory_reserved(device = None):
-                """Return MLX peak memory in bytes for torch.cuda compatibility API."""
+                """MLX peak memory in exact bytes, never below memory_reserved."""
                 return _mlx_peak_memory_bytes()
 
             def empty_cache():
@@ -578,14 +580,14 @@ if _IS_MLX:
                 return _mlx_memory_bytes("get_active_memory")
 
             def mem_get_info(device = None):
-                """(free, total) bytes; free uses live memory, not the peak."""
+                """(free, total) bytes; free uses live memory, not the peak, so it recovers after a spike."""
                 total = int(get_gpu_memory_stats()[2] * 1024 * 1024 * 1024)
                 return (max(total - memory_current(), 0), total)
 
             def reset_peak_memory_stats(device = None):
-                """Reset MLX's peak-memory counter."""
-                reset = _mlx_fn("reset_peak_memory")
-                if reset:
+                """Scope later max_* calls to the run, not earlier model-load peaks."""
+                reset = _mlx_memory_fn("reset_peak_memory")
+                if reset is not None:
                     reset()
 
             def synchronize(device = None):

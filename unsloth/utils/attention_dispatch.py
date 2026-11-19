@@ -1463,7 +1463,7 @@ def _packed_varlen_ok_eager(
     key = (device_index, dtype, head_dim, n_heads, n_kv_heads, window, impl)
     if key not in _PACKED_VARLEN_OK:
         from .flash_impl import flash_impl_allows
-        from .hf_packed_attention import _flash_varlen, _no_saved_tensor_hooks
+        from .hf_packed_attention import _flash_meta_matches, _flash_varlen, _no_saved_tensor_hooks
 
         ok = False
         with torch.inference_mode(False), torch.enable_grad(), _no_saved_tensor_hooks():
@@ -1482,7 +1482,8 @@ def _packed_varlen_ok_eager(
                     _flash_varlen(
                         query, key_, key_, cu_seqlens, 9, 1.0, window
                     ).float().sum().backward()
-                    ok = True
+                    # A compiled graph asserts the op's outputs against its fake kernel.
+                    ok = _flash_meta_matches(query, key_, cu_seqlens, 9, window)
             except Exception:
                 ok = False
         _PACKED_VARLEN_OK[key] = ok

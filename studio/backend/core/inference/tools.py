@@ -50,7 +50,12 @@ from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
-from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .browser_agent import (
+    BROWSER_TOOL_NAMES,
+    execute_browser_tool,
+    is_browser_tool,
+    workspace_path_of,
+)
 from .computer_use import execute_computer_tool, is_computer_tool
 from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
@@ -83,6 +88,7 @@ from core.inference.mcp_image import (
     strip_attached_image_note,
 )
 from core.inference.mcp_client import (
+    UNREACHABLE_SERVER,
     MCP_RESOURCE_TOOL,
     MCP_TOOL_PREFIX,
     MCP_IMAGES_SENTINEL,
@@ -121,6 +127,8 @@ from core.inference.providers import _metadata_host as _provider_metadata_host
 from utils import sandbox_memory_limit, tool_result_limit
 from core.inference import tool_facts
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
+from integrations.unreal import CALL_GUIDE as UNREAL_CALL_GUIDE
+from integrations.unreal import mcp_adapter as unreal_mcp_adapter
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
 
@@ -6930,9 +6938,14 @@ def _web_search_fetches_url(name: str, arguments: dict) -> bool:
     return name == "web_search" and bool(str(arguments.get("url", "") or "").strip())
 
 
+def _browser_opens_workspace_file(name: str, arguments: dict) -> bool:
+    """browser_navigate onto a workspace file hands its bytes to the model, so it asks like a read."""
+    return name == "browser_navigate" and workspace_path_of(arguments.get("url")) is not None
+
+
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts for anything that can mutate state or run code; unknown tools fail closed."""
-    if _web_search_fetches_url(name, arguments):
+    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
@@ -9607,7 +9620,7 @@ def _python_is_high_risk(code: str) -> bool:
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts only for sensitive actions (credentials, privilege, destructive, network exfil); unknown tools fail closed; hard blocks still apply."""
-    if _web_search_fetches_url(name, arguments):
+    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
@@ -14600,6 +14613,8 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         seen_names.add(name)
         tool_facts.note_mcp_tool(name, tool, studio = is_studio_tools(server.get("url") or ""))
         description = tool.get("description") or ""
+        if server.get("builtin_id") == "unreal" and raw_name == "call_tool":
+            description = description.rstrip() + "\n" + UNREAL_CALL_GUIDE.strip()
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name
             # The alias is the only name the model may emit; the description carries the real name.
@@ -14665,6 +14680,21 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     return _mcp_listing(listed), complete
 
 
+async def _discover_mcp_tools(server: dict) -> list[dict]:
+    if server.get("builtin_id") == "blender":
+        from integrations.blender import runtime_ready
+        from integrations.blender.runtime import ensure_runtime
+        if not runtime_ready():
+            await asyncio.to_thread(ensure_runtime)
+    return await list_tools_async(
+        url = server["url"],
+        headers = parse_server_headers(server),
+        timeout = probe_timeout(server["url"], bool(server.get("use_oauth"))),
+        use_oauth = bool(server.get("use_oauth")),
+        **oauth_client_kwargs(server),
+    )
+
+
 async def get_enabled_mcp_tools(
     include_stdio: bool = True, server_ids: set[str] | None = None
 ) -> list[dict]:
@@ -14687,17 +14717,7 @@ async def get_enabled_mcp_tools(
     ]
     if uncached:
         results = await asyncio.gather(
-            *(
-                list_tools_async(
-                    url = s["url"],
-                    headers = parse_server_headers(s),
-                    timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
-                    use_oauth = bool(s.get("use_oauth")),
-                    **oauth_client_kwargs(s),
-                )
-                for s in uncached
-            ),
-            return_exceptions = True,
+            *(_discover_mcp_tools(s) for s in uncached), return_exceptions = True
         )
         # On-loop re-read so an edit cannot invalidate between it and the cache writes.
         current = {s["id"]: s for s in mcp_servers_db.list_servers()}
@@ -15083,19 +15103,35 @@ def execute_tool(
             )
             # As for tool results: a marker anywhere in the text, errors included, would summon a widget.
             return _fit_result_to_room(_drop_forged_ui_sentinels(body), name)
-        result = call_tool_sync(
-            url = url,
-            headers = headers,
-            name = tool_name,
-            args = arguments,
-            timeout = effective_timeout,
-            use_oauth = use_oauth,
-            cancel_event = cancel_event,
-            scope = mcp_scope,
-            **oauth_client_kwargs(server),
-            config_check = _config_current,
-            ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
-        )
+
+        def _call(call_name: str, call_args: dict) -> str:
+            return call_tool_sync(
+                url = url,
+                headers = headers,
+                name = call_name,
+                args = call_args,
+                timeout = effective_timeout,
+                use_oauth = use_oauth,
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                **oauth_client_kwargs(server),
+                config_check = _config_current,
+                ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, call_name)),
+            )
+
+        if server.get("builtin_id") == "unreal" and tool_name == unreal_mcp_adapter.CALL_TOOL:
+            result = unreal_mcp_adapter.call(
+                url, arguments, lambda call_args: _call(tool_name, call_args), _call
+            )
+        else:
+            result = _call(tool_name, arguments)
+        if isinstance(result, str) and UNREACHABLE_SERVER in result:
+            result = result.replace(UNREACHABLE_SERVER, f"'{display}' is not reachable")
+            from integrations.editors import EDITORS  # noqa: PLC0415 (editors imports this package's mcp_client)
+
+            editor = EDITORS.get(server.get("builtin_id") or "")
+            if editor is not None:
+                result += f" {editor.not_ready}"
         if mcp_image is not None and isinstance(result, str):
             # Returned images may be resized copies of the user's; none of them reach the model on this call.
             result, returned_images, _ = result.partition(MCP_IMAGES_SENTINEL)

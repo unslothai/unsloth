@@ -176,6 +176,7 @@ export const zhTW = {
       add: "新增",
       cancel: "取消",
       removeSite: "移除 {site}",
+      hostOnly: "僅此主機，不含其子網域",
       permissionsNote:
         "這裡只會列出設有專屬權限的網站。「動作」指登入、表單送出，以及購買、傳送或刪除用的按鈕。",
       siteInvalid: "請輸入網站，例如 example.com 或 *.example.com。",
@@ -928,7 +929,6 @@ export const zhTW = {
     copy: "複製",
     addScheduledTask: "新增排程任務…",
     compact: "壓縮對話",
-    compactQueued: "已要求在下一則訊息時壓縮",
     compactEmpty: "目前還沒有可壓縮的內容",
     compactUnsupported: "壓縮需要支援工具的 GGUF 或 MLX 模型",
   },
@@ -1783,6 +1783,12 @@ export const zhTW = {
         "完整存取權會關閉沙箱。當您選擇其他等級時，此設定會再次生效。",
       learnMore: "瞭解詳情",
       managedNote: "作業系統沙箱由此 Unsloth 伺服器的擁有者設定。",
+      trustedFoldersTitle: "受信任的資料夾",
+      trustedFoldersLabel: "無需詢問即可執行",
+      trustedFoldersDescription: "僅在你自己的聊天中，Python 和終端機可以無需核准即可讀取和執行這些資料夾中的檔案。寫入這些資料夾仍會詢問。每行一個資料夾。",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "無法載入受信任的資料夾。",
+      trustedFoldersSaveError: "無法儲存受信任的資料夾。",
     },
     debugging: {
       description: "不必離開應用程式即可閱讀 Unsloth 記錄檔。",

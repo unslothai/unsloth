@@ -29,7 +29,7 @@ test("local chat opts into the rolling context policy", () => {
   assert.match(adapter, /runtime\.loadedIsGguf/);
   assert.match(adapter, /autoCompactEnabled/);
   assert.match(adapter, /ggufCompactionRequestFields\(/);
-  assert.match(adapter, /This conversation was compacted/);
+  assert.match(adapter, /compactionNoticeKind\(chunk\.context_truncated\)/);
 });
 
 test("the transport preserves standard chunks with context metadata", () => {
