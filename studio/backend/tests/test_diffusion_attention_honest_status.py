@@ -368,3 +368,79 @@ def test_status_builders_use_the_census_entry():
     assert "live_attention_entry(" in image
     assert video.count("attention_resolved_entry(") == 2  # generic video, H3 video
     assert video.count("annotate_attention_resolved(") == 2
+
+
+# ---------------------------------------------------------------- no graph break, recompile or tensor op added
+
+
+class _CompiledDit(_Dit):
+    """A DiT whose forward reads each processor's backend and runs diffusers' attention dispatch, like the stock
+    processors: a status read that changed anything a traced forward reads would show as a recompile."""
+
+    def forward(self, x):
+        from diffusers.models.attention_dispatch import dispatch_attention_fn
+        for m in self.blocks:
+            x = x + dispatch_attention_fn(x, x, x, backend = m.processor._attention_backend)
+        return x
+
+
+def test_status_reads_add_no_graph_break_recompile_or_tensor_op(monkeypatch):
+    pytest.importorskip("diffusers.models.attention_dispatch")
+    import torch._dynamo
+    from torch._dynamo.testing import CompileCounter
+    from torch._dynamo.utils import counters
+    from torch.overrides import TorchFunctionMode
+
+    _sage_missing(monkeypatch)
+    pipe = types.SimpleNamespace(transformer = _CompiledDit(head_dim = 8))
+    _load(pipe, "sage")
+    x = torch.randn(1, 16, 2, 8)
+
+    # the counters see a deliberate break (resources README 13.6)
+    def broken(t):
+        t = t + 1
+        torch._dynamo.graph_break()
+        return t * 2
+
+    torch._dynamo.reset()
+    counters.clear()
+    torch.compile(broken, backend = CompileCounter())(x)
+    assert sum(counters["graph_break"].values()) >= 1
+
+    torch._dynamo.reset()
+    counters.clear()
+    cnt = CompileCounter()
+    compiled = torch.compile(pipe.transformer, backend = cnt)
+    compiled(x)
+    compiled(x)
+    frames, ops = cnt.frame_count, cnt.op_count
+    assert frames == 1 and sum(counters["graph_break"].values()) == 0
+
+    class _Ops(TorchFunctionMode):
+        calls: list = []
+
+        def __torch_function__(
+            self,
+            func,
+            types_,
+            args = (),
+            kwargs = None,
+        ):
+            self.calls.append(func)
+            return func(*args, **(kwargs or {}))
+
+    with _Ops() as mode:
+        # everything the status path runs between renders: entry, census, live re-read, decline lookup
+        entry = build_resolved_record(
+            {"attention_backend": A.attention_resolved_entry("sage", None, pipe, target = _target())}
+        )
+        A.annotate_attention_resolved(entry, pipe)
+        A.live_attention_entry(entry["attention_backend"], pipe, None)
+        A.attention_census([pipe, pipe])
+        A.attention_decline(pipe)
+    assert mode.calls == [], "the status path must not touch a tensor (no host sync)"
+    assert entry["attention_backend"]["status"] == "fell_back"
+    compiled(x)
+    compiled(x)
+    assert (cnt.frame_count, cnt.op_count) == (frames, ops), "a status read recompiled the DiT"
+    assert sum(counters["graph_break"].values()) == 0

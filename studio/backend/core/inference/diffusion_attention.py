@@ -840,8 +840,14 @@ def _backend_label(name: Any) -> str:
     return _BACKEND_LABELS.get(text, text)
 
 
-def _stamp_decline(pipe: Any, declined: Optional[dict]) -> None:
-    targets = list(_attention_dits(pipe)) if pipe is not None else []
+def _stamp_decline(
+    pipe: Any,
+    declined: Optional[dict],
+    dits: bool = True,
+) -> None:
+    """``dits=False`` (the status path, which may run while a compiled DiT renders) marks the pipeline objects only:
+    no attribute of a traced module changes after it compiled."""
+    targets = list(_attention_dits(pipe)) if pipe is not None and dits else []
     for obj in [pipe, *targets]:
         try:
             setattr(obj, ATTENTION_DECLINE_ATTR, declined)
@@ -1025,9 +1031,12 @@ def attention_resolved_entry(
         declined = explicit_attention_decline(target, requested) if target is not None else None
         if declined is not None:
             why, status = declined
-            _stamp_decline(
-                pipe, {"tried": wanted, "engaged": value, "reason": why, "status": status}
-            )
+            for view in _pipes(pipe):
+                _stamp_decline(
+                    view,
+                    {"tried": wanted, "engaged": value, "reason": why, "status": status},
+                    dits = False,
+                )
         elif claimed in accepted:
             why = f"no attention module routes to {_backend_label(claimed)}"
         elif wanted == INT8_ATTENTION_BACKEND:
