@@ -181,6 +181,8 @@ class _FamilySpec:
     sample_forward_kwargs: Optional[dict] = None
     # cfg -> FlowMatchEuler scheduler. None = load scheduler/ (only valid if it IS FlowMatchEuler; Wan ships UniPC).
     training_scheduler: Optional[Callable[..., Any]] = None
+    # cfg -> what besides the base decides the caption tensors (the encoder's precision and source), for the cache key.
+    conditioning_key: Optional[Callable[..., str]] = None
     # cfg -> (repo, subfolder) of the DiT a family resolves at load; recorded in the checkpoint identity.
     dit_source: Optional[Callable[..., tuple]] = None
     # Saver takes ``adapter_metadata``; without it diffusers' loader assumes lora_alpha == rank.
@@ -2109,16 +2111,40 @@ def _ltx25_conditioning_source(cfg) -> str:
     )
 
 
+def _ltx25_te_quant(cfg):
+    """The encoder precision the worker loads: ``"int8"`` or None (bf16), as the Video page resolves it."""
+    from core.inference.video_ltx25 import ltx25_resolve_te_request, ltx25_te_quant_scheme
+    return ltx25_te_quant_scheme(ltx25_resolve_te_request(None, str(cfg.base_model)))
+
+
+def _ltx25_conditioning_key(cfg) -> str:
+    """Caption-cache key part naming the encoder that wrote them: int8 and bf16 Gemma 4 captions differ, and the
+    hosted int8 file is a separate artifact from an at-load quantization of the pack's encoder."""
+    from core.inference.video_ltx25 import (
+        LTX25_TE_HOSTED_FILE,
+        LTX25_TE_HOSTED_FORMAT,
+        LTX25_TE_HOSTED_REPO,
+        ltx25_te_prequant_sources,
+    )
+    from core.training.diffusion_train_extras import source_revision
+
+    te_quant = _ltx25_te_quant(cfg)
+    if te_quant is None:
+        return "te-bf16-pack"
+    if ltx25_te_prequant_sources(te_quant, str(cfg.base_model)):
+        return (
+            f"te-{te_quant}-{LTX25_TE_HOSTED_REPO}-{LTX25_TE_HOSTED_FILE}-{LTX25_TE_HOSTED_FORMAT}-"
+            f"{source_revision(LTX25_TE_HOSTED_REPO)}"
+        )
+    return f"te-{te_quant}-at-load-pack"
+
+
 def _ltx25_start_encoder(cfg, device):
     from core.inference.diffusion import hub_cache_dir
-    from core.inference.video_ltx25 import (
-        ltx25_resolve_te_request,
-        ltx25_te_quant_scheme,
-        start_text_encoder,
-    )
+    from core.inference.video_ltx25 import start_text_encoder
 
     base = str(cfg.base_model)
-    te_quant = ltx25_te_quant_scheme(ltx25_resolve_te_request(None, base))
+    te_quant = _ltx25_te_quant(cfg)
     worker_device = "cpu" if device not in ("cuda", "xpu") else f"{device}:{_current_index(device)}"
     return start_text_encoder(
         repo = base,
@@ -2587,6 +2613,7 @@ _SPECS: dict[str, _FamilySpec] = {
         save = _ltx2_save,
         training_scheduler = _ltx25_training_scheduler,
         dit_source = _ltx25_dit_source,
+        conditioning_key = _ltx25_conditioning_key,
     ),
     "wan2.2-ti2v-5b": _FamilySpec(
         family = "wan2.2-ti2v-5b",
@@ -3266,8 +3293,16 @@ def _train_dit(
         try:
             # Namespace on the CHECKPOINT: keys carry only content, so caches would cross models.
             from .diffusion_train_extras import source_revision  # noqa: PLC0415
+
             namespace = f"{spec.family}_{cfg.base_model}_{source_revision(fetch_cfg.base_model)}"
-            pcache = PersistentConditioningCache(cfg.cond_cache_dir, namespace, cfg.resolution)
+            conditioning_key = getattr(spec, "conditioning_key", None)
+            encoder = conditioning_key(fetch_cfg) if conditioning_key else ""
+            pcache = PersistentConditioningCache(
+                cfg.cond_cache_dir,
+                namespace,
+                cfg.resolution,
+                **({"text_encoder": encoder} if encoder else {}),
+            )
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
             _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
     # Seeded crop/flip plan: stable cache keys across runs, so the warm check precedes loads.
@@ -3485,7 +3520,7 @@ def _train_dit(
     identity = with_cache_mode(identity, latent_cache is not None)
     # base_precision is resolved now (auto, or fp8/mxfp8 fallback to bf16); without this the bundle records a base it never trained on.
     identity = with_resolved_base_precision(identity, base_precision)
-    if spec.dit_source is not None:
+    if getattr(spec, "dit_source", None) is not None:
         identity = with_resolved_dit(identity, *spec.dit_source(fetch_cfg))
 
     transformer.train()

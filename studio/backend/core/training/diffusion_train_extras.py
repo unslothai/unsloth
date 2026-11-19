@@ -299,10 +299,23 @@ class PersistentConditioningCache:
     exactly as the trainer's in-memory path holds them, so a reload is
     bit-identical to a fresh encode."""
 
-    def __init__(self, cache_dir: str, family: str, resolution: int):
+    def __init__(
+        self,
+        cache_dir: str,
+        family: str,
+        resolution: int,
+        text_encoder: str = "",
+    ):
         self.root = Path(cache_dir).expanduser()
         self.family = _sanitize(family)
         self.resolution = int(resolution)
+        # Encoder precision / source, for a family that picks it per run; empty keeps the existing text keys.
+        # Hashed so a long source (repo, file, revision) keeps file names short; the prefix stays readable.
+        self.text_encoder = (
+            f"{_sanitize(text_encoder)[:16]}-{hashlib.sha1(text_encoder.encode()).hexdigest()[:10]}"
+            if text_encoder
+            else ""
+        )
         self.root.mkdir(parents = True, exist_ok = True)
 
     def latent_key(
@@ -320,7 +333,8 @@ class PersistentConditioningCache:
         )
 
     def text_key(self, caption: str) -> str:
-        return f"txt_v{_CACHE_VERSION}_{self.family}_{_text_content_hash(caption)}"
+        encoder = f"_{self.text_encoder}" if self.text_encoder else ""
+        return f"txt_v{_CACHE_VERSION}_{self.family}{encoder}_{_text_content_hash(caption)}"
 
     def path_for(self, key: str) -> Path:
         return self.root / f"{key}.safetensors"

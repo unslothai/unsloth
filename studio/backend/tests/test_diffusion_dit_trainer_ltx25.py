@@ -768,3 +768,40 @@ def test_a_bundle_from_before_the_field_resumes_only_onto_the_default_dit():
     assert "base DiT revision" in old.mismatch_reason(new)
     assert old.mismatch_reason(dev) is None
     assert CheckpointIdentity.from_dict(old.as_dict()) == old
+
+
+def test_switching_the_encoder_precision_misses_the_caption_cache(
+    tiny_trainer, tmp_path, monkeypatch
+):
+    """INT8 and BF16 Gemma 4 captions differ: a warm cache written by one must not serve the other."""
+    import core.inference.video_ltx25 as v25
+
+    cache = str(tmp_path / "cond_cache")
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
+    tiny_trainer.run("int8", cond_cache_dir = cache)
+    assert len(tiny_trainer.clients) == 1
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
+    tiny_trainer.run("bf16", cond_cache_dir = cache)
+    assert len(tiny_trainer.clients) == 2, "the bf16 run reused the int8 captions"
+    # Each precision then has its own warm entries.
+    tiny_trainer.run("bf16_again", cond_cache_dir = cache)
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
+    tiny_trainer.run("int8_again", cond_cache_dir = cache)
+    assert len(tiny_trainer.clients) == 2
+
+
+def test_the_caption_cache_key_names_the_encoder_and_its_source(monkeypatch):
+    import core.inference.video_ltx25 as v25
+
+    cfg = types.SimpleNamespace(base_model = PACK, hf_token = None)
+    monkeypatch.setattr(
+        v25, "ltx25_te_prequant_sources", lambda quant, base: {"text_encoder": object()}
+    )
+    hosted = dit._ltx25_conditioning_key(cfg)
+    monkeypatch.setattr(v25, "ltx25_te_prequant_sources", lambda quant, base: {})
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
+    at_load = dit._ltx25_conditioning_key(cfg)
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
+    bf16 = dit._ltx25_conditioning_key(cfg)
+    assert len({hosted, at_load, bf16}) == 3
+    assert v25.LTX25_TE_HOSTED_FILE in hosted and "bf16" in bf16
