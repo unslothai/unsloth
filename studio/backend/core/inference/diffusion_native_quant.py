@@ -274,8 +274,8 @@ def _own_rotation(h: Any, dtype: Any) -> Any:
     return h.to(dtype, copy = True)
 
 
-def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any) -> Any:
-    """Eager ``_rotate`` + ``_int_mm_rows`` maths on tensors only, so offload hooks never invalidate the graph."""
+def _w8a8_codes(x2: Any, rot_h: Any) -> tuple:
+    """``_w8a8_rows``' rotation + act quant: (row-major int8 codes [M, K], fp32 row scales [M, 1])."""
     import torch
 
     if rot_h is not None:
@@ -291,6 +291,14 @@ def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any)
     if rot_h is None:
         op = _FUSED_STATE.get("row_major")
         xq = op(xq) if op is not None else xq.contiguous()
+    return xq, x_scale
+
+
+def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any) -> Any:
+    """Eager ``_rotate`` + ``_int_mm_rows`` maths on tensors only, so offload hooks never invalidate the graph."""
+    import torch
+
+    xq, x_scale = _w8a8_codes(x2, rot_h)
     acc = torch._int_mm(xq, weight_q.t())
     out = torch.mul(acc, x_scale)
     w_scale = weight_scale.view(torch.float32)
@@ -310,6 +318,9 @@ def _w8a8_rows_into(
 
 # "devices": per card, None once it may run the compiled linear, else why not (its arch, or its compile failed).
 _FUSED_STATE: dict = {"fn": None, "failed": None, "devices": {}}
+# sm75 fp16, no bias: the compiled ``_w8a8_codes`` feeds the prebuilt CUTLASS GEMM whose fused epilogue equals
+# ``_w8a8_rows``' (int32 * xs) * ws -> fp16, where the per-shape race (diffusion_int8_cutlass.native_prepare) won.
+_CUT16_CALLS = [0]
 _UNSEEN = object()
 
 
@@ -425,6 +436,8 @@ def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
     fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
     # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
     _FUSED_STATE["into"] = torch.compile(_w8a8_rows_into, dynamic = True, fullgraph = True)
+    # Compiled at its first call, which only an sm75 fp16 linear with a raced CUTLASS tile makes.
+    _FUSED_STATE["codes"] = torch.compile(_w8a8_codes, dynamic = True, fullgraph = True)
     _FUSED_STATE["fn"] = fn
     log.info("diffusion.native_quant: int8 W8A8 linear runs as one compiled function")
     return fn
@@ -494,6 +507,7 @@ def fused_w8a8_state() -> dict:
         failed = next((why for why in devices.values() if why is not None), None)
     return {
         "calls": _FUSED_STATE.get("calls", 0),
+        "cutlass16_calls": _CUT16_CALLS[0],
         "failed": failed,
         "devices": {_key_label(k): why for k, why in devices.items()},
     }
@@ -838,6 +852,48 @@ def native_linear_class():
                 )
             return out.reshape(*x.shape[:-1], self.out_features)
 
+        def _forward_cutlass16(self, x2: Any, rot_h: Any, rows: int) -> Any:
+            """sm75 fp16, no bias: compiled codes + the prebuilt CUTLASS GEMM (dequant fused), bit for bit the compiled
+            ``_w8a8_rows``; None where its race kept cuBLAS, the shape is ineligible or autocast is on."""
+            # the caller runs on CUDA only
+            if self.bias is not None or x2.dtype != torch.float16:
+                return None
+            codes = _FUSED_STATE.get("codes")
+            if codes is None or _autocast_on(x2):
+                return None
+            from . import diffusion_int8_cutlass as _cut  # noqa: PLC0415
+
+            entry = _cut._NATIVE_PLAN.get(
+                (x2.device.index, int(self.weight_q.shape[0]), int(self.weight_q.shape[1]))
+            )
+            if (
+                not entry
+                or entry.get(
+                    max(_cut._RACE_M) if rows >= _cut._NATIVE_LARGE_M else min(_cut._RACE_M)
+                )
+                is None
+            ):
+                return None
+            try:
+                xq, xs = codes(x2, rot_h)
+            except torch.cuda.OutOfMemoryError:
+                raise
+            except Exception:  # noqa: BLE001 - a compile failure keeps the compiled ``_w8a8_rows``
+                _FUSED_STATE["codes"] = None
+                return None
+            ws = self.weight_scale.view(torch.float32)
+            tile = _cut.native_tile(xq, self.weight_q, xs, ws)
+            if tile is not None:
+                try:
+                    out = _cut.native_gemm(xq, self.weight_q, xs, ws, tile)
+                    _CUT16_CALLS[0] += 1
+                    _FUSED_STATE["calls"] = _FUSED_STATE.get("calls", 0) + 1
+                    return out
+                except Exception:  # noqa: BLE001 - the same maths in eager below
+                    _cut._NATIVE_PLAN.clear()
+            acc = torch._int_mm(xq, self.weight_q.t())
+            return torch.mul(acc, xs).mul_(ws).to(x2.dtype)
+
         def _forward_fused(self, x: Any) -> Any:
             """Chunked compiled forward; None = use eager kernels (also during CUDA graph capture)."""
             in_f = self.in_features
@@ -857,6 +913,9 @@ def native_linear_class():
             # Detached: guards on a view's base / Parameter shape would recompile per layout / layer.
             x2 = x.reshape(-1, in_f).detach()
             rot_h = self.rot_h if self.rot_group else None
+            out = self._forward_cutlass16(x2, rot_h, rows)
+            if out is not None:
+                return out.reshape(*x.shape[:-1], self.out_features)
             bias = self.bias.detach() if self.bias is not None else None
             chunk = _INT_MM_FUSED_CHUNK_ELEMS // max(in_f, self.out_features)
             try:
