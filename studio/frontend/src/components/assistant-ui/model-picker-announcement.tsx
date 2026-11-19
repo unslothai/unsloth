@@ -105,10 +105,10 @@ function subscribe(listener: () => void): () => void {
 }
 
 const FEATURES = [
-  { icon: GridViewIcon, label: "Find and switch models fast" },
-  { icon: Settings01Icon, label: "Tweak settings on the spot" },
-  { icon: Brain03Icon, label: "Dial thinking up or down" },
-  { icon: StarIcon, label: "Keep favorites close" },
+  { icon: GridViewIcon, label: "All your models in one list" },
+  { icon: Settings01Icon, label: "Run settings for each model" },
+  { icon: Brain03Icon, label: "Turn thinking on or off" },
+  { icon: StarIcon, label: "Star the ones you use most" },
 ] as const;
 
 const MOCK_ROWS = [
@@ -211,7 +211,8 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               Meet the new model picker
             </DialogTitle>
             <DialogDescription className="text-balance">
-              Switch models, quants and thinking without leaving your chat.
+              The model picker now lives in the chat box, next to the send
+              button.
             </DialogDescription>
             <Button
               variant="primary"
