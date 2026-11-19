@@ -318,7 +318,6 @@ function writeExpanded(expanded: boolean): void {
   }
 }
 
-// Each model's own quant-list choice; others follow Settings > Expand quantizations.
 const QUANTS_OPEN_KEY = "unsloth_composer_picker_quants_open";
 const QUANTS_OPEN_MAX = 200;
 
