@@ -231,7 +231,9 @@ def site_cookie_state(subject: str, url: str) -> tuple[list, list[tuple[str, str
     """``([epoch, version], page_cookies(...), has_site_cookies(...))``, read together so the version dates both."""
     jar = _jar(subject)
     with jar._cookies_lock:  # type: ignore[attr-defined]
-        return [_EPOCH, _version], page_cookies(subject, url), has_site_cookies(subject, url)
+        # One pass over the jar serves both answers (it runs per navigation and per relayed request).
+        site = list(_site_cookies(subject, url))
+        return [_EPOCH, _version], _page_entries(site), bool(site)
 
 
 def _site_cookies(subject: str, url: str) -> Iterable[http.cookiejar.Cookie]:
@@ -240,8 +242,13 @@ def _site_cookies(subject: str, url: str) -> Iterable[http.cookiejar.Cookie]:
     if page is None:
         return
     jar = _jar(subject)
+    # return_ok only reads the request, so cookies sharing a path share one.
+    at_paths: dict[str, Optional[urllib.request.Request]] = {}
     for cookie in list(jar):
-        at_path = _request(f"{page.type}://{page.host}{cookie.path or '/'}")
+        path = cookie.path or "/"
+        if path not in at_paths:
+            at_paths[path] = _request(f"{page.type}://{page.host}{path}")
+        at_path = at_paths[path]
         if at_path is not None and jar._policy.return_ok(cookie, at_path):  # type: ignore[attr-defined]
             yield cookie
 
@@ -253,9 +260,13 @@ def has_site_cookies(subject: str, url: str) -> bool:
 def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
     """What ``document.cookie`` may see on ``url``'s site, at any path, in the frame's own form
     (browser.py): ``"<name>=<path>"`` to ``"<deadline ms>|<value>"``. HttpOnly ones stay here."""
+    return _page_entries(_site_cookies(subject, url))
+
+
+def _page_entries(cookies: Iterable[http.cookiejar.Cookie]) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     room = _MAX_PAGE_COOKIE_CHARS
-    for cookie in _site_cookies(subject, url):
+    for cookie in cookies:
         if _http_only(cookie):
             continue
         deadline = "" if cookie.expires is None else str(int(cookie.expires) * 1000)
