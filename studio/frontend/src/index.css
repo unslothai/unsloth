@@ -7090,6 +7090,8 @@ html[data-glass-clear][data-chat-wallpaper-workspace-ready] [data-windows-glass-
 html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame]::before {
   content: "";
   position: absolute;
+  /* Window-anchored, so the sheen and noise run on unbroken into docked Run settings. */
+  background-attachment: fixed;
   /* Keep the corner above the scrolled conversation canvas. */
   z-index: 1;
   inset: 0 auto 0 0;
@@ -7230,6 +7232,7 @@ html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wa
 /* Beside the strip the panel takes the strip's own fill and no edge line, so the two read as one sheet. */
 html[data-glass][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
+  background-attachment: fixed;
   box-shadow: none;
 }
 html[data-glass-clear][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
