@@ -445,9 +445,9 @@ LORA_RELOAD_OPENAI_CODE = "lora_reload_required"
 
 # How to reload, named once so every refusal gives the same remedy.
 LORA_RELOAD_REMEDY = (
-    "Reload the model with the LoRA selection: on the Images page click Generate (it offers the reload) or "
-    'Reapply, or send the adapters as "loras" in POST /api/inference/images/load. The reload rebuilds the '
-    "transformer from its full-precision weights, which may download them first."
+    "Reload the model with the LoRA selection: on the Images page click Reapply (Generate and this error offer "
+    'the same reload), or send the adapters as "loras" in POST /api/inference/images/load. The reload rebuilds '
+    "the transformer from its full-precision weights, which may download them first."
 )
 
 
