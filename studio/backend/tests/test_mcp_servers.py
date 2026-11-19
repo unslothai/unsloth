@@ -2564,7 +2564,7 @@ def test_message_matches_send_ranked_schemas_and_keep_ran_tools_callable(
     # The listing and the matches share one preload share: no room left, no schemas sent.
     monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 110 / searching)
     listing, sent, accepted = _thread_turn(tools_mod, searching, chat)
-    assert listing == second and sent == [] and accepted == [ran]
+    assert listing == second and sent == [] and accepted == [best, ran]
 
 
 def test_mcp_listing_keeps_its_order_when_a_listed_tool_runs(tmp_path, monkeypatch, searching):
@@ -2750,6 +2750,27 @@ def test_match_exchange_needs_a_thread_and_a_preload(tmp_path, monkeypatch, sear
     monkeypatch.delenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY")
     resumed = [*chat, {"role": "assistant", "content": "Moving"}]
     assert _thread_turn(tools_mod, searching, resumed)[1] == []
+
+
+def test_a_sent_match_stays_callable_after_an_unmatched_reply(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    move = "mcp__srv1__move-pages"
+    chat = [{"role": "user", "content": "hello"}]
+    first = _thread_listing(tools_mod, searching, chat)
+    chat += [
+        {"role": "assistant", "content": "Hi."},
+        {"role": "user", "content": "Move my roadmap page under the Archive page."},
+    ]
+    _, sent, matched = _thread_turn(tools_mod, searching, chat)
+    assert sent and move in matched
+    chat += [
+        {"role": "assistant", "content": "Under Archive or Archive/2025?"},
+        {"role": "user", "content": "yes"},
+    ]
+    listing, sent, names = _thread_turn(tools_mod, searching, chat)
+    assert listing == first and sent == [] and move in names
 
 
 def test_a_resumed_reply_keeps_the_matched_and_ran_tools_callable(tmp_path, monkeypatch, searching):

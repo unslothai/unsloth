@@ -13868,7 +13868,7 @@ _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
 # A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
 _MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
-# (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
+# (account, thread) -> MCP tools the thread ran while they were deferred, or was sent as matches, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 # (account, thread) -> (the window it was sized for, the MCP tools the thread lists, in order).
 _MCP_HELD_THREADS: "OrderedDict[tuple, tuple[int, list[str]]]" = OrderedDict()
@@ -14091,7 +14091,7 @@ def _mcp_loaded_names() -> list[str]:
 
 
 def mcp_record_loaded_tools(thread_id, names) -> None:
-    """Remember tools a thread ran, so its next turns list them up front."""
+    """Remember tools a thread ran or was sent, so its next turns can call them."""
     if not isinstance(thread_id, str) or not thread_id or not names:
         return
     key = (current_account_id(), thread_id)
@@ -14245,6 +14245,11 @@ def mcp_match_exchange(messages: list[dict], tools) -> dict | None:
             text = _mcp_search_result(matches),
             sources = None,
         )
+        # Callable on later turns too: a "yes" after a clarifying question ranks nothing.
+        if _MCP_LISTING_REMEMBER.get():
+            mcp_record_loaded_tools(
+                _MCP_LISTING_THREAD.get(), [spec["function"]["name"] for spec in matches]
+            )
     return {**exchange, "names": names}
 
 
