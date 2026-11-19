@@ -1188,6 +1188,9 @@ class GraphedForward:
         self._warmed: dict = {}
         # Resident only, per graph key: real steps run eagerly on capture-layout copies before the recording.
         self._real_warm: dict = {}
+        # Keys whose real warm-ups did not finish inside one render (a 1-3 step render): they record the side-stream
+        # way on their next appearance, so renders 2+ replay as before.
+        self._real_warm_closed: set = set()
         # Keys recorded before: a placement change re-records them with no warm-up (same shapes, new addresses).
         self._recorded: dict = {}
         # Offloaded only, per graph key: seen count, eager/graph spans, verdict ('' kept, else drop reason).
@@ -1310,6 +1313,7 @@ class GraphedForward:
         self._render_scopes.clear()
         self._open_warmups.clear()
         self._real_warm.clear()  # new weights may compile a new variant: its first real steps warm it again
+        self._real_warm_closed.clear()
         if getattr(self, "fallback_handle", None) is not None:
             try:
                 self.fallback_handle.reset()
@@ -1720,6 +1724,7 @@ class GraphedForward:
                 and self.warmup > 0
                 and real_warmup_enabled()
                 and self._real_warm.get(key, 0) < self.warmup
+                and key not in self._real_warm_closed
                 and self._real_warmup_ready(key, args, kwargs)
             ):
                 # Resident: this real step is one of the key's warm-ups (compile, lazy allocations), run on copies
@@ -2892,6 +2897,18 @@ def seal_lengths(handles: Any) -> None:
     """A render ended: a denoiser whose text length follows the prompt records no new prompt length from here on
     (until ``reset``). Covers a first render that recorded but never replayed (an offloaded key still being timed)."""
     for handle in handles or ():
+        try:
+            real = getattr(handle, "_real_warm", None)
+            if real:
+                # A key that ran fewer real warm-ups than a capture needs before the render ended records the
+                # side-stream way next time, as it did before real warm-ups (renders 2+ of a 1-step render replay).
+                handle._real_warm_closed.update(
+                    key
+                    for key, n in real.items()
+                    if 0 < n < handle.warmup and key not in handle.cache
+                )
+        except Exception:  # noqa: BLE001 - optimisation only
+            pass
         try:
             if not getattr(handle, "length_varies", False):
                 continue

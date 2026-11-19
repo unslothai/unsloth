@@ -2066,6 +2066,22 @@ def test_real_warmup_starts_over_after_reset(stub_torch, monkeypatch):
     assert module.calls == before + 1
 
 
+def test_real_warmup_one_step_render_replays_from_the_second_render(stub_torch, monkeypatch):
+    """A 1-step render (SDXL-Turbo): the key never finishes its real warm-ups inside a render, so the next render
+    records the side-stream way and replays, as main does from render 2 (renders 2+ never run eager)."""
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    module = _FakeDiT()
+    handle = _armed(module)
+    replays = []
+    for i in range(5):
+        before = handle.stats["replays"]
+        handle(_t(value = float(i)), timestep = _t((1,), value = 10.0), return_dict = False)
+        cg.seal_lengths((handle,))
+        replays.append(handle.stats["replays"] - before)
+    assert replays == [0, 1, 1, 1, 1]
+    assert handle.stats["real_warmups"] == 1 and handle.stats["captures"] == 1
+
+
 def _warm(handle, *args, **kwargs):
     """A key's WARMUP_ITERS real warm-up steps (the default): eager, nothing recorded."""
     for _ in range(cg.WARMUP_ITERS):
