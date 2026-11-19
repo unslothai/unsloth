@@ -515,3 +515,66 @@ def test_request_gate_held_until_image_is_gone():
     assert kinds.index("gate.enter") < kinds.index("chat.save_kv")
     assert kinds.index("image.unload") < kinds.index("gate.exit") < kinds.index("chat.reload")
     assert kinds.count("gate.exit") == 1
+
+
+class ArbiterImage(FakeImage):
+    """Loads under When they fit / Always: the arbiter keeps chat when both fit, else evicts it
+    (fit) or refuses the load (always)."""
+
+    def __init__(
+        self,
+        log,
+        chat,
+        *,
+        fits,
+        policy = "fit",
+        **kw,
+    ):
+        super().__init__(log, **kw)
+        self.arb_chat = chat
+        self.fits = fits
+        self.policy = policy
+
+    async def load(self, name, should_abort):
+        self.log.add("image.load", name)
+        if not self.fits:
+            if self.policy == "always":
+                raise RuntimeError("Keep multiple models loaded is set to Always")
+            self.arb_chat.resident = False
+        self.loaded = True
+
+
+def test_fit_policy_keeps_both_when_they_fit():
+    log = Log()
+    chat = FakeChat(log)
+    media = ArbiterImage(log, chat, fits = True)
+    trip = _trip(chat, media, beside_first = True)
+    assert asyncio.run(trip.run()).startswith("Generated")
+    kinds = [e[0] for e in log]
+    assert "chat.unload" not in kinds and "chat.reload" not in kinds and "image.unload" not in kinds
+    assert chat.discarded == [KV] and chat.resident and media.loaded
+    assert "image_kept_beside_chat" in trip.events
+
+
+def test_fit_policy_swaps_when_the_arbiter_evicts_chat():
+    log = Log()
+    chat = FakeChat(log)
+    media = ArbiterImage(log, chat, fits = False)
+    trip = _trip(chat, media, beside_first = True)
+    assert asyncio.run(trip.run()).startswith("Generated")
+    kinds = [e[0] for e in log]
+    assert kinds == ["chat.save_kv", "image.load", "image.generate", "image.unload", "chat.reload"]
+    assert chat.loaded_with[2] == KV and not media.loaded
+    # Evicted by the image load itself, so it is noted right after it.
+    assert trip.events[:3] == ["chat_kv_saved", "image_loaded", "chat_unloaded"]
+
+
+def test_always_policy_refusal_leaves_chat_alone():
+    log = Log()
+    chat = FakeChat(log)
+    media = ArbiterImage(log, chat, fits = False, policy = "always")
+    trip = _trip(chat, media, beside_first = True)
+    result = asyncio.run(trip.run())
+    assert result == "Error: image generation failed: Keep multiple models loaded is set to Always"
+    assert chat.resident and chat.discarded == [KV]
+    assert "chat.reload" not in [e[0] for e in log]

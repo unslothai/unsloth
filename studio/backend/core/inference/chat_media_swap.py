@@ -141,6 +141,9 @@ class RoundTrip:
     # (another tab, the next message after a Stop) waits for chat to come back instead of finding
     # no model. Released before the reload, which takes the same gate itself.
     hold_requests: Optional[Callable[[], Any]] = None
+    # When they fit / Always: load the image model beside chat first and swap only if the arbiter
+    # could not keep both (Off evicts chat up front).
+    beside_first: bool = False
 
     def stop(self) -> None:
         self.cancel.set()
@@ -212,19 +215,30 @@ class RoundTrip:
         media_touched = False
         result: Optional[str] = None
         error: Optional[BaseException] = None
+        beside = False
         try:
-            try:
-                await self._step("chat_unloaded", self.chat.unload(snap), model = snap.model)
-            finally:
-                # A failed eviction may still have taken chat down: then it comes back too.
-                unloaded = not await self.chat.is_resident(snap)
-            self._check()
+            if not self.beside_first:
+                try:
+                    await self._step("chat_unloaded", self.chat.unload(snap), model = snap.model)
+                finally:
+                    # A failed eviction may still have taken chat down: then it comes back too.
+                    unloaded = not await self.chat.is_resident(snap)
+                self._check()
             media_touched = True
-            await self._step(
-                "image_loaded",
-                self.media.load(self.image_model, self.cancel.is_set),
-                model = self.image_model,
-            )
+            try:
+                await self._step(
+                    "image_loaded",
+                    self.media.load(self.image_model, self.cancel.is_set),
+                    model = self.image_model,
+                )
+            finally:
+                if self.beside_first:
+                    # The user's When they fit / Always policy placed it: beside chat when both fit,
+                    # else the arbiter evicted chat for it (fit) or refused the load (always).
+                    unloaded = not await self.chat.is_resident(snap)
+                    beside = not unloaded
+                    if unloaded:
+                        self._note("chat_unloaded", model = snap.model, by = "arbiter")
             self._check()
             self.render_started = time.monotonic()
             result = await self._step("image_generated", self.media.generate(self.cancel.is_set))
@@ -233,6 +247,10 @@ class RoundTrip:
         except BaseException as exc:  # noqa: BLE001 - every failure still restores chat
             error = exc
         finally:
+            if beside and error is None:
+                # Both fit: the image model stays loaded as the policy keeps it; the next call is free.
+                media_touched = False
+                self._note("image_kept_beside_chat")
             if media_touched:
                 try:
                     await self._step("image_unloaded", self.media.unload())
@@ -295,6 +313,15 @@ class StudioChat:
             raise SwapUnavailable(
                 "Error: other chat models are kept loaded beside this one; unload them to let chat "
                 "swap to the image model."
+            )
+        from core.inference import gpu_arbiter
+        from utils.account_context import current_account_id
+
+        owner = gpu_arbiter.owner_account(gpu_arbiter.CHAT)
+        if owner is not None and owner != current_account_id():
+            raise SwapUnavailable(
+                "Error: the chat model was loaded by another account, so this chat cannot unload it "
+                "for the image model."
             )
         identity = loaded_identity()
         launch = launch_to_replay(llama)
@@ -467,16 +494,15 @@ class StudioImage:
 
 
 def chat_can_swap() -> bool:
-    """Cheap check for offering the tool: swap on, a GGUF chat model loaded, a default image model."""
+    """Cheap check for offering the tool (runs on the event loop, so no model index scan): swap on
+    and a GGUF chat model loaded. A missing default image model is the tool's own error."""
     if not swap_enabled():
         return False
     try:
         from routes.inference import get_llama_cpp_backend
-        if not get_llama_cpp_backend().is_loaded:
-            return False
+        return bool(get_llama_cpp_backend().is_loaded)
     except Exception:  # noqa: BLE001
         return False
-    return default_image_model() is not None
 
 
 def run_in_tool(
@@ -504,14 +530,17 @@ def run_in_tool(
         # Another chat is streaming from the same llama-server: unloading it would end that one.
         return "Error: another chat is generating on this model. Try again when it finishes."
     subject = getattr(account, "username", None) or "unsloth"
+    from core.inference.gpu_residency import current_policy
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
+    policy = current_policy()
     trip = RoundTrip(
         chat = StudioChat(subject),
         media = StudioImage(subject, render),
         image_model = name,
         on_cancel = stop_render,
         hold_requests = inference_lifecycle_gate,
+        beside_first = policy in ("fit", "always"),
     )
 
     async def _go():
