@@ -628,3 +628,69 @@ def test_cfg_batch_doubled_call_failure_falls_back_on_its_own_rows(monkeypatch):
     assert ap.COUNTS["served"] > served
     for a, b in zip(ref, out):
         assert torch.equal(a, b)
+
+
+# ---- review round 5 (PR #18342)
+
+
+def test_renders_under_inference_mode_like_diffusion_backend(monkeypatch):
+    """DiffusionBackend renders under torch.inference_mode(): inference tensors carry no version counter. A plain
+    render, a CFG-batched render (the router's arm_call path) and a later no_grad render must all match stock."""
+    from core.inference import diffusion_cfg_batch as cb
+
+    with torch.inference_mode():  # the pipeline builds its timesteps inside it: inference tensors
+        calls = _flux_calls(torch.bfloat16)
+        assert calls[0]["timestep"].is_inference()
+        ref = [_flux().to(torch.bfloat16)(**kw)[0].clone() for kw in calls]
+        ref_cfg = _flux_cfg_loop(_flux())
+    model = _flux().to(torch.bfloat16)
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    with torch.inference_mode():
+        out = [model(**kw)[0].clone() for kw in calls]
+    assert all(torch.equal(a, b) for a, b in zip(ref, out))
+    with (
+        torch.no_grad()
+    ):  # a later call outside inference_mode refills the same row buffer in place
+        plain_calls = _flux_calls(torch.bfloat16)
+        again = [model(**kw)[0].clone() for kw in plain_calls]
+    assert all(torch.equal(a, b) for a, b in zip(ref, again))
+
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "force")
+    base = _mark_streamed(_flux())
+    pipe_b = _keep(_Pipe(torch.linspace(1000.0, 30.0, 4)))
+    pipe_b.transformer = base
+    assert cb.install_cfg_batch(pipe_b, offload_policy = "group") is None
+    head = _flux()
+    assert ap.install(head, None, requested = ap.MODE_ON)
+    head = _mark_streamed(head)
+    pipe_h = _keep(_Pipe(torch.linspace(1000.0, 30.0, 4)))
+    pipe_h.transformer = head
+    ap.bind_pipe(pipe_h)
+    assert cb.install_cfg_batch(pipe_h, offload_policy = "group") is None
+    with torch.inference_mode():
+        ref_batched = _flux_cfg_loop(base)
+        out_batched = _flux_cfg_loop(head)
+    assert cb.router_for(pipe_h).stats["batched_steps"] > 0
+    assert all(torch.equal(a, b) for a, b in zip(ref_batched, out_batched))
+    assert len(ref_cfg) == len(out_batched)
+
+
+def test_cfg_replica_copy_takes_the_real_modules():
+    from core.inference.diffusion_multigpu import _copy_module
+
+    calls = _flux_calls(torch.float32)
+    ref = _run(_flux(), calls)
+    model = _flux()
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    replica = _copy_module(model, torch.device("cpu"))
+    assert ap.STATE_ATTR not in replica.__dict__
+    for blk in replica.transformer_blocks:
+        assert type(blk.norm1.linear) is torch.nn.Linear
+        assert type(blk.norm1_context.linear) is torch.nn.Linear
+    for blk in replica.single_transformer_blocks:
+        assert type(blk.norm.linear) is torch.nn.Linear
+    assert type(replica.norm_out.linear) is torch.nn.Linear
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(replica, calls)))
+    # the source keeps the lever and its output
+    assert ap.installed(model)
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))

@@ -515,7 +515,10 @@ class _State:
         if lay is None:
             torch = _torch()
             total = sum(int(torch.Size(s).numel()) for s, _d, _v in layout_id)
-            buf = torch.empty(total, dtype = like.dtype, device = like.device)
+            # A normal tensor even when the first miss runs under inference_mode: it is refilled in place by every
+            # later call, inference_mode or not (an inference tensor refuses that outside it).
+            with torch.inference_mode(False):
+                buf = torch.empty(total, dtype = like.dtype, device = like.device)
             views = []
             off = 0
             for shape, _d, _v in layout_id:
@@ -559,11 +562,29 @@ def _pre_hook(model: Any, args: tuple, kwargs: dict) -> None:
     return None
 
 
-def _input_ids(st: "_State", inputs: dict) -> tuple:
-    """Identity of a call's embedding inputs (objects, storage, in-place version): equal ids, equal rows."""
+def replica_memo(module: Any, device: Any, memo: dict) -> None:
+    """CFG-replica policy (diffusion_multigpu._copy_module): the replica takes the REAL modulation modules on its own
+    card and no precompute state. The source's pre-hook arms only the source's stand-ins, so a copied stand-in would
+    keep stale rows; the state (lock, tables on the source card) is source-only and never traversed."""
+    import copy
+
+    st = module.__dict__.get(STATE_ATTR)
+    if st is None:
+        return
+    for stand in st.stand_ins:
+        memo[id(stand)] = copy.deepcopy(stand._unsloth_orig).to(device)
+
+
+def _input_ids(st: "_State", inputs: dict) -> Optional[tuple]:
+    """Identity of a call's embedding inputs (objects, storage, in-place version): equal ids, equal rows. None when
+    an input cannot report mutation (an inference tensor, Studio's renders run under inference_mode, carries no
+    version counter): such calls always re-arm."""
     out = [str(inputs.get("_dtype"))]
     for name in st.adapter.key_names:
         t = inputs.get(name)
+        is_inference = getattr(t, "is_inference", None)
+        if t is not None and (not callable(is_inference) or is_inference()):
+            return None
         out.append(
             None
             if t is None

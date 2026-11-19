@@ -2064,6 +2064,9 @@ def _copy_module(module: Any, device: Any) -> Any:
     guard = module.__dict__.get("_unsloth_compile_guard")
     if guard is not None:
         memo[id(guard)] = _DROP
+    if "_unsloth_adaln" in module.__dict__:
+        from .diffusion_adaln_precompute import replica_memo
+        replica_memo(module, device, memo)
     # A baked LoRA's scale pinned as a 0-d device tensor (diffusion._pin_baked_lora_scales) lives in a plain dict,
     # not a buffer: the copy needs its own on ``device``.
     for sub in module.modules():
@@ -2132,7 +2135,11 @@ def _copy_module(module: Any, device: Any) -> Any:
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
 # Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
 # forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
-_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas"})
+# AdaLN precompute's state (a lock, tables on the source card): the replica gets the real modulation modules instead
+# (diffusion_adaln_precompute.replica_memo).
+_SOURCE_ONLY_ATTRS = frozenset(
+    {"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas", "_unsloth_adaln"}
+)
 
 
 def _shared_state_values(sub: Any) -> list:
