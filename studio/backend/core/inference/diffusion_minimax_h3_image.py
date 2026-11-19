@@ -4444,9 +4444,7 @@ TE_PARTIAL_PIN_ENV = "UNSLOTH_H3_IMAGE_TE_PARTIAL_PIN"
 TE_PARTIAL_PIN_SLACK_BYTES = 1 << 30
 
 
-# Host memory a parked stream-tier render takes past the load (arena slabs, host embedding lookups, decode
-# buffers). Colab L4 at 8 GB, 54 GB host: with 2 GiB here the lowest free host memory during renders was 7.3-7.7 GiB
-# against the 7.6 GiB reserve; 3 GiB keeps it above.
+# Host memory a parked stream-tier render takes past the load; 2 GiB dipped under the reserve on Colab L4, 3 GiB holds.
 TE_PARTIAL_PIN_RENDER_BYTES = 3 << 30
 
 
@@ -4459,8 +4457,7 @@ def te_later_host_bytes(plan: "H3ImagePlan") -> int:
 
 
 def dit_restream_pin_bytes(transformer: Any, plan: "H3ImagePlan", early_streamer: Any) -> int:
-    """Bytes the DiT streamer the load places after the encoder pins (no streamer yet, or a re-plan moved its resident
-    blocks), else 0. The replaced streamer's pins stay held until the new one repacks the blocks, so none are netted."""
+    """Pins of a DiT streamer placed after the encoder, else 0; the replaced one's pins stay held, so none are netted."""
     if plan.placement != PLACE_STREAM:
         return 0
     resident = int(plan.dit_resident_blocks or 0)
@@ -4518,7 +4515,7 @@ def partial_pin_count(
     replaced: bool = False,
     slack_bytes: Optional[int] = None,
 ) -> int:
-    """Leading members that fit the pinned streamer's own checks (host pin budget, plan pin room) less ``slack_bytes``."""
+    """Leading members that fit the host pin budget and plan pin room, less ``slack_bytes``."""
     if budget_bytes is None:
         return 0
     if slack_bytes is None:
@@ -4545,8 +4542,7 @@ def _split_text_encoder_streamer(
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
 ) -> Optional[SplitListStreamer]:
-    """Pin the leading encoder layers the budget holds, stream the rest; None when none or all fit.
-    Pageable layers re-read the checkpoint every prompt (L4 8 GB: 23 GB disk, ~70 s with none pinned)."""
+    """Pin the leading encoder layers the budget holds, stream the rest; None when none or all fit."""
     from .diffusion_memory import _pin_budget_mib, _storage_nbytes
     from .diffusion_offload_prefetch import pin_replaces_host_enabled, stream_module_list
 

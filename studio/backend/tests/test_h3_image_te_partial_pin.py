@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3-Image text encoder partial pinning: where the whole encoder does not fit the host pin budget, the
-leading layers that do are pinned and the rest stream pageable (CPU, the pinned streamer faked)."""
+"""MiniMax-H3-Image text encoder partial pinning (CPU, the pinned streamer faked)."""
 
 from __future__ import annotations
 
@@ -76,7 +75,6 @@ def _setup(monkeypatch, budget_mib, seen):
 
 
 def _layers(n = 8, mib = 1):
-    # each layer holds `mib` MiB of fp32 weights
     return torch.nn.ModuleList([torch.nn.Linear(256, mib * 1024, bias = False) for _ in range(n)])
 
 
@@ -144,8 +142,7 @@ def test_later_host_bytes_cover_the_parked_pieces_and_the_render():
 def test_a_dit_streamed_again_after_a_replan_keeps_its_pin_over_the_encoder_split(
     tmp_path, monkeypatch
 ):
-    """A re-plan that moves the DiT's resident blocks streams the DiT again after the encoder is placed: the encoder
-    split leaves the pins that DiT streamer takes, so the DiT keeps its pinned streamer (the old pins stay held)."""
+    """A re-plan restreaming the DiT after the encoder keeps its pinned streamer: the encoder split leaves its pins."""
     import copy
 
     import _minimax_h3_image_tiny as tiny
@@ -172,9 +169,7 @@ def test_a_dit_streamed_again_after_a_replan_keeps_its_pin_over_the_encoder_spli
     def fake_stream(owner, blocks, device, resident, **kw):
         blocks = list(blocks)
         need = nbytes(blocks[resident:])
-        if (
-            state["budget"] is None
-        ):  # the early DiT streamer: the whole DiT, the early pin, half the encoder
+        if state["budget"] is None:  # early DiT streamer
             state["budget"] = nbytes(blocks) + need + te_bytes // 2
         if need + kw.get("reserve_bytes", 0) > state["budget"] - state["held"]:
             return None
