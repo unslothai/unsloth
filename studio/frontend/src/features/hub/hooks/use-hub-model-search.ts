@@ -317,11 +317,7 @@ type ModelListingTransform = (
   iterator: AsyncGenerator<unknown>,
 ) => AsyncGenerator<unknown>;
 
-/**
- * Requests a listing's first item now and hands the listing over later, so its first Hub round trip
- * overlaps whatever is read before it. A failure surfaces where `read()` is iterated, as it would
- * have without the head start; `cancel()` aborts a listing that will not be read.
- */
+/** Prefetches a listing's first item so its Hub round trip overlaps earlier reads; errors surface in `read()`. */
 function prefetchListing(
   create: (signal: AbortSignal) => AsyncGenerator<unknown>,
   signal?: AbortSignal,
@@ -374,8 +370,7 @@ async function* mergedModelIterator(
   };
 
   const limit = query.trim() ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
-  // Unfiltered, phase 1 reads at most `limit` rows, so the Hub need not send its usual 500 (with
-  // every expanded field, megabytes for a common term).
+  // Unfiltered phase 1 reads at most `limit` rows; avoids the Hub's default 500 (megabytes).
   const unslothRows = filterPriority || parameterFilter ? {} : { limit };
   const unslothIter = mergeTaskIterators(
     tasks,
@@ -389,8 +384,7 @@ async function* mergedModelIterator(
       }) as AsyncGenerator<unknown>,
     signal,
   );
-  // Requested alongside the Unsloth listing, read after it: one Hub round trip before the first
-  // page, not two.
+  // Requested alongside the Unsloth listing: one Hub round trip before the first page, not two.
   const general = prefetchListing(
     (generalSignal) =>
       mergeTaskIterators(
@@ -942,7 +936,6 @@ export async function fetchChannelFirstPage(
       sortDirection,
       accessToken,
       signal,
-      // pullBatch reads no more than this many rows.
       limit: MAX_RAW_ITEMS_PER_BATCH,
     });
     for await (const model of iter) {
