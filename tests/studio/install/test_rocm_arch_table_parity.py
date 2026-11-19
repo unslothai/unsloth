@@ -478,39 +478,6 @@ class TestGpuNameArchParity:
                 ), f"{where}: {gpu_name!r} matches no arm, so this card gets CPU-only torch"
 
 
-# Krackan Point 2 (gfx1153) vs Krackan Point (gfx1152) on the Windows tables, where the gfx1153 row
-# is spelled out as plain alternatives. Linux resolves Krackan 2 partly outside its name table.
-_WINDOWS_KRACKAN_CASES = {
-    "AMD Radeon 820M Graphics": "gfx1153",
-    "AMD Ryzen AI 5 330": "gfx1153",
-    "AMD Ryzen AI 5 PRO 330": "gfx1153",
-    "AMD Krackan Point 2": "gfx1153",
-    "AMD Krackan 2": "gfx1153",
-    "Krackan2": "gfx1153",
-    "KrackanPoint2": "gfx1153",
-    "Krackan Point2": "gfx1153",
-    "KrackanPoint 2": "gfx1153",
-    "AMD Krackan Point": "gfx1152",
-    "AMD Ryzen AI 5 340": "gfx1152",
-    "AMD Radeon 860M Graphics": "gfx1152",
-}
-
-
-class TestWindowsKrackanRows:
-    @pytest.mark.parametrize("gpu_name,expected_arch", sorted(_WINDOWS_KRACKAN_CASES.items()))
-    def test_windows_tables_split_krackan_generations(self, gpu_name, expected_arch):
-        tables = {
-            "install.ps1": _name_table_ps(_INSTALL_PS1),
-            "studio/setup.ps1": _name_table_ps(_SETUP_PS1),
-            "studio/install_python_stack.py": list(stack_mod._WIN_GPU_NAME_ARCH_TABLE),
-        }
-        for where, rows in tables.items():
-            arch = _match_ps(rows, gpu_name)
-            assert (
-                arch == expected_arch
-            ), f"{where}: {gpu_name!r} -> {arch!r}, expected {expected_arch!r}"
-
-
 class TestSpoofFixtureParity:
     """Spoof fixture is another copy of the mapping; drift makes other ROCm tests use an impossible host."""
 

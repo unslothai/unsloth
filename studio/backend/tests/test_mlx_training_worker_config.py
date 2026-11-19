@@ -454,6 +454,7 @@ def _run_masking(
             "trainer": trainer,
             "train_on_responses_only": lambda t, **_kw: t,
             "_send": lambda event_type, **kw: events.append((event_type, kw)),
+            "requested_max_steps": 60,
         }
     )
     try:
@@ -1193,3 +1194,46 @@ def test_mlx_cpt_drops_a_tied_head_with_its_quantized_embedding():
         types.SimpleNamespace(named_modules = lambda: [("model.embed_tokens", quantized)]),
         {"embed_tokens", "lm_head"},
     ) == {"embed_tokens", "lm_head"}
+
+
+def test_mlx_epoch_run_counts_only_the_rows_left_after_completion_masking(monkeypatch):
+    trainer = types.SimpleNamespace(
+        distributed_world_size = 1,
+        args = types.SimpleNamespace(max_steps = 10, warmup_steps = 5, eval_steps = 0),
+        train_dataset = list(range(20)),
+    )
+
+    def apply_completion_masking(trainer, *args, **kwargs):
+        trainer.train_dataset = trainer.train_dataset[:10]
+        return trainer, True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "utils.datasets.completion_masking",
+        types.SimpleNamespace(apply_completion_masking = apply_completion_masking),
+    )
+    namespace = dict(vars(_worker))
+    namespace.update(
+        {
+            "config": {"train_on_completions": True},
+            "raw_text_mode": False,
+            "dataset_final_format": "alpaca",
+            "trainer": trainer,
+            "model_name": "m",
+            "train_on_responses_only": None,
+            "_send": lambda *args, **kwargs: None,
+            "requested_max_steps": 0,
+            "dataset_streaming": False,
+            "batch_size": 2,
+            "grad_accum": 1,
+            "num_epochs": 1,
+            "warmup_ratio": None,
+            "warmup_uses_ratio": False,
+            "eval_steps_ratio": None,
+        }
+    )
+    exec(
+        compile(ast.Module(body = [_masking_block()], type_ignores = []), "<masking>", "exec"),
+        namespace,
+    )
+    assert trainer.args.max_steps == 5

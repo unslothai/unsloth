@@ -4074,6 +4074,18 @@ def _run_mlx_training(
                     f"sequences (prompts included)."
                 ),
             )
+        elif not requested_max_steps and not dataset_streaming:
+            # Masking drops rows with no response left after truncation; an epoch counts the rows that remain.
+            _configure_mlx_training_schedule(
+                trainer,
+                requested_max_steps,
+                len(trainer.train_dataset),
+                batch_size,
+                grad_accum,
+                num_epochs,
+                warmup_ratio = warmup_ratio if warmup_uses_ratio else None,
+                eval_steps_ratio = eval_steps_ratio,
+            )
 
     wandb_run, tb_writer = _setup_mlx_tracking(trainer, config, output_dir, _send)
 
