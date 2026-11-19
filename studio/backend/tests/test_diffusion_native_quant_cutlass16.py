@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""sm75 fp16 native W8A8 linears: the compiled codes feed the prebuilt CUTLASS GEMM where its race won (routing only;
-the kernel's bit-equality with the stock epilogue is the load-time probe in diffusion_int8_cutlass)."""
+"""sm75 fp16 W8A8 routing to the CUTLASS GEMM; kernel bit-equality is probed in diffusion_int8_cutlass."""
 
 from __future__ import annotations
 

@@ -318,8 +318,7 @@ def _w8a8_rows_into(
 
 # "devices": per card, None once it may run the compiled linear, else why not (its arch, or its compile failed).
 _FUSED_STATE: dict = {"fn": None, "failed": None, "devices": {}}
-# sm75 fp16, no bias: the compiled ``_w8a8_codes`` feeds the prebuilt CUTLASS GEMM whose fused epilogue equals
-# ``_w8a8_rows``' (int32 * xs) * ws -> fp16, where the per-shape race (diffusion_int8_cutlass.native_prepare) won.
+# sm75 fp16 no-bias calls served by the CUTLASS GEMM (epilogue bit-equal to ``_w8a8_rows``).
 _CUT16_CALLS = [0]
 _UNSEEN = object()
 
@@ -436,7 +435,6 @@ def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
     fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
     # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
     _FUSED_STATE["into"] = torch.compile(_w8a8_rows_into, dynamic = True, fullgraph = True)
-    # Compiled at its first call, which only an sm75 fp16 linear with a raced CUTLASS tile makes.
     _FUSED_STATE["codes"] = torch.compile(_w8a8_codes, dynamic = True, fullgraph = True)
     _FUSED_STATE["fn"] = fn
     log.info("diffusion.native_quant: int8 W8A8 linear runs as one compiled function")
@@ -853,9 +851,7 @@ def native_linear_class():
             return out.reshape(*x.shape[:-1], self.out_features)
 
         def _forward_cutlass16(self, x2: Any, rot_h: Any, rows: int) -> Any:
-            """sm75 fp16, no bias: compiled codes + the prebuilt CUTLASS GEMM (dequant fused), bit for bit the compiled
-            ``_w8a8_rows``; None where its race kept cuBLAS, the shape is ineligible or autocast is on."""
-            # the caller runs on CUDA only
+            """sm75 fp16, no bias: compiled codes + CUTLASS GEMM; None where its race kept cuBLAS or autocast is on."""
             if self.bias is not None or x2.dtype != torch.float16:
                 return None
             codes = _FUSED_STATE.get("codes")
@@ -866,7 +862,7 @@ def native_linear_class():
             entry = _cut._NATIVE_PLAN.get(
                 (x2.device.index, int(self.weight_q.shape[0]), int(self.weight_q.shape[1]))
             )
-            # The fused path's row budget holds here too: codes and output are made per chunk, never for every row.
+            # Same row budget as the fused path: never codes for every row at once.
             chunk = _INT_MM_FUSED_CHUNK_ELEMS // max(self.in_features, self.out_features)
             parts = (
                 (x2,)
