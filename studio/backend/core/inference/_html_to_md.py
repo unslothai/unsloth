@@ -564,7 +564,8 @@ def _sup_exponent(base: str, raw: str, shown: str, after_price: int) -> str | No
 
 def _raise_superscript(parts: list[str], start: int) -> None:
     before = parts[max(start - _SUP_BASE_SCAN_PARTS, 0) : start]
-    base = next((part[-_SUP_BASE_SCAN_CHARS:] for part in reversed(before) if part), "")
+    # the joined tail: Word splits runs mid-word, and the citation rule reads the whole last word
+    base = "".join(part[-_SUP_BASE_SCAN_CHARS:] for part in before)[-_SUP_BASE_SCAN_CHARS:]
     if not base or not (base[-1].isalnum() or base[-1] in _SUP_BASE_ENDS):
         return
     after_price = _MarkdownRenderer._after_price(before) if base[-1].isdigit() else 0

@@ -933,6 +933,8 @@ function linearizeDocxMathParts(select: DocxPartSelect): Record<string, Uint8Arr
 }
 
 const DOCX_RUN_TEXT = new Map([["tab", "\t"], ["br", "\n"], ["cr", "\n"]]);
+const pieceText = (piece: Element) =>
+  piece.localName === "t" ? (piece.textContent ?? "") : (DOCX_RUN_TEXT.get(piece.localName) ?? "");
 
 export function writeDocxSuperscripts(archive: Uint8Array): Uint8Array {
   return rezipDocx(archive, writeDocxSuperscriptParts(archiveParts(archive)));
@@ -968,13 +970,19 @@ function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8
       let before = "";
       let raised: Element[] = [];
       const raise = () => {
-        const text = raised.map((t) => t.textContent ?? "").join("");
+        const text = raised.map(pieceText).join("");
         const result = raiseSuperscript(before, text);
         if (result !== text) {
-          raised.forEach((t, i) => {
-            while (t.firstChild) t.removeChild(t.firstChild);
-            if (!i) t.appendChild(doc.createTextNode(result));
-          });
+          const first = raised.find((piece) => piece.localName === "t");
+          for (const piece of raised) {
+            if (piece === first) continue;
+            if (piece.localName === "t") while (piece.firstChild) piece.removeChild(piece.firstChild);
+            else piece.parentNode?.removeChild(piece);
+          }
+          if (first) {
+            while (first.firstChild) first.removeChild(first.firstChild);
+            first.appendChild(doc.createTextNode(result));
+          }
           found = true;
         }
         before = (before + result).slice(-SUPERSCRIPT_BASE_CHARS);
@@ -983,10 +991,11 @@ function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8
       for (const run of Array.from(p.getElementsByTagNameNS(w, "r"))) {
         if (!visibleIn(run, p)) continue;
         const pieces = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1 && (child as Element).namespaceURI === w);
-        const text = pieces.map((child) => (child.localName === "t" ? (child.textContent ?? "") : (DOCX_RUN_TEXT.get(child.localName) ?? ""))).join("");
+        const text = pieces.map(pieceText).join("");
         if (!text) continue;
         if (isSuperscript(run)) {
-          raised.push(...pieces.filter((child) => child.localName === "t"));
+          // breaks and tabs stay in the exponent text, so a value never joins across them
+          raised.push(...pieces.filter((child) => child.localName === "t" || DOCX_RUN_TEXT.has(child.localName)));
           continue;
         }
         if (raised.length) raise();

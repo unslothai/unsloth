@@ -1009,9 +1009,11 @@ def test_docx_keeps_superscript_exponents(tmp_path):
         f"<w:p>{_r('Tolerance is 10')}{_sup('-')}{_sup('3')}{_r(' m')}</w:p>",
         f"<w:p>{_r('Due on the 1')}{_sup('st')}{_r(', as noted.')}{_sup('4')}{_r(' H')}"
         f'<w:r><w:rPr><w:vertAlign w:val="subscript"/></w:rPr><w:t>2</w:t></w:r>{_r("O")}</w:p>',
+        f"<w:p>{_r('As the clai')}{_r('m')}{_sup('1,2')}{_r(' states.')}</w:p>",
     )
     assert text == (
-        "The tank holds 2.5 × 10^6 litres over 40 km^2.\nTolerance is 10^-3 m\nDue on the 1st, as noted.4 H2O"
+        "The tank holds 2.5 × 10^6 litres over 40 km^2.\nTolerance is 10^-3 m\nDue on the 1st, as noted.4 H2O\n"
+        "As the claim1,2 states."
     )
 
 
@@ -1228,11 +1230,12 @@ def test_html_keeps_superscript_exponents(tmp_path):
         "<p>Mass is 1.898×10<sup>27</sup> kg; MAX is 2<sup>53</sup> - 1.</p>"
         "<p>Tolerance is 10<sup>-3</sup> m over 40 km<sup>2</sup>.</p>"
         '<p>Held on the 21<sup>st</sup> of June.<sup>4</sup> See Smith<sup class="reference">[2]</sup>'
-        ' and Jones<sup class="footnote-ref">3</sup>.</p>',
+        ' and Jones<sup class="footnote-ref">3</sup>.</p>'
+        "<p>As the clai<span>m</span><sup>1,2</sup> states.</p>",
     )
     assert text == (
         "Mass is 1.898×10^27 kg; MAX is 2^53 - 1.\nTolerance is 10^-3 m over 40 km^2.\n"
-        "Held on the 21st of June.4 See Smith[2] and Jones3."
+        "Held on the 21st of June.4 See Smith[2] and Jones3.\nAs the claim1,2 states."
     )
 
 
