@@ -13,8 +13,9 @@ from pathlib import Path
 import pytest
 
 _BACKEND = Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
+for _p in (_BACKEND, _BACKEND / "tests"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("diffusers")
@@ -138,3 +139,103 @@ def test_later_host_bytes_cover_the_parked_pieces_and_the_render():
         h3i.te_later_host_bytes(plan)
         == int((h3i.DIT_REFINER_GB + 2.34) * 1e9) + h3i.TE_PARTIAL_PIN_RENDER_BYTES
     )
+
+
+def test_a_dit_streamed_again_after_a_replan_keeps_its_pin_over_the_encoder_split(
+    tmp_path, monkeypatch
+):
+    """A re-plan that moves the DiT's resident blocks streams the DiT again after the encoder is placed: the encoder
+    split leaves the pins that DiT streamer takes, so the DiT keeps its pinned streamer (the old pins stay held)."""
+    import copy
+
+    import _minimax_h3_image_tiny as tiny
+    from core.inference import diffusion_memory, diffusion_offload_prefetch
+
+    root = tmp_path / "rel"
+    ref = tiny.make_tiny_release(root)
+    te = tiny.make_text_encoder(ref["tokenizer"])
+    scale = 64  # tiny weights in MiB-sized units, the pin budget's granularity
+    monkeypatch.setattr(
+        diffusion_memory, "_storage_nbytes", lambda t: [t.numel() * t.element_size() * scale]
+    )
+
+    def nbytes(modules):
+        return sum(
+            t.numel() * t.element_size() * scale
+            for m in modules
+            for t in list(m.parameters()) + list(m.buffers())
+        )
+
+    te_bytes = nbytes(te.model.language_model.layers)
+    state = {"budget": None, "held": 0}
+
+    def fake_stream(owner, blocks, device, resident, **kw):
+        blocks = list(blocks)
+        need = nbytes(blocks[resident:])
+        if (
+            state["budget"] is None
+        ):  # the early DiT streamer: the whole DiT, the early pin, half the encoder
+            state["budget"] = nbytes(blocks) + need + te_bytes // 2
+        if need + kw.get("reserve_bytes", 0) > state["budget"] - state["held"]:
+            return None
+        state["held"] += (
+            need  # a removed streamer's pins stay held until its blocks are packed again
+        )
+        pinned = types.SimpleNamespace(
+            members = blocks[resident:], pinned_bytes = need, replaced_bytes = need, _host = {}
+        )
+        pinned.stats = lambda: {"groups": len(pinned.members)}
+        pinned.remove = lambda: None
+        return pinned
+
+    monkeypatch.setattr(diffusion_offload_prefetch, "stream_module_list", fake_stream)
+    monkeypatch.setattr(
+        diffusion_memory,
+        "_pin_budget_mib",
+        lambda: None if state["budget"] is None else (state["budget"] - state["held"]) >> 20,
+    )
+    monkeypatch.setattr(h3i, "TE_PARTIAL_PIN_SLACK_BYTES", 0)
+    monkeypatch.setattr(h3i, "pin_room_bytes", lambda plan, pinned = (): None)
+    real_plan = h3i.plan_placement
+
+    def stream_plan(**kw):
+        p = real_plan(**kw)
+        p.placement, p.dit_resident_blocks, p.te_resident_layers = h3i.PLACE_STREAM, 1, 0
+        p.parked = p.vae_parked = False
+        return p
+
+    def replan(
+        plan,
+        te_gb,
+        plan_args,
+        slack_gb = 1.0,
+    ):
+        new = copy.copy(plan)
+        new.dit_resident_blocks = 0  # the encoder's real size moved the DiT's resident blocks
+        return new
+
+    monkeypatch.setattr(h3i, "plan_placement", stream_plan)
+    monkeypatch.setattr(h3i, "replan_for_encoder", replan)
+    pipe = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    try:
+        roles = {s._unsloth_role: s for s in pipe._unsloth_h3_streamers}
+        assert isinstance(roles["transformer"], types.SimpleNamespace)
+        assert roles["transformer"]._unsloth_resident == 0
+        assert isinstance(roles["text_encoder"], h3i.SplitListStreamer)
+        assert 0 < len(roles["text_encoder"].parts[0].members) < len(te.model.language_model.layers)
+    finally:
+        pipe.release()
+
+
+def test_only_a_dit_streamed_after_the_encoder_is_reserved_for():
+    blocks = _layers(4)
+    transformer = types.SimpleNamespace(transformer_blocks = blocks)
+    plan = types.SimpleNamespace(placement = h3i.PLACE_STREAM, dit_resident_blocks = 1)
+    early = types.SimpleNamespace(_unsloth_resident = 1)
+    assert h3i.dit_restream_pin_bytes(transformer, plan, early) == 0  # the early streamer stays
+    assert h3i.dit_restream_pin_bytes(transformer, plan, None) == 3 * (1 << 20)
+    early._unsloth_resident = 2
+    assert h3i.dit_restream_pin_bytes(transformer, plan, early) == 3 * (1 << 20)
+    for placement in (h3i.PLACE_RESIDENT, h3i.PLACE_DIT_RESIDENT, h3i.PLACE_SEQUENTIAL):
+        plan.placement = placement
+        assert h3i.dit_restream_pin_bytes(transformer, plan, None) == 0

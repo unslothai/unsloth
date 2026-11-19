@@ -4458,6 +4458,29 @@ def te_later_host_bytes(plan: "H3ImagePlan") -> int:
     return int(parked * 1e9) + TE_PARTIAL_PIN_RENDER_BYTES
 
 
+def dit_restream_pin_bytes(transformer: Any, plan: "H3ImagePlan", early_streamer: Any) -> int:
+    """Bytes the DiT streamer the load places after the encoder pins (no streamer yet, or a re-plan moved its resident
+    blocks), else 0. The replaced streamer's pins stay held until the new one repacks the blocks, so none are netted."""
+    if plan.placement != PLACE_STREAM:
+        return 0
+    resident = int(plan.dit_resident_blocks or 0)
+    if (
+        early_streamer is not None
+        and getattr(early_streamer, "_unsloth_resident", None) == resident
+    ):
+        return 0
+    from .diffusion_memory import _storage_nbytes
+
+    blocks = list(transformer.transformer_blocks)[max(0, resident) :]
+    return int(
+        sum(
+            sum(_storage_nbytes(t))
+            for b in blocks
+            for t in list(b.parameters()) + list(b.buffers())
+        )
+    )
+
+
 def te_partial_pin_enabled() -> bool:
     return pinned_stream_enabled() and not _env_off(TE_PARTIAL_PIN_ENV)
 
@@ -5259,9 +5282,11 @@ def _place_text_encoder(
     per_prompt: bool = False,
     reserve_bytes: int = 0,
     pinned_already: Sequence[Any] = (),
+    dit_pin_bytes: int = 0,
 ) -> Any:
     """``per_prompt`` (low-host tier, encoder reloaded each prompt) streams pageable: pinning would copy 27 GB per
-    prompt. ``pinned_already``: streamers whose pins count against the host room first."""
+    prompt. ``pinned_already``: streamers whose pins count against the host room first. ``dit_pin_bytes``: pins a DiT
+    streamer placed after the encoder still takes (``dit_restream_pin_bytes``); a split encoder pin leaves them."""
     if encoder is None:
         return None
     if plan.placement == PLACE_RESIDENT:
@@ -5297,7 +5322,7 @@ def _place_text_encoder(
             reserve_bytes = reserve_bytes,
             max_pin_bytes = pin_room_bytes(plan, pinned_already),
             replaces_counted = pins_replace_counted(plan),
-            later_host_bytes = te_later_host_bytes(plan),
+            later_host_bytes = te_later_host_bytes(plan) + max(0, int(dit_pin_bytes)),
         )
     return encoder
 
@@ -5566,7 +5591,14 @@ def load_minimax_h3_image_pipeline(
 
         pipe._unsloth_h3_te_loader = _te_loader
     else:
-        _place_text_encoder(pipe, text_encoder, plan, device, pinned_already = [early_streamer])
+        _place_text_encoder(
+            pipe,
+            text_encoder,
+            plan,
+            device,
+            pinned_already = [early_streamer],
+            dit_pin_bytes = dit_restream_pin_bytes(transformer, plan, early_streamer),
+        )
     if plan.placement != PLACE_SEQUENTIAL:
         vae.to(device)
     if plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
