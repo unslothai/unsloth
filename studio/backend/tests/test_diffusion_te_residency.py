@@ -315,11 +315,70 @@ def test_resident_groups_stream_the_encoders_only():
         patch(
             "core.inference.diffusion_memory.resident_group_mib", side_effect = lambda p: next(sizes)
         ),
+        patch.object(tr.EncoderResidency, "resident_mib", return_value = 4_000),
     ):
         r = tr.EncoderResidency(pipe, "cpu", tr.KIND_GROUPS)
         assert r.release("short", short_mib = 2_500) == 3_000
     assert calls[0][0] == 2_500 and calls[0][1]["encoders_only"] is True
     assert r.restore("fits") and calls[-1] == ("restore", True) and not r.streamed
+
+
+def test_a_partial_group_release_does_not_block_a_later_one_or_a_lend():
+    # Qwen-Image-2.1 on an L4: a near-steady render streamed 81 MiB, which then blocked the 8 GiB lend
+    pipe = _pipe()
+    order = []
+    resident = {"mib": 5_265}
+
+    def fake_release(
+        p,
+        need,
+        logger = None,
+        **kw,
+    ):
+        freed = min(need, resident["mib"])
+        resident["mib"] -= freed
+        tag = len(order)
+        order.append(("release", need))
+
+        def restore(strict = False):
+            order.append(("restore", tag))
+
+        return restore
+
+    with (
+        patch("core.inference.diffusion_memory.release_resident_groups", side_effect = fake_release),
+        patch(
+            "core.inference.diffusion_memory.resident_group_mib",
+            side_effect = lambda p: resident["mib"],
+        ),
+        patch.object(tr.EncoderResidency, "resident_mib", lambda self: resident["mib"]),
+    ):
+        r = tr.EncoderResidency(pipe, "cpu", tr.KIND_GROUPS)
+        with _live(free_mib = 7_106):
+            r.after_encode(6_912)  # short by 62 MiB
+        assert r.streamed and r.released_mib == 62
+        assert r.lend("an 8 GiB load") == 5_203
+        assert resident["mib"] == 0 and r.released_mib == 5_265
+        assert r.lend("again") == 0
+        assert r.restore("fits")
+    assert order == [("release", 62), ("release", 5_203), ("restore", 1), ("restore", 0)]
+    assert not r.streamed and r.released_mib == 0
+
+
+def test_resident_groups_with_a_decode_lend_are_priced_by_the_denoise_phase():
+    from core.inference.diffusion_memory import (
+        DECODE_LEND_ATTR,
+        MEASURED_RESERVE_DENOISE_PHASE_INDEX,
+    )
+
+    pipe = _pipe()
+    reserve = [6_912, "qwen-image-2.1", "default"] + [None] * 11
+    reserve[MEASURED_RESERVE_DENOISE_PHASE_INDEX] = 5_376
+    pipe._unsloth_measured_reserve = tuple(reserve)
+    setattr(pipe, tr.ATTR, _Recorder(kind = tr.KIND_GROUPS))
+    assert tr.render_need_mib(pipe, width = 1024, height = 1024, extra_mib = 10) == 6_922
+    setattr(pipe, DECODE_LEND_ATTR, (1_536, 7_000, 1 << 20, False))
+    assert tr.render_need_mib(pipe, width = 1024, height = 1024, extra_mib = 10) == 5_386
 
 
 def test_release_resident_groups_can_leave_the_denoiser_alone():

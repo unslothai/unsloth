@@ -120,6 +120,16 @@ def render_need_mib(
         except Exception:  # noqa: BLE001
             reserved = None
     if residency is not None and residency.kind == KIND_GROUPS:
+        from .diffusion_memory import DECODE_LEND_ATTR, MEASURED_RESERVE_DENOISE_PHASE_INDEX
+
+        phase = (
+            reserve[MEASURED_RESERVE_DENOISE_PHASE_INDEX]
+            if reserve and len(reserve) > MEASURED_RESERVE_DENOISE_PHASE_INDEX
+            else None
+        )
+        if phase and getattr(pipe, DECODE_LEND_ATTR, None):
+            # the decode lend streams these groups again for the decode when it is short: price the denoise here
+            return int(phase) + max(0, int(extra_mib or 0))
         return reserved
     candidates: list[int] = [] if reserved is None else [reserved]
     identity = getattr(pipe, "_unsloth_peak_identity", None)
@@ -213,6 +223,19 @@ class EncoderResidency:
         found = _encoders(pipe)
         return {n: found[n] for n in self.names if n in found}
 
+    def resident_mib(self) -> int:
+        """MiB of the encoders on the card now: whole (``plain``), or their groups pinned resident (``groups``)."""
+        if self.kind != KIND_GROUPS:
+            return 0 if self.streamed else int(self.mib)
+        from .diffusion_memory import _offload_groups
+
+        total = 0
+        for module in self._modules().values():
+            for group in _offload_groups(module) or []:
+                if getattr(group, "_unsloth_resident", False):
+                    total += int(getattr(group, "_unsloth_resident_bytes", 0) or 0)
+        return total >> 20
+
     def _still_plain(self) -> bool:
         from .diffusion_vae_oom import _placement
         modules = self._modules()
@@ -228,10 +251,10 @@ class EncoderResidency:
     ) -> int:
         """Stream the encoders from the host; MiB freed on the card (0 when nothing moved)."""
         with self._lock:
-            if self.streamed:
-                return 0
             if self.kind == KIND_GROUPS:
                 return self._release_groups(reason, short_mib)
+            if self.streamed:
+                return 0
             return self._release_plain(reason)
 
     def _release_plain(self, reason: str) -> int:
@@ -293,16 +316,36 @@ class EncoderResidency:
             return 0
         before = resident_group_mib(pipe)
         need = int(short_mib) if short_mib else int(self.mib)
-        restore = release_resident_groups(
-            pipe, need, self.logger, reason = reason, encoders_only = True, device = self.device
+        restore = (
+            release_resident_groups(
+                pipe, need, self.logger, reason = reason, encoders_only = True, device = self.device
+            )
+            if self.resident_mib() > 0
+            else None
         )
         if restore is None:
             self._record(action = "keep", why = "no resident encoder groups", reason = reason)
             return 0
         freed = max(0, before - resident_group_mib(pipe))
-        self._restore_groups = restore
+        held = self._restore_groups
+        if held is None:
+            self._restore_groups = restore
+        else:
+            # a further release while partly streamed: one restore re-pins both, the newest first
+
+            def both(
+                strict: bool = False,
+                _first = restore,
+                _then = held,
+            ) -> None:
+                try:
+                    _first(strict = strict)
+                finally:
+                    _then(strict = strict)
+
+            self._restore_groups = both
         self.streamed = True
-        self.released_mib = freed
+        self.released_mib += freed
         self.releases += 1
         self._record(action = "release", mib = freed, reason = reason)
         return freed
@@ -386,7 +429,7 @@ class EncoderResidency:
         """Prompt encoded: keep resident encoders when the rest of the render still fits with the slack, else stream
         the shortfall from the host before the denoise allocates."""
         with self._lock:
-            if self.streamed:
+            if self.streamed and (self.kind != KIND_GROUPS or self.resident_mib() <= 0):
                 return None
             live = live_free_mib(self.device)
             if live is None or need_mib is None:
@@ -413,9 +456,10 @@ class EncoderResidency:
         """Another load wants the card: stream the encoders now (they come back at a later encode if they fit). Not
         when they hold less than ``at_least_mib``: the caller would have to free the whole model anyway."""
         with self._lock:
-            if self.streamed or int(self.mib) < int(at_least_mib or 0):
+            resident = self.resident_mib()
+            if resident <= 0 or resident < int(at_least_mib or 0):
                 return 0
-            return self.release(reason)
+            return self.release(reason, short_mib = resident)
 
 
 def _apply_stream(module: Any, device: Any, logger: Any) -> None:
