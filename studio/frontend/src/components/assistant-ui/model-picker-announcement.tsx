@@ -242,8 +242,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
           </DialogClose>
           {page === 0 ? (
             <>
-              <DialogHero />
-              <div className="mt-7 flex flex-col items-center gap-2.5 px-4 text-center">
+              <div className="mt-4 flex flex-col items-center gap-2.5 px-4 text-center">
                 <NewBadge />
                 <DialogTitle className="text-balance font-heading font-semibold text-[1.65rem] leading-tight tracking-[-0.02em]">
                   Meet the new model picker
@@ -252,10 +251,15 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                   The model picker now lives in the chat box, next to the send
                   button.
                 </DialogDescription>
+              </div>
+              <div className="mt-5">
+                <DialogHero />
+              </div>
+              <div className="mt-3 flex justify-center">
                 <Button
                   variant="primary"
                   size="hero"
-                  className="mt-2 gap-1.5 px-5.5 py-2.5 text-[0.95rem]"
+                  className="gap-1.5 px-5.5 py-2.5 text-[0.95rem]"
                   onClick={() => {
                     openPickerOnClose.current = true;
                     setOpen(false);
