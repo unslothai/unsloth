@@ -344,10 +344,10 @@ test("the picker opens with its list unless the user collapsed it", () => {
   assert.doesNotMatch(picker, /<Popover[^>]*\bmodal\b/);
   assert.match(picker, /localStorage\.getItem\(EXPANDED_KEY\) !== "false"/);
   assert.match(picker, /useState\(readExpanded\)/);
-  assert.match(picker, /onClick=\{\(\) => setExpanded\(false\)\}/);
+  assert.match(picker, /onClick=\{\(\) => toggleExpanded\(false\)\}/);
 });
 
-test("each load starts collapsed, keeps the user's choice per model, and an eject forgets it", () => {
+test("a load opens as the user last left a loaded picker, and an eject expands", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
@@ -358,17 +358,21 @@ test("each load starts collapsed, keeps the user's choice per model, and an ejec
   );
   assert.match(
     picker,
-    /\(fresh \? undefined : readModelExpanded\(\)\[residentKey\]\) \?\? false/,
+    /setExpanded\(useChatRuntimeStore\.getState\(\)\.pickerExpandLoaded\);/,
   );
+  // Only the row, chevron and collapse button record the choice; automatic expands do not.
   assert.match(
     picker,
-    /if \(residentKeyRef\.current\) \{\s+writeModelExpanded\(residentKeyRef\.current, next\);/,
+    /if \(residentKeyRef\.current\) \{\s+useChatRuntimeStore\.getState\(\)\.setPickerExpandLoaded\(next\);/,
   );
+  assert.match(picker, /const expand = \(\) => \{\s+toggleExpanded\(true\);/);
+  assert.match(picker, /onClick=\{\(\) => toggleExpanded\(false\)\}/);
+  assert.doesNotMatch(picker, /MODEL_EXPANDED_KEY/);
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.match(
-    picker,
-    /writeModelExpanded\(prev, null\);\s+setExpanded\(true\);/,
+    store,
+    /pickerExpandLoaded: loadBool\(PICKER_EXPAND_LOADED_KEY, false\)/,
   );
-  assert.match(picker, /Math\.max\(0, keys\.length - MODEL_EXPANDED_MAX\)/);
 });
 
 test("On Device sections follow the header picker's buckets and order", () => {
