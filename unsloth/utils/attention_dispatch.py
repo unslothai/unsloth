@@ -1730,7 +1730,12 @@ def run_attention(
     manager = get_cp_manager()
     if manager is not None and manager.backend == "ulysses":
         return ulysses_attention(_run_attention, config, context, Q, K, V, manager.group)
-    if _SAVE_ATTENTION and context.training and manager is None:
+    if (
+        _SAVE_ATTENTION
+        and context.training
+        and manager is None
+        and (_SAVE_ATTENTION_MIN_SEQ is None or _auto_saves_attention(config, context))
+    ):
         # GC replay reuses the first pass's attention output + logsumexp; graph breaks under compile.
         traced = torch.compiler.is_compiling()
         return _saved_attention_call(
@@ -1751,15 +1756,37 @@ def _run_attention_as(traced, config, context, Q, K, V):
         _AS_TRACED[0] = previous
 
 
+def _auto_saves_attention(config, context) -> bool:
+    # Automatic mode (unsloth_zoo decides the GPU and the memory budget): only long, unpacked SDPA
+    # calls, where the saved recompute was measured faster; a plain shape check otherwise, no graph break.
+    return (
+        context.q_len >= _SAVE_ATTENTION_MIN_SEQ
+        and config.backend == SDPA
+        and context.seq_info is None
+        and context.prefix_seg_info is None
+    )
+
+
 def _load_saved_attention():
+    """(call, min_seq): min_seq None = every training call (UNSLOTH_GC_SAVE_ATTENTION=1 / offload);
+    an int = automatic mode from that query length. An unsloth_zoo without automatic mode stays off."""
     try:
         from unsloth_zoo.saved_attention import save_attention_enabled, saved_attention_call
     except Exception:
-        return None
-    return saved_attention_call if save_attention_enabled() else None
+        return None, None
+    if save_attention_enabled():
+        return saved_attention_call, None
+    try:
+        from unsloth_zoo.saved_attention import save_attention_auto_min_seq
+        min_seq = save_attention_auto_min_seq()
+    except Exception:
+        return None, None
+    if min_seq is None:
+        return None, None
+    return saved_attention_call, min_seq
 
 
-_saved_attention_call = _load_saved_attention()
+_saved_attention_call, _SAVE_ATTENTION_MIN_SEQ = _load_saved_attention()
 _SAVE_ATTENTION = _saved_attention_call is not None
 
 

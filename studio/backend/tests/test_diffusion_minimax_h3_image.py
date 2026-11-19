@@ -1937,6 +1937,80 @@ def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, m
     assert h3i.install_checkpoint_attention(p, "cpu", scheme = "int8") is None
 
 
+def test_an_explicit_attention_pick_beats_the_checkpoint_and_its_races(h3i, release, monkeypatch):
+    """The user's "sage" pins SageAttention on the DiT blocks whatever the checkpoint declares, with no race against
+    native and no INT8 race (INT8 only when its control is On); any other explicit pick keeps the checkpoint's
+    SageAttention off. The status reads the blocks' routes off the modules."""
+    from core.inference import diffusion_attention as da
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    mods = h3i._attention_processors(p.transformer)
+    blocks = {id(m) for b in p.transformer.transformer_blocks for m in b.modules()}
+    before = {id(m): m.processor._attention_backend for m in mods}
+    applied: list = []
+
+    def fake_apply(
+        pipe,
+        backend,
+        logger = None,
+        target = None,
+        requested = None,
+    ):
+        applied.append(requested)
+        for m in h3i._attention_processors(pipe.transformer):
+            m.processor._attention_backend = backend
+        return backend
+
+    raced: list = []
+
+    def no_race(*a, **k):
+        raise AssertionError("an explicit sage pick was raced against native")
+
+    def kernel_race(transformer, block_modules, saved, dev, dtype, sage, forced, log, **k):
+        raced.append((sage, forced))
+        return 0, None
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    monkeypatch.setattr(h3i, "race_checkpoint_attention", no_race)
+    monkeypatch.setattr(h3i, "_race_int8_kernel", kernel_race)
+    # fp8 declares no attention: the pick alone engages it
+    assert (
+        h3i.install_checkpoint_attention(p, "cuda", scheme = "fp8", attention_backend = "sage")
+        == "sage"
+    )
+    assert applied == ["sage"] and raced == [(True, True)]
+    routed = da.attention_census(p)
+    assert routed.get("sage") == sum(1 for m in mods if id(m) in blocks) > 0
+    entry = da.attention_resolved_entry("sage", "sage", p)
+    assert entry[1] == "sage" and len(entry) == 3
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    # an explicit native pick: the checkpoint's SageAttention stays off
+    assert (
+        h3i.install_checkpoint_attention(p, "cuda", scheme = "int8", attention_backend = "native")
+        is None
+    )
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    assert (
+        h3i.explicit_attention_pick("auto") is None
+        and h3i.explicit_attention_pick("unsloth_int8") is None
+    )
+
+
+def test_h3_image_load_passes_the_pick_and_reports_it():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    body = src[src.index("    def _load_h3_image_locked(") :]
+    body = body[: body.index("\n    def ", 10)]
+    assert "attention_backend = attention_backend," in body
+    assert '"attention_backend": attention_resolved_entry(' in body
+    assert "annotate_attention_resolved(resolved, pipe)" in body
+
+
 def test_int8_attention_stays_off_where_it_loses_the_race(h3i, release, monkeypatch):
     """Losing race stays native; UNSLOTH_H3_IMAGE_INT8_ATTENTION=1 forces INT8 with no race."""
     from core.inference import diffusion_attention as da

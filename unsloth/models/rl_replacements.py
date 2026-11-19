@@ -1567,12 +1567,24 @@ def sft_trainer_compute_loss(function_name, function):
                 if _text_config.router_aux_loss_coef != _aux_coef:
                     _aux_restore.append((_text_config, _text_config.router_aux_loss_coef))
                     _text_config.router_aux_loss_coef = _aux_coef
+        _parent_compute_loss = super().compute_loss
         try:
-            outputs = super().compute_loss(
+            # label_smoothing_factor: the fused CE with smoothing instead of LabelSmoother over the full logits.
+            from unsloth.models.fused_label_smoothing import (
+                fused_label_smoothing_compute_loss as _fused_label_smoothing,
+            )
+            outputs = _fused_label_smoothing(
+                self,
                 model,
                 inputs,
-                return_outputs = return_outputs,
-                num_items_in_batch = num_items_in_batch,
+                return_outputs,
+                num_items_in_batch,
+                lambda: _parent_compute_loss(
+                    model,
+                    inputs,
+                    return_outputs = return_outputs,
+                    num_items_in_batch = num_items_in_batch,
+                ),
             )
         finally:
             for _text_config, _old_coef in _aux_restore:

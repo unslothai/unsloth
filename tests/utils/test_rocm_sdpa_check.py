@@ -12,6 +12,7 @@ import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch.nn.functional as F
 
 ad = pytest.importorskip("unsloth.utils.attention_dispatch")
@@ -345,7 +346,7 @@ def test_child_script_compiles():
 
 
 @needs_check
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a GPU")
+@pytest.mark.skipif(not has_real_cuda() or not torch.cuda.is_available(), reason = "needs a GPU")
 def test_child_passes_on_a_working_gpu():
     """The child's shapes, reference and tolerance accept kernels that are correct."""
     results = check._run_children(0)
@@ -353,7 +354,7 @@ def test_child_passes_on_a_working_gpu():
 
 
 @needs_check
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a GPU")
+@pytest.mark.skipif(not has_real_cuda() or not torch.cuda.is_available(), reason = "needs a GPU")
 def test_child_out_of_memory_is_inconclusive(monkeypatch):
     """A child that cannot allocate its tensors (the model is resident) keeps both backends."""
     starved = "import torch\ntorch.cuda.set_per_process_memory_fraction(1e-6, int(__import__('sys').argv[1]))\n"
