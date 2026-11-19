@@ -399,6 +399,20 @@ test("a base file in a Turbo / Flash folder or repo keeps the backend's recipe, 
   });
 });
 
+test("a local safetensors pick keys its defaults on the selected file, not its folder", () => {
+  // The page passes the picked file, so a base Anima file in a Turbo folder gets the fallback the loaded recipe replaces.
+  const pick = "/models/anima-turbo/anima-base-v1.0.safetensors";
+  assert.deepEqual(defaultsFor(defaultsKeyFor(pick, "auto", "anima-base-v1.0.safetensors")), { steps: 9, guidance: 0 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima/anima-turbo-v1.1.safetensors", "auto", "anima-turbo-v1.1.safetensors")), {
+    steps: 10,
+    guidance: 1,
+  });
+  const page = readFileSync(new URL("../src/features/images/images-page.tsx", import.meta.url), "utf8");
+  const branch = page.slice(page.indexOf('id.toLowerCase().endsWith(".safetensors")'));
+  const call = branch.slice(0, branch.indexOf('kind: "single_file"'));
+  assert.match(call, /applyImageModelDefaults\(id, nextFamilyOverride, false, filename\)/);
+});
+
 test("Kromoss picks take the MOSS-Image recipe", () => {
   for (const id of ["lodestones/Kromoss", "molbal/Kromoss-GGUF", "kromoss-Q8_0.gguf"]) {
     assert.deepEqual(defaultsFor(id), { steps: 25, guidance: 2.5 }, id);
