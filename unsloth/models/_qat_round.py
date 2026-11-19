@@ -293,12 +293,14 @@ def _before_load(
     try:
         same = incoming.shape == weight.shape
         if same:
-            incoming = incoming.to(device = weight.device, dtype = weight.dtype)
             # The rounded weight state_dict() marked, unchanged since (any edit or replacement changes the
-            # checksum), or the rounded values this module already holds.
-            same = (
-                isinstance(marker, (tuple, list)) and list(_checksum(incoming)) == list(marker)
-            ) or torch.equal(incoming, weight)
+            # checksum; checked before any dtype cast, which the checksum includes), still exact in this
+            # module's dtype, or the rounded values this module already holds.
+            marked = isinstance(marker, (tuple, list)) and list(_checksum(incoming)) == list(marker)
+            converted = incoming.to(device = weight.device, dtype = weight.dtype)
+            if marked and converted.dtype != incoming.dtype:
+                marked = torch.equal(converted.to(incoming.dtype), incoming.to(converted.device))
+            same = marked or torch.equal(converted, weight)
     except Exception:
         same = False
     module.__dict__[_SAME] = (bool(same), _weight_state(weight))

@@ -45,12 +45,14 @@ def _model(
     monkeypatch,
     mode,
     seed = 0,
+    dtype = None,
 ):
     monkeypatch.setenv("UNSLOTH_QAT_ROUND_INPLACE", mode)
     monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
     torch.manual_seed(seed)
+    block = _Block() if dtype is None else _Block().to(dtype)
     model = peft.get_peft_model(
-        _Block(),
+        block,
         peft.LoraConfig(r = 8, lora_alpha = 8, target_modules = ["up_proj", "down_proj"]),
     )
     for name, p in model.named_parameters():
@@ -212,6 +214,21 @@ def test_copied_model_survives_a_device_move(scheme, monkeypatch):
     model._apply(lambda t: t.clone())
     assert qr.round_frozen_qat_weights(model) == 0
     assert torch.equal(_out(model, x), expected)
+
+
+@pytest.mark.parametrize("scheme", ["int4", "int8"])
+def test_rounded_checkpoint_in_another_dtype_loads_unchanged(scheme, monkeypatch):
+    # A rounded checkpoint from a bf16 prepared model loaded into an fp32 prepared model: the cast is exact, so
+    # the marker (checked before the cast) still holds and the weights are not rounded a second time.
+    source = _model(scheme, monkeypatch, "1", seed = 1, dtype = torch.bfloat16)
+    destination = _model(scheme, monkeypatch, "1", seed = 2)
+    state = source.state_dict()
+    destination.load_state_dict(state)
+    for name in ("up_proj", "down_proj"):
+        weight = _base(destination, name).weight
+        assert weight.dtype == torch.float32
+        assert torch.equal(weight, _base(source, name).weight.float())
+        assert _base(destination, name).weight_fake_quantizer.enabled is False
 
 
 def test_marked_rounded_state_dict_keeps_tensors_unchanged(monkeypatch):
