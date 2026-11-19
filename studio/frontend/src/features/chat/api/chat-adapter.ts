@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { isKnownCharacterChat, prepareCharacterRun } from "@/features/characters/chat-runtime";
+import { prepareCharacterRun, type CharacterRun } from "@/features/characters/chat-runtime";
+import { estimateTokenCount } from "@/lib/estimate-tokens";
 import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
@@ -877,14 +878,6 @@ async function updateStoredChatThreadEventually(
     if (updated) return;
     await wait(50);
   }
-}
-
-function estimateTokenCount(text: string): number | undefined {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  return Math.max(1, Math.round(trimmed.length / 4));
 }
 
 function buildTiming(
@@ -2201,6 +2194,27 @@ function localTargetReadsImages(
   return state.loadedIsMultimodal !== false;
 }
 
+// Count histories built for a character chat, so the extras send the same rolling flag the reply does.
+const characterCountHistories = new WeakSet<object>();
+// The meter recounts the same branch often; reuse its run (and lorebook scan) until the branch changes.
+const countRuns = new WeakMap<object, { threadId: string | undefined; run: Promise<CharacterRun | null> }>();
+
+function countedCharacterRun(
+  rawMessages: RunMessages,
+  threadId: string | undefined,
+  messages: RunMessages,
+): Promise<CharacterRun | null> {
+  const cached = countRuns.get(rawMessages);
+  if (cached && cached.threadId === threadId) return cached.run;
+  const run = prepareCharacterRun({ threadId, messages }).catch(() => null);
+  countRuns.set(rawMessages, { threadId, run });
+  // Only a built run is reused: an ordinary or not-yet-loaded chat is asked again next count.
+  void run.then((built) => {
+    if (!built && countRuns.get(rawMessages)?.run === run) countRuns.delete(rawMessages);
+  });
+  return run;
+}
+
 /** Tools are priced server-side since --enable-tools can inject schemas the client cannot see. */
 export async function buildLocalTokenCountHistory(
   rawMessages: RunMessages,
@@ -2221,23 +2235,32 @@ export async function buildLocalTokenCountHistory(
   });
   const survivingMessages = pruneOutboundHistory(messages, true);
   // Counted as it would be sent, so a character chat's meter includes the cards.
-  const characterRun = await prepareCharacterRun({ threadId, messages: survivingMessages }).catch(
-    () => null,
-  );
+  const characterRun = await countedCharacterRun(rawMessages, threadId, survivingMessages);
   const outboundMessages = (characterRun ? characterRun.messages : survivingMessages)
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
     );
-  if (characterRun) {
-    outboundMessages.unshift({ role: "system", content: characterRun.system });
-    return {
-      messages: outboundMessages as OpenAIChatMessage[],
-      ...studioToolHistoryRequestFieldsAfterReplay(
-        survivingMessages as unknown as ToolHistoryMessage[],
-      ),
-    };
+  const combinedSystemPrompt = characterRun
+    ? characterRun.system
+    : await localCountChatInstructions(threadId, params);
+  if (combinedSystemPrompt) {
+    prependSystemPrompt(outboundMessages, combinedSystemPrompt);
   }
+  if (characterRun) characterCountHistories.add(outboundMessages);
+
+  return {
+    messages: outboundMessages as OpenAIChatMessage[],
+    ...studioToolHistoryRequestFieldsAfterReplay(
+      survivingMessages as unknown as ToolHistoryMessage[],
+    ),
+  };
+}
+
+async function localCountChatInstructions(
+  threadId: string | undefined,
+  params: { systemPrompt?: unknown; systemVariables?: unknown },
+): Promise<string> {
   const safeSystemPrompt =
     typeof params.systemPrompt === "string"
       ? resolveSystemPromptVariables(
@@ -2252,21 +2275,11 @@ export async function buildLocalTokenCountHistory(
     resolveProjectInstructions(projectId),
     resolveAgentsMd(projectId),
   ]);
-  const combinedSystemPrompt = composeChatInstructions({
+  return composeChatInstructions({
     agentsMd,
     projectInstructions,
     systemPrompt: safeSystemPrompt,
   });
-  if (combinedSystemPrompt) {
-    prependSystemPrompt(outboundMessages, combinedSystemPrompt);
-  }
-
-  return {
-    messages: outboundMessages as OpenAIChatMessage[],
-    ...studioToolHistoryRequestFieldsAfterReplay(
-      survivingMessages as unknown as ToolHistoryMessage[],
-    ),
-  };
 }
 
 /** The reasoning fields a completion would send: llama-server falls back to load-time
@@ -2306,6 +2319,38 @@ export function buildLocalTokenCountReasoning(
   };
 }
 
+/** The compaction fields a local completion sends for the loaded model; rolling for character chats. */
+export function localCompactionFields(
+  state: ReturnType<typeof useChatRuntimeStore.getState>,
+  rolling: boolean,
+): ReturnType<typeof ggufCompactionRequestFields> {
+  return ggufCompactionRequestFields({
+    isGguf: isServedByLlamaCpp({
+      loadedIsGguf: state.loadedIsGguf,
+      activeGgufVariant: state.activeGgufVariant,
+      activeNativePathToken: state.activeNativePathToken,
+      checkpoint: state.params.checkpoint,
+    }),
+    isMlx: state.loadedIsMlx === true,
+    isManagedEngine: state.loadedEngine !== "auto",
+    isNpu: isNpuModelId(state.params.checkpoint),
+    autoCompactEnabled: state.autoCompactEnabled,
+    rolling,
+  });
+}
+
+/** A local completion's sampling fields, as the chat sends them. */
+export function localSamplingFields(params: ReturnType<typeof useChatRuntimeStore.getState>["params"]) {
+  return {
+    temperature: params.temperature,
+    top_p: params.topP,
+    top_k: params.topK,
+    min_p: params.minP,
+    repetition_penalty: params.repetitionPenalty,
+    presence_penalty: params.presencePenalty,
+  };
+}
+
 /** The tool flags a completion would send, so the count includes the schemas and the action nudge. */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
@@ -2336,19 +2381,7 @@ export async function buildLocalTokenCountExtras(
   const threadField = {
     ...(threadId ? { thread_id: threadId } : {}),
     max_tokens: state.params.maxTokens,
-    ...ggufCompactionRequestFields({
-      isGguf: isServedByLlamaCpp({
-        loadedIsGguf: state.loadedIsGguf,
-        activeGgufVariant: state.activeGgufVariant,
-        activeNativePathToken: state.activeNativePathToken,
-        checkpoint: state.params.checkpoint,
-      }),
-      isMlx: state.loadedIsMlx === true,
-      isManagedEngine: state.loadedEngine !== "auto",
-      isNpu: isNpuModelId(state.params.checkpoint),
-      autoCompactEnabled: state.autoCompactEnabled,
-      rolling: isKnownCharacterChat(threadId),
-    }),
+    ...localCompactionFields(state, characterCountHistories.has(messages)),
   };
   if (!supportsTools) {
     return {
@@ -7087,13 +7120,8 @@ export function createOpenAIStreamAdapter(
               rolling: characterRun != null,
               compactNow,
             }),
-            temperature: params.temperature,
-            top_p: params.topP,
+            ...localSamplingFields(params),
             max_tokens: params.maxTokens,
-            top_k: params.topK,
-            min_p: params.minP,
-            repetition_penalty: params.repetitionPenalty,
-            presence_penalty: params.presencePenalty,
             // Omit when unset (server draws a seed) or unread, so a stale GGUF pin is never sent.
             ...(params.seed == null ||
             !modelReadsSamplingSeed(activeModel, runtime.loadedEngine)

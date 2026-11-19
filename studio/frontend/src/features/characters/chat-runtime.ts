@@ -3,10 +3,12 @@
 
 import type { ThreadMessage } from "@assistant-ui/react";
 import { getAuthToken } from "@/features/auth";
+import { getLocale, translate } from "@/i18n";
 import { addressNameOf, loginDisplayName } from "@/features/profile/hooks/use-effective-profile";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { decodeJwtSubject } from "@/features/profile/utils/jwt-subject";
 import { getCharacter } from "./api";
+import { isCharacterChat } from "./chat-gate";
 import { pickPersona, roleplayMetaOf } from "./meta";
 import {
   buildCharacterPrompt,
@@ -23,7 +25,7 @@ export const ROLEPLAY_SPEAKER_RUN_KEY = "roleplaySpeakerId";
 
 export class CharacterChatUnavailableError extends Error {
   constructor(cause: unknown) {
-    super("This chat's characters could not be loaded, so the message was not sent. Try again in a moment.");
+    super(translate("characters.chat.castUnavailable", undefined, getLocale()));
     this.name = "CharacterChatUnavailableError";
     this.cause = cause;
   }
@@ -127,7 +129,7 @@ export async function loadParticipants(scene: ChatScene): Promise<{ cast: Charac
   return { cast, persona: resolvePersona(scene, useCharactersStore.getState().personas) };
 }
 
-export function isKnownCharacterChat(threadId: string | null | undefined): boolean {
+function isKnownCharacterChat(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
   const store = useCharactersStore.getState();
   return Boolean(store.scenes[threadId]) || threadId in store.chatIndex;
@@ -144,7 +146,10 @@ export async function prepareCharacterRun(args: {
   if (!threadId) return null;
   const store = useCharactersStore.getState();
   // Sending as an ordinary chat would expose hidden turns and save an unattributed reply.
-  const knownCharacterChat = isKnownCharacterChat(threadId) || messages.some((m) => roleplayMetaOf(m) !== null);
+  const hasRoleplayMeta = messages.some((m) => roleplayMetaOf(m) !== null);
+  const knownCharacterChat = isKnownCharacterChat(threadId) || hasRoleplayMeta;
+  // An ordinary chat the loaded index doesn't list costs no scene request before its first token.
+  if (!isCharacterChat(threadId, hasRoleplayMeta)(store)) return null;
   let scene: ChatScene | null;
   try {
     scene = await store.loadScene(threadId, args.revalidate === true && Boolean(store.scenes[threadId]));

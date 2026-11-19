@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { characterChatTranscript } from "../src/features/characters/export-transcript.ts";
 import vm from "node:vm";
 import ts from "@typescript/typescript6";
 
@@ -164,6 +165,7 @@ function loadExporters(
     ...liveThreadHead,
     savedBranchHead: () => undefined,
     orderByParentChain,
+    characterChatTranscript,
     unwrapPastedTextContent,
     toolResultModelText: (result: unknown) => result,
     toolCallReplayArguments,

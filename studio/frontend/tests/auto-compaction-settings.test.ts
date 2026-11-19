@@ -36,7 +36,9 @@ test("a character chat compacts by dropping its oldest turns, without a checkpoi
   // The reply and the context meter's count both send it, so the meter prices the same prompt.
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /rolling: characterRun != null/);
-  assert.match(adapter, /rolling: isKnownCharacterChat\(threadId\)/);
+  // The meter flags the history it built from a character run, the same run the reply is gated on.
+  assert.match(adapter, /localCompactionFields\(state, characterCountHistories\.has\(messages\)\)/);
+  assert.match(adapter, /if \(characterRun\) characterCountHistories\.add\(outboundMessages\);/);
 });
 
 test("auto-compact off sends an explicit error overflow policy", () => {

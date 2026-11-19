@@ -50,7 +50,7 @@ test("llama.cpp and vLLM send the selected value and replay reasoning only when 
   // A character chat's messages are shaped first; reasoning replay is the same argument either way.
   assert.match(
     source,
-    /toOpenAIMessages\(\s*(?:\/\/[^\n]*\n\s*)?(?:characterRun \? characterRun\.shape\(message\) : )?message,\s*replayReasoning,/,
+    /toOpenAIMessages\(\s*\/\/[^\n]*\n\s*characterRun \? characterRun\.shape\(message\) : message,\s*replayReasoning,/,
   );
 });
 

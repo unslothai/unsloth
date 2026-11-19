@@ -6,9 +6,10 @@ import {
   RoleplayUserFrame,
   RoleplayReplyFrame,
   useHiddenRoleplayTurn,
-  useIsRoleplayThread,
   useRoleplayUserParts,
 } from "@/features/characters/chat/message-parts";
+import { useCharacterChat } from "@/features/characters/chat/character-chat-context";
+import { addressNameOf } from "@/features/profile/hooks/use-effective-profile";
 import { roundAdvancing } from "@/features/characters/chat/roleplay-controller";
 import {
   RoleplaySpeakerBar,
@@ -71,7 +72,7 @@ import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messa
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
 import { LiveGenerationLine } from "@/components/assistant-ui/live-generation-line";
-import { UserMessageActionBar, UserMessageFooter, UserMessageTimeShownContext } from "@/components/assistant-ui/user-message-actions";
+import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
   composerColumnInset,
@@ -950,6 +951,17 @@ function pumpPromptQueues() {
   }
 }
 
+/** Waits for the target's running reply to finish, then dispatches (see handlePromptQueueRunState). */
+function parkUntilTargetIdle(run: PromptQueueRun): void {
+  run.waitingForTargetIdle = true;
+  run.prevStoreRunning = true;
+  promptQueueActiveRunIds.delete(run.id);
+  syncPromptQueueUI();
+  ensurePromptQueueSubscription();
+  handlePromptQueueRunState(run, useChatRuntimeStore.getState().runningByThreadId);
+  schedulePromptQueueTargetStatePoll(run);
+}
+
 async function dispatchQueuedPrompt(
   run: PromptQueueRun,
   item: PromptQueueItem,
@@ -963,33 +975,32 @@ async function dispatchQueuedPrompt(
     scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
     return;
   }
+  if (item.target.roundPending?.()) {
+    scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
+    return;
+  }
   if (
     isPromptQueueTargetRunning(
       item.target,
       useChatRuntimeStore.getState().runningByThreadId,
     )
   ) {
-    run.waitingForTargetIdle = true;
-    run.prevStoreRunning = true;
-    promptQueueActiveRunIds.delete(run.id);
-    syncPromptQueueUI();
-    ensurePromptQueueSubscription();
-    handlePromptQueueRunState(
-      run,
-      useChatRuntimeStore.getState().runningByThreadId,
-    );
-    schedulePromptQueueTargetStatePoll(run);
+    parkUntilTargetIdle(run);
     return;
   }
   const hasIndexingDocuments = await targetHasIndexingDocuments(item);
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  // recheck loading after the document probe; a group's next speaker can also start during it.
+  // A run can start during the document probe: wait for it like above.
+  if (isPromptQueueTargetRunning(item.target, useChatRuntimeStore.getState().runningByThreadId)) {
+    parkUntilTargetIdle(run);
+    return;
+  }
+  // recheck loading after the document probe; a group's next speaker can also be about to start.
   if (
     hasIndexingDocuments ||
     item.target.roundPending?.() ||
-    isPromptQueueTargetRunning(item.target, useChatRuntimeStore.getState().runningByThreadId) ||
     (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
   ) {
     promptQueueActiveRunIds.delete(run.id);
@@ -1908,14 +1919,15 @@ const RUN_SHRINK_WINDOW_MS = 1000;
 const ThreadMessage: FC = () => {
   const role = useAuiState(({ message }) => message.role);
   const isEditing = useAuiState(({ message }) => message.composer.isEditing);
-  // A character chat's opening and turn markers are for the model, not the screen. The opening
-  // keeps the room a first user message would take, so the greeting clears the header's fade.
+  // Opening and turn markers are model-only; the opening keeps a row's height (shrink-0) so the greeting clears the header fade.
   const hiddenTurn = useHiddenRoleplayTurn();
-  // shrink-0: in a short window the thread's flex column would squeeze it to nothing.
-  if (hiddenTurn === "opening") return <div aria-hidden={true} className="h-[calc(1.75rem*var(--ui-space-scale,1))] shrink-0" />;
-  if (hiddenTurn) return null;
   let body: ReactNode = null;
-  switch (threadMessageKind(role, isEditing)) {
+  // The rules still render: a compaction or fork boundary can fall on a turn marker.
+  if (hiddenTurn === "opening") {
+    body = <div aria-hidden={true} className="h-[calc(1.75rem*var(--ui-space-scale,1))] shrink-0" />;
+  } else if (hiddenTurn) {
+    body = null;
+  } else switch (threadMessageKind(role, isEditing)) {
     case "edit":
       body = <EditComposer />;
       break;
@@ -2163,7 +2175,7 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
   // Turn ticks would count a character chat's hidden turns, and roleplay reads as one scene.
-  const roleplayThread = useIsRoleplayThread(threadId);
+  const roleplayThread = useCharacterChat() !== null;
   const aui = useAui();
   useThreadForkCounts();
   useTrackForkBoundaryAnchor(threadId);
@@ -2862,7 +2874,7 @@ const ThreadWelcome: FC<{
   const t = useT();
 
   useEffect(() => {
-    const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    const raw = addressNameOf({ nickname, displayName }, "");
     const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName, nickname]);
@@ -9241,6 +9253,14 @@ const ScheduledTaskSource: FC = () => {
 /** Prompts already shown: the thread window remounts rows, and a remount must not replay the arrival. */
 const shownPrompts = new Set<string>();
 
+const UserMessageMedia: FC<{ align: "start" | "end" }> = ({ align }) => (
+  <>
+    <ScheduledTaskSource />
+    <UserMessageAttachments align={align} />
+    <UserMessageAudio align={align} />
+  </>
+);
+
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
   const id = useAuiState(({ message }) => message.id);
@@ -9270,52 +9290,50 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
-      {roleplayParts ? (
-        <RoleplayUserFrame>
-          <WindowedMessageBody>
-          <div className="mb-2 flex flex-col items-start gap-2 empty:hidden">
-            <ScheduledTaskSource />
-            <UserMessageAttachments align="start" />
-            <UserMessageAudio align="start" />
-          </div>
-          {hasContent ? (
-            <div
-              dir="auto"
-              className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! min-w-0 leading-relaxed text-[#0f1114] dark:text-foreground"
-            >
-              <MessagePrimitive.Parts components={roleplayParts} />
-            </div>
-          ) : null}
-          <div className="aui-user-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
-            <BranchPicker className="mr-0.5 h-8" />
-            {/* The time is already in the name line. */}
-            <UserMessageTimeShownContext.Provider value={false}>
-              <UserActionBar />
-            </UserMessageTimeShownContext.Provider>
-          </div>
-          </WindowedMessageBody>
-        </RoleplayUserFrame>
-      ) : (
+      {/* A character chat frames it under the persona, left-aligned; an ordinary chat gets the frame's children as is. */}
+      <RoleplayUserFrame>
         <WindowedMessageBody>
-          <ScheduledTaskSource />
-          <UserMessageAttachments />
-          <UserMessageAudio />
-
-          <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
+          {roleplayParts ? (
+            <div className="mb-2 flex flex-col items-start gap-2 empty:hidden">
+              <UserMessageMedia align="start" />
+            </div>
+          ) : (
+            <UserMessageMedia align="end" />
+          )}
+          <div
+            className={cn(
+              "aui-user-message-content-wrapper flex w-full min-w-0 flex-col",
+              roleplayParts ? "items-start" : "items-end",
+            )}
+          >
             {hasContent ? (
               <div
                 dir="auto"
-                className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
-                <MessagePrimitive.Parts />
+                className={cn(
+                  "aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! text-[#0f1114] dark:text-foreground",
+                  roleplayParts
+                    ? "min-w-0 leading-relaxed"
+                    : "w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 dark:bg-card",
+                )}
+              >
+                <MessagePrimitive.Parts components={roleplayParts} />
               </div>
             ) : null}
-            <UserMessageFooter>
-              <UserActionBar />
-              <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
-            </UserMessageFooter>
+            {roleplayParts ? (
+              <div className="aui-user-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
+                <BranchPicker className="mr-0.5 h-8" />
+                {/* The time is already in the name line. */}
+                <UserActionBar showTime={false} />
+              </div>
+            ) : (
+              <UserMessageFooter>
+                <UserActionBar />
+                <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
+              </UserMessageFooter>
+            )}
           </div>
         </WindowedMessageBody>
-      )}
+      </RoleplayUserFrame>
       {/* Reverse traversal reaches a trailing stop before the root. Focusing it
           mounts the autohidden controls, so the next Shift+Tab enters its controls
           instead of skipping the action bar and leaving the message. */}
@@ -9328,11 +9346,11 @@ const UserMessage: FC = () => {
   );
 };
 
-const UserActionBar: FC = () => {
+const UserActionBar: FC<{ showTime?: boolean }> = ({ showTime }) => {
   const ownsResearchMessage = useOwnsResearchMessage();
   const researchActive = useThreadResearchActive();
   return (
-    <UserMessageActionBar>
+    <UserMessageActionBar showTime={showTime}>
       <CopyButton />
       {!ownsResearchMessage && !researchActive && (
         <ActionBarPrimitive.Edit asChild={true}>
@@ -9425,8 +9443,7 @@ const EditComposer: FC = () => {
   }, [aui, isComposingRef]);
 
   return (
-    // Top gap and type match UserMessage, so the text stays near the prompt's line. A character chat
-    // keeps the persona's picture and name beside the box, as it does for an edited reply.
+    // Type matches UserMessage; a character chat keeps the persona frame while editing.
     <MessagePrimitive.Root
       className={cn(
         "aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]",

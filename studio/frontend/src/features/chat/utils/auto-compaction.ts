@@ -3,7 +3,7 @@
 
 /**
  * Local GGUF, MLX, NPU and managed engine auto-compaction is on or off only; the server chooses how it
- * compacts (UNSLOTH_CONTEXT_POLICY, default "checkpoint").
+ * compacts (UNSLOTH_CONTEXT_POLICY, default "checkpoint"), except that character chats ask for rolling.
  */
 
 export const DEFAULT_AUTO_COMPACT_ENABLED = true;
@@ -16,9 +16,7 @@ export function ggufCompactionRequestFields(options: {
   autoCompactEnabled: boolean;
   // /compact: asked for by the user, so it applies with auto-compaction off too
   compactNow?: boolean;
-  // Character chats use the rolling window. Dropped turns are still archived and recalled
-  // silently each turn, while a checkpoint would copy old roleplay lines into the system
-  // prompt as standing instructions and show its recall as a tool call in the reply.
+  // Character chats: rolling, since a checkpoint would turn old roleplay lines into standing instructions.
   rolling?: boolean;
 }): {
   context_overflow?: "error" | "truncate_oldest";

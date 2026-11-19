@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { escapeRegExp } from "../../../lib/escape-regexp.ts";
+import { estimateTokenCount } from "../../../lib/estimate-tokens.ts";
 import type { Lorebook, LorebookEntry } from "../types";
 import { linearRegex, type StepBudget } from "./linear-regex.ts";
 
@@ -13,10 +14,6 @@ export interface ActivatedLore {
   fired: { id: string | number; label: string; reason: "constant" | "keyword" }[];
 }
 
-/** Roughly four characters per token, enough to keep a budget without a tokenizer. */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
 
 const REGEX_KEY = /^\/(.+)\/([gimsuy]*)$/;
 const MAX_REGEX_KEY = 160;
@@ -187,7 +184,7 @@ export function activateLorebook(
   let used = 0;
   const kept: [LorebookEntry, "constant" | "keyword"][] = [];
   for (const [entry, reason] of ranked) {
-    const cost = estimateTokens(entry.content);
+    const cost = (estimateTokenCount(entry.content) ?? 0);
     // Even the first: an oversized system-block entry would fail every turn.
     if (used + cost > own || cost > budget.tokens) continue;
     used += cost;

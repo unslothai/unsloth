@@ -333,11 +333,6 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
-
-// Off the startup path: the mark, its store and the portraits load after the first paint.
-const CharacterChatMark = lazy(() =>
-  import("@/features/characters/sidebar-mark").then((m) => ({ default: m.CharacterChatMark })),
-);
 import { toast } from "@/lib/toast";
 import {
   folderRingKey,
@@ -360,6 +355,11 @@ import type { PinnedPage } from "@/features/browser/pinned-pages-store";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import { translate, useT, type TranslationKey } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";
+
+// Lazy: keeps the mark (and its chat-index load) off the sidebar's first paint.
+const CharacterChatMark = lazy(() =>
+  import("@/features/characters/sidebar-mark").then((m) => ({ default: m.CharacterChatMark })),
+);
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 

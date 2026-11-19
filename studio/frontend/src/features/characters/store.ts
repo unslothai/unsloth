@@ -47,6 +47,7 @@ const sceneWrites = new Map<string, Promise<unknown>>();
 const sceneWriteGen = new Map<string, number>();
 let refreshPromise: Promise<void> | null = null;
 let personasPromise: Promise<void> | null = null;
+let indexPromise: Promise<void> | null = null;
 // Bumped on sign-out: an answer to a request made before it belongs to the previous account.
 let epoch = 0;
 
@@ -110,10 +111,17 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
       });
     return personasPromise;
   },
-  refreshIndex: async () => {
+  refreshIndex: () => {
+    if (indexPromise) return indexPromise;
     const started = epoch;
-    const chatIndex = await getChatIndex();
-    if (started === epoch) set({ chatIndex, indexLoaded: true });
+    indexPromise = getChatIndex()
+      .then((chatIndex) => {
+        if (started === epoch) set({ chatIndex, indexLoaded: true });
+      })
+      .finally(() => {
+        indexPromise = null;
+      });
+    return indexPromise;
   },
   upsert: (character) =>
     set((state) => {
@@ -208,6 +216,7 @@ if (typeof window !== "undefined") {
     epoch += 1;
     refreshPromise = null;
     personasPromise = null;
+    indexPromise = null;
     inflightScenes.clear();
     sceneWrites.clear();
     sceneWriteGen.clear();

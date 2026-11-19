@@ -82,11 +82,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
-
-// Only character chats show it, so ordinary chats do not load it.
-const RoleplayPanel = lazy(() =>
-  import("@/features/characters/chat/roleplay-panel").then((m) => ({ default: m.RoleplayPanel })),
-);
 import { PermissionModeDropdown } from "./permission-mode-select";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
@@ -143,6 +138,12 @@ import {
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
+
+
+// Only character chats show it, so ordinary chats do not load it.
+const RoleplayPanel = lazy(() =>
+  import("@/features/characters/chat/roleplay-panel").then((m) => ({ default: m.RoleplayPanel })),
+);
 
 const SamplingFooter = lazy(() => import("./components/sampling-footer"));
 
@@ -1166,7 +1167,7 @@ export function ChatSettingsPanel({
         {characterChat && activeThreadId ? (
           <CollapsibleSection label={t("characters.panel.title")} defaultOpen={true} first={true}>
             <Suspense fallback={null}>
-              <RoleplayPanel threadId={activeThreadId} />
+              <RoleplayPanel key={activeThreadId} threadId={activeThreadId} />
             </Suspense>
           </CollapsibleSection>
         ) : null}

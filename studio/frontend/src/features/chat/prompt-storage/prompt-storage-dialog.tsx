@@ -87,6 +87,7 @@ import {
 } from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
+import { characterChatTranscript } from "@/features/characters/export-transcript";
 import {
   buildNamedConversationsMarkdown,
   conversationExportBasename,
@@ -268,12 +269,14 @@ async function loadConversationMessages(
   }
   // preserve DB order for legacy flat threads because parent-chain traversal would reverse it
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
-  if (!hasParentIds) return [...instructions, ...raw];
-  const headId = branchHeadId(threadId, liveBranch, raw);
-  return [
-    ...instructions,
-    ...orderByParentChain(raw, { includeSiblings, headId }),
-  ] as typeof raw;
+  const ordered = hasParentIds
+    ? (orderByParentChain(raw, {
+        includeSiblings,
+        headId: branchHeadId(threadId, liveBranch, raw),
+      }) as typeof raw)
+    : raw;
+  // A character chat never sent the chat's instructions: its prompt was built from the cards.
+  return characterChatTranscript(ordered) ?? [...instructions, ...ordered];
 }
 
 async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
@@ -1217,7 +1220,7 @@ export async function buildFineTuneJsonl(
       chatInstructionsTurn(id),
     ]);
     // A character chat's turns only make sense with its cards and hidden turns, which this format lacks.
-    if (raw.some((m) => (m as { metadata?: { roleplay?: unknown } }).metadata?.roleplay)) {
+    if (characterChatTranscript(raw)) {
       skipped += 1;
       continue;
     }

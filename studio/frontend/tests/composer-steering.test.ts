@@ -49,6 +49,7 @@ const names = [
   "findPromptQueueRunByThreadIds",
   "isPromptQueueTargetRunning",
   "isActivePromptQueueItem",
+  "parkUntilTargetIdle",
   "dispatchQueuedPrompt",
   "isPromptQueueRunReadyToDispatch",
   "handlePromptQueueRunState",
