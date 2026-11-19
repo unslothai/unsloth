@@ -79,3 +79,10 @@ test("a saved chat keeps who it speaks as when a default persona appears later",
   assert.equal(pickPersona(scene("gone"), personas)?.id, "alex", "a missing pick falls back to the default");
   assert.equal(pickPersona(null, []), null);
 });
+
+test("a chat with no cast left drops hidden turns, and audio replies keep the speaker", () => {
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /characterRun \? characterRun\.sends\(message\.id\) : !isHiddenRoleplayTurn\(message\)/);
+  assert.match(adapter, /: survivingMessages\.filter\(\(message\) => !isHiddenRoleplayTurn\(message\)\)/);
+  assert.equal((adapter.match(/\.\.\.audioMetadata,/g) ?? []).length, 2);
+});

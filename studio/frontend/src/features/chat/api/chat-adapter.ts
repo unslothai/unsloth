@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { prepareCharacterRun, type CharacterRun } from "@/features/characters/chat-runtime";
+import { isHiddenRoleplayTurn } from "@/features/characters/meta";
 import { estimateTokenCount } from "@/lib/estimate-tokens";
 import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
 
@@ -2236,7 +2237,11 @@ export async function buildLocalTokenCountHistory(
   const survivingMessages = pruneOutboundHistory(messages, true);
   // Counted as it would be sent, so a character chat's meter includes the cards.
   const characterRun = await countedCharacterRun(rawMessages, threadId, survivingMessages);
-  const outboundMessages = (characterRun ? characterRun.messages : survivingMessages)
+  const outboundMessages = (
+    characterRun
+      ? characterRun.messages
+      : survivingMessages.filter((message) => !isHiddenRoleplayTurn(message))
+  )
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
@@ -5401,7 +5406,10 @@ export function createOpenAIStreamAdapter(
           : { messages: survivingMessages, sandboxAttachments: [] };
       // The backend Gemini translator rebuilds functionCall/functionResponse parts from these.
       let outboundMessages = renderedMessages
-        .filter((message) => !characterRun || characterRun.sends(message.id))
+        // A chat whose cast was all deleted carries on as ordinary, minus its hidden turn markers.
+        .filter((message) =>
+          characterRun ? characterRun.sends(message.id) : !isHiddenRoleplayTurn(message),
+        )
         .flatMap((message) => {
           const serialized = toOpenAIMessages(
             // A character chat's turns carry the speaker names, notes and turn instructions.
@@ -5851,8 +5859,11 @@ export function createOpenAIStreamAdapter(
         void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
+          // Group rounds read the speaker and plan off the reply, audio ones included.
+          const audioMetadata = characterRun ? { metadata: { custom: roleplayCustom } } : {};
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
+            ...audioMetadata,
           };
 
           const result = await generateAudio(
@@ -5882,6 +5893,7 @@ export function createOpenAIStreamAdapter(
                 text: `<audio-player src="${audioUrl}" />`,
               },
             ],
+            ...audioMetadata,
           };
         } catch (err) {
           if (!runSignal.aborted) {
