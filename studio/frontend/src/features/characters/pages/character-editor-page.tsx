@@ -25,7 +25,7 @@ import { PortraitPicker } from "../components/editor/portrait-picker";
 import { LorebookEditor } from "../components/lorebook-editor";
 import { addTags, MAX_TAG_CHARS, permanentPromptText } from "../draft";
 import { useCharacterDraft } from "../hooks/use-character-draft";
-import { estimateTokens } from "../prompt/lorebook";
+import { estimateTokenCount } from "@/lib/estimate-tokens";
 
 /** The loaded model's context length; read from the server when Chat has not loaded it into the store yet. */
 function useContextLength(): number | null {
@@ -63,7 +63,7 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
     );
   }
 
-  const permanent = estimateTokens(permanentPromptText(draft));
+  const permanent = estimateTokenCount(permanentPromptText(draft)) ?? 0;
   const nameMissing = !draft.name.trim();
   const title = original ? t("characters.editor.editTitle", { name: original.name }) : t("characters.editor.newTitle");
   return (

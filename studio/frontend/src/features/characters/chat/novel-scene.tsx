@@ -4,13 +4,15 @@
 import { useBackgroundStore } from "@/features/chat-background";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { useAuiState } from "@assistant-ui/react";
+import { useObjectUrl } from "@/hooks/use-object-url";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Portrait } from "../components/portrait";
 import { nameHue, viewPicture } from "../images";
 import { shortName } from "../prompt/speakers";
 import { useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
-import { useAskToReply } from "./speaker-bar";
+import { useAskToReply } from "./ask-bridge";
 
 // Enough figures to read as a scene; a bigger cast shows the speaker and the members nearest them.
 const MAX_FIGURES = 4;
@@ -22,32 +24,14 @@ function shownCast(cast: Character[], focus: Character): Character[] {
   return cast.slice(start, start + MAX_FIGURES);
 }
 
-/** The user's chat background as its own picture, at full strength rather than behind the chat's scrim. */
-function useWallpaperUrl(): string | null {
-  const blob = useBackgroundStore((s) => s.value?.blob ?? null);
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!blob) {
-      setUrl(null);
-      return;
-    }
-    const next = URL.createObjectURL(blob);
-    setUrl(next);
-    return () => URL.revokeObjectURL(next);
-  }, [blob]);
-  return url;
-}
-
-/**
- * Visual novel view: the cast stands in the scene, the speaker in front and the others a step behind,
- * their lower halves behind the dialogue panel. The scene is the user's chat background when one is set,
- * otherwise a plain stage in the theme's colors.
- */
+/** Visual novel view: speaker in front, the rest a step behind, over the chat wallpaper or a plain stage. */
 export function NovelScene({ threadId, cast }: { threadId: string | null; cast: Character[] }) {
   const t = useT();
   const { focus, speaking } = useStageFocus(threadId, cast);
-  const wallpaper = useWallpaperUrl();
+  // The chat background at full strength, not behind the chat's scrim.
+  const wallpaper = useObjectUrl(useBackgroundStore((s) => s.value?.blob ?? null));
   const ask = useAskToReply();
+  const running = useAuiState(({ thread }) => thread.isRunning);
   if (!focus) return null;
   const figures = shownCast(cast, focus);
   return (
@@ -68,7 +52,7 @@ export function NovelScene({ threadId, cast }: { threadId: string | null; cast: 
             active={character.id === focus.id}
             speaking={speaking && character.id === focus.id}
             solo={cast.length === 1}
-            onAsk={() => ask(character.id, character.name)}
+            onAsk={running ? undefined : () => ask(character.id, character.name)}
           />
         ))}
       </section>
@@ -76,10 +60,7 @@ export function NovelScene({ threadId, cast }: { threadId: string | null; cast: 
   );
 }
 
-/**
- * Breathing that ends where it began: once the reply is done, the cycle in progress finishes before the
- * animation is removed, so the figure settles instead of snapping back.
- */
+/** Lets the current breath finish before stopping, so the figure settles instead of snapping. */
 function useSettlingBreath(on: boolean) {
   const [breathing, setBreathing] = useState(on);
   const stopping = useRef(false);
@@ -111,19 +92,26 @@ function NovelFigure({
   active: boolean;
   speaking: boolean;
   solo: boolean;
-  onAsk: () => void;
+  onAsk?: () => void;
 }) {
   const t = useT();
   const { breathing, onAnimationIteration } = useSettlingBreath(speaking);
-  const onClick = active || solo ? () => character.hasAvatar && viewPicture("character", character.id, character.name, character.avatarRev) : onAsk;
+  const viewing = active || solo;
+  const onClick = viewing
+    ? character.hasAvatar
+      ? () => viewPicture("character", character.id, character.name, character.avatarRev)
+      : undefined
+    : onAsk;
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={active || solo ? t("characters.actions.viewPicture") : t("characters.chat.replyNow", { name: character.name })}
+      // Nothing to do (no picture to view, or a reply running): not a control.
+      disabled={!onClick}
+      aria-label={viewing ? t("characters.actions.viewPicture") : t("characters.chat.replyNow", { name: character.name })}
       title={active ? character.name : t("characters.chat.replyNow", { name: character.name })}
       className={cn(
-        "novel-figure pointer-events-auto relative -mx-[1.5%] aspect-[2/3] h-full min-w-0 max-w-[36%] shrink origin-bottom cursor-pointer focus-visible:outline-none",
+        "novel-figure pointer-events-auto relative -mx-[1.5%] aspect-[2/3] h-full min-w-0 max-w-[36%] shrink origin-bottom cursor-pointer rounded-t-[40px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
         active ? "z-[2] max-sm:max-w-[78%]" : "novel-figure-waiting z-[1] scale-[0.84] max-sm:hidden",
         active && character.hasAvatar && "cursor-zoom-in",
       )}
@@ -147,6 +135,16 @@ function NovelFigure({
   );
 }
 
+function Dots() {
+  return (
+    <span className="flex gap-0.5" aria-hidden={true}>
+      <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.3s]" />
+      <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.15s]" />
+      <span className="size-1 animate-bounce rounded-full bg-white/90" />
+    </span>
+  );
+}
+
 export function NovelNameplate({ threadId, cast }: { threadId: string | null; cast: Character[] }) {
   const { focus, speaking } = useStageFocus(threadId, cast);
   if (!focus) return null;
@@ -163,11 +161,7 @@ export function NovelNameplate({ threadId, cast }: { threadId: string | null; ca
     >
       <span className="font-heading text-ui-15 font-semibold tracking-[-0.01em]">{shortName(focus.name)}</span>
       {speaking ? (
-        <span className="flex gap-0.5" aria-hidden={true}>
-          <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.3s]" />
-          <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.15s]" />
-          <span className="size-1 animate-bounce rounded-full bg-white/90" />
-        </span>
+        <Dots />
       ) : null}
     </div>
   );
@@ -177,11 +171,7 @@ export function SpeakingDots({ name }: { name: string }) {
   const t = useT();
   return (
     <span className="flex items-center gap-1.5 text-ui-12 text-white/80">
-      <span className="flex gap-0.5">
-        <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.3s]" />
-        <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.15s]" />
-        <span className="size-1 animate-bounce rounded-full bg-white/90" />
-      </span>
+      <Dots />
       {t("characters.chat.speaking", { name: shortName(name) })}
     </span>
   );

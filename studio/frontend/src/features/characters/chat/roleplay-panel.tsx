@@ -13,6 +13,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
@@ -27,21 +28,17 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { startCharacterChat } from "../actions";
-import { updateCharacter, type ScenePatch } from "../api";
+import { errorText, updateCharacter, type ScenePatch } from "../api";
 import { profilePersona } from "../chat-runtime";
 import { Portrait } from "../components/portrait";
 import { useCharactersStore } from "../store";
 import type { Character, ReplyOrder } from "../types";
 import { CharacterPickerDialog } from "./character-picker";
 import { PromptInspectorDialog } from "./prompt-inspector";
-import { useAskBridge } from "./ask-bridge";
+import { useBridgedAsk } from "./ask-bridge";
 import { useThreadScene, type ThreadScene } from "./use-thread-scene";
 
 const PROFILE_PERSONA = "__profile__";
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 export function RoleplayPanel({ threadId }: { threadId: string }) {
   const t = useT();
@@ -50,8 +47,9 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
   const personas = useCharactersStore((s) => s.personas);
   const [adding, setAdding] = useState(false);
   const [inspecting, setInspecting] = useState(false);
-  const bridge = useAskBridge();
-  const ask = bridge.threadId === threadId ? bridge.ask : null;
+  const [starting, setStarting] = useState(false);
+  const ask = useBridgedAsk(threadId);
+  const running = useChatRuntimeStore((s) => Boolean(s.runningByThreadId[threadId]));
   if (!thread) return null;
   const { scene, cast, group } = thread;
   const settings = scene.settings;
@@ -99,6 +97,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
                     <IconAction
                       label={t("characters.chat.replyNow", { name: character.name })}
                       icon={BubbleChatIcon}
+                      disabled={!ask || running}
                       onClick={() => ask?.(character.id, character.name)}
                     />
                     <IconAction
@@ -114,6 +113,13 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
                       onClick={() => void patch({ remove: [character.id] })}
                     />
                   </>
+                ) : muted ? (
+                  // A group cut down to one muted member: it must still be possible to unmute it.
+                  <IconAction
+                    label={t("characters.panel.unmute", { name: character.name })}
+                    icon={VolumeMute01Icon}
+                    onClick={() => void patch({ mute: { [character.id]: false } })}
+                  />
                 ) : null}
               </li>
             );
@@ -148,7 +154,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
           value={thread.persona.id ?? PROFILE_PERSONA}
           onValueChange={(value) => void patch({ personaId: value === PROFILE_PERSONA ? null : value })}
         >
-          <SelectTrigger size="sm" className="w-full">
+          <SelectTrigger size="sm" className="w-full" aria-label={t("characters.panel.persona")}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -199,11 +205,14 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
       <Button
         variant="outline"
         size="sm"
-        onClick={() =>
+        disabled={starting}
+        onClick={() => {
+          setStarting(true);
           void startCharacterChat(cast.map((c) => c.id))
             .then((id) => navigate({ to: "/chat", search: { thread: id } }))
             .catch((error) => toast.error(t("characters.chat.startFailed"), { description: errorText(error) }))
-        }
+            .finally(() => setStarting(false));
+        }}
       >
         {t("characters.chat.newChatSameCast")}
       </Button>
@@ -360,15 +369,20 @@ function QuickEdit({ thread }: { thread: ThreadScene }) {
   const t = useT();
   const [targetId, setTargetId] = useState(thread.cast[0].id);
   const target: Character = thread.cast.find((c) => c.id === targetId) ?? thread.cast[0];
-  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (!saved) return;
+    const timer = window.setTimeout(() => setSaved(false), 2500);
+    return () => window.clearTimeout(timer);
+  }, [saved]);
 
   async function save(field: "description" | "personality", value: string) {
     try {
       const updated = await updateCharacter(target.id, { [field]: value });
       useCharactersStore.getState().upsert(updated);
-      setSavedAt(Date.now());
+      setSaved(true);
     } catch (error) {
-      toast.error(errorText(error));
+      toast.error(t("characters.editor.saveFailed"), { description: errorText(error) });
     }
   }
 
@@ -376,13 +390,13 @@ function QuickEdit({ thread }: { thread: ThreadScene }) {
     <details className="group/quick rounded-xl bg-muted/50 px-3 py-2 dark:bg-card">
       <summary className="flex cursor-pointer list-none items-center justify-between text-ui-13 font-medium text-nav-fg">
         {t("characters.panel.quickEdit")}
-        {savedAt ? <span className="text-ui-12 text-primary">{t("characters.panel.saved")}</span> : null}
+        {saved ? <span className="text-ui-12 text-primary">{t("characters.panel.saved")}</span> : null}
       </summary>
       <div className="mt-2 flex flex-col gap-3">
         <p className="text-ui-12 leading-snug text-nav-fg-muted">{t("characters.panel.quickEditHint")}</p>
         {thread.group ? (
           <Select value={target.id} onValueChange={setTargetId}>
-            <SelectTrigger size="sm" className="w-full">
+            <SelectTrigger size="sm" className="w-full" aria-label={t("characters.panel.quickEdit")}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

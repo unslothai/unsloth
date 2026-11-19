@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useLocale, useT } from "@/i18n";
-import { withTimeFormat } from "@/lib/time-format";
+import { formatMessageDate } from "@/lib/format-message-date";
+import { messageTimestamp, replyFinishedTimestamp } from "@/lib/message-timestamp";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { cn } from "@/lib/utils";
 import { useUserProfileStore } from "@/features/profile";
 import { useAui, useAuiState } from "@assistant-ui/react";
@@ -13,66 +14,61 @@ import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-sco
 import { Portrait } from "../components/portrait";
 import { RoleplayText } from "../components/roleplay-text";
 import { toggleOnStage } from "../stage-focus";
-import { roleplayMetaOf } from "../meta";
-import { messageTime } from "../time";
+import { hiddenRoleplayTurnKind, roleplayMetaOf } from "../meta";
 import { useCharactersStore } from "../store";
+import { useCharacterChat } from "./character-chat-context";
 import { useThreadScene } from "./use-thread-scene";
 
 /** The speaking character's name, so a reply's leading "Name:" can be hidden. */
-export const RoleplaySpeakerNameContext = createContext<string | null>(null);
+const RoleplaySpeakerNameContext = createContext<string | null>(null);
 
 export function useRoleplaySpeakerName(): string | null {
   return useContext(RoleplaySpeakerNameContext);
 }
 
-/** When this message was written, with the full date on hover. */
+/** When this message was written (a reply: when it finished), with the full date on hover. */
 function MessageTime({ className }: { className?: string }) {
+  const t = useT();
   const locale = useLocale();
-  // A number, not the Date: a selector must return a stable value.
-  const at = useAuiState(({ message }) => (message.createdAt instanceof Date ? message.createdAt.getTime() : 0));
-  if (!at) return null;
-  const full = new Date(at).toLocaleString(
-    locale,
-    withTimeFormat({ weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" }, locale),
+  useTimeFormat();
+  const at = useAuiState(({ message }) =>
+    message.role === "assistant" ? replyFinishedTimestamp(message) : messageTimestamp(message),
   );
+  if (at === undefined) return null;
+  const date = new Date(at);
+  const full = date.toLocaleString(locale, withTimeFormat({ dateStyle: "full", timeStyle: "short" }, locale));
   return (
     <time
-      dateTime={new Date(at).toISOString()}
+      dateTime={date.toISOString()}
       title={full}
       className={cn("shrink-0 text-ui-12 font-normal tabular-nums text-muted-foreground", className)}
       data-testid="roleplay-message-time"
     >
-      {messageTime(locale, at)}
+      {formatMessageDate(at, Date.now(), locale, {
+        today: (time) => time,
+        yesterday: (time) => t("common.yesterdayAt", { time }),
+      })}
     </time>
   );
 }
 
-/** The chat's cast ids, read when needed rather than subscribed to by every reply. */
-function castIdsOf(threadId: string): string[] {
-  const scene = useCharactersStore.getState().scenes[threadId];
-  return scene ? scene.cast.map((member) => member.characterId) : [];
-}
-
 /** Who said this reply: its stamped speaker, else the chat's only character. */
 function useReplySpeaker() {
-  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const thread = useThreadScene(threadId);
-  // Strings, not the record: a selector must return a stable value or the store re-renders forever.
+  const thread = useCharacterChat();
   const group = Boolean(thread?.group);
+  // Strings, not the record: a selector must return a stable value or the store re-renders forever.
   const speakerId = useAuiState(({ message, thread: state }) => {
     const meta = roleplayMetaOf(message);
     if (meta?.kind === "reply") return meta.speakerId;
-    if (!group) return null;
+    if (!group || message.index < 1) return null;
     // A reply saved without its speaker (an older run) answers the turn marker before it.
-    const index = state.messages.findIndex((m) => m.id === message.id);
-    const previous = index > 0 ? roleplayMetaOf(state.messages[index - 1]) : null;
+    const previous = roleplayMetaOf(state.messages[message.index - 1]);
     return previous?.kind === "turn" ? previous.speakerId : null;
   });
   const speakerName = useAuiState(({ message }) => {
     const meta = roleplayMetaOf(message);
     return meta?.kind === "reply" ? meta.speakerName : "";
   });
-  // Only this reply's speaker, so an edit to another character does not re-render every reply.
   const speaker = useCharactersStore((s) => (speakerId ? s.characters[speakerId] : undefined));
   if (!thread) return null;
   if (speakerId) {
@@ -123,7 +119,7 @@ const FRAME_PORTRAIT =
 export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   const t = useT();
   const speaker = useReplySpeaker();
-  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const thread = useCharacterChat();
   const aui = useAui();
   if (!speaker) return <>{children}</>;
   const character = speaker.character;
@@ -138,16 +134,16 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
             name={speaker.name}
             hasImage={Boolean(character?.hasAvatar)}
             rev={character?.avatarRev ?? 0}
-            label={speaker.name}
+            label={character && thread ? t("characters.chat.showOnStage", { name: speaker.name }) : speaker.name}
             className={FRAME_PORTRAIT}
             onClick={
-              character && threadId
+              character && thread
                 ? () =>
                     toggleOnStage(
-                      threadId,
+                      thread.threadId,
                       character.id,
                       aui.thread().getState().messages,
-                      castIdsOf(threadId),
+                      thread.cast.map((member) => member.id),
                     )
                 : undefined
             }
@@ -177,8 +173,7 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
 
 /** Wraps the user's own message in a character chat the same way: the persona's picture, name and time. */
 export function RoleplayUserFrame({ children }: { children: ReactNode }) {
-  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const thread = useThreadScene(threadId);
+  const thread = useCharacterChat();
   // Speaking as the account itself shows the account's own picture.
   const profileAvatar = useUserProfileStore((s) => s.avatarDataUrl);
   if (!thread) return <>{children}</>;
@@ -212,17 +207,14 @@ export function RoleplayUserFrame({ children }: { children: ReactNode }) {
   );
 }
 
+/** For UI outside CharacterStage (the settings sheet): whether this thread is a character chat. */
 export function useIsRoleplayThread(threadId: string | null | undefined): boolean {
   return useThreadScene(threadId) !== null;
 }
 
 /** The hidden bookkeeping turn this message is (the opening or a group turn marker), else null. */
 export function useHiddenRoleplayTurn(): "opening" | "turn" | null {
-  return useAuiState(({ message }) => {
-    if (message.role !== "user") return null;
-    const kind = roleplayMetaOf(message)?.kind;
-    return kind === "opening" || kind === "turn" ? kind : null;
-  });
+  return useAuiState(({ message }) => hiddenRoleplayTurnKind(message));
 }
 
 function RoleplayUserText() {
@@ -234,6 +226,5 @@ const ROLEPLAY_USER_PARTS = { Text: RoleplayUserText };
 
 /** In a character chat, *actions* in the user's own messages read as italics too. */
 export function useRoleplayUserParts(): typeof ROLEPLAY_USER_PARTS | undefined {
-  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
-  return useThreadScene(threadId) ? ROLEPLAY_USER_PARTS : undefined;
+  return useCharacterChat() ? ROLEPLAY_USER_PARTS : undefined;
 }

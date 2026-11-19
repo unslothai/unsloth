@@ -10,30 +10,14 @@ import { cn } from "@/lib/utils";
 import { PencilEdit02Icon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Portrait } from "../components/portrait";
-import { ROLEPLAY_SPEAKER_RUN_KEY } from "../chat-runtime";
 import { roleplayMetaOf } from "../meta";
 import { shortName } from "../prompt/speakers";
 import { writeMyReply } from "./impersonate";
-import { useThreadScene } from "./use-thread-scene";
-
-/** Appends a hidden turn marker that asks one character to speak, then runs it. */
-export function useAskToReply() {
-  const aui = useAui();
-  return useCallback((characterId: string, name: string) => {
-    const thread = aui.thread();
-    if (thread.getState().isRunning) return;
-    void thread.append({
-      role: "user",
-      // Readable in exports; the prompt builder replaces it with its own instruction.
-      content: [{ type: "text", text: `[${name}'s turn]` }],
-      metadata: { custom: { roleplay: { kind: "turn", speakerId: characterId } } },
-      runConfig: { custom: { [ROLEPLAY_SPEAKER_RUN_KEY]: characterId } },
-      createdAt: new Date(),
-    } as never);
-  }, [aui]);
-}
+import { errorText } from "../api";
+import { useAskToReply } from "./ask-bridge";
+import { useCharacterChat } from "./character-chat-context";
 
 const CHIP =
   "flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-muted py-0.5 text-ui-13 font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 dark:bg-card";
@@ -42,9 +26,9 @@ const CHIP =
 export function RoleplaySpeakerBar() {
   const t = useT();
   const aui = useAui();
-  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const thread = useCharacterChat();
+  const threadId = thread?.threadId ?? null;
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const thread = useThreadScene(threadId);
   // Every composer mounts this bar; in an ordinary chat its selectors do no work per token.
   const active = thread !== null;
   const running = useAuiState(({ thread: state }) => active && state.isRunning);
@@ -73,26 +57,28 @@ export function RoleplaySpeakerBar() {
   const canWrite = Boolean(checkpoint) && !isExternalModelId(checkpoint);
 
   async function write() {
-    if (writing) {
-      abort.current?.abort();
+    // The ref, not state: a second click before the re-render must stop the first draft, not start another.
+    if (abort.current) {
+      abort.current.abort();
       return;
     }
+    const controller = new AbortController();
+    abort.current = controller;
     setWriting(true);
-    abort.current = new AbortController();
     try {
       const origin = threadId!;
       const typed = aui.composer().getState().text;
-      const text = await writeMyReply(origin, aui.thread().getState().messages, abort.current.signal);
+      const text = await writeMyReply(origin, aui.thread().getState().messages, controller.signal);
       // Only into the same chat, and never over what the user typed while it was being written.
       const untouched = aui.composer().getState().text === typed;
-      if (text && untouched && useChatRuntimeStore.getState().activeThreadId === origin) aui.composer().setText(text);
+      if (text && untouched && aui.threads().getState().mainThreadId === origin) aui.composer().setText(text);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
-        toast.error(t("characters.chat.writeFailed"), { description: error instanceof Error ? error.message : String(error) });
+        toast.error(t("characters.chat.writeFailed"), { description: errorText(error) });
       }
     } finally {
+      if (abort.current === controller) abort.current = null;
       setWriting(false);
-      abort.current = null;
     }
   }
 
@@ -100,7 +86,6 @@ export function RoleplaySpeakerBar() {
   return (
     <div
       className="roleplay-speaker-bar relative mb-2 flex items-center gap-1.5 px-1 pb-0.5"
-      role="toolbar"
       aria-label={t("characters.chat.nextReply")}
       data-testid="speaker-bar"
     >
@@ -162,7 +147,7 @@ export function RoleplaySpeakerBar() {
       {canWrite ? (
         <button
           type="button"
-          disabled={running}
+          disabled={running && !writing}
           onClick={() => void write()}
           className={cn(CHIP, "ml-auto shrink-0 px-3", writing && "bg-primary/12 text-foreground")}
           title={t("characters.chat.writeHint", { name: thread.persona.name })}
@@ -178,8 +163,7 @@ export function RoleplaySpeakerBar() {
 
 export function useRoleplayComposerPlaceholder(): string | null {
   const t = useT();
-  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const thread = useThreadScene(threadId);
+  const thread = useCharacterChat();
   if (!thread) return null;
   return thread.group
     ? t("characters.chat.placeholderGroup")

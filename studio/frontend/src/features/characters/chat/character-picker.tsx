@@ -18,6 +18,7 @@ import { PlusSignIcon, Search01Icon, Tick02Icon, Upload01Icon } from "@hugeicons
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { pickCardFiles } from "../actions";
 import { Portrait } from "../components/portrait";
 import { useCharactersStore } from "../store";
 
@@ -48,13 +49,16 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
     if (useCharactersStore.getState().status !== "ready") void useCharactersStore.getState().refresh().catch(() => undefined);
   }, [open, mode]);
 
+  // By content: callers pass a fresh array each render.
+  const excludeKey = exclude.join("\u0000");
   const list = useMemo(() => {
     const needle = query.trim().toLowerCase();
+    const excluded = new Set(excludeKey ? excludeKey.split("\u0000") : []);
     return order
       .map((id) => characters[id])
-      .filter((c) => c && !exclude.includes(c.id))
+      .filter((c) => c && !excluded.has(c.id))
       .filter((c) => !needle || c.name.toLowerCase().includes(needle) || c.tags.some((tag) => tag.toLowerCase().includes(needle)));
-  }, [order, characters, exclude, query]);
+  }, [order, characters, excludeKey, query]);
 
   function choose(id: string) {
     if (!several) {
@@ -84,8 +88,8 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
                 value={query}
                 autoFocus={true}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder={t("characters.picker.search")}
-                aria-label={t("characters.picker.search")}
+                placeholder={t("characters.search")}
+                aria-label={t("characters.search")}
                 className="h-control rounded-full border-none bg-muted pl-10 shadow-none dark:bg-card"
               />
             </div>
@@ -96,8 +100,15 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
               </label>
             ) : null}
             <ul className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2" data-testid="character-picker-list">
-              {list.length === 0 ? (
-                <li className="py-6 text-center text-ui-14 text-muted-foreground">{t("characters.picker.noMatches")}</li>
+              {status === "error" && order.length === 0 ? (
+                <li className="flex flex-col items-center gap-2 py-6 text-center text-ui-14 text-muted-foreground" role="alert">
+                  {t("characters.loadFailed")}
+                  <Button variant="outline" size="sm" onClick={() => void useCharactersStore.getState().refresh().catch(() => undefined)}>
+                    {t("characters.retry")}
+                  </Button>
+                </li>
+              ) : list.length === 0 ? (
+                <li className="py-6 text-center text-ui-14 text-muted-foreground">{t("characters.noMatches")}</li>
               ) : (
                 list.map((character) => {
                   const selected = picked.includes(character.id);
@@ -149,8 +160,9 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
               variant="ghost"
               size="sm"
               onClick={() => {
+                // The chooser opens inside the click: browsers refuse it after a navigation.
+                pickCardFiles(t);
                 onClose();
-                void navigate({ to: "/characters", search: { import: true } });
               }}
             >
               <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
@@ -165,7 +177,7 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
               }}
             >
               <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
-              {t("characters.picker.create")}
+              {t("characters.newCharacter")}
             </Button>
           </div>
           {several ? (

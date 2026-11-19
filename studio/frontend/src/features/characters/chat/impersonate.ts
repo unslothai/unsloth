@@ -3,10 +3,9 @@
 
 import type { ThreadMessage } from "@assistant-ui/react";
 import { authFetch } from "@/features/auth";
+import { localCompactionFields, localSamplingFields } from "@/features/chat/api/chat-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { ggufCompactionRequestFields } from "@/features/chat/utils/auto-compaction";
-import { isServedByLlamaCpp } from "@/features/model-picker/model-config/per-model-config";
-import { isNpuModelId } from "@/features/npu";
+import { getLocale, translate } from "@/i18n";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { loadParticipants, textOf, toPromptCharacter } from "../chat-runtime";
 import { roleplayMetaOf } from "../meta";
@@ -16,13 +15,19 @@ import { useCharactersStore } from "../store";
 /** Writes the persona's next line with the loaded model, for the user to edit and send. */
 export async function writeMyReply(threadId: string, messages: readonly ThreadMessage[], signal?: AbortSignal): Promise<string> {
   const scene = useCharactersStore.getState().scenes[threadId];
-  if (!scene) throw new Error("This chat has no characters.");
+  if (!scene) throw new Error(translate("characters.chat.noCast", undefined, getLocale()));
   const { cast, persona } = await loadParticipants(scene);
   const chat = messages.filter((m) => m.role === "user" || m.role === "assistant");
+  const stamp = (message: ThreadMessage | undefined) =>
+    message?.createdAt instanceof Date && !Number.isNaN(message.createdAt.getTime()) ? message.createdAt : undefined;
   const prompt = buildImpersonationMessages({
     cast: cast.map(toPromptCharacter),
     persona: { name: persona.name, description: persona.description },
     scene: scene.settings,
+    // Pinned like a character reply's prompt, so a draft reuses the same cached system block.
+    seed: threadId,
+    startedAt: stamp(chat[0]),
+    now: stamp(chat[chat.length - 1]),
     history: chat.map((m) => ({ role: m.role as "user" | "assistant", text: textOf(m), meta: roleplayMetaOf(m) })),
   });
   const state = useChatRuntimeStore.getState();
@@ -36,8 +41,7 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
       messages: [{ role: "system", content: prompt.system }, ...prompt.messages],
       stream: false,
       max_tokens: 320,
-      temperature: params.temperature,
-      top_p: params.topP,
+      ...localSamplingFields(params),
       stop: prompt.stop,
       enable_thinking: false,
       // A draft must never run tools: --enable-tools overrides enable_tools, so withdraw the catalog too.
@@ -45,23 +49,13 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
       tool_choice: "none",
       enabled_tools: [],
       // Fitted like a character reply, minus thread_id: a draft must not touch the thread's compaction state.
-      ...ggufCompactionRequestFields({
-        isGguf: isServedByLlamaCpp({
-          loadedIsGguf: state.loadedIsGguf,
-          activeGgufVariant: state.activeGgufVariant,
-          activeNativePathToken: state.activeNativePathToken,
-          checkpoint: params.checkpoint,
-        }),
-        isMlx: state.loadedIsMlx === true,
-        isNpu: isNpuModelId(params.checkpoint),
-        isManagedEngine: state.loadedEngine !== "auto",
-        autoCompactEnabled: state.autoCompactEnabled,
-        rolling: true,
-      }),
+      ...localCompactionFields(state, true),
     }),
   });
-  if (!response.ok) throw new Error(await readFastApiError(response, "Could not write a reply"));
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response, translate("characters.chat.writeFailed", undefined, getLocale())));
+  }
   const data = (await response.json()) as { choices?: { message?: { content?: string | null } }[] };
   const text = data.choices?.[0]?.message?.content ?? "";
-  return stripSpeakerPrefix(text, persona.name).trim();
+  return stripSpeakerPrefix(text, prompt.user).trim();
 }

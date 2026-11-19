@@ -9,7 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useT, type TranslationKey } from "@/i18n";
+import { useLocale, useT, type TranslationKey } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { BubbleChatIcon, ImageCompositionIcon, LayoutLeftIcon } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -22,19 +22,24 @@ import { useThreadScene } from "./use-thread-scene";
 /** The chat's characters at the top of a character chat; opens their panel. */
 export function CastChip({ threadId, onOpen }: { threadId: string | null | undefined; onOpen: () => void }) {
   const t = useT();
+  const locale = useLocale();
   const thread = useThreadScene(threadId);
   if (!thread) return null;
   const shown = thread.cast.slice(0, 3);
+  const names = new Intl.ListFormat(locale, { style: "short", type: "conjunction" });
   const label =
     thread.cast.length <= 2
-      ? thread.cast.map((c) => c.name).join(" & ")
-      : `${thread.cast[0].name}, ${thread.cast[1].name} +${thread.cast.length - 2}`;
+      ? names.format(thread.cast.map((c) => c.name))
+      : t("characters.chat.castMore", {
+          names: names.format(thread.cast.slice(0, 2).map((c) => c.name)),
+          count: thread.cast.length - 2,
+        });
   return (
+    // Named by its visible text, so a screen reader hears who is in the chat.
     <button
       type="button"
       onClick={onOpen}
-      aria-label={t("characters.chat.openCast")}
-      title={t("characters.chat.castLabel")}
+      title={t("characters.chat.openCast")}
       data-testid="cast-chip"
       className="ml-1 flex h-[var(--studio-chat-control-height,34px)] min-w-0 max-w-[42vw] cursor-pointer items-center gap-2 rounded-full py-1 pl-1 pr-3 text-ui-14 font-medium text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >

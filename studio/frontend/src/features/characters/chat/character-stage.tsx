@@ -2,31 +2,32 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useAuiState } from "@assistant-ui/react";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Portrait } from "../components/portrait";
 import { useImageUrl, useIsCutout, viewPicture } from "../images";
 import { chatViewOf, useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
 import { NovelNameplate, NovelScene, SpeakingDots } from "./novel-scene";
-import { useAskToReply } from "./speaker-bar";
+import { useAskToReply } from "./ask-bridge";
 import { RoleplayController } from "./roleplay-controller";
+import { CharacterChatContext } from "./character-chat-context";
 import { useThreadScene } from "./use-thread-scene";
 
-/**
- * The chat area of a character chat. Its controller keeps group rounds going. Stage view stands the
- * speaking character beside the conversation; visual novel view puts the cast over the scene with the
- * messages in a panel below. The thread keeps one place in the tree, so switching never remounts it.
- */
+/** A character chat's layout: plain, stage (speaker beside the chat) or novel (cast over the scene). Keeps the thread mounted across views. */
 export function CharacterStage({ threadId, children }: { threadId: string | null | undefined; children: ReactNode }) {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const id = threadId ?? activeThreadId ?? null;
-  const thread = useThreadScene(id);
+  const scene = useThreadScene(id);
+  // Worked out once here, so messages and the composer read context instead of each subscribing.
+  const thread = useMemo(() => (scene && id ? { ...scene, threadId: id } : null), [scene, id]);
   const view = thread ? chatViewOf(thread.scene.settings) : "chat";
   const stage = view === "stage";
   const novel = view === "novel";
   return (
+    <CharacterChatContext.Provider value={thread}>
     <div
       className={cn(
         "relative flex min-h-0 min-w-0 flex-1 basis-0",
@@ -48,6 +49,7 @@ export function CharacterStage({ threadId, children }: { threadId: string | null
         {novel && thread ? <NovelNameplate threadId={id} cast={thread.cast} /> : null}
       </div>
     </div>
+    </CharacterChatContext.Provider>
   );
 }
 
@@ -55,6 +57,7 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
   const t = useT();
   const { focus, speaking } = useStageFocus(threadId, cast);
   const ask = useAskToReply();
+  const running = useAuiState(({ thread }) => thread.isRunning);
   // Marked on the figure itself: a :has() rule above it would restyle the whole thread on every change.
   const focusUrl = useImageUrl("character", focus?.id, focus?.avatarRev ?? 0, Boolean(focus?.hasAvatar));
   const cutout = useIsCutout(focusUrl, true);
@@ -73,7 +76,7 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
       >
         <button
           type="button"
-          className="block size-full cursor-zoom-in"
+          className="block size-full cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default"
           onClick={() => viewPicture("character", focus.id, focus.name, focus.avatarRev)}
           disabled={!focus.hasAvatar}
           aria-label={t("characters.actions.viewPicture")}
@@ -102,9 +105,10 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
               key={character.id}
               type="button"
               onClick={() => ask(character.id, character.name)}
+              disabled={running}
               title={t("characters.chat.replyNow", { name: character.name })}
               aria-label={t("characters.chat.replyNow", { name: character.name })}
-              className="group/cast flex cursor-pointer items-center gap-2 rounded-full bg-muted/70 py-1 pl-1 pr-3 text-ui-13 font-medium text-foreground transition-colors hover:bg-accent dark:bg-card"
+              className="group/cast flex cursor-pointer items-center gap-2 rounded-full bg-muted/70 py-1 pl-1 pr-3 text-ui-13 font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 dark:bg-card"
             >
               <Portrait
                 id={character.id}

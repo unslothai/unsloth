@@ -165,7 +165,7 @@ export function CharactersLibrary() {
               }}
             >
               <HugeiconsIcon icon={UserGroupIcon} strokeWidth={1.75} className="size-icon" />
-              {selecting ? t("characters.cancelSelection") : t("characters.select")}
+              {selecting ? t("common.cancel") : t("characters.select")}
             </Button>
           </div>
         </div>

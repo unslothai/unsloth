@@ -5,6 +5,7 @@ import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useNavigate } from "@tanstack/react-router";
 import { startCharacterChat } from "../actions";
+import { errorText } from "../api";
 import { CharacterPickerDialog } from "./character-picker";
 
 /** "Chat with a character" from the composer's + menu: pick one (or several), and the chat opens. */
@@ -21,9 +22,7 @@ export function CharacterChatPicker({ onClose }: { onClose: () => void }) {
         void startCharacterChat(ids)
           .then((threadId) => navigate({ to: "/chat", search: { thread: threadId } }))
           .catch((error) =>
-            toast.error(t("characters.chat.startFailed"), {
-              description: error instanceof Error ? error.message : String(error),
-            }),
+            toast.error(t("characters.chat.startFailed"), { description: errorText(error) }),
           );
       }}
     />
