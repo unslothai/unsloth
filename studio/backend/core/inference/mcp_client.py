@@ -11,6 +11,7 @@ import hashlib
 import importlib
 import ipaddress
 import json
+import ssl
 import mimetypes
 import os
 import re
@@ -2137,6 +2138,43 @@ def _seeded_image_block(block: Any, mime: str) -> dict:
     return {**out, "type": "image", "mimeType": mime}
 
 
+# Below this an inline "image" is too small to be one, and the text too short to be worth parsing.
+_INLINE_IMAGE_MIN_CHARS = 1024
+_INLINE_IMAGE_PLACEHOLDER = "<image data moved out of the text>"
+
+
+def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Moves {"mimeType": "image/*", "data": <base64>} out of JSON text (Unreal's CaptureViewport) onto
+    the image-block path; left in, the model gets megabytes of truncated base64, never a picture."""
+    if (
+        len(text) < _INLINE_IMAGE_MIN_CHARS
+        or '"mimeType"' not in text
+        or text.lstrip()[:1] not in ("{", "[")
+    ):
+        return text, []
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        return text, []
+    found: list[tuple[str, str]] = []
+
+    def lift(node: Any) -> Any:
+        if isinstance(node, dict):
+            mime, data = _image_mime(node.get("mimeType")), node.get("data")
+            if mime is not None and isinstance(data, str) and len(data) >= _INLINE_IMAGE_MIN_CHARS:
+                found.append((data, mime))
+                return {**node, "data": _INLINE_IMAGE_PLACEHOLDER}
+            return {key: lift(item) for key, item in node.items()}
+        if isinstance(node, list):
+            return [lift(item) for item in node]
+        return node
+
+    lifted = lift(value)
+    if not found:
+        return text, []
+    return json.dumps(lifted, ensure_ascii = False), found
+
+
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
@@ -2146,9 +2184,12 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     omitted = 0
     has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
+    lifted = []
     for block in getattr(result, "content", None) or []:
         text = _block_text(block)
         if text:
+            text, inline_images = _lift_inline_images(text)
+            lifted.extend(inline_images)
             parts.append(text)
             has_text = True
             seed.append((block, None))
@@ -2176,6 +2217,14 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             unshown.append(note)
             if data:
                 payloads.add(data)
+    # After the block images: the widget hands images out positionally to the image blocks in its seed.
+    for data, mime in lifted:
+        payloads.add(data)
+        if len(data) > budget:
+            omitted += 1
+            continue
+        budget -= len(data)
+        images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
     # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)
@@ -2482,10 +2531,41 @@ def call_tool_sync(
         suffix = f" after {timeout:g}s" if timeout is not None else ""
         return f"Error: MCP tool '{name}' timed out{suffix}"
     except Exception as exc:
+        if server_unreachable(exc):
+            # The app behind the server is closed; say so, or models sleep and retry.
+            logger.warning("MCP server unreachable for %s: %s", name, exc)
+            return (
+                f"Error: MCP tool '{name}' did not run: {UNREACHABLE_SERVER}. {UNREACHABLE_ADVICE}"
+            )
         logger.exception("MCP call_tool failed for %s: %s", name, exc)
         return f"Error: MCP tool '{name}' failed: {exc}"
 
     return _flatten_result(result, ui_resource_uri)
+
+
+UNREACHABLE_SERVER = "the MCP server is not reachable (nothing answered the connection)"
+UNREACHABLE_ADVICE = "It is probably not running. Tell the user to start it; waiting or calling it again will not help until it runs."
+
+
+def server_unreachable(exc: BaseException) -> bool:
+    """A refused or unanswered connection anywhere in the cause chain (httpx is vendored, so match by type name).
+    A TLS failure is not one: httpx raises ConnectError for an untrusted certificate too, but the server answered."""
+    chain, seen = [], 0
+    while exc is not None and seen < 10:
+        chain.append(exc)
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    if any(
+        isinstance(item, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(item) for item in chain
+    ):
+        return False
+    for exc in chain:
+        if type(exc).__name__ in (
+            "ConnectError",
+            "ConnectionRefusedError",
+        ) or "All connection attempts failed" in str(exc):
+            return True
+    return False
 
 
 MAX_UI_TOOL_RESULT_CHARS = 4_000_000

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import types
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -290,6 +291,7 @@ def fresh_install_cache(monkeypatch, tmp_path):
     from integrations import installed
 
     installed._cache.clear()
+    monkeypatch.setattr(installed, "_connected", set())
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser("~") reads this on Windows
     monkeypatch.setattr(installed.shutil, "which", lambda name: None)
@@ -312,6 +314,153 @@ def test_install_hint_finds_editors_and_fails_open(fresh_install_cache, tmp_path
     monkeypatch.setattr(installed, "_detect", lambda *a: (_ for _ in ()).throw(OSError("denied")))
     installed._cache.clear()
     assert installed.is_installed("godot") is None
+
+
+def test_install_hint_finds_unpacked_linux_downloads(fresh_install_cache, tmp_path):
+    installed = fresh_install_cache
+    assert installed.is_installed("blender") is False and installed.is_installed("godot") is False
+    (tmp_path / "blender-5.3.0-linux-x64").mkdir()
+    (tmp_path / "blender-5.3.0-linux-x64" / "blender").write_text("", encoding = "utf-8")
+    (tmp_path / "Godot_v4.7.2-stable_linux.x86_64").write_text("", encoding = "utf-8")
+    installed._cache.clear()
+    assert installed.is_installed("blender") is True and installed.is_installed("godot") is True
+
+
+def test_a_connected_editor_counts_as_installed(fresh_install_cache):
+    installed = fresh_install_cache
+    assert installed.is_installed("godot") is False
+    installed.note_connected("godot")
+    assert installed.is_installed("godot") is True
+    assert installed.is_installed("unity") is False
+
+
+@pytest.mark.asyncio
+async def test_editor_that_refuses_the_connection_says_so(fresh_install_cache, monkeypatch):
+    from types import SimpleNamespace
+
+    class Refused(Exception):
+        response = SimpleNamespace(status_code = 401)
+
+    async def refuse(*args, **kwargs):
+        try:
+            raise Refused("401 Unauthorized")
+        except Refused as exc:
+            raise RuntimeError("Client failed to connect") from exc
+
+    monkeypatch.setattr(editors, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(editors, "list_tools_async", refuse)
+    result = await editors.probe("godot", EditorSettings(port = 9080))
+    assert (
+        not result.ok
+        and "refused the connection (HTTP 401)" in result.error
+        and "token" in result.error
+    )
+
+    async def answer(*args, **kwargs):
+        return [{"name": "get_scene_tree"}]
+
+    monkeypatch.setattr(editors, "list_tools_async", answer)
+    assert (await editors.probe("godot", EditorSettings(port = 9080))).ok
+    assert fresh_install_cache.is_installed("godot") is True
+
+
+@pytest.mark.parametrize(
+    "platform, settings_dir",
+    [("linux", ".config/Epic"), ("darwin", "Library/Application Support/Epic")],
+)
+def test_unreal_hint_reads_the_engine_registry(
+    fresh_install_cache, tmp_path, monkeypatch, platform, settings_dir
+):
+    installed = fresh_install_cache
+    monkeypatch.setattr(installed.sys, "platform", platform)
+    monkeypatch.setattr(installed, "_any", lambda patterns: False)
+    ini = tmp_path / settings_dir / "UnrealEngine" / "Install.ini"
+    ini.parent.mkdir(parents = True)
+    engine = tmp_path / "src" / "UnrealEngine"
+
+    def unreal_found(content: bytes) -> bool:
+        ini.write_bytes(content)
+        installed._cache.clear()
+        return installed.is_installed("unreal")
+
+    entry = f"[Installations]\n{{673FCAE7-FBB2-458F-9D7C-ED83D92881D3}}={engine}\n"
+    assert unreal_found(entry.encode()) is False  # stale entry: the engine was deleted
+    (engine / "Engine").mkdir(parents = True)
+    assert unreal_found(entry.encode()) is True
+    assert (
+        unreal_found(entry.replace("\n", "\r\n").encode("utf-16")) is True
+    )  # non-ASCII installs are saved as UTF-16
+    assert unreal_found(f"[Other]\nX={engine}\n[Installations]\n".encode()) is False
+
+
+def test_an_unreadable_registry_entry_does_not_hide_an_engine_found_elsewhere(
+    fresh_install_cache, tmp_path, monkeypatch
+):
+    installed = fresh_install_cache
+    monkeypatch.setattr(installed.sys, "platform", "linux")
+    monkeypatch.setattr(installed, "_epic_launcher_has_unreal", lambda: False)
+    monkeypatch.setattr(installed, "_any", lambda patterns: True)
+    ini = tmp_path / ".config/Epic/UnrealEngine/Install.ini"
+    ini.parent.mkdir(parents = True)
+    ini.write_text("[Installations]\nX=/mnt/locked/UnrealEngine\n")
+    monkeypatch.setattr(
+        installed.Path, "expanduser", lambda self: tmp_path / str(self).replace("~/", "")
+    )
+    real_is_dir = installed.Path.is_dir
+
+    def is_dir(self):
+        if "locked" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    monkeypatch.setattr(installed.Path, "is_dir", is_dir)
+    assert installed.is_installed("unreal") is True
+
+
+def test_unreal_hint_reads_the_windows_engine_registry(fresh_install_cache, tmp_path, monkeypatch):
+    installed = fresh_install_cache
+    monkeypatch.setattr(installed.sys, "platform", "win32")
+    monkeypatch.setattr(installed, "_any", lambda patterns: False)
+    monkeypatch.setattr(installed, "_epic_launcher_has_unreal", lambda: False)
+    engine = tmp_path / "src" / "UnrealEngine"
+    builds: dict = {}
+
+    class _Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def open_key(hive, path):
+        assert (hive, path) == ("HKCU", r"Software\Epic Games\Unreal Engine\Builds")
+        if builds is None:
+            raise FileNotFoundError(path)
+        return _Key()
+
+    def enum_value(_key, index):
+        items = list(builds.items())
+        if index >= len(items):
+            raise OSError("no more data")
+        return items[index][0], items[index][1], 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "winreg",
+        types.SimpleNamespace(HKEY_CURRENT_USER = "HKCU", OpenKey = open_key, EnumValue = enum_value),
+    )
+
+    def unreal_found() -> bool:
+        installed._cache.clear()
+        return installed.is_installed("unreal")
+
+    assert unreal_found() is False
+    builds["{673FCAE7-FBB2-458F-9D7C-ED83D92881D3}"] = str(engine)
+    assert unreal_found() is False
+    (engine / "Engine").mkdir(parents = True)
+    assert unreal_found() is True
+    builds = None
+    assert unreal_found() is False
 
 
 def test_catalog_reports_install_state(fresh_install_cache, monkeypatch):
