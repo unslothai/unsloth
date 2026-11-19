@@ -411,6 +411,28 @@ def test_a_gpu_swap_outside_the_family_makes_the_install_stale(monkeypatch, tmp_
     assert sdmod.install_is_stale(tmp_path) is False
 
 
+def test_a_visible_only_fallback_is_not_stale_for_the_masked_card(monkeypatch, tmp_path):
+    """No bundle covers the hidden sm_70 and the visible sm_90 together, so the pick serves sm_90
+    only; that install must stay current instead of reinstalling on every ensure."""
+    (tmp_path / sdmod.INSTALL_RECORD).write_text(
+        json.dumps(
+            {
+                "accelerator": "cuda",
+                "repo": "r",
+                "tag": TAG,
+                "requested_tag": TAG,
+                "cuda_sms": ["75", "80", "86", "89", "90", "120"],
+            }
+        )
+    )
+    monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", TAG)
+    monkeypatch.setattr(sdmod, "host_cuda_sms", lambda: (["70", "90"], ["90"]))
+    assert sdmod.install_is_stale(tmp_path) is False
+    # Unmasked, the sm_70 card is in use and the bundle does not serve it.
+    monkeypatch.setattr(sdmod, "host_cuda_sms", lambda: (["70", "90"], ["70", "90"]))
+    assert sdmod.install_is_stale(tmp_path) is True
+
+
 def test_a_pre_split_record_is_never_coverage_stale(monkeypatch, tmp_path):
     (tmp_path / sdmod.INSTALL_RECORD).write_text(
         json.dumps({"accelerator": "cuda", "repo": "r", "tag": TAG, "requested_tag": TAG})

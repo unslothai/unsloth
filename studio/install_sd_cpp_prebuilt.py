@@ -163,7 +163,7 @@ def _pinned_tag() -> Optional[str]:
 
 def install_is_stale(root: Path) -> bool:
     """True when ``root`` was installed for another pin, or is a per-GPU-family CUDA bundle that does
-    not serve a GPU this host now has (a card swapped since the install). Unknown (no record / tag,
+    not serve a GPU this process can use (a card swapped since the install). Unknown (no record / tag,
     tracking latest, undetectable GPUs) is not stale."""
     return _pin_is_stale(root) or _cuda_coverage_is_stale(root)
 
@@ -173,8 +173,10 @@ def _cuda_coverage_is_stale(root: Path) -> bool:
     sms = rec.get("cuda_sms")
     if rec.get("accelerator") != "cuda" or not isinstance(sms, list) or not sms:
         return False
-    physical, _visible = host_cuda_sms()
-    missing = [sm for sm in physical if sm not in {str(v) for v in sms}]
+    # The visible GPUs, not every physical one: when no bundle covers a masked card, the selection
+    # falls back to a visible-only bundle, and checking the hidden card would reinstall it forever.
+    physical, visible = host_cuda_sms()
+    missing = [sm for sm in (visible or physical) if sm not in {str(v) for v in sms}]
     if missing:
         print(
             f"sd-cli: installed {rec.get('asset') or 'CUDA bundle'} has no kernels for sm_{',sm_'.join(missing)}; "
