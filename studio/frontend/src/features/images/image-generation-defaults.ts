@@ -5,25 +5,30 @@ import { explicitFamily } from "../model-picker/components/model-selector/family
 
 export const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
+// Mirrors backend _GENERATION_DEFAULTS row for row, same order (first match wins); pinned by the parity test.
 const MODEL_DEFAULTS: Array<{
   match: string;
   steps: number;
   guidance: number;
 }> = [
   { match: "z-image-turbo", steps: 8, guidance: 0 },
-  // Krea 2 Raw is undistilled and must precede the distilled Krea key.
+  // FLUX.1 Krea dev is a FLUX.1-dev finetune, not a Krea 2: before the generic "krea" key.
+  { match: "flux.1-krea", steps: 20, guidance: 3.5 },
+  // Krea 2 Raw is undistilled and must precede the generic Krea key.
   { match: "krea-2-raw", steps: 52, guidance: 3.5 },
   // The same Raw checkpoint as GGUFs name it (Krea-2-Base-*, krea2_raw-*).
   { match: "krea-2-base", steps: 52, guidance: 3.5 },
   { match: "krea2-raw", steps: 52, guidance: 3.5 },
   { match: "krea2-base", steps: 52, guidance: 3.5 },
-  { match: "krea-2", steps: 8, guidance: 0 },
+  { match: "flux1-krea", steps: 20, guidance: 3.5 },
+  { match: "krea", steps: 8, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
+  { match: "flux1-schnell", steps: 4, guidance: 0 },
   // Must precede generic FLUX.1.
   { match: "kontext", steps: 20, guidance: 2.5 },
-  { match: "flux.1-krea", steps: 20, guidance: 3.5 },
   { match: "flux.1", steps: 20, guidance: 3.5 },
-  // FLUX.3 Image Klein (ComfyUI templates, the BFL reference): base 50 steps at CFG 3.5, distilled 16 steps without CFG. Base first.
+  { match: "flux1", steps: 20, guidance: 3.5 },
+  // FLUX.3 Image Klein (the BFL reference): base 50 steps at CFG 3.5, distilled 16 steps at CFG 1. Base first.
   // Every alias the backend registers for the two families, and the canonical family names (an opaque path
   // resolves through the explicit family).
   { match: "flux.3-klein-base", steps: 50, guidance: 3.5 },
@@ -55,12 +60,6 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image-2512", steps: 50, guidance: 4 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 25, guidance: 3 },
-  { match: "ideogram", steps: 20, guidance: 7 },
-  { match: "minimax-h3-image", steps: 6, guidance: 1 },
-  { match: "moss-image", steps: 25, guidance: 2.5 },
-  { match: "moss_image", steps: 25, guidance: 2.5 },
-  { match: "mossimage", steps: 25, guidance: 2.5 },
-  { match: "kromoss", steps: 25, guidance: 2.5 },
   { match: "lumina", steps: 50, guidance: 4 },
   // Distilled checkpoints use their publishers' recipes; each must precede its family's key.
   { match: "hunyuanimage-2.1-distilled", steps: 8, guidance: 3.25 },
@@ -73,9 +72,21 @@ const MODEL_DEFAULTS: Array<{
   { match: "hidream-i1-dev", steps: 28, guidance: 0 },
   { match: "hidream-i1-fast", steps: 16, guidance: 0 },
   { match: "hidream", steps: 50, guidance: 5 },
+  { match: "ideogram", steps: 20, guidance: 7 },
+  { match: "minimax-h3-image", steps: 6, guidance: 1 },
+  { match: "minimax_h3_image", steps: 6, guidance: 1 },
+  { match: "minimaxh3image", steps: 6, guidance: 1 },
+  { match: "h3-image", steps: 6, guidance: 1 },
+  { match: "moss-image", steps: 25, guidance: 2.5 },
+  { match: "moss_image", steps: 25, guidance: 2.5 },
+  { match: "mossimage", steps: 25, guidance: 2.5 },
+  { match: "kromoss", steps: 25, guidance: 2.5 },
   { match: "sdxl-turbo", steps: 1, guidance: 0 },
   { match: "stable-diffusion-xl", steps: 25, guidance: 7 },
   { match: "sdxl", steps: 25, guidance: 7 },
+  // Keyed by base repo: a bare "anima" would match Animagine XL (SDXL) files first.
+  { match: "circlestone-labs/anima", steps: 30, guidance: 4 },
+  { match: "chroma", steps: 26, guidance: 3.5 },
 ];
 
 // Families whose checkpoint caps the step count (one head per step): the slider stops there.

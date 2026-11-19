@@ -285,6 +285,46 @@ def _mask_padding_free_boundary_labels(batch) -> None:
     batch["labels"] = mask_packed_boundary_labels(labels, batch["packed_seq_lengths"])
 
 
+def _carry_host_lengths(before, after) -> None:
+    """Attach host `packed_seq_lengths` to the moved device tensor, avoiding a blocking `.tolist()`."""
+    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+        return
+    src = before.get("packed_seq_lengths")
+    dst = after.get("packed_seq_lengths")
+    if (
+        not isinstance(src, torch.Tensor)
+        or not isinstance(dst, torch.Tensor)
+        or dst is src
+        or src.device.type != "cpu"
+        or dst.device.type == "cpu"
+        or src.numel() != dst.numel()
+    ):
+        return
+    try:
+        dst._unsloth_lengths_tuple = tuple(int(x) for x in src.reshape(-1).tolist())
+    except Exception:
+        pass
+
+
+def _install_host_lengths_carry() -> None:
+    try:
+        import accelerate.data_loader as accelerate_data_loader
+    except Exception:
+        return
+    original = getattr(accelerate_data_loader, "send_to_device", None)
+    if original is None or getattr(original, "_unsloth_host_lengths_carry", False):
+        return
+
+    @wraps(original)
+    def send_to_device(tensor, *args, **kwargs):
+        moved = original(tensor, *args, **kwargs)
+        _carry_host_lengths(tensor, moved)
+        return moved
+
+    send_to_device._unsloth_host_lengths_carry = True
+    accelerate_data_loader.send_to_device = send_to_device
+
+
 def enable_sample_packing(
     model,
     trainer,
@@ -334,6 +374,7 @@ def enable_sample_packing(
                     batch.pop("attention_mask")
         return batch
 
+    _install_host_lengths_carry()
     collator.torch_call = torch_call_with_lengths
     collator._unsloth_packing_wrapped = True
 
@@ -383,6 +424,7 @@ def enable_padding_free_metadata(model, trainer):
             _mask_padding_free_boundary_labels(batch)
         return batch
 
+    _install_host_lengths_carry()
     collator.torch_call = torch_call_with_padding_free_metadata
     collator._unsloth_padding_free_lengths_wrapped = True
 

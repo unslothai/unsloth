@@ -76,6 +76,7 @@ import {
   resolveHubSection,
 } from "./model-selector/hub-section";
 import { PillTabs } from "./model-selector/pill-tabs";
+import { withLoadedPrecision } from "./model-selector/loaded-precision-trigger";
 import type {
   ExternalModelOption,
   ModelDownloadFootprintResolver,
@@ -102,6 +103,9 @@ interface ModelSelectorProps {
   loadedModelIdOverride?: string;
   /** Task-owned loaded quant, paired with `loadedModelIdOverride`; null means none. */
   loadedGgufVariantOverride?: string | null;
+  /** The precision the resident build runs at ("INT8", "BF16", "GGUF · Q4_K_M"), paired with
+   *  `loadedModelIdOverride`: the trigger names it instead of the catalog row's stored precision. */
+  loadedPrecisionOverride?: string | null;
   externalModels?: ExternalModelOption[];
   value?: string;
   /** Whether the selection is actually resident. Omitted means a selection is a load. */
@@ -631,6 +635,7 @@ export function ModelSelector({
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
   loadedGgufVariantOverride,
+  loadedPrecisionOverride,
   externalModels = [],
   value,
   activeGgufVariant,
@@ -718,6 +723,15 @@ export function ModelSelector({
       : missingExternalModel(selected, externalModels);
     // A cached GGUF's checkpoint is a snapshot path; the leaf matches the later catalog row.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
+    const showsLoaded =
+      Boolean(loadedModelIdOverride) && selected.toLowerCase() === loadedModelIdOverride?.toLowerCase();
+    if (loadedPrecisionOverride && showsLoaded) {
+      // The resident build, not the row: an INT8 load of a BF16 row reads INT8.
+      return withLoadedPrecision(
+        found ?? { id: selected, name: fallbackName },
+        loadedPrecisionOverride,
+      );
+    }
     if (triggerGgufVariant) {
       // The variant is the quant, so it goes in the suffix.
       const desc = `GGUF · ${triggerGgufVariant}`;
@@ -747,6 +761,8 @@ export function ModelSelector({
     optionById,
     catalog,
     triggerGgufVariant,
+    loadedModelIdOverride,
+    loadedPrecisionOverride,
     externalModels,
     t,
   ]);
