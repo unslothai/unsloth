@@ -6,6 +6,7 @@ import { MascotImg, publicAssetUrl } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogTitle,
@@ -24,7 +25,12 @@ import {
 } from "@/features/hub";
 import { useHubFeed } from "@/features/hub/hooks/use-hub-feed";
 import { browserAccountKey } from "@/lib/account-transition";
-import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import {
+  ChevronDownStandardIcon,
+  ChevronLeftStandardIcon,
+  ChevronRightStandardIcon,
+  ChevronUpStandardIcon,
+} from "@/lib/chevron-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -34,6 +40,7 @@ import {
   Download01Icon,
   FilterMailIcon,
   GridViewIcon,
+  MoreVerticalIcon,
   Navigation05Icon,
   PlusSignIcon,
   Search01Icon,
@@ -109,6 +116,13 @@ const FEATURES = [
   { icon: StarIcon, label: "Star the ones you use most" },
 ] as const;
 
+const USE_STEPS = [
+  "Browse Discover for models that fit your device",
+  "Click the gear to tweak settings before loading",
+  "Star models to keep them in Favorites",
+  "When a model is loaded, click its row or the arrow to expand or collapse the picker",
+] as const;
+
 const MOCK_ROWS = [
   { logo: "/hub/profile/logo/qwen.png", name: "Qwen3-14B", quant: "Q4_K_M" },
   {
@@ -130,6 +144,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
   const source = useComposerModelPickerSource();
   const dismissed = useSyncExternalStore(subscribe, readDismissed, () => true);
   const [open, setOpen] = useState(false);
+  const [page, setPage] = useState(0);
   const openPickerOnClose = useRef(false);
 
   // Chat only: Translate browses, and Compare and the API page own their selection.
@@ -150,7 +165,10 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
           <div className="relative w-full max-w-[calc(460px*var(--ui-space-scale,1))]">
             <button
               type="button"
-              onClick={() => setOpen(true)}
+              onClick={() => {
+                setPage(0);
+                setOpen(true);
+              }}
               className="relative flex w-full items-center gap-4 overflow-hidden rounded-[calc(22px*var(--ui-space-scale,1))] py-5 pr-3 pl-5 text-left bg-white shadow-[var(--composer-shadow)] dark:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span className="relative flex min-w-0 flex-1 flex-col items-start gap-1">
@@ -190,6 +208,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
       )}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
+          showCloseButton={false}
           className="content-start gap-0 p-6 sm:max-w-[calc(35rem*var(--ui-space-scale,1))]"
           onCloseAutoFocus={(event) => {
             if (!openPickerOnClose.current) {
@@ -200,26 +219,144 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
             source.onOpenChange(true);
           }}
         >
-          <DialogHero />
-          <div className="mt-7 flex flex-col items-center gap-2.5 px-4 text-center">
-            <NewBadge />
-            <DialogTitle className="text-balance font-heading font-semibold text-[1.65rem] leading-tight tracking-[-0.02em]">
-              Meet the new model picker
-            </DialogTitle>
-            <DialogDescription className="text-balance">
-              The model picker now lives in the chat box, next to the send
-              button.
-            </DialogDescription>
+          <DialogClose asChild={true}>
             <Button
-              variant="primary"
-              size="hero"
-              className="mt-2 gap-1.5 px-5.5 py-2.5 text-[0.95rem]"
-              onClick={() => {
-                openPickerOnClose.current = true;
-                setOpen(false);
-              }}
+              variant="ghost"
+              size="icon-sm"
+              className="absolute top-3 right-3 z-10 max-sm:fixed max-sm:top-[calc(0.75rem+var(--studio-window-chrome-top,0px))]"
             >
-              Open model picker
+              <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
+              <span className="sr-only">Close</span>
+            </Button>
+          </DialogClose>
+          {page === 0 ? (
+            <>
+              <DialogHero />
+              <div className="mt-7 flex flex-col items-center gap-2.5 px-4 text-center">
+                <NewBadge />
+                <DialogTitle className="text-balance font-heading font-semibold text-[1.65rem] leading-tight tracking-[-0.02em]">
+                  Meet the new model picker
+                </DialogTitle>
+                <DialogDescription className="text-balance">
+                  The model picker now lives in the chat box, next to the send
+                  button.
+                </DialogDescription>
+                <Button
+                  variant="primary"
+                  size="hero"
+                  className="mt-2 gap-1.5 px-5.5 py-2.5 text-[0.95rem]"
+                  onClick={() => {
+                    openPickerOnClose.current = true;
+                    setOpen(false);
+                  }}
+                >
+                  Open model picker
+                  <HugeiconsIcon
+                    icon={ChevronRightStandardIcon}
+                    strokeWidth={2}
+                    className="size-4"
+                  />
+                </Button>
+              </div>
+              <ul className="mt-7 grid grid-cols-2 gap-2">
+                {FEATURES.map((feature) => (
+                  <li
+                    key={feature.label}
+                    className="flex items-center gap-2.5 rounded-full bg-muted/50 py-3 pr-4 pl-4"
+                  >
+                    <span className="flex shrink-0 items-center justify-center text-primary">
+                      <HugeiconsIcon
+                        icon={feature.icon}
+                        strokeWidth={1.9}
+                        className="size-4.5"
+                      />
+                    </span>
+                    <span className="font-medium text-foreground text-sm leading-snug">
+                      {feature.label}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <>
+              <FoldHero />
+              <div className="mt-7 flex flex-col items-center gap-2.5 px-4 text-center">
+                <DialogTitle className="text-balance font-heading font-semibold text-[1.65rem] leading-tight tracking-[-0.02em]">
+                  How to use it
+                </DialogTitle>
+                <DialogDescription className="sr-only">
+                  Four ways to use the model picker.
+                </DialogDescription>
+              </div>
+              <ol className="mt-6 flex flex-col gap-2.5 rounded-[calc(22px*var(--ui-space-scale,1))] bg-muted/50 px-5 py-4 text-sm">
+                {USE_STEPS.map((step, index) => (
+                  <li key={step} className="flex items-baseline gap-3">
+                    <span className="w-3 shrink-0 font-semibold text-primary">
+                      {index + 1}
+                    </span>
+                    <span className="text-foreground">{step}</span>
+                  </li>
+                ))}
+              </ol>
+              <Button
+                variant="primary"
+                size="hero"
+                className="mt-6 gap-1.5 justify-self-center px-5.5 py-2.5 text-[0.95rem]"
+                onClick={() => {
+                  openPickerOnClose.current = true;
+                  setOpen(false);
+                }}
+              >
+                Open model picker
+                <HugeiconsIcon
+                  icon={ChevronRightStandardIcon}
+                  strokeWidth={2}
+                  className="size-4"
+                />
+              </Button>
+            </>
+          )}
+          <div className="mt-6 flex items-center justify-between">
+            <Button
+              variant="ghost"
+              className={cn("gap-1 text-[0.95rem]", page === 0 && "invisible")}
+              onClick={() => setPage(0)}
+            >
+              <HugeiconsIcon
+                icon={ChevronLeftStandardIcon}
+                strokeWidth={2}
+                className="size-4"
+              />
+              Back
+            </Button>
+            <div className="flex items-center">
+              {[0, 1].map((dot) => (
+                <button
+                  key={dot}
+                  type="button"
+                  onClick={() => setPage(dot)}
+                  aria-label={`Page ${dot + 1}`}
+                  aria-current={dot === page ? "step" : undefined}
+                  className="group/dot grid size-6 place-items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <span
+                    className={cn(
+                      "size-2 rounded-full transition-colors",
+                      dot === page
+                        ? "bg-primary"
+                        : "bg-muted-foreground/30 group-hover/dot:bg-muted-foreground/60",
+                    )}
+                  />
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="ghost"
+              className={cn("gap-1 text-[0.95rem]", page === 1 && "invisible")}
+              onClick={() => setPage(1)}
+            >
+              Next
               <HugeiconsIcon
                 icon={ChevronRightStandardIcon}
                 strokeWidth={2}
@@ -227,25 +364,6 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               />
             </Button>
           </div>
-          <ul className="mt-7 grid grid-cols-2 gap-2">
-            {FEATURES.map((feature) => (
-              <li
-                key={feature.label}
-                className="flex items-center gap-2.5 rounded-full bg-muted/50 py-3 pr-4 pl-4"
-              >
-                <span className="flex shrink-0 items-center justify-center text-primary">
-                  <HugeiconsIcon
-                    icon={feature.icon}
-                    strokeWidth={1.9}
-                    className="size-4.5"
-                  />
-                </span>
-                <span className="font-medium text-foreground text-sm leading-snug">
-                  {feature.label}
-                </span>
-              </li>
-            ))}
-          </ul>
         </DialogContent>
       </Dialog>
     </>
@@ -473,6 +591,131 @@ const DialogHero: FC = () => {
               ) : null}
             </div>
           ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const MOCK_SURFACE =
+  "flex shrink-0 flex-col gap-2 rounded-xl bg-white p-2 shadow-[var(--composer-shadow)] dark:bg-card";
+
+const EffortMock: FC = () => (
+  <div className="flex flex-col gap-1.5 px-2 pb-1">
+    <div className="flex items-center justify-between text-ui-11">
+      <span className="font-medium text-muted-foreground tracking-wide">
+        EFFORT
+      </span>
+      <span className="text-foreground">Medium</span>
+    </div>
+    <div className="relative h-1.5 rounded-full bg-muted">
+      <span className="absolute inset-y-0 left-0 w-1/2 rounded-full bg-primary" />
+      <span className="absolute top-1/2 left-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[var(--composer-shadow)]" />
+    </div>
+  </div>
+);
+
+const FoldHero: FC = () => {
+  const rows = useTrendingRows();
+  const model = rows[0];
+  return (
+    <div
+      aria-hidden="true"
+      className="mt-9 flex items-center justify-center gap-3 max-sm:flex-col"
+    >
+      <div
+        className={cn(MOCK_SURFACE, "w-[calc(216px*var(--ui-space-scale,1))]")}
+      >
+        <div className="flex items-center gap-2 rounded-lg bg-muted-foreground/10 px-2 py-1.5 text-foreground text-ui-11">
+          <LogoDot src={model.logo} className="size-4" />
+          <span className="min-w-0 flex-1 truncate">{model.name}</span>
+          <span className="size-1.5 shrink-0 rounded-full bg-primary" />
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted-foreground/15">
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={2}
+              className="size-3.5 text-primary"
+            />
+          </span>
+        </div>
+        <EffortMock />
+      </div>
+      <HugeiconsIcon
+        icon={ChevronRightStandardIcon}
+        strokeWidth={2}
+        className="size-5 shrink-0 text-muted-foreground max-sm:rotate-90"
+      />
+      <div
+        className={cn(MOCK_SURFACE, "w-[calc(230px*var(--ui-space-scale,1))]")}
+      >
+        <div className="flex items-center gap-3 px-2 pt-1 text-muted-foreground">
+          <HugeiconsIcon
+            icon={StarIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+          <HugeiconsIcon
+            icon={Navigation05Icon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+          <span className="relative text-foreground">
+            <HugeiconsIcon
+              icon={Download01Icon}
+              strokeWidth={1.75}
+              className="size-3.5"
+            />
+            <span className="absolute inset-x-0 -bottom-1.5 h-0.5 rounded-full bg-primary" />
+          </span>
+          <HugeiconsIcon
+            icon={CloudIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+          <span className="flex-1" />
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted-foreground/15">
+            <HugeiconsIcon
+              icon={ChevronUpStandardIcon}
+              strokeWidth={2}
+              className="size-3.5 text-primary"
+            />
+          </span>
+        </div>
+        <div className="flex flex-col">
+          {rows.map((row, index) => (
+            <div
+              key={row.name}
+              className={cn(
+                "flex items-center gap-2 rounded-lg px-2 py-1.5 text-foreground text-ui-11",
+                index === 0 && "bg-muted-foreground/10",
+              )}
+            >
+              <LogoDot src={row.logo} className="size-4" />
+              <span className="min-w-0 flex-1 truncate">{row.name}</span>
+              {index === 0 ? (
+                <>
+                  <HugeiconsIcon
+                    icon={MoreVerticalIcon}
+                    strokeWidth={2}
+                    className="size-3.5 shrink-0 text-primary"
+                  />
+                  <HugeiconsIcon
+                    icon={Settings01Icon}
+                    strokeWidth={1.75}
+                    className="size-3.5 shrink-0 text-primary"
+                  />
+                  <HugeiconsIcon
+                    icon={StarIcon}
+                    strokeWidth={1.75}
+                    className="size-3.5 shrink-0 text-primary"
+                  />
+                </>
+              ) : null}
+            </div>
+          ))}
+        </div>
+        <div className="border-border border-t pt-1.5">
+          <EffortMock />
         </div>
       </div>
     </div>
