@@ -489,8 +489,7 @@ class StepPolicy:
         return False
 
     def compile_key(self) -> tuple:
-        """What a compiled FP8 Linear guards on (the path each branch takes); a CFG replica shares this object, so
-        its warm-call signatures join it (diffusion_multigpu._shared_state_key)."""
+        """Compile guard key; a CFG replica shares this object (diffusion_multigpu._shared_state_key)."""
         return (bool(self.generation_a16), bool(self.reasoner_a16))
 
 

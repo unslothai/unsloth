@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a CFG replica copy must share with its source or rebuild on its own card, CPU only:
-* the ModelOpt FP8 step policy the source's ``cache_context`` advances (both branches of a step run the same
-  W8A16 / W8A8 path);
-* FLUX.3's merged Q / K / V buffer, merged again from the replica's own weights instead of a deep copy left on the
-  source card beside them (meta stands in for the second card)."""
+"""What a CFG replica shares with its source (FP8 step policy) or rebuilds on its card (FLUX.3 QKV). CPU only."""
 
 import contextlib
 import types
@@ -19,8 +15,6 @@ from core.inference import diffusion_multigpu as mg  # noqa: E402
 
 
 class _Fp8Model(torch.nn.Module):
-    """A denoiser with one generation-path FP8 Linear and the pipeline's ``cache_context`` (Cosmos 3 shape)."""
-
     def __init__(self):
         super().__init__()
         cls = mo.fp8_linear_class()
@@ -58,14 +52,12 @@ def test_replica_follows_the_source_fp8_step_policy():
         with model.cache_context("cond", step_index = step, num_inference_steps = 20):
             a16 = model.proj.policy.high_precision("generation")
             assert replica.proj.policy.high_precision("generation") is a16, step
-            # the two branches of one step run the same GEMM path: bit-identical on the same input
             assert torch.equal(model(x), replica(x)), step
     assert replica.proj.policy is model.proj.policy
 
 
 def test_shared_fp8_policy_keeps_warm_signatures_stable():
-    """A shared state joins every warm-call signature by its compile key: a key that changed each call would keep
-    the two cards from ever overlapping."""
+    """A per-call compile key would keep the two cards from ever overlapping."""
     policy = mo.StepPolicy(first_steps = 3, last_steps = 3)
     policy.set_step(5, 20)
     assert mg._shared_state_key((policy,)) == mg._shared_state_key((policy,))
@@ -117,14 +109,12 @@ def test_replica_merges_its_own_qkv_instead_of_copying_the_source_buffer(monkeyp
     replica = mg._copy_module(source, torch.device("meta"))
     for attn in (m for m in replica.modules() if type(m) is attn_cls):
         record = attn.__dict__.get(F._QKV_ATTR)
-        # no merged buffer left behind on the source card: either none, or the replica's own on its card
         assert record is not None, "the replica lost the merged Q / K / V GEMM"
         q, k, v, (wq, ws, n, _fused) = record
         assert (q, k, v) == (attn.to_q, attn.to_k, attn.to_v)
         assert wq.device.type == "meta" and ws.device.type == "meta" and n == 3
         assert tuple(wq.shape) == (144, 64)
         for i, lin in enumerate((attn.to_q, attn.to_k, attn.to_v)):
-            # the replica's weights are row slices of its own buffer, as on the source: no second copy
             assert lin.weight.qdata.device.type == "meta"
             assert lin.weight.qdata.storage_offset() == 48 * 64 * i
 

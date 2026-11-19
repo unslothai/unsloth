@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What each backend tells the multi-GPU placement about a load's default request (guided or not, steps, tokens):
-the input that decides whether a guided family runs one card plus a CFG replica instead of a split. CPU only."""
+"""The default request each backend notes for the CFG replica placement. CPU only."""
 
 import types
 
@@ -48,8 +47,6 @@ def test_image_default_request(family, repo, guided):
 
 
 def test_klein_base_runs_cfg_with_its_own_negative_prompt():
-    # Flux2KleinPipeline runs both branches above guidance 1 though Studio passes no negative prompt (Kaggle 2x T4:
-    # 38 replica calls in two 20-step renders)
     pipe = _Pipe()
     fam = _image_family("flux.2-klein")
     image._note_multigpu_default_request(

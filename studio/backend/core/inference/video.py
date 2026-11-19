@@ -5315,8 +5315,6 @@ def _video_sidecar_card_reserve_mib(pipe: Any, plan: Any = None) -> Optional[dic
 
 
 def _note_video_default_request(fam: Any, pipe: Any) -> None:
-    """Tell the multi-GPU placement whether this family's default clip is guided (guidance above 1 runs the
-    unconditional branch), its step count and its denoiser tokens per branch at the default shape."""
     try:
         guidance = float(fam.default_guidance)
         width, height = fam.resolution_presets[0]

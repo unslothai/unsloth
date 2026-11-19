@@ -706,17 +706,13 @@ def _negative_prompt_engaged(family: DiffusionFamily, guidance: float) -> bool:
     return threshold is None or float(guidance) > threshold
 
 
-# Families whose pipeline runs both guidance branches above guidance 1 with its own empty negative prompt, though
-# Studio passes none (Flux2KleinPipeline: do_classifier_free_guidance = guidance > 1 and not is_distilled).
+# Run CFG above guidance 1 with their own empty negative prompt (Flux2KleinPipeline do_classifier_free_guidance).
 _CFG_WITHOUT_NEGATIVE_PROMPT_FAMILIES = frozenset(("flux.2-klein",))
 
 
 def _note_multigpu_default_request(
     pipe: Any, family: DiffusionFamily, *identifiers: Optional[str]
 ) -> None:
-    """Tell the multi-GPU placement whether this load's default request runs two guidance branches per step (the
-    negative prompt engages, Studio's own rule), and its step count: a guided load can run one card plus a CFG replica
-    instead of a split."""
     try:
         steps, guidance = default_generation_params(*identifiers)
         distilled = family.name == "flux.2-klein" and bool(

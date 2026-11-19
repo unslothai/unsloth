@@ -191,14 +191,11 @@ def merge_qkv(transformer: Any, logger: Any = None) -> int:
 
 
 def is_replica_record(key: str, value: Any) -> bool:
-    """The merged Q / K / V record holds its own buffer outside the module tree: a CFG replica's deep copy would keep a
-    copy of it on the source card, apart from the copied weights (so the replica runs three GEMMs). The copier drops
-    it and :func:`rebuild_replica` merges the replica's own weights instead."""
+    """The merged QKV buffer lives outside the module tree, so a deep copy would leave it on the source card."""
     return key == _QKV_ATTR
 
 
 def rebuild_replica(source: Any, replica: Any) -> int:
-    """Merge the replica's Q / K / V on its own card when the source runs them merged; 0 when it does not."""
     if not fused_qkv_count(source):
         return 0
     return merge_qkv(replica)

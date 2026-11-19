@@ -699,9 +699,6 @@ def test_layer_split_primary_never_exceeds_the_one_card_budget(monkeypatch):
     assert d.plan.layer_split is None
 
 
-# CFG replica layout: a guided load whose denoiser fits a second card runs its one-card plan plus a replica there
-# instead of a split, when the measured price says so. The fake denoisers below are named like the real classes (the
-# layout keys on the class) and sized through replica_need_mib; compute is priced through _gemm_tflops.
 class WanTransformer3DModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -729,7 +726,6 @@ def _priced(
     tokens,
     h2d = 11.0,
 ):
-    """Measured bandwidth ``h2d``, and one forward of the fake denoiser priced at ``compute_s`` for ``tokens``."""
     monkeypatch.setattr(mg, "replica_need_mib", lambda module: int(need_mib))
     monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: (float(h2d), 30.0))
     monkeypatch.setattr(mg, "_gemm_tflops", lambda o, d: 25.0)
@@ -751,7 +747,6 @@ def _wan5b(
     cls = WanTransformer3DModel,
     need = 9582 + 0,
 ):
-    # Wan 2.2 TI2V-5B at the bench's 832x480x49 (5070 tokens), 10 steps, 2.65 s per forward on a T4 (Kaggle record)
     _priced(monkeypatch, need_mib = need, compute_s = 2.65, tokens = 5070)
     host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
     pipe = _DitPipe(cls())
@@ -773,7 +768,6 @@ def test_wan5b_on_two_t4s_runs_one_card_plus_a_cfg_replica_instead_of_the_layer_
     monkeypatch, gpu_ids
 ):
     d = _wan5b(monkeypatch, gpu_ids = gpu_ids)
-    # the one-card plan, unchanged: no split engaged, the replica takes the second card
     assert d.plan is d.one_card and d.plan.offload_policy != dm.OFFLOAD_NONE
     assert d.plan.layer_split is None and d.plan.secondary_ordinal is None
     recorded = _recorded(d)
@@ -796,8 +790,6 @@ def test_wan5b_kill_switch_keeps_the_layer_split(monkeypatch):
 
 @pytest.mark.parametrize("gpu_ids", [(0, 1), None], ids = ["explicit", "automatic"])
 def test_forced_multigpu_split_is_not_replaced_by_the_replica(monkeypatch, gpu_ids):
-    # UNSLOTH_DIFFUSION_MULTIGPU=force asks for a split even where one card holds the model: a guided load keeps the
-    # split it forced (companion here, layer split for Wan 5B) instead of the priced replica layout
     monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
     _priced(monkeypatch, need_mib = 3900, compute_s = 1.0, tokens = 4096)
     host = Host([Card(0, T4, 300), Card(1, T4, 300)])
@@ -823,8 +815,6 @@ def test_forced_multigpu_split_is_not_replaced_by_the_replica(monkeypatch, gpu_i
 def test_wan5b_status_reports_the_replica_choice_and_its_fallback(monkeypatch):
     d = _wan5b(monkeypatch)
     p = _placement(d)
-    # the fake denoiser is not on a CUDA card, so the replica does not arm: status says the load runs one card, why,
-    # and keeps the replica choice among the rejected candidates
     assert p["chosen"] == "offload", p
     first = p["rejected"][0]
     assert first["kind"] == "cfg_replica" and first["reason"].startswith(
@@ -837,7 +827,6 @@ def test_wan5b_status_reports_the_replica_choice_and_its_fallback(monkeypatch):
 
 
 def test_unguided_default_request_keeps_the_layer_split(monkeypatch):
-    # a guidance-distilled model (FLUX.1-dev style): one branch per step, the copy only splits even batches
     d = _wan5b(monkeypatch, guided = False, cls = FluxTransformer2DModel)
     assert d.plan.layer_split is not None
     assert _recorded(d).chosen == "layer_split"
@@ -846,7 +835,6 @@ def test_unguided_default_request_keeps_the_layer_split(monkeypatch):
 
 
 def test_replica_that_does_not_fit_the_second_card_keeps_the_layer_split(monkeypatch):
-    # weights plus working set over what the second T4 holds: the split stays (never a replica that cannot fit)
     d = _wan5b(monkeypatch, need = 14500)
     assert d.plan.layer_split is not None
     reasons = {c.kind: c.reason for c in _recorded(d).rejected}
@@ -861,7 +849,6 @@ def test_family_whose_branches_cannot_overlap_keeps_the_layer_split(monkeypatch)
 
 
 def test_heavy_stream_on_the_primary_keeps_the_layer_split(monkeypatch):
-    # a primary that streams more per step than a forward computes (slow host link): two resident forwards win
     d = _wan5b(monkeypatch)
     _priced(monkeypatch, need_mib = 9582, compute_s = 0.3, tokens = 5070, h2d = 2.0)
     host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
@@ -887,8 +874,6 @@ class ZImageTransformer2DModel(WanTransformer3DModel):
 
 
 def test_streamed_zimage_plan_keeps_the_split_its_replica_could_not_use(monkeypatch):
-    # Z-Image splits guidance only while no group-offload block streams: a streamed one-card plan would leave the
-    # replica idle, so the split stays
     d = _wan5b(monkeypatch, cls = ZImageTransformer2DModel)
     assert d.plan.layer_split is not None and d.plan.layer_split.cards == (0, 1)
     recorded = _recorded(d)
@@ -928,13 +913,10 @@ def test_guided_model_that_fits_one_card_reports_the_cfg_replica(monkeypatch):
     assert d.plan is d.one_card and d.plan.offload_policy == dm.OFFLOAD_NONE
     recorded = mg.placement_decision(pipe)
     assert recorded.chosen == "cfg_replica" and "everything resident on cuda:0" in recorded.summary
-    # not armed in the fake (no CUDA card): the live status falls back to the resident one-card plan
     assert _placement(d)["chosen"] == "one_card"
 
 
 def test_guided_model_whose_text_encoder_would_move_runs_the_replica_instead(monkeypatch):
-    # Wan 2.1 1.3B: the 10.6 GiB umt5 encoder would take the second T4 (companion split); a guided render gains a
-    # full forward per step from the replica, far more than streaming the encoder once per prompt costs
     _priced(monkeypatch, need_mib = 2700, compute_s = 1.5, tokens = 32760)
     host = Host([Card(0, T4, 300), Card(1, T4, 300)])
     pipe = _DitPipe(WanTransformer3DModel())
@@ -944,7 +926,6 @@ def test_guided_model_whose_text_encoder_would_move_runs_the_replica_instead(mon
     recorded = mg.placement_decision(pipe)
     assert recorded.chosen == "cfg_replica"
     assert "predicted faster" in {c.kind: c.reason for c in recorded.rejected}["companion_split"]
-    # unguided, the same load keeps today's companion split
     pipe2 = _DitPipe(WanTransformer3DModel())
     mg.note_default_request(pipe2, guided = False, steps = 50)
     d2 = decide(monkeypatch, host, _sizes(dit = 2700, te = 10834, vae = 485), headroom = 3500, pipe = pipe2)

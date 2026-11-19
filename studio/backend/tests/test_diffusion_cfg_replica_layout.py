@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The CFG replica layout's pure parts, CPU only: the mode price, the per-card fit of a replica, the default-request
-shape a backend notes, and the clean fallback when a replica runs out of memory mid-render."""
+"""The CFG replica layout's pure parts (price, fit, OOM fallback). CPU only."""
 
 import types
 
@@ -13,25 +12,16 @@ torch = pytest.importorskip("torch")
 from core.inference import diffusion_multigpu as mg  # noqa: E402
 
 
-# (guided, compute s, primary stream s, steps, encoder stream s, replica wins)
 @pytest.mark.parametrize(
     "guided, compute, stream, steps, encoders, wins",
     [
-        # Kaggle 2x T4, Wan 2.2 TI2V-5B 832x480x49: 2.65 s forward, about 1.06 s streamed on the group-offloaded
-        # primary. Measured 3.71 s/step replica vs 5.30 s/step layer split; the price predicts the same pair.
         (True, 2.65, 1.06, 10, 0.0, True),
-        # nothing streamed (the denoiser resident on the primary): one forward per step against two
         (True, 1.0, 0.0, 20, 0.0, True),
-        # the primary streams more per step than a forward computes: two resident forwards are faster
         (True, 0.3, 4.7, 10, 0.0, False),
-        # within the margin: kept on the split
         (True, 1.0, 0.97, 10, 0.0, False),
-        # unguided: a copy idles for one image, the split is never slower
         (False, 2.65, 0.0, 10, 0.0, False),
         (False, 2.65, 1.06, 10, 0.0, False),
-        # a companion split keeps the text encoder resident; streaming it once per prompt is cheap next to steps
         (True, 1.5, 0.0, 50, 1.0, True),
-        # but not on a one-step render
         (True, 0.05, 0.0, 1, 1.0, False),
     ],
 )
@@ -84,7 +74,6 @@ def test_replica_need_adds_only_a_working_set_over_the_reserve(monkeypatch):
     assert mg.replica_working_mib(small) == 1024  # the floor, already inside the 1 GiB reserve
     weights = sum(p.numel() * p.element_size() for p in small.parameters()) >> 20
     assert mg.replica_need_mib(small) == weights
-    # a 600 MiB block (Qwen-Image class): twice the block, the part over the reserve added
     monkeypatch.setattr(mg, "_module_mib", lambda m: 600)
     assert mg.replica_working_mib(small) == 1200
     assert mg.replica_need_mib(small) == weights + 1200 - 1024
@@ -96,7 +85,6 @@ def test_video_default_tokens_follow_the_vae_and_patch():
         vae_scale_factor_temporal = 4,
         transformer = types.SimpleNamespace(config = types.SimpleNamespace(patch_size = (1, 2, 2))),
     )
-    # Wan 2.2 TI2V-5B 832x480x49: the (1, 5070, 24, 128) attention shape of the Kaggle record
     assert mg.video_default_tokens(wan, 832, 480, 49) == 5070
     ltx = types.SimpleNamespace(
         vae_scale_factor_spatial = 32,
@@ -196,7 +184,6 @@ def test_replica_out_of_memory_falls_back_to_one_card_and_says_so():
         fallback_resident = False,
     )
     out = _guided(model)
-    # every branch the replica could not run was recomputed on the source: the render is the one-card render
     torch.testing.assert_close(out, ref, rtol = 0, atol = 0)
     assert router.disabled_reason is not None and "OutOfMemoryError" in router.disabled_reason
     assert router.stats["replica_failures"] == 1
@@ -215,7 +202,6 @@ def test_replica_out_of_memory_falls_back_to_one_card_and_says_so():
     ],
 )
 def test_a_family_whose_guidance_split_is_off_refuses_the_replica(monkeypatch, cls, env, value):
-    # both branches ride one call: with its splitter off the replica would sit idle
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MULTIGPU_ALL", "1")
     denoiser = type(cls, (torch.nn.Module,), {})()
     assert mg.replica_layout_refusal(denoiser) is None

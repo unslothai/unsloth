@@ -935,19 +935,12 @@ def _copy_partner(pipe: Any, selection: Any) -> Optional[int]:
 _STREAM_ESTIMATES: "weakref.WeakKeyDictionary[Any, dict]" = weakref.WeakKeyDictionary()
 
 
-# One card plus a CFG replica instead of a split. When a load's default request is guided (two denoiser branches per
-# step, or one doubled call), the replica runs the second branch on another card at the same time, so a step costs one
-# forward plus whatever the primary streams. A layer split runs both branches one card after the other (its blocks do
-# not overlap), and a companion split runs both on the primary. Kaggle 2x T4, Wan 2.2 TI2V-5B at 832x480x49, 10 steps,
-# 3 runs each: layer split 4.84-5.04 s/step, one group-offloaded card plus the replica 3.84-3.95 s/step (1.29x), the
-# primary's allocated peak the same 10.9 GiB as one card alone. ``0`` restores the split-first order; ``force`` takes
-# the replica layout whenever a copy fits, unpriced.
+# Guided loads: one card plus a CFG replica running the second branch concurrently beats a split, which runs both
+# branches serially (Kaggle 2x T4, Wan 2.2 5B: 3.9 vs 4.9 s/step). ``0`` = split first; ``force`` = replica, unpriced.
 CFG_REPLICA_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_CFG_REPLICA_PLACEMENT"
-# The replica layout must be predicted this much faster than the placement it replaces. The FLOP price under-reads a
-# real forward (T4, Wan 2.2 5B at 5070 tokens: 1.13 s priced, about 2.5 s measured), so the real margin is wider.
+# The FLOP price under-reads a real forward (T4 Wan 5B: 1.13 s priced, 2.5 s measured), so the real margin is wider.
 REPLICA_MIN_GAIN = 1.05
-# The room ``_replica_reserve_mib`` always leaves on the replica card (1 GiB): it also holds a block working set up to
-# that size, so only a larger working set adds to a replica's need.
+# The 1 GiB reserve already holds a block working set up to that size.
 _REPLICA_BASE_RESERVE_MIB = 1024
 
 
@@ -963,9 +956,7 @@ def cfg_replica_placement_mode() -> str:
 
 @dataclasses.dataclass(frozen = True)
 class DefaultRequest:
-    """What the load's default request asks of the denoiser, noted by the backend before placement: ``guided`` = it
-    runs two guidance branches per step (or one doubled call), None = unknown; ``tokens`` = denoiser tokens per
-    branch at the default shape (None: the 1024px image canvas)."""
+    """``guided`` None = unknown; ``tokens`` per branch, None = the 1024px image canvas."""
 
     guided: Optional[bool]
     steps: Optional[int] = None
@@ -1003,8 +994,6 @@ def default_request(pipe: Any) -> Optional[DefaultRequest]:
 
 
 def video_default_tokens(pipe: Any, width: int, height: int, frames: int) -> Optional[int]:
-    """Denoiser tokens per branch of a ``width`` x ``height`` x ``frames`` clip: the VAE's spatial / temporal factors
-    (``pipe.vae_scale_factor_spatial`` / ``_temporal``) and the transformer's patch size. None when any is unknown."""
     try:
         spatial = int(getattr(pipe, "vae_scale_factor_spatial"))
         temporal = int(getattr(pipe, "vae_scale_factor_temporal"))
@@ -1028,9 +1017,7 @@ def video_default_tokens(pipe: Any, width: int, height: int, frames: int) -> Opt
         return None
 
 
-# The replica layout needs the guided step to reach the copy: two calls per step on the same latent (the odd one is
-# routed), or the pipeline's doubled call cut in two (Z-Image's per-sample lists, LTX-2's batch split). These classes
-# never overlap their branches on two cards.
+# These classes never run their guidance branches on two cards.
 REPLICA_LAYOUT_UNSPLITTABLE: dict[str, str] = {
     "HiDreamImageTransformer2DModel": "the pipeline batches both branches inside its llama states (dim 1), which no "
     "cut separates",
@@ -1042,8 +1029,7 @@ REPLICA_LAYOUT_UNSPLITTABLE: dict[str, str] = {
 }
 
 
-# Classes whose guidance split runs only while no denoiser block streams: a streamed one-card plan keeps both branches
-# on the primary, so the replica would sit idle.
+# Guidance split only runs while no denoiser block streams.
 STREAMED_REPLICA_REFUSED = {
     "ZImageTransformer2DModel": "Z-Image splits guidance only while no group-offload block streams, and this one-card "
     "plan streams the denoiser: the replica would sit idle",
@@ -1051,7 +1037,6 @@ STREAMED_REPLICA_REFUSED = {
 
 
 def _plan_streams_denoiser(plan: Any, sizes: Mapping[str, tuple[int, str]]) -> bool:
-    """Whether the one-card ``plan`` streams part of the denoiser under group offload."""
     if getattr(plan, "offload_policy", None) != "group" or not bool(
         getattr(plan, "stream_transformer", True)
     ):
@@ -1061,7 +1046,6 @@ def _plan_streams_denoiser(plan: Any, sizes: Mapping[str, tuple[int, str]]) -> b
 
 
 def replica_layout_refusal(denoiser: Any) -> Optional[str]:
-    """Why a guided step of ``denoiser``'s class cannot run its branches on two cards, else None."""
     name = type(denoiser).__name__
     if name in REPLICA_LAYOUT_UNSPLITTABLE:
         return REPLICA_LAYOUT_UNSPLITTABLE[name]
@@ -1099,12 +1083,11 @@ def _module_mib(module: Any) -> int:
 
 
 def replica_working_mib(module: Any) -> int:
-    """One forward's working set on the replica card, priced like a layer split's block-only card (measured 0.6 GiB
-    klein-4B, 1.2 GiB FLUX.2-dev at 1024px on B200): twice the largest block, at least 1 GiB."""
+    """Twice the largest block, at least 1 GiB (measured 0.6 GiB klein-4B, 1.2 GiB FLUX.2-dev at 1024px)."""
     from .diffusion_layer_split_plan import _WORKING_SET_BLOCKS, _WORKING_SET_MIN_MIB
 
     try:
-        # the class's own block names, read without the regional compile's discovery (which patches some classes)
+        # not the regional compile's discovery, which patches some classes
         names = set(
             getattr(module, "_repeated_blocks", None)
             or getattr(module, "_no_split_modules", None)
@@ -1119,8 +1102,7 @@ def replica_working_mib(module: Any) -> int:
 
 
 def replica_need_mib(module: Any) -> int:
-    """MiB a CFG replica of ``module`` takes beyond :func:`_replica_reserve_mib`: its weights plus the part of its
-    working set the reserve's 1 GiB does not hold (only blocks over 512 MiB add any)."""
+    """MiB beyond :func:`_replica_reserve_mib`: weights plus working set over the reserve."""
     weights = sum(
         t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
     ) // (1 << 20)
@@ -1128,7 +1110,6 @@ def replica_need_mib(module: Any) -> int:
 
 
 def replica_fits(free_mib: Optional[int], total_mib: Optional[int], need_mib: int) -> bool:
-    """A replica of ``need_mib`` (:func:`replica_need_mib`) fits a card with ``free_mib`` free. Unknown free: no."""
     if free_mib is None:
         return False
     return int(need_mib) + _replica_reserve_mib(free_mib, total_mib) <= int(free_mib)
@@ -1142,13 +1123,8 @@ def price_replica_layout(
     steps: int,
     encoder_stream_s: float = 0.0,
 ) -> tuple[float, float]:
-    """(one card plus a CFG replica, the alternative) predicted seconds per render. Pure.
-
-    Replica layout step: the primary's branch (one forward plus what its one-card plan streams per step) beside the
-    replica's resident branch, so ``compute + primary stream``, guided or not (unguided, the copy idles for one image).
-    Alternative step (layer split or companion split, every block resident): ``branches x compute``.
-    ``encoder_stream_s``: per render, what the replica layout streams that the alternative holds resident (the text
-    encoders a companion split keeps on the second card)."""
+    """(replica layout, alternative) seconds per render: steps x ``compute + primary stream`` vs steps x
+    ``branches x compute``; ``encoder_stream_s`` = encoders the alternative keeps resident, streamed once per render."""
     branches = 2 if guided else 1
     replica = int(steps) * (float(compute_s) + float(primary_stream_s)) + float(encoder_stream_s)
     alternative = int(steps) * branches * float(compute_s)
@@ -1164,7 +1140,6 @@ def choose_replica_layout(
     encoder_stream_s: float = 0.0,
     min_gain: float = REPLICA_MIN_GAIN,
 ) -> tuple[bool, float, float]:
-    """(take the replica layout, its predicted render s, the alternative's) from :func:`price_replica_layout`."""
     replica, alternative = price_replica_layout(
         guided = guided,
         compute_s = compute_s,
@@ -1204,9 +1179,7 @@ def _replica_card(
     *,
     exclude: Sequence[int] = (),
 ) -> tuple[Optional[int], str]:
-    """The secondary :func:`install_cfg_parallel` would lend a replica of ``need_mib``, by the same rule: Automatic an
-    idle card of the primary's model (:func:`automatic_partner`), an explicit pick any same-model secondary (any under
-    ``force``) where the replica fits. (ordinal or None, why)."""
+    """(ordinal or None, why): the secondary :func:`install_cfg_parallel` would pick, by the same rule."""
     probes = probe_devices((selection.primary, *selection.secondaries))
     primary = probes.get(int(selection.primary))
     cards = [
@@ -1255,17 +1228,11 @@ def replica_layout(
     alternative: str,
     moved: Sequence[str] = (),
 ) -> tuple[Optional[str], Optional[str]]:
-    """Whether this load runs one card (its one-card ``plan``) plus a CFG replica instead of ``alternative``
-    (``layer_split`` / ``companion_split``, or ``one_card`` for a plan that keeps everything resident).
-
-    Returns (why the replica layout wins, None), (None, why it lost) when it was considered, or (None, None) when it
-    does not apply (the old order runs). Priced from this card's measured host-to-device bandwidth and GEMM rate in
-    the denoiser's dtype (:func:`price_replica_layout`); an unpriced load keeps the old order."""
+    """(why the replica wins, None), (None, why it lost), or (None, None) when it does not apply or is unpriced."""
     mode = cfg_replica_placement_mode()
     if mode == "off" or cfg_parallel_mode() == "off" or selection is None:
         return None, None
     if multigpu_mode() == "force" and mode != "force":
-        # UNSLOTH_DIFFUSION_MULTIGPU=force asked for a split even where one card holds the model: keep it
         return None, None
     if selection.automatic and cfg_parallel_mode() != "force" and automatic_cfg_parallel_off():
         return None, None
@@ -1513,8 +1480,6 @@ def refine_plan_for_multigpu(
         rejected.append(_one_card_rejection(plan, primary))
 
     def replica_instead(alternative: str, moved: Sequence[str] = ()) -> bool:
-        """Record and log the replica layout when it beats ``alternative`` (the caller then keeps the one-card plan);
-        else note why it lost."""
         replica, why = replica_layout(
             pipe, plan, sizes, selection, alternative = alternative, moved = moved
         )
@@ -2192,7 +2157,6 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     except TypeError:
         priced = None
     if priced is not None:
-        # the replica-vs-split price behind the decision (s per render, measured bandwidth and GEMM rate)
         out["mode_estimate"] = dict(priced)
     from .diffusion_layer_split import layer_split_stats
 
@@ -2242,7 +2206,6 @@ def _live_decision(
     elif decision.chosen == "layer_split" and not (layer or {}).get("cards"):
         failed = f"the layer split did not engage ({(layer or {}).get('declined') or 'placement failed'})"
     elif decision.chosen == "cfg_replica" and cfg_declined is not None:
-        # the replica the placement counted on is not running: the load is its one-card plan, and says so
         failed = f"the CFG replica fell back to one card: {cfg_declined}"
         cfg_declined = None
     if failed is not None:
@@ -2557,9 +2520,7 @@ def _copy_module(module: Any, device: Any) -> Any:
             for hook in (getattr(sub, attr, None) or {}).values():
                 if _is_offload_object(hook):
                     memo[id(hook)] = _DROP
-        # Per-step precision state (the NVFP4 W4A16 protect schedule, the ModelOpt FP8 step policy) is advanced by the
-        # source's scheduler: the copy must read the same object, or the two CFG branches of one step run different
-        # GEMMs.
+        # shared, or the two CFG branches of one step run different GEMMs
         for value in _shared_state_values(sub):
             memo[id(value)] = value
     guard = module.__dict__.get("_unsloth_compile_guard")
@@ -2598,7 +2559,6 @@ def _copy_module(module: Any, device: Any) -> Any:
     except Exception:  # noqa: BLE001 - the replica keeps the stock projections
         pass
     try:
-        # FLUX.3's merged Q / K / V buffer, rebuilt from the replica's own weights on its card
         f3_qkv_rebuild(module, replica)
     except Exception:  # noqa: BLE001 - the replica runs three GEMMs
         pass
@@ -2635,8 +2595,7 @@ def _copy_module(module: Any, device: Any) -> Any:
     return replica
 
 
-# Per-step precision state the source's own step loop advances: the NVFP4 W4A16 protect schedule, and ModelOpt FP8's
-# W8A16 / W8A8 step policy (advanced through the source's ``cache_context``, which the replica never enters).
+# Per-step precision state only the source's step loop advances (the replica never enters ``cache_context``).
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController", "StepPolicy"})
 # Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
 # forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
