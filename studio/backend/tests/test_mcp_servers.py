@@ -2564,7 +2564,7 @@ def test_message_matches_send_ranked_schemas_and_keep_ran_tools_callable(
     # The listing and the matches share one preload share: no room left, no schemas sent.
     monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 110 / searching)
     listing, sent, accepted = _thread_turn(tools_mod, searching, chat)
-    assert listing == second and sent == [] and accepted == [best, ran]
+    assert listing == second and sent == [] and accepted == [ran]
 
 
 def test_mcp_listing_keeps_its_order_when_a_listed_tool_runs(tmp_path, monkeypatch, searching):
@@ -2661,6 +2661,10 @@ def test_mcp_listing_refits_the_held_tools_to_a_smaller_window(tmp_path, monkeyp
     real_cost = tools_mod._text_token_cost
 
     def cost(text, ctx):
+        if text.startswith("["):
+            return sum(
+                cost(json.dumps(item, separators = (",", ":")), ctx) for item in json.loads(text)
+            )
         if '"name":"mcp_tool_search"' in text:
             return 0
         return 40 if text.startswith("{") else real_cost(text, ctx)
@@ -2798,12 +2802,40 @@ def test_a_sent_match_stays_callable_after_an_unmatched_reply(tmp_path, monkeypa
     ]
     _, sent, matched = _thread_turn(tools_mod, searching, chat)
     assert sent and move in matched
-    chat += [
+    reply = [
         {"role": "assistant", "content": "Under Archive or Archive/2025?"},
         {"role": "user", "content": "yes"},
     ]
-    listing, sent, names = _thread_turn(tools_mod, searching, chat)
-    assert listing == first and sent == [] and move in names
+    listing, sent_now, names = _thread_turn(tools_mod, searching, [*chat, *sent, *reply])
+    assert listing == first and sent_now == [] and move in names
+    # Callable because the replayed search gave the model its schema, not because it once ranked.
+    assert move not in _thread_turn(tools_mod, searching, [*chat, *reply])[2]
+
+
+def test_topic_matches_do_not_crowd_out_a_tool_the_thread_ran(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    catalog = [_PING, _big_mcp_tool()]
+    catalog += [{"name": f"tool-{i}", "description": f"Tool number {i}."} for i in range(10)]
+    _cache_server_tools(tmp_path, monkeypatch, catalog)
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    topics = {"a": range(0, 5), "b": range(5, 10)}
+
+    def ranked(specs, query):
+        return [names.index(f"mcp__srv1__tool-{i}") for i in topics.get(query, ())], 0
+
+    monkeypatch.setattr(tools_mod, "_mcp_ranked", ranked)
+    ping = "mcp__srv1__ping"
+    chat = [{"role": "user", "content": "hello"}]
+    _thread_listing(tools_mod, searching, chat)
+    tools_mod.mcp_record_loaded_tools("thread-1", [ping])
+    for topic in ("a", "b"):
+        chat += [{"role": "assistant", "content": "Done."}, {"role": "user", "content": topic}]
+        _, sent, _ = _thread_turn(tools_mod, searching, chat)
+        assert sent
+        chat += sent
+    chat += [{"role": "assistant", "content": "Done."}, {"role": "user", "content": "ping again"}]
+    assert ping in _thread_turn(tools_mod, searching, chat)[2]
 
 
 def test_a_resumed_reply_keeps_the_matched_and_ran_tools_callable(tmp_path, monkeypatch, searching):

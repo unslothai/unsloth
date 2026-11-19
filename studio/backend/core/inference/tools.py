@@ -13868,10 +13868,10 @@ _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
 # A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
 _MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
-# (account, thread) -> MCP tools the thread ran while they were deferred, or was sent as matches, oldest first.
+# (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
-# (account, thread) -> (the window it was sized for, the MCP tools the thread lists, in order).
-_MCP_HELD_THREADS: "OrderedDict[tuple, tuple[int, list[str]]]" = OrderedDict()
+# (account, thread) -> the MCP tools the thread lists, in order.
+_MCP_HELD_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -14091,7 +14091,7 @@ def _mcp_loaded_names() -> list[str]:
 
 
 def mcp_record_loaded_tools(thread_id, names) -> None:
-    """Remember tools a thread ran or was sent, so its next turns can call them."""
+    """Remember tools a thread ran, so its next turns list them up front."""
     if not isinstance(thread_id, str) or not thread_id or not names:
         return
     key = (current_account_id(), thread_id)
@@ -14102,23 +14102,22 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
-def _mcp_held(by_name: dict, ctx: int) -> list[str] | None:
-    """None before the thread's first listing at this window; a reload re-sizes the search tool anyway."""
+def _mcp_held(by_name: dict) -> list[str] | None:
     key = _mcp_thread_key()
     if key is None:
         return None
     with _MCP_LOADED_LOCK:
-        held_ctx, listed = _MCP_HELD_THREADS.get(key, (None, None))
-    return None if held_ctx != ctx else [n for n in listed if n in by_name]
+        listed = _MCP_HELD_THREADS.get(key)
+    return None if listed is None else [n for n in listed if n in by_name]
 
 
-def _mcp_hold(listed: list[str], ctx: int) -> None:
+def _mcp_hold(listed: list[str]) -> None:
     key = _mcp_thread_key()
     if key is None or not _MCP_LISTING_REMEMBER.get():
         return
     with _MCP_LOADED_LOCK:
         _MCP_HELD_THREADS.pop(key, None)
-        _MCP_HELD_THREADS[key] = (ctx, listed)
+        _MCP_HELD_THREADS[key] = listed
         while len(_MCP_HELD_THREADS) > _MCP_LOADED_THREADS_MAX:
             _MCP_HELD_THREADS.popitem(last = False)
 
@@ -14197,7 +14196,7 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
     if os.environ.get("UNSLOTH_STUDIO_MCP_SEARCH_ONLY") == "1":
         return listing
-    held = _mcp_held(by_name, ctx)
+    held = _mcp_held(by_name)
     if held is None:
         wanted = list(dict.fromkeys(_mcp_ran(by_name) + _mcp_best(specs)))
         names = [spec["function"]["name"] for spec in _mcp_fill(listing, wanted, by_name, ctx)[1:]]
@@ -14207,12 +14206,12 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         held_cost = _text_token_cost(
             json.dumps(listing[:1] + [by_name[name] for name in names], separators = (",", ":")), ctx
         )
-        # Past the share (a refreshed schema grew, or pins piled up): the block changes anyway, so re-fit it.
+        # Past the share (a smaller window, a grown schema, piled-up pins): the block changes anyway, so re-fit.
         if held_cost > ctx * _MCP_TOOL_PRELOAD_SHARE:
             names = [
                 spec["function"]["name"] for spec in _mcp_fill(listing, held, by_name, ctx)[1:]
             ]
-    _mcp_hold(names, ctx)
+    _mcp_hold(names)
     _mcp_note_matches(specs, by_name, listing[0], names, ctx)
     return listing[:1] + [by_name[name] for name in names]
 
@@ -14234,12 +14233,14 @@ def _mcp_note_matches(
 
 def mcp_match_exchange(messages: list[dict], tools) -> dict | None:
     """The latest message's matches as a mcp_tool_search exchange after it, like the forced knowledge-base
-    search; ``names`` is what the loop accepts beyond the listing: the matches and the tools the thread ran."""
+    search; ``names`` is what the loop accepts beyond the listing: the matches, the tools the thread ran,
+    and every tool an earlier search in ``messages`` gave the model the schema of."""
     tool_names = {(t.get("function") or {}).get("name") for t in tools or [] if isinstance(t, dict)}
-    box = _MCP_LISTING_MATCHES.get() or {}
-    if MCP_TOOL_SEARCH_NAME not in tool_names or not messages:
+    box = _MCP_LISTING_MATCHES.get()
+    if MCP_TOOL_SEARCH_NAME not in tool_names or not messages or not box:
         return None
-    matches, names = box.get("matches") or [], list(box.get("names") or [])
+    matches = box.get("matches") or []
+    names = list(dict.fromkeys([*(box.get("names") or []), *_mcp_searched_names(messages)]))
     if not names:
         return None
     exchange = {"events": [], "messages": []}
@@ -14253,12 +14254,30 @@ def mcp_match_exchange(messages: list[dict], tools) -> dict | None:
             text = _mcp_search_result(matches),
             sources = None,
         )
-        # Callable on later turns too: a "yes" after a clarifying question ranks nothing.
-        if _MCP_LISTING_REMEMBER.get():
-            mcp_record_loaded_tools(
-                _MCP_LISTING_THREAD.get(), [spec["function"]["name"] for spec in matches]
-            )
     return {**exchange, "names": names}
+
+
+def _mcp_searched_names(messages: list[dict]) -> list[str]:
+    from core.inference.tool_loop_controller import _mcp_tool_search_specs  # noqa: PLC0415 -- import cycle
+    search_ids = {
+        call.get("id")
+        for message in messages
+        if isinstance(message, dict)
+        for call in message.get("tool_calls") or []
+        if isinstance(call, dict)
+        and (call.get("function") or {}).get("name") == MCP_TOOL_SEARCH_NAME
+    }
+    return [
+        spec["function"]["name"]
+        for message in messages
+        if isinstance(message, dict)
+        and message.get("role") == "tool"
+        and isinstance(message.get("content"), str)
+        and (
+            message.get("name") == MCP_TOOL_SEARCH_NAME or message.get("tool_call_id") in search_ids
+        )
+        for spec in _mcp_tool_search_specs(message["content"])
+    ]
 
 
 def _runs_local_mcp(server: dict) -> bool:
