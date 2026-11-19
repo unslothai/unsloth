@@ -54,6 +54,8 @@ def test_packed_lengths_reach_device_without_a_device_read():
 
 
 def test_carry_leaves_other_moves_alone():
+    # Installed here, not inherited from the test above: xdist can run this one first or alone.
+    packing._install_host_lengths_carry()
     src = {"packed_seq_lengths": torch.tensor([2, 3], dtype = torch.int32)}
     same = dict(src)
     packing._carry_host_lengths(src, same)
