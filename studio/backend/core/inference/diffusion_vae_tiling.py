@@ -113,7 +113,9 @@ DECODE_MIB_PER_LATENT_BY_CLASS = {
 }
 DECODE_MIB_PER_LATENT_BY_RATIO = {8: (0.27, 0.18), 16: (1.7, 0.43), 32: (1.3, 1.3)}
 # Strip decode 16-bit peak = slope MiB per latent + four strip buffers; bounds measured tiles 48-256 (L4, A100, T4).
-DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS = {"AutoencoderKLFlux2": 0.048}
+# AutoencoderKL (FLUX.1 / SDXL decoders, same largest pass per latent as FLUX.2's): 929 / 3233 MiB at 128 / 256
+# latents (G4, L4); a decoder with a larger largest pass per latent scales the slope (diffusion_vae_strips).
+DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS = {"AutoencoderKLFlux2": 0.048, "AutoencoderKL": 0.048}
 DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
 FREE_FRACTION = 0.75
@@ -366,6 +368,14 @@ def _strips(vae: Any) -> bool:
         return False
 
 
+def _strips_slope(vae: Any) -> float:
+    """The class's strip slope, scaled up for a decoder whose largest pass per latent exceeds the measured one's."""
+    from .diffusion_vae_strips import _REF_PASS_ELEMS_PER_LATENT, largest_pass_elems
+
+    slope = DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__]
+    return slope * max(1.0, largest_pass_elems(vae.decoder, 1, 1) / _REF_PASS_ELEMS_PER_LATENT)
+
+
 def strips_decode_mib(vae: Any, z: Any, height: int, width: int) -> Optional[float]:
     """16-bit peak MiB of the strip decode of a (height, width) latent tile, or None when that decode would not take
     the strip path (not engaged, fp32, or a tile small enough that its largest pass fits in one strip)."""
@@ -377,7 +387,7 @@ def strips_decode_mib(vae: Any, z: Any, height: int, width: int) -> Optional[flo
         strip = strip_elems(z.device)
         if largest_pass_elems(vae.decoder, height, width) < 2 * strip:
             return None
-        slope = DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__]
+        slope = _strips_slope(vae)
         return slope * int(height) * int(width) + 4 * strip * 2 / 2**20
     except Exception:  # noqa: BLE001
         return None
@@ -391,7 +401,7 @@ def _strips_tile_area(vae: Any, z: Any, budget_mib: float) -> Optional[int]:
         from .diffusion_vae_strips import strip_elems
 
         const = 4 * strip_elems(z.device) * 2 / 2**20
-        area = int((budget_mib - const) / DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__])
+        area = int((budget_mib - const) / _strips_slope(vae))
         side = int(area**0.5)
         return area if area > 0 and strips_decode_mib(vae, z, side, side) is not None else None
     except Exception:  # noqa: BLE001
@@ -695,6 +705,75 @@ def _log_stock_fallback(vae: Any, reason: str) -> None:
         logger.warning(msg, type(vae).__name__, reason)
 
 
+def _log_full_map_once(vae: Any, engaged: bool, reason: str) -> None:
+    logger = vae.__dict__.get("_unsloth_wide_logger")
+    seen = vae.__dict__.setdefault("_unsloth_full_map_logged", set())
+    if logger is None or engaged in seen:
+        return
+    seen.add(engaged)
+    if engaged:
+        logger.info(
+            "diffusion.vae_tiling: %s decodes the whole map (GroupNorm over the full image): %s",
+            type(vae).__name__,
+            reason,
+        )
+    else:
+        logger.warning(
+            "diffusion.vae_tiling: %s decodes in tiles (per-tile colour shift possible): %s",
+            type(vae).__name__,
+            reason,
+        )
+
+
+def full_map_decode(
+    vae: Any,
+    z: Any,
+    return_dict: bool = True,
+) -> Any:
+    """Whole-map decode of a VAE ``strips.full_map_ok`` reproduces, when its peak fits ``FREE_FRACTION`` of free
+    memory (per-tile GroupNorm stats shift colour); None to tile."""
+    try:
+        import torch
+
+        from . import diffusion_vae_strips as strips
+
+        if torch.compiler.is_compiling() or z.dim() != 4 or not strips.full_map_ok(vae):
+            return None
+        if (os.environ.get(MAX_TILE_ENV) or "").strip():
+            _log_full_map_once(vae, False, f"{MAX_TILE_ENV} is set")
+            return None
+        free = _free_mib(vae, z)
+        if free is None:
+            free = _host_free_mib(vae, z)
+        need = strips.full_map_decode_mib(vae, z)
+        if free is None:
+            _log_full_map_once(vae, False, "no free-memory reading on this device")
+            return None
+        if need > FREE_FRACTION * free[0]:
+            _log_full_map_once(
+                vae,
+                False,
+                f"its peak ~{need:.0f} MiB exceeds {FREE_FRACTION:.0%} of the {free[0]:.0f} MiB free",
+            )
+            return None
+    except Exception:  # noqa: BLE001 - unknown figures: the tiles
+        return None
+    try:
+        dec = strips.full_map_decode(vae, z)
+    except Exception as exc:  # noqa: BLE001 - the tiles are the fallback
+        _clear_partial(vae, z)
+        _log_full_map_once(vae, False, f"the whole-map decode failed ({type(exc).__name__}: {exc})")
+        return None
+    _log_full_map_once(
+        vae, True, f"peak ~{need:.0f} MiB fits {FREE_FRACTION:.0%} of the {free[0]:.0f} MiB free"
+    )
+    if not return_dict:
+        return (dec,)
+    from diffusers.models.autoencoders.vae import DecoderOutput
+
+    return DecoderOutput(sample = dec)
+
+
 def install(vae: Any, logger: Any = None) -> bool:
     """Route ``vae``'s tiled decode / encode through the wide tiles where stock falls under the floor. Idempotent;
     False when not covered. ``_unsloth_decode_tile_side`` carries the real decode tile side for the memory estimates."""
@@ -718,6 +797,9 @@ def install(vae: Any, logger: Any = None) -> bool:
         z: Any,
         return_dict: bool = True,
     ) -> Any:
+        full = full_map_decode(self, z, return_dict)
+        if full is not None:
+            return full
         if wide_tiles_disabled() or stock_layout_ok(geometry, z.shape[-2], z.shape[-1]):
             return _stock(z, return_dict)
         # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles. Before
@@ -798,6 +880,7 @@ def uninstall(vae: Any) -> None:
         "_unsloth_wide_weights",
         "_unsloth_wide_logger",
         "_unsloth_wide_fallback_logged",
+        "_unsloth_full_map_logged",
         "_unsloth_wide_stock_tile",
     ):
         vae.__dict__.pop(name, None)

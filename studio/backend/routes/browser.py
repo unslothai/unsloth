@@ -35,6 +35,14 @@ from core.inference.tools import (
 )
 from core.inference.web_access_policy import normalize_domain
 from loggers import get_logger
+from utils.account_context import current_account
+from routes.browser_cookies import (
+    clear_cookies,
+    cookie_header,
+    set_page_cookie,
+    site_cookie_state,
+    store_cookies,
+)
 from routes.browser_network import BROWSER_NETWORK_JS
 
 # same embedders as the canvas shell.
@@ -196,7 +204,7 @@ _PAGE_STORAGE_JS = r"""
         const kept = (key, value) => key.length + value.length <= 131072;
         // Numbered so the panel's echo of an older write can't undo a newer one still on its way.
         let writes = 0;
-        const sync = (area, key, value) => {
+        const sync = (area, key, value, sameSite) => {
           const seq = ++writes;
           const store = pageStores[area];
           if (key === null) {
@@ -206,6 +214,7 @@ _PAGE_STORAGE_JS = r"""
           post({
             type: "storage", area, key, url: pageUrl, seq,
             value: key !== null && value !== null && kept(key, value) ? value : null,
+            ...(sameSite && { sameSite }),
           });
         };
         const pageStores = {};
@@ -217,9 +226,9 @@ _PAGE_STORAGE_JS = r"""
             acked: new Map(),
             clearedAt: 0,
             clearAcked: 0,
-            set: (key, value) => {
+            set: (key, value, sameSite) => {
               data.set(key, value);
-              sync(area, key, value);
+              sync(area, key, value, sameSite);
             },
             // Always sent: another tab may have written the key since this page loaded.
             remove: (key) => {
@@ -251,6 +260,7 @@ _PAGE_STORAGE_JS = r"""
           else if (data.command === "storageSync" && (data.area === "local" || data.area === "cookie") && text(data.key) && text(data.value)) {
             const store = pageStores[data.area];
             if (!store) return;
+            if (data.area === "cookie" && data.value !== null) { cfg.siteCookies = true; cfg.cookieWrites++; }
             // This page's write or clear of the key is still on its way: its own echo settles the key.
             const pending = (key) =>
               store.clearedAt > store.clearAcked || (key !== null && (store.latest.get(key) ?? 0) > (store.acked.get(key) ?? 0));
@@ -338,7 +348,7 @@ _PAGE_STORAGE_JS = r"""
           const name = at < 0 ? "" : pair.slice(0, at).trim();
           const value = (at < 0 ? pair : pair.slice(at + 1)).trim();
           if ((!name && !value) || name.length + value.length > 4096) return;
-          let maxAge = null, expires = null, path = null, domain = "";
+          let maxAge = null, expires = null, path = null, domain = "", sameSite = null, secure = false;
           for (const attribute of attributes) {
             const eq = attribute.indexOf("=");
             const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
@@ -347,7 +357,11 @@ _PAGE_STORAGE_JS = r"""
             else if (key === "expires") expires = Date.parse(setting);
             else if (key === "path" && setting.startsWith("/")) path = setting;
             else if (key === "domain") domain = setting.replace(/^\./, "").toLowerCase();
+            else if (key === "secure") secure = true;
+            else if (key === "samesite") sameSite = ["strict", "lax", "none"].includes(setting.toLowerCase()) ? setting.toLowerCase() : null;
           }
+          // A browser ignores SameSite=None without Secure, and Secure from an http page (rfc6265bis 5.7).
+          if (sameSite === "none" && (!secure || !/^https:/i.test(pageUrl))) return;
           if (domain) {
             let host = "";
             try { host = new URL(pageUrl).hostname; } catch {}
@@ -357,7 +371,11 @@ _PAGE_STORAGE_JS = r"""
           const id = name + "=" + (path ?? defaultPath(pagePath()));
           const deadline = maxAge !== null ? Date.now() + maxAge * 1000 : expires !== null && !Number.isNaN(expires) ? expires : null;
           if (deadline !== null && deadline <= Date.now()) cookies.remove(id);
-          else cookies.set(id, (deadline ?? "") + "|" + value);
+          else {
+            cookies.set(id, (deadline ?? "") + "|" + value, sameSite);
+            cfg.siteCookies = true;
+            cfg.cookieWrites++;
+          }
         };
         const liveCookies = () => {
           const path = pagePath();
@@ -1154,7 +1172,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null, scroll: data.scroll || null };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, siteCookies: data.siteCookies === true, cookieWrites: 0, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null, scroll: data.scroll || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
@@ -1614,6 +1632,10 @@ class BrowserFetchRequest(BaseModel):
     # favicon callers can lower the 50 MB fetch cap.
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
     error_page: bool = False
+    # The page a tab navigation came from; None for a typed address.
+    initiator: Optional[str] = Field(default = None, max_length = 8192)
+    # "omit" for a page's subresources (favicons): no cookies sent or kept.
+    credentials: Literal["include", "omit"] = "include"
 
 
 _BOMS = (
@@ -2012,10 +2034,48 @@ def _inline_module_scripts(
     return "".join(parts)
 
 
+def _site(url: str) -> Optional[str]:
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or not host:
+        return None
+    # With the scheme: the http form of a host is another site to its https one.
+    return f"{parsed.scheme}://{host.rstrip('.').lower()}"
+
+
 def _fetch(
-    request: BrowserFetchRequest, cancel_event: threading.Event
+    request: BrowserFetchRequest,
+    cancel_event: threading.Event,
+    subject: Optional[str] = None,
 ) -> tuple[Optional[str], bytes, str, dict]:
     meta: dict = {}
+    jar = None if request.credentials == "omit" else subject
+    site = None if request.initiator is None else (_site(request.initiator) or "")
+    at = {"url": request.url, "method": request.method, "cross": False}
+
+    def mark_cross() -> None:
+        # Same host = same site (no public suffix list); once cross-site, stays so (tainted origin).
+        at["cross"] = at["cross"] or (site is not None and site != _site(at["url"]))
+
+    def host_headers(host: str) -> dict:
+        headers = dict(_studio_headers(host))
+        if jar is not None:
+            cookies = cookie_header(jar, at["url"], cross_site = at["cross"], method = at["method"])
+            if cookies:
+                headers["Cookie"] = cookies
+        return headers
+
+    def on_redirect(url: str, method: str, _has_body: bool, headers) -> None:
+        if jar is not None:
+            store_cookies(jar, at["url"], headers)
+        at["url"], at["method"] = url, method
+        mark_cross()
+
+    mark_cross()
+
     error, body, content_type = _fetch_url_raw(
         request.url,
         timeout = _FETCH_TIMEOUT_S,
@@ -2029,10 +2089,17 @@ def _fetch(
         post_data = (request.body or "").encode() if request.method == "POST" else None,
         meta_out = meta,
         cancel_event = cancel_event,
-        host_headers = _studio_headers,
+        host_headers = host_headers,
         error_page = request.error_page,
+        on_redirect = on_redirect,
         proxy_hostname = True,
     )
+    if jar is not None:
+        final_url = meta.get("url") or at["url"]
+        store_cookies(jar, final_url, meta.get("headers"))
+        meta["cookies_version"], meta["cookies"], meta["site_cookies"] = site_cookie_state(
+            jar, final_url
+        )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
 
@@ -2093,6 +2160,10 @@ def _build_response(
             "ownBase": own_base is not None,
             # Its site answers any origin, the sandbox's too: the page's requests to it stay native.
             "anyOrigin": (meta.get("allow_origin") or "").strip() in ("*", "null"),
+            "cookies": meta.get("cookies") or [],
+            "cookiesVersion": meta.get("cookies_version"),
+            # HttpOnly ones count: the page's requests go through the backend to carry them.
+            "siteCookies": meta.get("site_cookies") is True,
             "refresh": refresh,
             "html": page,
         }
@@ -2145,6 +2216,7 @@ class BrowserPageRequest(BaseModel):
     redirect: Literal["follow", "error", "manual"] = "follow"
     # Fetch's integrity metadata; a body that doesn't match is a network error.
     integrity: str = Field(default = "", max_length = 4096)
+    credentials: Literal["omit", "same-origin", "include"] = "same-origin"
 
 
 def _origin(url: str) -> Optional[tuple[str, str, int]]:
@@ -2198,7 +2270,11 @@ def _allowed_header(name: str, value: str) -> bool:
     )
 
 
-def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) -> dict:
+def _page_request(
+    request: BrowserPageRequest,
+    cancel_event: threading.Event,
+    subject: Optional[str] = None,
+) -> dict:
     """The page's request, made as its browser would make a same-origin one; every status is the page's."""
     origin = _origin(request.page)
     if origin is None or _origin(request.url) != origin:
@@ -2248,6 +2324,7 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
     # CORS-safelisted headers go on (Range, never Authorization), since the rest would need a preflight
     # this can't make; and the request is a CORS one carrying Origin: the page's, or "null" once a hop
     # went from one other origin to another (Fetch's redirect-taint).
+    jar = None if request.credentials == "omit" else subject
     hops = {
         "same_origin": True,
         "stopped": False,
@@ -2255,12 +2332,17 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         "origin": serialized_origin,
         "rewritten": False,
         "redirected": False,
+        "url": request.url,
     }
 
     def allowed(allow_origin: Optional[str]) -> bool:
         return (allow_origin or "").strip() in ("*", hops["origin"])
 
     def on_redirect(url: str, hop_method: str, has_body: bool, headers) -> Optional[str]:
+        # Fetch's same-origin mode: cookies go to, and are kept from, the page's origin only.
+        if jar is not None and hops["same_origin"]:
+            store_cookies(jar, hops["url"], headers)
+        hops["url"] = url
         if request.redirect != "follow":
             hops["stopped"] = True
             return "Redirected, and the request asked not to follow."
@@ -2303,7 +2385,19 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
             }
             # The default referrer policy sends another site only the page's origin.
             own_headers["Referer"] = serialized_origin + "/"
+        elif jar is not None:
+            cookies = cookie_header(jar, hops["url"])
+            if cookies:
+                own_headers = {**own_headers, "Cookie": cookies}
         return {**_studio_headers(current_host), **own_headers}
+
+    def with_cookie_state(answer: dict) -> dict:
+        # Opaque redirects too: the one a sign-in stops at may have set the session.
+        if subject is not None:
+            answer["cookiesVersion"], answer["cookies"], answer["siteCookies"] = site_cookie_state(
+                subject, request.page
+            )
+        return answer
 
     meta: dict = {}
     error, raw, _content_type = _fetch_url_raw(
@@ -2321,16 +2415,20 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         on_redirect = on_redirect,
         proxy_hostname = True,
     )
+    if jar is not None and hops["same_origin"]:
+        store_cookies(jar, meta.get("url") or hops["url"], meta.get("headers"))
     # "manual" gets an opaque redirect: no status, headers or body reach the page.
     if hops["stopped"] and request.redirect == "manual":
-        return {
-            "opaqueRedirect": True,
-            "status": 0,
-            "statusText": "",
-            "url": request.url,
-            "headers": [],
-            "body": "",
-        }
+        return with_cookie_state(
+            {
+                "opaqueRedirect": True,
+                "status": 0,
+                "statusText": "",
+                "url": request.url,
+                "headers": [],
+                "body": "",
+            }
+        )
     status = meta.get("status")
     if not isinstance(status, int) or not isinstance(raw, bytes):
         raise HTTPException(status_code = 502, detail = error or "The request failed.")
@@ -2362,7 +2460,7 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
                 for name, value in headers
                 if name.lower() in _CORS_SAFELISTED_RESPONSE_HEADERS or name.lower() in exposed
             ]
-    return {
+    answer = {
         "status": status,
         "statusText": meta.get("reason") or "",
         "url": final_url,
@@ -2371,11 +2469,17 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         # Fetch's response.redirected and type: a chain back to the page's origin stays "cors".
         "redirected": hops["redirected"],
         "cors": not hops["same_origin"],
+        "cookies": [],
     }
+    return with_cookie_state(answer)
 
 
-def _fetch_and_build(request: BrowserFetchRequest, cancel_event: threading.Event) -> Response:
-    error, body, content_type, meta = _fetch(request, cancel_event)
+def _fetch_and_build(
+    request: BrowserFetchRequest,
+    cancel_event: threading.Event,
+    subject: Optional[str] = None,
+) -> Response:
+    error, body, content_type, meta = _fetch(request, cancel_event, subject)
     return _build_response(request.url, error, body, content_type, meta, cancel_event)
 
 
@@ -2420,6 +2524,14 @@ async def _run_in_pool(
         task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
 
 
+def _cookie_jar_key(current_subject: str) -> str:
+    """Cookie jars key on the immutable account_id: a deleted or renamed account's username can be reused."""
+    account = current_account()
+    return (
+        f"account:{account.account_id}" if account.username == current_subject else current_subject
+    )
+
+
 @router.post("/fetch")
 async def browser_fetch(
     request: BrowserFetchRequest,
@@ -2428,7 +2540,13 @@ async def browser_fetch(
 ):
     """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
     request.url = _normalize_url_scheme(request.url.strip())
-    return await _run_in_pool(_FETCH_POOL, _fetch_and_build, request, http_request)
+    jar_key = _cookie_jar_key(current_subject)
+    return await _run_in_pool(
+        _FETCH_POOL,
+        lambda request, cancel: _fetch_and_build(request, cancel, jar_key),
+        request,
+        http_request,
+    )
 
 
 @router.post("/request")
@@ -2438,9 +2556,38 @@ async def browser_page_request(
     current_subject: str = Depends(get_current_subject),
 ):
     """A page's fetch or XHR to its own site, which its opaque-origin sandbox can't make (browser_network.py)."""
+    jar_key = _cookie_jar_key(current_subject)
     return await _run_in_pool(
-        _REQUEST_POOL, _page_request, request, http_request, slots = _PAGE_REQUEST_SLOTS
+        _REQUEST_POOL,
+        lambda request, cancel: _page_request(request, cancel, jar_key),
+        request,
+        http_request,
+        slots = _PAGE_REQUEST_SLOTS,
     )
+
+
+class BrowserPageCookie(BaseModel):
+    page: str = Field(max_length = 8192)
+    key: str = Field(min_length = 2, max_length = 4096)
+    value: Optional[str] = Field(default = None, max_length = 8192)
+    same_site: Optional[str] = Field(default = None, max_length = 16)
+
+
+@router.post("/cookie", status_code = 204)
+async def browser_page_cookie(
+    request: BrowserPageCookie, current_subject: str = Depends(get_current_subject)
+):
+    """A page's ``document.cookie`` write, so the site sees it on the page's next request."""
+    jar_key = _cookie_jar_key(current_subject)
+    set_page_cookie(jar_key, request.page, request.key, request.value, request.same_site)
+    return Response(status_code = 204)
+
+
+@router.post("/clear-cookies", status_code = 204)
+async def browser_clear_cookies(current_subject: str = Depends(get_current_subject)):
+    """Forget the cookies sites set on this account's pages (Clear browsing data)."""
+    clear_cookies(_cookie_jar_key(current_subject))
+    return Response(status_code = 204)
 
 
 @router.get("/print", include_in_schema = False)

@@ -205,6 +205,7 @@ test("a model's defaults do not outrank what it is remembered with", async () =>
       response: response as never,
       modelId,
       presetSource: "builtin-default",
+      presetEditedKeys: [],
       loadedContextLength: response.context_length,
     });
   const memory = { [QWEN]: { temperature: 0.2, maxTokens: 4096 } };

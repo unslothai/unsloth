@@ -304,16 +304,20 @@ def _no_output_capture(layer):
         if hasattr(fn, "__wrapped__") and "make_capture_wrapper" in qual:
             swapped.append((module, fn))
             module.forward = fn.__wrapped__
+    # Live collector, trial entries trimmed after: a hidden (None) one compiled a graph no real call reuses.
     try:
         from transformers.utils.output_capturing import _active_collector
+        collected = _active_collector.get()
     except Exception:
-        _active_collector = None
-    token = _active_collector.set(None) if _active_collector is not None else None
+        collected = None
+    lists = []
+    if isinstance(collected, dict):
+        lists = [(v, len(v)) for v in collected.values() if type(v) is list]
     try:
         yield
     finally:
-        if _active_collector is not None:
-            _active_collector.reset(token)
+        for values, length in lists:
+            del values[length:]
         for module, fn in swapped:
             module.forward = fn
 
@@ -914,6 +918,17 @@ def _mark_batch_dynamic(batch, obj):
 
 
 _DYNAMIC_BATCH = os.environ.get("UNSLOTH_BLOCK_COMPILE_DYNAMIC_BATCH", "1") != "0"
+# Per-document metadata of a packed row: one entry per document (+1 for cu_seqlens).
+_PACKED_LENGTH_KWARGS = ("packed_seq_lengths", "cu_seq_lens_q", "cu_seq_lens_k", "cu_seqlens")
+
+
+def _mark_packed_dynamic(kwargs):
+    # The document count changes from one packed batch to the next: without the mark every block (and
+    # the attention frame after its graph break) recompiled once on the second packed batch.
+    for key in _PACKED_LENGTH_KWARGS:
+        value = kwargs.get(key)
+        if isinstance(value, torch.Tensor) and value.dim() == 1:
+            torch._dynamo.maybe_mark_dynamic(value, 0)
 
 
 # fla's opaque op state: None until a GatedDeltaNet layer ran its self-check, then True / False.
@@ -1342,6 +1357,7 @@ def _gemma4_router_hook():
                 and query.shape[-1] == key.shape[-1] == value.shape[-1]
                 and query.shape[1] % key.shape[1] == 0
                 and _band_kernel_checked(query)
+                and _band_offsets_fit(query, key, value)
             ):
                 # Longer than the window: masked SDPA computes all S x S scores (and repeats the kv
                 # heads); the interval kernel reads only each row's window (O(S * w)).
@@ -1378,6 +1394,16 @@ def _gemma4_router_hook():
 _LONG_BAND_ATTR = "_unsloth_block_long_band"
 _BAND_KERNEL_ENV = "UNSLOTH_BLOCK_SLIDING_KERNEL"
 _LH_MODULE = "unsloth.kernels.large_head_attention"
+
+
+def _band_offsets_fit(query, key, value):
+    lh = sys.modules.get(_LH_MODULE)
+    if lh is None:  # loaded by _band_kernel_checked whenever the kernel can run
+        return True
+    limit = lh._INT32_MAX
+    if max(query.numel(), key.numel(), value.numel()) > limit:
+        return False
+    return max(lh._row_span(query), lh._row_span(key), lh._row_span(value)) <= limit
 
 
 def _band_kernel_attention(query, key, value, window, scaling):
@@ -2070,6 +2096,7 @@ def _wrap(
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
             if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
                 _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
+            _mark_packed_dynamic(kwargs)
             _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
             _settle_mask_flags(self, kwargs)
         bit = 2 if torch.is_grad_enabled() else 1

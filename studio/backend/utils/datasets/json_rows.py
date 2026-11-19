@@ -9,7 +9,7 @@ _CHUNK_ROWS = 10_000
 
 
 def _row_chunks(path):
-    with open(path, encoding = "utf-8") as file:
+    with open(path, encoding = "utf-8-sig") as file:
         head = file.read(1)
         while head.isspace():
             head = file.read(1)

@@ -33,6 +33,7 @@ import {
   notifyModelLifecycle,
   subscribeModelLifecycle,
 } from "@/lib/model-lifecycle-events";
+import { isTranslationHeldSlot } from "@/lib/translation-models";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 import {
   type TransferSample,
@@ -161,6 +162,7 @@ import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   resolveFitMaxSeqLength,
   isReplayedLoadContext,
   unpinnedDefaultRequest,
@@ -722,10 +724,11 @@ export async function syncInferenceStatusToStore(options?: {
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
     const selectionChanged = selectedCheckpoint !== selectedAtStart;
-    // Read a TTS-owned slot as empty so the eviction branch clears the stale chat pick.
+    // Read a TTS-owned or Translate-owned slot as empty so the eviction branch clears the stale chat pick.
     const chatActiveModel =
       statusRes.active_model &&
       !isSpeechOnlyStatus(statusRes) &&
+      !isTranslationHeldSlot(statusRes.active_model, selectedCheckpoint) &&
       !(statusLoading && options?.externalChatSlotLoad);
     if (
       chatActiveModel &&
@@ -2667,6 +2670,7 @@ export function useChatModelRuntime() {
                   response: loadResponse,
                   modelId,
                   presetSource: useChatRuntimeStore.getState().activePresetSource,
+                  presetEditedKeys: useChatRuntimeStore.getState().presetEditedKeys,
                   loadedContextLength: loadedFields.loadedContextLength,
                 }),
                 ...(isGguf
@@ -2881,21 +2885,17 @@ export function useChatModelRuntime() {
             });
             noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             syncModelCapabilities(modelId, loadResponse);
-            const p = resolveQwenThinkingParams(
-              modelId,
-              nextReasoningEnabled,
+            const store = useChatRuntimeStore.getState();
+            const p = recommendedValuesForPick(
+              resolveQwenThinkingParams(modelId, nextReasoningEnabled),
+              store.activePresetSource,
+              store.presetEditedKeys,
             );
-            if (
-              p !== null &&
-              (loadResponse.supports_reasoning ?? false)
-            ) {
-              const store = useChatRuntimeStore.getState();
-              if (store.activePresetSource === "builtin-default") {
-                store.setParams({ ...store.params, ...p }, {
-                  fromModelDefaults: true,
-                  maxTokensCap: loadedContextCap,
-                });
-              }
+            if (p !== null && (loadResponse.supports_reasoning ?? false)) {
+              store.setParams({ ...store.params, ...p }, {
+                fromModelDefaults: true,
+                maxTokensCap: loadedContextCap,
+              });
             }
             await refresh({ signal: abortCtrl.signal });
             postLoadRefresh.needed = Boolean(

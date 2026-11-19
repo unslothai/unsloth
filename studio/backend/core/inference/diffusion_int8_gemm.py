@@ -265,14 +265,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         T,
         stride_gb,
         stride_gt,
-        HAS_BIAS: tl.constexpr,  # bias present
-        XS_FP32: tl.constexpr,  # activation scale is fp32
-        WS_FP32: tl.constexpr,  # weight scale is fp32
-        EVEN_K: tl.constexpr,  # K divisible by BLOCK_K
-        BLOCK_M: tl.constexpr,  # block size along M (rows)
-        BLOCK_N: tl.constexpr,  # block size along N (out features)
-        BLOCK_K: tl.constexpr,  # block size along K (in features)
-        GROUP_M: tl.constexpr,  # M tiles per swizzle group
+        HAS_BIAS: tl.constexpr,
+        XS_FP32: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        EVEN_K: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        GROUP_M: tl.constexpr,
         PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
         NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear epilogue: fp32 acc * xs * ws (+ bias), one bf16 round
         RES: tl.constexpr = False,  # gated residual: r + bf16(linear out) * g, rows of T tokens per batch
@@ -363,13 +363,13 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         N,
         K,
         stride_cm,
-        HAS_BIAS: tl.constexpr,  # bias present
-        XS_FP32: tl.constexpr,  # activation scale is fp32
-        WS_FP32: tl.constexpr,  # weight scale is fp32
-        BLOCK_M: tl.constexpr,  # block size along M (rows)
-        BLOCK_N: tl.constexpr,  # block size along N (out features)
-        BLOCK_K: tl.constexpr,  # block size along K (in features)
-        GROUP_M: tl.constexpr,  # M tiles per swizzle group
+        HAS_BIAS: tl.constexpr,
+        XS_FP32: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        GROUP_M: tl.constexpr,
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -653,12 +653,16 @@ def _cutlass_tile(
     plan = _CUT_PLAN.get(index)
     if not plan:
         return None
-    entry = plan.get(_cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None))
+    key = _cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None)
+    entry = plan.get(key)
     if not entry:
         return None
     from . import diffusion_int8_cutlass as cut
 
-    tile = entry.get(max(cut._RACE_M) if a.shape[0] >= _CUT_LARGE_M else min(cut._RACE_M))
+    m = int(a.shape[0])
+    if _CUT_ROWS_PENDING.get(index) or cut._LARGE_M <= m < cut._HUGE_M:
+        _note_rows(index, key, m)
+    tile = cut.slot(m, entry)
     if tile is None:
         return None
     import torch
@@ -666,10 +670,65 @@ def _cutlass_tile(
     return tile if cut.eligible(a, w, xs, ws, bias, out_dtype or torch.bfloat16) else None
 
 
+# index -> {shape key: [row buckets of its large calls, first seen first]}; recorded for the next load's plan
+_CUT_ROWS: dict = {}
+_CUT_ROWS_PENDING: dict = {}
+# index -> the race cache key its plan used (hashing the sources per call would cost a file read)
+_CUT_CKEY: dict = {}
+_CUT_ROWS_MAX = 4
+
+
+def _rows_cache_key(ckey: str) -> str:
+    return ckey + "|rows"
+
+
+def _note_rows(index: int, key: tuple, m: int) -> None:
+    """Record a large call's row bucket for the next load's race; writes the cache only outside capture."""
+    from . import diffusion_int8_cutlass as cut
+
+    if cut._LARGE_M <= m < cut._HUGE_M:
+        seen = _CUT_ROWS.setdefault(index, {}).setdefault(key, [])
+        b = cut.row_bucket(m)
+        if b not in seen:
+            seen.append(b)
+            del seen[:-_CUT_ROWS_MAX]
+            _CUT_ROWS_PENDING[index] = True
+    if not _CUT_ROWS_PENDING.get(index):
+        return
+    ckey = _CUT_CKEY.get(index)
+    if not ckey or not cut.row_race_enabled():
+        _CUT_ROWS_PENDING[index] = False
+        return
+    import torch
+
+    try:
+        busy = torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling()
+    except Exception:  # noqa: BLE001 - no CUDA runtime: nothing records a graph
+        busy = False
+    if busy:
+        return
+    _CUT_ROWS_PENDING[index] = False
+    table = _cut_cache_read()
+    rkey = _rows_cache_key(ckey)
+    stored = table.get(rkey) if isinstance(table.get(rkey), dict) else {}
+    changed = False
+    for k_, buckets in (_CUT_ROWS.get(index) or {}).items():
+        old = [int(b) for b in stored.get(repr(k_), []) if isinstance(b, int)]
+        new = [b for b in old if b not in buckets] + list(buckets)
+        new = new[-_CUT_ROWS_MAX:]
+        if new != old:
+            stored[repr(k_)] = new
+            changed = True
+    if changed:
+        table.pop(rkey, None)
+        table[rkey] = stored
+        _cut_cache_write(table)
+
+
 def _cutlass_fused(index: Any, n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> bool:
     from . import diffusion_int8_cutlass as cut
     entry = (_CUT_PLAN.get(index) or {}).get(_cut_key(n, k, xs_dtype, ws_dtype, bias))
-    return bool(entry) and entry.get(max(cut._RACE_M)) is not None
+    return bool(entry) and any(t is not None for t in cut.large_slots(entry))
 
 
 def cutlass_wanted(capability: Optional[tuple]) -> bool:
@@ -715,6 +774,8 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 tv,
                 os.environ.get(INT8_GEMM_TILES_ENV, ""),
                 os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
+                # the timing mode decides the huge-race winners: a plan raced the other way is re-raced
+                f"sustained={cut.sustained_mode()}",
                 h.hexdigest()[:20],
             )
         )
@@ -809,9 +870,13 @@ def _cutlass_plan(
         fam = cut.family(cap)
         act = cut.out_dtype_for(fam)
         ckey = _cut_cache_key(index)
+        if ckey:
+            _CUT_CKEY[index] = ckey
         table = _cut_cache_read() if ckey else {}
         cached = table.get(ckey) if ckey else None
         cached = cached if isinstance(cached, dict) else {}
+        recorded = table.get(_rows_cache_key(ckey)) if ckey else None
+        recorded = recorded if isinstance(recorded, dict) else {}
         dev = torch.device("cuda", index)
         g = torch.Generator(device = "cpu").manual_seed(11)
         seen: dict = {}
@@ -832,17 +897,38 @@ def _cutlass_plan(
             done.add(key)
             skey = repr(key)
             hit = cached.get(skey)
-            if isinstance(hit, dict) and all(
-                (v is None or v in cut.probed_tiles(index)) for v in hit.values()
-            ):
-                plan[key] = {int(m): v for m, v in hit.items()}
+            points = cut.race_points(recorded.get(skey))
+            hit = (
+                {int(m): v for m, v in hit.items()}
+                if isinstance(hit, dict)
+                and all((v is None or v in cut.probed_tiles(index)) for v in hit.values())
+                else {}
+            )
+            # a cache missing a fixed point (older format) races everything again
+            fixed = {min(cut._RACE_M)} | (
+                {cut._RACE_M_HUGE} if cut._RACE_M_HUGE in points else set()
+            )
+            entry = {m: hit[m] for m in points if m in hit} if fixed <= set(hit) else {}
+            if len(entry) == len(points):
+                plan[key] = entry
                 continue
             # random operands: a streamed weight need not be resident
             w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
             wsr = (torch.rand(n, generator = g) * 1e-3 + 1e-5).to(ws.dtype).to(dev)
             br = (torch.randn(n, generator = g) * 0.1).to(act).to(dev) if bias is not None else None
-            entry = {}
-            for m in cut._RACE_M:
+            for m in points:
+                if m in entry:
+                    continue
+                if m == cut._RACE_M_HUGE and not _huge_race_fits(dev, m, n, k):
+                    # no room to time it: today's path at that size, never an untimed 4096-row winner
+                    entry[m] = None
+                    races.setdefault(skey, {})[m] = {
+                        "tile": None,
+                        "us": {},
+                        "m": m,
+                        "skipped": "memory",
+                    }
+                    continue
                 if triton_on:
                     today = lambda a, w_, x_, s_, b_: _launch_or_ref(index, a, w_, x_, s_, b_)  # noqa: E731
                 elif m >= _CUT_LARGE_M:
@@ -857,6 +943,10 @@ def _cutlass_plan(
                     r["tile"] = int(r["tile"]) if r["tile"] is not None else None
                 entry[m] = r["tile"]
                 races.setdefault(skey, {})[m] = r
+                if m == cut._RACE_M_HUGE:
+                    # hand the race's ~1-2 GB of operands / outputs back before the next shape or the first forward
+                    torch.cuda.synchronize(dev)
+                    torch.cuda.empty_cache()
             plan[key] = entry
             cached[skey] = {str(m): v for m, v in entry.items()}
             del w, wsr, br
@@ -876,6 +966,21 @@ def _cutlass_plan(
     _CUT_FAMILY[index] = cut.family(torch.cuda.get_device_capability(index))
     _CUT_RACES[index] = races
     return plan
+
+
+# huge-race free memory, in (operand + output) units: today's output, cached candidate outputs, streaming slack
+_HUGE_RACE_HEADROOM = 4.0
+
+
+def _huge_race_fits(dev: Any, m: int, n: int, k: int) -> bool:
+    import torch
+
+    try:
+        free, _total = torch.cuda.mem_get_info(dev)
+    except Exception:  # noqa: BLE001
+        return False
+    need = m * k + m * n * 2
+    return free >= _HUGE_RACE_HEADROOM * need
 
 
 def _launch_or_ref(index: int, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
@@ -1593,10 +1698,151 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
     return rec
 
 
-def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
-    """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered."""
+def rdna_native_rotated(module: Any) -> bool:
+    """Native int8 Linear on the RDNA W8A8 kernels with ConvRot group 256. Traced: plain attribute reads only."""
+    return (
+        type(module).__name__ == "NativeWeightOnlyLinear"
+        and bool(getattr(module, "act_int8", False))
+        and bool(getattr(module, "_rdna", False))
+        and getattr(module, "rot_group", 0) == 256
+    )
+
+
+def _rdna_shared(x: Any, linears: tuple) -> Optional[list]:
+    """``[m(x) for m in linears]`` for native RDNA W8A8 Linears with one rotation + act quant: each Linear's own
+    forward (``_forward_rdna``) on the same codes, so bit-identical. None when any is not on that path for ``x``."""
     import torch
 
+    if not all(rdna_native_rotated(m) and not _hooked(m) for m in linears):
+        return None
+    d0 = linears[0]
+    k = d0.in_features
+    if x.shape[-1] != k or any(m.in_features != k for m in linears):
+        return None
+    if not all(m._rdna_on(x) for m in linears):
+        return None
+    for m in linears:
+        d = m.__dict__
+        if "_diffusers_hook" in d or "_hf_hook" in d:
+            return None
+    from . import diffusion_native_w8a8_rdna as rdna
+
+    xq, xs = rdna.rotq(x.reshape(-1, k), d0.rot_group)
+    lead = x.shape[:-1]
+    return [
+        rdna.w8a8_mm(
+            xq, xs, m.weight_q, m.weight_scale.view(torch.float32), m.bias, x.dtype
+        ).reshape(*lead, m.out_features)
+        for m in linears
+    ]
+
+
+class _MergedWeight:
+    """Merged rows as a weight for the CUTLASS race; other attributes come from the first part."""
+
+    def __init__(self, qdata: Any, scale: Any, part: Any):
+        self.qdata, self.scale, self._part = qdata, scale, part
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.__dict__["_part"], name)
+
+
+def merge_payloads(linears: tuple, logger: Any = None) -> Optional[tuple]:
+    """Concatenate same-input int8 rows into one buffer and repoint each weight to its slice (one copy; LoRA merges
+    write through). Undone if another holder keeps an old payload. Returns ``(wq, ws, n, path)`` or None. Eager only."""
+    import sys
+
+    import torch
+
+    recs = [_swapped_rec(m) for m in linears]
+    if not linears or any(r is None for r in recs):
+        return None
+    if (
+        len({(r[0], r[1], bool(r[2]), bool(r[4])) for r in recs}) != 1
+        or recs[0][0] != "v2"
+        or not recs[0][2]
+    ):
+        return None
+    if any(getattr(m, "bias", None) is not None for m in linears):
+        return None
+    weights = [r[3] for r in recs]
+    if any(type(w) is not type(weights[0]) for w in weights):
+        return None
+    qd = [getattr(w, "qdata", None) for w in weights]
+    sc = [getattr(w, "scale", None) for w in weights]
+    q0, s0 = qd[0], sc[0]
+    for q, s in zip(qd, sc):
+        if not (torch.is_tensor(q) and torch.is_tensor(s)):
+            return None
+        if (
+            q.dtype != torch.int8
+            or q.dim() != 2
+            or not q.is_contiguous()
+            or q.shape[1] != q0.shape[1]
+            or q.device != q0.device
+        ):
+            return None
+        if (
+            s.dim() == 0
+            or s.shape[0] != q.shape[0]
+            or s.shape[1:] != s0.shape[1:]
+            or s.dtype != s0.dtype
+        ):
+            return None
+        if s.device != q.device or not s.is_contiguous():
+            return None
+    wq, ws = torch.cat(qd, 0), torch.cat(sc, 0)
+    olds = list(zip(qd, sc))
+    del qd, sc, q, s, q0, s0
+    rows = 0
+    for w, (q, s) in zip(weights, olds):
+        n = q.shape[0]
+        w.qdata, w.scale = wq[rows : rows + n], ws[rows : rows + n]
+        rows += n
+    del q, s
+    # each old payload is now held by ``olds`` alone (+ the loop name + getrefcount's argument)
+    if any(sys.getrefcount(t) > 3 for pair in olds for t in pair):
+        for w, (q, s) in zip(weights, olds):
+            w.qdata, w.scale = q, s
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: Q/K/V rows kept apart (another holder keeps their payloads)"
+            )
+        return None
+    del olds
+    fused = bool(recs[0][4])
+    try:
+        index = wq.device.index if wq.is_cuda else None
+        if index is not None and fused and _CUT_PLAN.get(index) is not None:
+            _cutlass_plan(
+                index,
+                [
+                    (
+                        types.SimpleNamespace(bias = None),
+                        ("v2", recs[0][1], ws.reshape(-1), _MergedWeight(wq, ws, weights[0]), True),
+                    )
+                ],
+                device_config(index) is not None,
+                logger,
+            )
+    except Exception as exc:  # noqa: BLE001 - the merged shape runs the Triton path
+        if logger is not None:
+            logger.info("diffusion.int8_gemm: merged Q/K/V shape not raced (%s)", exc)
+    return wq, ws.reshape(-1), len(linears), fused
+
+
+def shared_rotq_linears(
+    x: Any,
+    linears: tuple,
+    merged: Any = None,
+) -> Optional[list]:
+    """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered. ``merged``
+    (``merge_payloads`` of the first ``merged[2]`` Linears): those run as one GEMM, their outputs column views of
+    it, bit for bit what their own GEMMs give (int32 accumulation, per-row x per-column dequant)."""
+    import torch
+
+    if linears and rdna_native_rotated(linears[0]):
+        return _rdna_shared(x, linears)
     if x.dtype != torch.bfloat16 or not x.is_cuda or x.numel() < _MIN_ROWS * x.shape[-1]:
         return None
     recs = [_swapped_rec(m) for m in linears]
@@ -1616,9 +1862,39 @@ def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
     if q is None:
         return None
     xq, xs = q
-    lead = x.shape[:-1]
+    return _shared_gemms(xq, xs, x.shape[:-1], x.device, linears, recs, parts, merged)
+
+
+def _shared_gemms(
+    xq: Any,
+    xs: Any,
+    lead: Any,
+    device: Any,
+    linears: tuple,
+    recs: list,
+    parts: list,
+    merged: Any = None,
+) -> list:
+    """The GEMMs of ``shared_rotq_linears`` on its codes ``xq`` / scales ``xs``."""
     outs = []
-    for m, r, (wq, ws) in zip(linears, recs, parts):
+    first = 0
+    if merged is not None:
+        wq_m, ws_m, n_m, fused_m = merged
+        if (
+            n_m <= len(linears)
+            and wq_m.device == device
+            and all(
+                bool(r[4]) == fused_m and m.bias is None for m, r in zip(linears[:n_m], recs[:n_m])
+            )
+        ):
+            if fused_m:
+                y = _OP_HANDLE(xq, wq_m, xs.reshape(-1), ws_m, None)
+            else:
+                y = stock_gemm(xq, wq_m, xs, ws_m, None)
+            y = y.reshape(*lead, y.shape[-1])
+            outs.extend(y.split([int(wq.shape[0]) for wq, _ in parts[:n_m]], dim = -1))
+            first = n_m
+    for m, r, (wq, ws) in zip(linears[first:], recs[first:], parts[first:]):
         if r[4]:
             y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, m.bias)
         else:
@@ -1704,6 +1980,42 @@ def producer_linear(down: Any, prefix: Any, gate: Any, value: Any) -> Optional[A
     else:
         y = stock_gemm(xq, wq, xs, ws, down.bias)
     return y.reshape(*lead, y.shape[-1])
+
+
+def situ_linear(down: Any, gate: Any, value: Any) -> Optional[Any]:
+    """``down(situ(value, gate))`` for MOSS-Image's SiTU-GLU MLP, with the product, rotation and act quant in one kernel
+    reading the projection's two halves (``[..., F]`` views of one output), else None (caller: stock)."""
+    import torch
+
+    rec = _swapped_rec(down)
+    if rec is None:
+        return None
+    kind, group, rotq, weight, fused = rec
+    f = gate.shape[-1]
+    if (
+        not rotq
+        or group != 256
+        or gate.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or gate.shape != value.shape
+        or f != down.in_features
+        or gate.numel() < _MIN_ROWS * f
+    ):
+        return None
+    wq, ws = _payload(kind, weight)
+    if wq.device != gate.device:
+        return None
+    from .diffusion_convrot_quant import convrot_situ_act_quant
+
+    q = convrot_situ_act_quant(gate.reshape(-1, f), value.reshape(-1, f), group, kind == "v2")
+    if q is None:
+        return None
+    xq, xs = q
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, down.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, down.bias)
+    return y.reshape(*gate.shape[:-1], y.shape[-1])
 
 
 def _plain_silu(act: Any) -> bool:
@@ -2040,6 +2352,60 @@ def _weight_card(module: Any) -> Optional[int]:
     return dev.index if dev is not None and dev.type == "cuda" else None
 
 
+def _gemm_probe_jobs(index: int) -> list:
+    """``device_config``'s cold-card ``_probe`` calls (preferred, fallback and per-shape tiles) as warm-up jobs."""
+    from functools import partial
+
+    import torch
+
+    if index in _DEVICE_CFG or index in _UNLISTED_CARDS:
+        return []
+    if not (_triton_version_ok() and _kernels() is not None):
+        return []
+    cap = torch.cuda.get_device_capability(index)
+    if unlisted_arch(cap):
+        return []
+    want = arch_config(cap)
+    if want is None:
+        return []
+    cfgs: list = []
+    for cfg in (want, _FALLBACK_CONFIG, *(rule[4] for rule in shape_tiles(cap))):
+        if cfg is not None and cfg not in cfgs:
+            cfgs.append(cfg)
+    return [partial(_probe, index, cfg) for cfg in cfgs]
+
+
+def _prewarm_probes(index: int, transformer: Any, rotated: bool, logger: Any) -> int:
+    try:
+        from .diffusion_convrot_quant import (
+            prewarm_probe_kernels,
+            probe_prewarm_enabled,
+            producer_probe_pending,
+            rotq_probes_pending,
+        )
+
+        if not probe_prewarm_enabled():
+            return 0
+        from .diffusion_flux_convrot_fused import producer_probe_expected
+
+        rotq = bool(rotated) and rotq_probes_pending(index)
+        producer = (
+            bool(rotated) and producer_probe_expected(transformer) and producer_probe_pending(index)
+        )
+        extra = tuple(_gemm_probe_jobs(index))
+        if not (extra or rotq or producer):
+            return 0
+        return prewarm_probe_kernels(
+            index, rotq = rotq, producer = producer, extra = extra, logger = logger
+        )
+    except Exception as exc:  # noqa: BLE001 - a warm-up only
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: probe prewarm skipped (%s: %s)", type(exc).__name__, exc
+            )
+        return 0
+
+
 def _swap_on(
     transformer: Any,
     logger: Any,
@@ -2072,9 +2438,10 @@ def _swap_on(
         recs = [(m, r) for m, r in recs if _card_dtypes_ok(m, r, True)]
         if not recs:
             return 0
+    rotated = any(r[1] is not None for _, r in recs)
+    _prewarm_probes(index, transformer, rotated, logger)
     gemm = device_config(index) is not None
     triton_gemm = gemm
-    rotated = any(r[1] is not None for _, r in recs)
     rotq = rotated and rotquant_device_config(index) is not None
     if gemm and rotated and not rotq and index in _UNLISTED_CARDS:
         # unlisted card: rotated Linears only with rotq_h16; else the stock fusions keep them, as on main

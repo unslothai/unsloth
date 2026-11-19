@@ -8,7 +8,11 @@ import type {
   ProviderAuthStatus,
 } from "./api/providers-api";
 import { modelCatalogSupportsVision } from "./model-catalog.ts";
-import { normalizeAutoCompactTokens } from "./utils/auto-compaction.ts";
+import {
+  normalizeAutoCompactTokens,
+  normalizeCompactionMode,
+  type ProviderCompactionMode,
+} from "./utils/auto-compaction.ts";
 import {
   type CustomReasoningConfig,
   normalizeCustomReasoningConfig,
@@ -31,6 +35,7 @@ export interface ExternalProviderConfig {
   maxOutputTokens?: number;
   /** Tokens after which chats on this connection compact; unset uses 75% of the model's window. */
   autoCompactTokens?: number;
+  compactionMode?: ProviderCompactionMode;
   extraHeaders?: Record<string, string>;
 
   hasApiKey?: boolean;
@@ -769,6 +774,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
     autoCompactTokens: normalizeAutoCompactTokens(raw.autoCompactTokens),
+    compactionMode: normalizeCompactionMode(raw.compactionMode),
     extraHeaders: extraHeadersFromSaved(raw.extraHeaders),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false

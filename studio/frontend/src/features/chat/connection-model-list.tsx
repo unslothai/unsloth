@@ -11,6 +11,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
+  isOlderModel,
   modelCatalogVersion,
   resolveModelCatalogEntry,
   subscribeModelCatalog,
@@ -65,11 +66,19 @@ export function modelDetails(
 }
 
 /** Fades the list's top or bottom edge while more rows lie beyond it. */
-function fadeScrollEdges(list: HTMLElement | null) {
+export function fadeScrollEdges(list: HTMLElement | null) {
   if (!list) return;
   const update = () => {
-    const above = list.scrollTop > 1;
-    const below = list.scrollTop + list.clientHeight < list.scrollHeight - 1;
+    // The Older models header pins to either edge and stays crisp: no fade over it.
+    const header = list.querySelector("[data-fold-header]");
+    const box = list.getBoundingClientRect();
+    const at = header?.getBoundingClientRect();
+    const pinnedTop = at !== undefined && at.top - box.top < 1;
+    const pinnedBottom = at !== undefined && box.bottom - at.bottom < 1;
+    header?.toggleAttribute("data-stuck", pinnedTop || pinnedBottom);
+    const above = list.scrollTop > 1 && !pinnedTop;
+    const below =
+      list.scrollTop + list.clientHeight < list.scrollHeight - 1 && !pinnedBottom;
     const mask =
       above || below
         ? `linear-gradient(to bottom, ${above ? "transparent" : "#000"} 0, #000 32px, #000 calc(100% - 32px), ${below ? "transparent" : "#000"} 100%)`
@@ -111,7 +120,7 @@ export function ConnectionModelList({
   selectedIds: string[];
   query: string;
   onQueryChange: (query: string) => void;
-  /** Models released over a year ago; folded away unless ticked, searched for or shown. */
+  /** Unticked models released over a year ago; folded away unless searched for or shown. */
   olderCount: number;
   showOlder: boolean;
   onShowOlderChange: (showOlder: boolean) => void;
@@ -120,7 +129,11 @@ export function ConnectionModelList({
   onClear: () => void;
 }) {
   // Subscribed so the names and facts follow a catalog refresh or a fresh listing.
-  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
+  useSyncExternalStore(
+    subscribeModelCatalog,
+    modelCatalogVersion,
+    modelCatalogVersion,
+  );
   useModelDisplayNamesVersion();
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
   const rows = models.map((model) => ({
@@ -129,6 +142,15 @@ export function ConnectionModelList({
     details: modelDetails(providerType, model),
   }));
   const filtered = query.trim().length > 0;
+  // Ticked models stay in the main list; ones ticked while the fold is open keep their place.
+  const [keptAtOpen, setKeptAtOpen] = useState<ReadonlySet<string>>(selected);
+  const kept = showOlder ? keptAtOpen : selected;
+  const folded = (id: string) =>
+    !filtered && !kept.has(id) && isOlderModel(providerType, id);
+  const recentRows = rows.filter((row) => !folded(row.id));
+  const olderRows = rows.filter((row) => folded(row.id));
+  const foldCount = showOlder ? olderRows.length : olderCount;
+  const grouped = !filtered && foldCount > 0;
   const [card, setCard] = useState<{
     name: string;
     details: [string, string][];
@@ -156,6 +178,33 @@ export function ConnectionModelList({
       top: text.top - 8,
     });
   };
+  const renderRow = (row: (typeof rows)[number]) => (
+    <li key={row.id}>
+      <label
+        htmlFor={`provider-model-${panelKey}-${row.id}`}
+        onPointerEnter={(event) => showCard(row, event.currentTarget)}
+        onPointerLeave={() => setCard(null)}
+        className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-3 py-1.5 transition-colors hover:bg-accent"
+      >
+        <Checkbox
+          id={`provider-model-${panelKey}-${row.id}`}
+          // Solid fill and a firmer edge: the default box vanishes into the row's hover pill.
+          className="border-muted-foreground/60 bg-background dark:bg-background"
+          checked={selected.has(row.id)}
+          onCheckedChange={() => onToggle(row.id)}
+        />
+        <span
+          data-model-name={true}
+          className="min-w-0 break-all text-sm leading-tight"
+        >
+          {row.name}
+          {row.name === row.id ? null : (
+            <span className="ml-2 text-xs text-muted-foreground">{row.id}</span>
+          )}
+        </span>
+      </label>
+    </li>
+  );
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -231,62 +280,47 @@ export function ConnectionModelList({
             "hover-scrollbar flex flex-col gap-0.5 pr-1",
             rows.length > 10 &&
               "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
+            // Rows reached by Tab scroll clear of the pinned header.
+            grouped && "scroll-py-12",
           )}
         >
-          {rows.length === 0 ? (
+          {rows.length === 0 && !grouped ? (
             <li className="px-3 py-2.5 text-xs text-muted-foreground">
               No matching models
             </li>
           ) : (
-            rows.map((row, index) => (
-              <li key={row.id}>
-                <label
-                  htmlFor={`provider-model-${panelKey}-${index}`}
-                  onPointerEnter={(event) => showCard(row, event.currentTarget)}
-                  onPointerLeave={() => setCard(null)}
-                  className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-3 py-1.5 transition-colors hover:bg-accent"
+            <>
+              {recentRows.map(renderRow)}
+              {grouped ? (
+                <li
+                  data-fold-header={true}
+                  className="sticky top-0 bottom-0 z-10 mt-1 border-t border-border/60 bg-background pt-1"
                 >
-                  <Checkbox
-                    id={`provider-model-${panelKey}-${index}`}
-                    // Solid fill and a firmer edge: the default box vanishes into the row's hover pill.
-                    className="border-muted-foreground/60 bg-background dark:bg-background"
-                    checked={selected.has(row.id)}
-                    onCheckedChange={() => onToggle(row.id)}
-                  />
-                  <span
-                    data-model-name={true}
-                    className="min-w-0 break-all text-sm leading-tight"
+                  <button
+                    type="button"
+                    aria-expanded={showOlder}
+                    onClick={() => {
+                      setKeptAtOpen(selected);
+                      onShowOlderChange(!showOlder);
+                    }}
+                    className="flex min-h-9 w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
-                    {row.name}
-                    {row.name === row.id ? null : (
-                      <span className="ml-2 text-xs text-muted-foreground">
-                        {row.id}
-                      </span>
-                    )}
-                  </span>
-                </label>
-              </li>
-            ))
+                    {`Older models · ${foldCount}`}
+                    <HugeiconsIcon
+                      icon={ChevronDownStandardIcon}
+                      className={cn(
+                        "ml-auto size-4 shrink-0 transition-transform",
+                        !showOlder && "-rotate-90",
+                      )}
+                    />
+                  </button>
+                </li>
+              ) : null}
+              {olderRows.map(renderRow)}
+            </>
           )}
         </ul>
       </div>
-      {olderCount > 0 && !filtered ? (
-        <button
-          type="button"
-          aria-expanded={showOlder}
-          onClick={() => onShowOlderChange(!showOlder)}
-          className="flex items-center gap-1 self-start rounded-md py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {`Older models (${olderCount})`}
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            className={cn(
-              "size-3.5 transition-transform",
-              !showOlder && "-rotate-90",
-            )}
-          />
-        </button>
-      ) : null}
       {filtered && rows.length > 0 ? (
         <p className="text-xs text-muted-foreground">
           {`Showing ${models.length} of ${totalCount} models`}

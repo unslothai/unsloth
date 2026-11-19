@@ -11,7 +11,10 @@ producer writes bf16, the kernel reads it back. Here:
     output) straight from the producers' buffers (``rotq_h16x``), so neither the product nor the concat is written.
 Every patch checks its Linears per call and runs the stock code when they are not swapped rotated int8 Linears.
 Kill switch ``UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED=0``; ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_PRODUCER=0`` keeps only the
-shared quants."""
+shared quants. On a resident FLUX.3 denoiser Q / K / V also run as one int8 GEMM over their rows concatenated in one
+buffer (the weights become row slices of it, so memory is unchanged; bit-identical) where torch attention reads them
+(the INT8 attention route keeps three GEMMs);
+``UNSLOTH_DIFFUSION_FLUX3_FUSED_QKV=0`` keeps three GEMMs."""
 
 from __future__ import annotations
 
@@ -27,6 +30,9 @@ from .diffusion_flux3_qk_rope import is_qk_processor, qk_norm_rope
 
 FLUX_CONVROT_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED"
 FLUX3_SPAN_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX3_SPAN_FUSED"
+FLUX3_FUSED_QKV_ENV = "UNSLOTH_DIFFUSION_FLUX3_FUSED_QKV"
+# Flux3Attention.__dict__: (to_q, to_k, to_v, merge_payloads result) while the three run as one GEMM
+_QKV_ATTR = "_unsloth_f3_fused_qkv"
 _MARK = "__unsloth_flux_convrot_fused__"
 _LOCK = threading.Lock()
 _STOCK: dict = {}  # (owner, attr) -> original
@@ -116,6 +122,80 @@ def span_single_enabled() -> bool:
     )
 
 
+def fused_qkv_disabled() -> bool:
+    return (os.environ.get(FLUX3_FUSED_QKV_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _merged_qkv(attn: Any) -> Any:
+    """Merged Q / K / V rows while the projections are still the merged modules (LoRA / replaced: three GEMMs)."""
+    rec = attn.__dict__.get(_QKV_ATTR)
+    if rec is None:
+        return None
+    q, k, v, merged = rec
+    if attn.to_q is not q or attn.to_k is not k or attn.to_v is not v:
+        return None
+    return merged
+
+
+def _int8_attention_route(attn: Any) -> bool:
+    """INT8 attention route: keeps three GEMMs, column views of the merged output cost +2.3% per step (L4)."""
+    return bool(getattr(getattr(attn, "processor", None), "_unsloth_int8", False))
+
+
+def _shared_qkv(
+    attn: Any,
+    x: Any,
+    extra: tuple = (),
+) -> Optional[list]:
+    linears = (attn.to_q, attn.to_k, attn.to_v) + extra
+    merged = None if _int8_attention_route(attn) else _merged_qkv(attn)
+    if merged is None:
+        return _gemm.shared_rotq_linears(x, linears)
+    return _gemm.shared_rotq_linears(x, linears, merged = merged)
+
+
+def merge_qkv(transformer: Any, logger: Any = None) -> int:
+    """Merge each FLUX.3 attention's Q / K / V into one int8 GEMM; resident denoisers, before compile. Idempotent."""
+    if fused_qkv_disabled() or type(transformer).__name__ != "Flux3Transformer2DModel":
+        return 0
+    attn_cls = _CLS.get("Flux3Attention")
+    if attn_cls is None:
+        return 0
+    from .diffusion_int8_fused import resident_cuda_cards
+
+    if not resident_cuda_cards(transformer):
+        return 0
+    count = 0
+    for m in transformer.modules():
+        if type(m) is not attn_cls or getattr(m, "fused_projections", False):
+            continue
+        if _QKV_ATTR in m.__dict__:
+            count += 1
+            continue
+        parts = (m.to_q, m.to_k, m.to_v)
+        merged = _gemm.merge_payloads(parts, logger)
+        if merged is not None:
+            m.__dict__[_QKV_ATTR] = (*parts, merged)
+            count += 1
+    if logger is not None:
+        logger.info(
+            "diffusion.flux_convrot_fused: Q / K / V as one int8 GEMM on %d FLUX.3 attention modules",
+            count,
+        )
+    return count
+
+
+def fused_qkv_count(transformer: Any) -> int:
+    if transformer is None:
+        return 0
+    return sum(1 for m in transformer.modules() if _QKV_ATTR in m.__dict__)
+
+
 def flux_convrot_fused_disabled() -> bool:
     return (os.environ.get(FLUX_CONVROT_FUSED_ENV) or "").strip().lower() in (
         "0",
@@ -154,7 +234,10 @@ def _has(fn: Any, key: str) -> bool:
 
 
 def _rotated(lin: Any) -> bool:
-    """``lin`` is a swapped rotated int8 Linear whose act quant the fused rotation covers."""
+    """``lin`` is a swapped rotated int8 Linear whose act quant the fused rotation covers, or a native int8 Linear on
+    the ROCm RDNA W8A8 kernels (``shared_rotq_linears`` shares its rotation + act quant)."""
+    if _gemm.rdna_native_rotated(lin):
+        return True
     rec = _gemm._swapped_rec(lin)
     return rec is not None and bool(rec[2]) and rec[1] == 256
 
@@ -242,7 +325,7 @@ def _make_f3_projections(stock: Any) -> Any:
     def _get_projections(attn, hidden_states):
         qkv = None
         if _rotated(attn.to_q):
-            qkv = _gemm.shared_rotq_linears(hidden_states, (attn.to_q, attn.to_k, attn.to_v))
+            qkv = _shared_qkv(attn, hidden_states)
         if qkv is None:
             return stock(attn, hidden_states)
         _count("shared")
@@ -349,7 +432,7 @@ def _f3_attn_ff(block: Any, x: Any, image_rotary_emb: Any, mod: Any) -> Optional
     if not _f3_block_ready(block):
         return None
     attn, ff = block.attn, block.ff
-    parts = _gemm.shared_rotq_linears(x, (attn.to_q, attn.to_k, attn.to_v, ff.linear_in))
+    parts = _shared_qkv(attn, x, (ff.linear_in,))
     if parts is None:
         return None
     _count("block")
@@ -566,12 +649,13 @@ def _rotated_count(transformer: Any) -> int:
 
 
 def _rotated_linears(transformer: Any) -> int:
-    """ConvRot (group 256) Linears in the denoiser, swapped yet or not."""
+    """ConvRot (group 256) Linears, swapped or not, plus native RDNA W8A8 int8 Linears."""
     from .diffusion_convrot import is_rotated_linear
     return sum(
         1
         for m in transformer.modules()
-        if is_rotated_linear(m) and int(getattr(m, "convrot_groupsize", 0) or 0) == 256
+        if (is_rotated_linear(m) and int(getattr(m, "convrot_groupsize", 0) or 0) == 256)
+        or _gemm.rdna_native_rotated(m)
     )
 
 
@@ -581,6 +665,11 @@ def _arm_cards(transformer: Any, logger: Any = None) -> list:
     from .diffusion_int8_fused import resident_cuda_cards
 
     cards = [index for index in resident_cuda_cards(transformer) or () if _arm_producer(index)]
+    try:
+        merge_qkv(transformer, logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only: three GEMMs stay
+        if logger is not None:
+            logger.info("diffusion.flux_convrot_fused: Q / K / V kept as three GEMMs (%s)", exc)
     if logger is not None:
         logger.info(
             "diffusion.flux_convrot_fused: %d swapped rotated int8 Linears; producer-fused rotation on cards %s",
@@ -588,6 +677,14 @@ def _arm_cards(transformer: Any, logger: Any = None) -> list:
             cards,
         )
     return cards
+
+
+def producer_probe_expected(transformer: Any) -> bool:
+    """``install`` will arm (and probe) ``rotq_h16x`` for this denoiser."""
+    return not flux_convrot_fused_disabled() and type(transformer).__name__ in (
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+    )
 
 
 def install(transformer: Any, logger: Any = None) -> dict:
@@ -605,6 +702,17 @@ def install(transformer: Any, logger: Any = None) -> dict:
         if not result["rotated"]:
             return result
         result["patches"] = _install_patches(logger)
+        native = sum(1 for m in transformer.modules() if _gemm.rdna_native_rotated(m))
+        if native:
+            result["rdna_native"] = native
+            if logger is not None:
+                logger.info(
+                    "diffusion.flux_convrot_fused: %d native int8 Linears on the ROCm RDNA W8A8 kernels share one "
+                    "rotation + act quant per block",
+                    native,
+                )
+        if native == result["rotated"]:
+            return result
         from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
         if resident_cuda_cards(transformer) and _rotated_count(transformer):

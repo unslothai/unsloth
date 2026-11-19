@@ -2176,6 +2176,19 @@ def _shares_storage(out, *tensors):
         return True
 
 
+from . import dequant_cache as _dequant_cache
+
+
+def _dequantize_lora_weight(W, W_quant, rows, use_global_buffer, dtype):
+    if _is_exl3_quant_state(W_quant):
+        return _dequantize_for_lora(
+            W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype
+        )
+    return _dequant_cache.dequantize(
+        W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype, rows = rows
+    )
+
+
 def matmul_lora(
     X,
     W,
@@ -2258,15 +2271,25 @@ def matmul_lora(
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             if W_quant is not None:
-                W = _dequantize_for_lora(
-                    W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype
+                W = _dequantize_lora_weight(
+                    W, W_quant, X.shape[0], use_global_buffer, dtype
                 )
             out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
+        elif (
+            W_quant is not None
+            and _HAS_LORA_FIRST_OP
+            and type(s) in (int, float)
+            and _is_dynamo_compiling()
+            and not _exporting()
+            and _dequant_cache.traced_route(W, W_quant)
+        ):
+            # The traced op below, with the base weight from the dequant cache (or decoded) inside the op.
+            out = _dequant_cache.nf4_lora_first(X, W, W_quant, XA, B, s)
         else:
             # Unquantized, fast_dequantize returns W as is (FP8 never takes this branch).
             if W_quant is not None:
-                W = _dequantize_for_lora(
-                    W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype
+                W = _dequantize_lora_weight(
+                    W, W_quant, X.shape[0], use_global_buffer, dtype
                 )
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
@@ -2283,8 +2306,12 @@ def matmul_lora(
                 out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
                 out = torch.addmm(out, X, W.t())
         A = None
+    elif out is None and _dequant_cache.traced_route(W, W_quant):
+        out = _dequant_cache.nf4_matmul(X, W, W_quant)
     else:
-        W = _dequantize_for_lora(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+        W = _dequantize_lora_weight(
+            W, W_quant, X.shape[0], use_global_buffer, dtype
+        )
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W

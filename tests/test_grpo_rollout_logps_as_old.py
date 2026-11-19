@@ -67,7 +67,7 @@ def test_generation_skips_the_old_forward_and_marks_the_batch():
     ast.parse(textwrap.dedent(patched))
     decision = patched.index("_unsloth_rollout_old = _unsloth_grpo_rollout_logps_as_old(")
     skip = re.search(
-        r"\n([ \t]*)if _unsloth_rollout_old:\n\1    old_per_token_logps = None\n"
+        r"\n([ \t]*)if _unsloth_rollout_old(?: or _unsloth_old_from_new)?:\n\1    old_per_token_logps = None\n"
         r"\1elif self\.args\.gradient_accumulation_steps % generate_every != 0",
         patched,
     )

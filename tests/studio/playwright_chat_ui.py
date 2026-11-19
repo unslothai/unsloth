@@ -1418,6 +1418,18 @@ with sync_playwright() as p:
     if picker_btn.count() == 0:
         soft_fail("model picker button not found")
     else:
+        # Open only once the selector names the loaded model: opened before the reload's residency check
+        # lands, the picker shows its search, then collapses under the typing and fill() times out.
+        try:
+            wait_until(
+                lambda: "select model" not in (picker_btn.inner_text() or "select model").lower(),
+                timeout_s = 30,
+                what = "the model selector to name the loaded model",
+                interval_s = 0.25,
+                page = page,
+            )
+        except TimeoutError as exc:
+            info(f"WARN {exc}")
         picker_btn.click()
         # The model loaded above opens the picker collapsed to its own row.
         if expand_collapsed_model_picker(page):

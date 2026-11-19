@@ -180,6 +180,28 @@ def _select(**payload_kwargs) -> list[dict]:
     return asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
 
 
+def test_documented_bash_alias_selects_the_canonical_terminal_tool():
+    from models.inference import AnthropicMessagesRequest
+    from routes.inference import _select_anthropic_server_tools
+
+    messages = [{"role": "user", "content": "hi"}]
+    chat = ChatCompletionRequest(
+        model = "m", messages = messages, enable_tools = True, enabled_tools = ["bash", "python"]
+    )
+    assert chat.enabled_tools == ["terminal", "python"]
+    selected = asyncio.run(_select_request_tools(chat, tools_on = True, mcp_allowed = False))
+    assert [t["function"]["name"] for t in selected] == ["python", "terminal"]
+
+    anthropic = AnthropicMessagesRequest(
+        model = "m", max_tokens = 8, messages = messages, enabled_tools = ["bash"]
+    )
+    picked = _select_anthropic_server_tools(ALL_TOOLS, set(), anthropic.enabled_tools)
+    assert [t["function"]["name"] for t in picked] == ["terminal"]
+
+    count = ChatCountTokensRequest(model = "m", messages = messages, enabled_tools = ["bash"])
+    assert count.enabled_tools == ["terminal"]
+
+
 @pytest.mark.parametrize("mode", ["ask", "auto", "off"])
 def test_non_full_modes_keep_the_sandboxed_schemas(mode):
     tools = _select(permission_mode = mode)

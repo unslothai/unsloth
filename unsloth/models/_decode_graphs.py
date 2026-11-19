@@ -82,8 +82,8 @@ MAX_LEN_HINT = 0
 # 1: size the graph KV cache for prompt + max_new_tokens up front (early stops still hold it all).
 PREALLOC = os.environ.get("UNSLOTH_DECODE_GRAPH_PREALLOC", "0") == "1"
 _SUPPORTED_ATTENTION = set()
-# Tested families only (Qwen2 reuses the Llama decode path, biases included).
-_SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen3"}
+# Tested families only (Qwen2 / Mistral reuse the Llama decode path, biases / sliding window included).
+_SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen3", "mistral"}
 _PROJ_NAMES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
 
 
@@ -1253,6 +1253,11 @@ def decode_step(
     # RoPE rows the captured steps may read: the table is sized (and its address fingerprinted)
     # for this many, so a position at or past it runs eagerly (the eager step grows the table).
     rope_len = max(state.rope_len or 0, cap + 1)
+    # LongRoPE reads its long table once a position passes original: capture the short one only.
+    rope_len = min(
+        rope_len,
+        getattr(getattr(attn0, "rotary_emb", None), "original_max_position_embeddings", rope_len),
+    )
     bound = getattr(position_ids, "_unsloth_position_bound", None)
     if bound is None:
         # Caller-supplied positions can exceed the KV length: one host read, as the eager step does.

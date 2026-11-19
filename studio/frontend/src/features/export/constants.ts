@@ -389,3 +389,9 @@ export function adapterCompatibilityTip(
 export function savedLabel(path: string): string {
   return /^([a-zA-Z]:[\\/]|[\\/])/.test(path) ? path : `exports/${path}`;
 }
+
+export type ExportTab = "llm" | "diffusion-lora" | "q4nx";
+
+export function resolveExportTab(tab: ExportTab, hasNpu: boolean): ExportTab {
+  return tab === "q4nx" && !hasNpu ? "llm" : tab;
+}

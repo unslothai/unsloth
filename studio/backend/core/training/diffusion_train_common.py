@@ -68,6 +68,7 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
         "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
         "flux.3-klein-base",
@@ -91,7 +92,11 @@ AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset(
 # silently changes the latent geometry. LTX-2: 32x VAE; Wan2.2-TI2V-5B: 16x VAE x 2x2 patch.
 _VIDEO_RESOLUTION_MULTIPLE = 32
 # Image families whose latent grid is coarser than the generic multiple-of-8 check.
-_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {"qwen-image-2.1": 32, "flux.3-klein-base": 16}
+_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {
+    "qwen-image-2.1": 32,
+    "flux.3-klein-base": 16,
+    "moss-image": 16,
+}
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -433,6 +438,14 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth defaults): rank/alpha 32, lr 3e-4, 512px.
     "krea-2": {"lora_rank": 32, "learning_rate": 3e-4, "resolution": 512},
+    # Published MOSS LoRA recipe: rank 32 / lr 1e-4 at 512, rank 16 at 1024.
+    "moss-image": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     # Upstream FLUX.2 DreamBooth uses rank 16 / lr 1e-4; uniform timestep draws need a warmup ramp.
     "flux.2-klein": {
         "lora_rank": 16,
@@ -528,6 +541,12 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Trains on Krea-2-Raw, runs on Turbo.",
     },
+    "moss-image": {
+        "params": "5B",
+        "qlora_vram_gb": 18,
+        "gated": False,
+        "note": "Trains on SFT or Base; the adapter runs on both.",
+    },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
     # Encoder freed before the DiT loads: nf4 peaks at 6.9 GB, bf16 13.1 GB (768 px, rank 32).
@@ -598,6 +617,7 @@ _DIT_TRAIN_FAMILIES = frozenset(
         "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
         "flux.3-klein-base",
@@ -2337,9 +2357,8 @@ def _publish_to_lora_catalog(
     cfg: DiffusionLoraConfig,
     steps: Optional[int] = None,
 ) -> Optional[str]:
-    """Video families are skipped: loras/diffusion is read only by the Images LoRA picker."""
-    if detect_video_family("", override = cfg.resolved_family) is not None:
-        return None
+    """Mirror into loras/diffusion, which the Images LoRA picker and the Video load's ``loras`` both read; the
+    sidecar's family keeps a video adapter out of every image family's list."""
     try:
         import shutil
 
