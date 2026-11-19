@@ -205,3 +205,19 @@ def test_replica_out_of_memory_falls_back_to_one_card_and_says_so():
     assert decision["rejected"][0]["kind"] == "cfg_replica"
     assert "fell back to one card" in decision["rejected"][0]["reason"]
     assert "OutOfMemoryError" in decision["rejected"][0]["reason"]
+
+
+@pytest.mark.parametrize(
+    "cls, env, value",
+    [
+        ("LTX2VideoTransformer3DModel", "UNSLOTH_DIFFUSION_BATCH_SPLIT", "0"),
+        ("ZImageTransformer2DModel", "UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT", "0"),
+    ],
+)
+def test_a_family_whose_guidance_split_is_off_refuses_the_replica(monkeypatch, cls, env, value):
+    # both branches ride one call: with its splitter off the replica would sit idle
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MULTIGPU_ALL", "1")
+    denoiser = type(cls, (torch.nn.Module,), {})()
+    assert mg.replica_layout_refusal(denoiser) is None
+    monkeypatch.setenv(env, value)
+    assert env in (mg.replica_layout_refusal(denoiser) or "")

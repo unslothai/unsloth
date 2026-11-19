@@ -1067,6 +1067,13 @@ def replica_layout_refusal(denoiser: Any) -> Optional[str]:
         return REPLICA_LAYOUT_UNSPLITTABLE[name]
     if name == "LTX2VideoTransformer3DModel" and not multigpu_all_enabled():
         return f"LTX-2 batches both branches in one call, and its batch split is off ({MULTIGPU_ALL_ENV}=0)"
+    if name == "LTX2VideoTransformer3DModel" and _batch_split_disabled():
+        # one call carries both branches: only the batch split hands half of it to the replica
+        return f"LTX-2 batches both branches in one call, and its batch split is off ({BATCH_SPLIT_ENV}=0)"
+    if name == "ZImageTransformer2DModel":
+        from .diffusion_zimage_cfg_split import ZIMAGE_CFG_SPLIT_ENV, zimage_cfg_split_disabled
+        if zimage_cfg_split_disabled():
+            return f"Z-Image batches both branches in one call, and its guidance split is off ({ZIMAGE_CFG_SPLIT_ENV}=0)"
     if name == "Cosmos3OmniTransformer" and not multigpu_all_enabled():
         return f"Cosmos 3's branches pair only with {MULTIGPU_ALL_ENV} on"
     try:
