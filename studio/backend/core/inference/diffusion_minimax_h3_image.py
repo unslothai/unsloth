@@ -4451,9 +4451,7 @@ TE_PARTIAL_PIN_RENDER_BYTES = 3 << 30
 
 
 def te_later_host_bytes(plan: "H3ImagePlan") -> int:
-    """Host bytes the load and its renders still take after the encoder is placed: the token refiner (and a parked
-    VAE) parked after it, and a parked render's working memory. A split encoder pin leaves them free, so the host
-    reserve still holds while rendering."""
+    """Host bytes still taken after the encoder is placed (parked refiner / VAE, render working memory)."""
     if not plan.parked or plan.placement != PLACE_STREAM:
         return 0
     parked = DIT_REFINER_GB + (float(plan.vae_gb) if plan.vae_parked else 0.0)
@@ -4465,9 +4463,7 @@ def te_partial_pin_enabled() -> bool:
 
 
 class SplitListStreamer:
-    """The encoder's streamed layers in two parts: a pinned prefetch streamer for the first ones the host pin budget
-    holds, the pageable ``ModuleListStreamer`` for the rest. Reads as one streamer to the pipeline (roles, stats,
-    pinned bytes, ``remove``)."""
+    """Pinned prefetch streamer for the leading layers, pageable ``ModuleListStreamer`` for the rest, seen as one."""
 
     def __init__(self, pinned: Any, pageable: Any) -> None:
         self.parts = [pinned, pageable]
@@ -4499,9 +4495,7 @@ def partial_pin_count(
     replaced: bool = False,
     slack_bytes: Optional[int] = None,
 ) -> int:
-    """How many leading members (byte ``sizes``) fit the same checks the pinned streamer makes, less ``slack_bytes``:
-    the live host pin budget (which keeps the host reserve free) and, unless pins replace counted host copies, the
-    plan's pin room."""
+    """Leading members that fit the pinned streamer's own checks (host pin budget, plan pin room) less ``slack_bytes``."""
     if budget_bytes is None:
         return 0
     if slack_bytes is None:
@@ -4528,10 +4522,8 @@ def _split_text_encoder_streamer(
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
 ) -> Optional[SplitListStreamer]:
-    """Where the whole encoder does not fit the pin budget (an 8 GB card's parked pieces on a ~54 GB host): pin the
-    leading layers that do and stream the rest pageable. A pageable layer is read from the checkpoint's mapping on
-    every prompt, which the page cache does not hold beside the pinned DiT (Colab L4: 23 GB of disk reads and about
-    70 s per new prompt with no encoder layer pinned). None where no layer, or every layer, fits."""
+    """Pin the leading encoder layers the budget holds, stream the rest; None when none or all fit.
+    Pageable layers re-read the checkpoint every prompt (L4 8 GB: 23 GB disk, ~70 s with none pinned)."""
     from .diffusion_memory import _pin_budget_mib, _storage_nbytes
     from .diffusion_offload_prefetch import pin_replaces_host_enabled, stream_module_list
 
