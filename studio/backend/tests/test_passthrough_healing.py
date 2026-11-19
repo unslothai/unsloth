@@ -19,6 +19,7 @@ from core.inference.passthrough_healing import (  # noqa: E402
     StreamToolCallHealer,
     heal_gate,
     heal_openai_message,
+    llama_server_native_format,
     nudge_enabled,
     nudge_messages,
     native_tool_format,
@@ -1739,6 +1740,11 @@ _MINIMAX = (
     '<minimax:tool_call><invoke name="Bash"><parameter name="command">ls</parameter></invoke>'
     "</minimax:tool_call>"
 )
+_M3_NS = "]<]minimax[>["
+_MINIMAX_M3 = (
+    f'{_M3_NS}<tool_call>\n{_M3_NS}<invoke name="Bash">{_M3_NS}<command>ls{_M3_NS}</command>'
+    f"{_M3_NS}</invoke>\n{_M3_NS}</tool_call>"
+)
 _SEED = f"<seed:tool_call>\n{_XML_BASH}\n</seed:tool_call>"
 _DEEPSEEK = (
     '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>Bash<｜tool▁sep｜>{"command": "ls"}'
@@ -1748,6 +1754,7 @@ _DEEPSEEK = (
 _NATIVE = {
     "glm": ("<arg_key>", _GLM),
     "minimax": ("<minimax:tool_call>", _MINIMAX),
+    "minimax_m3": (_M3_NS, _MINIMAX_M3),
     "kimi": ("<|tool_calls_section_begin|>", _KIMI),
     "deepseek": ("<｜tool▁calls▁begin｜>", _DEEPSEEK),
     "seed": ("<seed:tool_call>", _SEED),
@@ -1949,6 +1956,117 @@ class TestNativeToolFormats:
         events = [e for i in range(0, len(text), 4096) for e in healer.feed(text[i : i + 4096])]
         assert _events_text(events + healer.finalize()) == text
         assert heal_openai_message({"content": text}, {"Bash", "Write"}, native = native)
+
+
+def _m3(tag, value):
+    return f"{_M3_NS}<{tag}>{value}{_M3_NS}</{tag}>"
+
+
+def _m3_block(*invokes):
+    body = "".join(
+        f'{_M3_NS}<invoke name="{name}">{args}{_M3_NS}</invoke>\n' for name, args in invokes
+    )
+    return f"{_M3_NS}<tool_call>\n{body}{_M3_NS}</tool_call>"
+
+
+_M3_EDIT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "edit",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "edits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"oldText": {"type": "string"}, "newText": {"type": "string"}},
+                    },
+                },
+                "replaceAll": {"type": "boolean"},
+                "count": {"type": "integer"},
+            },
+            "required": ["path", "edits"],
+        },
+    },
+}
+
+
+class TestMinimaxM3:
+    """MiniMax-M3 namespaces every tag and expands object and array arguments into elements (#18481)."""
+
+    def _heal(self, text, tools = (_M3_EDIT_TOOL,)):
+        allowed = tuple(t["function"]["name"] for t in tools)
+        return _heal_native("minimax_m3", text, allowed, list(tools))
+
+    def test_nested_arguments_in_any_order_are_typed_by_the_schema(self):
+        item = _m3("item", _m3("newText", "- reload the session\n") + _m3("oldText", "a <b>"))
+        args = _m3("count", "2") + _m3("edits", item) + _m3("replaceAll", "false")
+        args += _m3("path", "README.md")
+        calls, relayed = self._heal("Editing.\n" + _m3_block(("edit", args)))
+        assert calls == [
+            (
+                "edit",
+                {
+                    "count": 2,
+                    "edits": [{"newText": "- reload the session\n", "oldText": "a <b>"}],
+                    "replaceAll": False,
+                    "path": "README.md",
+                },
+            )
+        ]
+        assert relayed == "Editing.\n"
+
+    def test_a_text_value_keeps_its_markup_like_text(self):
+        value = f"see {_M3_NS} and <b>{_M3_NS}<i> here\n"
+        args = _m3("path", "a.md") + _m3("edits", _m3("item", _m3("newText", value)))
+        calls, _relayed = self._heal(_m3_block(("edit", args)))
+        assert calls == [("edit", {"path": "a.md", "edits": [{"newText": value}]})]
+
+    def test_the_issue_tail_is_promoted_as_one_call(self):
+        # The tail the reporter saw relayed raw: a text value, then the call's and block's closers.
+        args = _m3("path", "notes.md") + _m3("oldText", "x")
+        args += _m3("newText", f"{_M3_NS} reload the session to pick up the new MCP server\n")
+        tools = [_client_tool("edit", {k: {"type": "string"} for k in ("path", "oldText", "newText")})]
+        calls, relayed = self._heal(_m3_block(("edit", args)), tools)
+        assert [name for name, _args in calls] == ["edit"] and relayed == ""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Cut inside a value, an unknown tag shape, a repeated argument, text after the calls.
+            _MINIMAX_M3.replace(f"ls{_M3_NS}</command>", "ls"),
+            _MINIMAX_M3.replace(f"{_M3_NS}<command>", f"{_M3_NS}<command x>"),
+            _MINIMAX_M3.replace("</command>", f"</command>{_m3('command', 'pwd')}"),
+            _MINIMAX_M3.replace(f"</invoke>\n{_M3_NS}</tool_call>", "</invoke>\nand more"),
+            _MINIMAX_M3.replace("</invoke>\n", "</invoke>\nmore\n"),
+            _MINIMAX_M3.replace('name="Bash"', 'name="Read"'),
+        ],
+    )
+    def test_a_block_it_cannot_read_whole_stays_text(self, text):
+        calls, relayed = _heal_native("minimax_m3", text, ("Bash",))
+        assert calls == [] and relayed == text
+
+    def test_the_llama_server_healer_reads_m3_only(self):
+        class Backend:
+            chat_template_override = None
+            chat_template = "{{ ns }}" + _NATIVE["minimax_m3"][0]
+
+        assert llama_server_native_format(Backend()).open == f"{_M3_NS}<tool_call>"
+        Backend.chat_template_override = "{# a mapped template #}"
+        assert llama_server_native_format(Backend()).open == f"{_M3_NS}<tool_call>"
+        for marker, _block in _NATIVE.values():
+            Backend.chat_template = marker
+            if marker != _M3_NS:
+                assert llama_server_native_format(Backend()) is None
+        assert llama_server_native_format(object()) is None
+
+    def test_the_generic_healer_relays_the_block_raw(self):
+        # What llama-server passthrough did before: the block's <tool_call> holds it, then it leaks.
+        healer = StreamToolCallHealer({"Bash"})
+        events = healer.feed(_MINIMAX_M3) + healer.finalize()
+        assert _events_calls(events) == [] and _events_text(events) == _MINIMAX_M3
 
 
 def _client_tool(name, properties):

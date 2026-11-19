@@ -3765,6 +3765,7 @@ from core.inference.passthrough_healing import (
     heal_gate,
     heal_openai_message,
     heal_openai_message_events,
+    llama_server_native_format,
     native_tool_format,
     nudge_enabled,
     nudge_messages,
@@ -43346,7 +43347,13 @@ async def _responses_stream(
             ),
             connection = upstream is not None,
             healer = (
-                StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
+                StreamToolCallHealer(
+                    _allowed_tools,
+                    body.get("tools"),
+                    native = None if upstream is not None else llama_server_native_format(llama_backend),
+                )
+                if _allowed_tools
+                else None
             ),
         )
         _sse = translator.sse
@@ -48384,6 +48391,7 @@ async def _anthropic_passthrough_stream(
                 _allowed_tools,
                 _healing_tools,
                 disable_parallel_tool_use = disable_parallel_tool_use,
+                native = llama_server_native_format(llama_backend),
             )
         # Outside the teardown try: a disconnect here would strand the tracker; __exit__ is idempotent.
         try:
@@ -48602,6 +48610,7 @@ def _anthropic_message_from_openai_completion(
     disable_parallel_tool_use: bool,
     response_format,
     parse_think: bool,
+    native = None,
 ):
     """A non-streaming OpenAI chat completion -> the Anthropic Messages JSON response."""
     choice = (data.get("choices") or [{}])[0]
@@ -48611,7 +48620,11 @@ def _anthropic_message_from_openai_completion(
     healing_active = bool(allowed_tools)
     healed_events = (
         heal_openai_message_events(
-            message, allowed_tools, openai_tools, allow_incomplete = finish_reason != "length"
+            message,
+            allowed_tools,
+            openai_tools,
+            allow_incomplete = finish_reason != "length",
+            native = native,
         )
         if healing_active
         else None
@@ -48829,6 +48842,7 @@ async def _anthropic_passthrough_non_streaming(
             disable_parallel_tool_use = disable_parallel_tool_use,
             response_format = response_format,
             parse_think = parse_think,
+            native = llama_server_native_format(llama_backend),
         )
 
 
@@ -49792,7 +49806,13 @@ async def _openai_passthrough_stream_admitted(
             last_chunk_model = model_name
             last_chunk_created = int(time.time())
             healer = (
-                StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
+                StreamToolCallHealer(
+                    _allowed_tools,
+                    body.get("tools"),
+                    native = llama_server_native_format(llama_backend),
+                )
+                if _allowed_tools
+                else None
             )
             healed_call_index = 0
 
@@ -50565,6 +50585,7 @@ async def _openai_passthrough_non_streaming_upstream(
             _allowed_tools,
             body.get("tools"),
             allow_incomplete = choice.get("finish_reason") != "length",
+            native = llama_server_native_format(llama_backend),
         ):
             if choice.get("finish_reason") == "stop":
                 choice["finish_reason"] = "tool_calls"
