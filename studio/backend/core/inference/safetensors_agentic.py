@@ -664,7 +664,6 @@ def run_safetensors_tool_loop(
     rag_autoinjected = bool(_auto)
     # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
     forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
-    # GGUF parity: the MCP tools ranked for this message arrive as a search the turn ran.
     if (
         mcp_match_exchange
         and mcp_match_exchange.get("messages")

@@ -13856,9 +13856,7 @@ _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# A thread keeps the MCP tools its first request listed: the tool block heads the prompt, so a change there makes
-# llama-server re-read the whole chat. Tools a later message ranks best arrive as a search the turn ran, after the
-# message, and tools the thread ran stay callable.
+# A thread keeps its first MCP listing: the tool block heads the prompt, so changing it re-reads the whole chat.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -13868,8 +13866,7 @@ _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
-# Filled by the listing with the latest message's matches (mcp_match_exchange). A dict set per request,
-# so the listing can fill it from a task or thread that runs in a copy of the request's context.
+# A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
 _MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
@@ -14106,8 +14103,7 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
 
 
 def _mcp_held(by_name: dict, ctx: int) -> list[str] | None:
-    """The thread's listed tools still in the catalog, or None before its first listing at this window: a
-    reload to another window re-sizes the search tool anyway, so the preload is re-fitted with it."""
+    """None before the thread's first listing at this window; a reload re-sizes the search tool anyway."""
     key = _mcp_thread_key()
     if key is None:
         return None
@@ -14128,18 +14124,15 @@ def _mcp_hold(listed: list[str], ctx: int) -> None:
 
 
 def _mcp_ran(by_name: dict) -> list[str]:
-    """The tools the thread ran, newest first."""
     return [name for name in reversed(_mcp_loaded_names()) if name in by_name]
 
 
 def _mcp_best(specs: list[dict]) -> list[str]:
-    """The tools ranked best for the latest message."""
     ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
     return ranked[:_MCP_TOOL_PRELOAD]
 
 
 def _mcp_fill(listing: list[dict], names: list[str], by_name: dict, ctx: int) -> list[dict]:
-    """``listing`` plus each of ``names`` that fits the preload share left after it."""
     chosen = list(listing)
     left = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
         json.dumps(listing, separators = (",", ":")), ctx
@@ -14202,7 +14195,6 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         search = _mcp_tool_search_spec(catalog, max_chars)
     listing = [search]
     listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
-    # Opt-in: only the search tool and the pinned tools, never a preload.
     if os.environ.get("UNSLOTH_STUDIO_MCP_SEARCH_ONLY") == "1":
         return listing
     held = _mcp_held(by_name, ctx)
@@ -14210,7 +14202,7 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         wanted = list(dict.fromkeys(_mcp_ran(by_name) + _mcp_best(specs)))
         names = [spec["function"]["name"] for spec in _mcp_fill(listing, wanted, by_name, ctx)[1:]]
     else:
-        # A newly pinned tool goes last and stays, so the block changes once for it, not on every image or forced turn.
+        # A new pin goes last and stays: the block changes once for it, not on every image or forced turn.
         names = list(dict.fromkeys(held + [spec["function"]["name"] for spec in listing[1:]]))
     _mcp_hold(names, ctx)
     _mcp_note_matches(specs, by_name, listing[0], names, ctx)
@@ -14220,9 +14212,6 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
 def _mcp_note_matches(
     specs: list[dict], by_name: dict, search: dict, listed: list[str], ctx: int
 ) -> None:
-    """Record the tools ranked best for this message that the thread's listing leaves out, for the turn to add
-    as a search after the message, and the names a call may use beyond the listing: those plus the tools the
-    thread ran, which stay callable without their schemas being sent again."""
     box = _MCP_LISTING_MATCHES.get()
     if box is None or _mcp_thread_key() is None:
         return
@@ -14234,10 +14223,8 @@ def _mcp_note_matches(
 
 
 def mcp_match_exchange(messages: list[dict], tools) -> dict | None:
-    """The tools this request's listing matched to the latest message, as a mcp_tool_search exchange shaped like
-    the forced knowledge-base search: the schemas reach the model as a tool result after the message, and the UI
-    shows and replays it as a search the turn ran. ``names`` is what the tool loop should accept beyond the
-    listing: the matches and the tools the thread ran."""
+    """The latest message's matches as a mcp_tool_search exchange after it, like the forced knowledge-base
+    search; ``names`` is what the loop accepts beyond the listing: the matches and the tools the thread ran."""
     tool_names = {(t.get("function") or {}).get("name") for t in tools or [] if isinstance(t, dict)}
     box = _MCP_LISTING_MATCHES.get() or {}
     if MCP_TOOL_SEARCH_NAME not in tool_names or not messages or messages[-1].get("role") != "user":

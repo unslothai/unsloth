@@ -5618,7 +5618,6 @@ def test_a_forced_tool_search_is_released_once_discovery_runs(monkeypatch):
 
 @pytest.mark.parametrize("tool_choice, injected", [(None, True), ("none", False)])
 def test_mcp_matches_arrive_as_a_search_after_the_message(tool_choice, injected):
-    """GGUF parity: the tools ranked for a message reach the model as a search the turn ran."""
     from core.inference.tools import build_synthetic_search_exchange
 
     exchange = build_synthetic_search_exchange(

@@ -1267,8 +1267,7 @@ class ToolLoopController:
         }
         self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
         if self._mcp_search:
-            # Matched to this message or run on an earlier turn: callable as if searched, so the
-            # declared tools, and the prompt prefix they head, stay put.
+            # Matched or already-run MCP tools are callable unlisted, so the tool block stays put.
             self._allowed_tool_names.update(
                 name for name in loaded_mcp_tools if _mcp_tool_spec(name) is not None
             )

@@ -38969,8 +38969,7 @@ class LlamaCppBackend:
         _auto_satisfies_forced_choice = bool(_auto) and (
             tool_choice == "required" or forced_tool_name(tool_choice) == "search_knowledge_base"
         )
-        # The MCP tools ranked for this message arrive as a search the turn ran, after the message, so the
-        # declared tools heading the cached prompt stay put. A forced tool keeps its first call.
+        # After the message, so the tool block heading the cached prompt stays put; a forced tool keeps its first call.
         if (
             mcp_match_exchange
             and mcp_match_exchange.get("messages")

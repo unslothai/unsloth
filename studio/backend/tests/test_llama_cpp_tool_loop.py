@@ -7660,8 +7660,6 @@ def _mcp_match_exchange(names = ()):
     ],
 )
 def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choice, injected):
-    """The tools ranked for a message reach the model as a search the turn ran, so the declared tools heading
-    the cached prompt stay put; a forced tool or tool_choice none keeps the turn as asked."""
     stream = [_sse({"content": "done"}), _done()]
     backend, payloads = _backend_and_payloads(monkeypatch, [stream])
     exchange = _mcp_match_exchange()
