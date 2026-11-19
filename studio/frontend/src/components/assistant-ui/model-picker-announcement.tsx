@@ -321,18 +321,38 @@ interface HeroRow {
   detail: string;
 }
 
-// Offline, or before the Hub answers: the shape of Unsloth's trending list.
+// Offline, or before the Hub answers: Trending Now's leaders at the time of writing.
 const FALLBACK_ROWS: readonly HeroRow[] = [
-  { name: "gemma-4-E4B-it-GGUF", logo: GOOGLE_MARK, detail: "8B" },
-  { name: "Qwen3.5-9B-GGUF", logo: "/hub/profile/logo/qwen.png", detail: "9B" },
   {
-    name: "DeepSeek-R1-0528-Qwen3-8B-GGUF",
+    name: "Qwen3.8-27B-GGUF",
+    logo: "/hub/profile/logo/qwen.png",
+    detail: "27B",
+  },
+  { name: "gemma-4-26B-A4B-it-GGUF", logo: GOOGLE_MARK, detail: "26B" },
+  {
+    name: "DeepSeek-V4.1-Flash-1017-GGUF",
     logo: "/hub/profile/logo/deepseek.svg",
-    detail: "8B",
+    detail: "748B",
   },
 ];
 
-/** The top of Model Hub's Trending Now (same feed and cache), keeping rows with a maker mark. */
+// The top trending chat model leads; then the top Google and DeepSeek ones, so one maker never fills the list.
+// Provider-logo ids, each with its offline stand-in.
+const FEATURED_MAKERS = [
+  ["google", 1],
+  ["deepseek-ai", 2],
+] as const;
+const NON_CHAT_TASKS = new Set([
+  "feature-extraction",
+  "sentence-similarity",
+  "text-to-image",
+  "image-to-image",
+  "text-to-video",
+  "text-to-speech",
+  "automatic-speech-recognition",
+]);
+
+/** From Model Hub's Trending Now (same feed and cache). */
 function useTrendingRows(): readonly HeroRow[] {
   const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -344,20 +364,29 @@ function useTrendingRows(): readonly HeroRow[] {
     deviceType,
   });
   return useMemo(() => {
-    const rows = trending.results.flatMap((model): HeroRow[] => {
+    const candidates = trending.results.flatMap((model) => {
       const [owner, repo] = model.id.split("/");
       const mark = resolveOwnerProviderLogo(owner, repo);
-      if (!(mark && repo)) {
+      if (!(mark && repo) || NON_CHAT_TASKS.has(model.pipelineTag ?? "")) {
         return [];
       }
-      return [
-        {
-          name: repo,
-          logo: mark.id === "google" ? GOOGLE_MARK : mark.logoPath,
-          detail: model.totalParams ? formatParamCount(model.totalParams) : "",
-        },
-      ];
+      const row: HeroRow = {
+        name: repo,
+        logo: mark.id === "google" ? GOOGLE_MARK : mark.logoPath,
+        detail: model.totalParams ? formatParamCount(model.totalParams) : "",
+      };
+      return [{ maker: mark.id, row }];
     });
+    const lead = candidates[0];
+    const rows = lead ? [lead.row] : [];
+    for (const [maker, fallback] of FEATURED_MAKERS) {
+      if (lead?.maker !== maker) {
+        rows.push(
+          candidates.find((c) => c.maker === maker)?.row ??
+            FALLBACK_ROWS[fallback],
+        );
+      }
+    }
     return rows.length >= 3 ? rows.slice(0, 3) : FALLBACK_ROWS;
   }, [trending.results]);
 }
