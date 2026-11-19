@@ -7628,6 +7628,85 @@ def fix_inductor_reduction_readback_race():
     )
 
 
+def fix_inductor_triton_wrapper_eager_vals():
+    """torch < 2.13 (checked 2.10 - 2.12): Inductor's decompose_triton_kernel_wrapper_functional traces the clone +
+    kernel decomposition twice (eager-mode and Inductor FakeTensors) and asserts both graphs have the same node
+    count. Under dynamic shapes the symbolic storage-length arithmetic of a mutated input can simplify differently
+    in the two traces, and compiling raises a bare AssertionError (pytorch/pytorch#181735). Unsloth hits it in the
+    GEGLU backward kernel of a block-compiled Gemma2 layer (torch 2.11, CUDA and ROCm). On that assertion, trace
+    once with Inductor's values and give the kernel node the matched node's eager-mode values, as torch >= 2.13
+    does (_propagate_triton_eager_input_vals)."""
+    try:
+        import torch
+        from torch._inductor import pattern_matcher as pm
+    except Exception:
+        return
+    match_cls = getattr(pm, "Match", None)
+    original = getattr(match_cls, "replace_by_example", None)
+    if original is None or getattr(original, "_unsloth_triton_eager_vals", False):
+        return
+    try:
+        source = inspect.getsource(inspect.unwrap(original))
+    except Exception:
+        return
+    # torch >= 2.13 no longer propagates eager values for Triton kernels inside replace_by_example.
+    if "graph_with_eager_vals" not in source or "triton_kernel_wrapper_functional" not in source:
+        return
+    hops = getattr(torch.ops, "higher_order", None)
+    functional = getattr(hops, "triton_kernel_wrapper_functional", None)
+    mutation = getattr(hops, "triton_kernel_wrapper_mutation", None)
+    if functional is None or mutation is None:
+        return
+
+    @functools.wraps(original)
+    def replace_by_example(self, replacement_fn, args, *rest, **kwargs):
+        try:
+            return original(self, replacement_fn, args, *rest, **kwargs)
+        except AssertionError:
+            nodes = getattr(self, "nodes", None) or []
+            if len(nodes) != 1 or nodes[0].target is not functional:
+                raise
+            hop = nodes[0]
+            eager = hop.meta.get("eager_input_vals")
+            if eager is None:
+                raise
+        # The failed attempt only traced: the graph is unchanged. Without eager_input_vals on the matched node
+        # replace_by_example traces with Inductor's values alone and inserts that graph.
+        graph = hop.graph
+        before = set(graph.find_nodes(op = "call_function", target = mutation))
+        del hop.meta["eager_input_vals"]
+        try:
+            out = original(self, replacement_fn, args, *rest, **kwargs)
+        except BaseException:
+            hop.meta["eager_input_vals"] = eager
+            raise
+        inserted = [
+            n for n in graph.find_nodes(op = "call_function", target = mutation) if n not in before
+        ]
+        if len(inserted) == 1:
+            _, eager_kwargs = eager
+            inserted[0].meta["eager_input_vals"] = (
+                (),
+                {k: v for k, v in eager_kwargs.items() if k != "tensors_to_clone"},
+            )
+        else:
+            logger.warning(
+                f"Unsloth: Inductor inserted {len(inserted)} Triton kernel nodes for one decomposition; "
+                "their eager-mode strides were not attached."
+            )
+        STATS_TRITON_EAGER_VALS["fallbacks"] += 1
+        return out
+
+    replace_by_example._unsloth_triton_eager_vals = True
+    match_cls.replace_by_example = replace_by_example
+    logger.info(
+        "Unsloth: Patched Inductor's Triton kernel decomposition for dynamic size-1 dims (pytorch#181735)."
+    )
+
+
+STATS_TRITON_EAGER_VALS = {"fallbacks": 0}
+
+
 def _same_tensor(tensor):
     return tensor
 
