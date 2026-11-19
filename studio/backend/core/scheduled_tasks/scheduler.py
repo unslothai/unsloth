@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import threading
 import uuid
 import weakref
@@ -134,6 +135,54 @@ def system_prompt(task: dict, now_ms: int) -> str:
     )
 
 
+_PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
+
+
+def _resolve_prompt_variables(prompt: str, variables_raw: Any, task: dict, now_ms: int) -> str:
+    # Mirrors resolveSystemPromptVariables in chat-adapter.ts, using the task timezone.
+    try:
+        zone = resolve_timezone(task["timezone"])
+    except ValueError:
+        zone = timezone.utc
+    local = datetime.fromtimestamp(now_ms / 1000, tz = zone)
+    offset = local.strftime("%z")
+    builtins = {
+        "$date": f"{local:%Y-%m-%d}",
+        "$time": f"{local:%H:%M:%S}",
+        "$now": f"{local:%Y-%m-%dT%H:%M:%S}{offset[:3]}:{offset[3:]}",
+    }
+    try:
+        custom = (
+            json.loads(variables_raw)
+            if isinstance(variables_raw, str) and variables_raw.strip()
+            else {}
+        )
+    except ValueError:
+        custom = {}
+    if not isinstance(custom, dict):
+        custom = {}
+
+    def replace(match: re.Match) -> str:
+        key = match.group(1).strip()
+        if key in builtins:
+            return builtins[key]
+        current: Any = custom
+        parts = [part.strip() for part in key.split(".") if part.strip()]
+        if not parts:
+            return match.group(0)
+        for part in parts:
+            if not isinstance(current, dict) or part not in current:
+                return match.group(0)
+            current = current[part]
+        if current is None:
+            return ""
+        if isinstance(current, str):
+            return current
+        return json.dumps(current, ensure_ascii = False, separators = (",", ":"))
+
+    return _PROMPT_VARIABLE.sub(replace, prompt)
+
+
 def _run_instructions(task: dict, now_ms: int) -> str:
     from core.agents_md import agents_md_text
     from storage import studio_db
@@ -145,7 +194,12 @@ def _run_instructions(task: dict, now_ms: int) -> str:
     parts = [
         f"<agents_md>\n{agents_md}\n</agents_md>" if agents_md else "",
         f"<project_instructions>\n{instructions}\n</project_instructions>" if instructions else "",
-        (chat_settings.get("systemPrompt") or "").strip(),
+        _resolve_prompt_variables(
+            chat_settings.get("systemPrompt") or "",
+            chat_settings.get("systemVariables"),
+            task,
+            now_ms,
+        ).strip(),
         system_prompt(task, now_ms),
     ]
     return "\n\n".join(part for part in parts if part)

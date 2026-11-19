@@ -2844,6 +2844,32 @@ def test_a_run_in_a_chat_keeps_that_chats_system_prompt(monkeypatch):
     assert producer.payload.messages[0].content == "Always answer in French.\n\n" + note
 
 
+def test_a_run_in_a_chat_fills_its_system_prompt_variables(monkeypatch):
+    make_chat()
+    studio_db.upsert_chat_thread(
+        {
+            "id": "chat-1",
+            "title": "Sheet export",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 1,
+            "settings": {
+                "systemPrompt": "Today is {{ $date }} ({{$now}}). Team {{team.name}}, {{missing}}.",
+                "systemVariables": '{"team": {"name": "Ops"}}',
+            },
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "Asia/Tokyo"}, db.now_ms())
+    producer = FakeProducer(completion("Done."))
+
+    generate(monkeypatch, producer, task = make_task(threadId = "chat-1", timezone = "Asia/Tokyo"))
+
+    assert producer.payload.messages[0].content == (
+        "Today is 2026-10-14 (2026-10-14T15:00:00+09:00). Team Ops, {{missing}}.\n\n" + note
+    )
+
+
 def test_a_run_without_a_chat_keeps_the_default_overflow(monkeypatch):
     producer = FakeProducer(completion("Done."))
     generate(monkeypatch, producer)
