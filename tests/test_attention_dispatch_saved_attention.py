@@ -192,7 +192,7 @@ def test_auto_mode_routes_long_calls_on_a_measured_gpu(monkeypatch):
     _fake_gpu(monkeypatch)
     call, min_seq = ad._load_saved_attention()
     assert call is SA.saved_attention_call
-    assert min_seq == SA._AUTO_MIN_SEQ
+    assert min_seq == SA._AUTO_MIN_SEQ[(8, 0)] == 8192
     assert SA._AUTO_ACTIVE[0] is True
 
 
