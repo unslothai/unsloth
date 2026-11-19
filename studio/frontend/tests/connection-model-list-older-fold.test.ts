@@ -58,13 +58,13 @@ const render = (props: Record<string, unknown>) =>
   );
 
 function listOrder(html: string): string[] {
-  const list = html.slice(html.indexOf("<ul"), html.indexOf("</ul>"));
+  const list = html.slice(html.indexOf("<ul"));
   return [
     ...list.matchAll(/(Older models)|data-model-name="true"[^>]*>([^<]+)/g),
   ].map((match) => (match[1] ? "HEADER" : match[2]));
 }
 
-test("closed fold: the Older models header sits inside the list after the ticked rows", () => {
+test("closed fold: the Older models header follows the ticked rows", () => {
   const html = render({
     models: ["fresh-model", "old-ticked"],
     showOlder: false,
@@ -87,12 +87,28 @@ test("open fold: unticked older models follow the header, ticked ones stay above
   assert.match(html, /aria-expanded="true"[^>]*>Older models · 1</);
 });
 
-test("the header pins to both list edges and Tab scrolls rows clear of it", () => {
-  const grouped = render({ models: ["fresh-model"], showOlder: false });
-  assert.match(grouped, /<ul[^>]*scroll-py-12/);
-  assert.match(grouped, /data-fold-header="true"[^>]*sticky top-0 bottom-0/);
-  const flat = render({ models: ["old-model"], query: "old", showOlder: false });
-  assert.doesNotMatch(flat, /scroll-py-12/);
+test("closed fold: the header sits below the scroller, so no row can pass under it", () => {
+  const html = render({
+    models: ["fresh-model", "old-model"],
+    showOlder: false,
+  });
+  const scroller = html.slice(html.indexOf("<ul"), html.indexOf("</ul>"));
+  assert.doesNotMatch(scroller, /Older models/);
+  assert.match(
+    html.slice(html.indexOf("</ul>")),
+    /data-fold-header="true"[\s\S]*Older models · 1/,
+  );
+  assert.doesNotMatch(html, /sticky/);
+});
+
+test("open fold: the header scrolls with the rows instead of pinning over them", () => {
+  const html = render({
+    models: ["fresh-model", "old-model"],
+    showOlder: true,
+  });
+  const scroller = html.slice(html.indexOf("<ul"), html.indexOf("</ul>"));
+  assert.match(scroller, /data-fold-header="true"/);
+  assert.doesNotMatch(html, /sticky/);
 });
 
 test("a search shows matches flat, with no fold header", () => {
@@ -105,36 +121,27 @@ test("a search shows matches flat, with no fold header", () => {
   assert.doesNotMatch(html, /Older models/);
 });
 
-test("the header pins to either list edge with no fade over it", () => {
+test("the edge fade follows the scroll position", () => {
   (globalThis as { MutationObserver?: unknown }).MutationObserver ??= class {
     observe() {}
     disconnect() {}
   };
-  // A 100px window onto 400px of rows; the header is 20px tall.
-  const fade = (headerTop: number | null) => {
-    const attrs = new Set<string>();
+  const fade = (scrollTop: number) => {
     const style: Record<string, string> = {};
-    const header = {
-      getBoundingClientRect: () => ({ top: headerTop!, bottom: headerTop! + 20 }),
-      toggleAttribute: (name: string, on: boolean) =>
-        on ? attrs.add(name) : attrs.delete(name),
-    };
     fadeScrollEdges({
-      scrollTop: 150,
+      scrollTop,
       clientHeight: 100,
       scrollHeight: 400,
-      getBoundingClientRect: () => ({ top: 0, bottom: 100 }),
-      querySelector: () => (headerTop === null ? null : header),
-      style: { setProperty: (name: string, value: string) => (style[name] = value) },
+      style: {
+        setProperty: (name: string, value: string) => (style[name] = value),
+      },
       addEventListener() {},
     });
-    const [top, bottom] = [/^linear-gradient\(to bottom, (\S+) 0/, /, (\S+) 100%\)$/].map(
+    return [/^linear-gradient\(to bottom, (\S+) 0/, /, (\S+) 100%\)$/].map(
       (edge) => style["-webkit-mask-image"].match(edge)?.[1] === "transparent",
     );
-    return { top, bottom, stuck: attrs.has("data-stuck") };
   };
-  assert.deepEqual(fade(null), { top: true, bottom: true, stuck: false });
-  assert.deepEqual(fade(40), { top: true, bottom: true, stuck: false });
-  assert.deepEqual(fade(0), { top: false, bottom: true, stuck: true });
-  assert.deepEqual(fade(80), { top: true, bottom: false, stuck: true });
+  assert.deepEqual(fade(0), [false, true]);
+  assert.deepEqual(fade(150), [true, true]);
+  assert.deepEqual(fade(300), [true, false]);
 });

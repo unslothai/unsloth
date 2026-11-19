@@ -69,16 +69,8 @@ export function modelDetails(
 export function fadeScrollEdges(list: HTMLElement | null) {
   if (!list) return;
   const update = () => {
-    // The Older models header pins to either edge and stays crisp: no fade over it.
-    const header = list.querySelector("[data-fold-header]");
-    const box = list.getBoundingClientRect();
-    const at = header?.getBoundingClientRect();
-    const pinnedTop = at !== undefined && at.top - box.top < 1;
-    const pinnedBottom = at !== undefined && box.bottom - at.bottom < 1;
-    header?.toggleAttribute("data-stuck", pinnedTop || pinnedBottom);
-    const above = list.scrollTop > 1 && !pinnedTop;
-    const below =
-      list.scrollTop + list.clientHeight < list.scrollHeight - 1 && !pinnedBottom;
+    const above = list.scrollTop > 1;
+    const below = list.scrollTop + list.clientHeight < list.scrollHeight - 1;
     const mask =
       above || below
         ? `linear-gradient(to bottom, ${above ? "transparent" : "#000"} 0, #000 32px, #000 calc(100% - 32px), ${below ? "transparent" : "#000"} 100%)`
@@ -205,6 +197,26 @@ export function ConnectionModelList({
       </label>
     </li>
   );
+  const foldToggle = (
+    <button
+      type="button"
+      aria-expanded={showOlder}
+      onClick={() => {
+        setKeptAtOpen(selected);
+        onShowOlderChange(!showOlder);
+      }}
+      className="flex min-h-9 w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      {`Older models · ${foldCount}`}
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
+        className={cn(
+          "ml-auto size-4 shrink-0 transition-transform",
+          !showOlder && "-rotate-90",
+        )}
+      />
+    </button>
+  );
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -279,8 +291,6 @@ export function ConnectionModelList({
             "hover-scrollbar flex flex-col gap-0.5 pr-1",
             rows.length > 10 &&
               "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
-            // Rows reached by Tab scroll clear of the pinned header.
-            grouped && "scroll-py-12",
           )}
         >
           {rows.length === 0 && !grouped ? (
@@ -290,35 +300,27 @@ export function ConnectionModelList({
           ) : (
             <>
               {recentRows.map(renderRow)}
-              {grouped ? (
+              {grouped && showOlder ? (
                 <li
                   data-fold-header={true}
-                  className="sticky top-0 bottom-0 z-10 mt-1 border-t border-border/60 bg-background pt-1"
+                  className="mt-1 border-t border-border/60 pt-1"
                 >
-                  <button
-                    type="button"
-                    aria-expanded={showOlder}
-                    onClick={() => {
-                      setKeptAtOpen(selected);
-                      onShowOlderChange(!showOlder);
-                    }}
-                    className="flex min-h-9 w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    {`Older models · ${foldCount}`}
-                    <HugeiconsIcon
-                      icon={ChevronDownStandardIcon}
-                      className={cn(
-                        "ml-auto size-4 shrink-0 transition-transform",
-                        !showOlder && "-rotate-90",
-                      )}
-                    />
-                  </button>
+                  {foldToggle}
                 </li>
               ) : null}
               {olderRows.map(renderRow)}
             </>
           )}
         </ul>
+        {grouped && !showOlder ? (
+          // Outside the scroller, so rows never pass under it.
+          <div
+            data-fold-header={true}
+            className="mt-1 mr-1 border-t border-border/60 pt-1"
+          >
+            {foldToggle}
+          </div>
+        ) : null}
       </div>
       {filtered && rows.length > 0 ? (
         <p className="text-xs text-muted-foreground">
