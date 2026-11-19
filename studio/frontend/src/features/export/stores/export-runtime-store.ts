@@ -212,7 +212,6 @@ interface ExportRuntimeActions {
   runExport: (params: RunExportParams) => Promise<void>;
   requestCancel: () => Promise<void>;
   appendLog: (entry: ExportLogEntry, seq?: number) => void;
-  /** appendLog over several SSE events in one store update; same per-event seq dedupe. */
   appendLogBatch: (items: ExportLogStreamItem[]) => void;
   appendLogs: (entries: ExportLogPollEntry[]) => void;
   setConnected: (value: boolean) => void;
@@ -227,8 +226,6 @@ export interface ExportLogStreamItem {
   seq?: number;
 }
 
-// Applies stream items in order with appendLog's rules: skip a numbered item at or below
-// lastSeq, keep the newest MAX_LOG_LINES, and bump logBase by the lines trimmed.
 function applyStreamItems(
   state: ExportRuntimeState,
   items: readonly ExportLogStreamItem[],

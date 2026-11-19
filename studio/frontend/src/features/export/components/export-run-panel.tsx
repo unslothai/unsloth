@@ -186,7 +186,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const elapsedSeconds = useElapsedSeconds(run.startedAt, isExporting);
 
   const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
-  // Lives here, not in ExportLogBox, so it survives the box remounting between runs.
+  // Here, not in ExportLogBox, so it survives box remounts.
   const [followTail, setFollowTail] = useState(true);
 
   const methodTitle = EXPORT_METHODS.find(
@@ -624,8 +624,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   );
 }
 
-// One row per entry object: the store keeps entry identity across appends and trims, so
-// only new lines run the class regexes and the line format.
 const ExportLogRow = memo(function ExportLogRow({
   entry,
 }: {
@@ -636,8 +634,6 @@ const ExportLogRow = memo(function ExportLogRow({
   );
 });
 
-// A fixed block of absolute lines. Only the first block (trim) and the last (append) change,
-// so React and layout skip the rest; the wrapper is a plain block and adds no styling.
 const ExportLogBlock = memo(
   function ExportLogBlock({
     start,
@@ -661,8 +657,7 @@ const ExportLogBlock = memo(
     a.entries[a.entries.length - 1] === b.entries[b.entries.length - 1],
 );
 
-// Subscribes to the log alone so the 1 s elapsed tick and other panel state skip the
-// list; keys are absolute line numbers, so trimming the head at the cap moves no rows.
+// Own subscription so the 1 s elapsed tick skips the list.
 const ExportLogBox = memo(function ExportLogBox({
   waiting,
   followTail,
@@ -694,8 +689,7 @@ const ExportLogBox = memo(function ExportLogBox({
     <div
       ref={logScrollRef}
       onScroll={handleLogScroll}
-      // Past the cap the head rows are removed instead of rewritten in place. Scroll anchoring
-      // would then pull a scrolled-up view along with its lines; keep the offset fixed instead.
+      // Head trims would let scroll anchoring drag a scrolled-up view; pin the offset.
       style={logBase > 0 ? { overflowAnchor: "none" } : undefined}
       className="h-56 w-full overflow-auto scroll-rounded rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
     >

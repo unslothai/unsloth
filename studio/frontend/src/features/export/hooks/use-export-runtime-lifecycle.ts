@@ -36,8 +36,7 @@ export function useExportRuntimeLifecycle(): void {
 
     const store = useExportRuntimeStore;
 
-    // One network chunk carries many SSE log events, parsed synchronously; queue them and
-    // flush once in a microtask so the chunk costs one store update instead of one per line.
+    // Batch a chunk's SSE events into one store update per microtask.
     let pendingLogs: ExportLogStreamItem[] = [];
     const flushLogs = () => {
       const items = pendingLogs;

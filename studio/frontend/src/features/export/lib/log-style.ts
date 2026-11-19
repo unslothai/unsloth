@@ -43,17 +43,12 @@ export function getExportLogLineClass(entry: ExportLogEntry): string {
 export const EXPORT_LOG_GROUP_SIZE = 100;
 
 export interface ExportLogGroup {
-  /** Absolute block number, stable while the block exists. */
   key: number;
-  /** Absolute line number of `entries[0]`. */
   start: number;
   entries: ExportLogEntry[];
 }
 
-/**
- * Splits the visible log into fixed absolute blocks, so a trim at the cap only touches the
- * first block and an append only the last; `base` is the number of lines trimmed so far.
- */
+/** Fixed absolute blocks: a trim touches only the first, an append only the last. */
 export function groupExportLogLines(
   lines: readonly ExportLogEntry[],
   base: number,
