@@ -948,10 +948,14 @@ function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8
     const root = doc.documentElement;
     const w = root?.namespaceURI ?? "";
     if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
-    const paragraphOf = (node: Node) => {
-      let parent = node.parentNode;
-      while (parent && !((parent as Element).localName === "p" && (parent as Element).namespaceURI === w)) parent = parent.parentNode;
-      return parent;
+    // runs the reader drops (tracked deletions and moves, ruby text, placeholders) neither raise nor serve as a base
+    const visibleIn = (run: Element, p: Element) => {
+      for (let node = run.parentNode as Element | null; node; node = node.parentNode as Element | null) {
+        if (node.namespaceURI !== w) continue;
+        if (node.localName === "p") return node === p;
+        if (DOCX_NOTE_SKIP.has(node.localName) || (node.localName === "sdt" && isDocxPlaceholder(node, w))) return false;
+      }
+      return false;
     };
     const isSuperscript = (run: Element) =>
       childElements(run, w, "rPr").some((pr) =>
@@ -977,7 +981,7 @@ function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8
         raised = [];
       };
       for (const run of Array.from(p.getElementsByTagNameNS(w, "r"))) {
-        if (paragraphOf(run) !== p) continue;
+        if (!visibleIn(run, p)) continue;
         const pieces = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1 && (child as Element).namespaceURI === w);
         const text = pieces.map((child) => (child.localName === "t" ? (child.textContent ?? "") : (DOCX_RUN_TEXT.get(child.localName) ?? ""))).join("");
         if (!text) continue;
