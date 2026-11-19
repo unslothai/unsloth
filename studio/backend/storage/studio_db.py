@@ -1584,6 +1584,27 @@ def get_connection(
     return conn
 
 
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+@contextmanager
+def connection(begin: Optional[str] = None) -> Iterator[sqlite3.Connection]:
+    """One connection: commits what the block wrote, rolls back on any exception."""
+    conn = get_connection()
+    try:
+        if begin:
+            conn.execute(begin)
+        yield conn
+        if conn.in_transaction:
+            conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 # Held open so the last-writer close does not checkpoint the WAL several times a second (#9934).
 _wal_keepers: dict[Path, sqlite3.Connection] = {}
 _wal_keeper_lock = threading.Lock()

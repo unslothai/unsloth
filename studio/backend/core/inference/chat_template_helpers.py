@@ -367,6 +367,25 @@ _SPECIAL_TOKEN_VARIABLES = (
 )
 
 
+# Mistral templates: "{%- if not tool_call.id is defined or tool_call.id|length != 9 %}" then raise.
+_NINE_CHAR_ID_CHECK = re.compile(
+    r"""(?:\b(?:id|tool_call_id)|\[\s*['"](?:id|tool_call_id)['"]\s*\])\s*\|\s*length\s*\)?\s*(?:!=|==|<=|>=|<|>)\s*9\b"""
+)
+_NINE_CHAR_ID = re.compile(r"[A-Za-z0-9]{9}")
+_BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def _nine_char_id(original: str, attempt: int = 0) -> str:
+    """A stable nine-alphanumeric stand-in for *original*: the same id maps the same way on every round."""
+    digest = hashlib.sha256(f"{attempt}:{original}".encode("utf-8")).digest()
+    value = int.from_bytes(digest[:8], "big")
+    out = []
+    for _ in range(9):
+        value, rest = divmod(value, 62)
+        out.append(_BASE62[rest])
+    return "".join(out)
+
+
 def model_markup(
     chat_template,
     tokens = None,
@@ -428,23 +447,6 @@ def model_markup(
         for built in _CONCATENATED_OPENER.findall(body):
             markers.add(f"<{built}=example>")
     return ModelMarkup(markers, bool(tools), nine_char_ids) if markers else None
-
-
-# Mistral templates: "{%- if not tool_call.id is defined or tool_call.id|length != 9 %}" then raise.
-_NINE_CHAR_ID_CHECK = re.compile(r"\b(?:id|tool_call_id)\s*\|\s*length\s*!=\s*9\b")
-_NINE_CHAR_ID = re.compile(r"[A-Za-z0-9]{9}")
-_BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-
-
-def _nine_char_id(original: str, attempt: int = 0) -> str:
-    """A stable nine-alphanumeric stand-in for *original*: the same id maps the same way on every round."""
-    digest = hashlib.sha256(f"{attempt}:{original}".encode("utf-8")).digest()
-    value = int.from_bytes(digest[:8], "big")
-    out = []
-    for _ in range(9):
-        value, rest = divmod(value, 62)
-        out.append(_BASE62[rest])
-    return "".join(out)
 
 
 def _spaced_out(pattern, text: str) -> str:
@@ -746,7 +748,7 @@ def _replayed_ids(msg: dict):
 
 
 def _injective_id_map(messages: list, markup = None) -> dict:
-    """Gives colliding tool-call ids a numeric suffix, since Gemma matches results to calls by id."""
+    """Remaps replayed tool-call ids so each call keeps its result: suffixes collisions (Gemma), or nine alphanumerics for Mistral."""
     originals: list = []
     seen: set = set()
     for msg in messages:
@@ -782,11 +784,11 @@ def _injective_id_map(messages: list, markup = None) -> dict:
 
 
 def _nine_char_id_map(originals: list) -> dict:
-    """Maps every id that is not already nine alphanumerics to a distinct one that is, so a call and its result stay paired."""
+    """Ids that aren't nine alphanumerics get distinct ones that are."""
     taken = {original for original in originals if _NINE_CHAR_ID.fullmatch(original)}
     mapping: dict = {}
     for original in originals:
-        if original in taken and _NINE_CHAR_ID.fullmatch(original):
+        if _NINE_CHAR_ID.fullmatch(original):
             continue
         attempt = 0
         candidate = _nine_char_id(original)

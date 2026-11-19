@@ -27,6 +27,7 @@ from core.inference.chat_generation_runs import detach_embedded_images
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
+from storage import characters_db
 from utils.api_errors import safe_validation_errors
 from utils.current_date_prompt_settings import (
     CURRENT_DATE_TIMEZONE_HEADER,
@@ -89,6 +90,16 @@ _ENVELOPE_MAX_NODES = 20_000
 _ENVELOPE_MAX_JSON_CHARS = 1_000_000
 
 
+class AssistantRoleplay(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+    kind: Literal["reply"] = "reply"
+    speakerId: str = Field(min_length = 1, max_length = characters_db.MAX_ID_CHARS)
+    speakerName: str = Field(default = "", max_length = 200)
+    plan: Optional[list[Annotated[str, Field(max_length = characters_db.MAX_ID_CHARS)]]] = Field(
+        default = None, max_length = characters_db.MAX_CAST
+    )
+
+
 class CreateChatGenerationRun(BaseModel):
     model_config = ConfigDict(extra = "forbid")
     runId: str = Field(min_length = 1, max_length = 128, pattern = r"^[A-Za-z0-9_-]+$")
@@ -101,18 +112,8 @@ class CreateChatGenerationRun(BaseModel):
     stopWhenUnattended: bool = False
     # In a character chat, who speaks in this reply. Stored on the reply when the run is made,
     # so it survives a stop, a reload or a run that finishes with no tab open.
-    assistantRoleplay: Optional["AssistantRoleplay"] = None
+    assistantRoleplay: Optional[AssistantRoleplay] = None
 
-
-class AssistantRoleplay(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
-    kind: Literal["reply"] = "reply"
-    speakerId: str = Field(min_length = 1, max_length = 64)
-    speakerName: str = Field(default = "", max_length = 200)
-    plan: Optional[list[Annotated[str, Field(max_length = 64)]]] = Field(default = None, max_length = 16)
-
-
-CreateChatGenerationRun.model_rebuild()
 
 
 def _normalized_key(key: object) -> str:

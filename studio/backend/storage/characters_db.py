@@ -1,37 +1,34 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Characters, personas and character chats in the account's studio.db.
+"""Characters, personas and character chats (a thread plus ``chat_cast`` and ``chat_scene``).
 
-A character chat is an ordinary chat thread plus a cast (``chat_cast``) and a scene
-(``chat_scene``: the persona the user plays and per-chat settings). Portraits live as files
-next to the database, one per character or persona, written atomically.
+Portraits are files next to studio.db, one per character or persona.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
-import tempfile
-import time
 import uuid
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
+from storage.studio_db import connection as _connect
 from storage.studio_db import (
     delete_chat_threads,
-    get_connection,
-    upsert_chat_message,
+    now_ms,
+    sync_chat_messages,
     upsert_chat_thread,
 )
+from utils.image_files import atomic_write_bytes
+from utils.paths.storage_roots import account_path, ensure_account_dir
 
 MAX_CHARACTERS = 5000
 MAX_PERSONAS = 200
 MAX_CAST = 16
-MAX_AVATAR_BYTES = 20 * 1024 * 1024
+MAX_ID_CHARS = 64
 
 # Tools stay off in a character chat unless the user turns them on there.
 CHARACTER_CHAT_SETTINGS = {
@@ -51,24 +48,8 @@ class LimitReached(Exception):
     pass
 
 
-@contextmanager
-def _connect(begin: Optional[str] = None) -> Iterator[sqlite3.Connection]:
-    conn = get_connection()
-    try:
-        if begin:
-            conn.execute(begin)
-        yield conn
-        if conn.in_transaction:
-            conn.commit()
-    except BaseException:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def now_ms() -> int:
-    return int(time.time() * 1000)
+class PersonaNotFound(LookupError):
+    pass
 
 
 def _loads(value: Optional[str], fallback: Any) -> Any:
@@ -84,30 +65,17 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii = False)
 
 
-def _image_dir(kind: str) -> Path:
-    from utils.paths.storage_roots import account_path
-
-    path = account_path(kind)
-    path.mkdir(parents = True, exist_ok = True)
-    return path
-
-
 def _image_path(kind: str, item_id: str) -> Path:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", item_id):
+    if not re.fullmatch(rf"[A-Za-z0-9_-]{{1,{MAX_ID_CHARS}}}", item_id):
         raise ValueError("bad id")
-    return _image_dir(kind) / f"{item_id}.img"
+    return account_path(kind) / f"{item_id}.img"
 
 
 def write_image(kind: str, item_id: str, data: bytes) -> None:
     path = _image_path(kind, item_id)
-    fd, tmp = tempfile.mkstemp(dir = path.parent, prefix = ".upload-")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok = True)
-        raise
+    # Only writes make the folder, and never for a deleted account.
+    ensure_account_dir(path.parent)
+    atomic_write_bytes(path, data)
 
 
 def read_image(kind: str, item_id: str) -> Optional[bytes]:
@@ -170,10 +138,8 @@ def _character_from_row(row: sqlite3.Row, *, full: bool = True) -> dict:
         "avatarRev": row["avatar_rev"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
-        "lastChatAt": (row["last_active"] or None)
-        if "last_active" in row.keys()
-        else row["last_chat_at"],
-        "chatCount": row["chat_count"] if "chat_count" in row.keys() else 0,
+        "lastChatAt": row["last_active"] or None,
+        "chatCount": row["chat_count"],
     }
     if full:
         character["card"] = _loads(row["card_json"], None)
@@ -186,14 +152,29 @@ _CHAT_COUNT = (
     # Recency follows the character's chats, so continuing an old chat moves it up.
     " MAX(COALESCE(last_chat_at, 0), COALESCE((SELECT MAX(COALESCE(t.updated_at, t.created_at))"
     " FROM chat_cast c JOIN chat_threads t ON t.id = c.thread_id"
-    " WHERE c.character_id = characters.id), 0)) AS last_active"
+    " WHERE c.character_id = characters.id AND t.archived = 0), 0)) AS last_active"
+)
+# Every column but card_json, which only a single read or an export needs.
+_LIST_COLUMNS = ", ".join(
+    (
+        "id",
+        *_CHARACTER_COLUMNS.values(),
+        *(column for column, _fallback in _CHARACTER_JSON_COLUMNS.values()),
+        *_CHARACTER_NULLABLE_JSON.values(),
+        "favorite",
+        "avatar_type",
+        "avatar_rev",
+        "created_at",
+        "updated_at",
+        "last_chat_at",
+    )
 )
 
 
 def list_characters() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
-            f"SELECT *, {_CHAT_COUNT} FROM characters"
+            f"SELECT {_LIST_COLUMNS}, {_CHAT_COUNT} FROM characters"
             " ORDER BY COALESCE(NULLIF(last_active, 0), updated_at) DESC, name"
         ).fetchall()
     return [_character_from_row(row, full = False) for row in rows]
@@ -305,24 +286,30 @@ def update_character(character_id: str, fields: dict) -> Optional[dict]:
     return get_character(character_id)
 
 
+def _set_avatar(
+    table: str, kind: str, item_id: str, data: Optional[bytes], media_type: Optional[str]
+) -> bool:
+    # File and row change under one write lock, so a racing upload or delete cannot leave
+    # one upload's bytes under another's type, or a file with no row.
+    with _connect("BEGIN IMMEDIATE") as conn:
+        if conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (item_id,)).fetchone() is None:
+            return False
+        if data:
+            write_image(kind, item_id, data)
+        else:
+            delete_image(kind, item_id)
+        conn.execute(
+            f"UPDATE {table} SET avatar_type = ?, avatar_rev = avatar_rev + 1, updated_at = ? WHERE id = ?",
+            (media_type if data else None, now_ms(), item_id),
+        )
+    return True
+
+
 def set_character_avatar(
     character_id: str, data: Optional[bytes], media_type: Optional[str]
 ) -> Optional[dict]:
-    with _connect() as conn:
-        if (
-            conn.execute("SELECT 1 FROM characters WHERE id = ?", (character_id,)).fetchone()
-            is None
-        ):
-            return None
-    if data:
-        write_image("characters", character_id, data)
-    else:
-        delete_image("characters", character_id)
-    with _connect("BEGIN IMMEDIATE") as conn:
-        conn.execute(
-            "UPDATE characters SET avatar_type = ?, avatar_rev = avatar_rev + 1, updated_at = ? WHERE id = ?",
-            (media_type if data else None, now_ms(), character_id),
-        )
+    if not _set_avatar("characters", "characters", character_id, data, media_type):
+        return None
     return get_character(character_id)
 
 
@@ -424,17 +411,8 @@ def update_persona(persona_id: str, fields: dict) -> Optional[dict]:
 def set_persona_avatar(
     persona_id: str, data: Optional[bytes], media_type: Optional[str]
 ) -> Optional[dict]:
-    if get_persona(persona_id) is None:
+    if not _set_avatar("personas", "personas", persona_id, data, media_type):
         return None
-    if data:
-        write_image("personas", persona_id, data)
-    else:
-        delete_image("personas", persona_id)
-    with _connect("BEGIN IMMEDIATE") as conn:
-        conn.execute(
-            "UPDATE personas SET avatar_type = ?, avatar_rev = avatar_rev + 1, updated_at = ? WHERE id = ?",
-            (media_type if data else None, now_ms(), persona_id),
-        )
     return get_persona(persona_id)
 
 
@@ -488,6 +466,67 @@ def chat_title(names: list[str]) -> str:
     return f"{', '.join(names[:-1])} & {names[-1]}"
 
 
+def _opening_messages(
+    thread_id: str, characters: list[dict], speaker_name: str, greetings: Optional[dict], created: int
+) -> tuple[list[dict], list[str], str]:
+    def message(parent_id: Optional[str], role: str, text: str, roleplay: dict) -> dict:
+        nonlocal created
+        created += 1
+        return {
+            "id": str(uuid.uuid4()),
+            "threadId": thread_id,
+            "parentId": parent_id,
+            "role": role,
+            "content": _text_content(text),
+            "metadata": {"roleplay": roleplay},
+            "createdAt": created,
+        }
+
+    opening = message(None, "user", OPENING_TEXT, {"kind": "opening"})
+    messages = [opening]
+    greeting_ids: list[str] = []
+    parent_id = opening["id"]
+    for index, character in enumerate(characters):
+        source = [character["firstMes"], *character["alternateGreetings"]]
+        resolved = (greetings or {}).get(character["id"])
+        # The client resolves every macro; this covers API callers that send no greetings.
+        if resolved is None or len(resolved) != len(source):
+            resolved = [fill_names(g, character["name"], speaker_name) for g in source]
+        texts = [(i, g) for i, g in enumerate(resolved) if g and g.strip()]
+        if len(characters) > 1 and index > 0:
+            # A hidden turn marker keeps each member's greeting answering a user turn.
+            marker = message(
+                parent_id,
+                "user",
+                f"[{character['name']}'s turn]",
+                {"kind": "turn", "speakerId": character["id"]},
+            )
+            messages.append(marker)
+            parent_id = marker["id"]
+        if not texts:
+            continue
+        # Alternates first: with no saved branch choice a chat opens on its newest row, which
+        # should be the main greeting, here and on every other device.
+        replies = [
+            message(
+                parent_id,
+                "assistant",
+                text,
+                {
+                    "kind": "reply",
+                    "speakerId": character["id"],
+                    "speakerName": character["name"],
+                    "greeting": source_index,
+                },
+            )
+            for source_index, text in [*texts[1:], texts[0]]
+        ]
+        messages.extend(replies)
+        greeting_ids.append(replies[-1]["id"])
+        parent_id = replies[-1]["id"]
+    return messages, greeting_ids, parent_id
+
+
 def create_character_chat(
     *,
     character_ids: list[str],
@@ -495,29 +534,27 @@ def create_character_chat(
     user_name: str,
     project_id: Optional[str] = None,
     settings: Optional[dict] = None,
-    title: Optional[str] = None,
     greetings: Optional[dict[str, list[str]]] = None,
 ) -> dict:
-    """Makes the thread, its cast and scene, then the opening turn with every member's greetings.
-
-    Greetings hang under a hidden opening user turn so alternate greetings are ordinary sibling
-    replies (and the history starts with a user turn, which strict chat templates require).
-    """
+    """Thread, cast, scene and opening turn. Greetings hang under a hidden user turn so alternates are
+    sibling replies and strict chat templates see a user turn first."""
     requested = list(dict.fromkeys(character_ids))
+    if len(requested) > MAX_CAST:
+        raise LimitReached(f"A chat can have up to {MAX_CAST} characters.")
     characters = get_characters(requested)
     # Every requested member must exist: a group must not quietly become a smaller chat.
     if not characters or len(characters) != len(requested):
         raise LookupError("character")
-    if len(characters) > MAX_CAST:
-        raise LimitReached(f"A chat can have up to {MAX_CAST} characters.")
     persona = get_persona(persona_id) if persona_id else None
+    if persona_id and persona is None:
+        raise PersonaNotFound(persona_id)
     speaker_name = (persona or {}).get("name") or user_name or "User"
     thread_id = str(uuid.uuid4())
     now = now_ms()
     upsert_chat_thread(
         {
             "id": thread_id,
-            "title": title or chat_title([c["name"] for c in characters]),
+            "title": chat_title([c["name"] for c in characters]),
             "modelType": "base",
             "modelId": "",
             "projectId": project_id,
@@ -526,93 +563,40 @@ def create_character_chat(
             "settings": dict(CHARACTER_CHAT_SETTINGS),
         }
     )
-    greeting_ids: list[str] = []
     try:
         with _connect("BEGIN IMMEDIATE") as conn:
+            # Checked again under the write lock: a delete since the read above would trip a foreign key.
+            placeholders = ",".join("?" for _ in requested)
+            (known,) = conn.execute(
+                f"SELECT COUNT(*) FROM characters WHERE id IN ({placeholders})", requested
+            ).fetchone()
+            if known != len(requested):
+                raise LookupError("character")
+            if persona and conn.execute(
+                "SELECT 1 FROM personas WHERE id = ?", (persona["id"],)
+            ).fetchone() is None:
+                raise PersonaNotFound(persona["id"])
             for position, character in enumerate(characters):
                 conn.execute(
                     "INSERT INTO chat_cast (thread_id, character_id, position, muted) VALUES (?, ?, ?, 0)",
                     (thread_id, character["id"], position),
                 )
-                conn.execute(
-                    "UPDATE characters SET last_chat_at = ? WHERE id = ?", (now, character["id"])
-                )
+            conn.executemany(
+                "UPDATE characters SET last_chat_at = ? WHERE id = ?",
+                [(now, c["id"]) for c in characters],
+            )
             conn.execute(
                 "INSERT INTO chat_scene (thread_id, persona_id, settings_json, updated_at) VALUES (?, ?, ?, ?)",
                 (thread_id, persona["id"] if persona else None, _dumps(settings or {}), now),
             )
-        created = now
-        parent_id = str(uuid.uuid4())
-        upsert_chat_message(
-            {
-                "id": parent_id,
-                "threadId": thread_id,
-                "parentId": None,
-                "role": "user",
-                "content": _text_content(OPENING_TEXT),
-                "metadata": {"roleplay": {"kind": "opening"}},
-                "createdAt": created,
-            }
+        messages, greeting_ids, head_id = _opening_messages(
+            thread_id, characters, speaker_name, greetings, now
         )
-        group = len(characters) > 1
-        for index, character in enumerate(characters):
-            source = [character["firstMes"], *character["alternateGreetings"]]
-            resolved = (greetings or {}).get(character["id"])
-            if resolved is None or len(resolved) != len(source):
-                resolved = [fill_names(g, character["name"], speaker_name) for g in source]
-            texts = [g for g in resolved if g and g.strip()]
-            if group and index > 0:
-                # A hidden turn marker keeps each member's greeting answering a user turn.
-                marker_id = str(uuid.uuid4())
-                created += 1
-                upsert_chat_message(
-                    {
-                        "id": marker_id,
-                        "threadId": thread_id,
-                        "parentId": parent_id,
-                        "role": "user",
-                        "content": _text_content(f"[{character['name']}'s turn]"),
-                        "metadata": {"roleplay": {"kind": "turn", "speakerId": character["id"]}},
-                        "createdAt": created,
-                    }
-                )
-                parent_id = marker_id
-            if not texts:
-                continue
-            first_id = None
-            # Alternates first: with no saved branch choice a chat opens on its newest row, which
-            # should be the main greeting, here and on every other device.
-            order = [*range(1, len(texts)), 0]
-            for greeting_index in order:
-                greeting = texts[greeting_index]
-                message_id = str(uuid.uuid4())
-                created += 1
-                upsert_chat_message(
-                    {
-                        "id": message_id,
-                        "threadId": thread_id,
-                        "parentId": parent_id,
-                        "role": "assistant",
-                        "content": _text_content(greeting),
-                        "metadata": {
-                            "roleplay": {
-                                "kind": "reply",
-                                "speakerId": character["id"],
-                                "speakerName": character["name"],
-                                "greeting": greeting_index,
-                            }
-                        },
-                        "createdAt": created,
-                    }
-                )
-                if greeting_index == 0:
-                    first_id = message_id
-            greeting_ids.append(first_id)  # type: ignore[arg-type]
-            parent_id = first_id  # type: ignore[assignment]
+        sync_chat_messages(thread_id, messages)
     except BaseException:
         delete_chat_threads([thread_id])
         raise
-    return {"threadId": thread_id, "greetingIds": greeting_ids, "headId": parent_id}
+    return {"threadId": thread_id, "greetingIds": greeting_ids, "headId": head_id}
 
 
 def _scene_from_rows(
@@ -681,6 +665,13 @@ def update_chat_scene(
         scene = conn.execute(
             "SELECT * FROM chat_scene WHERE thread_id = ?", (thread_id,)
         ).fetchone()
+        # Only adding a cast makes a plain chat a character chat.
+        if scene is None and not add:
+            return None
+        if persona_set and persona_id and conn.execute(
+            "SELECT 1 FROM personas WHERE id = ?", (persona_id,)
+        ).fetchone() is None:
+            raise PersonaNotFound(persona_id)
         now = now_ms()
         stored = _loads(scene["settings_json"], {}) if scene else {}
         conn.execute(

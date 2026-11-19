@@ -320,6 +320,7 @@ def canonical_request(
     user_message_id: str,
     assistant_message_id: str,
     request_payload: dict[str, Any],
+    reply_metadata: Optional[dict[str, Any]] = None,
 ) -> tuple[str, str]:
     request_json = json.dumps(
         request_payload,
@@ -327,17 +328,21 @@ def canonical_request(
         separators = (",", ":"),
         ensure_ascii = False,
     )
-    identity = json.dumps(
-        {
-            "threadId": thread_id,
-            "userMessageId": user_message_id,
-            "assistantMessageId": assistant_message_id,
-            "requestPayload": {
-                key: value
-                for key, value in request_payload.items()
-                if key not in (TIMEZONE_HEADERS_FIELD, API_MONITOR_ORIGIN_FIELD)
-            },
+    identity = {
+        "threadId": thread_id,
+        "userMessageId": user_message_id,
+        "assistantMessageId": assistant_message_id,
+        "requestPayload": {
+            key: value
+            for key, value in request_payload.items()
+            if key not in (TIMEZONE_HEADERS_FIELD, API_MONITOR_ORIGIN_FIELD)
         },
+    }
+    # Only when set, so a run hashed before speakers existed still replays.
+    if reply_metadata:
+        identity["replyMetadata"] = reply_metadata
+    identity = json.dumps(
+        identity,
         sort_keys = True,
         separators = (",", ":"),
         ensure_ascii = False,
@@ -516,6 +521,7 @@ def create_run(
         user_message_id = user_message_id,
         assistant_message_id = assistant_message_id,
         request_payload = request_payload,
+        reply_metadata = reply_metadata,
     )
     created = now_ms()
     worker_token = secrets.token_hex(16)
@@ -612,6 +618,9 @@ def create_run(
             merged_metadata = (
                 dict(assistant_metadata) if isinstance(assistant_metadata, dict) else {}
             )
+            if not reply_metadata:
+                # A speaker left on the row by an earlier attempt is not this run's.
+                merged_metadata.pop("roleplay", None)
             merged_metadata.update(metadata)
             conn.execute(
                 "UPDATE chat_messages SET metadata_json=? WHERE id=?",

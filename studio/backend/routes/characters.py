@@ -21,12 +21,14 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 from auth.authentication import get_current_subject
 from core.characters import cards, starters
 from storage import characters_db as db
+from storage import studio_db
+from utils.image_files import read_limited_body, sniff_image_type
 
 router = APIRouter()
 
 _NOT_FOUND = "Character not found"
 _PERSONA_NOT_FOUND = "Persona not found"
-_LONG = 200_000
+_TOO_LARGE = "The file is too large."
 
 
 def _not_blank(value: str) -> str:
@@ -36,10 +38,11 @@ def _not_blank(value: str) -> str:
     return value
 
 
-Name = Annotated[str, Field(max_length = 200), AfterValidator(_not_blank)]
-LongText = Annotated[str, Field(max_length = _LONG)]
-ShortText = Annotated[str, Field(max_length = 200)]
+Name = Annotated[str, Field(max_length = cards.MAX_SHORT_CHARS), AfterValidator(_not_blank)]
+LongText = Annotated[str, Field(max_length = cards.MAX_FIELD_CHARS)]
+ShortText = Annotated[str, Field(max_length = cards.MAX_SHORT_CHARS)]
 Tag = Annotated[str, Field(max_length = cards.MAX_TAG_CHARS), AfterValidator(_not_blank)]
+Id = Annotated[str, Field(max_length = db.MAX_ID_CHARS)]
 
 
 class DepthPrompt(BaseModel):
@@ -121,22 +124,16 @@ class SceneSettings(BaseModel):
 class CharacterChatCreate(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
-    characterIds: list[str] = Field(min_length = 1, max_length = db.MAX_CAST)
-    personaId: Optional[str] = Field(default = None, max_length = 64)
+    characterIds: list[Id] = Field(min_length = 1, max_length = db.MAX_CAST)
+    personaId: Optional[Id] = None
     # The name {{user}} becomes in greetings when no persona is picked.
-    userName: str = Field(default = "", max_length = 200)
+    userName: ShortText = ""
     projectId: Optional[str] = Field(default = None, max_length = 128)
     settings: Optional[SceneSettings] = None
     # [firstMes, *alternateGreetings] per character, resolved by the client (its clock and locale).
     greetings: Optional[
-        dict[
-            Annotated[str, Field(max_length = 64)],
-            Annotated[list[LongText], Field(max_length = cards.MAX_GREETINGS + 1)],
-        ]
+        dict[Id, Annotated[list[LongText], Field(max_length = cards.MAX_GREETINGS + 1)]]
     ] = Field(default = None, max_length = db.MAX_CAST)
-
-
-CharacterId = Annotated[str, Field(max_length = 64)]
 
 
 class SceneUpdate(BaseModel):
@@ -144,10 +141,10 @@ class SceneUpdate(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    add: list[CharacterId] = Field(default_factory = list, max_length = db.MAX_CAST)
-    remove: list[CharacterId] = Field(default_factory = list, max_length = db.MAX_CAST)
-    mute: dict[CharacterId, bool] = Field(default_factory = dict, max_length = db.MAX_CAST)
-    personaId: Optional[str] = Field(default = None, max_length = 64)
+    add: list[Id] = Field(default_factory = list, max_length = db.MAX_CAST)
+    remove: list[Id] = Field(default_factory = list, max_length = db.MAX_CAST)
+    mute: dict[Id, bool] = Field(default_factory = dict, max_length = db.MAX_CAST)
+    personaId: Optional[Id] = None
     settings: Optional[SceneSettings] = None
 
 
@@ -167,22 +164,18 @@ def _public(character: dict) -> dict:
     return out
 
 
-async def _read_body(request: Request, limit: int) -> bytes:
-    declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > limit:
-        raise HTTPException(status_code = 413, detail = "The file is too large.")
-    data = bytearray()
-    async for chunk in request.stream():
-        data.extend(chunk)
-        if len(data) > limit:
-            raise HTTPException(status_code = 413, detail = "The file is too large.")
-    return bytes(data)
+def _normalized(fields: dict) -> dict:
+    # Same shape as an imported book, so the prompt builder and export never see a raw one.
+    if fields.get("characterBook"):
+        fields["characterBook"] = cards.normalize_book(fields["characterBook"])
+    return fields
 
 
 def _image_response(data: bytes, media_type: Optional[str]) -> Response:
     return Response(
         content = data,
-        media_type = media_type or cards.sniff_image_type(data) or "application/octet-stream",
+        # The bytes decide: the stored type only says a picture exists.
+        media_type = sniff_image_type(data) or media_type or "application/octet-stream",
         headers = {
             "Cache-Control": "private, max-age=31536000, immutable",
             # The browser cache is shared by every account signed in on it.
@@ -209,7 +202,7 @@ def list_characters(current_subject: str = Depends(get_current_subject)):
 
 @router.post("", status_code = 201)
 def create_character(payload: CharacterCreate, current_subject: str = Depends(get_current_subject)):
-    fields = payload.model_dump(exclude_none = True)
+    fields = _normalized(payload.model_dump(exclude_none = True))
     try:
         return _public(db.create_character(fields))
     except db.LimitReached as exc:
@@ -222,7 +215,7 @@ async def import_character(
     filename: str = Query("", max_length = 255),
     current_subject: str = Depends(get_current_subject),
 ):
-    data = await _read_body(request, cards.MAX_CARD_BYTES)
+    data = await read_limited_body(request, cards.MAX_CARD_BYTES, _TOO_LARGE)
     try:
         parsed = await asyncio.to_thread(cards.parse_card_file, data, filename)
     except cards.CardError as exc:
@@ -269,7 +262,7 @@ def update_character(
     fields = payload.model_dump(exclude_none = True, exclude = {"clear"})
     for cleared in payload.clear:
         fields[cleared] = None
-    updated = db.update_character(character_id, fields)
+    updated = db.update_character(character_id, _normalized(fields))
     if updated is None:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND)
     return _public(updated)
@@ -286,7 +279,7 @@ def delete_character(character_id: str, current_subject: str = Depends(get_curre
 def duplicate_character(character_id: str, current_subject: str = Depends(get_current_subject)):
     source = _character_or_404(character_id)
     fields = {k: v for k, v in source.items() if k in CharacterFields.model_fields}
-    fields["name"] = f"{source['name']} (copy)"[:200]
+    fields["name"] = f"{source['name']} (copy)"[: cards.MAX_SHORT_CHARS]
     fields["extensions"] = source.get("extensions") or {}
     avatar = db.read_image("characters", character_id) if source["hasAvatar"] else None
     try:
@@ -314,7 +307,7 @@ async def put_character_avatar(
     current_subject: str = Depends(get_current_subject),
 ):
     _character_or_404(character_id)
-    data = await _read_body(request, db.MAX_AVATAR_BYTES)
+    data = await read_limited_body(request, cards.MAX_AVATAR_BYTES, _TOO_LARGE)
     data, media_type = await asyncio.to_thread(_checked_image, data)
     updated = await asyncio.to_thread(db.set_character_avatar, character_id, data, media_type)
     if updated is None:
@@ -343,7 +336,8 @@ def export_character(
 ):
     character = _character_or_404(character_id)
     filename = _download_name(character["name"], format)
-    disposition = f"attachment; filename*=UTF-8''{quote(filename)}"
+    ascii_name = filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
     if format == "json":
         body = json.dumps(cards.build_card_v3(character), ensure_ascii = False, indent = 2)
         return Response(
@@ -415,7 +409,7 @@ async def put_persona_avatar(
     current_subject: str = Depends(get_current_subject),
 ):
     _persona_or_404(persona_id)
-    data = await _read_body(request, db.MAX_AVATAR_BYTES)
+    data = await read_limited_body(request, cards.MAX_AVATAR_BYTES, _TOO_LARGE)
     data, media_type = await asyncio.to_thread(_checked_image, data)
     updated = await asyncio.to_thread(db.set_persona_avatar, persona_id, data, media_type)
     if updated is None:
@@ -435,12 +429,8 @@ def delete_persona_avatar(persona_id: str, current_subject: str = Depends(get_cu
 def create_character_chat(
     payload: CharacterChatCreate, current_subject: str = Depends(get_current_subject)
 ):
-    if payload.personaId and db.get_persona(payload.personaId) is None:
-        raise HTTPException(status_code = 400, detail = _PERSONA_NOT_FOUND)
-    if payload.projectId:
-        from storage import studio_db
-        if studio_db.get_chat_project(payload.projectId) is None:
-            raise HTTPException(status_code = 400, detail = "Project not found")
+    if payload.projectId and studio_db.get_chat_project(payload.projectId) is None:
+        raise HTTPException(status_code = 400, detail = "Project not found")
     try:
         created = db.create_character_chat(
             character_ids = payload.characterIds,
@@ -450,6 +440,8 @@ def create_character_chat(
             settings = payload.settings.model_dump(exclude_none = True) if payload.settings else None,
             greetings = payload.greetings,
         )
+    except db.PersonaNotFound:
+        raise HTTPException(status_code = 400, detail = _PERSONA_NOT_FOUND) from None
     except LookupError:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND) from None
     except db.LimitReached as exc:
@@ -459,8 +451,7 @@ def create_character_chat(
 
 @router.get("/chats/{thread_id}")
 def get_chat_scene(thread_id: str, current_subject: str = Depends(get_current_subject)):
-    """The chat's cast and scene; 204 for any chat without one, including a new chat not saved yet, so the
-    client can ask about every chat it opens without logging an error."""
+    """204 when the chat has no scene (or isn't saved yet), so the client can probe any chat quietly."""
     scene = db.get_chat_scene(thread_id)
     return scene if scene is not None else Response(status_code = 204)
 
@@ -471,9 +462,6 @@ def update_chat_scene(
     payload: SceneUpdate,
     current_subject: str = Depends(get_current_subject),
 ):
-    if "personaId" in payload.model_fields_set and payload.personaId:
-        if db.get_persona(payload.personaId) is None:
-            raise HTTPException(status_code = 400, detail = _PERSONA_NOT_FOUND)
     try:
         scene = db.update_chat_scene(
             thread_id,
@@ -486,6 +474,8 @@ def update_chat_scene(
             if payload.settings is not None
             else None,
         )
+    except db.PersonaNotFound:
+        raise HTTPException(status_code = 400, detail = _PERSONA_NOT_FOUND) from None
     except LookupError:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND) from None
     except (db.LimitReached, db.NoSpeakerLeft) as exc:

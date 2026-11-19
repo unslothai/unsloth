@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
-import tempfile
 import time
 from pathlib import Path
-from typing import Optional
 
 from filelock import FileLock
+
+from utils.image_files import atomic_write_bytes, sniff_image_type
 
 CLIENT_PREFERENCES_KEY = "client_preferences"
 CHAT_BACKGROUND_KEY = "chat_background"
@@ -66,32 +65,15 @@ def background_lock() -> FileLock:
     return FileLock(str(path.with_name(".chat-background.lock")))
 
 
-def sniff_image_type(data: bytes) -> Optional[str]:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
-
-
 def save_background_image(data: bytes) -> dict:
     if not data or len(data) > MAX_BACKGROUND_IMAGE_BYTES:
         raise ValueError("Background image is empty or too large.")
     media_type = sniff_image_type(data)
-    if media_type is None:
+    if media_type not in BACKGROUND_IMAGE_TYPES:
         raise ValueError("Background image must be PNG, JPEG or WebP.")
     with background_lock():
         path = background_image_path()
-        fd, tmp = tempfile.mkstemp(dir = path.parent, prefix = ".chat-background-")
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok = True)
-            raise
+        atomic_write_bytes(path, data, prefix = ".chat-background-")
         image = {"sha256": hashlib.sha256(data).hexdigest(), "type": media_type, "size": len(data)}
         stored = get_chat_background()
         return _write(

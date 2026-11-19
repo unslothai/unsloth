@@ -7,12 +7,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import time
 import uuid
 from contextlib import contextmanager
 from typing import Callable, Iterator, Optional
 
-from storage.studio_db import delete_chat_threads_in, get_connection
+from storage.studio_db import delete_chat_threads_in, get_connection, now_ms
 
 # Per account. Every run opens a chat, so this also bounds how many chats schedules can make.
 MAX_TASKS = 100
@@ -55,10 +54,6 @@ def _connect(begin: Optional[str] = None) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
-
-
-def now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 def chat_id_for_run(run_id: str) -> str:

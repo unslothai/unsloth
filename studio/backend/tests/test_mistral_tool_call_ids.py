@@ -6,7 +6,9 @@
 import re
 
 import jinja2
+import pytest
 
+from core.inference import chat_template_helpers as helpers
 from core.inference.chat_template_helpers import model_markup, neutralize_control_markup_in_messages
 
 # The tool-call parts of Mistral-Nemo-Instruct-2407's template, as shipped in its GGUF.
@@ -99,3 +101,63 @@ def test_other_templates_keep_their_ids():
     assert not markup.nine_char_tool_call_ids
     out = neutralize_control_markup_in_messages(_exchange(LONG_ID), None, markup)
     assert out[1]["tool_calls"][0]["id"] == LONG_ID
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        "tool_call.id|length != 9",
+        "(tool_call.id | length) != 9",
+        "tool_call['id']|length != 9",
+        'tool_call["id"] | length != 9',
+        "message.tool_call_id|length < 9",
+        "message['tool_call_id']|length == 9",
+    ],
+)
+def test_every_spelling_of_the_length_check_is_detected(check):
+    template = MISTRAL_TEMPLATE.replace("tool_call.id|length != 9", check)
+    assert model_markup(template).nine_char_tool_call_ids
+
+
+def test_a_length_check_on_another_field_is_not_mistaken_for_one():
+    template = MISTRAL_TEMPLATE.replace("|length != 9", "|length != 10").replace(
+        "{{ message.content }}[/INST]", "{% if message.name|length != 9 %}{% endif %}[/INST]"
+    )
+    assert not model_markup(template).nine_char_tool_call_ids
+
+
+def test_a_stand_in_never_takes_an_id_that_already_fits(monkeypatch):
+    real = helpers._nine_char_id
+    monkeypatch.setattr(
+        helpers,
+        "_nine_char_id",
+        lambda original, attempt = 0: "abc123XYZ" if attempt == 0 else real(original, attempt),
+    )
+    markup = model_markup(MISTRAL_TEMPLATE)
+    out = neutralize_control_markup_in_messages(_exchange("abc123XYZ", LONG_ID), None, markup)
+    call_ids = [m["tool_calls"][0]["id"] for m in out if m.get("tool_calls")]
+    assert call_ids[0] == "abc123XYZ" and call_ids[1] != "abc123XYZ"
+    assert re.fullmatch(r"[A-Za-z0-9]{9}", call_ids[1])
+    assert [m["tool_call_id"] for m in out if m.get("role") == "tool"] == call_ids
+
+
+def test_the_llama_cpp_profile_carries_the_flag_from_a_gguf_template():
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._chat_template = MISTRAL_TEMPLATE
+    backend._chat_template_override = None
+    backend._markup_tokens = ["[INST]", "[/INST]", "[TOOL_CALLS]", "[TOOL_RESULTS]", "[/TOOL_RESULTS]"]
+    markup = backend.markup_profile
+    assert markup.nine_char_tool_call_ids
+    out = neutralize_control_markup_in_messages(_exchange(LONG_ID), None, markup)
+    assert _render(out).count("[TOOL_RESULTS]") == 1
+
+
+def test_a_named_template_is_judged_by_the_body_that_renders():
+    chatml = "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
+    named = {"default": chatml, "tool_use": MISTRAL_TEMPLATE}
+    tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+    assert model_markup(named, tools = tools).nine_char_tool_call_ids
+    # The default body renders a no-tools turn, and it has no length check to satisfy.
+    assert not model_markup(named).nine_char_tool_call_ids

@@ -81,6 +81,7 @@ from models.inference import (
 )
 from utils.account_context import current_account_id, is_owner_context
 from utils.api_errors import openai_error_body, problem_headers
+from utils.image_files import sniff_image_type
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
 
 logger = get_logger(__name__)
@@ -1621,24 +1622,6 @@ def _record_epoch(record: dict) -> int:
     return 0
 
 
-_IMAGE_MAGIC = (
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"\xff\xd8\xff", "image/jpeg"),
-    (b"GIF87a", "image/gif"),
-    (b"GIF89a", "image/gif"),
-    (b"BM", "image/bmp"),
-)
-
-
-def _sniff_image_type(data: bytes) -> Optional[str]:
-    for magic, mime in _IMAGE_MAGIC:
-        if data.startswith(magic):
-            return mime
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
-
-
 def _valid_gallery_video_record(record: dict) -> bool:
     try:
         GalleryVideo(**record)
@@ -2091,7 +2074,7 @@ async def _reference_to_data_url(reference: Any, param: str = "input_reference")
                 param = param,
             )
         content_type = (reference.content_type or "").split(";")[0].strip().lower()
-        sniffed = _sniff_image_type(data)
+        sniffed = sniff_image_type(data)
         if not content_type.startswith("image/"):
             if sniffed is None:
                 raise _openai_video_error(400, f"{param} must be an image.", param = param)

@@ -514,6 +514,31 @@ def test_an_ordinary_chat_has_no_scene(client):
     assert client.get("/api/characters/chats/plain").status_code == 204
 
 
+def test_a_scene_edit_on_an_ordinary_chat_is_refused(client):
+    studio_db.upsert_chat_thread({"id": "plain", "modelType": "base", "createdAt": 1})
+    response = client.put("/api/characters/chats/plain", json = {"settings": {"view": "novel"}})
+    assert response.status_code == 404
+    assert client.get("/api/characters/chats/plain").status_code == 204
+    assert client.get("/api/characters/chat-index").json()["chats"] == {}
+
+
+def test_a_card_past_the_tag_and_greeting_limits_says_what_it_dropped(client):
+    extra = cards.MAX_TAGS + 5
+    card = {
+        **V2,
+        "data": {
+            **V2["data"],
+            "tags": [f"t{i}" for i in range(extra)],
+            "alternate_greetings": [f"Hi {i}." for i in range(cards.MAX_GREETINGS + 5)],
+        },
+    }
+    body = _import(client, json.dumps(card).encode(), "many.json").json()
+    assert len(body["character"]["tags"]) == cards.MAX_TAGS
+    assert len(body["character"]["alternateGreetings"]) == cards.MAX_GREETINGS
+    warnings = " ".join(body["warnings"]).lower()
+    assert "tag" in warnings and "greeting" in warnings
+
+
 def test_deleting_a_character_keeps_its_chats_and_deleting_a_chat_drops_its_scene(client):
     a = client.post("/api/characters", json = {"name": "Ann", "firstMes": "Hi."}).json()
     thread_id = client.post("/api/characters/chats", json = {"characterIds": [a["id"]]}).json()[
@@ -702,12 +727,13 @@ def test_repeated_compressed_card_chunks_are_not_all_inflated(monkeypatch):
     assert card["data"]["name"] == "Mira" and chunks == ["chara"]
     assert len(calls) == 1
     monkeypatch.setattr(cards, "MAX_CARD_BYTES", 4096)
-    bomb = _png()
-    for _ in range(8):
-        # Not a card, so each one is inflated and spends the budget.
-        bomb = _with_text(bomb, "ccv3", "x" * 3000, b"zTXt")
+    # Each junk chunk fits the limit alone; together they spend it, so the card after them is not inflated.
+    one = _with_text(_png(), "ccv3", "x" * 1500, b"zTXt")
+    assert cards.read_png_card(_with_text(one, "chara", V2, b"zTXt"))[0]["data"]["name"] == "Mira"
+    two = _with_text(one, "ccv3", "x" * 1500, b"zTXt")
     calls.clear()
-    assert cards.read_png_card(_with_text(bomb, "chara", V2, b"zTXt"))[0] is None
+    assert cards.read_png_card(_with_text(two, "chara", V2, b"zTXt"))[0] is None
+    assert len(calls) == 3, "the card chunk starts inflating and stops at the spent budget"
 
 
 def test_scene_settings_merge_so_tabs_keep_each_others_edits(client):
