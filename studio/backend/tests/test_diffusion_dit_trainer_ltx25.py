@@ -725,7 +725,6 @@ def test_resuming_onto_another_dit_is_refused(tiny_trainer, tmp_path, monkeypatc
     monkeypatch.setenv(dit.LTX25_TRAIN_DIT_ENV, "distilled")
     with pytest.raises(ResumeError, match = "base DiT"):
         tiny_trainer.run(output_dir = run_dir, resume_from_checkpoint = str(bundle))
-    # The same DiT resumes.
     monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV)
     events = tiny_trainer.run(output_dir = run_dir, resume_from_checkpoint = str(bundle))
     assert [e["step"] for e in events if e.get("type") == "progress"] == [3, 4]
@@ -768,5 +767,4 @@ def test_a_bundle_from_before_the_field_resumes_only_onto_the_default_dit():
     new = CheckpointIdentity(**base, base_dit = dev.base_dit, base_dit_revision = "rev-bbb")
     assert "base DiT revision" in old.mismatch_reason(new)
     assert old.mismatch_reason(dev) is None
-    # Round-trips through the manifest.
     assert CheckpointIdentity.from_dict(old.as_dict()) == old
