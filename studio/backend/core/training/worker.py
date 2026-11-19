@@ -3333,7 +3333,16 @@ def _run_mlx_training(
     )
     from utils.models import detect_audio_type
 
-    audio_type = detect_audio_type(model_load_name, hf_token) if is_dataset_audio else None
+    audio_type = (
+        detect_audio_type(
+            model_load_name,
+            hf_token,
+            local_files_only = model_local_only,
+            revision = model_revision,
+        )
+        if is_dataset_audio
+        else None
+    )
     if audio_type not in (None, "audio_vlm"):
         raise ValueError(_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL)
     use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
