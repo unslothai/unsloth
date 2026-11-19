@@ -106,6 +106,8 @@ class BudgetedCheckpoint:
         self.step_downs = 0
         # The room the plan had for kept activations; what they leave of it is ``spare_bytes``.
         self.headroom = 0
+        # free + reserved bytes the plan saw: memory another process took since comes off ``spare_bytes_now``.
+        self.planned_avail = 0
 
     def _block_index(self, owner: Any) -> int:
         key = id(owner)
@@ -167,6 +169,7 @@ class BudgetedCheckpoint:
         margin = max(_MARGIN_MIN_BYTES, int(total_bytes * _MARGIN_FRACTION))
         headroom = int((free_bytes + reserved_bytes - projected_peak - margin) * _HEADROOM_SHARE)
         self.headroom = max(0, headroom)
+        self.planned_avail = int(free_bytes) + int(reserved_bytes)
         self._choose(sorted(self.block_class), headroom)
         return len(self.keep)
 
@@ -176,6 +179,19 @@ class BudgetedCheckpoint:
         if self.disabled or self.step_downs:
             return 0
         return max(0, self.headroom - self.kept_bytes)
+
+    def spare_bytes_now(self) -> int:
+        """``spare_bytes`` less what the card lost since the plan (another load took it); 0 when unreadable."""
+        spare = self.spare_bytes
+        if spare <= 0:
+            return 0
+        try:
+            import torch
+            free, _total = torch.cuda.mem_get_info()
+            avail = int(free) + int(torch.cuda.memory_reserved())
+        except Exception:  # noqa: BLE001 -- unknown: cache nothing
+            return 0
+        return max(0, spare - max(0, self.planned_avail - avail))
 
     def _choose(self, order: list, room: int) -> None:
         # A block that does not fit (or an unmeasured one) stays checkpointed; a cheaper one after it can still fit.

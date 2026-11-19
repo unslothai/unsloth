@@ -3968,6 +3968,9 @@ def _train_dit(
             stop_latched = True
         return stop_latched
 
+    # Set below once the budget is known; a preview before then has no copies to drop.
+    fp8_backward = None
+
     def _sample(step: int) -> None:
         nonlocal sample_plan, t_rate, t_steady
         if sample_plan is None:
@@ -3977,6 +3980,9 @@ def _train_dit(
         if dequant_cache is not None:
             # The preview needs the room; the following steps refill the cache.
             dequant_cache.suspend()
+        if fp8_backward is not None:
+            # Same for the fp8 backward copies (a preview runs no backward; the next one refills them).
+            fp8_backward.clear(keep_budget = True)
         try:
             with isolated_sampling(device, compiled):
                 transformer.eval()
@@ -4071,7 +4077,9 @@ def _train_dit(
         fp8_backward.clear()
         fp8_backward.active = fp8_backward.enabled()
         if dequant_cache is None:
-            set_vram_request_handler(fp8_backward_vram_handler(fp8_backward))
+            set_vram_request_handler(
+                fp8_backward_vram_handler(fp8_backward, room = gc_budget.spare_bytes_now)
+            )
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
     consecutive_skips = 0

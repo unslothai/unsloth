@@ -154,8 +154,9 @@ class Fp8BackwardWeights:
 BACKWARD_WEIGHTS = Fp8BackwardWeights()
 
 
-def fp8_backward_vram_handler(cache: Fp8BackwardWeights = BACKWARD_WEIGHTS):
-    """lend_vram: give the copies back before another Studio load, keep making them per backward until returned."""
+def fp8_backward_vram_handler(cache: Fp8BackwardWeights = BACKWARD_WEIGHTS, room = None):
+    """lend_vram: give the copies back before another Studio load, keep making them per backward until returned.
+    ``room()`` caps the returned budget (a step-down or the new load since the lend leaves less)."""
     lent = {"budget": 0}
 
     def handle(kind: str) -> dict:
@@ -167,7 +168,13 @@ def fp8_backward_vram_handler(cache: Fp8BackwardWeights = BACKWARD_WEIGHTS):
             if freed and torch.cuda.is_available():
                 torch.cuda.empty_cache()
         elif kind == "return":
-            cache.plan(lent["budget"])
+            budget = lent["budget"]
+            if room is not None:
+                try:
+                    budget = min(budget, int(room()))
+                except Exception:  # noqa: BLE001 -- unknown room: cache nothing
+                    budget = 0
+            cache.plan(budget)
             lent["budget"] = 0
         return {"kind": kind, "freed_gib": round(freed / (1 << 30), 3), **cache.stats()}
 

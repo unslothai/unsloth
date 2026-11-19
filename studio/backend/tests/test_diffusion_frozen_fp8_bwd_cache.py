@@ -133,6 +133,34 @@ def test_lend_frees_and_return_restores():
     assert len(f8.BACKWARD_WEIGHTS.entries) == 3
 
 
+def test_return_never_restores_more_than_the_room_left():
+    model = _model()
+    f8.BACKWARD_WEIGHTS.plan(GIB)
+    _grad_x(model)
+    room = {"bytes": GIB}
+    handle = f8.fp8_backward_vram_handler(room = lambda: room["bytes"])
+    handle("lend")
+    # A step-down (or the lent load) left room for one layer's copy only.
+    room["bytes"] = 64 * 64
+    handle("return")
+    assert f8.BACKWARD_WEIGHTS.budget == 64 * 64
+    _grad_x(model)
+    assert len(f8.BACKWARD_WEIGHTS.entries) == 1
+    handle("lend")
+    room["bytes"] = 0
+    handle("return")
+    assert f8.BACKWARD_WEIGHTS.budget == 0 and f8.BACKWARD_WEIGHTS.entries == {}
+
+    def unreadable():
+        raise RuntimeError("no device")
+
+    f8.BACKWARD_WEIGHTS.plan(GIB)
+    handle = f8.fp8_backward_vram_handler(room = unreadable)
+    handle("lend")
+    handle("return")
+    assert f8.BACKWARD_WEIGHTS.budget == 0
+
+
 def test_a_freed_weight_is_never_served_for_another():
     a = _model(n = 1)
     f8.BACKWARD_WEIGHTS.plan(GIB)
