@@ -16,19 +16,22 @@ import re
 import shutil
 import stat
 import sys
+import tarfile
 import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Optional, Sequence
+from typing import Any, NamedTuple, Optional, Sequence
 
 if __package__:
+    from . import prebuilt_core as _core
     from .backend.utils.auth_safe import auth_safe_open
     from .backend.utils.subprocess_compat import windows_loader_error_boxes_suppressed
 else:
     _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
     if _STUDIO_DIR not in sys.path:
         sys.path.insert(0, _STUDIO_DIR)
+    import prebuilt_core as _core
     from backend.utils.auth_safe import auth_safe_open
     from backend.utils.subprocess_compat import windows_loader_error_boxes_suppressed
 
@@ -114,11 +117,18 @@ def _write_install_record(
     repo: str,
     tag: Optional[str],
     ships_server: Optional[bool] = None,
+    asset: Optional[str] = None,
+    cuda_sms: Optional[list[str]] = None,
 ) -> None:
     """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one. The write itself stays best-effort (a metadata failure must not throw away binaries that extracted correctly) but the answer is memoised either way, so this process never re-installs what it just installed."""
     klass = accelerator_class(accelerator)
     # The pin this install was for; a fallback tag never equals it.
     rec: dict = {"accelerator": klass, "repo": repo, "tag": tag, "requested_tag": _pinned_tag()}
+    if asset:
+        rec["asset"] = asset
+    # Only a per-GPU-family pick records its SMs: a GPU it does not serve makes the install stale.
+    if cuda_sms:
+        rec["cuda_sms"] = list(cuda_sms)
     if ships_server is not None:
         rec["ships_server"] = ships_server
         _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
@@ -152,7 +162,29 @@ def _pinned_tag() -> Optional[str]:
 
 
 def install_is_stale(root: Path) -> bool:
-    """True when ``root`` was installed for another pin. Unknown (no record / tag, tracking latest) is not stale."""
+    """True when ``root`` was installed for another pin, or is a per-GPU-family CUDA bundle that does
+    not serve a GPU this host now has (a card swapped since the install). Unknown (no record / tag,
+    tracking latest, undetectable GPUs) is not stale."""
+    return _pin_is_stale(root) or _cuda_coverage_is_stale(root)
+
+
+def _cuda_coverage_is_stale(root: Path) -> bool:
+    rec = read_install_record(root)
+    sms = rec.get("cuda_sms")
+    if rec.get("accelerator") != "cuda" or not isinstance(sms, list) or not sms:
+        return False
+    physical, _visible = host_cuda_sms()
+    missing = [sm for sm in physical if sm not in {str(v) for v in sms}]
+    if missing:
+        print(
+            f"sd-cli: installed {rec.get('asset') or 'CUDA bundle'} has no kernels for sm_{',sm_'.join(missing)}; "
+            "reinstalling for this GPU",
+            flush = True,
+        )
+    return bool(missing)
+
+
+def _pin_is_stale(root: Path) -> bool:
     want = _pinned_tag()
     if not want:
         return False
@@ -270,6 +302,270 @@ def resolve_release_asset(
     else:
         sel = [a for a in pool if not any(m in a.lower() for m in _ACCEL_MARKERS)]
     return sel[0] if sel else None
+
+
+# ── Per-GPU-family CUDA bundles ──
+# A release built since the split ships, per CUDA line, an "older" and a "newer" bundle beside the
+# "portable" one that keeps the pre-split name, and sd-prebuilt-manifest.json records which SMs each
+# covers: unslothai/llama.cpp's scheme, and its selector's ordering (linux_cuda_choice_from_release in
+# install_llama_prebuilt.py). A release without that manifest data (every one before the split) keeps
+# the name-based pick in resolve_release_asset, which only ever sees the portable bundle.
+SD_MANIFEST_ASSET = "sd-prebuilt-manifest.json"
+# Overrides the detected compute capabilities ("75" / "7.5,8.9"), e.g. to see what a card would get.
+_CUDA_SMS_ENV = "UNSLOTH_SD_CPP_CUDA_SMS"
+_MANIFEST_MAX_BYTES = 4 * 1024 * 1024
+_MANIFEST_OS = {"linux": "linux", "windows": "windows"}
+_MANIFEST_ARCH = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}
+
+
+class CudaBundle(NamedTuple):
+    """One CUDA bundle from the release manifest. Field names match llama.cpp's
+    PublishedLlamaArtifact so prebuilt_core's SM helpers apply to both. A NamedTuple, not a
+    dataclass: this module is also loaded from a spec without a sys.modules entry, which a
+    dataclass with postponed annotations cannot resolve."""
+
+    asset_name: str
+    runtime_line: str
+    coverage_class: str
+    rank: int
+    supported_sms: list[str]
+    min_sm: Optional[int]
+    max_sm: Optional[int]
+    ptx_sms: list[str]
+
+
+def cuda_bundles_from_manifest(manifest: Any, *, system: str, machine: str) -> list[CudaBundle]:
+    """The manifest's CUDA bundles for this OS / arch. Entries without SM coverage (every
+    pre-split asset, and anything malformed) are skipped, never guessed at."""
+    os_token = _MANIFEST_OS.get(system.lower())
+    arch_token = _MANIFEST_ARCH.get(machine.lower())
+    assets = manifest.get("assets") if isinstance(manifest, dict) else None
+    if not os_token or not arch_token or not isinstance(assets, list):
+        return []
+    out: list[CudaBundle] = []
+    for raw in assets:
+        if not isinstance(raw, dict) or raw.get("backend") != "cuda":
+            continue
+        if raw.get("os") != os_token or raw.get("arch") != arch_token:
+            continue
+        name, line, klass = raw.get("name"), raw.get("runtime_line"), raw.get("coverage_class")
+        sms = _core.normalize_compute_caps(raw.get("supported_sms") or [])
+        min_sm, max_sm, rank = raw.get("min_sm"), raw.get("max_sm"), raw.get("rank")
+        if not (isinstance(name, str) and isinstance(line, str) and isinstance(klass, str) and sms):
+            continue
+        if not (isinstance(min_sm, int) and isinstance(max_sm, int) and isinstance(rank, int)):
+            continue
+        out.append(
+            CudaBundle(
+                asset_name = name,
+                runtime_line = line,
+                coverage_class = klass,
+                rank = rank,
+                supported_sms = sms,
+                min_sm = min_sm,
+                max_sm = max_sm,
+                ptx_sms = _core.normalize_compute_caps(raw.get("ptx_sms") or []),
+            )
+        )
+    return out
+
+
+def _jit_covers(bundle: CudaBundle, host_sms: Sequence[str]) -> bool:
+    """Every host SM either has SASS here or can JIT this bundle's PTX (a PTX target loads on any
+    SM at or above it). Only reached for a host no bundle covers natively, e.g. a newer card."""
+    supported = set(bundle.supported_sms)
+    return all(
+        (sm in supported and bundle.min_sm <= int(sm) <= bundle.max_sm)
+        or any(int(p) <= int(sm) for p in bundle.ptx_sms)
+        for sm in host_sms
+    )
+
+
+def select_cuda_bundles(
+    bundles: Sequence[CudaBundle],
+    asset_names: Sequence[str],
+    *,
+    cuda_major: Optional[str],
+    host_sms: Sequence[str],
+) -> tuple[list[CudaBundle], list[str]]:
+    """Ordered CUDA bundle attempts for this host plus a selection log; pure. llama.cpp's order: the
+    tightest covering family bundle ((max_sm - min_sm), rank, max_sm), then the portable one; with
+    unknown compute capability only the portable one. A host no bundle lists (a card newer than the
+    build) takes the bundles whose PTX it can JIT, family before portable, where llama.cpp would build
+    from source. Empty when nothing applies, so the caller keeps the name-based pick."""
+    line = f"cuda{cuda_major or '12'}"
+    present = set(asset_names)
+    host_sms = _core.normalize_compute_caps(host_sms)
+    log = [f"sd_cuda_selection: runtime_line={line} detected_sms={','.join(host_sms) or 'unknown'}"]
+    native: list[CudaBundle] = []
+    portable: list[CudaBundle] = []
+    jit: list[CudaBundle] = []
+    for b in bundles:
+        if b.runtime_line != line:
+            continue
+        if b.asset_name not in present:
+            log.append(f"sd_cuda_selection: reject {b.asset_name} missing asset")
+            continue
+        if not host_sms:
+            if b.coverage_class == "portable":
+                portable.append(b)
+            else:
+                log.append(
+                    f"sd_cuda_selection: reject {b.asset_name} reason=unknown_compute_caps_prefer_portable"
+                )
+            continue
+        if _core.artifact_covers_sms(b, host_sms):
+            (portable if b.coverage_class == "portable" else native).append(b)
+            log.append(
+                f"sd_cuda_selection: accept {b.asset_name} coverage_class={b.coverage_class} "
+                f"coverage={b.min_sm}-{b.max_sm}"
+            )
+        elif _jit_covers(b, host_sms):
+            jit.append(b)
+            log.append(
+                f"sd_cuda_selection: jit-only {b.asset_name} ptx={','.join(b.ptx_sms)} "
+                f"coverage={b.min_sm}-{b.max_sm}"
+            )
+        else:
+            log.append(
+                f"sd_cuda_selection: reject {b.asset_name} coverage={b.min_sm}-{b.max_sm} "
+                f"supported={','.join(b.supported_sms)}"
+            )
+    by_coverage = lambda b: (_core.sm_range(b), b.rank, b.max_sm or 0)  # noqa: E731
+    attempts = sorted(native, key = by_coverage)[:1] + sorted(portable, key = lambda b: b.rank)[:1]
+    if not attempts and jit:
+        # The family bundle with the newest PTX JITs as well as the portable one at a fraction of the
+        # download; an older family's PTX would lose the newer kernels, so it is not an attempt.
+        newest_ptx = lambda b: (-max(map(int, b.ptx_sms)), by_coverage(b))  # noqa: E731
+        attempts = sorted((b for b in jit if b.coverage_class != "portable"), key = newest_ptx)[:1]
+        attempts += sorted((b for b in jit if b.coverage_class == "portable"), key = newest_ptx)[:1]
+        log.append("sd_cuda_selection: no bundle lists these SMs; using PTX JIT")
+    log.append(
+        "sd_cuda_selection: attempt_order=" + (",".join(b.asset_name for b in attempts) or "none")
+    )
+    return attempts, log
+
+
+def _sms_from_env() -> Optional[tuple[list[str], list[str]]]:
+    raw = (os.environ.get(_CUDA_SMS_ENV) or "").strip()
+    if not raw:
+        return None
+    sms = _core.normalize_compute_caps(t for t in re.split(r"[ ,;]+", raw) if t)
+    return sms, sms
+
+
+_HOST_SMS_CACHE: list[tuple[list[str], list[str]]] = []
+
+
+def host_cuda_sms() -> tuple[list[str], list[str]]:
+    """(every physical GPU's SMs, the visible GPUs' SMs), from the llama.cpp installer's
+    detect_host (nvidia-smi, with its CUDA_VISIBLE_DEVICES handling), cached per process; a GPU
+    swap needs a restart anyway. ([], []) when it cannot tell."""
+    override = _sms_from_env()
+    if override is not None:
+        return override
+    if not _HOST_SMS_CACHE:
+        try:
+            if __package__:
+                from . import install_llama_prebuilt as _llama
+            else:
+                import install_llama_prebuilt as _llama  # type: ignore[no-redef]
+            host = _llama.detect_host()
+            visible = _core.normalize_compute_caps(host.compute_caps)
+            physical = _core.normalize_compute_caps(list(host.physical_compute_caps) + visible)
+            _HOST_SMS_CACHE.append((physical, visible))
+        except Exception as exc:  # noqa: BLE001 -- unknown capability -> the portable bundle
+            print(f"sd-cli: compute capability detection failed ({exc})", flush = True)
+            _HOST_SMS_CACHE.append(([], []))
+    return _HOST_SMS_CACHE[0]
+
+
+def _fetch_manifest(release: dict, *, timeout: float = 30.0) -> Optional[dict]:
+    """The release's sd-prebuilt-manifest.json, checked against its GitHub digest, or None when
+    the release has none or it cannot be read (the caller then keeps the name-based pick)."""
+    asset = next(
+        (a for a in (release.get("assets") or []) if a.get("name") == SD_MANIFEST_ASSET), None
+    )
+    if asset is None or not asset.get("browser_download_url"):
+        return None
+    req = urllib.request.Request(
+        asset["browser_download_url"], headers = {"User-Agent": "unsloth-sd-cpp-installer"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:  # noqa: S310
+            data = resp.read(_MANIFEST_MAX_BYTES + 1)
+        if len(data) > _MANIFEST_MAX_BYTES:
+            raise ValueError("manifest too large")
+        algo, _, want = (asset.get("digest") or "").partition(":")
+        if algo.lower() == "sha256" and want and hashlib.sha256(data).hexdigest() != want.lower():
+            raise ValueError("sha256 mismatch")
+        payload = json.loads(data.decode("utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except Exception as exc:  # noqa: BLE001 -- any manifest failure -> the pre-split pick
+        print(f"sd-cli: {SD_MANIFEST_ASSET} unusable ({exc}); picking by asset name", flush = True)
+        return None
+
+
+# Asset name -> the SMs the installed bundle serves, for the install record (GPU-swap staleness).
+_SELECTED_CUDA_SMS: dict[str, list[str]] = {}
+
+
+def _resolve_cuda_bundle(
+    release: dict, names: Sequence[str], *, system: str, machine: str, cuda_major: Optional[str]
+) -> Optional[str]:
+    """The per-GPU-family bundle for this host, or None to keep the name-based pick (a release
+    without the split, no covering bundle, or no manifest)."""
+    if SD_MANIFEST_ASSET not in names:
+        return None
+    if not any(n.endswith(".tar.gz") or "-x64-cuda" in n for n in names):
+        return None
+    bundles = cuda_bundles_from_manifest(
+        _fetch_manifest(release) or {}, system = system, machine = machine
+    )
+    if not bundles:
+        return None
+    physical, visible = host_cuda_sms()
+    attempts, log = select_cuda_bundles(bundles, names, cuda_major = cuda_major, host_sms = physical)
+    if visible != physical:
+        # Cover every card the mask hides first, as llama.cpp does; the visible-only pick follows.
+        more, more_log = select_cuda_bundles(
+            bundles, names, cuda_major = cuda_major, host_sms = visible
+        )
+        attempts += [b for b in more if b not in attempts]
+        log += more_log
+    for line in log:
+        print(line, file = sys.stderr, flush = True)
+    if not attempts:
+        return None
+    chosen = attempts[0]
+    _SELECTED_CUDA_SMS[chosen.asset_name] = _core.normalize_compute_caps(
+        list(chosen.supported_sms) + (physical if _jit_covers(chosen, physical) else visible)
+    )
+    return chosen.asset_name
+
+
+def _tar_gz_to_zip(archive: Path, dest: Path) -> None:
+    """Repack a .tar.gz bundle (Linux per-family CUDA) as a stored zip, so it goes through exactly
+    the extraction, sweep and replacement path a .zip does. Regular files and directories only:
+    the bundles hold no links, so any link, device or path escaping the archive is refused."""
+    with tarfile.open(archive, "r:gz") as tf, zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as zf:
+        for m in tf:
+            name = m.name
+            parts = PurePosixPath(name).parts
+            if name.startswith("/") or "\\" in name or ".." in parts or PureWindowsPath(name).drive:
+                raise RuntimeError(f"archive {archive.name} has an unsafe member path: {name!r}")
+            if m.isdir():
+                continue
+            if not m.isfile():
+                raise RuntimeError(f"archive {archive.name} has a non-regular member: {name!r}")
+            info = zipfile.ZipInfo(name, date_time = (1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | (m.mode & 0o777)) << 16
+            src = tf.extractfile(m)
+            if src is None:
+                raise RuntimeError(f"archive {archive.name}: cannot read {name!r}")
+            with src, zf.open(info, "w", force_zip64 = True) as out:
+                shutil.copyfileobj(src, out, 1 << 20)
 
 
 def _fetch_release(
@@ -934,13 +1230,23 @@ def _resolve_repo_asset(
     if release is None:
         return None, None
     names = [a["name"] for a in (release.get("assets") or [])]
-    chosen = resolve_release_asset(
-        names,
-        system = platform.system(),
-        machine = platform.machine(),
-        accelerator = accelerator,
-        cuda_major = cuda_major,
-    )
+    chosen = None
+    if accelerator_class(accelerator) == "cuda":
+        chosen = _resolve_cuda_bundle(
+            release,
+            names,
+            system = platform.system(),
+            machine = platform.machine(),
+            cuda_major = cuda_major,
+        )
+    if chosen is None:
+        chosen = resolve_release_asset(
+            names,
+            system = platform.system(),
+            machine = platform.machine(),
+            accelerator = accelerator,
+            cuda_major = cuda_major,
+        )
     return release, chosen
 
 
@@ -1044,12 +1350,18 @@ def install(
         except OSError:
             pass
     archive = target / chosen
+    # A .tar.gz bundle is repacked to this zip, then installed exactly as a .zip is.
+    repacked = target / (chosen + ".zip") if chosen.endswith(".tar.gz") else None
     # Once set, later failures are reported as an incomplete replacement.
     replacing = False
     print(f"downloading {chosen} -> {archive}", flush = True)
     try:
         _download(url, archive)
         _verify_sha256(archive, asset.get("digest"))
+        if repacked is not None:
+            _tar_gz_to_zip(archive, repacked)
+            archive.unlink(missing_ok = True)
+            archive = repacked
         # Probe before touching the tree so a refused bundle never sweeps a working one.
         if _should_verify(chosen):
             _verify_bundle_starts(
@@ -1087,6 +1399,9 @@ def install(
         # Always drop the archive so a corrupt one cannot defeat a retry.
         try:
             archive.unlink(missing_ok = True)
+            if repacked is not None:
+                (target / chosen).unlink(missing_ok = True)
+                repacked.unlink(missing_ok = True)
         except OSError as exc:
             if replacing:
                 raise SupersededBinaryError(
@@ -1122,6 +1437,8 @@ def install(
             tag = release.get("tag_name"),
             # From the member list: a leftover server on disk is indistinguishable.
             ships_server = any(p.name == _binary_names()[1] for p in supplied),
+            asset = chosen,
+            cuda_sms = _SELECTED_CUDA_SMS.get(chosen),
         )
     return sd_cli
 
