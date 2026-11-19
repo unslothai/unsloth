@@ -5929,3 +5929,15 @@ def test_the_drafter_picker_lists_cached_drafters_of_a_cached_target(tmp_path, m
     assert ri._mlx_cached_drafters("o/absent") == []
     monkeypatch.setattr(ri.account_access, "filter_model_rows", lambda rows: rows[1:])
     assert [row["repo_id"] for row in ri._mlx_cached_drafters("o/T")] == ["o/T-MTP"]
+
+
+def test_a_vision_off_text_route_prices_no_auto_drafter(monkeypatch):
+    from core.inference import mlx_inference, mlx_memory, mlx_speculative
+
+    monkeypatch.setattr(mlx_memory, "_loads_as_vision", lambda _config: True)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_: None)
+    monkeypatch.setattr(mlx_inference, "_text_load_drops_the_tower", lambda _model: True)
+    request = SimpleNamespace(speculative_type = "auto", spec_draft_model = None)
+    assert ri._mlx_estimate_speculates(request, "/m")
+    with mlx_memory.mlx_dropping_vision(SimpleNamespace(is_vision = True), True):
+        assert not ri._mlx_estimate_speculates(request, "/m")

@@ -16027,12 +16027,15 @@ def _mlx_offload_warning(info: dict) -> Optional[str]:
 
 def _mlx_estimate_speculates(request, model_dir) -> bool:
     from core.inference import mlx_speculative
-    from core.inference.mlx_memory import _loads_as_vision, _snapshot_config
+    from core.inference.mlx_inference import _text_load_drops_the_tower
+    from core.inference.mlx_memory import _DROPS_VISION, _loads_as_vision, _snapshot_config
 
     mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
-    if not mlx_speculative.speculates_on_route(
-        mode, _loads_as_vision(_snapshot_config(model_dir) or {}), request.spec_draft_model
-    ):
+    vision = _loads_as_vision(_snapshot_config(model_dir) or {})
+    # Vision off loads such a checkpoint as text, which an auto drafter does not serve.
+    if vision and _DROPS_VISION.get() and _text_load_drops_the_tower(model_dir):
+        vision = False
+    if not mlx_speculative.speculates_on_route(mode, vision, request.spec_draft_model):
         return False
     return not mlx_speculative.speculation_refusal(distributed = False, lora = False)
 
