@@ -3124,25 +3124,31 @@ class InferenceOrchestrator:
         if not self._gen_lock.acquire(blocking = False):
             return None
         try:
-            with self._mailbox_lock:
-                if self._mailboxes:
+            with contextlib.ExitStack() as held:
+                # Reserved before the idle check, so a dispatched chat cannot slip in ahead of the count.
+                try:
+                    held.enter_context(self._reserve_worker("a screenshot is being sized"))
+                except RuntimeError:
                     return None
-            request_id = str(uuid.uuid4())
-            read_one, _drain, release_mailbox = self._direct_reader(request_id)
-            try:
-                self._send_cmd(
-                    {
-                        "type": "image_tokens",
-                        "request_id": request_id,
-                        "width": width,
-                        "height": height,
-                    }
-                )
-                resp = self._await_reply(
-                    read_one, request_id, "image_tokens_response", "image tokens", timeout
-                )
-            finally:
-                release_mailbox()
+                with self._mailbox_lock:
+                    if self._mailboxes:
+                        return None
+                request_id = str(uuid.uuid4())
+                read_one, _drain, release_mailbox = self._direct_reader(request_id)
+                try:
+                    self._send_cmd(
+                        {
+                            "type": "image_tokens",
+                            "request_id": request_id,
+                            "width": width,
+                            "height": height,
+                        }
+                    )
+                    resp = self._await_reply(
+                        read_one, request_id, "image_tokens_response", "image tokens", timeout
+                    )
+                finally:
+                    release_mailbox()
         finally:
             self._gen_lock.release()
         if resp is None or resp.get("error"):
