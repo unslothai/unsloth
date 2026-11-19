@@ -533,10 +533,7 @@ _ROCM_GFX1200_DEVICES = frozenset(
 
 def rocm_gfx1200_requires_expanded_gqa(device) -> bool:
     """Whether a device needs the gfx1200 ROCm SDPA compatibility route."""
-    if (
-        DEVICE_TYPE != "hip"
-        or os.environ.get("UNSLOTH_ALLOW_ROCM_GFX1200_SDPA", "0") == "1"
-    ):
+    if DEVICE_TYPE != "hip" or os.environ.get("UNSLOTH_ALLOW_ROCM_GFX1200_SDPA", "0") == "1":
         return False
     index = getattr(device, "index", None)
     if index is None:
@@ -545,6 +542,7 @@ def rocm_gfx1200_requires_expanded_gqa(device) -> bool:
         except Exception:
             return False
     return index in _ROCM_GFX1200_DEVICES
+
 
 # Packed SDPA runs per segment: a dense (T, T) mask + enable_gqa leaves only the math kernel.
 _SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lower() not in (

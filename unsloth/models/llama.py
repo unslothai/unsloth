@@ -977,7 +977,11 @@ def _decode_attention_span(self, Qn, static, bsz, sdpa_gqa_with_batch_mask):
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         return _gqa_decode_values(A, Vnn, Qn)
     # The mask is always batched here: as the eager core, Qwen3 expands K / V instead of SDPA GQA.
-    if SDPA_HAS_GQA and sdpa_gqa_with_batch_mask and not rocm_gfx1200_requires_expanded_gqa(Qn.device):
+    if (
+        SDPA_HAS_GQA
+        and sdpa_gqa_with_batch_mask
+        and not rocm_gfx1200_requires_expanded_gqa(Qn.device)
+    ):
         return scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = keep, enable_gqa = True)
     if n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, span, head_dim)
