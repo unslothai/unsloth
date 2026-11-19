@@ -120,3 +120,16 @@ test("Reload and generate survives a staged engine reload and binds to the load 
   const reapply = page.slice(page.indexOf("const reapplyLoad = useCallback("));
   assert.match(reapply.slice(0, reapply.indexOf("const handleReapply")), /!started && pendingRecalledGeneration\.current\?\.load === "next"/);
 });
+
+test("a status without the baked set never asks for a reload, and the backend reports that set", () => {
+  // Absent, the page cannot tell a baked LoRA from a new one; reading it as none baked made every Generate a reload.
+  const { baked_lora_specs: _omitted, ...noSpecs } = int8([{ id: "tarot", weight: 1 }]);
+  assert.equal(loraReloadReason(noSpecs, [{ id: "tarot", weight: 1 }]), null);
+  assert.equal(loraReloadReason({ ...noSpecs, baked_lora_specs: null }, [{ id: "tarot", weight: 1 }]), null);
+  // The /images/status response model must declare the field, or pydantic drops it from every answer.
+  const models = readText("../../backend/models/inference.py");
+  const start = models.indexOf("class DiffusionStatusResponse(BaseModel):");
+  const end = models.indexOf("\nclass ", start + 1);
+  assert.ok(start >= 0 && end > start);
+  assert.match(models.slice(start, end), /\n    baked_lora_specs: list\[dict\] = Field\(/);
+});

@@ -66,8 +66,11 @@ export function loraReloadReason(
   loras: readonly LoraPick[],
 ): string | null {
   if (!status?.loaded || status.supports_lora === false || !bakesLorasAtLoad(status)) return null;
+  // A status without the baked set cannot tell a baked selection from a new one: the backend decides, and its
+  // refusal still offers the reload. Read as "none baked", every click would reload and never generate.
+  if (status.baked_lora_specs == null) return null;
   const picks = activePicks(loras);
-  const baked = (status.baked_lora_specs ?? []).filter((s) => s && s.id && s.weight !== 0);
+  const baked = status.baked_lora_specs.filter((s) => s && s.id && s.weight !== 0);
   const h3 = (status.family ?? "").trim().toLowerCase() === H3_IMAGE_FAMILY;
   if (h3) {
     // Merged into the weights: the selection AND weights are fixed for the load.

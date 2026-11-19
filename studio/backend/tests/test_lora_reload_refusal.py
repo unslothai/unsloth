@@ -132,3 +132,26 @@ def test_openai_images_carry_the_reload_code(monkeypatch):
     monkeypatch.setattr(backend, "generate", _plain)
     resp = cli.post("/v1/images/generations", json = body)
     assert resp.status_code == 400 and resp.json()["error"]["code"] is None
+
+
+def test_images_status_reports_the_baked_specs(client, monkeypatch):
+    # The Images page reads baked_lora_specs to tell a baked selection from one that needs a reload. Dropped by the
+    # status response model, every LoRA on an INT8 build read as unbaked and Generate offered a reload forever.
+    backend = diffusion_module.get_diffusion_backend()
+    baked = [{"id": "tarot", "weight": 0.8}]
+    monkeypatch.setattr(
+        backend,
+        "status",
+        lambda: {
+            "loaded": True,
+            "repo_id": "OpenMOSS-Team/MOSS-Image",
+            "family": "moss-image",
+            "transformer_quant": "int8",
+            "supports_lora": True,
+            "baked_loras": ["tarot"],
+            "baked_lora_specs": baked,
+        },
+    )
+    body = client.get("/api/inference/images/status").json()
+    assert body["baked_lora_specs"] == baked
+    assert body["baked_loras"] == ["tarot"]
