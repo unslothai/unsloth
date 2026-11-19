@@ -214,6 +214,17 @@ def _clean_module_globals():
     cg._CAPTURE_STREAMS.clear()
 
 
+@pytest.fixture
+def side_stream_warmups(monkeypatch):
+    """The side-stream warm-ups (UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP=0): a key's first call runs WARMUP_ITERS discarded
+    forwards and records. The tests of what that first-call recording does pin it; the default (the first real steps
+    are the warm-ups, the next one records) has its own tests below."""
+    monkeypatch.setenv(cg.REAL_WARMUP_ENV, "0")
+
+
+side_stream = pytest.mark.usefixtures("side_stream_warmups")
+
+
 def _t(shape = (1, 4), **kwargs):
     return _FakeTensor(shape, **kwargs)
 
@@ -280,6 +291,7 @@ def test_return_dict_true_or_absent_runs_eager(stub_torch):
     assert module.calls == 2
 
 
+@side_stream
 def test_capture_then_replay_uses_one_graph_and_copies_statics(stub_torch):
     module = _FakeDiT()
     handle = _armed(module)
@@ -299,6 +311,7 @@ def test_capture_then_replay_uses_one_graph_and_copies_statics(stub_torch):
     assert stub_torch._records["inference_mode"] == [False]
 
 
+@side_stream
 def test_each_card_records_on_its_own_capture_stream(stub_torch):
     """torch's default capture stream lives on the first card that captured; each card needs its own."""
     first = _armed()
@@ -314,6 +327,7 @@ def test_each_card_records_on_its_own_capture_stream(stub_torch):
     ), "one stream per card: pool blocks are reused only from the recording stream"
 
 
+@side_stream
 def test_new_shape_adds_a_second_graph(stub_torch):
     handle = _armed()
     handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
@@ -323,6 +337,7 @@ def test_new_shape_adds_a_second_graph(stub_torch):
     assert handle.poisoned is False
 
 
+@side_stream
 def test_outputs_are_cloned_out_of_the_pool(stub_torch):
     handle = _armed()
     out = handle(_t(), timestep = _t((1,)), return_dict = False)
@@ -353,6 +368,7 @@ def test_unknown_object_in_the_tree_refuses_without_capturing(stub_torch):
     assert handle.poisoned is False
 
 
+@side_stream
 def test_host_tensor_poisons_with_capture_error(stub_torch):
     module = _FakeDiT()
     handle = _armed(module)
@@ -371,6 +387,7 @@ def test_host_tensor_poisons_with_capture_error(stub_torch):
     assert module.calls == 2
 
 
+@side_stream
 def test_capture_exception_poisons_and_returns_the_eager_result(stub_torch):
     stub_torch._records["graph_error"] = RuntimeError("CUDA out of memory during capture")
     module = _FakeDiT()
@@ -393,6 +410,7 @@ def test_capture_exception_poisons_and_returns_the_eager_result(stub_torch):
     assert all("Traceback" not in str(part) for part in logged[0][1:])
 
 
+@side_stream
 def test_a_failed_capture_is_released_before_the_eager_fallback(stub_torch):
     """The handled exception owns _capture's frame and so its statics; the eager fallback must run
     after they are dropped, or an OOM capture turns into an OOM render."""
@@ -438,6 +456,7 @@ def test_a_failed_capture_is_released_before_the_eager_fallback(stub_torch):
     assert handle.capture_error["type"] == "RuntimeError"
 
 
+@side_stream
 def test_poisoning_drops_the_graphs_it_can_no_longer_replay(stub_torch):
     """Once poisoned, ``__call__`` never reads the cache again, so its entries only pin memory."""
     module = _FakeDiT()
@@ -459,6 +478,7 @@ def test_poisoning_drops_the_graphs_it_can_no_longer_replay(stub_torch):
     assert handle.stats["captures"] == 1
 
 
+@side_stream
 def test_graph_cap_degrades_to_eager_without_poisoning(stub_torch):
     module = _FakeDiT()
     logged: list = []
@@ -483,6 +503,7 @@ def test_graph_cap_degrades_to_eager_without_poisoning(stub_torch):
     assert handle.stats["captures"] == 2
 
 
+@side_stream
 def test_bypass_runs_eager_and_keeps_the_graphs(stub_torch):
     module = _FakeDiT()
     handle = _armed(module)
@@ -502,6 +523,7 @@ def test_bypass_runs_eager_and_keeps_the_graphs(stub_torch):
     assert handle.stats["captures"] == 1
 
 
+@side_stream
 def test_step_cache_marker_forces_eager(stub_torch):
     module = _FakeDiT()
     handle = _armed(module)
@@ -524,6 +546,7 @@ def test_disabled_wrapper_runs_eager_and_uninstalls(stub_torch):
     assert handle.stats["eager_calls"] == 1
 
 
+@side_stream
 def test_reset_drops_the_graphs(stub_torch):
     handle = _armed()
     handle(_t(), timestep = _t((1,)), return_dict = False)
@@ -567,6 +590,7 @@ def test_install_covers_every_denoiser_module(stub_torch):
     assert all(h.enabled for h in handles)
 
 
+@side_stream
 def test_second_wrapper_reuses_the_shared_pool(stub_torch):
     first, second = _armed(), _armed()
     first(_t(), timestep = _t((1,)), return_dict = False)
@@ -591,6 +615,7 @@ def test_pool_survives_while_another_wrapper_still_holds_a_graph(stub_torch):
     assert cg._POOL_BOX[0] == pool
 
 
+@side_stream
 def test_a_graph_in_an_earlier_pool_does_not_keep_the_current_token(stub_torch):
     """Liveness is per graph: a wrapper still holding a graph in a pool dropped earlier (a placement move re-recorded
     another wrapper into a fresh pool) must not keep the current token alive after its own last graph is gone."""
@@ -604,6 +629,7 @@ def test_a_graph_in_an_earlier_pool_does_not_keep_the_current_token(stub_torch):
     assert cg._POOL_BOX[0] is None
 
 
+@side_stream
 def test_reset_all_forgets_the_pool_token_with_the_last_graph(stub_torch):
     """A reset that destroys the last graph in the shared pool must forget its token, or the next
     capture dies on the allocator's "use_count > 0 INTERNAL ASSERT FAILED"."""
@@ -747,6 +773,7 @@ class _CompiledUNet:
 _CompiledUNet.__name__ = "UNet2DConditionModel"  # the class NAME is what _denoiser_unet gates on
 
 
+@side_stream
 def test_compiled_unet_is_graphed_at_the_compiled_call(stub_torch):
     unet = _CompiledUNet()
     compiled = unet._compiled_call_impl
@@ -976,6 +1003,7 @@ def test_graph_eligible_family_opt_in_on_the_video_backend(stub_torch, monkeypat
     )
 
 
+@side_stream
 def test_stats_and_describe_are_json_safe(stub_torch):
     module = _FakeDiT()
     handle = _armed(module)
@@ -1015,6 +1043,7 @@ def test_stats_and_describe_are_json_safe(stub_torch):
     assert json.loads(json.dumps(described)) == described
 
 
+@side_stream
 def test_stats_reports_the_capture_error_without_the_traceback(stub_torch):
     handle = _armed()
     handle(_t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
@@ -1137,6 +1166,7 @@ def record_prewarm(monkeypatch):
     return calls
 
 
+@side_stream
 def test_capture_prewarms_the_nvfp4_layers_before_the_warmup(stub_torch, record_prewarm):
     module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear())])
     handle = _armed(module)
@@ -1150,6 +1180,7 @@ def test_capture_prewarms_the_nvfp4_layers_before_the_warmup(stub_torch, record_
     assert handle.poisoned is False
 
 
+@side_stream
 def test_capture_does_not_prewarm_a_model_without_nvfp4_layers(stub_torch, record_prewarm):
     handle = _armed()
     handle(_t(), timestep = _t((1,)), return_dict = False)
@@ -1235,6 +1266,7 @@ def test_live_status_turns_off_when_every_call_was_refused(stub_torch):
     assert json.loads(json.dumps(resolved)) == resolved
 
 
+@side_stream
 def test_live_status_names_float_refusals_and_a_poisoned_capture(stub_torch):
     handle = _armed()
     handle(_t(), timestep = 0.5, return_dict = False)
@@ -1247,6 +1279,7 @@ def test_live_status_names_float_refusals_and_a_poisoned_capture(stub_torch):
     )
 
 
+@side_stream
 def test_live_status_turns_off_when_a_graph_that_replayed_is_poisoned(stub_torch):
     handle = _armed()
     handle(_t(), timestep = _t((1,)), return_dict = False)
@@ -1265,6 +1298,7 @@ def test_live_status_turns_off_when_a_graph_that_replayed_is_poisoned(stub_torch
     assert cg.never_engaged((handle, other)) is None
 
 
+@side_stream
 def test_live_status_keeps_on_once_a_graph_replayed(stub_torch):
     handle = _armed()
     handle(_t(), timestep = _t((1,)), return_dict = False)
@@ -1409,6 +1443,7 @@ def test_the_wrapper_reads_the_prompt_length_policy(stub_torch, monkeypatch, nam
     assert (ok, reason) == (True, "eligible")
 
 
+@side_stream
 def test_a_new_prompt_length_after_the_first_render_records_nothing(stub_torch, monkeypatch):
     """Qwen-Image's text length follows the prompt: generation 2 with a new length recorded a graph on that render
     (seconds of capture). The first render's lengths replay; a new one runs the step ungraphed."""
@@ -1447,6 +1482,7 @@ def _planned_len_handle(stub_torch, monkeypatch):
     return handle
 
 
+@side_stream
 def test_a_planned_negative_of_another_length_records_on_the_first_render(stub_torch, monkeypatch):
     """The negative is still warming when the positive's replay seals the scope; it must still record."""
     handle = _planned_len_handle(stub_torch, monkeypatch)
@@ -1461,6 +1497,7 @@ def test_a_planned_negative_of_another_length_records_on_the_first_render(stub_t
     assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 2
 
 
+@side_stream
 def test_a_warmup_from_before_a_reset_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
     handle = _planned_len_handle(stub_torch, monkeypatch)
     _step(handle, 3)
@@ -1478,6 +1515,7 @@ def test_a_warmup_from_before_a_reset_does_not_reopen_the_sealed_scope(stub_torc
     assert handle.stats["length_eager"] == 3
 
 
+@side_stream
 def test_a_warmup_from_an_earlier_render_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
     handle = _planned_len_handle(stub_torch, monkeypatch)
     _step(handle, 3)
@@ -1505,6 +1543,7 @@ def test_a_fixed_length_family_records_as_before(stub_torch):
     assert not getattr(handle, "length_sealed", False)
 
 
+@side_stream
 def test_reset_reopens_the_first_render(stub_torch, monkeypatch):
     monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
     handle = _armed(_len_dit("QwenImageTransformer2DModel"))
@@ -1516,6 +1555,7 @@ def test_reset_reopens_the_first_render(stub_torch, monkeypatch):
     assert handle.length_sealed is True
 
 
+@side_stream
 def test_the_every_length_switch_records_each_new_length(stub_torch, monkeypatch):
     monkeypatch.setenv(cg.EVERY_LENGTH_ENV, "1")
     handle = _armed(_len_dit("QwenImageTransformer2DModel"))
@@ -1524,6 +1564,7 @@ def test_the_every_length_switch_records_each_new_length(stub_torch, monkeypatch
     assert handle.length_varies is False and handle.stats["captures"] == 3
 
 
+@side_stream
 def test_seal_lengths_closes_a_first_render_that_never_replayed(stub_torch, monkeypatch):
     monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
     varying = _armed(_len_dit("QwenImageTransformer2DModel"))
@@ -1540,6 +1581,7 @@ def test_seal_lengths_closes_a_first_render_that_never_replayed(stub_torch, monk
     assert varying.stats["captures"] == 1 and varying.stats["length_eager"] == 1
 
 
+@side_stream
 def test_describe_reports_the_seal(stub_torch, monkeypatch):
     monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
     handle = _armed(_len_dit("QwenImageTransformer2DModel"))
@@ -1586,6 +1628,7 @@ def _render_at(
         )
 
 
+@side_stream
 def test_a_new_resolution_still_records_after_the_seal(stub_torch, monkeypatch):
     """The seal stops new TEXT lengths only: a later render at a new resolution (or batch) is a new image scope and
     records its first render, as before; a further new prompt length at that resolution then runs ungraphed."""
@@ -1603,6 +1646,7 @@ def test_a_new_resolution_still_records_after_the_seal(stub_torch, monkeypatch):
     assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 4
 
 
+@side_stream
 def test_a_render_with_no_capture_after_reset_does_not_seal(stub_torch, monkeypatch):
     """seal_lengths counts captures since the last reset: a first render after reset that recorded nothing (bypassed
     here, or a planned step that only warmed up) must not seal an empty cache, or its key runs ungraphed forever."""
@@ -1619,6 +1663,7 @@ def test_a_render_with_no_capture_after_reset_does_not_seal(stub_torch, monkeypa
     assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 0
 
 
+@side_stream
 def test_a_step_dependent_key_seals_only_when_the_render_ends(stub_torch, monkeypatch):
     """A key that also follows the step (NVFP4's protect branch, a pre-hook's branch flag) gets a new variant on a
     later step of the first render: a replay on step 2 must not seal the scope before that variant records."""
@@ -1650,6 +1695,7 @@ class _RefDiT(_LenDiT):
         return super().forward(hidden_states, encoder_hidden_states, return_dict)
 
 
+@side_stream
 def test_separate_reference_images_are_part_of_the_image_scope(stub_torch, monkeypatch):
     """FLUX.3 passes its reference images apart from the latents: a new reference layout at the same output size is a
     new scope that records its first render, not a sealed one that runs ungraphed."""
@@ -1840,6 +1886,7 @@ def test_eager_as_recorded_runs_the_original_call_when_the_copies_do_not_fit(mon
         cg.uninstall_all([handle])
 
 
+@side_stream
 def test_a_refused_capture_runs_eager_and_records_on_a_later_call(stub_torch, monkeypatch):
     monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
     retired = []
@@ -1868,6 +1915,7 @@ def test_a_refused_capture_runs_eager_and_records_on_a_later_call(stub_torch, mo
     assert retired == []
 
 
+@side_stream
 def test_capture_warmups_wait_for_held_replica_work(stub_torch):
     seen = []
 
@@ -1958,21 +2006,27 @@ def test_status_response_models_keep_graph_engagement():
         assert model.model_validate({}).model_dump()["graph_engagement"] is None
 
 
-# --- Opt-in real-step warm-up (UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP=1) ---
+# --- Real-step warm-up (the default; UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP=0 keeps the side-stream warm-ups) ---
 
 
-def test_real_warmup_is_off_by_default(stub_torch, monkeypatch):
-    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+@pytest.mark.parametrize(
+    "value, real", [(None, True), ("1", True), ("0", False), ("off", False), ("false", False)]
+)
+def test_real_warmup_is_on_unless_switched_off(stub_torch, monkeypatch, value, real):
+    if value is None:
+        monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    else:
+        monkeypatch.setenv(cg.REAL_WARMUP_ENV, value)
     module = _FakeDiT()
     handle = _armed(module)
     handle(_t(value = 1.0), timestep = _t((1,), value = 10.0), return_dict = False)
-    assert handle.stats["real_warmups"] == 0
-    assert handle.stats["captures"] == 1
-    assert module.calls == cg.WARMUP_ITERS + 1
+    assert handle.stats["real_warmups"] == (1 if real else 0)
+    assert handle.stats["captures"] == (0 if real else 1)
+    assert module.calls == (1 if real else cg.WARMUP_ITERS + 1)
 
 
 def test_real_warmup_runs_no_discarded_forward(stub_torch, monkeypatch):
-    monkeypatch.setenv(cg.REAL_WARMUP_ENV, "1")
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
     module = _FakeDiT()
     handle = _armed(module)
     for i in range(cg.WARMUP_ITERS):
@@ -1996,7 +2050,7 @@ def test_real_warmup_runs_no_discarded_forward(stub_torch, monkeypatch):
 
 
 def test_real_warmup_starts_over_after_reset(stub_torch, monkeypatch):
-    monkeypatch.setenv(cg.REAL_WARMUP_ENV, "1")
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
     module = _FakeDiT()
     handle = _armed(module)
     for i in range(cg.WARMUP_ITERS + 1):
@@ -2012,13 +2066,115 @@ def test_real_warmup_starts_over_after_reset(stub_torch, monkeypatch):
     assert module.calls == before + 1
 
 
+def _warm(handle, *args, **kwargs):
+    """A key's WARMUP_ITERS real warm-up steps (the default): eager, nothing recorded."""
+    for _ in range(cg.WARMUP_ITERS):
+        handle(*args, **kwargs)
+    assert handle.stats["captures"] == 0
+
+
+def test_real_warmup_records_on_the_step_after_its_warmups_and_copies_statics(stub_torch):
+    """test_capture_then_replay_uses_one_graph_and_copies_statics on the default: the step after the warm-ups
+    records once (one device sync, no side-stream forward) and replays from statics refreshed per call."""
+    module = _FakeDiT()
+    handle = _armed(module)
+    warm, first, second = _t(value = 0.5), _t(value = 1.0), _t(value = 2.0)
+    _warm(handle, warm, timestep = _t((1,), value = 5.0), return_dict = False)
+    handle(first, timestep = _t((1,), value = 10.0), return_dict = False)
+    handle(second, timestep = _t((1,), value = 20.0), return_dict = False)
+
+    assert handle.stats["captures"] == 1 and handle.stats["replays"] == 2 and len(handle.cache) == 1
+    entry = next(iter(handle.cache.values()))
+    assert entry.static[0].copied_from == [first, first, second]
+    assert entry.static[0].value == 2.0 and entry.graph.replays == 2
+    assert module.calls == cg.WARMUP_ITERS + 1
+    assert stub_torch._records["synchronize"] == 1
+
+
+def test_real_warmup_warms_a_new_shape_before_its_second_graph(stub_torch):
+    """test_new_shape_adds_a_second_graph on the default: each key warms on its own real steps, then records."""
+    handle = _armed()
+    _warm(handle, _t((1, 4)), timestep = _t((1,)), return_dict = False)
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["captures"] == 1
+    for _ in range(cg.WARMUP_ITERS):
+        handle(_t((2, 4)), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["captures"] == 1 and handle.stats["real_warmups"] == 2 * cg.WARMUP_ITERS
+    handle(_t((2, 4)), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["captures"] == 2 and len(handle.cache) == 2 and handle.poisoned is False
+
+
+def test_real_warmup_capture_exception_poisons_and_returns_the_eager_result(stub_torch):
+    """A recording that raises after the real warm-ups poisons the wrapper and the step still returns its eager
+    output, as on the side-stream path."""
+    stub_torch._records["graph_error"] = RuntimeError("CUDA out of memory during capture")
+    module = _FakeDiT()
+    handle = _armed(module)
+    _warm(handle, _t(), timestep = _t((1,)), return_dict = False)
+    out = handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned is True and handle.stats["fallbacks"] == 1
+    assert handle.capture_error["type"] == "RuntimeError"
+    assert (
+        module.calls == cg.WARMUP_ITERS + 1
+    )  # the warm-ups, then the eager retry (the recording never began)
+    assert out[0].value == ("out", module.calls)
+
+
+def test_real_warmup_host_tensor_poisons_at_the_recording(stub_torch):
+    """A host tensor in the step is refused when the step would record, after its warm-ups; every step still runs."""
+    module = _FakeDiT()
+    handle = _armed(module)
+    _warm(handle, _t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
+    out = handle(_t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned is True and handle.stats["refused_host_tensor"] == 1
+    assert "not on cuda" in handle.capture_error["msg"]
+    assert module.calls == cg.WARMUP_ITERS + 1 and out[0].value == ("out", module.calls)
+
+
+def test_real_warmup_prewarms_the_nvfp4_layers_before_its_first_step(stub_torch, record_prewarm):
+    """NVFP4 GEMMs are tuned before the first real warm-up step, as before the side-stream ones: an untuned eager
+    step would run another tactic than the replays of the same seed's next render."""
+    module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear())])
+    handle = _armed(module)
+    handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
+    assert len(record_prewarm) == 1 and module.calls == 1
+    tuned_module, shapes = record_prewarm[0]
+    assert tuned_module is module and 1 in shapes and 16 in shapes
+    for _ in range(cg.WARMUP_ITERS):
+        handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["captures"] == 1 and handle.poisoned is False
+
+
+def test_real_warmup_leaves_unbaked_nvfp4_scales_to_the_capture_refusal(stub_torch, record_prewarm):
+    """Activation scales still calibrating: no real warm-up; the step goes to the capture, which refuses the load
+    (eager), exactly as on the side-stream path."""
+    module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear(baked = False))])
+    handle = _armed(module)
+    handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["real_warmups"] == 0 and handle.poisoned is True
+    assert "unbaked" in handle.capture_error["msg"]
+
+
+def test_a_first_render_of_real_warmups_only_keeps_its_length_window_open(stub_torch, monkeypatch):
+    """A true-CFG render shorter than the warm-ups records nothing, so seal_lengths leaves its scope open and the
+    next render's first steps record its lengths (no step of a later render runs ungraphed for want of a seal)."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    _render(handle, 3, steps = cg.WARMUP_ITERS)
+    cg.seal_lengths((handle,))
+    assert handle.stats["captures"] == 0 and handle.length_sealed is False
+    _render(handle, 3, steps = 2)
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
+    assert handle.stats["replays"] == 4
+
+
 def test_real_cuda_real_warmup_matches_eager_bit_for_bit(monkeypatch):
     torch = pytest.importorskip("torch")
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
         pytest.skip("needs CUDA")
     import torch.nn as nn
 
-    monkeypatch.setenv(cg.REAL_WARMUP_ENV, "1")
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
 
     class TinyDiT(nn.Module):
         def __init__(self, dim):

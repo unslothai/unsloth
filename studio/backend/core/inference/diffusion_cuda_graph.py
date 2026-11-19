@@ -54,16 +54,20 @@ MAX_GRAPHS_PER_MODULE = 4
 
 # Three per the PyTorch docs. The warmup forces lazy allocations OUTSIDE the capture.
 WARMUP_ITERS = 3
-# Opt-in (1): a resident key's first real steps are its warm-ups, so no forward is run and thrown away before the
-# recording (three per key on the first render of a load). Unset keeps the side-stream warm-ups.
-# L4: FLUX.3 klein INT8 keeps every image byte for byte. Qwen-Image-2.1 does not: its first render then differs from the
-# same seed's next render (LPIPS 0.0027), exactly as with graphs off, because the thrown-away warm-ups are what its
-# first-call decisions run on today. Not a default until those decisions are settled before the first real step.
+# A resident key's first real steps are its warm-ups, so no forward is run and thrown away before the recording (three
+# per key on the first render of a load); its WARMUP_ITERS-th + 1 step records. 0 keeps the side-stream warm-ups.
+# Exact while no first-call decision changes an output after a used step: INT8 attention keeps the sink path a used
+# call ran on for the load (diffusion_int8_attention._choose_path), NVFP4 tunes before the first step (below).
 REAL_WARMUP_ENV = "UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP"
 
 
 def real_warmup_enabled() -> bool:
-    return (os.environ.get(REAL_WARMUP_ENV) or "").strip().lower() in _TRUE_TOKENS
+    return (os.environ.get(REAL_WARMUP_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 _TRUE_TOKENS = ("1", "true", "yes", "on")
@@ -1716,6 +1720,7 @@ class GraphedForward:
                 and self.warmup > 0
                 and real_warmup_enabled()
                 and self._real_warm.get(key, 0) < self.warmup
+                and self._real_warmup_ready(key, args, kwargs)
             ):
                 # Resident: this real step is one of the key's warm-ups (compile, lazy allocations), run on copies
                 # laid out like the capture statics so the recording meets no new compiled variant.
@@ -1863,6 +1868,24 @@ class GraphedForward:
             skip.stats["calls"] += 1
             skip.stats["computed"] += 1
         return _rebuild(entry.out_spec, outs)
+
+    def _real_warmup_ready(self, key: Any, args: tuple, kwargs: dict) -> bool:
+        """Before a key's first real warm-up step, what ``_capture`` does before its side-stream warm-ups: NVFP4
+        GEMMs tuned at the step's row counts (an untuned eager step would run another tactic than the replays), and
+        a load with NVFP4 activation scales still calibrating left to the capture's refusal (runs eager)."""
+        if self._real_warm.get(key, 0):
+            return True
+        nvfp4_layers = _nvfp4_flashinfer_linears(self.module)
+        if not nvfp4_layers:
+            return True
+        if _unbaked_nvfp4_layers(nvfp4_layers):
+            return False
+        live: list = []
+        _flatten((args, kwargs), live)
+        from .diffusion_nvfp4_linear import nvfp4_prewarm
+
+        nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
+        return True
 
     def _statics(self, live: list) -> list:
         """Fresh copies of ``live``, as a capture records from (and the shape warm-up step runs on)."""
