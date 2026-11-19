@@ -336,3 +336,24 @@ def test_a_batched_latent_decodes_one_image_at_a_time(tmp_path, monkeypatch):
     one_by_one = [tv.decode([_as_wire(latent[i : i + 1])], path)[0] for i in range(3)]
     assert batches == [1] * 6
     assert [im.tobytes() for im in together] == [im.tobytes() for im in one_by_one]
+
+
+def test_unload_drops_the_cached_decoder(tmp_path):
+    _vae, path = _tiny_vae_file(tmp_path)
+    tv.prepare(path)
+    assert tv._CACHE
+    bk.SdCppDiffusionBackend().unload()
+    assert not tv._CACHE
+
+
+def test_windows_commit_headroom_caps_the_host_ram_reading(monkeypatch):
+    from core.inference import diffusion_memory
+
+    need_mib = (tv.decode_bytes(64, 64) + tv._DECODE_RESERVE_BYTES) >> 20
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: need_mib + 64)
+    monkeypatch.setattr(diffusion_memory, "_windows_commit_headroom_mib", lambda: None)
+    assert tv.fits_host_ram(64, 64)
+    monkeypatch.setattr(diffusion_memory, "_windows_commit_headroom_mib", lambda: need_mib - 1)
+    assert not tv.fits_host_ram(64, 64)
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: None)
+    assert not tv.fits_host_ram(64, 64), "the commit headroom alone still refuses"

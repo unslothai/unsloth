@@ -120,15 +120,25 @@ def decode_bytes(width: int, height: int) -> int:
 
 def fits_host_ram(width: int, height: int) -> bool:
     """True when one image's torch decode leaves the reserve free in host RAM (unknown RAM: True). Images are
-    decoded one at a time, so the batch size does not change the need."""
+    decoded one at a time, so the batch size does not change the need. Windows fails on commit, not on physical
+    RAM, so its commit headroom caps the reading as in the CPU VAE tiling budget."""
     try:
-        from core.inference.diffusion_memory import _available_system_memory_mib
-        available = _available_system_memory_mib()
+        from core.inference.diffusion_small_host import host_commit_mib, host_ram_mib
+        available = host_ram_mib()[1]
+        commit = host_commit_mib()
     except Exception:  # noqa: BLE001 -- unreadable is "cannot tell", as for the other host-RAM gates
         return True
+    if commit is not None:
+        available = commit if available is None else min(available, commit)
     if available is None:
         return True
     return int(available) << 20 >= decode_bytes(width, height) + _DECODE_RESERVE_BYTES
+
+
+def release() -> None:
+    """Drop the cached decoder (model unload): its fp32 weights would otherwise stay in host RAM."""
+    with _LOCK:
+        _CACHE.clear()
 
 
 def prepare(vae_path: str) -> None:

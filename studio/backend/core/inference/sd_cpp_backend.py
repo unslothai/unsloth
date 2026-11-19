@@ -5865,6 +5865,9 @@ class SdCppDiffusionBackend:
         # Wait for a signalled generation to exit: callers treat return as "device is free".
         with self._generate_lock:
             pass
+        from core.inference import sd_cpp_torch_vae
+
+        sd_cpp_torch_vae.release()
         return self.status()
 
     def status(self) -> dict[str, Any]:
