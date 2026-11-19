@@ -279,7 +279,6 @@ export function applyActiveModelStatusToStore(
   const rememberedNParallel = remembered?.remembered
     ? (remembered.config.nParallel ?? null)
     : null;
-  // MLX reads both batch sizes too (its batched-prefill cap and prefill step).
   const batchesEchoed = (status.is_gguf ?? true) || status.is_mlx === true;
   const rememberedNBatch =
     batchesEchoed && remembered?.remembered

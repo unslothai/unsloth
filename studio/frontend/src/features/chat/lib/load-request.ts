@@ -38,7 +38,6 @@ export function llamaServerLoadFields(
       ? { n_ubatch: settings.nUbatch }
       : {}),
     ...(llamaServer ? serverTuningLoadPayload(settings) : {}),
-    // MLX sizes its prompt cache from it.
     ...(mlx && settings.cacheRam != null ? { cache_ram: settings.cacheRam } : {}),
     ...(llamaServer && settings.llamaExtraArgs !== undefined
       ? // biome-ignore lint/style/useNamingConvention: API schema
