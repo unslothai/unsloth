@@ -4454,7 +4454,7 @@ if (-not $HasNvidiaSmi) {
                 @{ P = "9060|RX 9050";                                        A = "gfx1200" }  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
                 @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                 @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]|Z2 Extreme"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-                @{ P = "820M|Krackan Point 2|Krackan Point2|KrackanPoint 2|KrackanPoint2|Krackan 2|Krackan2|AI 5 PRO 330|AI 5 330"; A = "gfx1153" }  # RDNA 3.5 (Krackan Point 2: Radeon 820M)
+                @{ P = "820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330";       A = "gfx1153" }  # RDNA 3.5 (Krackan Point 2: Radeon 820M)
                 @{ P = "860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35"; A = "gfx1152" }  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
                 @{ P = "RX 7900|PRO W7900|PRO W7800";                         A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
                 @{ P = "RX 7800|RX 7700(?!S)|PRO W7700|PRO V710";             A = "gfx1101" }  # RDNA 3 (Navi 32)

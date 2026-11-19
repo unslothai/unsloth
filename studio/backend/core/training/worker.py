@@ -3611,14 +3611,11 @@ def _run_mlx_training(
     slice_start = config.get("dataset_slice_start")
     slice_end = config.get("dataset_slice_end")
 
-    # max_steps runs cannot reach the whole dataset; bound rows before mapping.
-    mlx_raw_text_mode = (
-        training_type == "Continued Pretraining" or config.get("format_type") == "raw"
-    )
+    # max_steps runs cannot reach the whole dataset; bound rows before mapping. MLXTrainer never packs.
     # mlx.launch shards the batch like DDP and advertises the process count in the env this reads.
     mlx_max_train_rows = max_train_rows_for_config(
         config,
-        branch_never_packs = is_vlm and not mlx_raw_text_mode,
+        branch_never_packs = True,
         world_size = _data_parallel_world_size(),
     )
     # Resume replays a batch cursor, so the bound must match the checkpoint's marker.

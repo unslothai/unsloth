@@ -106,3 +106,30 @@ def test_mlx_training_streams_only_a_streamed_hf_dataset():
         if isinstance(n, ast.keyword) and n.arg == "streaming"
     ]
     assert keyword_values == ["dataset_streaming"]
+
+
+def test_mlx_max_steps_run_bounds_rows_even_with_packing_requested():
+    """API, CLI and OpenAI fine-tuning jobs default to packing=true, but MLXTrainer never packs, so a max_steps run must still bound its rows."""
+    body = _TREE.body[0].body
+    bound = [
+        n
+        for n in body
+        if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "mlx_max_train_rows"
+    ]
+    namespace = dict(vars(_worker))
+    namespace.update(
+        {
+            "config": {
+                "packing": True,
+                "max_steps": 60,
+                "batch_size": 4,
+                "gradient_accumulation_steps": 8,
+                "format_type": "auto",
+            },
+            "training_type": "LoRA/QLoRA",
+            "is_vlm": False,
+            "_data_parallel_world_size": lambda: 1,
+        }
+    )
+    exec(compile(ast.Module(body = bound[:1], type_ignores = []), "<bound>", "exec"), namespace)
+    assert namespace["mlx_max_train_rows"] is not None

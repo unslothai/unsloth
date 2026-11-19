@@ -399,7 +399,6 @@ from .import_fixes import (
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
-    fix_inductor_triton_wrapper_eager_vals,
     fix_flex_attention_eager_saved_tensor_hooks,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
@@ -502,8 +501,6 @@ fix_triton_compiled_kernel_missing_attrs()
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
 fix_inductor_reduction_readback_race()
-# torch < 2.13: dynamic-shape Triton kernel decomposition assertion (Gemma2 GEGLU under block compile).
-fix_inductor_triton_wrapper_eager_vals()
 # Eager flex_attention inside a non-reentrant checkpoint (DDP) restarted the layer's recompute mid forward.
 fix_flex_attention_eager_saved_tensor_hooks()
 patch_trunc_normal_precision_issue()
@@ -575,7 +572,6 @@ del fix_rocm_windows_wide_head_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del fix_inductor_reduction_readback_race
-del fix_inductor_triton_wrapper_eager_vals
 del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet

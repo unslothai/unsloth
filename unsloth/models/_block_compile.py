@@ -1643,48 +1643,10 @@ def _training_flex_options(options):
     return options
 
 
-# Memory-efficient SDPA backward ops (masked training calls).
-_EFFICIENT_SDPA_BACKWARD = (
-    "_scaled_dot_product_efficient_attention_backward",
-    "_efficient_attention_backward",
-)
-
-
-def _efficient_backward_keeps_guard():
-    """CUDA torch < 2.14: without torch's (always true) guard the efficient backward copies the bias densely
-    and faults on padded lengths not a multiple of 8 (`attn_bias is not correctly aligned`)."""
-    from packaging.version import Version
-    return torch.version.hip is None and Version(torch.__version__.split("+")[0]) < Version("2.14")
-
-
-# Cache keys do not see the lowering, so graphs cached without the guard must be invalidated.
-_EFFICIENT_BACKWARD_CACHE_TAG = "unsloth/efficient-backward-guard"
-
-
-def _tag_efficient_backward_cache():
-    config = getattr(torch.compiler, "config", None)
-    if config is None or not isinstance(getattr(config, "cache_key_tag", None), str):
-        return False
-    tags = [t for t in config.cache_key_tag.split(",") if t]
-    if _EFFICIENT_BACKWARD_CACHE_TAG in tags:
-        return True
-    value = ",".join(tags + [_EFFICIENT_BACKWARD_CACHE_TAG])
-    try:
-        from ..kernels.triton_launch import set_torch_config, sync_compile_cache_tag_to_workers
-    except Exception:
-        setattr(config, "cache_key_tag", value)
-        return True
-    # Every thread: a reentrant checkpoint recompiles its grad graph on autograd's device thread.
-    set_torch_config(config, "cache_key_tag", value)
-    sync_compile_cache_tag_to_workers()
-    return True
-
-
 def _sdpa_alignment_without_guard():
     """Stop Inductor recompiling a block per `seq_len % 8` class: inside torch 2.14's SDPA lowering only,
     `guard_or_false` becomes `statically_known_true` (False is its documented safe answer), so a dynamic length
     takes the general unaligned path instead of installing a `Mod(s, 8)` guard (20-44 s recompile per layer kind).
-    The memory-efficient backward keeps torch's guard where it needs it (_efficient_backward_keeps_guard).
     UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
     if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
         return False
@@ -1704,18 +1666,9 @@ def _sdpa_alignment_without_guard():
         SizeVarAllocator, "guard_or_false"
     ):
         return False
-    guarded = set()
-    if _efficient_backward_keeps_guard():
-        for name in _EFFICIENT_SDPA_BACKWARD:
-            packet = getattr(torch.ops.aten, name, None)
-            if packet is not None and hasattr(packet, "default"):
-                guarded.add(packet.default)
-        _tag_efficient_backward_cache()
 
     @functools.wraps(original)
     def sdpa_constraint(*args, **kwargs):
-        if args and getattr(args[0], "target", None) in guarded:
-            return original(*args, **kwargs)
         sizevars = V.graph.sizevars
         shadowed = "guard_or_false" in sizevars.__dict__
         previous = sizevars.__dict__.get("guard_or_false")

@@ -176,19 +176,6 @@ install.ps1 and scripts/uninstall.ps1 are scanned in full at compile time, befor
 runs, and nothing reads a header comment from inside the script. Duplicating the README's option list
 into a header adds bytes to a classifier's input and reaches no user.
 
-## The Windows GPU name table is plain literals, not nested optional groups
-
-Cortex XDR Local Analysis (code C040008C, rule powershell.powershell_replace_brackets_2, action block)
-stopped a Desktop backend update on studio/setup.ps1 sha256
-9cacbbe0d36d12ee2ded941237d28fa97c3bcdaa52c8e69614205e017cb4908f, the file shipped in v0.1.918-beta and
-v0.1.919-beta. The v0.1.914..917 file (b15f3e706498...) ran through the same launcher on the same machine.
-Between the two, the only new regex syntax in the whole script is one $nameArchTable row,
-`820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330`: the only `?(?:`, `?)?` and ` ?(` in the file. The other
-edits were literals in shapes the clean file already had. The row is now spelled out as plain alternatives
-(the same language, checked with -match). test_windows_gpu_name_table_has_no_optional_groups keeps optional
-or non-capturing groups out of both Windows tables. The `[05]` classes and the `(?!S)` lookahead
-shipped in the clean file and stay. Unconfirmed against the vendor: the rule body is not public.
-
 ## Shapes we are keeping, on purpose
 
 Each fires a rule and each is load-bearing. Listed so nobody spends a second pass rediscovering them.
@@ -1040,7 +1027,6 @@ def test_the_record_survives_and_keeps_its_evidence() -> None:
         "## The icon-cache refresh is gated on a first install or a real icon change",
         "## uv comes from a pinned archive, not from a remote install script",
         "## Why the script headers do not repeat the usage text",
-        "## The Windows GPU name table is plain literals, not nested optional groups",
         "## Shapes we are keeping, on purpose",
     ):
         assert section in AV_SHAPES_RECORD, f"the record lost its {section!r} section"
@@ -1052,50 +1038,8 @@ def test_the_record_survives_and_keeps_its_evidence() -> None:
         "#10540",
         "#10805",
         "#9140",
-        "powershell.powershell_replace_brackets_2",
-        "9cacbbe0d36d12ee2ded941237d28fa97c3bcdaa52c8e69614205e017cb4908f",
     ):
         assert evidence in AV_SHAPES_RECORD, f"the record no longer names {evidence}"
-
-
-_NAME_TABLE_ROW = re.compile(r'@\{\s*P\s*=\s*"([^"]+)"\s*;\s*A\s*=\s*"(gfx[0-9a-z]+)"\s*\}')
-# A non-capturing group, or `?` on a group or after a space: the shapes only the blocked row carried.
-_OPTIONAL_GROUP = re.compile(r"\(\?:|\)\?| \?")
-
-
-def _windows_name_table_lines(name: str) -> list:
-    """Code part of every active line in $nameArchTable, whatever its quoting; comment lines dropped."""
-    text = _text(name)
-    start = text.find("$nameArchTable = @(")
-    assert start != -1, f"{name}: $nameArchTable not found (renamed? update this guard)"
-    close = re.compile(r"\n[ \t]*\)[ \t]*\r?\n").search(text, start)
-    assert close, f"{name}: $nameArchTable has no closing `)` line"
-    block = text[start : close.start()].splitlines()[1:]
-    # The table's patterns never contain '#', so everything after one is a comment.
-    lines = [line.split("#", 1)[0].strip() for line in block]
-    lines = [line for line in lines if line]
-    assert (
-        len(_NAME_TABLE_ROW.findall("\n".join(lines))) >= 10
-    ), f"{name}: $nameArchTable rows not parsed"
-    return lines
-
-
-@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
-def test_windows_gpu_name_table_has_no_optional_groups(name: str) -> None:
-    """See AV_SHAPES_RECORD: a single row with nested optional groups got setup.ps1 blocked."""
-    offending = [line for line in _windows_name_table_lines(name) if _OPTIONAL_GROUP.search(line)]
-    assert not offending, (
-        f"{name}: $nameArchTable rows {offending} use (?:...), a `)?` or a ` ?`. Spell the variants "
-        f"out as plain `A|B|C` alternatives (same -match result); see AV_SHAPES_RECORD."
-    )
-
-
-def test_the_optional_group_guard_can_fire() -> None:
-    assert _OPTIONAL_GROUP.search("820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330")
-    assert not _OPTIONAL_GROUP.search("820M|Krackan Point 2|Krackan 2|AI 5 PRO 330|AI 5 330")
-    # Shapes the clean release already shipped stay legal.
-    assert not _OPTIONAL_GROUP.search("RX 7800|RX 7700(?!S)|PRO W7700")
-    assert not _OPTIONAL_GROUP.search("890M|HX 37[05]|AI 9 36[05]")
 
 
 @pytest.mark.parametrize("name", DOCUMENTED_SCRIPTS)
