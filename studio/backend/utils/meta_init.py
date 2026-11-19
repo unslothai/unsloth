@@ -12,7 +12,11 @@ process fails until a restart.
 
 ``install()`` puts one permanent dispatcher on ``register_parameter`` that moves a parameter to the meta (or other)
 device only while the *calling thread* is inside ``init_on_device``, and replaces accelerate's ``init_on_device`` with
-a version that keeps that state thread-local. Idempotent; a missing accelerate is a no-op."""
+a version that keeps that state thread-local. Idempotent; a missing accelerate is a no-op.
+
+Behaviour change: a thread started *inside* an ``init_on_device`` block no longer inherits it (stock accelerate gives
+it meta parameters because the patch is process-wide); it builds real tensors unless it enters a block itself. No
+``init_empty_weights`` block in Studio starts a thread today."""
 
 from __future__ import annotations
 

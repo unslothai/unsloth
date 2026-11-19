@@ -104,10 +104,24 @@ def test_install_on_import_patches_accelerate_when_it_is_first_imported(tmp_path
         from utils import meta_init
         meta_init.install_on_import()
         assert "accelerate" not in sys.modules and "torch" not in sys.modules
-        from accelerate import init_empty_weights, big_modeling
+        import threading
+        import torch.nn as nn
+        from accelerate import init_empty_weights
         assert meta_init._installed, "not installed on import"
-        import accelerate
-        assert accelerate.init_on_device is big_modeling.init_on_device
+        # Behavioural check (a stub that only sets the flag fails it): with stock accelerate a block held open
+        # in another thread makes this thread's modules meta.
+        inside, done = threading.Event(), threading.Event()
+        def holder():
+            with init_empty_weights(include_buffers = False):
+                inside.set()
+                done.wait(10)
+        t = threading.Thread(target = holder)
+        t.start()
+        inside.wait(10)
+        leaked = nn.Linear(4, 4).weight.is_meta
+        done.set()
+        t.join()
+        assert not leaked, "the import-time patch is not in effect"
         print("ok")
         """
     )
