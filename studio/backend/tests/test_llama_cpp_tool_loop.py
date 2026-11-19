@@ -7242,7 +7242,7 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
             "parameters": {"type": "object"},
         },
     }
-    monkeypatch.setattr(tools_mod, "mcp_tool_spec", lambda name: ping)
+    monkeypatch.setattr(tools_mod, "mcp_tool_specs", lambda names: {name: ping for name in names})
     monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
     monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
     streams = [
