@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// An INT8 / FP8 image build takes LoRAs only when it loads. A selection it did not bake makes Generate reload the model
-// with it (the Reapply path) instead of sending a run the backend refuses; a refusal that still arrives offers the
-// same reload.
+// An unbaked LoRA selection on an INT8 / FP8 build makes Generate reload first; a backend refusal offers the same.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -42,7 +40,6 @@ test("the baked set, a subset of it, new weights or no LoRA run without a reload
   assert.equal(loraReloadReason(baked, []), null);
   assert.equal(loraReloadReason(baked, [{ id: "tarot", weight: 0 }, { id: "  ", weight: 1 }]), null);
   assert.notEqual(loraReloadReason(baked, [{ id: "tarot", weight: 1 }, { id: "other", weight: 1 }]), null);
-  // One baked copy covers one pick.
   assert.notEqual(loraReloadReason(int8([{ id: "tarot", weight: 1 }]), [{ id: "tarot", weight: 1 }, { id: "tarot", weight: 1 }]), null);
 });
 
@@ -98,7 +95,6 @@ test("the Images page routes Generate, Queue, Compare and refusals through the r
   assert.match(page, /if \(!reapplyLoad\(true\)\)/);
   // Every other caller of handleGenerate is stopped before the request.
   assert.match(page, /if \(!external && loraReload\) \{\s*toast\.error\(LORA_RELOAD_TITLE/);
-  // A refusal that still arrives offers the reload.
   assert.match(page, /err instanceof LoraReloadRefusalError/);
   const api = readSrc("features/images/api.ts");
   assert.match(api, /isLoraReloadRefusal\(response\.status, response\.headers\.get\(MEMORY_REFUSAL_HEADER\)\)/);

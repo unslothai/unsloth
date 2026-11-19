@@ -5,9 +5,7 @@ import { explicitFamily } from "../model-picker/components/model-selector/family
 
 export const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
-// Mirrors the backend's _GENERATION_DEFAULTS (diffusion_families.py) row for row and in the same order: first match
-// wins in both, so a pick shows what Studio renders before the status reports it. Parity is pinned by
-// tests/image-generation-defaults-parity.test.ts.
+// Mirrors backend _GENERATION_DEFAULTS row for row, same order (first match wins); pinned by the parity test.
 const MODEL_DEFAULTS: Array<{
   match: string;
   steps: number;
@@ -23,7 +21,6 @@ const MODEL_DEFAULTS: Array<{
   { match: "krea2-raw", steps: 52, guidance: 3.5 },
   { match: "krea2-base", steps: 52, guidance: 3.5 },
   { match: "flux1-krea", steps: 20, guidance: 3.5 },
-  // Krea 2 Turbo (distilled) and any other krea id but Raw.
   { match: "krea", steps: 8, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
   { match: "flux1-schnell", steps: 4, guidance: 0 },
@@ -73,7 +70,6 @@ const MODEL_DEFAULTS: Array<{
   { match: "minimax_h3_image", steps: 6, guidance: 1 },
   { match: "minimaxh3image", steps: 6, guidance: 1 },
   { match: "h3-image", steps: 6, guidance: 1 },
-  // MOSS-Image SFT and Base: 25 steps at CFG 2.5.
   { match: "moss-image", steps: 25, guidance: 2.5 },
   { match: "moss_image", steps: 25, guidance: 2.5 },
   { match: "mossimage", steps: 25, guidance: 2.5 },

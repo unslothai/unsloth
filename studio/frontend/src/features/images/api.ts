@@ -588,7 +588,6 @@ export async function generateDiffusionImage(
   ) {
     throw new MemoryEstimateRefusalError(await readFastApiError(response));
   }
-  // Same header, another kind: the resident build bakes LoRAs at load time, so the page offers that reload.
   if (!response.ok && isLoraReloadRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))) {
     throw new LoraReloadRefusalError(await readFastApiError(response));
   }

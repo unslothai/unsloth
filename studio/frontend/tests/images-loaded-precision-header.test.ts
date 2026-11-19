@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Images picker header names the precision the resident build runs at, the same value the Loaded build row and the
-// loaded-models chip show: an INT8 load of the BF16 MOSS-Image row reads INT8, not BF16.
+// The picker header names the resident build's precision: an INT8 load of the BF16 MOSS-Image row reads INT8.
 
 import assert from "node:assert/strict";
 import test from "node:test";

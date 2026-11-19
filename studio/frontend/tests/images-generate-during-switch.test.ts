@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Generate stays off while a model pick plans, downloads or loads: the resident model is on its way out and the form
-// already carries the incoming model's steps and guidance. The backend refuses such a run too (409).
+// Generate stays off while a model pick plans, downloads or loads; the backend also refuses it (409).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -63,7 +62,6 @@ test("the Images page tracks every pick and gates the button on it", () => {
   const page = readSrc("features/images/images-page.tsx");
   const assignments = page.match(/quantRevert\.current = [^;\n]+;/g) ?? [];
   assert.ok(assignments.length > 10);
-  // Each pick start and end updates the render state the button reads.
   const unpaired = page
     .split("\n")
     .map((line, i, lines) => [line, lines[i + 1] ?? ""])

@@ -167,11 +167,7 @@ export function denseTransformerBuildLabel(status: {
   return denseDtypeLabel(status.dtype);
 }
 
-/**
- * The precision the loaded transformer runs at, in the Loaded build row's vocabulary: the engaged quant ("INT8"), else
- * the GGUF as stored, else the dense dtype. The picker header names the loaded build with it, so header, Loaded build
- * and the loaded-models chip read one value. Null when nothing is loaded.
- */
+/** Loaded transformer precision: engaged quant, else GGUF as stored, else dense dtype; null when nothing is loaded. */
 export function loadedTransformerPrecisionLabel(status: {
   loaded?: boolean;
   transformer_quant?: string | null;

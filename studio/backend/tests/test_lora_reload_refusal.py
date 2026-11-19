@@ -48,7 +48,6 @@ def test_an_unbaked_quantized_load_names_the_reload(quant, label):
         )
     msg = str(caught.value)
     assert f"This {label} build was loaded without LoRA adapters" in msg
-    # The exact remedy: the page's buttons and the load field.
     assert "Reapply" in msg and "Generate" in msg
     assert '"loras" in POST /api/inference/images/load' in msg
     assert isinstance(caught.value, LoraSelectionError) and isinstance(caught.value, ValueError)
@@ -70,7 +69,6 @@ def test_a_new_adapter_on_a_baked_load_names_the_reload(monkeypatch):
             state, state.pipe, [("tarot", 1.0), ("other", 1.0)], baked, True, threading.Event()
         )
     assert "FP8 build was not loaded with" in str(caught.value)
-    # A subset of the bake still renders without a reload.
     backend._adjust_baked_loras(state, state.pipe, [("tarot", 1.0)], baked, True, threading.Event())
 
 
@@ -135,8 +133,7 @@ def test_openai_images_carry_the_reload_code(monkeypatch):
 
 
 def test_images_status_reports_the_baked_specs(client, monkeypatch):
-    # The Images page reads baked_lora_specs to tell a baked selection from one that needs a reload. Dropped by the
-    # status response model, every LoRA on an INT8 build read as unbaked and Generate offered a reload forever.
+    # Regression: dropped by the status model, every INT8 LoRA read unbaked and Generate reloaded forever.
     backend = diffusion_module.get_diffusion_backend()
     baked = [{"id": "tarot", "weight": 0.8}]
     monkeypatch.setattr(

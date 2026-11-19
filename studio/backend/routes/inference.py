@@ -52125,8 +52125,7 @@ async def generate_diffusion_image(
 ):
     if request.provider_id:
         return await _external_image_generation(request, http_request)
-    # A load or model switch in flight replaces the resident model: a run admitted now renders the old model with the
-    # new pick's settings, or is cancelled by the swap. Refused; the Images page keeps Generate off meanwhile.
+    # A run admitted mid-switch renders the old model with the new pick's settings, or is cancelled by the swap.
     if await asyncio.to_thread(_image_load_in_flight):
         raise HTTPException(
             status_code = 409,
@@ -52487,7 +52486,6 @@ async def _generate_diffusion_image_run(
                 headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_MEMORY_ESTIMATE},
             )
         except LoraReloadRequiredError as exc:
-            # Tagged so the Images page offers the reload that bakes the selection, not a bare failure.
             raise HTTPException(
                 status_code = 400,
                 detail = str(exc),
@@ -53608,8 +53606,7 @@ IMAGE_LOAD_IN_FLIGHT_MSG = "An image model is loading. Generate again once the l
 
 
 def _image_load_in_flight() -> bool:
-    """Whether an image model load is running: its POST in preflight or saving the chat context, or the engine
-    downloading / building it."""
+    """Image load in flight: POST preflight, chat-context save, or engine downloading / building."""
     from core.inference.chat_swap_kv import load_preparing, saving_progress
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 

@@ -438,12 +438,10 @@ class LoraSelectionError(ValueError):
     """A LoRA selection the loaded model cannot take; the caller's to fix."""
 
 
-# The refusal code of LoraReloadRequiredError: the X-Unsloth-Refusal header of /images/generate and the OpenAI error
-# code of /v1/images/generations, so a client can offer the reload instead of showing a failure.
+# X-Unsloth-Refusal / OpenAI error code, so a client can offer the reload instead of a failure.
 LORA_RELOAD_REFUSAL = "lora-reload"
 LORA_RELOAD_OPENAI_CODE = "lora_reload_required"
 
-# How to reload, named once so every refusal gives the same remedy.
 LORA_RELOAD_REMEDY = (
     "Reload the model with the LoRA selection: on the Images page click Reapply (Generate and this error offer "
     'the same reload), or send the adapters as "loras" in POST /api/inference/images/load. The reload rebuilds '

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A torchao INT8 / FP8 / NVFP4 / MXFP8 image load (and MiniMax-H3-Image at any precision) takes LoRA adapters only
-// when it loads, so a selection the load did not bake needs a reload. The page offers that reload instead of sending a
-// generate the backend refuses. No app deps, so it is testable on its own.
+// torchao INT8 / FP8 / NVFP4 / MXFP8 loads (and MiniMax-H3-Image) take LoRAs only at load: unbaked ones need a reload.
 
 /** Backend: diffusion_lora.LORA_RELOAD_REFUSAL, sent in X-Unsloth-Refusal on /images/generate. */
 export const LORA_RELOAD_REFUSAL = "lora-reload";
@@ -47,7 +45,6 @@ function bakeScheme(status: LoraBakeStatus): string | null {
   return null;
 }
 
-/** Whether the resident build fixes its adapters at load time. */
 export function bakesLorasAtLoad(status: LoraBakeStatus | null | undefined): boolean {
   if (!status?.loaded) return false;
   return bakeScheme(status) !== null || (status.family ?? "").trim().toLowerCase() === H3_IMAGE_FAMILY;
@@ -59,15 +56,13 @@ function activePicks(loras: readonly LoraPick[]): LoraPick[] {
     .filter((l) => l.id && l.weight !== 0);
 }
 
-/** Why Generate must reload the model first (a sentence for the page), or null when the resident build can run the
- *  selection: no adapters, or a subset of the baked set (weights may change there, the backend re-scales them). */
+/** Why Generate must reload first, or null for no adapters or a subset of the baked set (backend re-scales). */
 export function loraReloadReason(
   status: LoraBakeStatus | null | undefined,
   loras: readonly LoraPick[],
 ): string | null {
   if (!status?.loaded || status.supports_lora === false || !bakesLorasAtLoad(status)) return null;
-  // A status without the baked set cannot tell a baked selection from a new one: the backend decides, and its
-  // refusal still offers the reload. Read as "none baked", every click would reload and never generate.
+  // No baked set: let the backend decide. Reading it as "none baked" makes every click reload, never generate.
   if (status.baked_lora_specs == null) return null;
   const picks = activePicks(loras);
   const baked = status.baked_lora_specs.filter((s) => s && s.id && s.weight !== 0);

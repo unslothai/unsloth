@@ -2231,8 +2231,7 @@ export function ImagesPage({
   const lastLoadSig = useRef<string | null>(null);
   // `{ prev }` distinguishes "revert to null" from "nothing pending"; also carries the recipe.
   const quantRevert = useRef<PickRevert | null>(null);
-  // Mirrors quantRevert != null: a pick is planning, downloading or loading, so the resident model is on its way out
-  // and Generate stays off (busy is not set while a pick plans or downloads).
+  // Mirrors quantRevert != null (busy is not set while a pick plans or downloads); keeps Generate off.
   const [pickInFlight, setPickInFlight] = useState(false);
   // Staging does not set `busy`, so a second pick can overwrite quantRevert meanwhile.
   const stagedQuantRevert = useRef<PickRevert | null>(null);
@@ -4841,8 +4840,7 @@ export function ImagesPage({
     });
   }, [routedItem, navigateSelf, loadGallery, loadMore, pickImage]);
 
-  // Reload the current model with the current advanced options. `keepLoras` carries the LoRA selection into the load
-  // even when the resident model is not the one this page last loaded (an INT8 / FP8 build bakes it there).
+  // `keepLoras` carries the selection even when this page did not load the resident model.
   const reapplyLoad = useCallback((keepLoras: boolean): boolean => {
     // Against the current status: another client may have replaced the model this page last loaded.
     const l = reapplyTarget(lastLoad.current, status);
@@ -4868,8 +4866,7 @@ export function ImagesPage({
     reapplyLoad(false);
   }, [reapplyLoad]);
 
-  // The resident INT8 / FP8 build takes LoRAs only at load: reload it with the selection baked in (the Reapply path,
-  // with its load toast and progress), then run the Generate that asked for it.
+  // INT8 / FP8 builds take LoRAs only at load: reload via the Reapply path, then generate.
   const reloadWithLoras = useCallback(
     (thenGenerate: boolean) => {
       if (busy !== null || !status?.loaded || !status.repo_id) return;
@@ -5924,7 +5921,6 @@ export function ImagesPage({
           duration: 20_000,
         });
       } else if (report && err instanceof LoraReloadRefusalError) {
-        // The build bakes LoRAs at load time (or merged them into weights it streams): offer that reload.
         toast.error(LORA_RELOAD_TITLE, {
           description: msg,
           duration: 20_000,

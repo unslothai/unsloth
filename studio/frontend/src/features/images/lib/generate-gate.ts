@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What the Images page's primary button does and whether it is on. No app deps, so it is testable on its own.
 
 export const SWITCHING_MODEL_NOTICE =
   "Switching models. Generate turns back on once the new model has loaded.";
 export const RELOAD_AND_GENERATE_LABEL = "Reload and generate";
 
 export interface GenerateGateInput {
-  /** The page's busy state: "loading" | "unloading" | "generating" | null. */
   busy: string | null;
   presetsHydrated: boolean;
   loaded: boolean;
@@ -27,7 +25,6 @@ export interface GenerateGate {
   disabled: boolean;
   action: "generate" | "queue" | "reload";
   label: string;
-  /** One line above the button saying why it is off or what it will do; null for none. */
   notice: string | null;
 }
 
@@ -52,9 +49,8 @@ export function generateGate(input: GenerateGateInput): GenerateGate {
   };
 }
 
-/** Whether a pick lost its owner to a page switch (the guard's release) while still the newest pick. Its plan then
- *  stages and loads nothing and no load toast settles it, so the page takes the pick back as a cancel would; else
- *  Generate stays held for a switch that never runs. A newer claim or a cancel answers false: that owner settles it. */
+/** A pick released by a page switch while still newest: nothing settles it, so the page takes it back (else Generate
+ *  stays held forever). A newer claim or a cancel answers false: that owner settles it. */
 export function pickReleasedWhileNewest(
   guard: { holds(token: number): boolean; isLatest(token: number): boolean },
   token: number | undefined,
