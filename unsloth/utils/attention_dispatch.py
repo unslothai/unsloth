@@ -30,6 +30,7 @@ from ..device_type import DEVICE_TYPE
 from ..models._utils import *
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
+from .rocm_sdpa_check import rocm_sdpa_verdict  # noqa: F401  (re-exported)
 from ..utils.packing import (
     PACKED_BLOCK_KWARG,
     PackedVarlen,
@@ -108,8 +109,19 @@ _XFORMERS_FP32_UNSUPPORTED = (
 
 
 def scaled_dot_product_attention(*args, **kwargs):
+    """The only SDPA entry point here (tests/utils/test_rocm_sdpa_check.py enforces it), so ROCm
+    kernels refused by rocm_sdpa_check stay out of every call."""
     # Resolved per call: context_parallel monkey patches torch.nn.functional.
+    if _ROCM_SDPA_GUARD and args and isinstance(args[0], Tensor) and args[0].is_cuda:
+        backends = _CUDNN_FREE_BACKENDS[_rocm_sdpa_index(args[0].device.index)]
+        if backends is not None:
+            with _sdpa_kernel(backends):
+                return F.scaled_dot_product_attention(*args, **kwargs)
     return F.scaled_dot_product_attention(*args, **kwargs)
+
+
+# ROCm: AOTriton kernels that failed rocm_sdpa_check on a device are kept out of every SDPA call here.
+_ROCM_SDPA_GUARD = torch.version.hip is not None
 
 
 def _avoids_cudnn(Q, training):
@@ -300,9 +312,9 @@ def _rerouted_sdpa(*args, **kwargs):
     """Compiled xformers stand-in: avoid cuDNN's per-length planning."""
     backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
     if backends is None:
-        return F.scaled_dot_product_attention(*args, **kwargs)
+        return scaled_dot_product_attention(*args, **kwargs)
     with _sdpa_kernel(backends):
-        return F.scaled_dot_product_attention(*args, **kwargs)
+        return scaled_dot_product_attention(*args, **kwargs)
 
 
 # Module level: reading SDPBackend's attributes while traced breaks the graph.
@@ -413,6 +425,8 @@ def _decode_picks_cudnn(query, key, attn_mask, enable_gqa):
 
 def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
     """Decode SDPA, kept off cuDNN where torch would pick it on _NO_CUDNN_DECODE devices."""
+    if _ROCM_SDPA_GUARD and query.is_cuda:
+        return scaled_dot_product_attention(query, key, value, *args, **kwargs)
     if (
         _CUDNN_CHOICE is not None
         and query.is_cuda
@@ -433,8 +447,8 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
         backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
         if backends is not None:
             with _sdpa_kernel(backends):
-                return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
-    return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
+                return scaled_dot_product_attention(query, key, value, *args, **kwargs)
+    return scaled_dot_product_attention(query, key, value, *args, **kwargs)
 
 
 def _cudnn_free_index():
@@ -798,6 +812,30 @@ _sdpa_masked_choice = _constant_probe(_sdpa_masked_choice)
 _cudnn_free_index = _constant_probe(_cudnn_free_index)
 
 
+def _rocm_sdpa_index_now(device_index) -> int:
+    """_CUDNN_FREE_BACKENDS index of the enabled SDPA backends minus AOTriton kernels that failed
+    rocm_sdpa_check on this device; 0 when nothing is refused or only refused ones are enabled."""
+    if not _ROCM_SDPA_GUARD:
+        return 0
+    from .rocm_sdpa_check import rocm_sdpa_verdict
+
+    verdict = rocm_sdpa_verdict(device_index)
+    if verdict["flash"] and verdict["efficient"]:
+        return 0
+    cuda = torch.backends.cuda
+    enabled = (
+        (1 if cuda.flash_sdp_enabled() else 0)
+        | (2 if cuda.mem_efficient_sdp_enabled() else 0)
+        | (4 if cuda.math_sdp_enabled() else 0)
+    )
+    allowed = enabled & ~((0 if verdict["flash"] else 1) | (0 if verdict["efficient"] else 2))
+    # A caller that enabled only refused kernels (sdpa_kernel([FLASH])) keeps its own policy.
+    return 0 if allowed in (0, enabled) else allowed
+
+
+_rocm_sdpa_index = _constant_probe(_rocm_sdpa_index_now)
+
+
 @functools.lru_cache(maxsize = 128)
 def _sdpa_gqa_choices(
     device,
@@ -911,6 +949,10 @@ def _sdpa_gqa_state(*args, no_cudnn = False):
     """_sdpa_gqa_state_now; no_cudnn probes under the kernels the call runs with (_training_sdpa,
     _rerouted_sdpa), whose enabled flags are part of the probe's cache key."""
     backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()] if no_cudnn else None
+    if _ROCM_SDPA_GUARD:
+        rocm = _rocm_sdpa_index_now(torch.device(args[0]).index)
+        if rocm:
+            backends = _CUDNN_FREE_BACKENDS[rocm]
     if backends is not None:
         with _sdpa_kernel(backends):
             return _sdpa_gqa_state_now(*args)
@@ -1668,7 +1710,7 @@ def _prepared_packed_attention(config, context, Q, K, V):
     if K.shape[1] != n_heads:
         K = K.repeat_interleave(n_heads // K.shape[1], dim = 1)
         V = V.repeat_interleave(n_heads // V.shape[1], dim = 1)
-    out = F.scaled_dot_product_attention(
+    out = scaled_dot_product_attention(
         Q, K, V, attn_mask = mask, scale = scale, dropout_p = sdpa_kwargs.get("dropout_p", 0.0)
     )
     return out.transpose(1, 2)
@@ -1688,7 +1730,12 @@ def run_attention(
     manager = get_cp_manager()
     if manager is not None and manager.backend == "ulysses":
         return ulysses_attention(_run_attention, config, context, Q, K, V, manager.group)
-    if _SAVE_ATTENTION and context.training and manager is None:
+    if (
+        _SAVE_ATTENTION
+        and context.training
+        and manager is None
+        and (_SAVE_ATTENTION_MIN_SEQ is None or _auto_saves_attention(config, context))
+    ):
         # GC replay reuses the first pass's attention output + logsumexp; graph breaks under compile.
         traced = torch.compiler.is_compiling()
         return _saved_attention_call(
@@ -1709,15 +1756,37 @@ def _run_attention_as(traced, config, context, Q, K, V):
         _AS_TRACED[0] = previous
 
 
+def _auto_saves_attention(config, context) -> bool:
+    # Automatic mode (unsloth_zoo decides the GPU and the memory budget): only long, unpacked SDPA
+    # calls, where the saved recompute was measured faster; a plain shape check otherwise, no graph break.
+    return (
+        context.q_len >= _SAVE_ATTENTION_MIN_SEQ
+        and config.backend == SDPA
+        and context.seq_info is None
+        and context.prefix_seg_info is None
+    )
+
+
 def _load_saved_attention():
+    """(call, min_seq): min_seq None = every training call (UNSLOTH_GC_SAVE_ATTENTION=1 / offload);
+    an int = automatic mode from that query length. An unsloth_zoo without automatic mode stays off."""
     try:
         from unsloth_zoo.saved_attention import save_attention_enabled, saved_attention_call
     except Exception:
-        return None
-    return saved_attention_call if save_attention_enabled() else None
+        return None, None
+    if save_attention_enabled():
+        return saved_attention_call, None
+    try:
+        from unsloth_zoo.saved_attention import save_attention_auto_min_seq
+        min_seq = save_attention_auto_min_seq()
+    except Exception:
+        return None, None
+    if min_seq is None:
+        return None, None
+    return saved_attention_call, min_seq
 
 
-_saved_attention_call = _load_saved_attention()
+_saved_attention_call, _SAVE_ATTENTION_MIN_SEQ = _load_saved_attention()
 _SAVE_ATTENTION = _saved_attention_call is not None
 
 
