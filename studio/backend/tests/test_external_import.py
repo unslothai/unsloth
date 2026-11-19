@@ -1261,6 +1261,88 @@ def test_codex_reimport_after_images_keeps_studio_edits(codex_home):
     assert run_import(codex.SOURCE).messages == 1
 
 
+def _tool_images_rollout(home, generated = True):
+    def call(call_id, name, output):
+        return [
+            x_line(
+                "response_item",
+                {"type": "function_call", "name": name, "arguments": "{}", "call_id": call_id},
+            ),
+            x_line(
+                "response_item",
+                {"type": "function_call_output", "call_id": call_id, "output": output},
+            ),
+        ]
+
+    body = [
+        *_pasted(""),
+        _completed("AgentMessage", "Taking a look."),
+        *call(
+            "c1",
+            "view_image",
+            [{"type": "input_image", "image_url": f"data:application/octet-stream;base64,{PNG}"}],
+        ),
+        *call(
+            "c2",
+            "mcp__playwright__browser_take_screenshot",
+            [
+                {"type": "input_text", "text": "Took the screenshot"},
+                {"type": "input_image", "image_url": f"data:image/png;base64,{PNG}"},
+            ],
+        ),
+        _completed("AgentMessage", "A login form. Here is an icon for it."),
+        x_line(
+            "response_item",
+            {
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "revised_prompt": "A flat login icon",
+                "result": PNG,
+            },
+        ),
+        _completed("AgentMessage", "Done."),
+    ]
+    if not generated:
+        body = [line for line in body if line["payload"]["type"] != "image_generation_call"]
+    return _rollout(home, sid = "tools", history_mode = "paginated", body = body)
+
+
+def test_codex_keeps_images_tools_viewed_and_generated(codex_home):
+    shot = {"data": PNG, "mimeType": "image/png"}
+    messages = codex.read_transcript(_tool_images_rollout(codex_home), "t", "s1").messages
+    calls = [m["content"][0] for m in messages if m["content"][0]["type"] == "tool-call"]
+
+    assert [(c["toolName"], c["result"]) for c in calls] == [
+        ("view_image", {"text": "", "images": [shot]}),
+        (
+            "mcp__playwright__browser_take_screenshot",
+            {"text": "Took the screenshot", "images": [shot]},
+        ),
+        ("image_generation", {"image_b64": PNG, "image_mime": "image/png"}),
+    ]
+    assert calls[2]["args"] == {"prompt": "A flat login icon"}
+    assert messages[-1]["content"] == [{"type": "text", "text": "Done."}]
+
+
+def test_codex_reimport_after_generated_images_keeps_studio_edits(codex_home):
+    _tool_images_rollout(codex_home, generated = False)
+    assert run_import(codex.SOURCE).messages == 6
+    tid = thread_id_for(codex.SOURCE, "tools")
+    reply = next(
+        m for m in _messages(codex.SOURCE, "tools") if m["content"][0].get("text") == "Done."
+    )
+    edited = [{"type": "text", "text": "Done, edited in Studio"}]
+    studio_db.sync_chat_messages(tid, [{**reply, "content": edited}], prune_missing = False)
+
+    path = _tool_images_rollout(codex_home)
+    assert run_import(codex.SOURCE).messages == 0
+    assert {m["id"]: m for m in _messages(codex.SOURCE, "tools")}[reply["id"]]["content"] == edited
+
+    _append(path, [_completed("UserMessage", "One more")])
+    assert run_import(codex.SOURCE).messages == 1
+
+
 def _image_revert(
     home,
     cut,

@@ -247,9 +247,9 @@ def _reread_messages(
 
 
 def _reader(revision: str) -> str:
-    # ":images" only says the file has image-only turns; it reads completed items like ":items".
+    # ":images" and ":generated" only mark image turns; both read completed items like ":items".
     tag = revision.partition(":")[2]
-    return "items" if tag == "images" else tag
+    return "items" if tag in ("images", "generated") else tag
 
 
 def _pending_messages(
