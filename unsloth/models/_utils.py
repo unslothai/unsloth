@@ -1842,6 +1842,19 @@ def _flex_preferred_fits(config, dtype = None):
         return True
 
 
+def _flex_float32_compile_too_slow(config, dtype = None):
+    """True when attention runs in float32 above head_dim 128: Inductor then takes minutes per flex
+    kernel (B200, torch 2.15, head_dim 256: 174 s forward, 211 s with backward, against 7 s / 16 s
+    in bf16), and a model compiles several, so the load looks hung. SDPA / eager are used instead;
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM=1 or an explicit flex_attention request keeps flex."""
+    if not _flex_attention_runs_float32(dtype):
+        return False
+    if _flex_large_head_dim_override() is True:
+        return False
+    head_dim = _text_attention_head_dim(config)
+    return head_dim is not None and head_dim > _SDPA_FLASH_MAX_HEAD_DIM
+
+
 def _supports_flex_attention(
     model_class,
     config,
@@ -1857,6 +1870,8 @@ def _supports_flex_attention(
     if not _flex_attention_gpu_is_supported():
         return False
     if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config, dtype):
+        return False
+    if _flex_float32_compile_too_slow(config, dtype):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
