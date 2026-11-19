@@ -2390,15 +2390,15 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "n_ubatch?: number | null;" in api_types
     # One rule for every load path: omitted when blank, since an explicit null reads as set and
     # strips inherited -b / -ub.
+    # MLX reads the same two fields (#18426), so the gate may widen to MLX but must keep GGUF and
+    # must not send them to an engine that ignores them.
     load_request = " ".join(_read("features/chat/lib/load-request.ts").split())
-    assert (
-        "...(target.isGguf && settings.nBatch != null ? { n_batch: settings.nBatch } : {}),"
-        in load_request
-    )
-    assert (
-        "...(target.isGguf && settings.nUbatch != null ? { n_ubatch: settings.nUbatch } : {}),"
-        in load_request
-    )
+    for field, key in (("nBatch", "n_batch"), ("nUbatch", "n_ubatch")):
+        assert re.search(
+            rf"\.\.\.\(\(?target\.isGguf(?: \|\| mlx\))? && settings\.{field} != null "
+            rf"\? \{{ {key}: settings\.{field} \}} : \{{\}}\),",
+            load_request,
+        ), f"{key} is no longer sent, only when set, on a GGUF load"
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "pendingLoadConfig?.nBatch" in runtime
     assert "nBatch: loadNBatch, nUbatch: loadNUbatch," in runtime
@@ -2452,9 +2452,12 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
     assert "n_ubatch = payload.n_ubatch," in route
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert '("n_batch", "n_ubatch")' in store
-    gguf_block = store.split("    if is_gguf:", 1)[1]
-    assert 'kwargs["n_batch"] = override["n_batch"]' in gguf_block
-    assert 'kwargs["n_ubatch"] = override["n_ubatch"]' in gguf_block
+    # Read through the builder rather than its source: the fields may be copied for GGUF alone or
+    # for GGUF and MLX alike (#18426).
+    assert _override_load_kwargs({"n_batch": 1024, "n_ubatch": 256}, is_gguf = True) == {
+        "n_batch": 1024,
+        "n_ubatch": 256,
+    }
     # A stored pass-through -b / -ub must not outrank the first-class field, and survives without one.
     build = _override_load_kwargs
     stored = ["-b", "512", "-ub", "256", "--threads", "4"]
