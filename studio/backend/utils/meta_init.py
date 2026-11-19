@@ -72,15 +72,16 @@ def install() -> bool:
         def init_on_device(device: Any, include_buffers: Optional[bool] = None):
             if include_buffers is None:
                 include_buffers = parse_flag_from_env("ACCELERATE_INIT_INCLUDE_BUFFERS", False)
-            if include_buffers:
-                # accelerate's own path: a torch.device context, which is already thread-local.
-                with device:
-                    yield
-                return
+            # Pushed in both modes so a nested block's device wins over an outer one for parameters too.
             stack = _device_stack()
             stack.append(device)
             try:
-                yield
+                if include_buffers:
+                    # Buffers: accelerate's own torch.device context, which is already thread-local.
+                    with device:
+                        yield
+                else:
+                    yield
             finally:
                 stack.pop()
 

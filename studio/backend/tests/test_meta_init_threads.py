@@ -86,9 +86,12 @@ def test_innermost_device_wins_and_buffers_follow_accelerate():
         bn = nn.BatchNorm1d(4)
         with init_on_device(torch.device("cpu"), include_buffers = False):
             inner = nn.Linear(2, 2)
+        with init_on_device(torch.device("cpu"), include_buffers = True):
+            inner_buffers = nn.Linear(2, 2)
         outer = nn.Linear(2, 2)
     assert bn.weight.is_meta and not bn.running_mean.is_meta
     assert not inner.weight.is_meta and outer.weight.is_meta
+    assert not inner_buffers.weight.is_meta
     with init_empty_weights(include_buffers = True):
         bn2 = nn.BatchNorm1d(4)
     assert bn2.weight.is_meta and bn2.running_mean.is_meta
