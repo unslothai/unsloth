@@ -524,6 +524,16 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 		'[data-wallpaper-route="page"] .elevated-card',
 	])
 		assert.ok(LENS_HOSTS.includes(host), host);
+	// Every surface the Glass menus blur reaches (menus, pickers, toasts) is a lens host too.
+	const glassCss = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	for (const rule of [
+		/^html\[data-glass\]\[data-glass-menus\] :is\((\[data-slot\$="menu-content"\].*?)\) \{$/m,
+		/^html\[data-glass\]\[data-glass-menus\] :is\((\[data-sonner-toast\].*?)\) \{$/m,
+	]) {
+		const list = glassCss.match(rule)?.[1];
+		assert.ok(list, String(rule));
+		for (const selector of list.split(", ")) assert.ok(LENS_HOSTS.includes(selector), selector);
+	}
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	// Menus and sheets are portaled to <body>; hosts without a backdrop filter (Glass menus off, opaque sheets) are skipped.
 	assert.match(lens, /document\.querySelectorAll<HTMLElement>\(LENS_HOSTS\)\]\.filter\(drawsGlass\)/);
