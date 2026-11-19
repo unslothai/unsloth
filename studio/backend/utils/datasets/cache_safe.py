@@ -77,7 +77,7 @@ def load_dataset_cache_safe(*args, **kwargs):
     quiet_third_party_progress_bars()
 
     try:
-        return _load_with_cache_retries(load_dataset, args, kwargs)
+        dataset = _load_with_cache_retries(load_dataset, args, kwargs)
     except Exception as error:
         features = _json_retry_features(error, args, kwargs)
         if features is None:
@@ -88,10 +88,10 @@ def load_dataset_cache_safe(*args, **kwargs):
             error.__cause__ or error,
         )
         return _load_with_cache_retries(load_dataset, args, {**kwargs, "features": features})
+    return _json_dates_as_written(dataset, args, kwargs)
 
 
-def _json_retry_features(error, args, kwargs):
-    """Features for a local JSON load that failed on rows typed unlike the first block, else None."""
+def _local_json_files(args, kwargs):
     loader = args[0] if args else kwargs.get("path")
     files = kwargs.get("data_files")
     if loader != "json" or kwargs.get("features") is not None or kwargs.get("streaming"):
@@ -102,6 +102,14 @@ def _json_retry_features(error, args, kwargs):
         return None
     if not all(isinstance(path, (str, os.PathLike)) and os.path.isfile(path) for path in files):
         return None
+    return files
+
+
+def _json_retry_features(error, args, kwargs):
+    """Features for a local JSON load that failed on rows typed unlike the first block, else None."""
+    files = _local_json_files(args, kwargs)
+    if files is None:
+        return None
     from datasets.exceptions import DatasetGenerationError
 
     if not isinstance(error, DatasetGenerationError):
@@ -109,6 +117,28 @@ def _json_retry_features(error, args, kwargs):
     from utils.datasets.json_rows import json_rows_features
 
     return json_rows_features(files)
+
+
+def _has_timestamp(data_type):
+    import pyarrow as pa
+
+    if pa.types.is_struct(data_type):
+        return any(_has_timestamp(field.type) for field in data_type)
+    if hasattr(data_type, "value_type"):
+        return _has_timestamp(data_type.value_type)
+    return pa.types.is_timestamp(data_type)
+
+
+def _json_dates_as_written(dataset, args, kwargs):
+    features = getattr(dataset, "features", None)
+    files = _local_json_files(args, kwargs)
+    if features is None or files is None:
+        return dataset
+    if not any(_has_timestamp(field.type) for field in features.arrow_schema):
+        return dataset
+    from utils.datasets.json_rows import json_rows_dataset
+
+    return json_rows_dataset(files, kwargs.get("cache_dir")) or dataset
 
 
 def _load_with_cache_retries(load_dataset, args, kwargs):

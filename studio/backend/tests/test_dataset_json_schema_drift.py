@@ -176,3 +176,16 @@ def test_bom_schema_recovery_keeps_invalid_utf8_as_an_error(tmp_path):
     assert json_rows_features([first, str(path)]) is None
     with pytest.raises(DatasetGenerationError):
         _load([first, str(path)], tmp_path)
+
+
+def test_date_strings_load_as_written(tmp_path):
+    rows = [
+        {"date": "1945-05-08", "stamp": "2021-05-03T10:00:00Z", "meta": {"day": "2024-02-29"}},
+        {"date": "1945-05-09", "stamp": "2021-05-04T10:00:00Z", "meta": {"day": "2024-03-01"}},
+    ]
+    jsonl = _write_jsonl(tmp_path / "dates.jsonl", rows)
+    array = tmp_path / "dates.json"
+    array.write_text(json.dumps(rows), encoding = "utf-8")
+
+    assert _load(jsonl, tmp_path).to_list() == rows
+    assert _load(str(array), tmp_path).to_list() == rows
