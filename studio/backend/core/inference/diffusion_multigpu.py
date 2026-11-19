@@ -1078,8 +1078,15 @@ def replica_working_mib(module: Any) -> int:
     from .diffusion_layer_split_plan import _WORKING_SET_BLOCKS, _WORKING_SET_MIN_MIB
 
     try:
-        from .diffusion_layer_split import find_blocks
-        largest = max((_module_mib(block) for _q, _i, block in find_blocks(module)), default = 0)
+        # the class's own block names, read without the regional compile's discovery (which patches some classes)
+        names = set(
+            getattr(module, "_repeated_blocks", None)
+            or getattr(module, "_no_split_modules", None)
+            or ()
+        )
+        largest = max(
+            (_module_mib(m) for m in module.modules() if type(m).__name__ in names), default = 0
+        )
     except Exception:  # noqa: BLE001 - unreadable layout: the floor
         largest = 0
     return max(int(_WORKING_SET_MIN_MIB), int(_WORKING_SET_BLOCKS) * int(largest))
