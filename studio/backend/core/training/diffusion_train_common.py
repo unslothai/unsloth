@@ -1118,8 +1118,10 @@ def family_train_infos() -> list[dict[str, Any]]:
             if is_dit
             else None
         )
-        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only.
-        supports_compile = bool(not dit_block) and name in _DIT_TRAIN_FAMILIES
+        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only. The fp16 path trains eager.
+        supports_compile = (
+            bool(not dit_block) and name in _DIT_TRAIN_FAMILIES and not dit_fp16_fallback(name)
+        )
         if not is_dit or dit_block:
             fam_modes: list[str] = []
         else:

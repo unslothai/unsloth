@@ -157,6 +157,23 @@ def test_t4_family_infos_offer_nf4_only(card, monkeypatch):
         assert infos["qwen-image"]["precision_modes"] == []
 
 
+def test_t4_family_infos_hide_compile_the_fp16_path_never_runs(card, monkeypatch):
+    # The fp16 trainer always runs eager, so the panel must not offer a compile switch it ignores.
+    monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda *a, **k: None)
+    monkeypatch.setattr(dtc, "has_functional_torchao", lambda: False)
+    card((7, 5))
+    t4 = {i["name"]: i for i in dtc.family_train_infos()}
+    card((8, 9))
+    l4 = {i["name"]: i for i in dtc.family_train_infos()}
+    present = [fam for fam in FP16_FAMILIES if fam in t4]
+    assert present, "no fp16 family is listed, so this test would prove nothing"
+    for fam in present:
+        assert t4[fam]["precision_modes"] == ["nf4"], fam
+        assert t4[fam]["supports_compile"] is False, fam
+        # bf16 cards keep the compile switch.
+        assert l4[fam]["supports_compile"] is True, fam
+
+
 def _toy(lr = 0.1):
     w = torch.nn.Parameter(torch.ones(4))
     opt = torch.optim.SGD([w], lr = lr)
