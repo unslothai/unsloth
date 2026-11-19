@@ -924,6 +924,21 @@ def _user_callbacks(callbacks):
     ]
 
 
+def _has_nf4_weights(model):
+    """True when model holds a bitsandbytes NF4 weight the cache could serve: a parameter's quant state, or a
+    Linear4bit's own copy (FSDP2 all-gathers the packed bytes into a Parameter without it). Once per train()."""
+    try:
+        for module in model.modules():
+            if _is_bnb_nf4(module.__dict__.get("quant_state")):
+                return True
+            for param in module._parameters.values():
+                if _is_bnb_nf4(getattr(param, "quant_state", None)):
+                    return True
+        return False
+    except Exception:
+        return True  # cannot tell: keep the guarded behaviour
+
+
 def _make_callback():
     from transformers.trainer_callback import TrainerCallback
     class UnslothDequantCacheScope(TrainerCallback):
@@ -941,6 +956,9 @@ def _make_callback():
             else:
                 _ACTIVE = 1
             model = kwargs.get("model")
+            if _ACTIVE and isinstance(model, torch.nn.Module) and not _has_nf4_weights(model):
+                # Nothing to cache: no pre-hook (its padded-mask check reads the mask on the host every forward).
+                _ACTIVE = 0
             if _ACTIVE and isinstance(model, torch.nn.Module) and not _HOOKS:
                 try:
                     _HOOKS.append(
