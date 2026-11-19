@@ -1242,7 +1242,7 @@ test("Only models that fit judges MLX and safetensors results by the checkpoint 
   assert.match(picker, /searchRowFitsDevice\(\s*\{\s*id: r\.id,/);
   assert.match(
     picker,
-    /const checkpointFits = hubCheckpointFits\.get\(row\.id\.toLowerCase\(\)\);\s*if \(checkpointFits !== undefined\) \{\s*return checkpointFits;/,
+    /if \(hubCheckpointFits\.has\(row\.id\.toLowerCase\(\)\)\) \{[^}]*return !hubCheckpointFit\.has\(row\.id\.toLowerCase\(\)\);/,
   );
 });
 
@@ -1854,5 +1854,24 @@ test("a failed repo size listing is not cached, so it can retry", () => {
   assert.match(
     sizes,
     /\.then\(\(bytes\) => \{\s+sizes\.set\(key, bytes\);[\s\S]*?\}\)\s+\/\/[^\n]*\n\s+\.catch\(\(\) => null\)\s+\.finally\(\(\) => inflight\.delete\(key\)\);/,
+  );
+});
+
+test("the fit-only filter and the row warning share the measured verdict", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /if \(hubCheckpointFits\.has\(row\.id\.toLowerCase\(\)\)\) \{[^}]*return !hubCheckpointFit\.has\(row\.id\.toLowerCase\(\)\);/,
+  );
+  // Sizes come from the search results, so hiding a row cannot drop its own size.
+  assert.match(
+    picker,
+    /hubResults\.flatMap\(\(r\) => \(r\.isGguf \? \[\] : \[r\.id\]\)\)/,
+  );
+  assert.ok(
+    picker.indexOf("const hubCheckpointFit = useMemo") <
+      picker.indexOf("const foundRows = useMemo"),
   );
 });

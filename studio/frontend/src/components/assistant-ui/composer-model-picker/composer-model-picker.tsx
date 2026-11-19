@@ -2586,6 +2586,59 @@ export function ComposerModelPicker({
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
+  const sizeFilter = formatFilter === "mlx" || formatFilter === "safetensors";
+  // From the search results, not the shown rows: the fit filter below reads these sizes.
+  const hubSizes = useHubRepoSizes(
+    useMemo(
+      () => hubResults.flatMap((r) => (r.isGguf ? [] : [r.id])),
+      [hubResults],
+    ),
+    open && viewed === RECOMMENDED_TAB,
+  );
+  // Non-GGUF loads have no offload, so a repo past the device is "exceeds"; the summed files
+  // replace the Hub's estimate, which reads packed MLX weights as full width.
+  const hubCheckpointFit = useMemo(() => {
+    const map = new Map<string, PickerFitStatus>();
+    for (const r of hubResults) {
+      if (r.isGguf) {
+        continue;
+      }
+      const id = r.id.toLowerCase();
+      const bytes = hubSizes.get(id);
+      // An MLX repo loads its files as they are: the measured size outranks the 0.4 B/param
+      // estimate hfModelFitsDevice otherwise prefers. Safetensors keep the transformers rule.
+      const mlx = isMlxId(r.id, hasMlxCardTag(r));
+      const fits = bytes
+        ? searchRowFitsDevice(
+            {
+              id: r.id,
+              totalParams: r.totalParams,
+              estimatedSizeBytes: bytes,
+              curatedSizeBytes: mlx ? bytes : undefined,
+              quantMethod: r.quantMethod,
+            },
+            {
+              isGguf: false,
+              gpu: gpuInfo,
+              inferenceGpu,
+              taskScoped: false,
+              budgetFraction,
+            },
+          )
+        : hubCheckpointFits.get(id);
+      if (fits === false) {
+        map.set(id, "exceeds");
+      }
+    }
+    return map;
+  }, [
+    hubResults,
+    hubSizes,
+    hubCheckpointFits,
+    gpuInfo,
+    inferenceGpu,
+    budgetFraction,
+  ]);
   const foundRows = useMemo(() => {
     // Discover rows are the Hub's answer to this very query ("google" finds unsloth/gemma-*).
     const hubAnswered =
@@ -2613,9 +2666,9 @@ export function ComposerModelPicker({
         ) {
           return true;
         }
-        const checkpointFits = hubCheckpointFits.get(row.id.toLowerCase());
-        if (checkpointFits !== undefined) {
-          return checkpointFits;
+        if (hubCheckpointFits.has(row.id.toLowerCase())) {
+          // Same verdict as the row's warning, measured size first.
+          return !hubCheckpointFit.has(row.id.toLowerCase());
         }
         const fit = hubFit.get(row.id.toLowerCase());
         return !isOverBudget(fit) || (fit === "ram" && noGpu);
@@ -2657,6 +2710,7 @@ export function ComposerModelPicker({
     fitOnDeviceOnly,
     hubFit,
     hubCheckpointFits,
+    hubCheckpointFit,
     noGpu,
     chosenId,
   ]);
@@ -2741,63 +2795,6 @@ export function ComposerModelPicker({
     listSections,
     collapsedSections,
     foundRows,
-  ]);
-  const sizeFilter = formatFilter === "mlx" || formatFilter === "safetensors";
-  const hubSizes = useHubRepoSizes(
-    useMemo(
-      () =>
-        shownRows.flatMap((row) =>
-          row.kind === "hub" && !row.hub?.isGguf && !row.onDevice
-            ? [row.id]
-            : [],
-        ),
-      [shownRows],
-    ),
-    open && viewed === RECOMMENDED_TAB,
-  );
-  // Non-GGUF loads have no offload, so a repo past the device is "exceeds"; the summed files
-  // replace the Hub's estimate, which reads packed MLX weights as full width.
-  const hubCheckpointFit = useMemo(() => {
-    const map = new Map<string, PickerFitStatus>();
-    for (const r of hubResults) {
-      if (r.isGguf) {
-        continue;
-      }
-      const id = r.id.toLowerCase();
-      const bytes = hubSizes.get(id);
-      // An MLX repo loads its files as they are: the measured size outranks the 0.4 B/param
-      // estimate hfModelFitsDevice otherwise prefers. Safetensors keep the transformers rule.
-      const mlx = isMlxId(r.id, hasMlxCardTag(r));
-      const fits = bytes
-        ? searchRowFitsDevice(
-            {
-              id: r.id,
-              totalParams: r.totalParams,
-              estimatedSizeBytes: bytes,
-              curatedSizeBytes: mlx ? bytes : undefined,
-              quantMethod: r.quantMethod,
-            },
-            {
-              isGguf: false,
-              gpu: gpuInfo,
-              inferenceGpu,
-              taskScoped: false,
-              budgetFraction,
-            },
-          )
-        : hubCheckpointFits.get(id);
-      if (fits === false) {
-        map.set(id, "exceeds");
-      }
-    }
-    return map;
-  }, [
-    hubResults,
-    hubSizes,
-    hubCheckpointFits,
-    gpuInfo,
-    inferenceGpu,
-    budgetFraction,
   ]);
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
