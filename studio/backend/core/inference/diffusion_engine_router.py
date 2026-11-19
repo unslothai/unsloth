@@ -18,7 +18,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from core.inference.diffusion_device import resolve_diffusion_device_target
+from core.inference.diffusion_device import diffusion_target_is_cpu, resolve_diffusion_device_target
 from core.inference.diffusion_families import (
     DiffusionFamily,
     family_mlx_supported,
@@ -1084,13 +1084,10 @@ def cpu_gguf_native_only(
 
 
 def host_runs_gguf_native_only() -> bool:
-    """Host-level form for the Images page (no family check). Never raises."""
+    """Host-level form for the Images page (no family check). Never raises; probe-free, as a status poll asks it."""
     if not cpu_gguf_rule_enabled():
         return False
-    try:
-        return resolve_diffusion_device_target().backend == "cpu"
-    except Exception:  # noqa: BLE001
-        return False
+    return diffusion_target_is_cpu()
 
 
 def _refuse_cpu_gguf_diffusers(

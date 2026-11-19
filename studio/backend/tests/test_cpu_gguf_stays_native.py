@@ -61,6 +61,7 @@ def _device(monkeypatch, backend):
         "resolve_diffusion_device_target",
         lambda **_: SimpleNamespace(backend = backend, device = backend),
     )
+    monkeypatch.setattr(r, "diffusion_target_is_cpu", lambda: backend == "cpu")
 
 
 def _binaries(monkeypatch, path):
@@ -284,6 +285,50 @@ def test_status_tells_the_page_to_hide_the_diffusers_choice(monkeypatch):
     monkeypatch.delenv(r.CPU_GGUF_DIFFUSERS_FALLBACK_ENV)
     _device(monkeypatch, "cuda")
     assert r.engine_choice_status({"loaded": False})["gguf_diffusers_allowed"] is True
+
+
+@pytest.mark.parametrize(
+    "studio, cuda, xpu, mps, want",
+    [
+        ("CUDA", True, False, False, False),
+        ("CUDA", False, False, False, True),
+        ("XPU", False, True, False, False),
+        ("MLX", False, False, True, False),
+        ("CPU", False, False, True, False),
+        ("CPU", False, False, False, True),
+        ("CPU", True, False, False, False),
+        ("CPU", False, True, False, False),
+    ],
+)
+def test_the_status_poll_check_agrees_with_the_target_without_its_probes(
+    monkeypatch, studio, cuda, xpu, mps, want
+):
+    """Same answer as ``resolve_diffusion_device_target`` without its dtype probes (they initialise CUDA / MPS)."""
+    import torch
+
+    from core.inference import diffusion_device as dd
+    from utils import hardware
+    from utils.hardware import hardware as hw
+
+    probed = []
+    monkeypatch.setattr(hardware, "get_device", lambda: getattr(hw.DeviceType, studio))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_capability", lambda *_a: probed.append("cuda") or (9, 0)
+    )
+    monkeypatch.setattr(
+        torch,
+        "xpu",
+        SimpleNamespace(is_available = lambda: xpu, is_bf16_supported = lambda: True),
+        raising = False,
+    )
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+    monkeypatch.setattr(
+        dd, "_mps_or_cpu_target", lambda t: SimpleNamespace(backend = "mps" if mps else "cpu")
+    )
+    assert dd.diffusion_target_is_cpu() is want
+    assert probed == []
+    assert (dd.resolve_diffusion_device_target().backend == "cpu") is want
 
 
 # ── CPU-only hosts: no FP8 / INT8 / bf16 rows for a family with a GGUF route ──────────────────────────────────────
