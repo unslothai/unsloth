@@ -1985,9 +1985,21 @@ def producer_probe_pending(index: int) -> bool:
     return not (isinstance(stored, dict) and isinstance(stored.get("producer"), bool))
 
 
-def _warm_input(m: int, k: int, dev: Any) -> Any:
+def _warm_input(
+    m: int,
+    k: int,
+    dev: Any,
+    seed: int = 0,
+) -> Any:
+    """A warm-up operand drawn from its own seeded generator on ``dev``: the warm-up runs before the user's renders,
+    so it must not advance the default (global) RNG of the card or the host."""
     import torch
-    return torch.randn(m, k, device = dev, dtype = torch.float32).mul_(0.5).to(torch.bfloat16)
+
+    g = torch.Generator(device = dev)
+    g.manual_seed(seed)
+    return (
+        torch.randn(m, k, device = dev, dtype = torch.float32, generator = g).mul_(0.5).to(torch.bfloat16)
+    )
 
 
 def _warm_rotq(dev: Any, m: int, k: int, kind: str, cfg: tuple) -> None:
@@ -1996,7 +2008,7 @@ def _warm_rotq(dev: Any, m: int, k: int, kind: str, cfg: tuple) -> None:
 
 def _warm_h16(dev: Any, m: int, k: int, kind: str, tf32x3: bool, swiglu: bool) -> None:
     x = _warm_input(m, k, dev)
-    _h16_launch(x, kind, _warm_input(m, k, dev) if swiglu else None, tf32x3 = tf32x3)
+    _h16_launch(x, kind, _warm_input(m, k, dev, seed = 1) if swiglu else None, tf32x3 = tf32x3)
 
 
 def _warm_producer(dev: Any, m: int, pre: Optional[tuple], f: int, kind: str, tf32x3: bool) -> None:
