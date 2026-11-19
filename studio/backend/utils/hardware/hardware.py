@@ -2259,7 +2259,6 @@ def _video_cpu_opt_in() -> bool:
         return False
 
 
-# A --no-torch (Chat only) install: the full install is what adds PyTorch (and records it, so updates keep it).
 _VIDEO_NO_TORCH_INSTALL_MESSAGE = (
     "This install was set up without PyTorch (--no-torch), so video generation is disabled. "
     "Reinstall Unsloth Studio without --no-torch to enable it."
@@ -2348,7 +2347,6 @@ def _video_capability_verdict() -> dict:
         # Reason kept for every no-torch host: "no_accelerator" would let the CPU opt-in admit a host without torch.
         reason = "pytorch_not_installed"
         if verdict[0] == "no_torch" and trains_on_cpu("no_torch"):
-            # The full install trains on the CPU here and brings no video device, so do not send the user to it.
             message = (
                 "Video generation requires an NVIDIA, AMD or Intel GPU. No supported accelerator "
                 "was found on this host."

@@ -1238,8 +1238,7 @@ export function VideoPage({
   onInitialReady?: () => void;
 }) {
   const hardware = useHardwareInfo();
-  // A Chat only desktop install gets video from the full install, as Export and Train do. Only offered:
-  // the generator still gates on the backend's own verdict alone.
+  // Only offered: the generator still gates on the backend's own verdict alone.
   const fullInstall = useFullInstallBringsVideo();
   const [fullInstallOpen, setFullInstallOpen] = useState(false);
   const offerFullInstall =

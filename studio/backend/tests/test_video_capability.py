@@ -42,7 +42,6 @@ def _patch(
     cpu_training_reason = None,
 ):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
-    # The install manifest's --no-torch record, pinned so the venv running the tests cannot leak in.
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: installed_without_torch)
     monkeypatch.setattr(hw, "_CPU_TRAINING_REASON", cpu_training_reason)
     monkeypatch.setattr(hw, "_running_under_rosetta", lambda: rosetta)

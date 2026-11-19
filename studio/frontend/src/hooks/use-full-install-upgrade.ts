@@ -21,8 +21,7 @@ export function useFullInstallUpgrade(): TauriRepairController | null {
     : null;
 }
 
-/** The full install for the Video page; its own eligibility (``canUpgradeForVideo``), so a training-only blocker does
- * not hide it. Kept here so the Video page never reads the training verdict itself. */
+/** Video-page full install; own eligibility so a training-only blocker does not hide it. */
 export function useFullInstallBringsVideo(): TauriRepairController | null {
   const repair = useTauriRepairController();
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);

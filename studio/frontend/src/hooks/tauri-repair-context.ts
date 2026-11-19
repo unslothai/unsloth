@@ -36,9 +36,7 @@ export function canUpgradeToFullInstall(
   );
 }
 
-/** The full install brings video wherever it brings a video device: not on a GPU-less host (it trains on the CPU there).
- * On a Mac the only hint is the MLX wheel floor, which blocks training alone: the full install skips MLX and still
- * brings PyTorch with MPS, which video runs on. Every other hint (a closed AMD node) blocks video too. */
+/** Not on a GPU-less host (no video device). On a Mac the MLX floor blocks training only: PyTorch MPS still runs video. */
 export function canUpgradeForVideo(
   chatOnlyReason: string | null,
   chatOnlyHint: string | null,

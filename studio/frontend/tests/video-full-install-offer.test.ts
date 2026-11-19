@@ -40,7 +40,6 @@ const repair = { repairInstall: async () => {}, isExternalServer: false };
 const MLX_HINT = "Training on this Mac needs MLX, which requires macOS 14 or later.";
 
 test("the full install is not offered for video on a GPU-less host", () => {
-  // It trains on the CPU there and brings no video device.
   assert.equal(
     canUpgradeForVideo("no_torch", null, true, repair, { deviceType: "linux", cpuTraining: true }),
     false,
@@ -53,7 +52,6 @@ test("the full install is not offered for video on a GPU-less host", () => {
 });
 
 test("a Mac the MLX wheels skip is still offered video, unlike Train", () => {
-  // macOS 13 on Apple Silicon: the full install skips MLX but brings PyTorch with MPS.
   assert.equal(canUpgradeToFullInstall("no_torch", MLX_HINT, true, repair), false);
   assert.equal(
     canUpgradeForVideo("no_torch", MLX_HINT, true, repair, { deviceType: "mac", cpuTraining: false }),
