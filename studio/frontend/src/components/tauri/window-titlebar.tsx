@@ -6,6 +6,7 @@ import {
   getViewportBackdropTone,
   subscribeViewportBackdrop,
 } from "@/components/tauri/viewport-backdrop";
+import { UpdatePill } from "@/components/update/update-pill";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
@@ -608,6 +609,14 @@ export function WindowTitlebar({
           onDoubleClick={handleDragDoubleClick}
           aria-hidden="true"
         />
+        <div
+          className="pointer-events-auto absolute top-0 z-[100] flex h-full items-center"
+          style={{ right: "calc(var(--studio-window-control-inset,138px) + 6px)" }}
+          data-wallpaper-chrome-controls=""
+        >
+          {/* On every route, so the chat header does not repeat it. */}
+          <UpdatePill slot="titlebar" className="h-[26px] text-ui-12" />
+        </div>
         <div
           className={cn(
             // Keep native window actions crisp above the visual modal backdrop.
