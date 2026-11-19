@@ -493,7 +493,7 @@ def test_a_windows_code_integrity_block_names_its_fix(npu, monkeypatch, error):
 
 
 def test_a_fail_fast_exit_alone_is_a_crash_not_a_policy_block(npu, monkeypatch):
-    # 0xC0000602 is also any __fastfail crash; only named policy output makes it a block.
+    # An ordinary crash can also exit with 0xC0000602; only policy wording in the output makes it a block.
     restarted = _restarted(npu)
     crashed = _exited(0xC0000602)
     monkeypatch.setattr(LemonadeServer, "start", _raising(crashed))
@@ -501,13 +501,16 @@ def test_a_fail_fast_exit_alone_is_a_crash_not_a_policy_block(npu, monkeypatch):
         restarted.catalog()
     assert "Smart App Control" not in str(caught.value)
 
-    refused = LemonadeUnavailable(
-        "Lemonade did not start. Last output:\nThis program was blocked by Smart App Control"
-    )
-    refused.returncode = 0xC0000602
-    monkeypatch.setattr(LemonadeServer, "start", _raising(refused))
-    with pytest.raises(nb.NpuError, match = "Windows blocked part of the local model runtime"):
-        restarted.catalog()
+    for output in (
+        "This program was blocked by Smart App Control",
+        # The status in the output too: the classifier matches it before the policy wording.
+        "exit 0xC0000602: This program was blocked by Smart App Control",
+    ):
+        refused = LemonadeUnavailable(f"Lemonade did not start. Last output:\n{output}")
+        refused.returncode = 0xC0000602
+        monkeypatch.setattr(LemonadeServer, "start", _raising(refused))
+        with pytest.raises(nb.NpuError, match = "Smart App Control has no per-application exception"):
+            restarted.catalog()
     restarted.shutdown()
 
 
@@ -1108,6 +1111,36 @@ def test_stop_interrupts_a_start_that_never_becomes_ready(tmp_path):
     thread.join(timeout = 30)
     assert len(errors) == 1 and isinstance(errors[0], LemonadeUnavailable)
     assert not server.is_alive()
+    server.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shell stand-in for lemond")
+@pytest.mark.parametrize(
+    "script, returncode, reason",
+    [
+        # Alive but never healthy: the kill at the deadline must not read as lemond's own exit.
+        ("exec sleep 60", None, "did not answer its health check within 1 s"),
+        ("exit 3", 3, "did not start"),
+    ],
+)
+def test_a_failed_start_reports_lemonds_own_exit_status(tmp_path, script, returncode, reason):
+    binary = tmp_path / "lemond"
+    binary.write_text(f"#!/bin/sh\n{script}\n", encoding = "utf-8")
+    binary.chmod(0o755)
+    server = LemonadeServer(
+        binary,
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+    )
+    with pytest.raises(LemonadeUnavailable, match = reason) as caught:
+        server.start(timeout = 1)
+    assert caught.value.returncode == returncode
+    message = nb._lemonade_start_error(binary, caught.value)
+    if returncode is None:
+        assert "exited with status" not in message
+    else:
+        assert "lemond exited with status 3." in message
     server.close()
 
 

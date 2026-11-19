@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -177,9 +178,18 @@ def base_of(folder: Path) -> Optional[str]:
 
 
 def _own_file(path: Path) -> bool:
-    """A plain file inside the acting account: a link could hand over another account's weights."""
+    """A plain file inside the acting account: a link could hand over another account's weights.
+
+    Raises PermissionError rather than reading a denied file as missing (Path.is_file() on Python
+    3.14 returns False for it), so the caller skips the folder instead of calling it incomplete.
+    """
     from utils.paths.storage_roots import within_account
-    return path.is_file() and not path.is_symlink() and within_account(path)
+
+    try:
+        mode = path.lstat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return stat.S_ISREG(mode) and within_account(path)
 
 
 def _size(path: Path) -> int:

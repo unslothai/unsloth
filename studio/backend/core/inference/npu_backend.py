@@ -139,16 +139,17 @@ class NpuError(RuntimeError):
     """An NPU operation failed; the message is safe to show the user."""
 
 
-# STATUS_FAIL_FAST_EXCEPTION: any __fastfail crash exits with it, so alone it proves no policy block.
+# STATUS_FAIL_FAST_EXCEPTION: an ordinary crash can exit with it too, so alone it proves no block.
 _FAIL_FAST = code_integrity_block_reason(0xC0000602)
+_FAIL_FAST_TEXT = re.compile(r"0xc0000602\b", re.IGNORECASE)
 
 
 def _lemonade_start_error(binary: Path, exc: Exception) -> str:
     """What to tell the user when lemond would not start: a Windows block names its fix."""
     reason = code_integrity_block_reason(exc)
     if reason == _FAIL_FAST:
-        # The exit status is checked first; the output may still name the policy.
-        reason = code_integrity_block_reason(str(exc))
+        # The classifier matches the status before any policy wording; look for that wording alone.
+        reason = code_integrity_block_reason(_FAIL_FAST_TEXT.sub("", str(exc)))
     if reason is not None and reason != _FAIL_FAST:
         return code_integrity_user_message(str(binary.parent), reason)
     if isinstance(exc, OSError):

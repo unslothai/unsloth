@@ -117,7 +117,8 @@ class LemonadeServer:
         self.port: Optional[int] = None
         self.api_key: Optional[str] = None
         self._process: Optional[subprocess.Popen] = None
-        # Exit status of the last lemond stopped; a Windows code integrity block arrives as one.
+        # Exit status of the last lemond that died before it was ready (a Windows code integrity
+        # block arrives as one); None when it was still running at the deadline.
         self.last_returncode: Optional[int] = None
         self._tail: deque[str] = deque(maxlen = 200)
         # Never reset, so a mark taken before a restart still counts the new lines.
@@ -316,7 +317,12 @@ class LemonadeServer:
                             "Unsloth is shutting down; not starting Lemonade."
                         )
                     continue
-                error = LemonadeUnavailable(f"Lemonade did not start. Last output:\n{tail}")
+                if self.last_returncode is None and not self._stop_requested.is_set():
+                    # Still running at the deadline: the exit status would be our own kill.
+                    message = f"Lemonade did not answer its health check within {timeout:g} s."
+                else:
+                    message = "Lemonade did not start."
+                error = LemonadeUnavailable(f"{message} Last output:\n{tail}")
                 error.returncode = self.last_returncode
                 raise error
 
@@ -383,6 +389,8 @@ class LemonadeServer:
         )
         self._drain_thread.start()
         if not self._wait_ready(timeout):
+            # Before the kill, which would replace a real exit status with its own signal.
+            self.last_returncode = proc.poll()
             # After the kill, which joins the drain thread, so the tail has the last lines.
             self._kill_locked()
             return False
@@ -558,7 +566,6 @@ class LemonadeServer:
         except Exception as exc:  # noqa: BLE001 -- best-effort teardown
             logger.warning("Error stopping Lemonade: %s", exc)
         finally:
-            self.last_returncode = proc.returncode
             self._process = None
             self.port = None
             self.api_key = None
