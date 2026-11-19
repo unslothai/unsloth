@@ -875,9 +875,18 @@ class CfgBatchRouter:
         shape.render_steps += 1
         self.shape = self.last_shape = shape
 
+    def _forward(self, args: tuple, kwargs: dict) -> Any:
+        """``orig_forward`` past ``module.__call__``: AdaLN precompute's rows are armed for these inputs first (the
+        pre-hook armed the outer call's; a doubled call, or a fallback after one, needs its own)."""
+        module = self.module_ref()
+        if module is not None and "_unsloth_adaln" in module.__dict__:
+            from .diffusion_adaln_precompute import arm_call
+            arm_call(module, args, kwargs)
+        return self.orig_forward(*args, **kwargs)
+
     def _plain(self, args: tuple, kwargs: dict) -> Any:
         self.stats["plain_calls"] += 1
-        out = self.orig_forward(*args, **kwargs)
+        out = self._forward(args, kwargs)
         if self.offloaded and self.stats["plain_calls"] <= 2 and self._displaced():
             self._retake_slot()
         return out
@@ -933,15 +942,15 @@ class CfgBatchRouter:
             graphs = _graph_count()
             for _ in range(_BATCHED_SAMPLES):
                 t0 = time.perf_counter()
-                self.orig_forward(*first[0], **first[1])
-                self.orig_forward(*second[0], **second[1])
+                self._forward(first[0], first[1])
+                self._forward(second[0], second[1])
                 self._sync(latent)
                 plain_s.append(time.perf_counter() - t0)
                 t0 = time.perf_counter()
                 predicted = self._predict(latent) if self.template is not None else second
                 b_args, b_kwargs = merge_branches(first, predicted, batch)
                 snapshots = _snapshot(predicted)
-                split_output(self.orig_forward(*b_args, **b_kwargs), batch)
+                split_output(self._forward(b_args, b_kwargs), batch)
                 _matches(snapshots, second)
                 self._sync(latent)
                 shape.batched_s.append(time.perf_counter() - t0)
@@ -1102,7 +1111,7 @@ class CfgBatchRouter:
             return None
         graphs = _graph_count()
         try:
-            out = self.orig_forward(*b_args, **b_kwargs)
+            out = self._forward(b_args, b_kwargs)
             mine, other = split_output(out, int(latent.shape[0]))
         except Exception as exc:  # noqa: BLE001 - the branch reruns plain
             del b_args, b_kwargs
