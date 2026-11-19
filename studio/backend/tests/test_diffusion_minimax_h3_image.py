@@ -40,21 +40,20 @@ def _stack():
     return torch
 
 
-# Per-test hang guard: the whole file runs in about 100 s on CPU, so a test past this is stuck, not slow.
+# Hang guard: the file runs in ~100 s on CPU.
 _TEST_TIMEOUT_S = 300
 pytestmark = pytest.mark.timeout(_TEST_TIMEOUT_S)
 
 
 @pytest.fixture(autouse = True)
 def _fail_fast_on_a_hang(request):
-    """pytest-timeout honours the mark above. Without it, faulthandler dumps every thread's stack and ends the
-    run, so a hang names its frame instead of blocking for hours."""
+    """Without pytest-timeout, faulthandler dumps stacks and exits on a hang."""
     if request.config.pluginmanager.hasplugin("timeout"):
         yield
         return
     import faulthandler
 
-    try:  # pytest's dup of the real stderr; fd 2 is the capture file, which an exit would discard
+    try:  # pytest's real stderr dup; fd 2 is the capture file
         from _pytest.faulthandler import fault_handler_stderr_fd_key
         fd = request.config.stash[fault_handler_stderr_fd_key]
     except (ImportError, KeyError):

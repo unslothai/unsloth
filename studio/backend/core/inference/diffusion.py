@@ -4569,7 +4569,7 @@ class DiffusionBackend:
                     if gate.wait(timeout = 0.1):
                         break
             try:
-                # Inside the try: the slot is held, so an import failure here must still release it.
+                # Inside the try so an import failure still releases the held slot.
                 from hub.services.models.account_access import media_generation_slot
                 with media_generation_slot("diffusion"):
                     yield

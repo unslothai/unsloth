@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An admitted generation that fails before its body runs must still hand the generate lock back.
-
-The account slot import used to sit between admission and the try that releases the lock, so an
-import failure left the lock held and every later generate, load and unload waited on it forever."""
+"""A generation failing before its body (slot import) must still release the generate lock."""
 
 from __future__ import annotations
 
@@ -40,7 +37,6 @@ def test_unload_after_a_failed_generation_slot_does_not_wait_forever(monkeypatch
             pass
     monkeypatch.delitem(sys.modules, _SLOT_MODULE)
     done = threading.Event()
-    # A daemon thread, so a regression fails this test instead of hanging the session.
     worker = threading.Thread(target = lambda: (backend.unload(), done.set()), daemon = True)
     worker.start()
     assert done.wait(timeout = 30), "unload blocked on a generate lock a failed generation kept"
