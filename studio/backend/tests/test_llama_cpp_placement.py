@@ -3093,8 +3093,7 @@ def test_the_unbacked_part_of_a_strix_halo_hip_reading(monkeypatch):
 
 
 def test_an_unreadable_carve_out_keeps_the_plain_headroom(monkeypatch):
-    """128 GB Strix Halo, 96 GiB carve-out: counting an unreadable carve-out as 0 would
-    lift the margin past the whole HIP reading."""
+    """128 GB Strix Halo with a 96 GiB carve-out: unknown must not count as none."""
     _hip_apu(monkeypatch, free_mib = 110_301, carve_mib = 98_128)
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4_603)
@@ -3111,7 +3110,6 @@ def test_the_unbacked_lift_rides_on_the_paging_headroom(monkeypatch):
         "--fit-target",
         str(16_384 + 55_232),
     ]
-    # A user margin still wins outright.
     assert (
         LlamaCppBackend._paged_fit_headroom_flags(
             [*argv, "--fit-target", "4096"], {}, ["--fit-target", "4096"], unbacked_mib = 55_232

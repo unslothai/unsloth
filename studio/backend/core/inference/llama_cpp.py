@@ -16264,12 +16264,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _rocm_apu_unbacked_free_mib(gpu_ids: Iterable[int]) -> int:
-        """MiB of a lone Windows ROCm APU's HIP free reading that RAM plus the BIOS carve-out
-        cannot back; 0 elsewhere or when unreadable.
-
-        The PAL total adds most of the WDDM shared heap on top of RAM (110 GiB on a 64 GB Strix
-        Halo, #18316), and llama.cpp's --fit takes its margin from that free reading, so the
-        margin has to cover the part no memory stands behind or the fitter fills it from RAM."""
+        """MiB of a lone Windows ROCm APU's HIP free reading that RAM plus the carve-out cannot
+        back; 0 elsewhere or when unreadable. PAL adds the WDDM shared heap (110 GiB free on a
+        64 GB Strix Halo, #18316), and llama.cpp's --fit subtracts its margin from that reading."""
         ids = list(gpu_ids or ())
         if sys.platform != "win32" or len(ids) != 1:
             return 0
@@ -16286,8 +16283,7 @@ class LlamaCppBackend:
                 ordinal = physical_ids.index(idx)
             else:
                 return 0
-            # The child's own hipMemGetInfo, not trusted_mem_get_info: that caps by this
-            # process's allocator, which the child does not share.
+            # The child's own reading; trusted_mem_get_info caps by this process's allocator.
             free_bytes, _total = torch.cuda.mem_get_info(ordinal)
         except Exception as e:  # noqa: BLE001 -- unreadable: leave the margin as it was
             logger.debug("Could not read the APU's HIP free memory: %s", e)
@@ -24501,7 +24497,6 @@ class LlamaCppBackend:
             _fit_target_margins_by_idx: Optional[dict[int, float]] = None
             # --fit-target pair a paged iGPU launch appended, withdrawn if a retry leaves the iGPU.
             _paged_headroom: list = []
-            # Unbacked APU free that headroom also covers, withdrawn with it.
             _paged_unbacked_mib = 0
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
