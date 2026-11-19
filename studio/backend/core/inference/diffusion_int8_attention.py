@@ -1209,11 +1209,18 @@ def _learn_now(plan: dict, i8: Any, n: Optional[int]) -> Any:
             known = True
         fresh = plan["decision"] + (True,) not in _decisions()
         _decisions()[plan["decision"] + (True,)] = known
-        plan["sinks"] = known
+        # A verdict another plan published while this one learned: an earlier used call of this plan may already
+        # have clipped on the sink path (its check still pending), and then this plan keeps it for the load.
+        for check in plan["checks"]:
+            check[0].synchronize()
+            if len(check) > 2 and check[2] and bool(check[1].any()):
+                plan["live_seen"] = True
         plan["checks"] = []
-        if known == "native" and fresh:
+        path = True if plan.get("live_seen") else known
+        plan["sinks"] = path
+        if path == "native" and fresh:
             _drop_routes(plan)
-    return known
+    return path
 
 
 def _bucket_ran(plan: dict) -> bool:
@@ -2021,6 +2028,7 @@ def note_sink_checkpoint(dit: Any) -> None:
     a verdict holds for the model whose inputs it raced on (a DiT of no known checkpoint persists none)."""
     name = type(dit).__name__
     if name not in SINK_DITS:
+        _SINK_DIT[0] = None  # never the previous load's checkpoint
         return
     path = str(getattr(getattr(dit, "config", None), "_name_or_path", "") or "")
     _SINK_DIT[0] = (name, path) if path else None
@@ -2083,6 +2091,8 @@ def _install(
     candidates = [
         m for m in int8_processors(transformer) if modules is None or any(m is x for x in modules)
     ]
+    # Every install path (the floor-based auto installs too) keys persisted sink verdicts on this load's checkpoint.
+    note_sink_checkpoint(transformer)
     if not candidates:
         return 0
     env_force = setting == "force" and env_forced(policy)
@@ -2144,7 +2154,6 @@ def _install(
         proc._unsloth_int8 = True
         proc._unsloth_int8_min_tokens = minimum
         proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, force)
-        note_sink_checkpoint(transformer)
         if not force:
             register_route(index, head_dim, _raise_processor_floor(proc, m))
         engaged += 1

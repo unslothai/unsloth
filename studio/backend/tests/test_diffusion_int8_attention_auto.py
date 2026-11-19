@@ -645,6 +645,39 @@ def test_a_known_torch_verdict_after_used_int8_calls_keeps_the_kernels(monkeypat
     assert plan["sinks"] is True and launched == [("quant", True), ("attn", True)] * 5
 
 
+@pytest.mark.parametrize("verdict", [False, "native"])
+def test_a_verdict_published_mid_learning_keeps_a_used_clipped_sink_path(monkeypatch, verdict):
+    """Another plan of the bucket publishes a verdict while this plan learns: an earlier used call of this plan that
+    clipped on the sink path (its check still pending) keeps the path for the load, so the next render repeats."""
+    plan = _fake_plan(mode = I.MODE_RACE)
+    launched = _recording_kernels(monkeypatch, plan, clipped = (2,))
+    monkeypatch.setattr(
+        I, "_drop_routes", lambda plan: pytest.fail("the kept sink path moves no route")
+    )
+    plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), True)]
+    plan["calls"] = 2
+    I._decisions()[plan["decision"] + (True,)] = verdict
+    q = torch.zeros(1, 4, 2, 8)
+    I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
+    assert plan["sinks"] is True and plan["checks"] == []
+    assert launched == [("quant", True), ("attn", True)]
+    # the bucket keeps the verdict for the next plans (torch's attention after used INT8 calls becomes the kernels)
+    assert I._decisions()[plan["decision"] + (True,)] == (True if verdict == "native" else verdict)
+
+
+def test_a_pending_thrown_away_clip_does_not_keep_the_sink_path(monkeypatch):
+    """A pending clip from a thrown-away graph warm-up is not a used output: the published verdict is taken."""
+    plan = _fake_plan(mode = I.MODE_RACE)
+    launched = _recording_kernels(monkeypatch, plan, clipped = (2,))
+    plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), False)]
+    plan["calls"] = 2
+    I._decisions()[plan["decision"] + (True,)] = False
+    q = torch.zeros(1, 4, 2, 8)
+    I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
+    assert plan["sinks"] is False
+    assert launched == [("quant", True), ("quant", False), ("attn", False)]
+
+
 def _decide_at(plan, race, live):
     """The SINK_DECIDE_AT-th call of a plan one of whose read calls clipped, used by a render (live) or a thrown-away
     graph warm-up."""
