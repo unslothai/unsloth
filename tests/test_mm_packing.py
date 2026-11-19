@@ -79,6 +79,7 @@ def test_padding_inside_a_document_is_stripped():
 
 @pytest.mark.parametrize("key", ["pixel_values_videos", "image_grid_thw", "pixel_attention_mask"])
 def test_unproven_media_keys_are_refused(key):
+    # Grids and video rows need per-document mRoPE positions; without them they are refused too.
     d = _text([1])
     d[key] = torch.ones(1, 2)
     with pytest.raises(ValueError, match = "cannot pack"):
@@ -86,9 +87,122 @@ def test_unproven_media_keys_are_refused(key):
 
 
 def test_unsupported_models_are_refused():
-    qwen = SimpleNamespace(config = SimpleNamespace(model_type = "qwen2_5_vl"))
+    llava = SimpleNamespace(config = SimpleNamespace(model_type = "llava"))
     with pytest.raises(ValueError, match = "only supported"):
-        prepare_packed_multimodal_model(qwen)
+        prepare_packed_multimodal_model(llava)
+
+
+class _FakeQwenVL(torch.nn.Module):
+    """get_rope_index stand-in: image tokens (id 9) get position 100 + their index on the mRoPE planes."""
+
+    def __init__(self, model_type = "qwen2_5_vl"):
+        super().__init__()
+        self.config = SimpleNamespace(model_type = model_type, image_token_id = 9, video_token_id = 8)
+        self.calls = []
+
+    def get_rope_index(
+        self,
+        input_ids,
+        image_grid_thw = None,
+        video_grid_thw = None,
+        attention_mask = None,
+    ):
+        self.calls.append(
+            (input_ids.clone(), None if image_grid_thw is None else image_grid_thw.clone())
+        )
+        pos = torch.arange(input_ids.shape[1]).expand(3, 1, -1).clone()
+        pos[:, input_ids == 9] += 100
+        return pos, torch.zeros(1, 1)
+
+
+def _qwen_image(ids, rows, grid):
+    d = _text(ids)
+    d["pixel_values"] = torch.full((rows, 6), float(len(ids)))
+    d["image_grid_thw"] = torch.tensor([grid])
+    return d
+
+
+def test_mrope_documents_get_their_own_planes_and_a_text_plane():
+    model = _FakeQwenVL()
+    rope_index = prepare_packed_multimodal_model(model)
+    docs = [
+        _qwen_image([1, 9, 2], 4, [1, 2, 2]),
+        _text([3, 4]),
+        _qwen_image([9, 9, 5], 8, [1, 2, 4]),
+    ]
+    out = pack_multimodal_documents(docs, rope_index = rope_index)
+    pos = out["position_ids"]
+    assert pos.shape == (4, 1, 8)
+    assert pos[0, 0].tolist() == [
+        0,
+        1,
+        2,
+        0,
+        1,
+        0,
+        1,
+        2,
+    ]  # text plane: the packed mask / varlen bounds
+    assert pos[1, 0].tolist() == [0, 101, 2, 0, 1, 100, 101, 2]  # each document's own mRoPE planes
+    assert len(model.calls) == 3 and model.calls[1][1] is None
+    assert model.calls[2][1].tolist() == [[1, 2, 4]]
+    assert out["image_grid_thw"].tolist() == [[1, 2, 2], [1, 2, 4]]
+    assert out["pixel_values"].shape == (12, 6)
+    assert out["packed_seq_lengths"].tolist() == [3, 2, 3]
+
+
+def test_mrope_token_types_are_derived_when_the_processor_gives_none():
+    seen = {}
+
+    class NeedsTypes(_FakeQwenVL):
+        def get_rope_index(
+            self,
+            input_ids,
+            mm_token_type_ids,
+            image_grid_thw = None,
+            **kwargs,
+        ):
+            seen["types"] = mm_token_type_ids.tolist()
+            return torch.arange(input_ids.shape[1]).expand(3, 1, -1).clone(), None
+
+    d = _qwen_image([1, 9, 8], 4, [1, 2, 2])
+    del d["mm_token_type_ids"]
+    pack_multimodal_documents(
+        [d], rope_index = prepare_packed_multimodal_model(NeedsTypes("qwen3_vl"))
+    )
+    assert seen["types"] == [[0, 1, 2]]
+
+
+def test_mrope_rows_of_different_width_are_refused():
+    rope_index = prepare_packed_multimodal_model(_FakeQwenVL())
+    a, b = _qwen_image([9], 4, [1, 2, 2]), _qwen_image([9], 4, [1, 2, 2])
+    b["pixel_values"] = torch.ones(4, 7)
+    with pytest.raises(ValueError, match = "differ in width"):
+        pack_multimodal_documents([a, b], rope_index = rope_index)
+
+
+def test_mrope_model_without_get_rope_index_is_refused():
+    with pytest.raises(ValueError, match = "get_rope_index"):
+        prepare_packed_multimodal_model(
+            SimpleNamespace(config = SimpleNamespace(model_type = "qwen3_vl"))
+        )
+
+
+def test_mrope_kill_switch_restores_the_refusal(monkeypatch):
+    import importlib
+
+    import unsloth.utils.mm_packing as mm
+
+    monkeypatch.setenv("UNSLOTH_VLM_MROPE_PACKING", "0")
+    try:
+        importlib.reload(mm)
+        assert "qwen2_5_vl" not in mm.SUPPORTED_PACKED_MULTIMODAL_MODEL_TYPES
+        with pytest.raises(ValueError, match = "only supported"):
+            mm.prepare_packed_multimodal_model(_FakeQwenVL())
+    finally:
+        monkeypatch.delenv("UNSLOTH_VLM_MROPE_PACKING")
+        importlib.reload(mm)
+    assert "qwen2_5_vl" in mm.SUPPORTED_PACKED_MULTIMODAL_MODEL_TYPES
 
 
 if __name__ == "__main__":

@@ -151,6 +151,7 @@ class McpServerProbeResult(BaseModel):
     error: Optional[str] = None
     blender_ready: Optional[bool] = None
     blender_error: Optional[str] = None
+    blender_path: Optional[str] = None
     editor_ready: Optional[bool] = None
     editor_error: Optional[str] = None
 

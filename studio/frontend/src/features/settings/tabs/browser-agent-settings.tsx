@@ -31,7 +31,7 @@ import { useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
-type Column = keyof SiteRule;
+type Column = Exclude<keyof SiteRule, "hostOnly">;
 
 export const BROWSER_USE_DOCS_URL = "https://unsloth.ai/docs/basics/browser-use";
 
@@ -137,8 +137,11 @@ function PermissionsTable() {
   const row = (name: string, rule: SiteRule, site: string | null) => (
     <div key={site ?? "default"} className="flex flex-col gap-2.5 border-b border-border/60 py-4 first:pt-3 last:border-b-0 last:pb-5">
       <div className="flex min-h-8 items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={name}>
-          {name}
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-sm font-medium text-foreground" title={name}>
+            {name}
+          </span>
+          {rule.hostOnly ? <span className="truncate text-xs text-muted-foreground">{t("browser.agentSettings.hostOnly")}</span> : null}
         </span>
         {site === null ? null : (
           <Button

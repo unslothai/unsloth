@@ -5,6 +5,7 @@
 
 import ast
 import inspect
+import json
 import sys
 import textwrap
 import types
@@ -219,6 +220,55 @@ def test_mlx_stop_during_dataset_load_skips_the_model_load(monkeypatch):
     assert loaded == []
     assert events[-1]["type"] == "complete"
     assert events[-1]["status_message"] == "Training cancelled"
+
+
+def _checkpoint_with_tokens(path, *tokens):
+    decoder = {str(index): {"content": token} for index, token in enumerate(tokens)}
+    (path / "tokenizer_config.json").write_text(
+        json.dumps({"added_tokens_decoder": decoder}), encoding = "utf-8"
+    )
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [("<|startoftranscript|>",), ("<|AUDIO|>", "<|audio_eos|>"), ("<|bicodec_semantic_0|>",)],
+    ids = ["whisper", "csm", "bicodec"],
+)
+def test_mlx_audio_run_refuses_a_speech_checkpoint_before_any_download(
+    monkeypatch, tmp_path, tokens
+):
+    def _no_dataset(*_args):
+        raise AssertionError("the dataset loaded")
+
+    monkeypatch.setattr(_worker, "_load_hf_train_and_eval_datasets", _no_dataset)
+    with pytest.raises(ValueError, match = "speech-recognition checkpoints are not supported"):
+        _run_mlx_until_model_load(
+            monkeypatch,
+            {
+                "model_name": _checkpoint_with_tokens(tmp_path, *tokens),
+                "hf_dataset": "org/data",
+                "is_dataset_audio": True,
+            },
+            [False],
+        )
+
+
+@pytest.mark.parametrize(
+    "is_audio, tokens", [(True, "<audio_soft_token>"), (False, "<|startoftranscript|>")]
+)
+def test_mlx_audio_refusal_leaves_other_runs_alone(monkeypatch, tmp_path, is_audio, tokens):
+    monkeypatch.setattr(_worker, "_load_hf_train_and_eval_datasets", lambda *_args: (["row"], None))
+    with pytest.raises(AssertionError, match = "the model loaded"):
+        _run_mlx_until_model_load(
+            monkeypatch,
+            {
+                "model_name": _checkpoint_with_tokens(tmp_path, tokens),
+                "hf_dataset": "org/data",
+                "is_dataset_audio": is_audio,
+            },
+            [False],
+        )
 
 
 @pytest.mark.parametrize("is_audio", [True, False])

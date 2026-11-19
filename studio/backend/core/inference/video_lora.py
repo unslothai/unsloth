@@ -366,9 +366,18 @@ def bake_into_module_(
     params = dict(module.named_parameters())
     missing = [m for m in deltas if f"{m}.weight" not in params]
     if missing:
-        shown = ", ".join(sorted(missing)[:4]) + (" ..." if len(missing) > 4 else "")
+        modules = dict(module.named_modules())
+        absent = [m for m in missing if m not in modules]
+        names = absent or missing
+        shown = ", ".join(sorted(names)[:4]) + (" ..." if len(names) > 4 else "")
+        if absent:
+            raise ValueError(
+                f"This LoRA adapts layers the {label} does not have ({shown}); it was trained for a different model."
+            )
+        # the layers exist but keep quantized codes (e.g. a ModelOpt FP8 runtime) rather than a float weight
         raise ValueError(
-            f"This LoRA adapts layers the {label} does not have ({shown}); it was trained for a different model."
+            f"The {label} layers {shown} hold quantized weights, not a dense float weight; LoRAs bake only into "
+            "the bfloat16 denoiser."
         )
     for m, terms in deltas.items():
         weight = params[f"{m}.weight"]

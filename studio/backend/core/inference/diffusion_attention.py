@@ -3701,7 +3701,17 @@ def apply_attention_backend(
             _warn(logger, "unsloth_int8 plans", exc)
     if target is not None and (engaged is None or str(engaged).startswith("_native")):
         try:
-            from .diffusion_int8_attention import BACKEND, install_auto, install_requested
+            from .diffusion_int8_attention import (
+                BACKEND,
+                INCUMBENT_ATTR,
+                install_auto,
+                install_requested,
+            )
+
+            try:
+                setattr(pipe, INCUMBENT_ATTR, engaged)
+            except Exception:  # noqa: BLE001 - a slotted pipeline: the status keeps the kernel's name
+                pass
             if install_requested(pipe, requested, target, logger = logger, policy = int8_policy):
                 return BACKEND
             # switch unset: the strided processors of a raced family (FLUX.3) race their incumbent

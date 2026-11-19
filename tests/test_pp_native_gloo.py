@@ -74,7 +74,9 @@ def build(
 ):
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    probe = AutoConfig.from_pretrained(repo)
+    from tests._tiny_fixture_revisions import revision
+
+    probe = AutoConfig.from_pretrained(repo, revision = revision(repo))
     values = probe.to_dict()
     values["num_hidden_layers"] = layers
     values.pop("layer_types", None)  # rebuilt for the new depth (sliding / full pattern)

@@ -6,6 +6,7 @@ Inference API routes for model loading and text generation.
 """
 
 from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
+import copy
 import math
 import os
 import shutil
@@ -425,8 +426,10 @@ def _friendly_upstream_error(text: str) -> str:
     lowered = text.lower()
     if "failed to parse grammar" in lowered:
         return (
-            "The model couldn't compile a grammar for this request. A tool or response_format "
-            "schema in it carries a constraint llama-server's grammar engine cannot compile, "
+            "The model couldn't compile a grammar for this request. A top-level grammar or "
+            "json_schema is forwarded as sent, so it must compile in llama-server as written. "
+            "Otherwise a tool or response_format schema in the request may carry a constraint "
+            "llama-server's grammar engine cannot compile, "
             "which does not depend on the model or quant. Update Unsloth, which drops the "
             "constraints known to break it, and report the schemas if it still fails."
         )
@@ -1966,7 +1969,7 @@ def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
     return extra_args_image_max_tokens(extra_args)
 
 
-# Per-projector image caps from llama.cpp set_limit_image_tokens (keys: clip.projector_type); no universal default, absent families use the default.
+# Per image-tower caps from llama.cpp set_limit_image_tokens; absent families use the default.
 _MMPROJ_IMAGE_TOKEN_MAX = {
     "qwen2vl_merger": 4096,
     "qwen2.5vl_merger": 4096,
@@ -1980,8 +1983,8 @@ _MMPROJ_IMAGE_TOKEN_MAX = {
     "lightonocr": 1024,
     "kimivl": 1024,
     "minimax_m3": 576,
-    "gemma4v": 280,
-    "gemma4uv": 280,
+    "gemma4v": 1120,
+    "gemma4uv": 1120,
     "lfm2": 256,
 }
 
@@ -4619,6 +4622,7 @@ def _memory_tool_requested(payload) -> bool:
         or getattr(payload, "tool_choice", None) == "none"
         or (getattr(payload, "n", None) or 1) > 1
         or _response_format_constrains_decoding(payload)
+        or _raw_grammar_fields(payload)
         or (
             _has_openai_tool_history(getattr(payload, "messages", None) or [])
             and not _only_studio_tool_history(payload)
@@ -4805,7 +4809,7 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     if supports_passthrough and has_client_contract:
         return True
     # Only constraining formats need the grammar engine; {'type': 'text'} is the default.
-    return _response_format_constrains_decoding(payload)
+    return _response_format_constrains_decoding(payload) or bool(_raw_grammar_fields(payload))
 
 
 def _folds_studio_tool_history(payload, llama_backend) -> bool:
@@ -6257,8 +6261,35 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
 _computer_use_withheld: "str | None" = None
 
 
-def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
+def _loaded_model_type(name, entry = None) -> str:
+    """The loaded local model's config ``model_type``: as the worker loaded it, else read from disk; "" if unknown."""
+    if (entry or {}).get("model_type"):
+        return str(entry["model_type"])
+    try:
+        from utils.paths import normalize_path
+        from utils.transformers_version import _config_json_from_hf_cache
+
+        path = Path(os.path.expanduser(normalize_path(name or ""))) / "config.json"
+        if path.is_file():
+            with open(path, encoding = "utf-8") as f:
+                config = json.load(f)
+        else:
+            config = _config_json_from_hf_cache(name or "")
+        return str((config or {}).get("model_type") or "")
+    except Exception:
+        return ""
+
+
+def _computer_use_tool(
+    payload,
+    can_show_and_see: bool,
+    engine = None,
+    encoder: "Optional[str | Callable[[], str]]" = None,
+) -> "dict | None":
+    """`engine`: the local backend whose image-token counts size screenshots. `encoder`: the local
+    model's image tower ("" if unknown) or a callable reading it, None for a cloud model."""
     from core.inference.computer_use import computer_tool, policy
+    from core.inference.computer_use.budget import ImageBudget
     from state import computer_use as computer_state
 
     if not (can_show_and_see and policy.offered()):
@@ -6273,12 +6304,19 @@ def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
             _computer_use_withheld = reason
             logger.info("computer use not offered: %s", reason)
         return None
-    mode = policy.coordinate_mode(getattr(payload, "model", None))
+    if callable(encoder):
+        encoder = encoder()
+    mode = policy.coordinate_mode(getattr(payload, "model", None), encoder)
     computer_state.set_coordinates(
         computer_state.session_key(
             getattr(payload, "thread_id", None) or getattr(payload, "session_id", None)
         ),
         mode,
+        (
+            ImageBudget(engine.image_tokens, lambda: getattr(engine, "context_length", None))
+            if engine is not None
+            else None
+        ),
     )
     return computer_tool(mode)
 
@@ -6291,6 +6329,8 @@ async def _select_request_tools(
     checkpoint_fitted: bool = False,
     supports_vision: bool = False,
     ui_events: bool = True,
+    engine = None,
+    encoder: "Optional[str | Callable[[], str]]" = None,
 ) -> list[dict]:
     """Empty result skips the loop, so a model-emitted built-in call cannot ride an empty allow-list."""
     from core.inference.tools import (
@@ -6323,7 +6363,7 @@ async def _select_request_tools(
         if COMPUTER_TOOL_NAME in payload.enabled_tools:
             # Only where the approval card can be shown.
             computer = await asyncio.to_thread(
-                _computer_use_tool, payload, ui_events and supports_vision
+                _computer_use_tool, payload, ui_events and supports_vision, engine, encoder
             )
             if computer is not None:
                 # First, or a small model with code tools scripts the mouse in Python instead.
@@ -29860,6 +29900,21 @@ def _external_fit_limits(payload, prompt_tokens: int) -> tuple[int, Optional[int
     return context_length, max_tokens
 
 
+def _overflow_retry_thresholds(refused_tokens: int, max_tokens: Optional[int]) -> list[int]:
+    """Half the refused prompt, then looser, then the trigger whose prompt budget is one token
+    under the refused prompt: a dominant latest turn still gets the older turns dropped."""
+    from core.inference.context_window import prompt_budget
+
+    low, high = 1, max(2, 2 * refused_tokens + (max_tokens or 0))
+    while low < high:
+        mid = (low + high) // 2
+        if prompt_budget(mid, max_tokens) >= refused_tokens - 1:
+            high = mid
+        else:
+            low = mid + 1
+    return [max(1, refused_tokens * eighths // 8) for eighths in (4, 5, 6, 7)] + [low]
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -31039,10 +31094,27 @@ async def _proxy_to_external_provider(
                 "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
             }
         )
+    # No summary call; dropped turns go to the archive. "rolling" is the pre-summary cloud fit.
+    _evict_only = (
+        managed is None
+        and payload.compaction_mode in ("rolling", "checkpoint")
+        and not _provider_compacts
+    )
+    _rolling_only = _evict_only and payload.compaction_mode == "rolling"
     # Eviction's replacement: providers that compact server-side keep doing so themselves.
-    _auto_summary = bool(payload.compaction_threshold) and _rolling and not _provider_compacts
+    _auto_summary = (
+        bool(payload.compaction_threshold)
+        and _rolling
+        and not _provider_compacts
+        and not _evict_only
+    )
     # /compact. A saved thread only, so the summary outlives this request.
-    _compact_now = managed is None and payload.compact_context is True and bool(payload.thread_id)
+    _compact_now = (
+        managed is None
+        and not _evict_only
+        and payload.compact_context is True
+        and bool(payload.thread_id)
+    )
     _first_turn_overrides: dict = {}
     if _compact_now and _provider_compacts:
         _native_trigger = None
@@ -31060,7 +31132,13 @@ async def _proxy_to_external_provider(
             _first_turn_overrides = {"compaction_threshold": _native_trigger}
     _manual_summary_pending = _compact_now and not _first_turn_overrides
     _has_saved_summary = False
-    if managed is None and payload.thread_id and not _auto_summary and not _manual_summary_pending:
+    if (
+        managed is None
+        and not _evict_only
+        and payload.thread_id
+        and not _auto_summary
+        and not _manual_summary_pending
+    ):
         from core.inference import cloud_compaction as _cloud_compaction
         _has_saved_summary = await asyncio.to_thread(
             _cloud_compaction.thread_has_summaries, str(payload.thread_id)
@@ -31069,10 +31147,44 @@ async def _proxy_to_external_provider(
     _fit_active = _auto_summary or (
         managed is None and (_manual_summary_pending or _has_saved_summary)
     )
+    if _evict_only:
+        # An earlier summary is not replayed: the turns it covered are evicted like any others.
+        _fit_active = (bool(payload.compaction_threshold) and _rolling) or (
+            not _rolling_only and payload.compact_context is True and bool(payload.thread_id)
+        )
+        if not _fit_active and not _rolling_only and payload.thread_id:
+            # A /compact epoch stays in force with auto-compact off, as a saved summary does.
+            from storage import studio_db as _studio_db
+            _fit_active = bool(
+                await asyncio.to_thread(
+                    _studio_db.chat_thread_has_context_truncation, str(payload.thread_id)
+                )
+            )
+    _evicting_fit = managed is not None or _evict_only
+    # The mode names its context policy, over the process default and a checkpoint saved under the other mode.
+    _evicting_payload = (
+        payload.model_copy(update = {"context_policy": payload.compaction_mode})
+        if _evict_only
+        else payload
+    )
+    if _evict_only and _fit_active and not (payload.compaction_threshold and _rolling):
+        # /compact or its epoch, auto-compact off or the error policy: nothing past it is evicted.
+        _evicting_payload = _evicting_payload.model_copy(
+            update = {
+                "compaction_threshold": payload.context_window or _EXTERNAL_COMPACTION_THRESHOLD_MAX
+            }
+        )
 
     # Managed local engines keep the evicting fit, with its /compact checkpoint epochs.
     _checkpoint_pass: dict = {}
-    _first_payload = payload
+    _first_payload = _evicting_payload
+    # The prompt last sent, so an overflow refit evicts below what the provider refused.
+    _last_fit = None
+
+    # As the plain fit decides it: a cloud model that never gets Studio tools cannot search an epoch.
+    _model_can_reset = managed is not None or provider_model_runs_local_tools(
+        provider_type, payload.external_model or payload.model
+    )
 
     async def _managed_context_fitter(messages, tools):
         nonlocal _first_payload
@@ -31088,15 +31200,17 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
                 # The NPU has no compaction of its own, so /compact resets here as on GGUF.
-                can_reset = not _tool_calls_are_disabled(payload),
+                can_reset = (
+                    not _rolling_only and not _tool_calls_are_disabled(payload) and _model_can_reset
+                ),
                 first_pass = first_pass,
-                replays_manual = True,
+                replays_manual = not _rolling_only,
             )
 
         refit = not later
         if later:
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                fit, candidate, payload, False
+                fit, candidate, _evicting_payload, False
             )
             refit = bool(
                 truncation and (truncation.get("dropped_messages") or not truncation.get("fits"))
@@ -31104,14 +31218,17 @@ async def _proxy_to_external_provider(
             if refit:
                 # Boundaries must count the full branch, so an overflow refits it without /compact.
                 fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                    fit, messages, payload.model_copy(update = {"compact_context": None}), True
+                    fit,
+                    messages,
+                    _evicting_payload.model_copy(update = {"compact_context": None}),
+                    True,
                 )
         else:
             # /compact applies to the loop's first fit only, whether or not it evicted anything.
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                 fit, messages, _first_payload, True
             )
-            _first_payload = payload.model_copy(update = {"compact_context": None})
+            _first_payload = _evicting_payload.model_copy(update = {"compact_context": None})
         # A refit moves the boundary, so the next pass extends this result, not the stale one.
         if (later and not refit) or (refit and truncation and truncation.get("checkpoint") is True):
             _checkpoint_pass.update(input = list(messages), fitted = fitted)
@@ -31129,12 +31246,32 @@ async def _proxy_to_external_provider(
         """Yields a progress line when a summary has to be written first, then
         ``(messages, max_tokens, truncation_line)``."""
         nonlocal _external_truncation, _manual_summary_pending
+        nonlocal _evicting_payload, _first_payload, _last_fit
         from core.inference import cloud_compaction
 
         if force is None and _manual_summary_pending:
             force = "manual"
         _manual_summary_pending = False
-        if managed is not None:
+        if _evict_only and force == "overflow":
+            # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
+            # the loop's later passes. The window stays: the fit clamps the reply cap against it.
+            refused = _last_fit if _last_fit is not None else messages
+            refused_tokens = _external_token_counter(payload, tools)(refused)
+            unbounded, first_unbounded = _evicting_payload, _first_payload
+            for threshold in _overflow_retry_thresholds(
+                refused_tokens, _effective_max_tokens(unbounded)
+            ):
+                bound = {"compaction_threshold": threshold}
+                _evicting_payload = unbounded.model_copy(update = bound)
+                _first_payload = first_unbounded.model_copy(update = bound)
+                _checkpoint_pass.clear()
+                # A copy per probe: the fit shortens oversized attachments in place.
+                fitted, truncation, fallback_max_tokens = await _managed_context_fitter(
+                    copy.deepcopy(messages), tools
+                )
+                if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
+                    break
+        elif _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
             if plan is None:
@@ -31159,6 +31296,7 @@ async def _proxy_to_external_provider(
             )
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
+        _last_fit = fitted
         if truncation and truncation.get("dropped_messages"):
             _external_truncation = truncation
         truncation_line = None
@@ -31212,15 +31350,17 @@ async def _proxy_to_external_provider(
     _deferred_fit_plan = None
     # An overflow refit starts from the transcript, not from a prompt that already holds a summary.
     _unfitted_messages = chat_messages
-    if _fit_active and not run_studio_tool_loop and managed is not None:
+    if _fit_active and not run_studio_tool_loop and _evicting_fit:
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
             _fit_external_context,
             chat_messages,
-            payload,
+            _evicting_payload,
             tools = _external_fit_tools,
             # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
-            can_reset = bool(managed.supports_tools) and not _tool_calls_are_disabled(payload),
-            replays_manual = True,
+            can_reset = (bool(managed.supports_tools) if managed is not None else _model_can_reset)
+            and not _tool_calls_are_disabled(payload)
+            and not _rolling_only,
+            replays_manual = not _rolling_only,
         )
         try:
             _refuse_what_ollama_would_cut(
@@ -31229,6 +31369,7 @@ async def _proxy_to_external_provider(
         except context_refusal.ContextBudgetExceeded as exc:
             raise _context_budget_http_error(exc)
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
+        _last_fit = chat_messages
     elif _fit_active and not run_studio_tool_loop:
         _prefit_plan = await asyncio.to_thread(
             _plan_external_compaction,
@@ -31856,6 +31997,10 @@ def _refuse_npu_chat_request(payload, *, supports_vision: bool, supports_tools: 
         _raise_unsupported_openai_parameter(
             "response_format",
             "response_format needs a grammar engine, and FastFlowLM on the NPU has none.",
+        )
+    if _raw_param := _raw_grammar_param(payload):
+        _raise_unsupported_openai_parameter(
+            _raw_param, f"{_raw_param} needs a grammar engine, and FastFlowLM on the NPU has none."
         )
     if getattr(payload, "seed", None) is not None:
         _raise_unsupported_openai_parameter(
@@ -32912,6 +33057,13 @@ async def produce_openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
+        # The proxy would drop these llama-server fields.
+        if _raw_param := _raw_grammar_param(payload):
+            _raise_unsupported_openai_parameter(
+                _raw_param,
+                f"{_raw_param} is a llama-server field and is applied only when a local GGUF "
+                "model is loaded, not on an external provider.",
+            )
         # _build_external_messages has no input_audio case; refuse rather than drop it.
         if _messages_have_input_audio(payload.messages):
             raise HTTPException(
@@ -32948,6 +33100,8 @@ async def produce_openai_chat_completions(
                         param = "tools",
                     ),
                 )
+    # Refused on every backend, so reject before an auto-switch can evict the resident model.
+    _reject_unhonorable_raw_grammar(payload)
 
     # Reject a system-only chat before any auto load, even with features off, to keep preview ownership.
     _pre_parsed = None
@@ -32982,6 +33136,7 @@ async def produce_openai_chat_completions(
             or bool(payload.anthropic_code_exec_container_id)
             # A JSON-schema response_format is grammar-constrained decoding; check it with the router's predicate.
             or _response_format_constrains_decoding(payload)
+            or bool(_raw_grammar_fields(payload))
         )
         # Client-tool passthrough leaves confirm_tool_calls unset; only an explicit True rejects.
         _studio_local_tool_loop = bool(_use_tools_intent) and (
@@ -33185,6 +33340,12 @@ async def produce_openai_chat_completions(
                     "response_format cannot be honored by an audio reply; send the "
                     "request to a text model to use guided decoding.",
                 )
+            if _raw_param := _raw_grammar_param(payload):
+                _raise_unsupported_openai_parameter(
+                    _raw_param,
+                    f"{_raw_param} cannot be honored by an audio reply; send the request to a "
+                    "text model to use it.",
+                )
             _reject_audio_output_continuation(payload)
             # This branch speaks only the newest user TEXT; an image would go unread.
             if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
@@ -33223,6 +33384,12 @@ async def produce_openai_chat_completions(
         if payload.stream and _wants_multiple_choices(payload):
             _raise_unsupported_n("streaming chat completions")
         model_info = backend.models.get(backend.active_model_name, {})
+        if _raw_param := _raw_grammar_param(payload):
+            _raise_unsupported_openai_parameter(
+                _raw_param,
+                f"{_raw_param} is a llama-server field and is applied only when a GGUF model "
+                "is loaded.",
+            )
         if _response_format_constrains_decoding(payload):
             _audio_reply = model_info.get("is_audio") and model_info.get("audio_type") != "whisper"
             _transcribes = model_info.get("audio_type") == "whisper"
@@ -33843,9 +34010,22 @@ async def produce_openai_chat_completions(
         )
     # Shared with the token counter. Guided decoding routes here too: the other path drops schema.
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
+        if getattr(llama_backend, "is_diffusion", False) and (
+            _raw_param := _raw_grammar_param(payload)
+        ):
+            raise _reject(
+                400,
+                openai_error_body(
+                    f"{_raw_param} is not supported by diffusion models; load an autoregressive "
+                    "GGUF to use it.",
+                    status = 400,
+                    code = "unsupported_parameter",
+                    param = _raw_param,
+                ),
+            )
         _refuse_unused_mcp_image(_mcp_image)
         if _wants_multiple_choices(payload):
-            raise _reject_unsupported_n("GGUF tool or response_format passthrough")
+            raise _reject_unsupported_n("GGUF tool, response_format or grammar passthrough")
         _reject_unresumable_thought(payload, llama_backend, _reject)
         if payload.audio_base64:
             # Passthrough forwards verbatim, so transcoded audio would never be injected.
@@ -34120,6 +34300,8 @@ async def produce_openai_chat_completions(
                 supports_vision = bool(getattr(llama_backend, "is_vision", False)),
                 tools_on = _tools_on,
                 mcp_allowed = _mcp_allowed,
+                engine = llama_backend,
+                encoder = getattr(llama_backend, "_mmproj_projector_type", None) or "",
                 # Process policy says a reset is possible somewhere, not that this request can do one.
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
                 ui_events = _ui_events,
@@ -34139,6 +34321,18 @@ async def produce_openai_chat_completions(
                     status = 400,
                     code = "unsupported_parameter",
                     param = "response_format",
+                ),
+            )
+        if _raw_param := _raw_grammar_param(payload):
+            # Only an Unsloth tool-loop request reaches here; every other one took the passthrough.
+            raise _reject(
+                400,
+                openai_error_body(
+                    f"{_raw_param} is not supported with Unsloth tool execution; "
+                    "send the request without enable_tools to use it.",
+                    status = 400,
+                    code = "unsupported_parameter",
+                    param = _raw_param,
                 ),
             )
 
@@ -36206,6 +36400,10 @@ async def produce_openai_chat_completions(
             supports_vision = bool(_sf_model_info.get("is_vision")),
             checkpoint_fitted = _sf_fit_overflow is not None,
             ui_events = _ui_events,
+            engine = backend,
+            encoder = functools.partial(
+                _loaded_model_type, backend.active_model_name, _sf_model_info
+            ),
         )
         _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Refuse the loop when nothing survived so built-in calls can't use the empty allow-list.
@@ -41116,6 +41314,8 @@ class _ResponsesReasoningExtractor:
         structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
         if structured_reasoning:
             reasoning_parts.append(structured_reasoning)
+            # The server split the reasoning out, so tags in the answer are literal text.
+            self._parse_think_markers = False
         if text:
             self._buffer += text
             self._fed += len(text)
@@ -44342,6 +44542,8 @@ async def _mlx_count_chat_tokens(
                 mcp_allowed = False,
                 supports_vision = bool(entry.get("is_vision")),
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                engine = backend,
+                encoder = functools.partial(_loaded_model_type, active, entry),
             )
         ) + _mcp_tools
         # With no tools left the completion skips the loop, so use the plain render, not an empty catalog.
@@ -44925,6 +45127,8 @@ async def chat_count_tokens(
             mcp_allowed = _mcp_allowed,
             supports_vision = bool(getattr(llama_backend, "is_vision", False)),
             checkpoint_fitted = _rolling_context_policy(payload) is not None,
+            engine = llama_backend,
+            encoder = getattr(llama_backend, "_mmproj_projector_type", None) or "",
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
@@ -48993,6 +49197,72 @@ def _response_format_constrains_decoding(payload) -> bool:
     return response_format_constrains_decoding(_extract_response_format(payload))
 
 
+def _raw_grammar_fields(payload) -> dict:
+    """Top-level llama-server ``grammar`` / ``json_schema`` from model_extra that constrain decoding."""
+    extra = getattr(payload, "model_extra", None)
+    if not isinstance(extra, dict):
+        return {}
+    fields = {}
+    # llama-server's chat endpoint treats an empty grammar as none.
+    if extra.get("grammar") not in (None, ""):
+        fields["grammar"] = extra["grammar"]
+    if extra.get("json_schema") is not None:
+        fields["json_schema"] = extra["json_schema"]
+    return fields
+
+
+def _raw_grammar_param(payload) -> Optional[str]:
+    fields = _raw_grammar_fields(payload)
+    return next(iter(fields), None)
+
+
+def _reject_unhonorable_raw_grammar(payload) -> None:
+    fields = _raw_grammar_fields(payload)
+    if not fields:
+        return
+    if "grammar" in fields and not isinstance(fields["grammar"], str):
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "grammar must be a GBNF string.", status = 400, code = "invalid_type", param = "grammar"
+            ),
+        )
+    if "json_schema" in fields and not isinstance(fields["json_schema"], dict):
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "json_schema must be a JSON Schema object.",
+                status = 400,
+                code = "invalid_type",
+                param = "json_schema",
+            ),
+        )
+    param = next(iter(fields))
+    if len(fields) > 1:
+        _raise_unsupported_openai_parameter(
+            "grammar", "Send either grammar or json_schema, not both."
+        )
+    response_format = _extract_response_format(payload)
+    # llama-server keeps the top-level schema under a schema-less json_object (server-common.cpp).
+    schema_under_json_object = (
+        param == "json_schema"
+        and isinstance(response_format, dict)
+        and response_format.get("type") == "json_object"
+        and "schema" not in response_format
+    )
+    if _response_format_constrains_decoding(payload) and not schema_under_json_object:
+        _raise_unsupported_openai_parameter(
+            param,
+            f"{param} cannot be combined with a constraining response_format; send only one of them.",
+        )
+    # llama-server refuses a custom grammar beside callable tools, and a schema would block the call.
+    if _tools_outrank_response_format(payload, payload.tools):
+        _raise_unsupported_openai_parameter(
+            param,
+            f"{param} cannot be combined with callable tools; send tool_choice 'none' or no tools.",
+        )
+
+
 def _reject_unhonorable_response_format(payload) -> None:
     from core.inference.grammar_constraint import (
         ResponseFormatError,
@@ -49072,6 +49342,9 @@ def _build_openai_passthrough_body(
         stream_options = payload.stream_options,
         markup = getattr(llama_backend, "markup_profile", None),
     )
+    # Sent as llama-server takes them: a GBNF constrains from the first token, so on a template
+    # that pre-opens the think block the constrained text lands in reasoning_content.
+    body.update(_raw_grammar_fields(payload))
     if _continue_final_message(payload, thought = True):
         # llama-server rejects both flags set true.
         body["continue_final_message"] = True

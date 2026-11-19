@@ -207,3 +207,31 @@ def test_nograd_kill_spares_a_verified_signature():
         r"if _pg_diff >= _PG_TOL_KILL and _pg_layout\.signature not in \(\s*_pg_v if isinstance\(_pg_v, dict\) else \{\}",
         source,
     )
+
+
+def test_nograd_verify_envelope_is_rounded_up_to_a_power_of_two():
+    # An exact-max envelope re-ran the no-grad self-verify on about half the steps.
+    node = next(
+        n
+        for n in ast.parse(TEXT).body
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "grpo_trainer__get_per_token_logps_and_entropies"
+    )
+    source = ast.get_source_segment(TEXT, node)
+    m = re.search(r"\n\s*_pg_vT = (.+?)\n\s*_pg_vS = (.+?)\n", source)
+    assert m, "no-grad self-verify envelope store not found"
+
+    class _T:
+        def __init__(self, n, m):
+            self.shape, self._m = (1, n), m
+
+        def max(self):
+            return self._m
+
+    def env(T, maxpos):
+        layout = type("L", (), {"flat_ids": _T(T, None), "position_ids": _T(None, maxpos)})()
+        ns = {"_pg_layout": layout, "int": int}
+        return eval(m.group(1), ns), eval(m.group(2), ns)
+
+    assert env(1000, 700) == (1024, 1024)
+    assert env(1025, 1024) == (2048, 2048)
