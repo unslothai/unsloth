@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import contextlib
+import functools
 import gc
 import logging
 import sys
@@ -1671,3 +1672,123 @@ def test_a_short_turn_holds_again_the_boundary_it_resumed_from():
         assert turn(store, n) == 512
         assert held(store) == [512, n - 1]
     assert turn(store, 800) == 512 and turn(store, 800) == 799
+
+
+def _write_positions(cache, n):  # KV layer i, row r holds r + i; recurrent state, the offset
+    mx, start = sys.modules["mlx.core"], cache_entries_offset(cache)
+    rows = mx.arange(start, start + n, dtype = mx.float32)[None, None, :, None] * mx.ones(64)
+    for i, entry in enumerate(cache):
+        if hasattr(entry, "update_and_fetch"):
+            entry.update_and_fetch(rows + i, -rows - i)
+        else:
+            entry[0] = mx.full((1, 64), float(start + n))
+    mx.eval([entry.state for entry in cache])
+
+
+def test_a_resumed_turn_moves_its_lineage_and_publishes_exact_rows(request):
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+    seam = request.getfixturevalue("seam")
+    # Uncached, so a buffer's size is what was allocated for it, not a larger recycled one.
+    request.addfinalizer(functools.partial(mx.set_cache_limit, mx.set_cache_limit(0)))
+    store, first, during = VLMPromptSnapshotStore(1 << 30), list(range(700)), []
+    ids = first[:690] + list(range(2000, 2410))
+    layout = lambda: [cache.KVCache(), cache.RotatingKVCache(1100), cache.ArraysCache(1)]
+
+    def lm(inputs, cache, **_kwargs):
+        _write_positions(cache, len(inputs))
+        during.append(sorted(len(item[1]) for item in store._entries))
+
+    def turn(prompt, finish):
+        during.clear()
+        with Session(store, "m", lm, layout, dispatch = seam, max_new_tokens = 4) as session:
+            if finish:
+                _stream(session, seam, _VLM(lm), prompt)
+            else:
+                prefix = session.find_prefix_length(prompt)
+                session._forward.record.on_resume()(prefix)
+        assert [entry.keys is None for entry in session.cache[:2]] == [True, len(prompt) <= 1096]
+        for item, (entries, _charged) in store._entries.items():
+            n, keys = len(item[1]), entries[0].keys
+            assert entries[0].offset == entries[1].offset == entries[2][0][0, 0].item() == n
+            assert mx.array_equal(keys[0, 0, :, 0], mx.arange(n)).item()
+            assert mx.array_equal(entries[0].values, -keys).item()
+            base = store._entries[store._bases.get(item, item)][0][0].keys
+            assert (
+                mx.get_array_buffer_size(keys)
+                == mx.get_array_buffer_size(base)
+                < base.nbytes + 2**14
+            )
+        return session.reused_tokens, sorted(len(i[1]) for i in store._entries), list(during)
+
+    assert turn(first, True) == (0, [512, 699], [[]] * 4)
+    assert turn(first[:600], False) == (512, [512], [])  # no write: the served rows are a view
+    assert turn(ids, True) == (512, [512, 1024, 1099], [[]] * 4)
+    assert turn(ids, True) == (1099, [512, 1024, 1099], [[]]) and "m" in store._replays
+    # The ring wraps past 1100 rows, so 1024 and its 512 reader keep rows of their own.
+    longer = ids + list(range(3000, 3600))
+    assert turn(longer[:1400], True)[:2] == (1024, [512, 1024, 1280, 1399])
+    assert turn(longer, True)[:2] == (1280, [512, 1024, 1280, 1536, 1699])
+    assert turn(longer[:1300] + [-1] * 400, True)[0] == 1280
+    assert ("m", tuple(longer[:1536])) in store._entries
+
+
+@pytest.mark.parametrize("fault", (None, "uneven", "wrapped", "converts"))
+def test_publish_keeps_only_rows_the_final_cache_still_holds(fault):
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+    final = [cache.KVCache(), cache.RotatingKVCache(16), cache.KVCache(), cache.KVCache()]
+    _write_positions(final[3:], 5)  # final[2] stays empty: neither one tracks the stream
+    _write_positions(final[:2], 12)
+    rows = 17 if fault == "converts" else 16  # converting moves no KV; the ring wraps in 17
+    keeps = functools.partial(snapshots._owner_eligible, rows = rows, converts = rows > 16)
+    skeleton = snapshots.kv_skeleton(final, keeps)
+    assert [e.keys is None for e in skeleton] == [fault != "converts"] * 2 + [True, False]
+    # A ring keeps every row through a multi-row update and drops one on the next single row.
+    for n in (8, 1) if fault == "wrapped" else (2,):
+        _write_positions(final[1 if fault == "uneven" else 0 : 2], n)
+    kept = snapshots.publish_skeletons([(12, skeleton, False)], final)
+    dropped = fault in ("uneven", "wrapped")
+    assert bool(kept) is not dropped and [e.keys is None for e in skeleton[:2]] == [dropped] * 2
+    assert dropped or cache.mx.array_equal(skeleton[1].keys[0, 0, :, 0], cache.mx.arange(12) + 1)
+
+
+def test_eviction_keeps_the_boundaries_that_shared_an_evicted_or_held_replay(request):
+    mx = pytest.importorskip("mlx.core")
+    request.addfinalizer(functools.partial(mx.set_cache_limit, mx.set_cache_limit(0)))
+    cache, ids, budget = pytest.importorskip("mlx_vlm.models.cache"), list(range(1100)), 1600 * 512
+
+    def put(store, key, n, replay, lineage):
+        entries = [cache.KVCache()]
+        _write_positions(entries, n)
+        entries[0].keys, entries[0].values = (array * 1 for array in entries[0].state)
+        store.store(key, ids[:n], entries, replay = replay, lineage = lineage)
+
+    # The replay is evicted, or held if stored last; without lineage, plain LRU drops the boundary.
+    for last, lineage in (("o", True), ("m", True), ("m", False)):
+        store = VLMPromptSnapshotStore(budget)
+        sequence = [("m", 512, False), ("m", 960, False), ("o", 600, False), ("m", 1024, True)]
+        if last == "o":
+            sequence.append(sequence.pop(2))
+        for key, n, replay in sequence:
+            put(store, key, n, replay, lineage)
+        boundary = store._entries.get(("m", tuple(ids[:960])))
+        assert (boundary is not None) == lineage and store.nbytes <= budget
+        assert (("m", tuple(ids[:1024])) in store._held._entries) == (last == "m" and lineage)
+        if boundary and last == "m":
+            # Its own 15 pages, not a view of the held replay's 16 (page multiples: sizes exact).
+            keys = boundary[0][0].keys
+            mx.eval(keys)
+            assert mx.get_array_buffer_size(keys) == keys.nbytes
+
+
+def test_ownership_needs_a_layer_that_can_move_and_no_expert_offload():
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+    dispatch = types.SimpleNamespace(generate_step = None)
+    nested = lambda: cache.CacheList(cache.KVCache())
+    for layer, offloaded in ((cache.KVCache, False), (nested, False), (cache.KVCache, True)):
+        store, kwargs = VLMPromptSnapshotStore(10**9), dict(experts_offloaded = offloaded)
+        with Session(
+            store, "m", FakeLanguageModel(), lambda: [layer()], dispatch = dispatch, **kwargs
+        ) as s:
+            s.find_prefix_length(list(range(300)))
+            assert (s._keeps_rows is not None) == (layer is cache.KVCache and not offloaded)
