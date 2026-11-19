@@ -1234,11 +1234,18 @@ export function TranslatePage() {
           ? t("translate.model.chat")
           : (attempt?.customName ?? prefs.customModel?.name ?? "")));
 
+  const downloadedRef = useRef(downloaded);
+  useEffect(() => {
+    downloadedRef.current = downloaded;
+  }, [downloaded]);
   useEffect(() => {
     if (busy) return;
     const abort = new AbortController();
     for (const model of DEDICATED_TRANSLATE_MODELS) {
-      void translateModelDownloaded(model, abort.signal).then((onDisk) => {
+      // After every run: the disk shows a finished download, so the Hub is asked only before it is known missing.
+      void translateModelDownloaded(model, abort.signal, {
+        remote: downloadedRef.current[model.id] !== false,
+      }).then((onDisk) => {
         if (onDisk === null || abort.signal.aborted) return;
         setDownloaded((prev) => ({ ...prev, [model.id]: onDisk }));
       });
@@ -1326,7 +1333,11 @@ export function TranslatePage() {
     // Read-only meanwhile; a swap or history pick still wins.
     const before = useTranslateStore.getState().source;
     try {
-      const { text, warning } = await extractDocumentText(file);
+      const { text, warning } = await extractDocumentText(
+        file,
+        undefined,
+        TRANSLATE_SOURCE_MAX_CHARS,
+      );
       if (useTranslateStore.getState().source !== before) {
         return;
       }
