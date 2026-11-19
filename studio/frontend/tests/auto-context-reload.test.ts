@@ -92,7 +92,7 @@ test("Manual with fixed layers keeps the resident context only on a same-model A
   // Both the load and the config page resolve an unset per-model mode before asking.
   assert.match(
     RUNTIME,
-    /fixedLayerContextPin\(\{\s*isGguf: isGguf && !switchingModelOrVariant,\s*gpuMemoryMode: loadGpuMemoryMode,/,
+    /loadCustomContextLength =\s*fixedLayerContextPin\(\{\s*isGguf: isGguf && !switchingModelOrVariant,\s*gpuMemoryMode: loadGpuMemoryMode,\s*gpuLayers: loadGpuLayers,\s*customContextLength: loadCustomContextLength,\s*activeLoadedContext: loadContextLength,\s*\}\) \?\? loadCustomContextLength;/,
   );
   assert.match(
     RUNTIME,

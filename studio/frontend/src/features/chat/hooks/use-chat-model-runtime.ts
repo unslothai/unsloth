@@ -2311,10 +2311,7 @@ export function useChatModelRuntime() {
               targetIsMlx,
               pinnedMaxSeqLength,
             );
-            // Pinning layers on the SAME model keeps the currently resolved context: with no explicit pin, a
-            // manual+pinned reload would send 0, which the backend's --fit off branch treats as the NATIVE
-            // context, far larger than the sheet shows when the load was fit-sized, a likely OOM.
-            // loadedContextLength is that resolved value; a model already at native reloads unchanged.
+            // After explicitCtxPin, so the kept resident context is not recorded as the user's.
             loadCustomContextLength =
               fixedLayerContextPin({
                 isGguf: isGguf && !switchingModelOrVariant,

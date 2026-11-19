@@ -20,7 +20,6 @@ test("an explicit length is priced as itself", () => {
   assert.equal(resolveEstimateContext(524288), 524288);
 });
 
-
 // Must include quantization: modelPath is identical across quant switches.
 const sourceId = (
   path: string,
