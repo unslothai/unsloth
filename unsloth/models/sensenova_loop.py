@@ -50,6 +50,7 @@ __all__ = [
     "register_sensenova_loop",
     "convert_sensenova_loop_checkpoint",
     "prepare_sensenova_loop_int8_load",
+    "verify_sensenova_loop_int8_build",
     "SenseNovaLoopInt8Embedding",
 ]
 
@@ -321,6 +322,53 @@ def prepare_sensenova_loop_int8_load(model_name, config, token = None, revision 
     config._unsloth_sensenova_int8_scale_dtype = _config_scale_dtype(config)
     _patch_remote_build_for_int8(config)
     return True
+
+
+def verify_sensenova_loop_int8_build(checkpoint, token = None, revision = None):
+    """CPU-only wiring check (no weights read, no GPU touched): run the converted-checkpoint
+    prepare, build the model on the meta device with transformers' own init contexts, and
+    return the ``embed_tokens`` class name.
+
+    Raises when the checkpoint is not converted, the remote class cannot be resolved, or the
+    build patch failed to engage (a plain nn.Embedding would load the int8 table as garbage).
+    """
+    import transformers.initialization as _init
+    from contextlib import ExitStack
+
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(
+        checkpoint, token = token, revision = revision, trust_remote_code = True
+    )
+    if not prepare_sensenova_loop_int8_load(
+        checkpoint, config, token = token, revision = revision
+    ):
+        raise RuntimeError(
+            f"Unsloth: {checkpoint} does not carry the int8 token table ({_SCALE_KEY} "
+            "missing). Run convert_sensenova_loop_checkpoint first."
+        )
+    module = sys.modules.get(getattr(type(config), "__module__", ""))
+    auto_map = getattr(config, "auto_map", {}) or {}
+    remote_class = (auto_map.get("AutoModelForCausalLM") or "").split(".")[-1]
+    model_class = getattr(module, remote_class, None)
+    if model_class is None:
+        raise RuntimeError(f"Unsloth: could not resolve the remote {remote_class} class.")
+    # transformers 5 builds under these contexts in from_pretrained (get_init_context).
+    with ExitStack() as stack:
+        stack.enter_context(_init.no_tie_weights())
+        stack.enter_context(_init.meta_device_safe_creation_ops())
+        stack.enter_context(torch.device("meta"))
+        model = model_class(config)
+    text_model = getattr(getattr(model, "model", model), "language_model", None)
+    if text_model is None:
+        text_model = getattr(model, "language_model", None)
+    embedding = getattr(text_model, "embed_tokens", None)
+    if not isinstance(embedding, SenseNovaLoopInt8Embedding):
+        raise RuntimeError(
+            f"Unsloth: the build produced {type(embedding).__name__} instead of "
+            f"{SenseNovaLoopInt8Embedding.__name__}; the int8 build patch did not engage."
+        )
+    return type(embedding).__name__
 
 
 def _convert_embedding_to_int8(text_model):

@@ -100,6 +100,21 @@ Fix, checkpoint side (the path that makes the 8 GB fit deterministic):
   weights against about 6.76 GiB usable: no offload_layers, no host-RAM dependence, no
   block-swap margin. If the build patch ever fails to reach the model, the loader raises
   instead of letting the int8 table land in a bf16 `nn.Embedding` as garbage.
+  `sensenova-loop-verify-build.py` (repo root) checks this wiring on the meta device
+  with no weights and no GPU; it prints `SenseNovaLoopInt8Embedding`.
+- Fit-guard arithmetic (found when the first end-to-end load refused with the same
+  message as stock): transformers derates the 4-bit placement budget to 90% of free
+  VRAM before `infer_auto_device_map` runs (`Bnb4BitHfQuantizer.adjust_max_memory`), so
+  the guard on the 8 GB card compares against about 6.08 GiB, not the 6.76 GiB free.
+  The stock 7.36 GiB and the converted 6.42 GiB both exceed 6.08 GiB, and the error
+  text is static, so the refusal was identical either way; the build patch itself was
+  engaging the whole time. For a detected converted checkpoint on a single GPU, the
+  loader now passes `max_memory` pre-raised by 1/0.90 so the derated budget lands at
+  98% of free (about 6.63 GiB on this card), which holds the converted 6.42 GiB with
+  the 2% kept as the bitsandbytes quantization-transient reserve. A model that does
+  not fit 98% of free still spills and refuses with the same clean message; only the
+  90-98% band is newly accepted, and bnb's per-module load transients (the largest
+  module is about 150 MB) are far smaller than that band.
 - The post-load conversion (bf16 table staged through host RAM, int8 copy lands after
   the VRAM copy is freed) stays as the fallback for stock checkpoints and adapter loads.
 
@@ -143,5 +158,10 @@ versions below 5.17.0 remain untested.
   twice-executed loop layers; PEFT's own LoRA forwards carry it in the meantime.
 - Offline tokenizer loads keep the broken regex (transformers' own detection needs the
   hub tag or the config fetch), and offline conversion requires a local snapshot.
-- Only `py_compile` was run on the changed files; no GPU or load verification was done in
-  this draft.
+- The single-GPU budget compensation only restores the 90-98%-of-free band; a card whose
+  free-minus-weights gap falls inside that band could still hit a dispatch-time OOM,
+  bounded by bnb's per-module quantization transients. Multi-GPU hosts keep the stock
+  derated budget (the unsloth planner handles placement there).
+- Only `py_compile` and the CPU-only meta-device build check
+  (`sensenova-loop-verify-build.py`) were run on this draft; the full GPU load was not
+  re-run by the drafter.

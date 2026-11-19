@@ -3032,6 +3032,22 @@ class FastModel(FastBaseModel):
                     token = token,
                     revision = base_revision,
                 )
+                # A converted load (about 6.42 GiB of weights) still trips the bitsandbytes
+                # fit guard: transformers derates the placement budget to 90% of free VRAM
+                # (Bnb4BitHfQuantizer.adjust_max_memory), about 6.08 GiB on the 8 GB card.
+                # Pre-raise the passed budget so the derate lands at 98% of free, keeping a
+                # transient reserve; an oversized model still spills and refuses cleanly.
+                if _sensenova_int8 and DEVICE_TYPE == "cuda":
+                    try:
+                        if torch.cuda.device_count() == 1 and "max_memory" not in kwargs:
+                            free = torch.cuda.mem_get_info(0)[0]
+                            kwargs["max_memory"] = {0: int(free * 0.98 / 0.90)}
+                            print(
+                                f"Unsloth: int8 SenseNova-Loop checkpoint; budgeting "
+                                f"{free * 0.98 / 1024**3:.2f} GiB of free VRAM for the 4-bit placement."
+                            )
+                    except Exception:
+                        pass
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
