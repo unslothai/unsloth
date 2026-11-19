@@ -6105,6 +6105,16 @@ def _ensure_rocm_torch() -> "bool | None":
     # ── Linux x86_64 only: PyTorch ROCm wheels are not published for aarch64 ──
     # PyTorch ROCm wheels are not published for aarch64.
     if platform.machine().lower() not in {"x86_64", "amd64"}:
+        # Same bar as the forced-request check below, which this return would otherwise skip.
+        if (
+            _rocm_torch_explicitly_requested()
+            and _has_usable_nvidia_gpu()
+            and _explicit_rocm_torch_index_url() is None
+            and _explicit_cuda_torch_index_url() is None
+            and _explicit_cpu_torch_index_url() is None
+            and not _forced_rocm_route_is_viable()
+        ):
+            _note_forced_rocm_declined()
         return
     # An explicit ROCm pin commits to ROCm wheels whatever the visible GPU (headless / CI).
     _rocm_pin = _explicit_rocm_torch_index_url()

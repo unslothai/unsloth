@@ -327,3 +327,21 @@ def test_update_under_install_sh_stays_quiet(stack, monkeypatch, capsys):
     """install.sh already said why and exported the CUDA backend; the stack must not repeat it."""
     out = _update(stack, monkeypatch, capsys, archs = ["gfx1010"], backend = "cuda")
     assert "UNSLOTH_FORCE_ROCM_TORCH" not in out, out
+
+
+def test_update_on_aarch64_says_the_wheels_are_x86_only(stack, monkeypatch, capsys):
+    """Red before the fix: the aarch64 guard returned ahead of the forced-request check."""
+    out = _update(stack, monkeypatch, capsys, machine = "aarch64")
+    lines = [l for l in out.splitlines() if _PY_REASON in l]
+    assert len(lines) == 1, out
+    assert "ROCm PyTorch wheels are x86_64 only." in lines[0], out
+
+
+@pytest.mark.parametrize(
+    "host",
+    [dict(request = False), dict(pin_url = "https://download.pytorch.org/whl/cu130")],
+    ids = ["no-request", "cuda-pin"],
+)
+def test_update_on_aarch64_stays_quiet_without_a_live_request(stack, monkeypatch, capsys, host):
+    out = _update(stack, monkeypatch, capsys, machine = "aarch64", **host)
+    assert "UNSLOTH_FORCE_ROCM_TORCH" not in out, out
