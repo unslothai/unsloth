@@ -148,16 +148,16 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  // Makers sit on their own row, under the sources, as toggles.
+  // Makers are toggles, in the source tab bar by default.
   assert.match(picker, /\{sourceTabs\.map\(\(t\) => \(/);
   assert.match(picker, /const orgButtons = orgTabs\.map\(/);
   assert.match(picker, /aria-label="Filter by organization"[\s\S]{0,200}?\{orgButtons\}/);
   assert.match(picker, /aria-pressed=\{toggle \? shown : undefined\}/);
-  // Settings can put the org filters back in the source tab bar instead of their own row.
+  // Settings can drop the org filters to their own row under the sources.
   assert.match(picker, /\{showOrgs && orgsInTabBar \? \(\s+<div\s+role="group"\s+aria-label="Filter by organization"/);
   assert.match(picker, /\{showOrgs && !orgsInTabBar \? \(\s+<div\s+ref=\{setOrgStrip\}/);
   const runtime = readSrc("features/chat/stores/chat-runtime-store.ts");
-  assert.match(runtime, /pickerOrgsInTabBar: loadBool\(CHAT_PICKER_ORGS_IN_TAB_BAR_KEY, false\),/);
+  assert.match(runtime, /pickerOrgsInTabBar: loadBool\(CHAT_PICKER_ORGS_IN_TAB_BAR_KEY, true\),/);
   assert.match(readSrc("features/settings/tabs/general-tab.tsx"), /"unsloth_chat_picker_orgs_in_tab_bar",/);
   // An overflowing org row scrolls on a mouse wheel and fades its clipped ends, like the sources row.
   assert.match(

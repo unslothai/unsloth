@@ -4656,7 +4656,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   showMemoryBar: loadBool(CHAT_SHOW_MEMORY_BAR_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   pickerOrgs: loadPickerOrgs(),
-  pickerOrgsInTabBar: loadBool(CHAT_PICKER_ORGS_IN_TAB_BAR_KEY, false),
+  pickerOrgsInTabBar: loadBool(CHAT_PICKER_ORGS_IN_TAB_BAR_KEY, true),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
   customContextLength: null,
