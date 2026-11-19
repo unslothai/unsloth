@@ -1318,10 +1318,13 @@ def _pad_queries_attend_self(mask_4d, mask_2d):
         return mask_4d
     pad_q = (mask_2d == 0)[:, None, :, None]
     diag = torch.eye(q_len, dtype = torch.bool, device = mask_4d.device)
+    # One [B, 1, T, T] result; the per-query choice broadcasts a [T, T] row set, never a batch-sized one.
     if mask_4d.dtype == torch.bool:
-        return (mask_4d & ~pad_q) | (pad_q & diag)
+        return torch.where(pad_q, diag, mask_4d)
     blocked = torch.finfo(mask_4d.dtype).min
-    return mask_4d.masked_fill(pad_q & ~diag, blocked).masked_fill(pad_q & diag, 0)
+    self_only = torch.zeros(q_len, q_len, dtype = mask_4d.dtype, device = mask_4d.device)
+    self_only.masked_fill_(~diag, blocked)
+    return torch.where(pad_q, self_only, mask_4d)
 
 
 class Gemma2AttentionMaskConverter(AttentionMaskConverter):
@@ -1586,6 +1589,11 @@ def LlamaModel_fast_forward(
                 dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
                     attention_mask, seq_length, inputs_embeds.dtype, key_value_length
                 )
+                # Same pad-query repair as the shared branch: the softcapping kernels add the mask, so a
+                # fully masked pad row would softmax uniformly over every key, its target included.
+                if self.training and past_key_values_length == 0:
+                    dynamic_SWA_mask = _pad_queries_attend_self(dynamic_SWA_mask, attention_mask)
+                    dynamic_GA_mask = _pad_queries_attend_self(dynamic_GA_mask, attention_mask)
             else:
                 dynamic_SWA_mask = attention_mask
                 dynamic_GA_mask = attention_mask
