@@ -37,6 +37,7 @@ import {
   Navigation05Icon,
   PlusSignIcon,
   Search01Icon,
+  Settings01Icon,
   SparklesIcon,
   StarIcon,
   Tick02Icon,
@@ -105,9 +106,9 @@ function subscribe(listener: () => void): () => void {
 
 const FEATURES = [
   { icon: GridViewIcon, label: "Easy browsing and switching" },
-  { icon: Download01Icon, label: "Download in one pick" },
+  { icon: Settings01Icon, label: "Run settings in reach" },
   { icon: Brain03Icon, label: "Reasoning built in" },
-  { icon: StarIcon, label: "Favorites and settings" },
+  { icon: StarIcon, label: "Star your favorites" },
 ] as const;
 
 const MOCK_ROWS = [
