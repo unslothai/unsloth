@@ -61,6 +61,11 @@ export function patternMatches(pattern: string, host: string): boolean {
   return host === pattern || host.endsWith(`.${pattern}`);
 }
 
+/** Whether the saved rule for `pattern` applies on `host`: a host-only rule skips its subdomains. */
+export function ruleCovers(pattern: string, rule: SiteRule | undefined, host: string): boolean {
+  return Boolean(host) && patternMatches(pattern, host) && (host === pattern || !rule?.hostOnly);
+}
+
 // Longer is narrower. On a tie ("example.com" and "*.example.com" on a subdomain) the wildcard
 // wins, so the result doesn't depend on the order the rules were saved in.
 const specificity = (pattern: string) => pattern.replace("*.", "").length * 2 + (pattern.startsWith("*.") ? 1 : 0);
@@ -70,8 +75,7 @@ export function ruleFor(url: string, permissions: AgentPermissions): { rule: Sit
   const host = hostOf(url);
   let best: string | null = null;
   for (const pattern of Object.keys(permissions.sites)) {
-    const covers = host && patternMatches(pattern, host) && (host === pattern || !permissions.sites[pattern]?.hostOnly);
-    if (covers && (!best || specificity(pattern) > specificity(best))) best = pattern;
+    if (ruleCovers(pattern, permissions.sites[pattern], host) && (!best || specificity(pattern) > specificity(best))) best = pattern;
   }
   const site = best ? permissions.sites[best] : undefined;
   return site ? { rule: site, site: best } : { rule: permissions.defaults, site: null };

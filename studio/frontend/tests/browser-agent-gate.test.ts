@@ -342,3 +342,9 @@ test("Always allow on a script prompt covers only that host, not the rest of its
   assert.ok(blog);
   assert.equal(scriptRunsWithoutAsking("ask", "https://attacker.wordpress.com/", permissions({ [blog.site]: blog.rule })), false);
 });
+
+test("a host-only rule set to ask still asks when the agent comes from one of its subdomains", () => {
+  const rules = permissions({ "google.com": { ...NONE.defaults, hostOnly: true } });
+  assert.equal(gateNavigation("https://google.com/", navigation({ permissions: rules, currentUrl: "https://mail.google.com/" })).kind, "ask");
+  assert.equal(gateNavigation("https://google.com/a", navigation({ permissions: rules, currentUrl: "https://www.google.com/b" })).kind, "allow");
+});
