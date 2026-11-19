@@ -156,7 +156,6 @@ def needs_tool_confirmation(
         from core.inference.computer_use import installed
 
         if not installed():
-            # Nothing to approve: the call only answers that computer use is not installed.
             return False
         from core.inference.computer_use import policy as computer_policy
 

@@ -22,8 +22,7 @@ from . import ADDON_PACKAGE, ADDON_VERSION, addon_root, detach, installed
 logger = get_logger(__name__)
 
 DISTRIBUTION = "unsloth-computer-use"
-# The published wheel's sha256. Nothing is downloaded without it: a version number alone would
-# trust whoever holds the name on the index.
+# The published wheel's sha256. Empty downloads nothing: a version alone trusts the index name.
 ADDON_SHA256 = ""
 _INSTALL_TIMEOUT_S = 180
 _LOCK_TIMEOUT_S = 200
@@ -52,7 +51,6 @@ def _download_command(staging: Path, requirements: Path) -> list[str]:
     requirements.write_text(
         f"{DISTRIBUTION}=={ADDON_VERSION} --hash=sha256:{ADDON_SHA256}\n", encoding = "utf-8"
     )
-    # A wheel only, with no dependencies: nothing from the index runs during the install.
     return command + [
         "--require-hashes",
         "--target",
@@ -79,7 +77,6 @@ def _download(staging: Path) -> None:
     ):
         raise AddonInstallError("Computer use can't be installed while offline mode is on.")
     with tempfile.TemporaryDirectory(prefix = "unsloth-computer-use-") as scratch:
-        # TLS and proxy variables only: no credentials, index redirects or package overrides.
         env = {key: value for key, value in os.environ.items() if key in _INSTALL_ENV_KEYS}
         env["PIP_CONFIG_FILE"] = os.devnull
         try:

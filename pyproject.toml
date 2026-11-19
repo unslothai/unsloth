@@ -121,7 +121,6 @@ exclude = [
 # Same for the frontend source tree: setuptools-scm ships every tracked file, but only
 # frontend/dist is read at runtime. Keep src-tauri/icons: install.sh reads icons from it.
 "studio" = [
-    # The optional computer use add-on is its own distribution (studio/addons/computer_use).
     "addons/**",
     "frontend/public/**",
     "frontend/src/**",

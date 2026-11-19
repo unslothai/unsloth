@@ -113,7 +113,6 @@ def test_installing_copies_the_checkout_and_removing_deletes_it(client, bare, mo
     monkeypatch.setattr(policy, "update_settings", lambda **changes: chosen.update(changes))
     installed = client.post("/api/computer-use/install")
     assert installed.status_code == 200 and installed.json()["installed"] is True
-    # Installing never switches it on.
     assert installed.json()["enabled"] is False
     package = bare / computer_use.ADDON_VERSION / computer_use.ADDON_PACKAGE
     assert (package / "tool.py").is_file() and (package / "backends" / "base.py").is_file()
@@ -121,7 +120,6 @@ def test_installing_copies_the_checkout_and_removing_deletes_it(client, bare, mo
     assert [entry.name for entry in bare.iterdir() if entry.is_dir()] == [
         computer_use.ADDON_VERSION
     ]
-    # A second press changes nothing.
     assert client.post("/api/computer-use/install").status_code == 200
 
     removed = client.delete("/api/computer-use/install")

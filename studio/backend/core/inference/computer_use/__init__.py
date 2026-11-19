@@ -15,8 +15,7 @@ from typing import Any, Optional
 COMPUTER_TOOL_NAME = "computer"
 COMPUTER_TOOL_NAMES = frozenset({COMPUTER_TOOL_NAME})
 
-# Equal to the version in studio/addons/computer_use/pyproject.toml. The add-on imports this
-# backend's modules, so only the exact version this build names is ever loaded.
+# Equal to studio/addons/computer_use/pyproject.toml; no other version is ever loaded.
 ADDON_VERSION = "1.0.0"
 ADDON_PACKAGE = "unsloth_computer_use"
 NOT_INSTALLED = "Computer use is not installed. Install it in Settings > Computer use."

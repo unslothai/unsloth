@@ -62,7 +62,6 @@ def _status() -> ComputerUseStatus:
     from core.inference.computer_use import host_problem, installed
 
     if not installed():
-        # `reason` set: this server could not use it, so there is nothing to install.
         return ComputerUseStatus(
             installed = False,
             available = False,
@@ -265,7 +264,6 @@ async def uninstall_computer_use(current_subject: str = Depends(get_current_subj
     """Switch it off, end what is running, and delete the add-on's files."""
     from core.inference.computer_use import addon
 
-    # Off first, so installing it again later does not also switch it back on.
     await asyncio.to_thread(_turn_off)
     try:
         await asyncio.to_thread(addon.uninstall)

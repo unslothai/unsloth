@@ -35,7 +35,6 @@ function fromApi(body: unknown): ComputerUseStatus {
   const names = (value: unknown) =>
     Array.isArray(value) ? value.filter((app): app is string => typeof app === "string") : [];
   return {
-    // A backend older than the add-on has it built in.
     installed: raw.installed !== false,
     available: raw.available === true,
     reason: typeof raw.reason === "string" ? raw.reason : null,
