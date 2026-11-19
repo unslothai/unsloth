@@ -36,7 +36,6 @@ STATE_ATTR = "_unsloth_adaln"
 
 MODE_OFF, MODE_ON, MODE_AUTO = "off", "on", "auto"
 
-# Engagement evidence for benches and tests (process-wide).
 COUNTS = {
     "installs": 0,
     "served": 0,
@@ -124,14 +123,8 @@ class AdaLNTable(_torch().nn.Module):
         return f"{self.site_name}, kind={self.kind}, in={self.in_features}, out={self.out_features}"
 
 
-# --------------------------------------------------------------------------------------------------------------------
-# Family adapters: where the modulation sites are, which forward inputs the embedding reads, and the forward's own
-# preamble (op for op) that turns them into ``temb``.
-
-
 class _Adapter:
     cls_names: tuple = ()
-    # forward keyword names the embedding reads (all optional except timestep)
     key_names: tuple = ()
 
     def sites(self, model: Any) -> Optional[list]:
@@ -234,10 +227,6 @@ def _site_input(kind: str, temb: Any, dtype: Any) -> Any:
     return x
 
 
-# --------------------------------------------------------------------------------------------------------------------
-# Host residency of the real modules.
-
-
 def _pin(t: Any) -> Any:
     try:
         return t.pin_memory()
@@ -292,10 +281,6 @@ def _device_clone(mod: Any, device: Any) -> Any:
     return clone
 
 
-# --------------------------------------------------------------------------------------------------------------------
-# Per-transformer state.
-
-
 def _key_of(tensors: list) -> tuple:
     """Exact key: dtype / shape / bytes of every embedding input (one small device-to-host copy)."""
     torch = _torch()
@@ -344,7 +329,6 @@ class _State:
         self.armed_ids = None  # _input_ids of the call whose rows are armed
         self.armed_refs: tuple = ()
 
-    # ---- inputs / keys
     def inputs(self, model: Any, args: tuple, kwargs: dict) -> dict:
         sig = self._sig
         if sig is None:
@@ -398,7 +382,6 @@ class _State:
             out.append(d)
         return out
 
-    # ---- compute
     def _embedder(self, model: Any, device: Any) -> tuple:
         tte = getattr(model, "time_text_embed")
         for p in list(tte.parameters())[:1]:
@@ -653,10 +636,6 @@ def _serve(model: Any, st: "_State", args: tuple, kwargs: dict) -> None:
         st.armed_refs = tuple(inputs.get(name) for name in st.adapter.key_names)
 
 
-# --------------------------------------------------------------------------------------------------------------------
-# Install / uninstall.
-
-
 def decline_reason(
     model: Any,
     *,
@@ -752,7 +731,6 @@ def install(
         stands.append(stand)
     st = _State(model, adapter, sites, stands, pipe)
     st.host_bytes = moved
-    # A host copy of the (small) embedder, for calls whose live embedder an offload hook keeps on the host.
     try:
         st.tte_host = copy.deepcopy(model.time_text_embed).to("cpu")
     except Exception:  # noqa: BLE001

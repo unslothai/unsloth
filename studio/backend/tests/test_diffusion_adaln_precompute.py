@@ -176,7 +176,6 @@ def test_flux_bit_identical_one_weight_pass(dtype, batch):
     )  # every step predicted from the scheduler
     assert c["served"] - before["served"] == len(calls)
     assert c["verify_checks"] > before["verify_checks"]
-    # a second request with the same inputs re-reads no weights
     out2 = _run(model, calls)
     assert _counts()["weight_passes"] == c["weight_passes"]
     assert all(torch.equal(a, b) for a, b in zip(ref, out2))
@@ -194,7 +193,6 @@ def test_flux_cfg_branches_and_guidance_change(dtype):
     out = _run(model, interleaved)
     for a, b in zip(ref, out):
         assert torch.equal(a, b)
-    # each pooled / guidance set has its own rows: 3 requests' worth
     assert ap.summary(model)["cached_rows"] == 12
 
 
@@ -253,7 +251,6 @@ def test_modes_and_declines(monkeypatch):
     assert ap.decline_reason(model, offloaded = True) is None
     monkeypatch.setenv(ap.ENV, "1")
     assert ap.decline_reason(model, offloaded = False) is None
-    # shared-modulation families are not installed
     assert ap.adapter_for(torch.nn.Linear(2, 2)) is None
 
 
@@ -271,12 +268,8 @@ def test_compiled_blocks_bit_identical():
     assert all(torch.allclose(a, b, atol = 1e-6, rtol = 0) for a, b in zip(ref, out))
 
 
-# ---- review fixes (PR #18342)
-
-
 def test_layer_split_declines_and_rows_follow_block_device():
     model = _flux()
-    # a denoiser planned split across cards takes no lever
     assert ap.install(model, _pipe(4), requested = ap.MODE_ON, split = True) is False
     assert not ap.installed(model)
     # a stand-in whose block sits on another device returns its row there (CPU mock: "meta" as the second card)
@@ -344,9 +337,6 @@ def test_learned_peak_label_records_the_lever():
     assert on != off and on.endswith("|adaln:on")
     ap.uninstall(model)
     assert learned_peak_label(pipe, "native", "m") == off
-
-
-# ---- review round 2 (PR #18342)
 
 
 def _mark_streamed(model):
@@ -525,9 +515,6 @@ def test_baked_lora_load_declines():
     assert ap.install(model, pipe, requested = ap.MODE_ON) is False
 
 
-# ---- review round 3 (PR #18342)
-
-
 def test_sequential_cpu_offload_restore_keeps_weights_and_renders():
     """enable_sequential_cpu_offload = accelerate cpu_offload per component; a LoRA request restores the modules and
     diffusers then removes and re-applies the hooks around the adapter load."""
@@ -592,9 +579,6 @@ def test_precompute_holds_at_most_the_table_budget(monkeypatch):
     assert st.row_bytes <= budget
 
 
-# ---- review round 4 (PR #18342)
-
-
 def test_cfg_batch_doubled_call_failure_falls_back_on_its_own_rows(monkeypatch):
     """The doubled forward raises (OOM on the doubled activations) after its rows were armed; the plain fallback and
     every later branch call must read their own rows: bit-identical to the router-off render."""
@@ -628,9 +612,6 @@ def test_cfg_batch_doubled_call_failure_falls_back_on_its_own_rows(monkeypatch):
     assert ap.COUNTS["served"] > served
     for a, b in zip(ref, out):
         assert torch.equal(a, b)
-
-
-# ---- review round 5 (PR #18342)
 
 
 def test_renders_under_inference_mode_like_diffusion_backend(monkeypatch):
