@@ -263,6 +263,9 @@ class _ForwardRecord:
         "tail",
         "resume_offset",
         "on_resume",
+        "window",
+        "prompt",
+        "served",
     )
 
     def __init__(self):
@@ -274,6 +277,9 @@ class _ForwardRecord:
         self.tail = None
         self.resume_offset = None
         self.on_resume = None
+        self.window = 0
+        self.prompt = ()
+        self.served = 0
 
 
 _RECORDING_CLASSES = {}
@@ -410,6 +416,230 @@ class RecordingForward:
     def unrecorded(self, *args, **kwargs):
         """A forward the record does not count: rows prepared outside the generation."""
         return self._base.__call__(self._language_model, *args, **kwargs)
+
+
+def vlm_checkpoint_dispatch():
+    """mlx-vlm's dispatch module when its ``generate_step`` takes a checkpoint callback, else None."""
+    try:
+        import mlx_vlm
+        from packaging.version import Version
+
+        # Before 0.7.11 a cold run's processors see only the last chunk: a resumed one must not see more.
+        if Version(mlx_vlm.__version__) < Version("0.7.11"):
+            return None
+        dispatch = importlib.import_module("mlx_vlm.generate.dispatch")
+        ar = importlib.import_module("mlx_vlm.generate.ar")
+        params = set(inspect.signature(ar.generate_step).parameters)
+    except Exception:
+        return None
+    needed = {"prompt_cache_checkpoint", "prompt_cache_checkpoint_lengths", "prefill_step_size"}
+    return (
+        dispatch
+        if needed <= params and callable(getattr(dispatch, "generate_step", None))
+        else None
+    )
+
+
+def _with_reused_prefix(processor, prefix_ids):
+    """*processor* fed the cold run's history: mlx-vlm hands it only the ids past a resumed cache."""
+    import mlx.core as mx
+
+    head = mx.array(list(prefix_ids), dtype = mx.int32)
+
+    def _processor(tokens, logits):
+        return processor(mx.concatenate([head.astype(tokens.dtype), tokens]), logits)
+
+    return _processor
+
+
+def _resumed_processors(kwargs, prefix_ids):
+    """``kwargs`` with every processor ``generate_step`` would run, its own penalties first as it
+    builds them, fed the full history."""
+    ar = importlib.import_module("mlx_vlm.generate.ar")
+    names = (
+        "logit_bias",
+        "repetition_penalty",
+        "repetition_context_size",
+        "presence_penalty",
+        "presence_context_size",
+        "frequency_penalty",
+        "frequency_context_size",
+    )
+    own = {name: kwargs.pop(name) for name in names if name in kwargs}
+    make = ar._generate_module_override("make_logits_processors", ar.make_logits_processors)
+    processors = [*make(**own), *(kwargs.get("logits_processors") or ())]
+    kwargs["logits_processors"] = [_with_reused_prefix(p, prefix_ids) for p in processors]
+    return kwargs
+
+
+class CheckpointForward:
+    """The capture of one request through mlx-vlm's ``generate_step`` checkpoint hook. The language
+    model keeps its class, which unsloth-zoo's drafter discovery checks. Every listed length ends a
+    chunk mlx-vlm cuts anyway, so no forward changes shape. With no ``dispatch`` it captures
+    nothing."""
+
+    def __init__(
+        self,
+        language_model,
+        dispatch = None,
+    ):
+        self._language_model = language_model
+        self._dispatch = dispatch
+        self.record = _ForwardRecord()
+        self._generate_step = None
+        self._capturing = None
+        self._marks = {}
+        self._embed = None
+
+    def __enter__(self):
+        if self._dispatch is not None:
+            self._generate_step = self._dispatch.generate_step
+            self._dispatch.generate_step = self._seam
+        return self
+
+    def __exit__(self, *_exc):
+        self._disarm()
+        self._restore_embed()
+        if self._dispatch is not None and self._dispatch.generate_step == self._seam:
+            self._dispatch.generate_step = self._generate_step
+        return False
+
+    def unrecorded(self, *args, **kwargs):
+        return self._language_model(*args, **kwargs)
+
+    def _seam(self, input_ids, model, pixel_values, mask, **kwargs):
+        record = self.record
+        if record.resume_offset is not None or kwargs.get("prompt_cache_checkpoint") is not None:
+            # A second generation under one session, or APC's own checkpoints: nothing captured.
+            return self._generate_step(input_ids, model, pixel_values, mask, **kwargs)
+        cache = kwargs.get("prompt_cache")
+        offset = (cache_entries_offset(cache) or 0) if cache is not None else 0
+        record.resume_offset = offset
+        on_resume = record.on_resume() if record.on_resume is not None else None
+        if on_resume is not None:
+            on_resume(offset)
+        primed = None
+        if offset:
+            # GLM4V-style models take an explicit table as is: positions come from the cache offset.
+            primed = (kwargs.pop("position_ids", None), kwargs.get("rope_deltas"))
+            kwargs = _resumed_processors(kwargs, record.prompt[:offset])
+        lengths = []
+        if kwargs.get("prefill_step_size") == record.window and record.window:
+            kwargs["prompt_cache_checkpoint"] = self._checkpoint
+            kwargs["prompt_cache_checkpoint_lengths"] = lengths
+        self._embed_once(model, int(input_ids.shape[-1]), offset, primed, lengths)
+        return self._generate(input_ids, model, pixel_values, mask, kwargs)
+
+    def _generate(self, input_ids, model, pixel_values, mask, kwargs):
+        try:
+            yield from self._generate_step(input_ids, model, pixel_values, mask, **kwargs)
+        finally:
+            # mlx-vlm prefills unchunked when the model refuses chunking: the capture is still taken.
+            snapshot = self._disarm(kwargs.get("prompt_cache"))
+            if self.record.snapshot is None:
+                self.record.snapshot = snapshot
+            self._restore_embed()
+
+    def _embed_once(self, model, ids, offset, primed, lengths):
+        """Fill the checkpoint lengths once the embedding rows are known, as ``generate_step`` reads
+        them only after its one ``get_input_embeddings`` call."""
+        previous = model.__dict__.get("get_input_embeddings")
+        embed = previous or functools.partial(type(model).get_input_embeddings, model)
+        self._embed = (model, previous)
+
+        def get_input_embeddings(*args, **kwargs):
+            self._restore_embed()
+            output = embed(*args, **kwargs)
+            if primed is not None:
+                for name in ("position_ids", "per_layer_inputs"):
+                    if getattr(output, name, None) is not None:
+                        setattr(output, name, None)
+                # generate_step resets the mRoPE state when drafting: back to the prompt's.
+                language_model = getattr(model, "language_model", model)
+                for name, value in zip(("_position_ids", "_rope_deltas"), primed):
+                    if value is not None and hasattr(language_model, name):
+                        setattr(language_model, name, value)
+            rows = getattr(getattr(output, "inputs_embeds", None), "shape", (0, 0))[1]
+            # Visual tokens a processor expands differ from ids: captures would key on the wrong rows.
+            if rows == ids:
+                lengths.extend(self._plan(rows, offset))
+            return output
+
+        model.__dict__["get_input_embeddings"] = get_input_embeddings
+
+    def _restore_embed(self):
+        installed, self._embed = self._embed, None
+        if installed is None:
+            return
+        model, previous = installed
+        if previous is None:
+            model.__dict__.pop("get_input_embeddings", None)
+        else:
+            model.__dict__["get_input_embeddings"] = previous
+
+    def _plan(self, rows, offset):
+        record = self.record
+        window, last = record.window, rows - 1
+        # Marks sit on window multiples or the last row, where mlx-vlm ends a chunk anyway.
+        in_prompt = lambda n: 0 < n <= last
+        self._marks = {}
+        target = record.capture_at * window
+        if record.capture_rows:
+            end = min(target + window, last)
+            if target < last:
+                self._marks.setdefault(end, set()).add("disarm")
+                if target:
+                    self._marks.setdefault(target, set()).add("arm")
+                else:
+                    self._arm()
+        elif in_prompt(target):
+            self._marks.setdefault(target, set()).add("boundary")
+        if record.tail_at and offset == record.served and in_prompt(last):
+            self._marks.setdefault(last, set()).add("tail")
+        return sorted(self._marks)
+
+    def _checkpoint(self, processed, cache):
+        marks = self._marks.get(processed, ())
+        record = self.record
+        if "disarm" in marks:
+            record.snapshot = self._disarm(cache)
+        if "boundary" in marks:
+            record.snapshot = self._copy(cache)
+        if "tail" in marks:
+            record.tail = self._copy(cache)
+        if "arm" in marks:
+            self._arm()
+
+    @staticmethod
+    def _copy(cache):
+        try:
+            return copy_cache_entries(cache)
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+            return None
+
+    def _arm(self):
+        from unsloth_zoo.mlx.offload import capture_prefill_rows
+
+        def copy(entry):
+            try:
+                return copy_cache_entries([entry])[0]
+            except Exception as exc:
+                logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+
+        scope = capture_prefill_rows(self.record.capture_rows, copy)
+        self._capturing = (scope, scope.__enter__())
+
+    def _disarm(self, cache = None):
+        capturing, self._capturing = self._capturing, None
+        if capturing is None:
+            return None
+        scope, captured = capturing
+        scope.__exit__(None, None, None)
+        if cache is None:
+            return None
+        snapshot = [captured.get(id(entry)) for entry in cache]
+        return snapshot if all(entry is not None for entry in snapshot) else None
 
 
 def _cache_classes(name):
@@ -796,12 +1026,17 @@ class VLMPromptCacheSession:
         policy_hosts = (),
         step = VLM_PREFILL_STEP,
         window = None,
+        dispatch = None,
+        reuse = True,
+        audio_token_ids = (),
     ):
         self.step = step
         self.window = window or step
+        self._reuse = reuse
         self._store = store
         self._key = key
         self._media_token_ids = tuple(media_token_ids)
+        self._audio_token_ids = tuple(audio_token_ids)
         self._releases_unserved = releases_unserved
         self.media_block = media_block
         self._origin = 0
@@ -809,7 +1044,12 @@ class VLMPromptCacheSession:
         self.produced_tokens = 0
         self.produced_seconds = 0.0
         self._policy_hosts = tuple(policy_hosts)
-        self._forward = RecordingForward(language_model)
+        # The class swap only without the hook, and never under a drafter, whose discovery it defeats.
+        self._forward = (
+            RecordingForward(language_model)
+            if dispatch is None and reuse
+            else CheckpointForward(language_model, dispatch)
+        )
         self.cache = make_cache()
         self.reused_tokens = 0
         self._token_ids = None
@@ -841,6 +1081,14 @@ class VLMPromptCacheSession:
         token_ids = list(token_ids)
         self._token_ids = token_ids
         origin = self.media_block.rows(token_ids) if self.media_block is not None else 0
+        # mlx-vlm resumes past audio placeholders, which Gemma 4's helper maps to per-layer row 0.
+        audio_end = media_prefix_end(token_ids, self._audio_token_ids)
+        if not self._reuse or 0 < origin < audio_end:
+            # Nothing resumed or captured: without the hook a media block's prefix lacks the seam's
+            # position fixes, and here an audio placeholder follows it. Freed as a miss would be.
+            self._keep(None)
+            self._store.release_held()
+            return 0
         self._origin = origin
         boundary = shape_stable_prefix(len(token_ids), origin, self.step)
         self._media_end = media_prefix_end(token_ids, self._media_token_ids)
@@ -850,6 +1098,10 @@ class VLMPromptCacheSession:
             self._keep(None)
             return 0
         entries, prefix_len = self._store.lookup(self._key, token_ids, boundary)
+        if prefix_len < audio_end:
+            # A miss, so nothing stays held beside the prefill.
+            entries, prefix_len = None, 0
+            self._store.release_held()
         self._handed_over = (
             entries is not None and (self._key, tuple(token_ids[:prefix_len])) not in self._store
         )
@@ -889,6 +1141,7 @@ class VLMPromptCacheSession:
         if prefix_len <= boundary < len(token_ids) - 1:
             record.tail_at = record.capture_at + 1
         self.reused_tokens = prefix_len
+        record.window, record.prompt, record.served = self.window, token_ids, prefix_len
         return prefix_len
 
     def _keep(self, item):
@@ -5661,11 +5914,25 @@ class MLXInferenceBackend:
     @staticmethod
     def _vlm_media_token_ids(config):
         ids = set()
-        for attr in ("image_token_id", "image_token_index", "video_token_id", "video_token_index"):
+        for attr in (
+            "image_token_id",
+            "image_token_index",
+            "video_token_id",
+            "video_token_index",
+        ):
             value = config.get(attr) if isinstance(config, dict) else getattr(config, attr, None)
             if value is not None:
                 ids.add(int(value))
         return ids
+
+    @staticmethod
+    def _vlm_audio_token_ids(config):
+        value = (
+            config.get("audio_token_id")
+            if isinstance(config, dict)
+            else getattr(config, "audio_token_id", None)
+        )
+        return () if value is None else (int(value),)
 
     @staticmethod
     def _vlm_image_digest(images):
@@ -5688,6 +5955,7 @@ class MLXInferenceBackend:
         images = None,
         prompt = None,
         has_video = False,
+        drafting = False,
     ):
         store = self._vlm_prompt_cache_store()
         if store is None or self._vlm_is_diffusion_model(self._model):
@@ -5703,17 +5971,22 @@ class MLXInferenceBackend:
         try:
             language_model, key, make_cache = self._vlm_snapshot_scope(adapter_state, images)
             block = self._vlm_media_block(prompt, images, make_cache)
+            dispatch = vlm_checkpoint_dispatch()
             return VLMPromptCacheSession(
                 store,
                 key,
                 language_model,
                 make_cache,
                 media_token_ids = media_ids,
+                audio_token_ids = self._vlm_audio_token_ids(getattr(self._model, "config", None)),
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
                 step = self._grid_step(),
                 window = self._session_window(),
+                dispatch = dispatch,
+                # Without the hook only the class swap captures, which a drafter cannot run under.
+                reuse = dispatch is not None or not drafting,
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -8587,8 +8860,18 @@ class MLXInferenceBackend:
             # mlx-vlm adds special tokens by family, doubling a BOS the template already emitted.
             import mlx.core as mx
             vlm_kwargs["input_ids"] = mx.array([self._encode_prompt(prompt)])
+        processors = vlm_kwargs.get("logits_processors") or ()
+        if (
+            draft is None
+            or not all(
+                getattr(processor, "history_only", False) or hasattr(processor, "settle")
+                for processor in processors
+            )
+            or _vlm_generation_is_diffusion(self._model)
+        ):
+            draft = None
         session = self._vlm_prompt_cache_session(
-            _adapter_state, images, prompt, has_video = bool(videos)
+            _adapter_state, images, prompt, has_video = bool(videos), drafting = draft is not None
         )
         vlm_kwargs.update(self._kv_runtime_quant_kwargs())
         if session is not None:
@@ -8602,17 +8885,7 @@ class MLXInferenceBackend:
             vlm_kwargs.update(self._kv_quant_generate_kwargs())
             vlm_kwargs.update(self._prefill_step_kwargs())
         session_scope = session if session is not None else nullcontext()
-        processors = vlm_kwargs.get("logits_processors") or ()
-        if (
-            draft is None
-            or not all(
-                getattr(processor, "history_only", False) or hasattr(processor, "settle")
-                for processor in processors
-            )
-            or _vlm_generation_is_diffusion(self._model)
-        ):
-            draft = None
-        elif "input_ids" not in vlm_kwargs and not videos:
+        if draft is not None and "input_ids" not in vlm_kwargs and not videos:
             vlm_kwargs.update(
                 _vlm_generate_kwargs(
                     _vlm_prepared_inputs(self._model, self._processor, prompt, images)

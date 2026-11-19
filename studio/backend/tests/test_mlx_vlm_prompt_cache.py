@@ -13,6 +13,7 @@ import pytest
 from core.inference import mlx_inference as snapshots
 from core.inference.mlx_inference import (
     VLM_PREFILL_STEP,
+    MLXInferenceBackend,
     RecordingForward,
     VLMBatchRowCache,
     VLMPromptCacheSession,
@@ -44,11 +45,19 @@ def _plain_logger(monkeypatch):
 class FakeArray:
     __repr__ = lambda self: repr(self.rows)
 
-    def __init__(self, rows):
+    def __init__(
+        self,
+        rows,
+        dtype = None,
+    ):
         self.rows = list(rows)
 
     def __add__(self, _other):
         return FakeArray(self.rows)
+
+    shape = property(lambda self: (1, len(self.rows)))
+    dtype = "int32"
+    astype = lambda self, _dtype: self
 
     @property
     def nbytes(self):
@@ -62,6 +71,8 @@ def fake_mx(monkeypatch):
     mlx_core.array = FakeArray
     mlx_core.eval = mlx_core.async_eval = lambda arrays: evaluated.append(list(arrays))
     mlx_core.contiguous = lambda array: FakeArray(array.rows)
+    mlx_core.concatenate = lambda arrays: FakeArray(sum((a.rows for a in arrays), []))
+    mlx_core.int32 = "int32"
     mlx_pkg = types.ModuleType("mlx")
     mlx_pkg.core = mlx_core
     monkeypatch.setitem(sys.modules, "mlx", mlx_pkg)
@@ -564,6 +575,220 @@ def test_a_resumed_session_is_freed_without_the_cycle_collector(fake_mx, entered
             gc.enable()
 
 
+class SeamModel(FakeLanguageModel):
+    _position_ids = _rope_deltas = None
+
+    def __call__(
+        self,
+        inputs,
+        cache = None,
+        **kwargs,
+    ):
+        self.rows.append((len(inputs), type(self), kwargs, self.armed()))
+        return super().__call__(inputs, cache, **kwargs)
+
+
+class _VLM:
+    def __init__(self, lm, **kw):
+        self.language_model, self.expand, self.events = lm, kw.get("expand", 0), kw.get("events")
+
+    def get_input_embeddings(self, input_ids, *_args, **_kwargs):
+        self.events is None or self.events.append("embed")
+        rows = FakeArray(range(len(input_ids.rows) + self.expand))
+        return types.SimpleNamespace(inputs_embeds = rows, position_ids = "ids", per_layer_inputs = "ids")
+
+
+def _fake_generate_step(input_ids, model, _pixels, _mask, prompt_cache, prefill_step_size, **kw):
+    """mlx-vlm 0.8.0's prefill (ar.py:427-511), the branch shortening a forward included."""
+    hook, lengths = (
+        kw.pop("prompt_cache_checkpoint", None),
+        kw.pop("prompt_cache_checkpoint_lengths", []),
+    )
+    own = [kw.pop("repetition_penalty")] if "repetition_penalty" in kw else []
+    processors = [*own, *(kw.pop("logits_processors", None) or ())]
+    if kw.pop("draft_model", None):
+        model.language_model._position_ids = model.language_model._rope_deltas = None
+    kw.pop("prompt_cache_checkpoint_len")
+    explicit = {k: kw[k] for k in ("position_ids", "rope_deltas") if kw.get(k) is not None}
+    out = vars(model.get_input_embeddings(input_ids))
+    kw.update({k: v for k, v in out.items() if k != "inputs_embeds" and v is not None}, **explicit)
+    ids, rows, done = input_ids.rows, out["inputs_embeds"].shape[1], 0
+    lengths = sorted(n for n in lengths if hook and 0 < n < rows)
+    while rows - done > 1 and not kw.pop("unchunked", False):
+        n = min(prefill_step_size, rows - done - 1, *(lengths[:1] and [lengths[0] - done]))
+        model.language_model(ids[done : done + n], cache = prompt_cache, **kw)
+        done += n
+        if lengths and done == lengths[0]:
+            hook(done, prompt_cache)
+            lengths.pop(0)
+    model.language_model(ids[done:], cache = prompt_cache, **kw)
+    [processor(FakeArray(ids + [0] * n), None) for n in (0, 1) for processor in processors]
+    yield 0
+
+
+@pytest.fixture
+def seam(monkeypatch):
+    ar = types.ModuleType("mlx_vlm.generate.ar")
+    ar.make_logits_processors = (
+        lambda repetition_penalty = None: [repetition_penalty] if repetition_penalty else []
+    )
+    ar._generate_module_override = lambda _name, fallback: fallback
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.ar", ar)
+    return types.SimpleNamespace(generate_step = _fake_generate_step)
+
+
+def _stream(
+    session,
+    dispatch,
+    vlm,
+    ids,
+    accept = True,
+    **kwargs,
+):
+    """mlx-vlm's stream_generate around a ``prompt_cache_state`` (dispatch.py:972-990)."""
+    kwargs.update(prompt_cache = session.cache, prefill_step_size = session.window)
+    # stream_generate always passes APC's checkpoint keywords, empty without APC.
+    kwargs.update(prompt_cache_checkpoint = None, prompt_cache_checkpoint_len = None)
+    kwargs.update(prompt_cache_checkpoint_lengths = [])
+    prefix = session.find_prefix_length(ids)
+    if accept and 0 < prefix < len(ids):
+        vlm.language_model._position_ids, vlm.language_model._rope_deltas = "prompt", "deltas"
+        kwargs.update(prompt_cache = session.cache, position_ids = "prompt", rope_deltas = "deltas")
+        ids = ids[prefix:]
+    list(dispatch.generate_step(FakeArray(ids), vlm, None, None, **kwargs))
+    return session.finish()
+
+
+def _seam_model():
+    lm = SeamModel()
+    lm.rows, lm.armed = [], lambda: False
+    return lm, VLMPromptSnapshotStore(max_bytes = 10**9)
+
+
+def test_the_seam_captures_on_mlx_vlms_own_chunks_and_keeps_the_class(fake_mx, seam):
+    (lm, store), ids, seen = _seam_model(), list(range(700)), []
+    history = lambda name: lambda tokens, logits: seen.append((name, list(tokens.rows)))
+    with Session(store, "m", lm, make_cache, dispatch = seam) as session:
+        assert _stream(session, seam, _VLM(lm), ids)
+    record = session._forward.record
+    assert [r[0] for r in lm.rows] == [
+        256,
+        256,
+        187,
+        1,
+    ] and seam.generate_step is _fake_generate_step
+    assert cache_entries_offset(record.snapshot) == 512 and cache_entries_offset(record.tail) == 699
+    lm.rows.clear()
+    with Session(store, "m", lm, make_cache, dispatch = seam) as session:
+        kwargs = dict(logits_processors = [history("caller")], repetition_penalty = history("own"))
+        kwargs.update(draft_model = 1)
+        _stream(session, seam, _VLM(lm), ids + list(range(700, 800)), **kwargs)
+    assert session.reused_tokens == 512 and [r[0] for r in lm.rows] == [256, 31, 1]
+    assert cache_entries_offset(session._forward.record.snapshot) == 768
+    # No forward sees a position table: positions come from the primed state at the cache offset.
+    assert all(
+        r[1] is SeamModel and r[2].keys() & {"position_ids", "per_layer_inputs"} == set()
+        for r in lm.rows
+    )
+    assert {r[2]["rope_deltas"] for r in lm.rows} == {"deltas"}
+    assert (lm._position_ids, lm._rope_deltas) == ("prompt", "deltas")
+    assert seen == [(name, [*range(800), *[0] * n]) for n in (0, 1) for name in ("own", "caller")]
+
+
+def test_a_declined_resume_frees_what_served_before_the_media_pass(fake_mx, seam, monkeypatch):
+    (lm, store), ids, events = _seam_model(), list(range(700)), []
+    with Session(store, "m", lm, make_cache, dispatch = seam) as session:
+        _stream(session, seam, _VLM(lm), ids)
+    release = snapshots.release_cache_entries
+    monkeypatch.setattr(
+        snapshots, "release_cache_entries", lambda e: (events.append("release"), release(e))
+    )
+    vlm = _VLM(lm, events = events)
+    with Session(store, "m", lm, make_cache, dispatch = seam) as session:
+        _stream(session, seam, vlm, ids + [1], accept = False)
+    with Session(store, "m", lm, make_cache, dispatch = seam) as session:
+        # A generation never iterated never runs its own cleanup: the session's exit does.
+        seam.generate_step(
+            FakeArray(ids), vlm, None, None, prompt_cache = session.cache, prefill_step_size = STEP
+        )
+    assert events == ["release", "embed"] and store.lookup("m", ids + [1], limit = 512)[0] is None
+    assert "get_input_embeddings" not in vlm.__dict__ and seam.generate_step is _fake_generate_step
+
+
+def test_a_wide_forward_is_captured_inside_without_splitting_it(fake_mx, seam, monkeypatch):
+    (lm, store), armed = _seam_model(), []
+    zoo = types.ModuleType("unsloth_zoo.mlx.offload")
+    zoo.capture_prefill_rows = lambda rows, _copy: _Capture(armed, rows, session.cache)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.offload", zoo)
+    lm.armed = lambda: armed[-1:] == [1]
+    with Session(store, "m", lm, make_cache, dispatch = seam, window = 512) as session:
+        _stream(session, seam, _VLM(lm), list(range(1400)))
+    # Armed for exactly the third outer forward, the one holding row 1280.
+    assert [r[0] for r in lm.rows] == [512, 512, 375, 1] and armed == [256, 1, 0]
+    assert [r[3] for r in lm.rows] == [False, False, True, False]
+    assert session._forward.record.snapshot == ["copy"] * 3
+
+
+class _Capture:
+    def __init__(self, armed, rows, cache):
+        armed.append(rows)
+        self.armed, self.cache, self.captured = armed, cache, {}
+
+    __enter__ = lambda self: self.armed.append(1) or self.captured
+
+    def __exit__(self, *_):
+        self.armed.append(0)
+        self.captured.update((id(entry), "copy") for entry in self.cache)
+
+
+def test_an_unchunked_wide_prefill_keeps_the_capture_inside_it(fake_mx, seam, monkeypatch):
+    (lm, store), armed = _seam_model(), []
+    lm.armed = lambda: armed[-1:] == [1]
+    session = Session(store, "m", lm, make_cache, dispatch = seam, window = 1024)
+    zoo = types.ModuleType("unsloth_zoo.mlx.offload")
+    zoo.capture_prefill_rows = lambda rows, _copy: _Capture(armed, rows, session.cache)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.offload", zoo)
+    with session:
+        _stream(session, seam, _VLM(lm), list(range(600)), unchunked = True)
+    assert [r[0] for r in lm.rows] == [600] and [r[3] for r in lm.rows] == [True]
+    assert armed == [512, 1, 0]
+    assert session._forward.record.snapshot == ["copy"] * 3
+
+
+def test_without_reuse_nothing_is_served_not_even_the_media_block(fake_mx):
+    store, ids, block = (
+        VLMPromptSnapshotStore(max_bytes = 10**9),
+        _block_prompt(800),
+        FakeMediaBlock(100),
+    )
+    store.store("m", ids[:612], _snapshot(range(612)))
+    block.store = store
+    for key, reuse, served in (("m", True, 612), ("new", True, 100), ("new", False, 0)):
+        with Session(
+            store, key, FakeLanguageModel(), make_cache, media_block = block, reuse = reuse
+        ) as session:
+            assert session.find_prefix_length(ids) == served
+    assert block.prefilled == 1
+    store, ids = _over_budget_store()
+    with Session(store, "m", FakeLanguageModel(), make_cache, reuse = False) as session:
+        assert session.find_prefix_length(ids + [1]) == 0 and not store._held
+
+
+@pytest.mark.parametrize("expand, reuse", [(5, True), (0, False)])
+def test_no_capture_where_rows_are_not_ids_or_a_drafter_needs_the_swap(
+    fake_mx, seam, expand, reuse
+):
+    lm, store = _seam_model()
+    store.store("m", list(range(512)), _snapshot(range(512)))
+    with Session(
+        store, "m", lm, make_cache, dispatch = reuse and seam or None, reuse = reuse
+    ) as session:
+        _stream(session, seam, _VLM(lm, expand = expand), list(range(700)))
+    record = session._forward.record
+    assert session.reused_tokens == 512 * reuse and {r[1] for r in lm.rows} == {SeamModel}
+    assert record.snapshot is record.tail is None and len(store) == 1
+
+
 class LayeredLanguageModel(FakeLanguageModel):
     capture, skipped = None, ()
 
@@ -582,6 +807,44 @@ class LayeredLanguageModel(FakeLanguageModel):
                     if i not in self.skipped
                 )
         return output
+
+
+def test_no_resume_starts_before_an_audio_placeholder(fake_mx):
+    store, ids = VLMPromptSnapshotStore(max_bytes = 10**9), list(range(1000, 1800))
+    for audio_at, served in ((512, 0), (511, 512), (None, 512)):
+        prompt = [7 if i == audio_at else t for i, t in enumerate(ids)]
+        store.store("m", prompt[:512], _snapshot(range(512)))
+        session = Session(store, "m", FakeLanguageModel(), make_cache, audio_token_ids = (7,))
+        assert session.find_prefix_length(prompt) == served
+    # Nor a media block's, which counts image rows alone.
+    block = FakeMediaBlock(100)
+    block.store = store
+    for audio_at, served in ((150, 0), (None, 100)):
+        prompt = [7 if i == audio_at else t for i, t in enumerate(_block_prompt(800))]
+        with Session(
+            store, "m", FakeLanguageModel(), make_cache, media_block = block, audio_token_ids = (7,)
+        ) as session:
+            assert session.find_prefix_length(prompt) == served
+    assert block.prefilled == 1
+    store, ids = _over_budget_store()
+    session = Session(store, "m", FakeLanguageModel(), make_cache, audio_token_ids = (7,))
+    assert session.find_prefix_length(ids[:699] + [7]) == 0 and not store._held
+    assert MLXInferenceBackend._vlm_audio_token_ids({"audio_token_id": 7}) == (7,)
+
+
+@pytest.mark.parametrize("version, hooked", [("0.7.10", False), ("0.7.11", True), ("0.8.0", True)])
+def test_the_seam_needs_an_mlx_vlm_whose_processors_see_the_whole_prompt(
+    monkeypatch, version, hooked
+):
+    ar = types.ModuleType("mlx_vlm.generate.ar")
+    ar.generate_step = (
+        lambda prefill_step_size, prompt_cache_checkpoint, prompt_cache_checkpoint_lengths: 0
+    )
+    dispatch = types.SimpleNamespace(generate_step = ar.generate_step)
+    modules = {"mlx_vlm": types.SimpleNamespace(__version__ = version), "mlx_vlm.generate.ar": ar}
+    for name, module in {**modules, "mlx_vlm.generate.dispatch": dispatch}.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    assert (snapshots.vlm_checkpoint_dispatch() is dispatch) is hooked
 
 
 def test_a_window_of_grid_steps_snapshots_the_grid_inside_it(fake_mx, monkeypatch):
