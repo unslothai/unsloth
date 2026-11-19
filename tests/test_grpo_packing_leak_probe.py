@@ -163,3 +163,15 @@ def test_the_generated_trainer_carries_the_probe():
     src = SOURCE_PATH.read_text(encoding = "utf-8")
     assert f'RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource({PROBE}))' in src
     assert src.index(f"inspect.getsource({PROBE})") < src.index(f"inspect.getsource({HELPER})")
+
+
+@pytest.mark.parametrize("kind", ["opt", "llama"])
+def test_probe_restores_every_submodule_mode(kind):
+    # A training model with one block deliberately kept in eval mode (its dropout must stay off): the probe's
+    # eval() / restore must not flip that block back to training.
+    model = _tiny(kind).train()
+    frozen = model.model.decoder.layers[0] if kind == "opt" else model.model.layers[0]
+    frozen.eval()
+    before = {name: m.training for name, m in model.named_modules()}
+    _namespace()[PROBE](_trainer(), model)
+    assert {name: m.training for name, m in model.named_modules()} == before

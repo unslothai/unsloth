@@ -1834,7 +1834,9 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
         lengths = torch.tensor([n1, n2], dtype = torch.int32, device = device)
         enabled = bool(getattr(self, "_autocast_enabled", False))
         dtype = getattr(self, "_autocast_dtype", torch.bfloat16)
-        was_training = unwrapped.training
+        # Every submodule's own flag: a recursive .train() afterwards would also flip children kept in eval mode
+        # on purpose (a frozen block whose dropout must stay off).
+        was_training = [(m, m.training) for m in unwrapped.modules()]
         unwrapped.eval()
         outs = []
         with torch.no_grad():
@@ -1865,7 +1867,8 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
         return None
     finally:
         if was_training:
-            unwrapped.train()
+            for module, training in was_training:
+                module.training = training
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
