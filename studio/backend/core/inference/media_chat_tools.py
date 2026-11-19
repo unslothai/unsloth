@@ -57,6 +57,13 @@ def offered_media_chat_tools(enabled_tools) -> list[dict]:
             continue
         status = media_chat_status(task)
         if status is None:
+            if name == "generate_image":
+                from core.inference.chat_media_swap import chat_can_swap
+
+                # No image model loaded: offered when the chat image swap can load the default one.
+                # Sizes are snapped to the real model's grid once it is loaded.
+                if chat_can_swap():
+                    tools.append(generate_image_schema({}))
             continue
         if name == "generate_image":
             if offers_txt2img(status):

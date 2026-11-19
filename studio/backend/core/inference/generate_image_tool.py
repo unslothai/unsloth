@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat tool: one image on the loaded image model for the caller's account; never loads/unloads models"""
+"""Chat tool: one image on the loaded image model for the caller's account. Loads or unloads models only
+with the opt-in chat image swap (chat_media_swap), when no image model is loaded."""
 
 from __future__ import annotations
 
@@ -36,8 +37,7 @@ ERR_NO_LOOP = "Error: Unsloth Studio could not reach its server loop to run this
 _DESCRIPTION = (
     "Generate one image with the image model loaded in Unsloth Studio. Write the full prompt "
     "yourself from the user's request: subject, setting, style, lighting and composition. Steps "
-    "and guidance follow the loaded model's own defaults; the size defaults to 1024x1024. It "
-    "never loads or unloads a model."
+    "and guidance follow the loaded model's own defaults; the size defaults to 1024x1024."
 )
 
 # Even a no-limit chat gets a ceiling, so a stuck render cannot hold the turn forever.
@@ -215,7 +215,10 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return ERR_NO_LOOP
     status = media_chat_status("text-to-image")
     if status is None:
-        return ERR_NOT_LOADED
+        from core.inference import chat_media_swap
+        if not chat_media_swap.swap_enabled():
+            return ERR_NOT_LOADED
+        return _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop)
     if not offers_txt2img(status):
         return ERR_EDIT_ONLY
     engine = engine_if_imported(DIFFUSION)
@@ -255,6 +258,10 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return ERR_OTHER_ACCOUNT
     except HTTPException as exc:
         return _http_error(exc)
+    return _result_text(response, prompt, workdir, account)
+
+
+def _result_text(response, prompt: str, workdir: str, account) -> str:
     if not response.images:
         return "Error: the image model returned no image."
     image = response.images[0]
@@ -266,6 +273,51 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
     )
     return (
         text + "\n__FILES__:" + json.dumps([saved]) + "\n__IMAGES__:" + json.dumps([saved["name"]])
+    )
+
+
+def _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop) -> str:
+    """No image model loaded: swap the chat model out for the default image model and back."""
+    from fastapi import HTTPException
+
+    from core.inference import chat_media_swap
+    from core.inference.generation_ticket import GenerationTicket
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+    from core.inference.media_chat_tools import media_chat_status
+
+    ticket = GenerationTicket()
+
+    async def render(should_abort) -> str:
+        import asyncio
+
+        status = await asyncio.to_thread(media_chat_status, "text-to-image")
+        if status is None:
+            return ERR_NOT_LOADED
+        if not offers_txt2img(status):
+            return ERR_EDIT_ONLY
+        try:
+            request = _build_request(arguments, prompt, status)
+        except (TypeError, ValueError) as exc:
+            return f"Error: invalid generate_image arguments: {exc}"
+        if should_abort():
+            return ERR_STOPPED
+        try:
+            response = await _generate(request, ticket)
+        except GpuBusyForAnotherAccountError:
+            return ERR_OTHER_ACCOUNT
+        except HTTPException as exc:
+            return _http_error(exc)
+        return await asyncio.to_thread(_result_text, response, prompt, workdir, account)
+
+    # The tool timeout bounds the render; the swap's loads have their own budget on top.
+    limit = _MAX_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
+    return chat_media_swap.run_in_tool(
+        loop = loop,
+        account = account,
+        render = render,
+        cancel_event = cancel_event,
+        render_limit_s = limit,
+        stop_render = ticket.stop,
     )
 
 
