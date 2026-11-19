@@ -3370,6 +3370,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "try:\n"
+            "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
+            "except ImportError:\n"
+            "    _unsloth_install_image_dedup = None\n"
+            "if _unsloth_install_image_dedup is not None:\n"
+            "    _unsloth_install_image_dedup(getattr(self, 'model', None))\n"
+            "pass\n"
+        )
+
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
             "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
@@ -5632,9 +5644,10 @@ def patch_trl_async_grpo():
                 # nearly idle; let the engine batch as many as it can schedule.
                 config.max_inflight_tasks = server.max_num_seqs
         # TRL unfreezes a VLM's whole text model and LM head; under LoRA that is full fine-tuning of the base (and,
-        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set.
+        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set. By name:
+        # native FSDP2 shards inside Trainer.__init__, replacing every parameter with a new DTensor one.
         trainable = (
-            {id(p) for p in model.parameters() if p.requires_grad}
+            {name for name, p in model.named_parameters() if p.requires_grad}
             if isinstance(model, torch.nn.Module) and hasattr(model, "peft_config")
             else None
         )
@@ -5655,8 +5668,8 @@ def patch_trl_async_grpo():
                 restore_requires_grad()
                 restore_text_config()
             if trainable is not None:
-                for p in model.parameters():
-                    if p.requires_grad and id(p) not in trainable:
+                for name, p in model.named_parameters():
+                    if p.requires_grad and name not in trainable:
                         p.requires_grad_(False)
             if server is not None:
                 if not getattr(self, "_lora_sync", False):

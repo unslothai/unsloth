@@ -78,6 +78,21 @@ to five tools ranked against the user's message. Tools a turn loads stay within
 half of the window, the oldest leaving first; a tool too large for that is refused
 with a message naming it.
 
+To help a local model reuse its prompt cache when a follow-up mentions a new
+topic, start Studio with `UNSLOTH_STUDIO_MCP_SEARCH_ONLY=1`. For oversized
+catalogs, Studio advertises only `mcp_tool_search`, forced tools and tools
+mapped to an attached image. The model may need extra search calls to find a
+tool, and smaller models may miss tools they need. Only the value `1` turns it
+on, and it is an environment variable only, with no toggle in Settings.
+
+```sh
+UNSLOTH_STUDIO_MCP_SEARCH_ONLY=1 unsloth studio
+```
+
+```powershell
+$env:UNSLOTH_STUDIO_MCP_SEARCH_ONLY = "1"; unsloth studio
+```
+
 ## Unsloth Decisions MCP
 
 When the Decision API is on (**Settings → API**), the chat's MCP menu lists

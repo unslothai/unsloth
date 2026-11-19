@@ -167,6 +167,8 @@ NEUTRAL_PLAIN_HELPERS = {
     "_ast_fingerprint": _no_replay,
     "_bindings_intact": _no_replay,
     "_resolved_bindings": _no_replay,
+    # unsloth_zoo #2586: the head replay tries several contracts through this resolver.
+    "_first_resolved": _no_replay,
     "_verify_with_lazy_replay": _no_replay,
 }
 
@@ -7994,6 +7996,56 @@ def test_a_count_prices_one_picture_where_the_template_marks_one(monkeypatch):
 
     assert backend.count_chat_tokens([turn, turn], images = [old, new]) == 524
     assert rendered == [(1, [new])]
+
+
+def _soft_token_processor(monkeypatch):
+    """A Gemma 4-shaped processor: every image costs its call's max_soft_tokens, 280 by default."""
+    module = types.ModuleType("fake_gemma4_processing")
+    module._SUPPORTED_SOFT_TOKENS = (70, 140, 280, 560, 1120, 2240)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    base = type("ImageProcessor", (), {"__module__": module.__name__, "max_soft_tokens": 280})
+    # A subclass defined elsewhere, as Gemma 4 Unified's is.
+    image_processor = type("UnifiedImageProcessor", (base,), {"__module__": "fake_gemma4_unified"})
+
+    class Processor:
+        def __init__(self):
+            self.image_processor = image_processor()
+
+        def __call__(
+            self,
+            text = None,
+            images = None,
+            images_kwargs = None,
+        ):
+            soft = (images_kwargs or {}).get("max_soft_tokens", 280)
+            return {"input_ids": SimpleNamespace(size = len(text.split()) + soft * len(images or ()))}
+
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.prepare_inputs = lambda processor, *, prompts, images = None, **_k: processor(
+        text = prompts, images = images
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    return Processor()
+
+
+def test_a_screenshot_request_lifts_the_soft_token_budget_for_its_own_calls_only(monkeypatch):
+    backend = _vision_backend()
+    backend._processor = processor = _soft_token_processor(monkeypatch)
+    backend._render_vlm_prompt = lambda messages, images, **_k: ("one two", None, None)
+    turn, streamed = [{"role": "user", "content": "what"}], []
+
+    def _generate_vlm(*_a, **_k):
+        streamed.append(backend._processor(text = "p", images = [object()])["input_ids"].size)
+        yield "done"
+
+    backend._generate_vlm = _generate_vlm
+    assert backend.count_chat_tokens(turn, images = [object()], computer_use = True) == 1122
+    assert backend.count_chat_tokens(turn, images = [object()]) == 282
+    assert backend.image_tokens(1008, 560) == 1120
+    for computer_use in (True, False):
+        assert list(backend.generate_chat_response(turn, computer_use = computer_use)) == ["done"]
+    assert streamed == [1121, 281]
+    assert backend._processor is processor
 
 
 def test_a_count_through_mlx_lm_prices_the_ids_generation_embeds(monkeypatch):

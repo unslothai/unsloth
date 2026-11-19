@@ -401,6 +401,7 @@ def fast_inference_trl(fake_trl):
 
     class AsyncGRPOTrainer:
         lora_sync = True
+        reshard = False
 
         def __init__(
             self,
@@ -412,6 +413,9 @@ def fast_inference_trl(fake_trl):
         ):
             calls["init"].append((model, args))
             self.url_seen = args.vllm_server_base_url
+            if AsyncGRPOTrainer.reshard:
+                # What native FSDP2 does inside Trainer.__init__: a new parameter object under the same name.
+                model.lora = torch.nn.Parameter(model.lora.detach().clone())
             # What TRL does for a VLM: unfreeze the text model.
             model.frozen.requires_grad_(True)
             self._lora_sync = AsyncGRPOTrainer.lora_sync
@@ -450,6 +454,20 @@ def test_fast_inference_model_gets_the_in_process_server(fast_inference_trl):
     assert calls_args(mod).max_inflight_tasks == 8
     assert not peft.frozen.requires_grad and peft.lora.requires_grad
     assert trainer.train() == "trained" and server.aborted == 1
+
+
+def test_adapter_stays_trainable_when_init_replaces_its_parameters(fast_inference_trl, monkeypatch):
+    # Native FSDP2 shards inside Trainer.__init__: the LoRA parameters come back as new objects.
+    mod, _ = fast_inference_trl
+    monkeypatch.setattr(mod.AsyncGRPOTrainer, "reshard", True)
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    old_lora = peft.lora
+    mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    assert peft.lora is not old_lora
+    assert (
+        peft.lora.requires_grad
+    ), "the re-created adapter parameter was frozen: nothing would train"
+    assert not peft.frozen.requires_grad
 
 
 def test_explicit_server_url_keeps_the_external_server(fast_inference_trl):

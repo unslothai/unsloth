@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import collections
+import hashlib
 import io
 import json
 import re
+import threading
 from typing import Any, Sequence
 
 from loggers import get_logger
@@ -23,6 +26,8 @@ DETACHED_IMAGE_TURN_TEXT = "Images returned by earlier tool calls in this conver
 
 MAX_MODEL_IMAGES = 4
 MAX_TOTAL_MODEL_IMAGES = 8
+# Past the cap, drop this many oldest at once so the prompt stays append-only between drops (#18231).
+IMAGE_TRIM_STEP = 4
 # Safetensors and MLX allow one image per message; GGUF is exempt.
 LOCAL_MAX_IMAGES_PER_TURN = 1
 # Mirrors DECODE_FAILURE_ALLOWANCE in studio/frontend/src/features/chat/api/mcp-images.ts.
@@ -30,8 +35,26 @@ DECODE_FAILURE_ALLOWANCE = 4
 # MIME type has no length bound; metadata must not hide megabytes from the byte budgets on both sides
 MAX_MCP_IMAGE_MIME_CHARS = 256
 MAX_IMAGE_EDGE = 1024
+# Images these tools return are already sized for the model, and x and y are read off them: sent as taken.
+AS_TAKEN_TOOLS = frozenset({"computer"})
+_AS_TAKEN = "as_taken"
 # Bounded off the header: a small PNG can hold tens of gigapixels.
 MAX_IMAGE_PIXELS = 40_000_000
+
+
+def stepped_keep(
+    count: int,
+    limit: int,
+    step: int = IMAGE_TRIM_STEP,
+) -> int:
+    """Newest pictures kept; a function of count alone, so the tool loop and a later replay agree."""
+    if limit <= 0:
+        return 0
+    if count <= limit:
+        return count
+    # Too small to batch: slide one at a time.
+    step = step if limit >= step else 1
+    return count - -(-(count - limit) // step) * step
 
 
 def is_image_tool(name: str) -> bool:
@@ -76,7 +99,17 @@ def _split_images(result: str) -> tuple[str, list[dict]]:
         return result, []
     if not all(_is_image(image) for image in images):
         return result, []
-    return head.rstrip(), images
+    # Only Studio marks an image as taken, and only where it knows the tool (mark_as_taken).
+    return head.rstrip(), [
+        {k: v for k, v in image.items() if k != _AS_TAKEN} if _AS_TAKEN in image else image
+        for image in images
+    ]
+
+
+def mark_as_taken(images: list[dict], tool_name: Any) -> list[dict]:
+    if tool_name not in AS_TAKEN_TOOLS:
+        return images
+    return [{**image, _AS_TAKEN: True} for image in images]
 
 
 def _is_image(image: Any) -> bool:
@@ -121,6 +154,18 @@ def probably_decodable(image: Any) -> bool:
     return not head.lstrip()[:16].startswith(_UNDECODABLE_PREFIXES)
 
 
+def _sniffed_undecodable(image: Any) -> bool:
+    """Header plainly not a raster; an unreadable one is left to the decoder. Mirrors sniffedUndecodable."""
+    data = image.get("data") if isinstance(image, dict) else None
+    if not isinstance(data, str):
+        return False
+    try:
+        head = base64.b64decode(data[:32], validate = False)
+    except (binascii.Error, ValueError, TypeError):
+        return False
+    return head.lstrip()[:16].startswith(_UNDECODABLE_PREFIXES)
+
+
 def count_probably_decodable(images: Sequence[dict]) -> int:
     return sum(1 for image in images if probably_decodable(image))
 
@@ -156,13 +201,15 @@ def _decoded_urls(
         if not _mime_is_bounded(image):
             continue
         data = image.get("data", "")
+        as_taken = image.get(_AS_TAKEN) is True
+        key = (data, True) if as_taken else data
         # cache holds one request's decodes keyed by payload, so a repeated promotion does not decode twice.
-        if cache is not None and data in cache:
-            url = cache[data]
+        if cache is not None and key in cache:
+            url = cache[key]
         else:
-            url = _png_data_url(data)
+            url = _png_data_url(data, as_taken)
             if cache is not None:
-                cache[data] = url
+                cache[key] = url
         if url:
             urls.append(url)
     return urls
@@ -189,6 +236,7 @@ def eligible_replay_images(
     *,
     local: bool = False,
     budget: int = MAX_TOTAL_MODEL_IMAGES,
+    parsed: "dict | None" = None,
 ) -> dict:
     """Chooses survivors before any decode, so Pillow work follows the cap, not the history."""
     eligible: dict = {}
@@ -203,6 +251,8 @@ def eligible_replay_images(
         return isinstance(message, dict) and message.get("role") == "tool"
 
     def _mcp_images_at(position: int) -> "list | None":
+        if parsed is not None and position in parsed:
+            return parsed[position]
         content = messages[position].get("content")
         if not isinstance(content, str):
             return None
@@ -224,24 +274,64 @@ def eligible_replay_images(
         # Newest first within the batch, the order the local decoder tries them.
         batch = [position for position in range(index, start - 1, -1)]
         index = start - 1
-        room = min(budget, per_result)
+        # Whole windows: the oldest-first trim afterwards must find each result's tail.
+        room = per_result if not local and budget > 0 else min(budget, per_result)
         allowance = room + spare
         taken = 0
         for position in batch:
             images = _mcp_images_at(position)
             if images is None:
                 continue
-            take = min(len(images), allowance)
+            take = counted = min(len(images), allowance)
+            if not local and take > 0:
+                # The loop's decoder skips a plain non-raster, so it costs no allowance.
+                take = counted = 0
+                for image in images:
+                    if counted >= allowance:
+                        break
+                    take += 1
+                    counted += not _sniffed_undecodable(image)
             if take <= 0:
                 eligible[position] = 0
                 continue
             eligible[position] = take
-            allowance -= take
-            taken += take
+            allowance -= counted
+            taken += counted
         charged = min(taken, room)
-        budget -= charged
+        budget = max(0, budget - charged)
         spare -= taken - charged
     return eligible
+
+
+def replay_image_total(messages: Sequence[dict], parsed: "dict | None" = None) -> int:
+    """Pictures counted as the tool loop admits them (per result quota, at most the cap per parallel
+    batch); parsed collects each result's images for eligible_replay_images."""
+    call_names = resolve_tool_names(messages)
+    total = 0
+    batch = 0
+    for position, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            total += min(batch, MAX_TOTAL_MODEL_IMAGES)
+            batch = 0
+            continue
+        content = message.get("content")
+        images = None
+        if isinstance(content, str):
+            name = message.get("name") or call_names.get(position)
+            if not (isinstance(name, str) and name and not is_image_tool(name)):
+                images = split_images(content)[1] or None
+        if parsed is not None:
+            parsed[position] = images
+        if images:
+            batch += min(
+                MAX_MODEL_IMAGES,
+                sum(
+                    1
+                    for image in images
+                    if _mime_is_bounded(image) and not _sniffed_undecodable(image)
+                ),
+            )
+    return total + min(batch, MAX_TOTAL_MODEL_IMAGES)
 
 
 def content_parts(images: Sequence[dict]) -> list[dict]:
@@ -300,7 +390,36 @@ def flattened_rgb(image, background = None):
     return canvas
 
 
-def _png_data_url(data: str) -> str | None:
+# Normalized PNG per payload, so a long replay decodes only pictures it has not seen (#18231).
+_PNG_MEMO: "collections.OrderedDict[bytes, str]" = collections.OrderedDict()
+_PNG_MEMO_MAX_CHARS = 64 * 1024 * 1024
+_png_memo_chars = 0
+_PNG_MEMO_LOCK = threading.Lock()
+
+
+def _png_data_url(data: str, as_taken: bool = False) -> str | None:
+    global _png_memo_chars
+    if not isinstance(data, str):
+        return _normalized_png_data_url(data, as_taken)
+    key = hashlib.sha256(data.encode("utf-8", "surrogatepass")).digest() + bytes((as_taken,))
+    with _PNG_MEMO_LOCK:
+        url = _PNG_MEMO.get(key)
+        if url is not None:
+            _PNG_MEMO.move_to_end(key)
+            return url
+    url = _normalized_png_data_url(data, as_taken)
+    # Failures are not kept: they are cheap and must keep being refused.
+    if url is not None and len(url) <= _PNG_MEMO_MAX_CHARS:
+        with _PNG_MEMO_LOCK:
+            if key not in _PNG_MEMO:
+                _PNG_MEMO[key] = url
+                _png_memo_chars += len(url)
+                while _png_memo_chars > _PNG_MEMO_MAX_CHARS:
+                    _png_memo_chars -= len(_PNG_MEMO.popitem(last = False)[1])
+    return url
+
+
+def _normalized_png_data_url(data: str, as_taken: bool = False) -> str | None:
     # PNG always: llama-server's stb_image reads few formats (MCP servers often send WebP).
     try:
         raw = base64.b64decode(data, validate = True)
@@ -316,14 +435,15 @@ def _png_data_url(data: str) -> str | None:
         if width * height > MAX_IMAGE_PIXELS:
             logger.debug("MCP image is %dx%d, past the pixel budget", width, height)
             return None
-        # JPEG decodes straight to a smaller raster; a no-op for every other format.
-        image.draft("RGB", (MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
+        if not as_taken:
+            # JPEG decodes straight to a smaller raster; a no-op for every other format.
+            image.draft("RGB", (MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
         image.load()
         # Apply EXIF orientation, or the model sees camera JPEGs sideways.
         from PIL import ImageOps
 
         image = ImageOps.exif_transpose(image) or image
-        if max(image.size) > MAX_IMAGE_EDGE:
+        if not as_taken and max(image.size) > MAX_IMAGE_EDGE:
             image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
         flattened_rgb(image).save(buffer, format = "PNG")
@@ -524,6 +644,7 @@ def trim_image_url_turns(
     conversation: list,
     limit: int = MAX_TOTAL_MODEL_IMAGES,
     only: "list | None" = None,
+    step: int = 1,
 ) -> None:
     """Same cap for data-URL pixels; only promoted parts count, never the caller's own attachments."""
     if only is not None:
@@ -531,7 +652,7 @@ def trim_image_url_turns(
         present = {id(part) for part in _all_image_url_parts(conversation)}
         only[:] = [part for part in only if id(part) in present]
     counted = len(only) if only is not None else count_image_parts(conversation, "image_url")
-    excess = counted - limit
+    excess = counted - stepped_keep(counted, limit, step)
     if excess <= 0:
         return
     _drop_oldest_image_parts(conversation, excess, "image_url", only = only)
@@ -593,7 +714,7 @@ def append_image_turn(
         if reserve_caller_images:
             # Providers cap images in document order; reserve attachment slots so the newest survive.
             limit = max(0, limit - (len(_all_image_url_parts(conversation)) - len(owned or ())))
-        trim_image_url_turns(conversation, limit, only = owned)
+        trim_image_url_turns(conversation, limit, only = owned, step = IMAGE_TRIM_STEP)
 
 
 def insert_placeholder_turn(
@@ -802,10 +923,12 @@ def promote_history(
     vision: bool,
     promoted_out: "list | None" = None,
     reserve_for_caller: bool = False,
+    limit: "int | None" = MAX_TOTAL_MODEL_IMAGES,
 ) -> list[dict]:
-    """Strips the envelope from tool text either way, so text-only models never see base64."""
+    """Strips the envelope from tool text either way, so text-only models never see base64. limit
+    None keeps every picture, for a compacting chat whose tool loop keeps them too."""
     out, _payloads, promoted = _promote(
-        messages, vision, local = False, reserve_for_caller = reserve_for_caller
+        messages, vision, local = False, reserve_for_caller = reserve_for_caller, limit = limit
     )
     if promoted_out is not None:
         promoted_out.extend(promoted)
@@ -870,6 +993,7 @@ def _promote(
     reserve_for_caller: bool = False,
     decode_cache: "dict | None" = None,
     caller_images: Sequence = (),
+    limit: "int | None" = MAX_TOTAL_MODEL_IMAGES,
 ) -> tuple[list[dict], list[str], list[dict]]:
     out: list[dict] = []
     caller_payloads = (
@@ -885,9 +1009,16 @@ def _promote(
         if local
         else (len(_all_image_url_parts(messages)) if vision and reserve_for_caller else 0)
     )
+    parsed: dict = {}
+    # Only the final trim is stepped (from the whole history's count); admission keeps the full budget.
+    _total = replay_image_total(messages, parsed) if vision and not local else 0
     eligible = (
         eligible_replay_images(
-            messages, local = local, budget = max(0, MAX_TOTAL_MODEL_IMAGES - _reserved)
+            messages,
+            local = local,
+            # Uncapped: every result's window; the per-turn cap applies at decode.
+            budget = len(messages) * MAX_MODEL_IMAGES if limit is None else max(0, limit - _reserved),
+            parsed = None if local else parsed,
         )
         if vision
         else {}
@@ -953,6 +1084,7 @@ def _promote(
             text, images = split_images(content)
             # The suffix always comes off; provenance decides only whether it becomes image input.
             name = message.get("name") or call_names.get(position)
+            images = mark_as_taken(images, name)
             if isinstance(name, str) and name and not is_image_tool(name):
                 # A non-MCP result between the images and their turn makes "the tool call above" name web_search.
                 if pending:
@@ -993,12 +1125,12 @@ def _promote(
                 index for index, part in enumerate(markers) if id(part) in caller_payloads
             )
         trim_image_turns(out, payloads, keep = protected)
-    else:
+    elif limit is not None:
         # Providers cap images in document order (Gemini: 8, rest dropped), so reserve the attachment's room.
         _caller_parts = len(_all_image_url_parts(out)) - len(promoted) if reserve_for_caller else 0
         trim_image_url_turns(
             out,
-            limit = max(0, MAX_TOTAL_MODEL_IMAGES - _caller_parts),
+            limit = stepped_keep(_total, max(0, limit - _caller_parts)),
             only = promoted,
         )
     return out, payloads, promoted
