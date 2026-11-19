@@ -730,6 +730,7 @@ export const it = {
     background: "L'installazione avviene in background.",
     failed: "Installazione del motore non riuscita. Riprova o usa il motore predefinito.",
     details: "Dettagli tecnici",
+    lastAttempt: "Ultimo tentativo: {time}",
     cancelled: "Installazione annullata. Puoi riprovare.",
     scope: "Chat di testo e immagini su GPU NVIDIA. Il primo caricamento può richiedere più tempo.",
   },

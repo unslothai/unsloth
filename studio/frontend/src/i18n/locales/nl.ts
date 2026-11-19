@@ -813,6 +813,7 @@ export const nl = {
     failed:
       "Installatie van engine mislukt. Probeer het opnieuw of gebruik de standaardengine.",
     details: "Technische details",
+    lastAttempt: "Laatste poging: {time}",
     cancelled: "Installatie geannuleerd. Je kunt het opnieuw proberen.",
     scope:
       "Tekst- en afbeeldingschat op NVIDIA-GPU's. Het eerste laden kan langer duren.",

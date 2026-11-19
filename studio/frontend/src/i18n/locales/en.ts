@@ -730,6 +730,7 @@ export const en = {
     background: "Installs in the background.",
     failed: "Engine installation failed. Retry or use the default engine.",
     details: "Technical details",
+    lastAttempt: "Last attempt: {time}",
     cancelled: "Installation cancelled. You can retry.",
     scope: "Text and image chat on NVIDIA GPUs. First load may take longer.",
   },

@@ -811,6 +811,7 @@ export const es419 = {
     failed:
       "No se pudo instalar el motor. Vuelve a intentarlo o usa el motor predeterminado.",
     details: "Detalles técnicos",
+    lastAttempt: "Último intento: {time}",
     cancelled: "Instalación cancelada. Puedes volver a intentarlo.",
     scope:
       "Chat de texto e imagen en GPU NVIDIA. La primera carga puede tardar más.",

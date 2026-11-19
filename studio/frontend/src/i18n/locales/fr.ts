@@ -733,6 +733,7 @@ export const fr = {
     background: "S’installe en arrière-plan.",
     failed: "L’installation du moteur a échoué. Réessayez ou utilisez le moteur par défaut.",
     details: "Détails techniques",
+    lastAttempt: "Dernière tentative : {time}",
     cancelled: "Installation annulée. Vous pouvez réessayer.",
     scope: "Chat texte et image sur les GPU NVIDIA. Le premier chargement peut être plus long.",
   },

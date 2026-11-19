@@ -808,6 +808,7 @@ export const vi = {
     failed:
       "Cài đặt công cụ chạy không thành công. Hãy thử lại hoặc dùng công cụ chạy mặc định.",
     details: "Chi tiết kỹ thuật",
+    lastAttempt: "Lần thử gần nhất: {time}",
     cancelled: "Đã hủy cài đặt. Bạn có thể thử lại.",
     scope:
       "Trò chuyện bằng văn bản và hình ảnh trên GPU NVIDIA. Lần nạp đầu tiên có thể lâu hơn.",

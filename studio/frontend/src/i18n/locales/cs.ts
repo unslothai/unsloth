@@ -807,6 +807,7 @@ export const cs = {
     failed:
       "Instalace modulu se nezdařila. Zkuste to znovu nebo použijte výchozí modul.",
     details: "Technické podrobnosti",
+    lastAttempt: "Poslední pokus: {time}",
     cancelled: "Instalace byla zrušena. Můžete to zkusit znovu.",
     scope:
       "Textový a obrázkový chat na GPU NVIDIA. První načtení může trvat déle.",

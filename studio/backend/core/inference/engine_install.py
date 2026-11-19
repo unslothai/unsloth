@@ -1122,6 +1122,11 @@ def _update(engine: str, **values) -> None:
         job = _jobs.setdefault(engine, {})
         if "phase" in values and values["phase"] != job.get("phase"):
             values.setdefault("activity", "")
+        if values.get("state") == "running" and job.get("state") != "running":
+            values.setdefault("finished_at", None)
+        elif values.get("state") in ("success", "error", "cancelled", "waiting"):
+            # Tells a retry's failure apart from the previous one with the same message.
+            values.setdefault("finished_at", time.time())
         job.update(values)
         root = engine_root()
         root.mkdir(parents = True, exist_ok = True)
@@ -1451,6 +1456,16 @@ def _smoke_source(engine: str) -> str:
     )
 
 
+def _uv_executable() -> str | None:
+    """uv on PATH, else where its installers put it (~/.local/bin, ...): a service or web UI
+    launch never reads the shell profile that adds those folders to PATH."""
+    try:
+        from utils.mlx_repair import _uv_executable as find_uv
+        return find_uv()
+    except Exception:  # noqa: BLE001
+        return shutil.which("uv")
+
+
 def _install(
     engine: str,
     cancel: threading.Event,
@@ -1468,7 +1483,7 @@ def _install(
             if wsl_host.active():
                 _install_wsl(engine, cancel)
                 return
-            uv = shutil.which("uv")
+            uv = _uv_executable()
             if uv is None:
                 raise RuntimeError("uv is unavailable. Repair the Unsloth installation and retry.")
             root = engine_root() / engine
