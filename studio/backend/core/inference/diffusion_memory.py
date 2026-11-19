@@ -25,7 +25,7 @@ import sys
 import threading
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Iterator, Optional
-from .host_pinning import host_pinning_allowed
+from .host_pinning import consume_cuda_error, host_pinning_allowed
 from .rocm_bf16 import is_rocm_torch
 
 
@@ -8089,6 +8089,8 @@ class _RegisteredHostBuffer:
     def register(self) -> None:
         err = self._cudart.cudaHostRegister(self.ptr, self._size, 0)
         if int(err) != 0:
+            # The refusal stays this thread's pending CUDA error; left there, the next kernel launch raises it.
+            consume_cuda_error()
             raise RuntimeError(f"cudaHostRegister failed ({err})")
         import torch
 

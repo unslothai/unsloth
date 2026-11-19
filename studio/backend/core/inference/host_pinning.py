@@ -80,3 +80,24 @@ def host_pinning_allowed(device: Any = None) -> bool:
 def reset_cache() -> None:
     with _LOCK:
         _CACHE.clear()
+
+
+_get_last_error: Any = None
+
+
+def consume_cuda_error() -> None:
+    """Clear this thread's pending CUDA runtime error after a handled failure (a refused ``cudaHostRegister``):
+    left pending, the thread's next kernel launch raises it. Never raises."""
+    global _get_last_error
+    try:
+        if _get_last_error is None:
+            import ctypes
+
+            # torch loads the CUDA runtime globally, so the symbol resolves without naming the library
+            fn = ctypes.CDLL(None).cudaGetLastError
+            fn.argtypes = []
+            fn.restype = ctypes.c_int
+            _get_last_error = fn
+        _get_last_error()
+    except Exception:  # noqa: BLE001 - no runtime symbol (CPU / ROCm build): nothing is pending
+        pass
