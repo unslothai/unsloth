@@ -110,7 +110,7 @@ function subscribe(listener: () => void): () => void {
 }
 
 const featureIcon = (icon: typeof StarIcon) => (
-  <HugeiconsIcon icon={icon} strokeWidth={1.9} className="size-4.5" />
+  <HugeiconsIcon icon={icon} strokeWidth={1.9} className="size-4" />
 );
 
 const FEATURES = [
@@ -120,7 +120,7 @@ const FEATURES = [
   },
   { icon: featureIcon(Settings01Icon), label: "Run settings for each model" },
   {
-    icon: <BulbIcon className="size-4.5" />,
+    icon: <BulbIcon className="size-4" />,
     label: "Adjust thinking effort easily",
   },
   { icon: featureIcon(StarIcon), label: "Star the ones you use most" },
@@ -251,19 +251,19 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                   button.
                 </DialogDescription>
               </div>
-              <div className="mt-5">
+              <div className="mt-8">
                 <DialogHero />
               </div>
-              <ul className="mt-3 grid grid-cols-2 gap-2">
+              <ul className="mx-auto mt-7 grid w-full max-w-[calc(488px*var(--ui-space-scale,1))] grid-cols-2 gap-2">
                 {FEATURES.map((feature) => (
                   <li
                     key={feature.label}
-                    className="flex items-center gap-2.5 rounded-full bg-muted dark:bg-muted/50 py-3 pr-4 pl-4"
+                    className="flex items-center gap-2 rounded-full bg-muted dark:bg-muted/50 py-2.5 pr-3 pl-3.5"
                   >
                     <span className="flex shrink-0 items-center justify-center text-primary">
                       {feature.icon}
                     </span>
-                    <span className="font-medium text-foreground text-sm leading-snug">
+                    <span className="whitespace-nowrap font-medium text-foreground text-[0.84rem] max-sm:whitespace-normal leading-snug">
                       {feature.label}
                     </span>
                   </li>
@@ -273,7 +273,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                 <Button
                   variant="dark"
                   size="hero"
-                  className="gap-1.5 px-5.5 py-2.5 text-[0.95rem]"
+                  className="gap-1.5 px-5.5 py-2.5 text-[0.9rem]"
                   onClick={() => {
                     openPickerOnClose.current = true;
                     setOpen(false);
@@ -312,7 +312,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               <Button
                 variant="dark"
                 size="hero"
-                className="mt-6 gap-1.5 justify-self-center px-5.5 py-2.5 text-[0.95rem]"
+                className="mt-6 gap-1.5 justify-self-center px-5.5 py-2.5 text-[0.9rem]"
                 onClick={() => {
                   openPickerOnClose.current = true;
                   setOpen(false);
