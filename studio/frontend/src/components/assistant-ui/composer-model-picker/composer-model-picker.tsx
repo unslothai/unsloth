@@ -5790,7 +5790,7 @@ export function ComposerModelPicker({
               aria-label={`${chosenName}: show all models`}
               onClick={expand}
               // 1px up, matching the gap above the first control below the line.
-              className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch pb-[calc(2px*var(--ui-space-scale,1))] pl-3 text-left text-ui-14"
+              className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch pr-3 pb-[calc(2px*var(--ui-space-scale,1))] pl-3 text-left text-ui-14"
             >
               {pending || modelLoading ? (
                 <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
