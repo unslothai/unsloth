@@ -52,6 +52,24 @@ export const LENS_SCALE: Record<LensMode, number> = {
 export function sanitizeLens(value: unknown): LensMode {
 	return LENS_MODES.includes(value as LensMode) ? (value as LensMode) : "off";
 }
+/** Every glass surface the lens can draw into; lens.tsx skips those without a backdrop filter at the moment. */
+export const LENS_HOSTS = [
+	".unsloth-composer-surface",
+	".unsloth-files-panel",
+	'[data-slot="sidebar-inner"]',
+	'[data-slot="chat-settings-panel"]',
+	'[data-slot="sheet-content"]',
+	"[data-chat-model-controls] > .unsloth-model-selector-trigger",
+	"[data-chat-header-actions] > button",
+	'[data-slot$="menu-content"]',
+	'[data-slot$="menu-sub-content"]',
+	'[data-slot="select-content"]',
+	'[data-slot="combobox-content"]',
+	'[data-slot="popover-content"]',
+	'[data-slot="hover-card-content"]',
+	'[data-wallpaper-route="page"] .elevated-card',
+	'[data-wallpaper-route="page"] .library-card',
+].join(", ");
 // Off draws nothing: without GPU rendering, WebKitGTK repaints each wallpaper copy and its filter on every frame.
 export function lensDrawn(material: WindowMaterial, lens: LensMode): boolean {
 	return material !== "solid" && lens !== "off";

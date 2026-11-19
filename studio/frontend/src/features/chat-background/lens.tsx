@@ -4,18 +4,25 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAppliedMaterial, useMaterialStore } from "./material";
-import { LENS_SCALE, lensDrawn } from "./model";
+import { LENS_HOSTS, LENS_SCALE, lensDrawn } from "./model";
 
-const COMPOSER = ".unsloth-composer-surface";
+const HOST_FLAG = "data-glass-lens-host";
 
-/** A wallpaper copy, since backdrop-filter cannot scale and SVG backdrop filters are Chromium only (not WebKit). */
-export function ComposerGlassLenses({
-  wallpaper,
-}: {
-  wallpaper: HTMLElement | null;
-}) {
+// Only surfaces drawing glass right now: Glass menus off, an opaque sheet or a split card has no backdrop filter.
+function drawsGlass(el: HTMLElement): boolean {
+  const { width, height } = el.getBoundingClientRect();
+  if (width < 8 || height < 8) return false;
+  if (el.hasAttribute("data-glass-moving")) return true;
+  const style = getComputedStyle(el);
+  const filter = style.backdropFilter || style.getPropertyValue("-webkit-backdrop-filter");
+  return Boolean(filter) && filter !== "none";
+}
+
+/** A wallpaper copy in every glass surface, since backdrop-filter cannot scale and SVG backdrop filters are Chromium only (not WebKit). */
+export function GlassLenses({ wallpaper }: { wallpaper: HTMLElement | null }) {
   const material = useAppliedMaterial();
   const lens = useMaterialStore((s) => s.lens);
+  const menus = useMaterialStore((s) => s.menus);
   const [hosts, setHosts] = useState<HTMLElement[]>([]);
   const workspace = wallpaper?.parentElement ?? null;
   const on = Boolean(workspace) && lensDrawn(material, lens);
@@ -25,7 +32,8 @@ export function ComposerGlassLenses({
     const scan = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const found = [...workspace.querySelectorAll<HTMLElement>(COMPOSER)];
+        // Menus, popovers and sheets are portaled to <body>, outside the workspace.
+        const found = [...document.querySelectorAll<HTMLElement>(LENS_HOSTS)].filter(drawsGlass);
         setHosts((prev) =>
           prev.length === found.length && prev.every((h, i) => h === found[i])
             ? prev
@@ -35,13 +43,19 @@ export function ComposerGlassLenses({
     };
     const observer = new MutationObserver(scan);
     observer.observe(workspace, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true });
+    // A panel opening or a menu's open animation settling changes which hosts draw glass.
+    document.addEventListener("transitionend", scan, true);
+    document.addEventListener("animationend", scan, true);
     scan();
     return () => {
       observer.disconnect();
+      document.removeEventListener("transitionend", scan, true);
+      document.removeEventListener("animationend", scan, true);
       cancelAnimationFrame(frame);
       setHosts([]);
     };
-  }, [workspace, on]);
+  }, [workspace, on, menus]);
   if (!wallpaper || !on) return null;
   return hosts.map((host, i) =>
     createPortal(
@@ -103,7 +117,7 @@ function Lens({
         const fills: string[] = [];
         for (
           let node = host.parentElement;
-          node && node !== workspace;
+          node && node !== workspace && node !== document.body;
           node = node.parentElement
         ) {
           const color = getComputedStyle(node).backgroundColor;
@@ -129,6 +143,9 @@ function Lens({
       frame = requestAnimationFrame(copy);
     };
     copy();
+    // The lens paints at z-index -1, so the host becomes its stacking context (index.css).
+    host.setAttribute(HOST_FLAG, getComputedStyle(host).position === "static" ? "static" : "");
+    host.addEventListener("animationend", place);
     const resize = new ResizeObserver(place);
     resize.observe(host);
     resize.observe(wallpaper);
@@ -141,6 +158,8 @@ function Lens({
     const poll = window.setInterval(place, 300);
     window.addEventListener("resize", place);
     return () => {
+      host.removeAttribute(HOST_FLAG);
+      host.removeEventListener("animationend", place);
       resize.disconnect();
       mutations.disconnect();
       window.clearInterval(poll);

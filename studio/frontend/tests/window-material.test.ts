@@ -279,7 +279,7 @@ test("glass frosts the chat model controls and gives the account row the row hov
 test("glass frosts sticky bars in panels and popups, floating buttons, and softens shared shadows", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\] :is\(\[data-slot="chat-settings-panel"\], \[data-slot\$="popover-content"\][^)]*\) \.sticky \{\n  -webkit-backdrop-filter: blur\(12px\)/);
-	assert.match(css, /html\[data-glass\] :is\(\[data-glass-float\], \.aui-thread-scroll-to-bottom\) \{\n  -webkit-backdrop-filter: blur\(8px\);/);
+	assert.match(css, /html\[data-glass\] :is\(\[data-glass-float\], \.aui-thread-scroll-to-bottom\) \{\n  -webkit-backdrop-filter: blur\(calc\(8px \* var\(--glass-strength, 1\)\)\);/);
 	assert.match(css, /html\.dark\[data-glass\] \{\n  --popup-shadow: 0 16px 40px -12px rgb\(0 0 0 \/ \.52\);/);
 	const pickers = readFileSync(new URL("../src/features/model-picker/components/model-selector/pickers.tsx", import.meta.url), "utf8");
 	assert.match(pickers, /data-glass-float=""\n\s*onClick=\{\(\) => \(ejectsAll/);
@@ -347,7 +347,7 @@ test("glass sheen runs at 90% except on the composer and files panel", () => {
 
 test("grouped glass cards get more blur and a lighter fill than single controls", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /:is\(\.elevated-card, \.elevated-card > \[class~="bg-card"\], \.library-card\) \{\n  background-color: var\(--page-glass-card-fill, color-mix\(in srgb, color-mix\(in srgb, var\(--glass-composer-fill\), #fff 6%\)[^}]*backdrop-filter: blur\(calc\(var\(--glass-blur\) \+ 8px\)\)/);
+	assert.match(css, /:is\(\.elevated-card, \.elevated-card > \[class~="bg-card"\], \.library-card\) \{\n  background-color: var\(--page-glass-card-fill, color-mix\(in srgb, color-mix\(in srgb, var\(--glass-composer-fill\), #fff 6%\)[^}]*backdrop-filter: blur\(calc\(var\(--glass-blur\) \+ 8px \* var\(--glass-strength, 1\)\)\)/);
 	assert.ok(css.indexOf(".library-card) {") < css.indexOf(".elevated-card:has(> [class~=\"bg-card\"]) {"));
 	const surface = readFileSync(new URL("../src/features/library/surface.ts", import.meta.url), "utf8");
 	assert.match(surface, /CARD_SHADOW =\n  "library-card /);
@@ -376,7 +376,7 @@ test("light glass New chat lifts the wallpaper along a curve that still tracks t
 test("light glass pages use the white control glass and a lighter card sheet, edged with an outline and inner light", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const light = String.raw`html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\]`;
-	assert.match(css, new RegExp(`${light} \\{\\n  --page-glass-fill: var\\(--glass-control\\);\\n  --page-glass-card-fill: rgb\\(255 255 255 / \\.45\\);\\n  --page-glass-edge: var\\(--glass-light-edge\\);`));
+	assert.match(css, new RegExp(`${light} \\{\\n  --page-glass-fill: rgb\\(255 255 255 / min\\(\\.96, calc\\(\\.3 \\* var\\(--glass-opacity, 1\\)\\)\\)\\);\\n  --page-glass-card-fill: rgb\\(255 255 255 / min\\(\\.96, calc\\(\\.45 \\* var\\(--glass-opacity, 1\\)\\)\\)\\);\\n  --page-glass-edge: var\\(--glass-light-edge\\);`));
 	assert.match(css, new RegExp(`${light} \\.elevated-card > \\[class~="bg-card"\\] \\{\\n  background-color: transparent;\\n  box-shadow: inset -1px 0 0 var\\(--page-glass-divider\\), inset 0 -1px 0 var\\(--page-glass-divider\\);`));
 	assert.match(css, new RegExp(`${light} :is\\(\\.elevated-card, \\.library-card\\) \\{\\n  box-shadow: var\\(--page-glass-card-edge\\);`));
 	assert.match(css, new RegExp(`${light} \\.glass-divider \\{\\n  border-color: var\\(--page-glass-divider\\);`));
@@ -388,7 +388,7 @@ test("light glass pages use the white control glass and a lighter card sheet, ed
 
 test("light glass API cards use a thinner fill with the outlined glass edge", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] \.api-monitor-page \{\n  --page-glass-card-fill: rgb\(255 255 255 \/ \.3\);\n  --page-glass-card-edge: var\(--glass-light-edge\);/);
+	assert.match(css, /html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] \.api-monitor-page \{\n  --page-glass-card-fill: rgb\(255 255 255 \/ min\(\.96, calc\(\.3 \* var\(--glass-opacity, 1\)\)\)\);\n  --page-glass-card-edge: var\(--glass-light-edge\);/);
 	assert.match(css, /\.api-monitor-page \.elevated-card:has\(> \[class~="bg-card"\]\) \{\n  clip-path: inset\(0 1px 1px 0 round var\(--radius-2xl\)\);/);
 });
 
@@ -494,7 +494,7 @@ test("macOS glass and a plain background image leave the resting page headers cl
 
 test("the update cards that float like toasts take the glass toast surface", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{[^}]*backdrop-filter: blur\(max\(var\(--glass-blur\), 18px\)\)/);
+	assert.match(css, /html\[data-glass\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{[^}]*backdrop-filter: blur\(max\(var\(--glass-blur\), calc\(18px \* var\(--glass-strength, 1\)\)\)\)/);
 	assert.match(css, /html\[data-glass\^="liquid"\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{/);
 	// Transparent keeps toasts opaque; the cards re-resolve the palette at full alpha like the toaster.
 	assert.match(css, /html\[data-glass-clear\] #root :is\(\[data-sonner-toaster\], \.toast-surface\) \{\n\s*--clear-alpha: 100%;/);
@@ -502,4 +502,66 @@ test("the update cards that float like toasts take the glass toast surface", () 
 		const source = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
 		assert.match(source, /className="toast-surface /, file);
 	}
+});
+
+test("the glass lens draws into every glass surface, not only the composer", async () => {
+	const { LENS_HOSTS } = await import("../src/features/chat-background/model.ts");
+	assert.equal(typeof LENS_HOSTS, "string");
+	for (const host of [
+		".unsloth-composer-surface",
+		'[data-slot="sidebar-inner"]',
+		'[data-slot="chat-settings-panel"]',
+		'[data-slot="sheet-content"]',
+		"[data-chat-model-controls] > .unsloth-model-selector-trigger",
+		'[data-slot$="menu-content"]',
+		'[data-slot="popover-content"]',
+		'[data-wallpaper-route="page"] .elevated-card',
+	])
+		assert.ok(LENS_HOSTS.includes(host), host);
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	// Menus and sheets are portaled to <body>; hosts without a backdrop filter (Glass menus off, opaque sheets) are skipped.
+	assert.match(lens, /document\.querySelectorAll<HTMLElement>\(LENS_HOSTS\)\]\.filter\(drawsGlass\)/);
+	assert.match(lens, /observer\.observe\(document\.body, \{ childList: true \}\);/);
+	// Outside the workspace the wash stops at <body>, whose opaque fill would hide the copy.
+	assert.match(lens, /node && node !== workspace && node !== document\.body;/);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	// The lens paints at z-index -1, so each host is its own stacking context.
+	assert.match(css, /\[data-glass-lens-host\] \{\n  isolation: isolate;\n\}\n\[data-glass-lens-host="static"\] \{\n  position: relative;\n\}/);
+	assert.doesNotMatch(css, /:has\(> \.glass-lens\)/);
+	for (const file of ["background.tsx", "backdrop.tsx"]) {
+		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");
+		assert.match(source, /<GlassLenses wallpaper=\{appWallpaper\} \/>/, file);
+	}
+});
+
+test("glass strength scales the blur and the fill of every glass surface, with no fixed floors", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+	// Fixed blur floors and add-ons left the menus' low end and the open composer's extra blur deaf to the slider.
+	assert.doesNotMatch(css, /max\(var\(--glass-blur\), \d+px\)/);
+	assert.doesNotMatch(css, /\+ 5px \+ var\(--glass-repaint/);
+	assert.doesNotMatch(css, /calc\(var\(--glass-blur\) \+ 8px\)/);
+	// Every backdrop blur on a glass surface reads the strength, except the clear (Transparent) theme's,
+	// and sticky headers, which frost their own panel's scrolled content rather than the wallpaper.
+	const off: string[] = [];
+	for (const [, selector, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+		if (!/data-glass(?!-clear)/.test(selector) || /data-glass-clear|\.sticky|data-config-header-row|data-pinned-footer|data-glass-motion/.test(selector)) continue;
+		for (const [, filter] of body.matchAll(/(?<!-webkit-)backdrop-filter: blur\(([^;]*)\)/g))
+			if (!/--glass-blur|--glass-strength/.test(filter)) off.push(selector.trim().slice(0, 120));
+	}
+	assert.deepEqual(off, []);
+	// Light pages and the macOS strip had fixed fills: the slider moved their blur but not their tint.
+	assert.match(css, /--page-glass-card-fill: rgb\(255 255 255 \/ min\(\.96, calc\(\.45 \* var\(--glass-opacity, 1\)\)\)\);/);
+	assert.match(css, /--page-glass-fill: rgb\(255 255 255 \/ min\(\.96, calc\(\.3 \* var\(--glass-opacity, 1\)\)\)\);/);
+	assert.match(css, /html\[data-glass="macos"\] :is\(\[data-slot="sidebar-inset"\], \[data-slot="window-titlebar"\]\) \{\n  background-color: color-mix\(in srgb, var\(--background\) min\(96%, calc\(52% \* var\(--glass-opacity, 1\)\)\), transparent\);/);
+});
+
+test("every glass surface keeps a readable blur floor at any strength, lens copy included", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass\] \{\n  --glass-tint: var\(--glass-tint-base\);\n  --glass-read-blur: 12px;\n  --glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	// The open chat's composer redefines --glass-blur, so it carries the floor too.
+	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\), \(var\(--glass-blur-base\) \+ 5px\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	// Every other --glass-blur definition goes through the floor.
+	for (const [, value] of css.matchAll(/--glass-blur: ([^;]+);/g)) assert.match(value, /var\(--glass-read-blur\)/, value);
+	// The lens copy blurs with the same variable.
+	assert.match(css, /\.glass-lens-fill \.glass-lens-copy \{\n  filter: blur\(var\(--glass-blur, 12px\)\)/);
 });
