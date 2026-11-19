@@ -65,16 +65,11 @@ def _result_text(content: Any) -> str:
     return clean_text(content) if isinstance(content, str) else ""
 
 
-def _message(record: dict) -> dict:
-    message = record.get("message")
-    return message if isinstance(message, dict) else {}
-
-
 def _parts(
     record: dict, message_id: str, expanded: bool
 ) -> tuple[list[dict], dict[str, str], bool]:
     """Parts, ``{tool_use_id: result}`` this record answers, and whether revision "" kept it. Thinking is dropped."""
-    content = _message(record).get("content")
+    content = record.get("message", {}).get("content")
     if isinstance(content, str):
         content = [{"type": "text", "text": content}]
     if not isinstance(content, list):
@@ -130,6 +125,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             expanded.add(line.get("parentUuid"))
         if (
             line.get("type") in ("user", "assistant")
+            and isinstance(line.get("message"), dict)
             and not line.get("isSidechain")
             and not line.get("isMeta")
         ):
@@ -144,7 +140,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     legacy_ends = [0]
     for index, (record, node, parent_node) in enumerate(records):
         uuid = str(record.get("uuid") or "")
-        reply = _message(record).get("id") if record["type"] == "assistant" else None
+        reply = record.get("message", {}).get("id") if record["type"] == "assistant" else None
         continues_reply = record["type"] == "assistant" and reply and reply == active_reply
         if continues_reply and active_blocks:
             ancestor, seen = parent_node, set()

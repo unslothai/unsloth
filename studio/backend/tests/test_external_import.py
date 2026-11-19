@@ -572,6 +572,37 @@ def test_claude_parallel_tool_calls_and_compaction_keep_one_conversation(claude_
     assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
 
 
+def test_claude_null_message_inside_a_streamed_reply_keeps_the_branch(claude_home):
+    def block(uuid, tool_id, parent):
+        record = c_asst(
+            uuid, [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {}}], parent = parent
+        )
+        record["message"]["id"] = "m1"
+        return record
+
+    def result(uuid, tool_id, parent):
+        return c_user(
+            uuid, [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}], parent = parent
+        )
+
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            block("a1", "t1", "u1"),
+            {"type": "assistant", "uuid": "x", "parentUuid": "a1", "message": None},
+            block("a1b", "t2", "x"),
+            result("r2", "t2", "a1b"),
+            result("r1", "t1", "a1"),
+            c_asst("a2", [{"type": "text", "text": "A"}], parent = "r1"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert len(messages) == 4
+    assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
+
+
 def test_cursor_reads_the_query_and_strips_injected_context(cursor_home):
     path = _write(
         cursor_home / "projects" / "p" / "agent-transcripts" / "s1" / "s1.jsonl",
