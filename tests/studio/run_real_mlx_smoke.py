@@ -38,7 +38,10 @@ def _seed_everything() -> None:
 
 
 def _peak_gpu_gb() -> float:
-    import mlx.core as mx
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return 0.0
 
     if not mx.metal.is_available():
         return 0.0
@@ -507,34 +510,15 @@ def _find_llama_binary(name: str) -> Path | None:
 
 
 def _llama_server_completion(
-    llama_server: Path,
-    gguf_path: Path,
-    n_predict: str,
-    n_threads: str,
-    n_ctx: str,
-    n_gpu_layers: str,
-    timeout: int,
+    llama_server: Path, flags: list[str], n_predict: str, timeout: int
 ) -> str:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     url = f"http://127.0.0.1:{port}"
-    argv = [
-        str(llama_server),
-        "-m",
-        str(gguf_path),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(port),
-        "-t",
-        n_threads,
-        "-c",
-        n_ctx,
-        "-ngl",
-        n_gpu_layers,
-        "--no-warmup",
-    ]
+    # Loopback must never go through an HTTP(S)_PROXY from the environment.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    argv = [str(llama_server), *flags, "--host", "127.0.0.1", "--port", str(port)]
     with tempfile.TemporaryFile() as log:
         server = subprocess.Popen(argv, stdout = log, stderr = subprocess.STDOUT)
 
@@ -550,7 +534,7 @@ def _llama_server_completion(
                         f"llama-server exit {server.returncode}; log tail: {_log_tail()}"
                     )
                 try:
-                    with urllib.request.urlopen(f"{url}/health", timeout = 5):
+                    with opener.open(f"{url}/health", timeout = 5):
                         break
                 except OSError:
                     if time.monotonic() > deadline:
@@ -558,19 +542,18 @@ def _llama_server_completion(
                             f"llama-server not healthy after {timeout}s; log tail: {_log_tail()}"
                         )
                     time.sleep(0.5)
+            payload = {
+                "prompt": PROMPT,
+                "n_predict": int(n_predict),
+                "temperature": 0,
+                "seed": SEED,
+            }
             request = urllib.request.Request(
                 f"{url}/completion",
-                data = json.dumps(
-                    {
-                        "prompt": PROMPT,
-                        "n_predict": int(n_predict),
-                        "temperature": 0,
-                        "seed": SEED,
-                    }
-                ).encode(),
+                data = json.dumps(payload).encode(),
                 headers = {"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(request, timeout = timeout) as response:
+            with opener.open(request, timeout = timeout) as response:
                 return json.loads(response.read()).get("content") or ""
         finally:
             server.terminate()
@@ -601,75 +584,71 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
     n_ctx = os.environ.get("UNSLOTH_GGUF_RELOAD_CTX", "256")
     n_gpu_layers = os.environ.get("UNSLOTH_GGUF_RELOAD_NGL", "0")
     reload_timeout = int(os.environ.get("UNSLOTH_GGUF_RELOAD_TIMEOUT", "420"))
-    if llama_cli is None:
-        with Phase("reload_gguf", metrics):
-            content = _llama_server_completion(
-                llama_server, gguf_path, n_predict, n_threads, n_ctx, n_gpu_layers, reload_timeout
-            )
-        metrics["generation"] = content[:1500]
-        print(f"  [reload:gguf] llama-server completion: {content!r}", flush = True)
-        metrics["gguf_has_expected"] = EXPECT_IN_OUTPUT in content
-        assert (
-            len(content.strip()) >= 4
-        ), f"GGUF reload produced no usable output for {PROMPT!r}: {content[:400]!r}"
-        metrics["final_peak_rss_gb"] = round(_peak_rss_gb(), 3)
-        _write_metrics(save_dir.parent / "gguf_reload_metrics.json", metrics)
-        return 0
-    argv = [
-        str(llama_cli),
+    flags = [
         "-m",
         str(gguf_path),
-        "-p",
-        PROMPT,
-        "-n",
-        n_predict,
         "-t",
         n_threads,
         "-c",
         n_ctx,
         "-ngl",
         n_gpu_layers,
-        "--temp",
-        "0",
-        "--seed",
-        str(SEED),
         "--no-warmup",
     ]
-    with Phase("reload_gguf", metrics):
-        try:
-            proc = subprocess.run(
-                argv,
-                capture_output = True,
-                text = True,
-                timeout = reload_timeout,
-                # Newer llama.cpp keeps llama-cli in chat mode; exit after one reply.
-                input = "/exit\n",
-            )
-        except subprocess.TimeoutExpired as exc:
 
-            def _decode(stream) -> str:
-                if isinstance(stream, bytes):
-                    return stream.decode("utf-8", errors = "replace")
-                return stream or ""
+    if llama_cli is None:
+        with Phase("reload_gguf", metrics):
+            output = _llama_server_completion(llama_server, flags, n_predict, reload_timeout)
+        metrics["generation"] = output[:1500]
+        print(f"  [reload:gguf] llama-server completion: {output!r}", flush = True)
+        body = output.strip()
+    else:
+        argv = [
+            str(llama_cli),
+            *flags,
+            "-p",
+            PROMPT,
+            "-n",
+            n_predict,
+            "--temp",
+            "0",
+            "--seed",
+            str(SEED),
+        ]
+        with Phase("reload_gguf", metrics):
+            try:
+                proc = subprocess.run(
+                    argv,
+                    capture_output = True,
+                    text = True,
+                    timeout = reload_timeout,
+                    # Newer llama.cpp keeps llama-cli in chat mode; exit after one reply.
+                    input = "/exit\n",
+                )
+            except subprocess.TimeoutExpired as exc:
 
-            print(f"  [reload:gguf] TIMEOUT running: {' '.join(argv)}", flush = True)
-            print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
-            print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
-            raise
+                def _decode(stream) -> str:
+                    if isinstance(stream, bytes):
+                        return stream.decode("utf-8", errors = "replace")
+                    return stream or ""
 
-    metrics["llama_cli_returncode"] = proc.returncode
-    metrics["generation"] = (proc.stdout or "")[:1500]
-    metrics["stderr_head"] = (proc.stderr or "")[:600]
+                print(f"  [reload:gguf] TIMEOUT running: {' '.join(argv)}", flush = True)
+                print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
+                print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
+                raise
 
-    print(f"  [reload:gguf] stdout (head):\n{proc.stdout[:800]}", flush = True)
-    if proc.returncode != 0:
-        raise SystemExit(f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}")
+        output = proc.stdout or ""
+        metrics["llama_cli_returncode"] = proc.returncode
+        metrics["generation"] = output[:1500]
+        metrics["stderr_head"] = (proc.stderr or "")[:600]
+        print(f"  [reload:gguf] stdout (head):\n{output[:800]}", flush = True)
+        if proc.returncode != 0:
+            raise SystemExit(f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}")
+        body = output.replace(PROMPT, "", 1).strip()
+
     # llama.cpp samples differently than mlx_lm, so record EXPECT_IN_OUTPUT without gating.
-    body = (proc.stdout or "").replace(PROMPT, "", 1).strip()
-    metrics["gguf_has_expected"] = EXPECT_IN_OUTPUT in (proc.stdout or "")
-    assert len(body) >= 4, (
-        f"GGUF reload produced no usable output for {PROMPT!r}: " f"{proc.stdout[:400]!r}"
-    )
+    metrics["gguf_has_expected"] = EXPECT_IN_OUTPUT in output
+    assert len(body) >= 4, f"GGUF reload produced no usable output for {PROMPT!r}: {output[:400]!r}"
 
     metrics["final_peak_rss_gb"] = round(_peak_rss_gb(), 3)
     _write_metrics(save_dir.parent / "gguf_reload_metrics.json", metrics)
