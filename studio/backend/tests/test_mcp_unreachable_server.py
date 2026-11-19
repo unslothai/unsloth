@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An MCP server with nothing listening (the editor or app is closed) gets a plain answer, not a raw connect error.
-
-Seen live with Unreal: the editor stopped mid-chat and the model got "Client failed to connect: All connection attempts
-failed" on every call, then slept and retried for minutes."""
+"""A closed MCP server gets a plain answer; live, Unreal's raw connect error left models sleeping and retrying."""
 
 import socket
 

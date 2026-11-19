@@ -2532,8 +2532,7 @@ def call_tool_sync(
         return f"Error: MCP tool '{name}' timed out{suffix}"
     except Exception as exc:
         if server_unreachable(exc):
-            # Nothing listens there: the editor or app behind the server is closed. Say so plainly, or models sleep and
-            # retry the same call for minutes.
+            # The app behind the server is closed; say so, or models sleep and retry.
             logger.warning("MCP server unreachable for %s: %s", name, exc)
             return (
                 f"Error: MCP tool '{name}' did not run: {UNREACHABLE_SERVER}. {UNREACHABLE_ADVICE}"
