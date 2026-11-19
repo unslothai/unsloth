@@ -158,9 +158,8 @@ def install_frozen_prefix_skip(model):
             or not torch.is_grad_enabled()
         ):
             return None
-        embeds = kwargs.get("inputs_embeds")
-        if isinstance(embeds, torch.Tensor) and embeds.requires_grad:
-            return None  # the caller wants a gradient at the input
+        if any(isinstance(x, torch.Tensor) and x.requires_grad for x in (*args, *kwargs.values())):
+            return None  # the caller wants a gradient at an input (inputs_embeds by keyword or position, ...)
         outer = model_ref()
         if outer is None:
             return None

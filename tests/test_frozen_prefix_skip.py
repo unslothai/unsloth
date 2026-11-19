@@ -140,6 +140,25 @@ def test_inputs_embeds_that_require_grad_keep_their_gradient():
     assert fp.FROZEN_PREFIX_STATS == before
 
 
+def test_positional_inputs_embeds_that_require_grad_keep_their_gradient():
+    import inspect
+
+    model = _model([2, 3])
+    embeds = model.get_input_embeddings()(torch.zeros(1, 8, dtype = torch.long)).detach()
+    embeds.requires_grad_(True)
+    # PeftModel forwards positional arguments to the transformers model unchanged.
+    names = [
+        n
+        for n in inspect.signature(transformers.LlamaForCausalLM.forward).parameters
+        if n != "self"
+    ]
+    args = [None] * names.index("inputs_embeds") + [embeds]
+    before = dict(fp.FROZEN_PREFIX_STATS)
+    model(*args).logits.sum().backward()
+    assert embeds.grad is not None and embeds.grad.abs().sum() > 0
+    assert fp.FROZEN_PREFIX_STATS == before
+
+
 def test_first_trainable_layer_outside_checkpointing_still_matches(monkeypatch):
     # checkpoint_skip_layers can leave the first trainable layer unchecked while the rest replay.
     def build():
