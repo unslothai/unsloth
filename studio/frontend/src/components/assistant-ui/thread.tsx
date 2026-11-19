@@ -2303,7 +2303,11 @@ export const Thread: FC<{
     }
     if (prev != null && composerHeight > prev) {
       // Detach as if the user scrolled up so nothing re-pins; not mid-run, where growth is tool rows.
-      if (!aui.thread().getState().isRunning) {
+      // An empty composer only grows as its row floor eases (new chat vs conversation), which must
+      // not strand a conversation opening under it a few pixels above its end.
+      const draft = aui.composer().getState();
+      const writing = draft.text.length > 0 || draft.attachments.length > 0;
+      if (writing && !aui.thread().getState().isRunning) {
         autoScrollContext.detachFromBottom();
       }
     }
