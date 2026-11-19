@@ -456,7 +456,7 @@ def test_tool_offered_when_swap_can_load_default(monkeypatch):
 
 def test_default_image_model_order(monkeypatch):
     monkeypatch.delenv(swap.SWAP_MODEL_ENV, raising = False)
-    monkeypatch.setattr(swap, "_last_image_model", None)
+    monkeypatch.setattr(swap, "_last_image_model", {})
     import utils.openai_auto_switch_settings as settings
 
     monkeypatch.setattr(settings, "_cached_setting", lambda key, default, *a: None)
@@ -623,7 +623,8 @@ def test_tier_choice(monkeypatch, server_loop, policy, on_gpu, beside):
         ("never", True, True),
         ("never", False, True),
         ("beside_only", True, True),
-        ("beside_only", False, False),
+        # A torch CPU device can still put an MLX / GPU sd.cpp load on the GPU: refused too.
+        ("beside_only", False, True),
         ("bogus", False, True),
         ("any", True, False),
     ],
@@ -631,7 +632,7 @@ def test_tier_choice(monkeypatch, server_loop, policy, on_gpu, beside):
 def test_the_credential_load_policy_gates_the_swap(
     monkeypatch, server_loop, load_policy, on_gpu, refused
 ):
-    """An inference-only key may neither load nor unload; the chat tools key only loads beside chat."""
+    """Only a credential allowed any load may swap; a beside-only or inference-only key never does."""
     import dataclasses
 
     import core.inference.media_switch_backends as backends
@@ -731,3 +732,62 @@ def test_tool_description_unchanged_while_swap_is_off(monkeypatch):
     monkeypatch.setattr(swap, "swap_enabled", lambda: True)
     on = tool.generate_image_schema({})["function"]["description"]
     assert "never loads or unloads" not in on
+
+
+def test_keyless_api_access_never_swaps(monkeypatch, server_loop):
+    import dataclasses
+
+    log, box = Log(), {}
+    _patch_adapters(monkeypatch, log, box)
+    keyless = dataclasses.replace(OWNER, via_api_key = True, key_id = None)
+    result = swap.run_in_tool(
+        loop = server_loop,
+        account = keyless,
+        render = None,
+        cancel_event = None,
+        render_limit_s = 5,
+        stop_render = lambda: None,
+    )
+    assert result == swap.ERR_LOAD_POLICY and log == []
+
+
+def test_last_image_model_is_per_account(monkeypatch):
+    from utils import account_context as ac
+
+    monkeypatch.delenv(swap.SWAP_MODEL_ENV, raising = False)
+    monkeypatch.setattr(swap, "_last_image_model", {})
+    import utils.openai_auto_switch_settings as settings
+    import core.inference.media_model_index as index
+
+    monkeypatch.setattr(settings, "_cached_setting", lambda key, default, *a: None)
+    monkeypatch.setattr(index, "available_media_model_ids", lambda task: [])
+    alice = ac.AccountContext("acct-alice", "alice")
+    ac.run_as(alice, swap.remember_image_model, "/home/alice/private-model")
+    assert ac.run_as(alice, swap.default_image_model) == "/home/alice/private-model"
+    assert swap.default_image_model() is None
+
+
+def test_unresolvable_pick_is_refused_before_chat_is_evicted(monkeypatch):
+    log = Log()
+
+    class Unresolvable(FakeImage):
+        async def prepare(self, name):
+            log.add("image_prepare", name)
+            raise swap.SwapUnavailable("Error: no downloaded image model matches 'gone/model'.")
+
+    chat, media = FakeChat(log), Unresolvable(log)
+    with pytest.raises(swap.SwapUnavailable):
+        asyncio.run(_trip(chat, media).run())
+    assert [e[0] for e in log] == ["image_prepare"]
+
+
+def test_network_path_is_never_probed(monkeypatch):
+    import core.inference.media_auto_switch as mas
+
+    monkeypatch.setattr(mas, "_resolve_pick", lambda *a: None)
+    probed = []
+    monkeypatch.setattr(swap.os.path, "isfile", lambda p: probed.append(p) or True)
+    image = swap.StudioImage("unsloth", render = None)
+    with pytest.raises(swap.SwapUnavailable):
+        asyncio.run(image.prepare("\\\\host\\share\\model"))
+    assert probed == []

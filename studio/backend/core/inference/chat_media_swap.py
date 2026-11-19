@@ -37,7 +37,8 @@ ERR_NO_DEFAULT = (
 
 SWAP_BUDGET_S = 900.0
 
-_last_image_model: Optional[str] = None
+# Per account: one account's last load must neither steer nor reveal another account's swap.
+_last_image_model: dict[str, str] = {}
 
 
 class SwapUnavailable(RuntimeError):
@@ -70,10 +71,14 @@ def swap_enabled() -> bool:
         return False
 
 
+def _account_key() -> str:
+    from utils.account_context import current_account_id
+    return current_account_id()
+
+
 def remember_image_model(model_id: Optional[str]) -> None:
-    global _last_image_model
     if isinstance(model_id, str) and model_id.strip():
-        _last_image_model = model_id.strip()
+        _last_image_model[_account_key()] = model_id.strip()
 
 
 def default_image_model() -> Optional[str]:
@@ -88,8 +93,9 @@ def default_image_model() -> Optional[str]:
             return stored.strip()
     except Exception:  # noqa: BLE001
         pass
-    if _last_image_model:
-        return _last_image_model
+    last = _last_image_model.get(_account_key())
+    if last:
+        return last
     try:
         from core.inference.media_model_index import IMAGE_TASK, available_media_model_ids
         ids = list(available_media_model_ids(IMAGE_TASK) or ())
@@ -167,6 +173,15 @@ class RoundTrip:
             )
         if self.cancel.is_set():
             return ERR_STOPPED
+        prepare = getattr(self.media, "prepare", None)
+        if prepare is not None:
+            # A pick that cannot load is refused while chat is still up, not after evicting it.
+            try:
+                await prepare(self.image_model)
+            except SwapUnavailable:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise SwapUnavailable(f"Error: image generation failed: {exc}") from exc
         gate = contextlib.AsyncExitStack()
         if self.hold_requests is not None:
             try:
@@ -402,27 +417,40 @@ class StudioImage:
         self.load_timeout_s = 600.0
         # Only this swap's admitted load is ever unloaded.
         self._admitted: Optional[tuple[str, Any]] = None
+        self._prepared: Optional[tuple[str, Any]] = None
 
-    async def load(self, name: str, should_abort) -> None:
+    async def prepare(self, name: str) -> None:
         from core.inference.gpu_arbiter import DIFFUSION
-        from core.inference.media_auto_switch import (
-            _resolve_pick,
-            _retired_copy_as_base,
-            _start_load,
-        )
+        from core.inference.media_auto_switch import _resolve_pick, _retired_copy_as_base
         from core.inference.media_locality import is_edit_only
-        from core.inference.media_model_index import IMAGE_TASK, resident_is_pick
-        from core.inference.media_switch_backends import backend_for
+        from core.inference.media_model_index import IMAGE_TASK
+        from utils.paths.path_utils import is_network_or_device_path
 
         pick = await asyncio.to_thread(_resolve_pick, DIFFUSION, name, IMAGE_TASK)
-        if pick is None and os.path.isfile(os.path.join(name, "model_index.json")):
+        # A UNC / device path is never probed: on Windows the probe alone authenticates over SMB.
+        if (
+            pick is None
+            and not is_network_or_device_path(name)
+            and os.path.isfile(os.path.join(name, "model_index.json"))
+        ):
             from core.inference.media_model_index import MediaModelPick
             pick = MediaModelPick(name, name, None, "pipeline")
         if pick is None:
-            raise RuntimeError(f"no downloaded image model matches '{name}'")
+            raise SwapUnavailable(f"Error: no downloaded image model matches '{name}'.")
         pick = _retired_copy_as_base(pick)
         if await asyncio.to_thread(is_edit_only, pick):
-            raise RuntimeError(f"'{pick.model_id}' only edits images")
+            raise SwapUnavailable(f"Error: '{pick.model_id}' only edits images.")
+        self._prepared = (name, pick)
+
+    async def load(self, name: str, should_abort) -> None:
+        from core.inference.gpu_arbiter import DIFFUSION
+        from core.inference.media_auto_switch import _start_load
+        from core.inference.media_model_index import resident_is_pick
+        from core.inference.media_switch_backends import backend_for
+
+        if self._prepared is None or self._prepared[0] != name:
+            await self.prepare(name)
+        pick = self._prepared[1]
         await _start_load(DIFFUSION, pick, self.subject)
         self._admitted = (name, pick)
         backend = backend_for(DIFFUSION)
@@ -518,15 +546,19 @@ def run_in_tool(
     from core.inference.load_policy import LoadPolicy
 
     try:
-        load_policy = LoadPolicy(getattr(account, "load_policy", LoadPolicy.ANY))
+        load_policy = LoadPolicy(getattr(account, "load_policy", LoadPolicy.NEVER))
     except ValueError:
         load_policy = LoadPolicy.NEVER
+    # Only a credential allowed any load: a torch "cpu" device does not prove the image load stays off
+    # the GPU (MLX, a Vulkan / CUDA sd.cpp build), so a beside-only key could still evict chat.
+    if load_policy is not LoadPolicy.ANY:
+        return ERR_LOAD_POLICY
+    # Keyless API access (no key row) may be barred from loading models; it never swaps.
+    if getattr(account, "via_api_key", False) and getattr(account, "key_id", None) is None:
+        return ERR_LOAD_POLICY
     from core.inference.media_switch_backends import load_takes_the_gpu
 
     on_gpu = load_takes_the_gpu()
-    # A non-ANY key may only load beside chat (CPU image device); refused before any eviction.
-    if load_policy is LoadPolicy.NEVER or (load_policy is not LoadPolicy.ANY and on_gpu):
-        return ERR_LOAD_POLICY
     from core.inference.gpu_residency import current_policy
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
