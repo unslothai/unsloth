@@ -426,7 +426,7 @@ from .diffusion_precision import (
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from . import diffusion_lora_files as lora_files
-from .diffusion_lora import LoraSelectionError
+from .diffusion_lora import LORA_RELOAD_REMEDY, LoraReloadRequiredError, LoraSelectionError
 from .diffusion_lora_memory import price_attached_loras
 from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
@@ -637,15 +637,21 @@ def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any)
     return not any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles)
 
 
+def _quant_build_label(state: Any) -> str:
+    """ "INT8" / "FP8" / ... for the engaged transformer quant; a quantized single file reports none."""
+    quant = str(getattr(state, "transformer_quant", None) or "").strip()
+    return quant.upper() if quant else "quantized"
+
+
 def _remerge_quant_loras(state: Any, pipe: Any, updated: tuple) -> bool:
     """Re-merges adapters merged into a quantized file's weights in place (no recompile, no recapture). False when
     nothing was merged."""
     if not lora_quant_merge.merged(pipe):
         return False
     if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE:
-        raise LoraSelectionError(
+        raise LoraReloadRequiredError(
             "This load's LoRA adapters are merged into weights that are now offloaded, so their weights are fixed "
-            "until the model is reloaded. Reload the model with the new adapter weights."
+            "until the model is reloaded. " + LORA_RELOAD_REMEDY
         )
     try:
         lora_quant_merge.set_weights(pipe, {n: w for (n, _p, w) in updated})
@@ -666,9 +672,9 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     later generate, so such a load keeps its baked weights until a reload."""
     handles = getattr(state, "cuda_graphs", ()) or ()
     if any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles):
-        raise LoraSelectionError(
+        raise LoraReloadRequiredError(
             "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
-            "model is reloaded. Reload the model with the new adapter weights."
+            "model is reloaded. " + LORA_RELOAD_REMEDY
         )
 
 
@@ -14671,9 +14677,9 @@ class DiffusionBackend:
         )
         if tuple(desired) == tuple(current):
             return
-        raise LoraSelectionError(
+        raise LoraReloadRequiredError(
             "MiniMax-H3-Image merges LoRA adapters into its weights when the model loads, so the LoRA selection "
-            "and weights are fixed for this load. Load the model again with the new LoRA selection."
+            "and weights are fixed for this load. " + LORA_RELOAD_REMEDY
         )
 
     def _fuse_constant_loras(self, state: Any, pipe: Any) -> None:
@@ -14720,9 +14726,9 @@ class DiffusionBackend:
         if not quant_baked:
             if not specs:
                 return  # no adapters baked, none requested
-            raise LoraSelectionError(
-                "This quantized (int8/fp8) load was built without LoRA adapters. Reload the "
-                "model with the adapter selection to bake it into the quantized transformer."
+            raise LoraReloadRequiredError(
+                f"This {_quant_build_label(state)} build was loaded without LoRA adapters, and a quantized "
+                "transformer takes adapters only when it loads. " + LORA_RELOAD_REMEDY
             )
         if not specs:
             # Disable every baked adapter: scale 0 reproduces the quantized base exactly.
@@ -14763,9 +14769,9 @@ class DiffusionBackend:
             for (name, path, _w) in current
         )
         if any(wanted.values()):
-            raise LoraSelectionError(
-                "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
-                "adapters at load time. Reload the model with the new adapter selection."
+            raise LoraReloadRequiredError(
+                f"The LoRA selection adds adapters this {_quant_build_label(state)} build was not loaded with, and "
+                "a quantized transformer takes adapters only when it loads. " + LORA_RELOAD_REMEDY
             )
         if updated == current:
             return

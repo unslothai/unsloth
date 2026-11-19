@@ -438,6 +438,27 @@ class LoraSelectionError(ValueError):
     """A LoRA selection the loaded model cannot take; the caller's to fix."""
 
 
+# The refusal code of LoraReloadRequiredError: the X-Unsloth-Refusal header of /images/generate and the OpenAI error
+# code of /v1/images/generations, so a client can offer the reload instead of showing a failure.
+LORA_RELOAD_REFUSAL = "lora-reload"
+LORA_RELOAD_OPENAI_CODE = "lora_reload_required"
+
+# How to reload, named once so every refusal gives the same remedy.
+LORA_RELOAD_REMEDY = (
+    "Reload the model with the LoRA selection: on the Images page click Generate (it offers the reload) or "
+    'Reapply, or send the adapters as "loras" in POST /api/inference/images/load. The reload rebuilds the '
+    "transformer from its full-precision weights, which may download them first."
+)
+
+
+class LoraReloadRequiredError(LoraSelectionError):
+    """The loaded build fixes its adapters at load time (int8 / fp8 / nvfp4 / mxfp8 bake, a merge into quantized or
+    streamed weights), so this selection needs a reload that bakes it; never a silent reload behind a generate."""
+
+    refusal = LORA_RELOAD_REFUSAL
+    openai_code = LORA_RELOAD_OPENAI_CODE
+
+
 def resolve_one(
     spec_id: str,
     weight: float,

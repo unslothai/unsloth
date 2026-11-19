@@ -52289,6 +52289,7 @@ async def _generate_diffusion_image_run(
         ImageActivationShortfallError,
         unified_memory_refusal_code,
     )
+    from core.inference.diffusion_lora import LoraReloadRequiredError
     from core.inference.mlx_diffusion_routing import FallbackLoadRefusedError
 
     backend = get_active_diffusion_engine()
@@ -52476,6 +52477,13 @@ async def _generate_diffusion_image_run(
                 status_code = 400,
                 detail = str(exc),
                 headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_MEMORY_ESTIMATE},
+            )
+        except LoraReloadRequiredError as exc:
+            # Tagged so the Images page offers the reload that bakes the selection, not a bare failure.
+            raise HTTPException(
+                status_code = 400,
+                detail = str(exc),
+                headers = {IMAGE_REFUSAL_HEADER: exc.refusal},
             )
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc))
@@ -54880,7 +54888,12 @@ async def _generate_openai_images(
             if isinstance(exc, LoraSelectionError):
                 raise HTTPException(
                     status_code = 400,
-                    detail = openai_error_body(str(exc), status = 400, param = "loras"),
+                    detail = openai_error_body(
+                        str(exc),
+                        status = 400,
+                        param = "loras",
+                        code = getattr(exc, "openai_code", None),
+                    ),
                 )
             if isinstance(exc, ImageActivationShortfallError):
                 raise HTTPException(
