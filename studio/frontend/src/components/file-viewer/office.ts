@@ -668,16 +668,13 @@ function formatScientific(value: number, format: string): string {
   const dot = tokens.indexOf(".");
   const places = Math.min(dot === -1 ? 0 : tokens.slice(dot + 1).filter(isPlaceholder).length, 100);
   const step = Math.max(1, (dot === -1 ? tokens : tokens.slice(0, dot)).filter(isPlaceholder).length);
-  const [normalized = "0", exponentText = "0"] = value.toExponential(places).split("e");
-  let mantissa = normalized;
-  let exponent = Number(exponentText);
-  if (step > 1 && value !== 0) {
-    exponent = Math.floor(Math.log10(value) / step) * step;
-    mantissa = (value / 10 ** exponent).toFixed(places);
-    if (Number(mantissa) >= 10 ** step) {
-      exponent += step;
-      mantissa = (value / 10 ** exponent).toFixed(places);
-    }
+  const [digits = "0", exponentText = "0"] = value.toExponential(14).split("e");
+  const at10 = Number(exponentText);
+  let exponent = Math.floor(at10 / step) * step;
+  let mantissa = decimalFixed(Number(`${digits}e${at10 - exponent}`), places);
+  if (Number(mantissa) >= 10 ** step) {
+    exponent += step;
+    mantissa = decimalFixed(Number(`${digits}e${at10 - exponent}`), places);
   }
   const expSign = exponent < 0 ? "-" : format[at + 1] === "+" ? "+" : "";
   return `${placeDigits(Number(mantissa), mantissaFormat)}E${expSign}${placeDigits(Math.abs(exponent), exponentFormat)}`;

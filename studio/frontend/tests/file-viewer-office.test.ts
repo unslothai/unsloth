@@ -98,6 +98,11 @@ test("number formats round a written half up, as Excel does", () => {
     [0.615, '"$"0.00', "$0.62"],
     [1234.5675, "#,##0.000", "1,234.568"],
     [2.674, "0.00", "2.67"],
+    [9.995, "0.00", "10.00"],
+    [1.005, "0.00E+00", "1.01E+00"],
+    [9.995, "0.00E+00", "1.00E+01"],
+    [70865000000, "##0.00E+00", "70.87E+09"],
+    [0.00012, "##0.0E+0", "120.0E-6"],
   ];
   for (const [value, format, expected] of cases) assert.equal(formatNumber(value, format), expected, `${value} ${format}`);
 });
