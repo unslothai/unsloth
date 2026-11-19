@@ -32,7 +32,7 @@ class MockDataset:
 
 # __spec__ must be set or find_spec raises ValueError when transformers probes datasets.
 datasets_mock = type(sys)("datasets")
-datasets_mock.__spec__ = importlib.util.spec_from_loader("datasets", loader=None)
+datasets_mock.__spec__ = importlib.util.spec_from_loader("datasets", loader = None)
 datasets_mock.Dataset = MockDataset
 
 current_dir = os.path.dirname(__file__)
@@ -67,8 +67,8 @@ def test_raw_text_loader():
         def __call__(
             self,
             text,
-            return_tensors=None,
-            add_special_tokens=False,
+            return_tensors = None,
+            add_special_tokens = False,
         ):
             words = text.split()
             token_ids = list(range(len(words)))
@@ -94,24 +94,24 @@ def test_raw_text_loader():
         def decode(
             self,
             token_ids,
-            skip_special_tokens=False,
+            skip_special_tokens = False,
         ):
             return " ".join([f"word_{i}" for i in token_ids])
 
     test_content = "This is a test file for raw text training. " * 10
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode = "w", suffix = ".txt", delete = False) as f:
         f.write(test_content)
         test_file = f.name
 
     try:
         tokenizer = MockTokenizer()
-        loader = RawTextDataLoader(tokenizer, chunk_size=5, stride=2)
+        loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
 
-        text_dataset = loader.load_from_file(test_file, return_tokenized=False)
+        text_dataset = loader.load_from_file(test_file, return_tokenized = False)
         assert len(text_dataset) > 0, "Should create at least one chunk"
         assert "text" in text_dataset.column_names, "Dataset should have 'text' column"
 
-        tokenized_dataset = loader.load_from_file(test_file, return_tokenized=True)
+        tokenized_dataset = loader.load_from_file(test_file, return_tokenized = True)
         assert len(tokenized_dataset) > 0, "Should create at least one tokenized chunk"
         assert (
             "input_ids" in tokenized_dataset.column_names
@@ -131,30 +131,30 @@ def test_raw_text_loader():
         assert first_sample["labels"] == first_sample["input_ids"], "labels should match input_ids"
 
         try:
-            bad_loader = RawTextDataLoader(tokenizer, chunk_size=0, stride=2)
+            bad_loader = RawTextDataLoader(tokenizer, chunk_size = 0, stride = 2)
             assert False, "Should raise ValueError for chunk_size=0"
         except ValueError as e:
             assert "chunk_size must be positive" in str(e)
 
         try:
-            bad_loader = RawTextDataLoader(tokenizer, chunk_size=5, stride=10)
+            bad_loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 10)
             assert False, "Should raise ValueError for stride >= chunk_size"
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)
 
         # smart_chunk_text bypasses the constructor guard, so a bad stride would loop forever.
         long_text = "This is a test file for raw text training. " * 10
-        valid_chunks = loader.smart_chunk_text(long_text, chunk_size=5, stride=2)
+        valid_chunks = loader.smart_chunk_text(long_text, chunk_size = 5, stride = 2)
         assert len(valid_chunks) > 0, "Valid stride should produce chunks"
 
         try:
-            loader.smart_chunk_text(long_text, chunk_size=5, stride=5)
+            loader.smart_chunk_text(long_text, chunk_size = 5, stride = 5)
             assert False, "Should raise ValueError for stride == chunk_size"
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)
 
         try:
-            loader.smart_chunk_text(long_text, chunk_size=5, stride=10)
+            loader.smart_chunk_text(long_text, chunk_size = 5, stride = 10)
             assert False, "Should raise ValueError for stride > chunk_size"
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)
@@ -323,8 +323,8 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
         def __call__(
             self,
             text,
-            return_tensors=None,
-            add_special_tokens=False,
+            return_tensors = None,
+            add_special_tokens = False,
         ):
             token_ids = list(range(len(text.split())))
             if return_tensors == "pt":
@@ -334,13 +334,13 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
         def decode(
             self,
             token_ids,
-            skip_special_tokens=False,
+            skip_special_tokens = False,
         ):
             return " ".join(f"word_{i}" for i in token_ids)
 
-    loader = RawTextDataLoader(MockTokenizerNoEos(), chunk_size=2048, stride=512)
+    loader = RawTextDataLoader(MockTokenizerNoEos(), chunk_size = 2048, stride = 512)
     result = loader.smart_chunk_text(
-        "hello world short text", chunk_size=2048, stride=512, return_tokenized=True
+        "hello world short text", chunk_size = 2048, stride = 512, return_tokenized = True
     )
     input_ids = result[0]["input_ids"]
     assert isinstance(
@@ -362,8 +362,8 @@ def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
         def __call__(
             self,
             text,
-            return_tensors=None,
-            add_special_tokens=False,
+            return_tensors = None,
+            add_special_tokens = False,
         ):
             token_ids = list(range(len(text.split())))
             if return_tensors == "pt":
@@ -373,14 +373,14 @@ def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
         def decode(
             self,
             token_ids,
-            skip_special_tokens=False,
+            skip_special_tokens = False,
         ):
             return " ".join(f"word_{i}" for i in token_ids)
 
     text = " ".join(f"w{i}" for i in range(37))  # several full chunks plus a short tail
-    loader = RawTextDataLoader(WordTokenizer(), chunk_size=10, stride=3)
+    loader = RawTextDataLoader(WordTokenizer(), chunk_size = 10, stride = 3)
 
-    tokenized_chunks = loader.chunk_text(text, return_tokenized=True)
+    tokenized_chunks = loader.chunk_text(text, return_tokenized = True)
     assert len(tokenized_chunks) > 2, "test needs several chunks to cover the intermediate case"
     for i, chunk in enumerate(tokenized_chunks):
         ids = chunk["input_ids"]
@@ -395,7 +395,7 @@ def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
                 ids[-1] != -1
             ), f"chunk {i} is not the last chunk but ends with eos_token_id: {ids}"
 
-    text_chunks = loader.chunk_text(text, return_tokenized=False)
+    text_chunks = loader.chunk_text(text, return_tokenized = False)
     assert len(text_chunks) > 2
     for i, chunk in enumerate(text_chunks):
         is_last = i == len(text_chunks) - 1
@@ -410,7 +410,7 @@ def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
 def test_load_from_file_skips_non_object_json_lines():
     """Non-object .jsonl lines (valid JSON, not dicts) are skipped, not fatal."""
     # Each case would hit data[field] and raise TypeError without the isinstance guard.
-    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+    with tempfile.NamedTemporaryFile("w", suffix = ".jsonl", delete = False) as f:
         f.write('"context"\n["text", "x"]\n42\n{"text": "keep this"}\n')
         path = f.name
     try:
@@ -435,8 +435,8 @@ def test_smart_chunk_text_empty_input_returns_no_chunks():
         def __call__(
             self,
             text,
-            return_tensors=None,
-            add_special_tokens=False,
+            return_tensors = None,
+            add_special_tokens = False,
         ):
             token_ids = [ord(c) % 100 for c in text]
             if return_tensors == "pt":
@@ -446,13 +446,13 @@ def test_smart_chunk_text_empty_input_returns_no_chunks():
         def decode(
             self,
             token_ids,
-            skip_special_tokens=False,
+            skip_special_tokens = False,
         ):
             return "".join(chr(32 + (t % 90)) for t in token_ids)
 
     for eos_token_id in (2, None):
         loader = RawTextDataLoader(
-            WhitespacePreservingTokenizer(eos_token_id), chunk_size=2048, stride=512
+            WhitespacePreservingTokenizer(eos_token_id), chunk_size = 2048, stride = 512
         )
         # Whitespace tokenizes to >0 tokens, so [] proves the pre-tokenize guard.
         assert len(loader.tokenizer("   \n\t  ")["input_ids"]) > 0
@@ -460,11 +460,11 @@ def test_smart_chunk_text_empty_input_returns_no_chunks():
             for return_tokenized in (True, False):
                 assert (
                     loader.smart_chunk_text(
-                        text, chunk_size=2048, stride=512, return_tokenized=return_tokenized
+                        text, chunk_size = 2048, stride = 512, return_tokenized = return_tokenized
                     )
                     == []
                 ), f"no chunks for empty input (eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
-                assert loader.chunk_text(text, return_tokenized=return_tokenized) == [], (
+                assert loader.chunk_text(text, return_tokenized = return_tokenized) == [], (
                     f"chunk_text: no chunks for empty input "
                     f"(eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
                 )
@@ -483,8 +483,8 @@ def test_negative_stride_is_rejected():
         def __call__(
             self,
             text,
-            return_tensors=None,
-            add_special_tokens=False,
+            return_tensors = None,
+            add_special_tokens = False,
         ):
             token_ids = [ord(c) % 100 for c in text]
             if return_tensors == "pt":
@@ -494,7 +494,7 @@ def test_negative_stride_is_rejected():
         def decode(
             self,
             token_ids,
-            skip_special_tokens=False,
+            skip_special_tokens = False,
         ):
             return "".join(chr(32 + (t % 90)) for t in token_ids)
 
@@ -502,19 +502,19 @@ def test_negative_stride_is_rejected():
     text = "x" * 100
 
     try:
-        RawTextDataLoader(tokenizer, chunk_size=10, stride=-5)
+        RawTextDataLoader(tokenizer, chunk_size = 10, stride = -5)
         assert False, "the constructor should reject a negative stride"
     except ValueError as e:
         assert "stride" in str(e) and "non-negative" in str(e), str(e)
 
-    loader = RawTextDataLoader(tokenizer, chunk_size=10, stride=0)
+    loader = RawTextDataLoader(tokenizer, chunk_size = 10, stride = 0)
     try:
-        loader.smart_chunk_text(text, chunk_size=10, stride=-5)
+        loader.smart_chunk_text(text, chunk_size = 10, stride = -5)
         assert False, "smart_chunk_text should reject a negative stride"
     except ValueError as e:
         assert "stride" in str(e) and "non-negative" in str(e), str(e)
 
-    chunks = loader.smart_chunk_text(text, chunk_size=10, stride=0)
+    chunks = loader.smart_chunk_text(text, chunk_size = 10, stride = 0)
     assert len(chunks) > 0, "stride = 0 should still produce chunks"
 
     print("test_negative_stride_is_rejected passed")
@@ -532,24 +532,24 @@ def test_load_from_files_all_empty_raises():
         def __call__(
             self,
             text,
-            return_tensors=None,
-            add_special_tokens=False,
+            return_tensors = None,
+            add_special_tokens = False,
         ):
             token_ids = [ord(c) % 100 for c in text]
             if return_tensors == "pt":
                 return {"input_ids": [token_ids]}
             return {"input_ids": token_ids}
 
-    loader = RawTextDataLoader(WhitespacePreservingTokenizer(), chunk_size=2048, stride=512)
+    loader = RawTextDataLoader(WhitespacePreservingTokenizer(), chunk_size = 2048, stride = 512)
     paths = []
     try:
         for content in ("", "   \n\t  "):
-            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
                 f.write(content)
                 paths.append(f.name)
         raised = False
         try:
-            loader.load_from_files(paths, return_tokenized=True)
+            loader.load_from_files(paths, return_tokenized = True)
         except ValueError as e:
             raised = True
             assert "empty" in str(e).lower() or "whitespace" in str(e).lower(), str(e)
@@ -572,8 +572,8 @@ def test_validate_dataset_handles_tokenized_and_text_columns():
         def __call__(
             self,
             text,
-            return_tensors=None,
-            add_special_tokens=False,
+            return_tensors = None,
+            add_special_tokens = False,
         ):
             words = text.split()
             token_ids = list(range(len(words)))
@@ -599,27 +599,27 @@ def test_validate_dataset_handles_tokenized_and_text_columns():
         def decode(
             self,
             token_ids,
-            skip_special_tokens=False,
+            skip_special_tokens = False,
         ):
             return " ".join(f"word_{i}" for i in token_ids)
 
     tokenizer = MockTokenizer()
-    loader = RawTextDataLoader(tokenizer, chunk_size=5, stride=2)
+    loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
     preprocessor = TextPreprocessor()
 
     test_content = "This is a test file for raw text training. " * 10
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode = "w", suffix = ".txt", delete = False) as f:
         f.write(test_content)
         test_file = f.name
 
     try:
-        text_dataset = loader.load_from_file(test_file, return_tokenized=False)
+        text_dataset = loader.load_from_file(test_file, return_tokenized = False)
         stats = preprocessor.validate_dataset(text_dataset)
         assert stats["total_samples"] > 0, "Should count samples from text column"
         assert "warnings" in stats
 
-        tokenized_dataset = loader.load_from_file(test_file, return_tokenized=True)
-        stats = preprocessor.validate_dataset(tokenized_dataset, tokenizer=tokenizer)
+        tokenized_dataset = loader.load_from_file(test_file, return_tokenized = True)
+        stats = preprocessor.validate_dataset(tokenized_dataset, tokenizer = tokenizer)
         assert stats["total_samples"] > 0, "Should count samples decoded from input_ids"
         assert "warnings" in stats
         assert stats["max_length"] > 0
@@ -715,12 +715,12 @@ def test_validate_dataset_streams_instead_of_materialising_columns():
         def decode(
             self,
             token_ids,
-            skip_special_tokens=False,
+            skip_special_tokens = False,
         ):
             return " ".join(f"word_{i}" for i in token_ids)
 
     dataset = BatchedDataset([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    stats = TextPreprocessor().validate_dataset(dataset, tokenizer=Tokenizer())
+    stats = TextPreprocessor().validate_dataset(dataset, tokenizer = Tokenizer())
 
     assert stats["total_samples"] == 3, stats
     assert stats["empty_samples"] == 0, stats
@@ -783,7 +783,7 @@ def _eos_tokenizer():
 def test_tokenized_chunks_reserve_space_for_the_final_eos():
     for size in (2, 4):
         for stride in range(size):
-            loader = RawTextDataLoader(_eos_tokenizer(), chunk_size=size, stride=stride)
+            loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = size, stride = stride)
             for count in (size - 1, size, 2 * size - stride, 2 * size, 3 * size):
                 if count == 0:
                     continue
@@ -811,11 +811,11 @@ def test_text_chunks_reserve_space_for_the_final_eos():
     # MLX truncates chunks at max_seq_length, which would drop an overflowing EOS.
     for size in (2, 4):
         for stride in range(size):
-            loader = RawTextDataLoader(_eos_tokenizer(), chunk_size=size, stride=stride)
+            loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = size, stride = stride)
             for count in (size - 1, size, 2 * size - stride, 2 * size, 3 * size):
                 if count == 0:
                     continue
-                chunks = loader.chunk_text(" ".join(map(str, range(count))), return_tokenized=False)
+                chunks = loader.chunk_text(" ".join(map(str, range(count))), return_tokenized = False)
                 pieces = [chunk.replace("</s>", " </s>").split() for chunk in chunks]
                 assert all(len(piece) <= size for piece in pieces)
                 assert all(piece != ["</s>"] for piece in pieces)
@@ -829,7 +829,7 @@ def test_text_chunks_reserve_space_for_the_final_eos():
 
 
 def test_chunk_size_one_keeps_the_final_eos_overflow():
-    loader = RawTextDataLoader(_eos_tokenizer(), chunk_size=1, stride=0)
+    loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = 1, stride = 0)
     for count in (1, 2, 3):
         chunks = loader.chunk_text(" ".join(map(str, range(count))))
         assert all(chunk["input_ids"] != [99] for chunk in chunks)
@@ -910,7 +910,6 @@ def test_add_structure_tokens_closer_fills_its_line():
 
 def test_add_structure_tokens_unclosed_long_fence_line_is_linear():
     import time
-
     for text in (
         "```" + "a" * 200_000 + " b`",
         "```" + " " * 200_000 + "`",
