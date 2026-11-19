@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from core.characters.cards import MAX_GREETINGS, card_data
 from storage.studio_db import connection as _connect
 from storage.studio_db import (
     delete_chat_threads,
@@ -466,6 +467,16 @@ def chat_title(names: list[str]) -> str:
     return f"{', '.join(names[:-1])} & {names[-1]}"
 
 
+def _group_only_greetings(character: dict) -> list[str]:
+    card = character.get("card")
+    if not isinstance(card, dict):
+        return []
+    greetings = card_data(card)[0].get("group_only_greetings")
+    if not isinstance(greetings, list):
+        return []
+    return [g for g in greetings if isinstance(g, str)][:MAX_GREETINGS]
+
+
 def _opening_messages(
     thread_id: str,
     characters: list[dict],
@@ -496,6 +507,12 @@ def _opening_messages(
         # The client resolves every macro; this covers API callers that send no greetings.
         if resolved is None or len(resolved) != len(source):
             resolved = [fill_names(g, character["name"], speaker_name) for g in source]
+        if len(characters) > 1:
+            # V3 group-only greetings: kept on the stored card, so only names are filled here.
+            resolved = [
+                *resolved,
+                *(fill_names(g, character["name"], speaker_name) for g in _group_only_greetings(character)),
+            ]
         texts = [(i, g) for i, g in enumerate(resolved) if g and g.strip()]
         if len(characters) > 1 and index > 0:
             # A hidden turn marker keeps each member's greeting answering a user turn.

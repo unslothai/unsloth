@@ -4,6 +4,7 @@
 """Character storage: transactions, portrait files, scene edits and the shared image helpers."""
 
 import asyncio
+import json
 import io
 import shutil
 
@@ -198,3 +199,32 @@ def test_image_helpers():
         asyncio.run(read_limited_body(_Request(), 10, "too big"))
     assert refused.value.status_code == 413
     assert asyncio.run(read_limited_body(_Request(), 12, "too big")) == b"x" * 12
+
+
+def test_group_openings_use_v3_group_only_greetings(client):
+    def card(name, group_only):
+        return {
+            "spec": "chara_card_v3",
+            "spec_version": "3.0",
+            "data": {"name": name, "first_mes": f"Hi from {name}.", "group_only_greetings": group_only},
+        }
+
+    ids = []
+    for name, extra in (("Ada", ["Hello, {{user}} and friends."]), ("Bo", [])):
+        response = client.post(
+            "/api/characters/import?filename=" + name + ".json", content = json.dumps(card(name, extra)).encode()
+        )
+        ids.append(response.json()["character"]["id"])
+    solo = client.post("/api/characters/chats", json = {"characterIds": ids[:1], "userName": "Wren"}).json()
+    group = client.post("/api/characters/chats", json = {"characterIds": ids, "userName": "Wren"}).json()
+
+    def texts(thread_id):
+        return [
+            part["text"]
+            for m in studio_db.list_chat_messages(thread_id)
+            if m["role"] == "assistant"
+            for part in m["content"]
+        ]
+
+    assert "Hello, Wren and friends." not in texts(solo["threadId"])
+    assert "Hello, Wren and friends." in texts(group["threadId"])
