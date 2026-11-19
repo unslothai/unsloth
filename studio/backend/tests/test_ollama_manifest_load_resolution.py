@@ -932,6 +932,21 @@ def test_an_mlx_tag_lists_as_a_chat_only_safetensors_row(mlx_store, monkeypatch)
     assert ollama.scan_ollama_dir(root) == []
 
 
+def test_an_mlx_tag_pulled_with_a_downgrade_anchor_lists(mlx_store):
+    from hub.services.models import ollama, ollama_mlx
+
+    assert ollama._OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES <= ollama_mlx._ADMITTED_MEDIA_TYPES
+    root, tag_file, _ = mlx_store
+    manifest = json.loads(tag_file.read_text())
+    manifest["layers"] += [
+        {"mediaType": media_type, "digest": f"sha256:{c * 64}", "size": 1}
+        for media_type, c in zip(sorted(ollama._OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES), "ab")
+    ]
+    tag_file.write_text(json.dumps(manifest))
+    (row,) = ollama.scan_ollama_dir(root)
+    assert ollama.ollama_mlx_ref_for_path(row.id) is not None
+
+
 def test_an_unloaded_mlx_tag_resolves_for_the_api(mlx_store):
     from core.inference import local_model_resolver as resolver
     from hub.services.models import ollama
