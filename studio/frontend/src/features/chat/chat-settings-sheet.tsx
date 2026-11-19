@@ -522,6 +522,13 @@ export function ChatSettingsPanel({
       uiSpaceScale,
     );
   }, [open, isCompact, settingsWidth, settingsScale, uiSpaceScale]);
+  // On <html>: the chat header's actions tuck into the docked panel's corner under glass.
+  const docked = open && !isCompact;
+  useEffect(() => {
+    const el = document.documentElement;
+    el.toggleAttribute("data-chat-settings-docked", docked);
+    return () => el.removeAttribute("data-chat-settings-docked");
+  }, [docked]);
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,

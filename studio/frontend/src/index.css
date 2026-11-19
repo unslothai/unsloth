@@ -7235,6 +7235,13 @@ html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-sidebar-glass-fr
 html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {
   border-top-left-radius: inherit;
 }
+/* Docked, the header actions sit as far from the panel's edge as from the top bar, in its corner. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-chat-header-actions] {
+  transition: translate .2s ease;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready][data-chat-settings-docked] [data-chat-header-actions] {
+  translate: calc(var(--thread-scrollbar-gutter, 10px) + .5rem * var(--ui-space-scale, 1) - var(--studio-chat-header-padding-top, 11px)) 0;
+}
 
 html[data-glass] {
   --glass-hover: color-mix(in srgb, var(--foreground) 9%, transparent);

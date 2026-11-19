@@ -282,6 +282,18 @@ test("the window buttons get an inset glass pill off the pinned strip, keeping t
 	assert.match(titlebar, /label=\{t\("desktopShell\.close"\)\}[\s\S]*?<CaptionGlyph kind="close" \/>\n\s*<\/WindowControlButton>\n\s*<\/div>/);
 });
 
+test("docked Run settings pulls the chat header's actions into its corner, as far from its edge as from the top bar", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	// The header's right padding (gutter + .5rem) less its top padding: the side gap then equals the top one.
+	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\]\[data-chat-settings-docked\] \[data-chat-header-actions\] \{\n  translate: calc\(var\(--thread-scrollbar-gutter, 10px\) \+ \.5rem \* var\(--ui-space-scale, 1\) - var\(--studio-chat-header-padding-top, 11px\)\) 0;/);
+	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
+	assert.match(page, /right-\[calc\(var\(--thread-scrollbar-gutter,10px\)\+var\(--studio-side-panel-width,0px\)\)\] z-40 flex h-\[var\(--studio-chat-header-height,48px\)\] shrink-0 items-start bg-background pt-\[var\(--studio-chat-header-padding-top,11px\)\] pr-\[calc\(0\.5rem\*var\(--ui-space-scale,1\)\+/);
+	// Set only by the docked panel (the narrow window's sheet is not docked), never through a :has() over the thread.
+	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
+	assert.match(sheet, /const docked = open && !isCompact;\n\s*useEffect\(\(\) => \{\n\s*const el = document\.documentElement;\n\s*el\.toggleAttribute\("data-chat-settings-docked", docked\);\n\s*return \(\) => el\.removeAttribute\("data-chat-settings-docked"\);/);
+	assert.doesNotMatch(css, /:has\([^)]*chat-settings-panel[^)]*\)[^{]*\[data-chat-header-actions\]/);
+});
+
 test("docked Run settings rounds its top corner only while no pinned sidebar strip meets it", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const panel = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\]`;
