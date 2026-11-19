@@ -706,10 +706,25 @@ def _packed_rows_verdict(model, model_config):
         probe = getattr(target, "model", None)
         if not isinstance(probe, torch.nn.Module):
             probe = getattr(target, "base_model", target)
+    # Probe the object the trainer was handed first. The hybrid varlen shim is installed on that object, and a
+    # LoRA/Peft wrapper is where it lives: get_base_model() does not see it, so probing only the backbone
+    # reports "mixes" for a model that does keep packed documents apart (qwen3_5 + LoRA: 0.017 vs 0.968).
+    probes = []
+    if isinstance(model, torch.nn.Module):
+        probes.append(model)
+    if not any(probe is candidate for candidate in probes):
+        probes.append(probe)
+
+    def _honored(candidate, transform = None):
+        try:
+            return _packing_honored(candidate, transform, packed_lengths = True)
+        except Exception:
+            return False
+
     verdict = "mixes"
-    if _packing_honored(probe, None, packed_lengths = True):
+    if any(_honored(candidate) for candidate in probes):
         verdict = "as_is"
-    elif mrope and _packing_honored(probe, _text_prepended_position_ids, packed_lengths = True):
+    elif mrope and any(_honored(candidate, _text_prepended_position_ids) for candidate in probes):
         verdict = "text_prepended"
     try:
         target._unsloth_packed_rows_verdict = verdict
