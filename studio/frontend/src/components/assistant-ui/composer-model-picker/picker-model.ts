@@ -558,8 +558,7 @@ export function discoverUsesFallback(
   return hubQuery === "" || hubResultCount === 0;
 }
 
-/** Hub results to size: each is a file listing, and only a Discover row (`recommended`) shows or
- *  filters by one, so a search's other results (speech, embeddings, image models) are not listed. */
+/** Only Discover rows (`recommended`) use a size, so only they cost a file listing. */
 export function hubSizeIds(
   results: readonly { id: string; isGguf: boolean }[],
   recommended: readonly { id: string }[],

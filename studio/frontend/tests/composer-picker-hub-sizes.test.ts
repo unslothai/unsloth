@@ -32,13 +32,11 @@ test("Discover sizes only the Hub results that are its rows", () => {
     { id: "unsloth/Chat-8B-GGUF" },
     { id: "unsloth/Chat-8B-MLX-4bit" },
   ];
-  // A GGUF row needs no listing; a result that is no row is never listed.
   assert.deepEqual(hubSizeIds(results, recommended), [
     "unsloth/Chat-8B",
     "unsloth/Chat-8B-MLX-4bit",
   ]);
   assert.deepEqual(hubSizeIds(results, []), []);
-  // The chat fallback's rows are not Hub results: nothing to list.
   assert.deepEqual(hubSizeIds([], [{ id: "unsloth/Chat-8B" }]), []);
 });
 
