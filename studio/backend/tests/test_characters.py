@@ -636,7 +636,7 @@ def test_starter_cards_are_original_and_export_cleanly(client):
         card = json.loads((STARTER_DIR / f"{starter}.json").read_text())
         data = card["data"]
         assert card["spec"] == "chara_card_v2" and data["creator"] == "Unsloth Studio"
-        text = json.dumps(data)
+        text = json.dumps(data, ensure_ascii = False)
         assert "\u2014" not in text and "\u2013" not in text
         assert (STARTER_DIR / f"{starter}.webp").read_bytes()[8:12] == b"WEBP"
     character = client.get("/api/characters").json()["characters"][0]
