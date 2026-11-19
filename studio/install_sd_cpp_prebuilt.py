@@ -438,8 +438,13 @@ def select_cuda_bundles(
     if not attempts and jit:
         # The family bundle with the newest PTX JITs as well as the portable one at a fraction of the
         # download; an older family's PTX would lose the newer kernels, so it is not an attempt.
-        newest_ptx = lambda b: (-max(map(int, b.ptx_sms)), by_coverage(b))  # noqa: E731
-        attempts = sorted((b for b in jit if b.coverage_class != "portable"), key = newest_ptx)[:1]
+        newest_ptx = lambda b: (-max(map(int, b.ptx_sms), default = 0), by_coverage(b))  # noqa: E731
+        # A family whose PTX is older than portable's (a Turing + newer-than-every-bundle mix) is skipped.
+        best = min(newest_ptx(b)[0] for b in jit)
+        attempts = sorted(
+            (b for b in jit if b.coverage_class != "portable" and newest_ptx(b)[0] == best),
+            key = newest_ptx,
+        )[:1]
         attempts += sorted((b for b in jit if b.coverage_class == "portable"), key = newest_ptx)[:1]
         log.append("sd_cuda_selection: no bundle lists these SMs; using PTX JIT")
     log.append(

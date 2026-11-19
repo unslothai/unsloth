@@ -159,6 +159,11 @@ def test_a_card_newer_than_every_list_jits_the_family_ptx_first():
     assert _pick(["121"]) == [L("cuda12", "newer"), L("cuda12", "portable")]
 
 
+def test_a_newer_card_beside_turing_keeps_the_newest_ptx():
+    # Only the older family covers sm_75, but its sm_89 PTX would lose portable's sm_100 kernels on the new card.
+    assert _pick(["75", "130"]) == [L("cuda12", "portable")]
+
+
 def test_a_card_older_than_every_ptx_gets_nothing():
     # Pascal: no bundle has SASS or JIT-able PTX for it; the caller falls back as before the split.
     assert _pick(["61"]) == []
