@@ -190,6 +190,11 @@ def _lora_linear_classes():
     return tuple(classes)
 
 
+def _is_fp32_island(mod) -> bool:
+    # Patching an fp32 island root (diffusion_dit_fp16) would run it under fp16 autocast.
+    return bool(mod.__dict__.get("_unsloth_fp32_island", False))
+
+
 def install_fast_lora(model, dequant_cache: Optional["Nf4DequantCache"] = None) -> int:
     """Route plain LoRA linears (dense or nf4 base) through ``_fast_forward``; returns the count patched."""
     classes = _lora_linear_classes()
@@ -197,7 +202,11 @@ def install_fast_lora(model, dequant_cache: Optional["Nf4DequantCache"] = None) 
         return 0
     n = 0
     for mod in model.modules():
-        if type(mod) not in classes or "_unsloth_orig_forward" in mod.__dict__:
+        if (
+            type(mod) not in classes
+            or "_unsloth_orig_forward" in mod.__dict__
+            or _is_fp32_island(mod)
+        ):
             continue
         base = getattr(mod, "base_layer", None)
         bnb4 = _is_bnb4(base)
@@ -210,7 +219,7 @@ def install_fast_lora(model, dequant_cache: Optional["Nf4DequantCache"] = None) 
     if dequant_cache is not None:
         # Every nf4 linear, LoRA base or not (FLUX.2's untargeted feed-forwards dequantise every call too).
         for mod in model.modules():
-            if "_unsloth_orig_forward" in mod.__dict__ or not _is_bnb4(mod):
+            if "_unsloth_orig_forward" in mod.__dict__ or not _is_bnb4(mod) or _is_fp32_island(mod):
                 continue
             if not isinstance(mod, torch.nn.Linear):
                 continue
