@@ -2000,12 +2000,26 @@ def _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
     return _ltx2_unpack(pred, f, h, w, conf)
 
 
-def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
-    LTX2Pipeline = _ltx2_pipeline_cls()
-    LTX2Pipeline.save_lora_weights(
+def _ltx2_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
+    import inspect
+
+    save = _ltx2_pipeline_cls().save_lora_weights
+    kwargs = {}
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,
         weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
     )
 
 
@@ -2597,6 +2611,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _ltx2_collate,
         forward = _ltx2_forward,
         save = _ltx2_save,
+        save_takes_metadata = True,
     ),
     "ltx-2.5": _FamilySpec(
         family = "ltx-2.5",
@@ -2611,6 +2626,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _ltx2_collate,
         forward = _ltx2_forward,
         save = _ltx2_save,
+        save_takes_metadata = True,
         training_scheduler = _ltx25_training_scheduler,
         dit_source = _ltx25_dit_source,
         conditioning_key = _ltx25_conditioning_key,

@@ -814,3 +814,28 @@ def test_the_caption_cache_key_names_the_encoder_and_its_source(monkeypatch):
     bf16 = dit._ltx25_conditioning_key(cfg)
     assert len({hosted, at_load, bf16}) == 3
     assert v25.LTX25_TE_HOSTED_FILE in hosted and "bf16" in bf16
+
+
+@pytest.mark.parametrize("family", ["ltx-2", FAMILY])
+def test_ltx_lora_save_keeps_a_non_default_alpha(family, tmp_path):
+    """Without adapter metadata diffusers loads lora_alpha == rank, so an alpha of 2 * rank would halve on reload."""
+    from peft import LoraConfig
+    from safetensors import safe_open
+
+    try:
+        dit._ltx2_pipeline_cls()
+    except Exception as exc:  # noqa: BLE001 -- this diffusers has no LTX-2 pipeline
+        pytest.skip(f"no LTX2Pipeline: {exc}")
+    spec = _SPECS[family]
+    assert spec.save_takes_metadata, family
+    trained = types.SimpleNamespace(
+        peft_config = {"default": LoraConfig(r = 4, lora_alpha = 8, target_modules = ["to_q"])}
+    )
+    layers = {
+        "transformer_blocks.0.attn1.to_q.lora_A.weight": torch.zeros(4, 16),
+        "transformer_blocks.0.attn1.to_q.lora_B.weight": torch.zeros(16, 4),
+    }
+    dit._adapter_saver(spec, trained)(None, str(tmp_path), layers)
+    with safe_open(str(tmp_path / DEFAULT_LORA_FILENAME), "pt") as f:
+        meta = json.loads(f.metadata()["lora_adapter_metadata"])
+    assert meta["transformer.r"] == 4 and meta["transformer.lora_alpha"] == 8
