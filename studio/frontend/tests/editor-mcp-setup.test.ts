@@ -59,7 +59,6 @@ test("install state is looked up only for the app being set up, which then links
   }
   assert.equal(COMPOSER.match(/onClose=\{/g)?.length, 2);
   assert.match(GUIDE, /"https:\/\/unsloth\.ai\/docs\/basics\/mcp\/mcp-engines"/);
-  // The panel cannot show behind the modal: close it first, then Unsloth's browser, else the system one.
   assert.match(GUIDE, /close\?\.\(\);\n  if \(!openUrlInBrowserPanel\(url\)\) openLink\(url\);/);
 });
 

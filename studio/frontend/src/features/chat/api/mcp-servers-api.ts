@@ -60,7 +60,7 @@ export interface BlenderMcpSettings {
   blender_path: string;
 }
 
-// detect: the one app whose install state to look up (a disk read); every other row reports installed: null.
+// detect: the one app to look up (a disk read); the rest report installed: null.
 export function listMcpBuiltins(
   waitForPendingMutations = true,
   detect?: string,
