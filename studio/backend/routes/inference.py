@@ -6284,10 +6284,10 @@ def _computer_use_tool(
     payload,
     can_show_and_see: bool,
     engine = None,
-    encoder: Optional[str] = None,
+    encoder: "Optional[str | Callable[[], str]]" = None,
 ) -> "dict | None":
     """`engine`: the local backend whose image-token counts size screenshots. `encoder`: the local
-    model's image tower ("" if unknown), None for a cloud model."""
+    model's image tower ("" if unknown) or a callable reading it, None for a cloud model."""
     from core.inference.computer_use import computer_tool, policy
     from core.inference.computer_use.budget import ImageBudget
     from state import computer_use as computer_state
@@ -6304,6 +6304,8 @@ def _computer_use_tool(
             _computer_use_withheld = reason
             logger.info("computer use not offered: %s", reason)
         return None
+    if callable(encoder):
+        encoder = encoder()
     mode = policy.coordinate_mode(getattr(payload, "model", None), encoder)
     computer_state.set_coordinates(
         computer_state.session_key(
@@ -6328,7 +6330,7 @@ async def _select_request_tools(
     supports_vision: bool = False,
     ui_events: bool = True,
     engine = None,
-    encoder: Optional[str] = None,
+    encoder: "Optional[str | Callable[[], str]]" = None,
 ) -> list[dict]:
     """Empty result skips the loop, so a model-emitted built-in call cannot ride an empty allow-list."""
     from core.inference.tools import (
@@ -36399,7 +36401,7 @@ async def produce_openai_chat_completions(
             checkpoint_fitted = _sf_fit_overflow is not None,
             ui_events = _ui_events,
             engine = backend,
-            encoder = await asyncio.to_thread(
+            encoder = functools.partial(
                 _loaded_model_type, backend.active_model_name, _sf_model_info
             ),
         )
@@ -44539,7 +44541,7 @@ async def _mlx_count_chat_tokens(
                 supports_vision = bool(entry.get("is_vision")),
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
                 engine = backend,
-                encoder = await asyncio.to_thread(_loaded_model_type, active, entry),
+                encoder = functools.partial(_loaded_model_type, active, entry),
             )
         ) + _mcp_tools
         # With no tools left the completion skips the loop, so use the plain render, not an empty catalog.

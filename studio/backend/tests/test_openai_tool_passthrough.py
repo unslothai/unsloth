@@ -10037,7 +10037,6 @@ class TestApiMonitorSafetensorsUsage:
                     inf_mod.get_inference_backend,
                     inf_mod._loaded_satisfies,
                     inf_mod._trained_run_dir,
-                    inf_mod._loaded_model_type,
                 ):
                     return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()
