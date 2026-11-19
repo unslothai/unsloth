@@ -65,8 +65,7 @@ import { buildVideoTourSteps } from "./tour";
 import { VideoRestylePanel } from "./restyle-panel";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
-import { usePlatformStore } from "@/config/env";
-import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
+import { useFullInstallBringsVideo } from "@/hooks/use-full-install-upgrade";
 import {
   applyPin,
   fetchNextPage,
@@ -1239,14 +1238,12 @@ export function VideoPage({
   onInitialReady?: () => void;
 }) {
   const hardware = useHardwareInfo();
-  // A Chat only Desktop install gets video from the full install, as Export and Train do. Not on a
-  // GPU-less host: the full install trains on its CPU there and brings no video device.
-  const fullInstall = useFullInstallUpgrade();
-  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
+  // A Chat only desktop install gets video from the full install, as Export and Train do. Only offered:
+  // the generator still gates on the backend's own verdict alone.
+  const fullInstall = useFullInstallBringsVideo();
   const [fullInstallOpen, setFullInstallOpen] = useState(false);
   const offerFullInstall =
     fullInstall !== null &&
-    !cpuTraining &&
     hardware.videoUnsupportedReason === "pytorch_not_installed";
 
   useEffect(() => {

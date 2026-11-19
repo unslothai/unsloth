@@ -19,3 +19,11 @@ export function useFullInstallUpgrade(): TauriRepairController | null {
     ? repair
     : null;
 }
+
+/** The full install brings video only where it brings a video device: not on a GPU-less host, where it trains on the
+ * CPU. Kept here so the Video page never reads the training verdict itself. */
+export function useFullInstallBringsVideo(): TauriRepairController | null {
+  const repair = useFullInstallUpgrade();
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
+  return cpuTraining ? null : repair;
+}
