@@ -88,35 +88,52 @@ def _words(raw: Any, rate: int) -> list[dict]:
     ]
 
 
-def _segments(raw: Any, rate: int) -> list[dict]:
-    return [
-        {"start": start, "end": end, "text": _clean_lines(text)}
-        for item, (start, end) in _spanned(raw, rate)
-        if isinstance(text := item.get("text"), str)
-    ]
+def _speaker(item: dict) -> Optional[str]:
+    speaker = item.get("speaker_id", item.get("speaker"))
+    if isinstance(speaker, (str, int)) and not isinstance(speaker, bool) and str(speaker).strip():
+        return str(speaker).strip()
+    return None
+
+
+def _segments(raw: Any, rate: int, *, speakers: bool = False) -> list[dict]:
+    segments = []
+    for item, (start, end) in _spanned(raw, rate):
+        if isinstance(text := item.get("text"), str):
+            segment = {"start": start, "end": end, "text": _clean_lines(text)}
+            if speakers and (speaker := _speaker(item)):
+                segment["speaker"] = speaker
+            segments.append(segment)
+    return segments
 
 
 def _turns(raw: Any, rate: int) -> list[tuple[float, float, str, Optional[str]]]:
     turns = []
     for item, (start, end) in _spanned(raw, rate):
-        speaker = item.get("speaker_id", item.get("speaker"))
-        if (
-            isinstance(speaker, (str, int))
-            and not isinstance(speaker, bool)
-            and str(speaker).strip()
-        ):
+        if speaker := _speaker(item):
             text = item.get("text")
             text = _clean_lines(text) if isinstance(text, str) else None
-            turns.append((start, end, str(speaker).strip(), text))
+            turns.append((start, end, speaker, text))
     return turns
+
+
+def _pair_speakers(segments: list[dict], turns: list[tuple[float, float, str, Optional[str]]]) -> None:
+    """MOSS and VibeVoice emit segment i and turn i from one span, so turn i names segment i's speaker."""
+    if len(segments) == len(turns) and all(
+        (segment["start"], segment["end"]) == (start, end) and text in (None, segment["text"])
+        for segment, (start, end, _, text) in zip(segments, turns)
+    ):
+        for segment, (_, _, speaker, _) in zip(segments, turns):
+            segment["speaker"] = speaker
 
 
 def _assign_speakers(
     segments: list[dict], turns: list[tuple[float, float, str, Optional[str]]]
 ) -> None:
-    """MOSS and VibeVoice pair each segment with a turn of the same span: that turn names its speaker.
-    Overlap is only the fallback: an interruption the other speaker's turns cover ties with its own."""
+    """For arrays that do not pair up: a turn of the segment's span names its speaker, else overlap does.
+    Overlap alone ties for an interruption the other speaker's turns cover."""
     for segment in segments:
+        if "speaker" in segment:
+            continue
         paired = {
             speaker
             for start, end, speaker, text in turns
@@ -244,7 +261,9 @@ def normalize(payload: dict, family: str, sent_rate: int) -> dict:
     segments = _segments(payload.get("segments"), rate)
     turns = _turns(payload.get("speaker_turns"), rate)
     if not segments and turns:
-        segments = _segments(payload.get("speaker_turns"), rate)
+        segments = _segments(payload.get("speaker_turns"), rate, speakers = True)
+    elif turns:
+        _pair_speakers(segments, turns)
     # Diarized answers can come grouped per speaker; the player assumes time order.
     _by_time = lambda span: (span["start"], span["end"])  # noqa: E731
     words.sort(key = _by_time)

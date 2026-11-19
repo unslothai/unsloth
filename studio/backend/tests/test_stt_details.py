@@ -251,7 +251,21 @@ def test_an_interruption_across_two_turns_of_the_other_speaker_keeps_its_own_spe
     assert [s["speaker"] for s in result["segments"]] == ["S01", "S02", "S01"]
 
 
-def test_two_speakers_on_one_span_fall_back_to_overlap():
+@pytest.mark.parametrize("with_segments", [True, False])
+def test_two_speakers_saying_the_same_words_at_once_keep_their_own_speakers(with_segments):
+    span = {"start_sample": 0, "end_sample": 24000, "text": "Yes."}
+    payload = {
+        "speaker_turns": [{**span, "speaker_id": "S01"}, {**span, "speaker_id": "S02"}],
+        "sample_rate": 24000,
+    }
+    if with_segments:
+        payload["segments"] = [span, dict(span)]
+    result = stt_details.normalize(payload, "moss_transcribe_diarize", 24000)
+    assert [s["speaker"] for s in result["segments"]] == ["S01", "S02"]
+    assert result["speaker_ids"] == ["S01", "S02"]
+
+
+def test_an_unpaired_segment_on_two_speakers_span_falls_back_to_overlap():
     span = {"start_sample": 0, "end_sample": 24000, "text": "Yes."}
     payload = {
         "segments": [span],
