@@ -143,6 +143,7 @@ from .diffusion_multigpu import (
     multigpu_mode,
     invalidate_cfg_replica,
     mirror_cfg_replica_adapter_scales,
+    note_default_request,
     set_cfg_parallel_fallback,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
@@ -707,6 +708,35 @@ def _negative_prompt_engaged(family: DiffusionFamily, guidance: float) -> bool:
         return False
     threshold = _negative_prompt_guidance_threshold(family)
     return threshold is None or float(guidance) > threshold
+
+
+# Run CFG above guidance 1 with their own empty negative prompt (Flux2KleinPipeline do_classifier_free_guidance).
+_CFG_WITHOUT_NEGATIVE_PROMPT_FAMILIES = frozenset(("flux.2-klein",))
+
+
+def _note_multigpu_default_request(
+    pipe: Any, family: DiffusionFamily, *identifiers: Optional[str]
+) -> None:
+    try:
+        steps, guidance = default_generation_params(*identifiers)
+        distilled = family.name == "flux.2-klein" and bool(
+            getattr(getattr(pipe, "config", None), "is_distilled", False)
+        )
+        own_negative = (
+            family.name in _CFG_WITHOUT_NEGATIVE_PROMPT_FAMILIES and float(guidance) > 1.0
+        )
+        guided = bool(
+            family.uses_guidance
+            and not distilled
+            and (own_negative or _negative_prompt_engaged(family, guidance))
+        )
+        if guided or (family.uses_negative_prompt and family.uses_guidance and not distilled):
+            why = f"default guidance {float(guidance):g}"
+        else:
+            why = "guidance-distilled or embedded guidance, no negative branch"
+    except Exception:  # noqa: BLE001 - unknown: the placement keeps its split-first order
+        guided, steps, why = None, None, ""
+    note_default_request(pipe, guided = guided, steps = steps, why = why)
 
 
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
@@ -11124,6 +11154,16 @@ class DiffusionBackend:
 
                     # GGUF defaults to `default` (below quant noise floor); dense stays bit-identical `off`.
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
+                    _note_multigpu_default_request(
+                        pipe,
+                        fam,
+                        *_family_default_ids(fam),
+                        gguf_filename,
+                        content_variant_hint(repo_id, gguf_filename),
+                        repo_id,
+                        base,
+                        fam.name,
+                    )
                     split_expected = _layer_split_expected(pipe, plan)
                     # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower, losing to GGUF.
                     if comfy_compile and _has_active_lora(loras):
