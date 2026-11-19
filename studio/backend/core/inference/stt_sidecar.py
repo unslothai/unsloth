@@ -1048,14 +1048,40 @@ def _lend_diffusion_training_vram(device: Optional[str], reason: str):
         return contextlib.nullcontext()
 
 
-def _lend_image_text_encoder_vram(device: Optional[str], reason: str) -> int:
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth")
+# The dictation worker's CUDA context and its first activations, beside its weights.
+_DICTATION_OVERHEAD_MIB = 512
+
+
+def _dictation_need_mib(snapshot_path: Optional[str]) -> Optional[int]:
+    """MiB a dictation load takes on the card: its weight files (an upper bound when stored wider than fp16) plus the
+    worker's context. None when the snapshot has no readable weight files."""
+    if not snapshot_path:
+        return None
+    try:
+        total = sum(
+            entry.stat().st_size
+            for entry in Path(snapshot_path).rglob("*")
+            if entry.name.endswith(_WEIGHT_SUFFIXES) and entry.is_file()
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    return (total >> 20) + _DICTATION_OVERHEAD_MIB if total > 0 else None
+
+
+def _lend_image_text_encoder_vram(
+    device: Optional[str],
+    reason: str,
+    snapshot_path: Optional[str] = None,
+) -> int:
     """A CUDA load beside an idle image model: its resident text encoders stream from the host first
-    (``diffusion_te_residency``); they come back before a later image encode once the render fits again."""
+    (``diffusion_te_residency``) when the dictation model does not already fit beside them; they come back before a
+    later image encode once the render fits again."""
     if device != "cuda":
         return 0
     try:
         from core.inference.diffusion_te_residency import lend_from_loaded_engine
-        return lend_from_loaded_engine(reason)
+        return lend_from_loaded_engine(reason, need_mib = _dictation_need_mib(snapshot_path))
     except Exception:  # noqa: BLE001 -- coordination is best-effort; the load behaves as before
         return 0
 
@@ -1567,7 +1593,9 @@ class WhisperSttSidecar:
 
                 retry_on_cpu = False
                 try:
-                    _lend_image_text_encoder_vram(device, "dictation model load")
+                    _lend_image_text_encoder_vram(
+                        device, "dictation model load", str(snapshot_path)
+                    )
                     with _lend_diffusion_training_vram(device, "dictation model load"):
                         candidate = self._build_model(
                             str(snapshot_path), device, dtype, cancel_event

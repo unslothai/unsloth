@@ -498,16 +498,79 @@ def test_lend_from_loaded_engine_never_imports_the_engine(monkeypatch):
     assert "core.inference.diffusion" not in sys.modules
 
 
-def test_dictation_load_asks_the_image_engine_first():
+def test_dictation_load_asks_the_image_engine_first(tmp_path):
     from core.inference import stt_sidecar
 
+    (tmp_path / "model.safetensors").write_bytes(b"\0" * (3 * MIB))
+    (tmp_path / "config.json").write_text("{}")
     with patch.object(tr, "lend_from_loaded_engine", return_value = 4_600) as lend:
-        assert stt_sidecar._lend_image_text_encoder_vram("cuda", "dictation model load") == 4_600
+        assert (
+            stt_sidecar._lend_image_text_encoder_vram("cuda", "dictation model load", str(tmp_path))
+            == 4_600
+        )
         assert stt_sidecar._lend_image_text_encoder_vram("cpu", "dictation model load") == 0
-    lend.assert_called_once_with("dictation model load")
+    # priced by its weight files plus the worker's context, so a card with room keeps the encoders
+    lend.assert_called_once_with(
+        "dictation model load", need_mib = 3 + stt_sidecar._DICTATION_OVERHEAD_MIB
+    )
+    assert stt_sidecar._dictation_need_mib(str(tmp_path / "missing")) is None
     source = Path(stt_sidecar.__file__).read_text()
-    i = source.index('_lend_image_text_encoder_vram(device, "dictation model load")')
+    i = source.index("_lend_image_text_encoder_vram(\n")
+    assert source.index('device, "dictation model load", str(snapshot_path)') > i
     assert i < source.index('with _lend_diffusion_training_vram(device, "dictation model load")')
+
+
+def test_a_lend_is_not_made_when_the_other_load_already_fits():
+    r = _Recorder(mib = 4_600)
+    engine, lend = _engine(r)
+    with _live(free_mib = 1_600 + tr.slack_mib(24_000)):
+        assert lend("dictation model load", 0, 1_600) == 0 and not r.streamed
+    assert r.last["action"] == "keep"
+    with _live(free_mib = 1_600 + tr.slack_mib(24_000) - 1):
+        assert lend("dictation model load", 0, 1_600) == 4_600 and r.streamed
+
+
+def test_lend_from_loaded_engine_passes_the_load_size(monkeypatch):
+    calls = []
+
+    class _Engine:
+        def lend_text_encoder_vram(
+            self,
+            reason,
+            at_least_mib = 0,
+            need_mib = None,
+        ):
+            calls.append((reason, at_least_mib, need_mib))
+            return 7
+
+    monkeypatch.setitem(
+        sys.modules, "core.inference.diffusion", SimpleNamespace(_diffusion_backend = _Engine())
+    )
+    assert tr.lend_from_loaded_engine("dictation", need_mib = 1_000) == 7
+    assert tr.lend_from_loaded_engine("chat", 3_000) == 7
+    assert calls == [("dictation", 0, 1_000), ("chat", 3_000, None)]
+
+
+def test_a_group_lend_hands_the_freed_memory_back_to_the_driver():
+    """The other load is usually another process (dictation worker, llama.cpp): blocks left in this process's
+    allocator cache are not free to it."""
+    r = _Recorder(mib = 4_600, kind = tr.KIND_GROUPS)
+    with (
+        patch.object(tr.EncoderResidency, "resident_mib", return_value = 4_600),
+        patch("core.inference.diffusion_vae_oom._empty_cache") as empty,
+    ):
+        assert r.lend("a chat model") == 4_600
+    empty.assert_called_once()
+
+
+def test_lend_and_unload_both_invalidate_cached_gpu_memory():
+    from core.inference.diffusion import DiffusionBackend
+    from utils import gpu_memory_events
+
+    wrapper = gpu_memory_events.invalidates_gpu_memory("x")(lambda: None).__code__
+    assert DiffusionBackend.unload.__code__ is wrapper
+    assert DiffusionBackend.lend_text_encoder_vram.__code__ is wrapper
+    assert DiffusionBackend.unload.__wrapped__.__name__ == "unload"
 
 
 class TestFreeStepsLend:

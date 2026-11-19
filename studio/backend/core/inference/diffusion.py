@@ -16652,11 +16652,12 @@ class DiffusionBackend:
                 cancel.set()
             return True
 
-    @_invalidates_gpu_memory("diffusion unload")
+    @_invalidates_gpu_memory("diffusion text encoder lend")
     def lend_text_encoder_vram(
         self,
         reason: str,
         at_least_mib: int = 0,
+        need_mib: Optional[int] = None,
     ) -> int:
         """Another load wants this card: an idle image model streams its resident text encoders from the host (they
         come back before a later encode once the render fits again). MiB freed; 0 while a render or a load holds the
@@ -16666,10 +16667,13 @@ class DiffusionBackend:
         try:
             state = self._state
             pipe = getattr(state, "pipe", None) if state is not None else None
-            return te_residency.lend(pipe, reason, logger = logger, at_least_mib = at_least_mib)
+            return te_residency.lend(
+                pipe, reason, logger = logger, at_least_mib = at_least_mib, need_mib = need_mib
+            )
         finally:
             self._generate_lock.release()
 
+    @_invalidates_gpu_memory("diffusion unload")
     def unload(
         self,
         *,

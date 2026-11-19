@@ -467,14 +467,27 @@ class EncoderResidency:
         self,
         reason: str,
         at_least_mib: int = 0,
+        need_mib: Optional[int] = None,
     ) -> int:
         """Another load wants the card: stream the encoders now (they come back at a later encode if they fit). Not
-        when they hold less than ``at_least_mib``: the caller would have to free the whole model anyway."""
+        when they hold less than ``at_least_mib``: the caller would have to free the whole model anyway. Not when
+        ``need_mib`` (the other load's size) and the slack already fit in live free memory: nothing is short."""
         with self._lock:
             resident = self.resident_mib()
             if resident <= 0 or resident < int(at_least_mib or 0):
                 return 0
-            return self.release(reason, short_mib = resident)
+            if need_mib is not None:
+                live = live_free_mib(self.device)
+                if live is not None and live[0] >= int(need_mib) + slack_mib(live[1]):
+                    self._record(action = "keep", free_mib = live[0], need_mib = int(need_mib),
+                                 why = "the other load fits beside them", reason = reason)  # fmt: skip
+                    return 0
+            freed = self.release(reason, short_mib = resident)
+            if freed > 0 and self.kind == KIND_GROUPS:
+                # the other load is usually another process: hand the freed blocks back to the driver
+                from .diffusion_vae_oom import _empty_cache
+                _empty_cache(self.device)
+            return freed
 
 
 def _apply_stream(module: Any, device: Any, logger: Any) -> None:
@@ -624,25 +637,35 @@ def lend(
     reason: str,
     logger: Any = None,
     at_least_mib: int = 0,
+    need_mib: Optional[int] = None,
 ) -> int:
     residency = of(pipe)
     if residency is None:
         return 0
     try:
-        return residency.lend(reason, at_least_mib)
+        return residency.lend(reason, at_least_mib, need_mib = need_mib)
     except Exception as exc:  # noqa: BLE001 - the other load proceeds as before
         _note(logger, "warning", "diffusion.te_residency: lend skipped (%s)", exc)
         return 0
 
 
-def lend_from_loaded_engine(reason: str, at_least_mib: int = 0) -> int:
+def lend_from_loaded_engine(
+    reason: str,
+    at_least_mib: int = 0,
+    need_mib: Optional[int] = None,
+) -> int:
     """For a load outside the image engine (dictation, a chat model beside an image model): the loaded image engine,
-    if any and idle, streams its resident text encoders first. Never imports the engine; never raises. MiB freed."""
+    if any and idle, streams its resident text encoders first. ``need_mib``: the other load's size when known (it
+    lends nothing while that already fits). Never imports the engine; never raises. MiB freed."""
     import sys
     try:
         module = sys.modules.get("core.inference.diffusion")
         engine = getattr(module, "_diffusion_backend", None) if module is not None else None
         lend_vram = getattr(engine, "lend_text_encoder_vram", None)
-        return int(lend_vram(reason, at_least_mib) or 0) if callable(lend_vram) else 0
+        if not callable(lend_vram):
+            return 0
+        if need_mib is None:
+            return int(lend_vram(reason, at_least_mib) or 0)
+        return int(lend_vram(reason, at_least_mib, need_mib = need_mib) or 0)
     except Exception:  # noqa: BLE001 - the other load proceeds as before
         return 0
