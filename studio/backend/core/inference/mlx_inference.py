@@ -14,6 +14,7 @@ import shutil
 import sys
 import threading
 import time
+import weakref
 from collections import Counter, OrderedDict
 from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
@@ -321,8 +322,9 @@ def _recording_class(base):
             offset = cache_entries_offset(cache) if cache is not None else None
             if record.resume_offset is None:
                 record.resume_offset = offset or 0
-                if record.on_resume is not None:
-                    record.on_resume(record.resume_offset)
+                on_resume = record.on_resume() if record.on_resume is not None else None
+                if on_resume is not None:
+                    on_resume(record.resume_offset)
             # Only after a resume: a Qwen VL model fed no positions reuses the previous request's.
             if record.resume_offset and _prompt_wide_position_ids(args, kwargs):
                 kwargs.pop("position_ids")
@@ -877,7 +879,8 @@ class VLMPromptCacheSession:
         if entries is not None:
             # The copy is taken at the first forward, once mlx-vlm has resumed.
             self.cache = entries
-            record.on_resume = self._detach_served
+            # Weak: a bound method would hold this session, and its live cache, in a cycle.
+            record.on_resume = weakref.WeakMethod(self._detach_served)
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
         rows = boundary - prefix_len
         record.capture_at, record.capture_rows = (

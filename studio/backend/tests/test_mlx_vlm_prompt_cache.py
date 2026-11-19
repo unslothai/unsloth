@@ -2,9 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import contextlib
+import gc
 import logging
 import sys
 import types
+import weakref
 
 import pytest
 
@@ -539,6 +541,27 @@ def test_session_captures_the_boundary_and_resumes_leaving_a_copy_behind(fake_mx
 
     session, _cache, stored = _generate(store, language_model, longer + [1])
     assert session.reused_tokens == 768 and stored and len(store) == 5
+
+
+@pytest.mark.parametrize("entered", [True, False])
+def test_a_resumed_session_is_freed_without_the_cycle_collector(fake_mx, entered):
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    language_model = FakeLanguageModel()
+    ids = list(range(700))
+    _generate(store, language_model, ids)
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        session = Session(store, "m", language_model, make_cache)
+        with session if entered else contextlib.nullcontext():
+            assert session.find_prefix_length(ids + [1, 2]) == 512
+            run_generation(language_model, ids + [1, 2], session.cache, 512)
+        freed = weakref.ref(session)
+        del session
+        assert freed() is None
+    finally:
+        if enabled:
+            gc.enable()
 
 
 class LayeredLanguageModel(FakeLanguageModel):
