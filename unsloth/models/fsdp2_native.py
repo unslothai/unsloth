@@ -3112,6 +3112,7 @@ def native_load_optimizer(model, optimizer, path_or_state):
             param.requires_grad_(True)
     for param in unstepped:
         inner.state.pop(param, None)
+    _repack_legacy_lora_b_optimizer(inner)
     return state
 
 
@@ -3274,6 +3275,7 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     # As the optimizer.pt path: torch Adam keys to the local-shard bitsandbytes keys, or back.
     rename_optimizer_state_for(optimizer, state)
     set_optimizer_state_dict(root, optimizer, state, options = options)
+    _repack_legacy_lora_b_optimizer(optimizer)
     return state
 
 
@@ -3707,6 +3709,31 @@ def _repack_legacy_lora_b(root, configs):
         return sum(
             convert_legacy_lora_b(root, adapter, config) for adapter, config in configs.items()
         )
+
+
+def _repack_legacy_lora_b_optimizer(optimizer):
+    """The restored optimizer state of each lora_B _repack_legacy_lora_b moved, in the same column order
+    (Zoo's repack_optimizer_state_for_legacy_lora_b, which Zoo's Trainer resume wrapper runs; the native
+    hook bypasses it). Consumes the per-parameter marker, so a second call is a no-op; none set, nothing
+    moves. Returns (moved, reset)."""
+    if not any(
+        getattr(p, "_unsloth_lora_b_repacked", None) is not None
+        for group in getattr(optimizer, "param_groups", ())
+        for p in group["params"]
+    ):
+        return 0, 0
+    from torch.distributed.tensor.experimental import implicit_replication
+    from unsloth_zoo.temporary_patches.moe_utils import repack_optimizer_state_for_legacy_lora_b
+
+    with implicit_replication():  # Zoo's plain permutation index against the sharded moments
+        moved, reset = repack_optimizer_state_for_legacy_lora_b(optimizer)
+    if moved or reset:
+        _print_rank0(
+            f"Unsloth: native FSDP2 resume moved the optimizer state of {moved} repacked fused MoE "
+            f"expert lora_B tensors to the rank_major column order"
+            + (f"; {reset} reset (8-bit state cannot be permuted)." if reset else ".")
+        )
+    return moved, reset
 
 
 def _check_checkpoint_tables(root, checkpoint):
