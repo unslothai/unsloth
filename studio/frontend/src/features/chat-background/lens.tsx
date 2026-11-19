@@ -8,14 +8,21 @@ import { LENS_HOSTS, LENS_SCALE, lensDrawn } from "./model";
 
 const HOST_FLAG = "data-glass-lens-host";
 
+// The style drawing a surface's glass: its own, or its ::before (the Desktop sidebar frame, layered panels).
+function glassLayer(el: HTMLElement): CSSStyleDeclaration | null {
+  for (const pseudo of [null, "::before"]) {
+    const style = getComputedStyle(el, pseudo);
+    const filter = style.backdropFilter || style.getPropertyValue("-webkit-backdrop-filter");
+    if (filter && filter !== "none") return style;
+  }
+  return null;
+}
+
 // Only surfaces drawing glass right now: Glass menus off, an opaque sheet or a split card has no backdrop filter.
 function drawsGlass(el: HTMLElement): boolean {
   const { width, height } = el.getBoundingClientRect();
   if (width < 8 || height < 8) return false;
-  if (el.hasAttribute("data-glass-moving")) return true;
-  const style = getComputedStyle(el);
-  const filter = style.backdropFilter || style.getPropertyValue("-webkit-backdrop-filter");
-  return Boolean(filter) && filter !== "none";
+  return el.hasAttribute("data-glass-moving") || glassLayer(el) !== null;
 }
 
 /** A wallpaper copy in every glass surface, since backdrop-filter cannot scale and SVG backdrop filters are Chromium only (not WebKit). */
@@ -88,7 +95,7 @@ function Lens({
       const w = wallpaper.getBoundingClientRect();
       const h = host.getBoundingClientRect();
       const opacity = getComputedStyle(wallpaper).opacity;
-      const fill = getComputedStyle(host);
+      const fill = glassLayer(host) ?? getComputedStyle(host);
       const key = [
         w.left,
         w.top,

@@ -510,8 +510,10 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	for (const host of [
 		".unsloth-composer-surface",
 		'[data-slot="sidebar-inner"]',
+		"[data-windows-glass-frame]",
 		'[data-slot="chat-settings-panel"]',
 		'[data-slot="sheet-content"]',
+		'[data-slot="dialog-content"]',
 		"[data-chat-model-controls] > .unsloth-model-selector-trigger",
 		'[data-slot$="menu-content"]',
 		'[data-slot="popover-content"]',
@@ -522,6 +524,9 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	// Menus and sheets are portaled to <body>; hosts without a backdrop filter (Glass menus off, opaque sheets) are skipped.
 	assert.match(lens, /document\.querySelectorAll<HTMLElement>\(LENS_HOSTS\)\]\.filter\(drawsGlass\)/);
 	assert.match(lens, /observer\.observe\(document\.body, \{ childList: true \}\);/);
+	// The Desktop sidebar frame and layered panels draw their glass (and fill) on ::before.
+	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
+	assert.match(lens, /const fill = glassLayer\(host\) \?\? getComputedStyle\(host\);/);
 	// Outside the workspace the wash stops at <body>, whose opaque fill would hide the copy.
 	assert.match(lens, /node && node !== workspace && node !== document\.body;/);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");

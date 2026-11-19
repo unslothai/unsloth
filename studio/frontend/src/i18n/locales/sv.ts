@@ -77,7 +77,7 @@ export const sv = {
     materialMenusDescription: "Rullgardinsmenyer, menyer och väljare använder också glas.",
     materialStrength: "Glasstyrka",
     lens: "Glaslins",
-    lensDescription: "Böjer bilden under skrivfältet som riktigt glas.",
+    lensDescription: "Böjer bilden under varje glasyta som riktigt glas.",
     lensOff: "Av",
     lensMagnify: "Förstora",
     lensShrink: "Förminska",
