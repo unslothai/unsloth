@@ -116,6 +116,8 @@ def test_only_listed_families_and_never_whisper_go_to_mlx(mlx_host):
     assert stt_mlx.is_mlx_stt_config(aligner) is False
     asr = {"model_type": "qwen3_asr", "thinker_config": {"model_type": "qwen3_asr"}}
     assert stt_mlx.is_mlx_stt_config(asr) is True
+    transformers_layout = {"model_type": "qwen3_asr", "audio_config": {}, "text_config": {}}
+    assert stt_mlx.is_mlx_stt_config(transformers_layout) is False
     assert stt_mlx.is_mlx_stt_config(None) is False
 
 

@@ -38,6 +38,9 @@ def is_mlx_stt_config(config: object) -> bool:
     thinker = config.get("thinker_config")
     if isinstance(thinker, dict) and thinker.get("model_type") == "qwen3_forced_aligner":
         return False
+    # The Transformers-native layout (Qwen/Qwen3-ASR-*-hf) loads into mlx-audio without its weights and transcribes noise.
+    if thinker is None and ("text_config" in config or "audio_config" in config):
+        return False
     return mlx_stt_available()
 
 
