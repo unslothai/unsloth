@@ -745,20 +745,28 @@ def cutlass_wanted(capability: Optional[tuple]) -> bool:
         return False
 
 
+@lru_cache(maxsize = 4)
+def _sources_digest(lib: Optional[str]) -> str:
+    """Both sources and the loaded library, hashed once per process: the plan asks once per weight shape."""
+    import hashlib
+
+    from . import diffusion_int8_cutlass as cut
+
+    h = hashlib.sha256(open(__file__, "rb").read())
+    h.update(open(cut.__file__, "rb").read())
+    if lib:
+        h.update(open(lib, "rb").read())
+    return h.hexdigest()[:20]
+
+
 def _cut_cache_key(index: int) -> Optional[str]:
     """Card, toolchain, library build and both sources: any change re-races."""
     try:
-        import hashlib
-
         import torch
 
         from . import diffusion_int8_cutlass as cut
 
-        h = hashlib.sha256(open(__file__, "rb").read())
-        h.update(open(cut.__file__, "rb").read())
-        lib = cut.library_path()
-        if lib:
-            h.update(open(lib, "rb").read())
+        digest = _sources_digest(cut.library_path())
         try:
             import triton as _triton
             tv = _triton.__version__
@@ -776,7 +784,7 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
                 # the timing mode decides the huge-race winners: a plan raced the other way is re-raced
                 f"sustained={cut.sustained_mode()}",
-                h.hexdigest()[:20],
+                digest,
             )
         )
     except Exception:  # noqa: BLE001
