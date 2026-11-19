@@ -2833,6 +2833,9 @@ def _resolve_uncached(
             unsupported = unsupported or PACKAGE_INCOMPLETE
             variants = [AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)]
         default = variants[0]
+    if unsupported and vouched and not (header is not None and header.is_audio_cpp):
+        # Only the spec claims it (d1-Omni: a llama.cpp chat GGUF): leave it to llama.cpp as before.
+        return None
     chosen = match_variant(variants, wanted, ref.folder) if wanted else default
     if (
         chosen is not None

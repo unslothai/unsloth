@@ -126,6 +126,17 @@ def test_repo_no_spec_names_with_foreign_architecture_does_not_resolve(hub, monk
     assert acm.spec_vouched_family("shared/repo") is None
 
 
+def test_a_vouched_repo_studio_cannot_run_stays_llama_cpps(hub, monkeypatch):
+    repo = "LiquidAI/d1-Omni-2B-GGUF"
+    spec = {**_pkg_spec(repo), "family": "lfm_d1_omni", "tasks": ["classify"]}
+    _use_specs(monkeypatch, {**SPECS, "lfm_d1_omni": spec})
+    _listing(monkeypatch, repo, {"model.gguf": 100})
+    _put(_snapshot(hub, repo), "model.gguf", _gguf_bytes(arch = "lfm2"))
+
+    assert acm.spec_vouched_family(repo) == "lfm_d1_omni"
+    assert acm.resolve(repo, network = False) is None
+
+
 def test_single_file_packages_are_no_package_variant_set(monkeypatch):
     _use_specs(monkeypatch)
     files = [
