@@ -385,6 +385,8 @@ def test_rocm_keeps_windowed_rows_off_flash_attn(monkeypatch, window):
     dispatched = []
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(torch.version, "hip", "6.4")
+    # Torch varlen off (failed self-check), so rows reach flash-attn.
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [None])
     monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: ad.FLASH_VARLEN)
     monkeypatch.setattr(ad, "run_attention", lambda **kwargs: dispatched.append(1) or kwargs["Q"])
     lengths = [3, 5]
@@ -737,7 +739,11 @@ def test_int32_guard_splits_documents_instead_of_the_dense_fallback(monkeypatch,
     assert hpa.HF_PACKED_ATTENTION_STATS["int32_split"] == before["int32_split"] + 1
     assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"]
     for a, b in zip(split, whole):
-        torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+        if torch.version.hip is None:
+            torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+        else:
+            # ROCm AOTriton bf16 rounding varies per launch shape: self-check tolerance, not bit equality.
+            assert (a.float() - b.float()).abs().max() <= 0.02 * b.float().abs().max() + 1e-3
 
 
 def test_block_varlen_kwargs_sends_rows_past_int32_to_the_eager_wrapper(monkeypatch):
@@ -2230,3 +2236,50 @@ def test_rocm_window_check_is_separate(monkeypatch):
     assert hpa._torch_varlen(device) is no_window
     assert not hpa._hip_window_ok(device, 4096)
     assert hpa._hip_window_ok(device, None)
+
+
+def _flash_like_op(real_lse_rank):
+    """aten._flash_attention_forward stand-in: (out, logsumexp, ...) whose logsumexp rank differs
+    between real and fake tensors, as ROCm's varlen does against the op's fake kernel."""
+    from torch._subclasses.fake_tensor import FakeTensor
+
+    def op(query, key, value, *args, **kwargs):
+        heads, total = query.shape[1], query.shape[0]
+        fake = isinstance(query, FakeTensor)
+        rank = 2 if fake else real_lse_rank
+        lse = query.new_zeros((heads, total) if rank == 2 else (1, heads, total))
+        return query.clone(), lse, None, None, None
+
+    return op
+
+
+@pytest.mark.parametrize("real_rank, expected", [(2, True), (3, False)])
+def test_flash_meta_check_catches_a_logsumexp_rank_the_fake_kernel_does_not_promise(
+    real_rank, expected
+):
+    """Compiled blocks assert the op's outputs against its fake kernel; a build whose real logsumexp
+    has another rank (ROCm varlen) must keep the eager wrapper instead of failing in the graph."""
+    query = torch.zeros(1, 4, 16, 8)
+    key = torch.zeros(1, 2, 16, 8)
+    cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32)
+    got = hpa._flash_meta_matches(query, key, cu_seqlens, 9, None, op = _flash_like_op(real_rank))
+    assert got is expected
+
+
+def test_varlen_in_graph_probe_refuses_when_the_fake_kernel_disagrees(monkeypatch):
+    """The probe's eager forward and backward pass, but the meta check fails: no in-graph varlen."""
+    import unsloth.utils.flash_impl as flash_impl
+
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_hip_window_ok", lambda device, window: True)
+    monkeypatch.setattr(flash_impl, "flash_impl_allows", lambda *args: True)
+    zeros, tensor = torch.zeros, torch.tensor
+    # The probe builds CUDA tensors; this host runs them on CPU.
+    monkeypatch.setattr(torch, "zeros", lambda *a, device = None, **k: zeros(*a, **k))
+    monkeypatch.setattr(torch, "tensor", lambda *a, device = None, **k: tensor(*a, **k))
+    monkeypatch.setattr(hpa, "_flash_varlen", lambda q, k, v, *args: (q * 1.0).transpose(1, 2))
+    verdicts = []
+    for matches in (True, False):
+        monkeypatch.setattr(hpa, "_flash_meta_matches", lambda *args, m = matches: m)
+        verdicts.append(hpa._varlen_in_graph_probe(0, torch.bfloat16, 64, 8, 2, None))
+    assert verdicts == [True, False]
