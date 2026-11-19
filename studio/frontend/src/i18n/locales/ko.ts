@@ -3141,6 +3141,9 @@ export const ko = {
         showMemoryBar: "VRAM 사용량 막대 표시",
         showMemoryBarDescription:
           "다운로드한 모델의 행 아래에 예상 VRAM 사용량을 표시합니다. 가중치, 실제로 로드될 컨텍스트 길이 기준 KV 캐시, 그리고 추측 디코딩 초안용 예약 공간으로 나뉩니다.",
+        showModelSizes: "모델 크기 및 파라미터",
+        showModelSizesDescription:
+          "모델 선택기의 각 행에 모델의 크기와 파라미터 수를 표시합니다. 알 수 없으면 비워 둡니다.",
         fitOnDeviceOnly: "맞는 모델만 표시",
         fitOnDeviceOnlyDescription:
           "이 기기의 GPU 메모리와 RAM보다 큰 모델을 모델 선택기와 Hub에서 숨깁니다. 다운로드한 모델은 계속 표시됩니다.",

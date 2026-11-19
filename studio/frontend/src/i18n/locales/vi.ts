@@ -3395,6 +3395,9 @@ export const vi = {
         showMemoryBar: "Thanh mức dùng VRAM",
         showMemoryBarDescription:
           "Hiển thị VRAM ước tính cho trọng số mô hình, ngữ cảnh và giải mã suy đoán.",
+        showModelSizes: "Kích thước và tham số mô hình",
+        showModelSizesDescription:
+          "Hiển thị kích thước và số tham số của mỗi mô hình trên hàng của nó trong bộ chọn mô hình. Để trống khi không rõ.",
         fitOnDeviceOnly: "Chỉ hiện mô hình vừa với máy",
         fitOnDeviceOnlyDescription:
           "Ẩn các mô hình quá lớn so với bộ nhớ GPU và RAM của thiết bị này trong trình chọn mô hình và Hub. Mô hình đã tải xuống vẫn hiển thị.",

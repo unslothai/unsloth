@@ -3262,6 +3262,9 @@ export const th = {
         showMemoryBar: "แถบการใช้ VRAM",
         showMemoryBarDescription:
           "แสดง VRAM โดยประมาณสำหรับน้ำหนักโมเดล บริบท และ speculative decoding",
+        showModelSizes: "ขนาดและพารามิเตอร์ของโมเดล",
+        showModelSizesDescription:
+          "แสดงขนาดและจำนวนพารามิเตอร์ของแต่ละโมเดลในแถวของตัวเลือกโมเดล เว้นว่างเมื่อไม่ทราบ",
         fitOnDeviceOnly: "แสดงเฉพาะโมเดลที่ใช้ได้",
         fitOnDeviceOnlyDescription:
           "ซ่อนโมเดลที่ใหญ่เกินหน่วยความจำ GPU และ RAM ของอุปกรณ์นี้ในตัวเลือกโมเดลและ Hub โมเดลที่ดาวน์โหลดแล้วจะยังแสดงอยู่",

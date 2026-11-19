@@ -84,6 +84,7 @@ function toLocalModelInfo(row: LocalInventoryRow, opaqueKind?: FamilyOverrideArt
     id: row.loadId,
     display_name: row.displayName ?? row.title,
     path: row.path,
+    size_bytes: row.bytes,
     source: row.source as LocalModelInfo["source"],
     model_id: row.modelId ?? row.repoId,
     model_format: row.modelFormat,

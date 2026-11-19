@@ -3432,6 +3432,9 @@ export const pl = {
         showMemoryBar: "Pasek użycia VRAM",
         showMemoryBarDescription:
           "Pokazuj szacowaną VRAM dla wag modelu, kontekstu i dekodowania spekulatywnego.",
+        showModelSizes: "Rozmiar i parametry modelu",
+        showModelSizesDescription:
+          "Pokazuj rozmiar i liczbę parametrów każdego modelu w jego wierszu w wyborze modelu. Puste, gdy nieznane.",
         fitOnDeviceOnly: "Pokazuj tylko mieszczące się modele",
         fitOnDeviceOnlyDescription:
           "Ukrywaj w wyborze modelu i centrum modele zbyt duże dla pamięci GPU i RAM tego urządzenia. Pobrane modele pozostają widoczne.",

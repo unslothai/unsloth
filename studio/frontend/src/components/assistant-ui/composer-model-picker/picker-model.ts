@@ -3,6 +3,9 @@
 
 // No path aliases here, so node:test can import it directly.
 
+import { formatBytes } from "../../../features/hub/lib/format.ts";
+import { extractParamLabel } from "../../../lib/model-size.ts";
+
 export const FAVORITES_TAB = "favorites";
 export const RECOMMENDED_TAB = "recommended";
 export const DEVICE_TAB = "device";
@@ -586,4 +589,59 @@ export function ejectTargetId(
   chosenId: string | undefined,
 ): string | undefined {
   return row.id === chosenId ? undefined : (row.loadedId ?? row.id);
+}
+
+export interface RowSizeInput {
+  kind: RowKind;
+  id: string;
+  format?: FormatTone;
+  baseModel?: string;
+  partial?: boolean;
+  /** The row's own bytes on disk: its quant when it stands for one. */
+  sizeBytes?: number | null;
+  /** Discover only: the Hub's dtype-summed estimate; GGUF repos have none. */
+  estimatedBytes?: number | null;
+  hubParams?: string | null;
+}
+
+/** A favorited quant sizes only itself: once deleted, it reads unknown, not a sibling's size. */
+export function rowOwnBytes(
+  favoriteQuant: string | undefined,
+  favoriteBytes: number | null,
+  soleQuantBytes: number | null,
+  repoBytes: number | null | undefined,
+): number | null {
+  if (favoriteQuant) {
+    return favoriteBytes;
+  }
+  return soleQuantBytes ?? repoBytes ?? null;
+}
+
+/** "Model size and parameters" setting. Unknown stays blank: no guessing past the data. */
+export function rowSizeMeta(row: RowSizeInput): {
+  params: string | null;
+  size: string | null;
+} {
+  if (row.kind === "external") {
+    return { params: null, size: null };
+  }
+  const params =
+    row.kind === "hub"
+      ? (row.hubParams ?? null)
+      : // A folder model's baseModel is its store ("LM Studio"), so the id is the fallback.
+        ((row.baseModel ? extractParamLabel(row.baseModel) : null) ??
+        extractParamLabel(row.id));
+  // A partial download's bytes are what arrived, not the model.
+  const bytes = row.partial
+    ? null
+    : row.kind === "hub"
+      ? row.format === "gguf"
+        ? null
+        : row.estimatedBytes
+      : row.sizeBytes;
+  const size =
+    bytes != null && Number.isFinite(bytes) && bytes > 0
+      ? `${row.kind === "hub" ? "~" : ""}${formatBytes(bytes)}`
+      : null;
+  return { params, size };
 }

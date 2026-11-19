@@ -3437,6 +3437,9 @@ export const nl = {
         showMemoryBar: "VRAM-gebruiksbalk",
         showMemoryBarDescription:
           "Geschat VRAM tonen voor modelgewichten, context en speculatieve decodering.",
+        showModelSizes: "Modelgrootte en parameters",
+        showModelSizesDescription:
+          "Toon de grootte en het aantal parameters van elk model op de rij in de modelkiezer. Leeg als onbekend.",
         fitOnDeviceOnly: "Alleen modellen tonen die passen",
         fitOnDeviceOnlyDescription:
           "Modellen die te groot zijn voor het GPU-geheugen en RAM van dit apparaat verbergen in de modelkiezer en de Hub. Gedownloade modellen blijven zichtbaar.",

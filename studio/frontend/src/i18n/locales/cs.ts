@@ -3412,6 +3412,9 @@ export const cs = {
         showMemoryBar: "Ukazatel využití VRAM",
         showMemoryBarDescription:
           "Zobrazovat odhad VRAM pro váhy modelu, kontext a spekulativní dekódování.",
+        showModelSizes: "Velikost a parametry modelu",
+        showModelSizesDescription:
+          "Zobrazovat u každého modelu ve výběru modelů jeho velikost a počet parametrů. Prázdné, když nejsou známé.",
         fitOnDeviceOnly: "Zobrazovat jen modely, které se vejdou",
         fitOnDeviceOnlyDescription:
           "Ve výběru modelu a v centru modelů skrýt modely, které jsou pro paměť GPU a RAM tohoto zařízení příliš velké. Stažené modely zůstanou viditelné.",

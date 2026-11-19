@@ -247,6 +247,8 @@ import {
   pinCoversId,
   readBounded,
   repoSection,
+  rowOwnBytes,
+  rowSizeMeta,
   sectionsHaveRows,
   sortConnectedRows,
   sortDeviceRows,
@@ -1001,6 +1003,35 @@ function ParamChip({ label }: { label: string }) {
   );
 }
 
+/** Fixed widths so params and sizes line up down the list; an unknown leaves its slot blank. */
+function RowSizeColumns({
+  params,
+  size,
+  sizeSlot,
+  dimmed,
+}: {
+  params: string | null;
+  size: string | null;
+  sizeSlot: boolean;
+  dimmed: boolean;
+}) {
+  return (
+    <span
+      data-row-size=""
+      className={cn("flex shrink-0 items-center gap-1.5", dimmed && DIM_CLASS)}
+    >
+      <span className="flex w-[4.4em] shrink-0 justify-end text-ui-10">
+        {params ? <ParamChip label={params} /> : null}
+      </span>
+      {sizeSlot ? (
+        <span className="w-[5.2em] shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums">
+          {size}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 const JUMP_LABEL: Partial<Record<ListSection, string>> = {
   other: "Go to other models",
   fineTuned: "Go to trained models",
@@ -1258,6 +1289,7 @@ function modelFacts(
   row: Row,
   onDisk: readonly GgufVariantDetail[],
   known: ChatModelSummary | undefined,
+  sized: ReturnType<typeof rowSizeMeta>,
 ): [string, ReactNode][] {
   const facts: [string, ReactNode][] = [];
   const format =
@@ -1270,13 +1302,12 @@ function modelFacts(
   } else if (format) {
     facts.push(["Format", format]);
   }
-  const size = onDisk.length === 1 ? quantBytes(onDisk[0]) : row.sizeBytes;
-  if (size && size > 0) {
-    facts.push(["Disk space", formatBytes(size)]);
+  // The row's own size and params, so the two never disagree.
+  if (sized.size) {
+    facts.push(["Disk space", sized.size]);
   }
-  const params = extractParamLabel(row.lora?.baseModel ?? row.id);
-  if (params) {
-    facts.push(["Parameters", params]);
+  if (sized.params) {
+    facts.push(["Parameters", sized.params]);
   }
   const task = row.gguf?.task ?? row.cached?.task ?? undefined;
   const id = row.lora?.baseModel ? `${row.lora.baseModel} ${row.id}` : row.id;
@@ -1769,6 +1800,7 @@ export function ComposerModelPicker({
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   const showMemoryBar = useChatRuntimeStore((s) => s.showMemoryBar);
+  const showModelSizes = useChatRuntimeStore((s) => s.showModelSizes);
   const loadFreesResident =
     !keepModelsLoaded &&
     typeof checkpoint === "string" &&
@@ -1868,18 +1900,21 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults, gpuInfo, inferenceGpu, budgetFraction]);
-  const hubParams = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const r of hubResults) {
-      const label = r.totalParams
-        ? formatParamCount(r.totalParams)
-        : extractParamLabel(r.id);
-      if (label) {
-        map.set(r.id.toLowerCase(), label);
-      }
-    }
-    return map;
-  }, [hubResults]);
+  const hubSizes = useMemo(
+    () =>
+      new Map(
+        hubResults.map((r) => [
+          r.id.toLowerCase(),
+          {
+            params: r.totalParams
+              ? formatParamCount(r.totalParams)
+              : extractParamLabel(r.id),
+            estimate: r.estimatedSizeBytes,
+          },
+        ]),
+      ),
+    [hubResults],
+  );
   const noGpu = !(inferenceGpu.memoryTotalGb > 0);
   const { scrollRef: hubScrollRef, sentinelRef: hubSentinelRef } =
     useHubInfiniteScroll(hubSearch.fetchMore, hubSearch.scannedCount, {
@@ -2749,6 +2784,22 @@ export function ComposerModelPicker({
     collapsedSections,
     foundRows,
   ]);
+  // As the header picker: Discover gives sizes a column only when a shown row can fill it.
+  const hubHasSizes = useMemo(
+    () =>
+      showModelSizes &&
+      shownRows.some(
+        (row) =>
+          row.kind === "hub" &&
+          rowSizeMeta({
+            kind: row.kind,
+            id: row.id,
+            format: row.format,
+            estimatedBytes: hubSizes.get(row.id.toLowerCase())?.estimate,
+          }).size !== null,
+      ),
+    [showModelSizes, shownRows, hubSizes],
+  );
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
     onFoldersChange: source?.onFoldersChange,
@@ -4130,22 +4181,44 @@ export function ComposerModelPicker({
     const dimmed = isOverBudget(fit) && !(fit === "ram" && noGpu) && !isChosen;
     const offerOpen = offer?.key === row.key;
     const paramLabel =
-      row.kind === "hub" ? (hubParams.get(row.id.toLowerCase()) ?? null) : null;
+      row.kind === "hub"
+        ? (hubSizes.get(row.id.toLowerCase())?.params ?? null)
+        : null;
     const onDisk = deviceQuants.get(row.inventoryKey ?? row.key) ?? NO_QUANTS;
     const partials = partialsOf(row);
     const manyQuants = onDisk.length + partials.length > 1;
     const wholeQuant = onDisk.length === 1 ? onDisk[0].quant : null;
     const soleQuant = row.favoriteQuant ?? (manyQuants ? null : wholeQuant);
+    const favoriteOnDisk = row.favoriteQuant
+      ? onDisk.find(
+          (v) => v.quant.toLowerCase() === row.favoriteQuant?.toLowerCase(),
+        )
+      : undefined;
     const savedVariant =
       row.kind !== "gguf"
         ? undefined
         : row.favoriteQuant
-          ? onDisk.find(
-              (v) => v.quant.toLowerCase() === row.favoriteQuant?.toLowerCase(),
-            )
+          ? favoriteOnDisk
           : onDisk.length === 1
             ? onDisk[0]
             : undefined;
+    const rowSize = rowSizeMeta({
+      kind: row.kind,
+      id: row.id,
+      format: row.format,
+      baseModel: row.lora?.baseModel,
+      partial: row.partial,
+      sizeBytes: rowOwnBytes(
+        row.favoriteQuant,
+        favoriteOnDisk ? quantBytes(favoriteOnDisk) : null,
+        onDisk.length === 1 ? quantBytes(onDisk[0]) : null,
+        row.sizeBytes ??
+          (row.lora?.source === "local" ? row.lora.sizeBytes : undefined),
+      ),
+      estimatedBytes: hubSizes.get(row.id.toLowerCase())?.estimate,
+      hubParams: paramLabel,
+    });
+    const sizeMeta = showModelSizes ? rowSize : null;
     // Known without a quant listing, for Reset run settings and the gear's saved state.
     const savedMeta = savedVariant
       ? ggufMeta(row, savedVariant, true, true, row.gguf?.has_vision)
@@ -4195,6 +4268,10 @@ export function ComposerModelPicker({
           chatModels,
           row.npu ? npuCatalog : null,
           paramLabel,
+          showModelSizes,
+          rowSize.params,
+          rowSize.size,
+          hubHasSizes,
         ]}
         render={() => (
           <div
@@ -4310,7 +4387,7 @@ export function ComposerModelPicker({
                     compact={true}
                   />
                 ) : null}
-                {paramLabel ? (
+                {paramLabel && !sizeMeta ? (
                   <span className={cn("flex", dimmed && DIM_CLASS)}>
                     <ParamChip label={paramLabel} />
                   </span>
@@ -4328,6 +4405,19 @@ export function ComposerModelPicker({
               </span>
             ) : row.kind === "npu" ? (
               <QuantPill quant="NPU" />
+            ) : null}
+            {sizeMeta && row.kind !== "external" ? (
+              <RowSizeColumns
+                params={sizeMeta.params}
+                // An NPU offer already prints its size.
+                size={npuOffer || npuProgress ? null : sizeMeta.size}
+                sizeSlot={
+                  row.kind !== "hub" ||
+                  viewed !== RECOMMENDED_TAB ||
+                  hubHasSizes
+                }
+                dimmed={dimmed}
+              />
             ) : null}
             {isChosen && !row.loaded && row.kind !== "external" ? (
               <HugeiconsIcon
@@ -4363,6 +4453,7 @@ export function ComposerModelPicker({
                                 m.id.toLowerCase() ===
                                 (row.loadedId ?? row.id).toLowerCase(),
                             ),
+                            rowSize,
                           )}
                         />
                       ) : undefined

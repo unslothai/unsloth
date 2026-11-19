@@ -3243,6 +3243,9 @@ export const zhTW = {
         showMemoryBar: "VRAM 用量列",
         showMemoryBarDescription:
           "顯示模型權重、上下文和推測解碼的估計 VRAM 用量。",
+        showModelSizes: "模型大小與參數量",
+        showModelSizesDescription:
+          "在模型選擇器的每一列顯示模型大小與參數量。未知時留白。",
         fitOnDeviceOnly: "僅顯示放得下的模型",
         fitOnDeviceOnlyDescription:
           "在模型選擇器和模型中心中，隱藏超出此裝置 GPU 記憶體和 RAM 的模型。已下載的模型仍會顯示。",
