@@ -425,7 +425,12 @@ def _f3_block_ready(block: Any) -> bool:
         return False
     proc = getattr(attn, "processor", None)
     return (
-        (type(proc) is _CLS.get("Flux3AttnProcessor") or is_qk_processor(proc))
+        (
+            type(proc) is _CLS.get("Flux3AttnProcessor")
+            or is_qk_processor(proc)
+            # the strided cuDNN / INT8 processor takes the projections (diffusion_flux3_attn)
+            or getattr(proc, "_unsloth_projected_attention", False)
+        )
         and type(attn) is _CLS.get("Flux3Attention")
         and not _gemm._hooked(attn)
         and type(ff) is _CLS.get("Flux3FeedForward")
@@ -439,7 +444,8 @@ def _f3_block_ready(block: Any) -> bool:
 
 def _f3_attn_ff(block: Any, x: Any, image_rotary_emb: Any, mod: Any) -> Optional[tuple]:
     """(attention output, MLP output) of ``x`` with Q / K / V and the MLP input on one rotation + act quant; None:
-    the caller runs the stock modules. Mirrors ``Flux3AttnProcessor.__call__`` below the projections."""
+    the caller runs the stock modules. Below the projections: the strided processor's own method when it takes the
+    call, else a mirror of ``Flux3AttnProcessor.__call__``."""
     if not _f3_block_ready(block):
         return None
     attn, ff = block.attn, block.ff
@@ -449,6 +455,12 @@ def _f3_attn_ff(block: Any, x: Any, image_rotary_emb: Any, mod: Any) -> Optional
     _count("block")
     query, key, value, h = parts
     proc = attn.processor
+    if getattr(proc, "_unsloth_projected_attention", False):
+        out = proc.unsloth_projected_attention(
+            attn, query, key, value, x.shape[1], image_rotary_emb
+        )
+        if out is not None:
+            return out, _ff_tail(ff, h)
     query = query.unflatten(-1, (attn.heads, -1))
     key = key.unflatten(-1, (attn.heads, -1))
     value = value.unflatten(-1, (attn.heads, -1))
