@@ -255,9 +255,24 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               <div className="mt-5">
                 <DialogHero />
               </div>
-              <div className="mt-3 flex justify-center">
+              <ul className="mt-3 grid grid-cols-2 gap-2">
+                {FEATURES.map((feature) => (
+                  <li
+                    key={feature.label}
+                    className="flex items-center gap-2.5 rounded-full bg-muted dark:bg-muted/50 py-3 pr-4 pl-4"
+                  >
+                    <span className="flex shrink-0 items-center justify-center text-primary">
+                      {feature.icon}
+                    </span>
+                    <span className="font-medium text-foreground text-sm leading-snug">
+                      {feature.label}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-6 flex justify-center">
                 <Button
-                  variant="primary"
+                  variant="dark"
                   size="hero"
                   className="gap-1.5 px-5.5 py-2.5 text-[0.95rem]"
                   onClick={() => {
@@ -273,21 +288,6 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                   />
                 </Button>
               </div>
-              <ul className="mt-7 grid grid-cols-2 gap-2">
-                {FEATURES.map((feature) => (
-                  <li
-                    key={feature.label}
-                    className="flex items-center gap-2.5 rounded-full bg-muted dark:bg-muted/50 py-3 pr-4 pl-4"
-                  >
-                    <span className="flex shrink-0 items-center justify-center text-primary">
-                      {feature.icon}
-                    </span>
-                    <span className="font-medium text-foreground text-sm leading-snug">
-                      {feature.label}
-                    </span>
-                  </li>
-                ))}
-              </ul>
             </>
           ) : (
             <>
@@ -311,7 +311,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                 ))}
               </ol>
               <Button
-                variant="primary"
+                variant="dark"
                 size="hero"
                 className="mt-6 gap-1.5 justify-self-center px-5.5 py-2.5 text-[0.95rem]"
                 onClick={() => {
