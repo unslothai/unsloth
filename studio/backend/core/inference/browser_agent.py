@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lets the model drive the chat tab browser panel, its web pages and the files it shows (user can
-watch, stop, take over; tab gates risky actions). Enforces argument shapes, http(s) only, public or
-this-machine hosts off Studio ports, website policy before and after navigation, and fenced
-untrusted page text."""
+"""Lets the model drive the chat browser panel; enforces argument shapes, http(s) only, public or
+this-machine hosts off Studio ports, website policy before and after navigation, fenced untrusted
+text."""
 
 from __future__ import annotations
 

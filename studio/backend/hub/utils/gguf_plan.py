@@ -49,9 +49,8 @@ class GgufVariantPlan:
         return next((t for t in self.engram_tables if found and t.path == found.filename), None)
 
     def with_engram(self, precision: Optional[str]) -> "GgufVariantPlan":
-        """The files a load with the ``precision`` table fetches: the quant's own table shard
-        swapped for the standalone file. Unchanged when the table is the quant's own (same size),
-        the repo has no such table, or the quant's shard is unknown."""
+        """Swap the quant's table shard for the standalone file; unchanged if same size, absent or
+        unknown."""
         table = self.engram_table(precision)
         shard = self.engram_shard
         if table is None or shard is None or table.size == shard.size:

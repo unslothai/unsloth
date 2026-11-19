@@ -539,10 +539,9 @@ class RestyleSetup:
             for (repo, _, f), size in zip(wanted, sizes)
             if size > 0 and _blob_bytes(_hub_blob_dir(repo), f.get("sha256"), final = True) >= size
         )
-        # Room for what is left to download, the merged transformer, the VAE and (8-bit) the GGUF. Each output is
-        # written to .partial and replaces its file only once verified, so an existing copy still holds its space
-        # while the new one is written: outputs a failed run left (no record) are removed first, and a recorded
-        # setup's outputs are kept and not counted as free.
+        # Outputs go to .partial and replace their file only once verified, so an existing copy
+        # keeps its space meanwhile; unrecorded leftovers are removed first; recorded outputs are
+        # kept, not counted free.
         if not (root / RECORD_NAME).exists():
             for leftover in _outputs(root):
                 leftover.unlink(missing_ok = True)

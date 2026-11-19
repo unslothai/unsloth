@@ -2840,14 +2840,12 @@ _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 # absent text = no generated span cells, so a pass needs no span-free scoring re-render
 _SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
 _NOSCRIPT_TAG = re.compile(r"<(/?)noscript\b", re.IGNORECASE)
-# html.unescape raises once a decimal reference has more digits, leading zeros included, than
-# int()'s limit, which Python never sets below 640
+# html.unescape raises past int()'s digit limit (never below 640), leading zeros included.
 _LONG_DECIMAL_REF = re.compile(r"&#([0-9]{641,})")
 
 
 def _short_decimal_ref(match: re.Match[str]) -> str:
-    """The reference without its leading zeros, or &#65533 (U+FFFD, what html.unescape gives past
-    U+10FFFF) when 8 or more digits remain."""
+    """Leading zeros dropped; 8+ digits give U+FFFD, as html.unescape does past U+10FFFF."""
     digits = match.group(1).lstrip("0") or "0"
     return "&#" + (digits if len(digits) < 8 else "65533")
 

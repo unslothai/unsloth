@@ -2579,9 +2579,8 @@ def _mlx_audio_rows(
     image_col = _RESOLVE_IMAGE_COLUMN,
     warn = None,
 ) -> tuple:
-    """The CUDA transcription rows, with each clip left decoded so zoo can check its rate, and
-    the row's images (a mixed audio + image dataset) beside them. Returns (rows, image column);
-    an eval split takes the train split's image column, None for none."""
+    """CUDA transcription rows with clips left decoded for the zoo rate check, plus row images
+    beside them; returns (rows, image column); eval takes the train image column, None for none."""
     from datasets import Audio
     from unsloth_zoo.mlx.utils import audio_extractor_sampling_rate
 

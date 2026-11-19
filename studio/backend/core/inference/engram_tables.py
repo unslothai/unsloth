@@ -94,9 +94,7 @@ def _gguf_counts(path: Path, *, split_total: bool) -> Optional[int]:
 
 
 def repo_snapshots(repo_id: str) -> list[Path]:
-    """The cached snapshots of ``repo_id`` in the active and every known Hub cache root: the one
-    place a repo's standalone tables are looked for. A plain listing, so the inventory scan can
-    call it (gguf_cache_snapshots classifies, which reads the scan back)."""
+    """Cached snapshots of repo_id across all Hub cache roots; a plain listing, so the scan can call it."""
     target = f"models--{repo_id.replace('/', '--')}".lower()
     try:
         from hub.utils.hf_cache_state import hf_cache_roots

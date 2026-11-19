@@ -7268,8 +7268,7 @@ _PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
 
 
 def _quote_end(line: str, i: int) -> int:
-    """Index of the quote closing the one at ``i``; a `$(` or backtick inside double quotes opens a
-    fresh quoting context, as in bash. -1 when unterminated."""
+    """Index of the closing quote or -1; $( and backticks in double quotes open a new context."""
     quote, j, n = line[i], i + 1, len(line)
     while j < n and line[j] != quote:
         if quote == '"' and line[j] == "\\":
@@ -12907,9 +12906,8 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
 def _edit_file_parent(
     target: str, workdir: "str | None", create_dirs: bool
 ) -> "tuple[int | None, str]":
-    """(folder fd or None, name to use with it). Confined POSIX writes open every parent below the
-    workdir without following links, so a folder swapped for a link mid-call fails instead of
-    carrying the write outside; unconfined calls and Windows keep the path."""
+    """(folder fd or None, name); confined POSIX writes open each parent below workdir without
+    following links, so a swapped link fails; unconfined calls and Windows keep the path."""
     if workdir is None or not file_history.DIR_FD_WALK:
         if create_dirs:
             os.makedirs(os.path.dirname(target) or ".", exist_ok = True)
@@ -19208,9 +19206,8 @@ def _check_signal_escape_patterns(code: str):
             return self._cache[key]
 
         def _converged(self, query, node):
-            # A self-referential binding (d = d["system"]) reads the previous pass's answer, so repeat
-            # until no answer grows (they are finite sets, so this ends); keep only converged answers.
-            # Each pass writes a fresh layer over _final: copying _final per query made scans quadratic.
+            # Self-referential bindings need repeats until no answer grows; keep only converged
+            # answers.
             previous, self._guess = None, {}
             while True:
                 self._cache, self._cyclic = {}, False

@@ -3134,8 +3134,7 @@ def get_system_info(
 
     logger = logging.getLogger(__name__)
 
-    # The image/video picker explicitly asks on first use; ordinary system polls
-    # must not import torchao or diffusers just to populate optional picker tiers.
+    # Media probes run only when the picker asks; polls must not import torchao or diffusers.
     if probe_media:
         # Like an image or video load: the probes import torchao and diffusers, which must not race Dynamo.
         gate_torch_stack_import("media capability probe", logger)

@@ -154,8 +154,7 @@ def gpu_platform() -> str:
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
 
-    # Status is read by idle Chat. The wheel's build family is enough to choose
-    # an engine profile; discovering it must not initialize the ML runtime.
+    # Idle Chat reads this: the wheel's build family is enough; do not init the ML runtime.
     if hardware.DETECTION_COMPLETE.is_set():
         is_rocm = hardware.IS_ROCM
     else:

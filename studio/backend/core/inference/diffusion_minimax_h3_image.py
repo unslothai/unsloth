@@ -3101,9 +3101,7 @@ def quantize_block_(block: Any, scheme: str, *, device: Any) -> int:
     return len(names)
 
 
-# cuBLASLt int8 GEMMs (torch._int_mm) refuse some row counts with CUBLAS_STATUS_NOT_SUPPORTED, and torchao then
-# silently falls back to a much slower fp32 matmul. A packed sequence rarely lands on a supported count; multiples
-# of 32 always ran and also suit the fp8 row-wise GEMM.
+# cuBLASLt refuses some int8 row counts and torchao silently falls back to fp32, so pad rows to 32.
 ROW_MULTIPLE = 32
 
 
@@ -3192,8 +3190,7 @@ def _auto_scheme_by_fit(
     te_gb: Optional[float],
     inflight: int,
 ) -> tuple[Optional[str], str]:
-    """Auto by fit: bf16 when the table-form bf16 DiT stays on the card (beside the encoder with ``te_gb``), else
-    int8."""
+    """Auto picks bf16 DiT only if it fits beside the encoder (te_gb), else int8."""
     need = H3_IMAGE_DIT_TABLE_BF16_GB + activation_gb(width, height) + 1.5
     if vram_gb is not None and vram_gb >= need:
         if te_gb is None:
@@ -3756,9 +3753,8 @@ def _int8_epilogue(module: Any) -> bool:
 
 
 def stream_runs_rescaled(transformer: Any, scale: float = FP16_STREAM_SCALE) -> int:
-    """fp16 runs only (sm75): the stream enters and is written at 1/scale (folded into the writers' float32 epilogue)
-    and every norm reading it is scale invariant (eps / scale^2), so the result is exact up to rounding. Returns the
-    writers rescaled; 0 on a layout it does not know."""
+    """fp16 only (sm75): stream runs at 1/scale, folded into the writers fp32 epilogue; norms are
+    scale invariant (eps / scale^2), so exact up to rounding; returns 0 on an unknown layout"""
     inv = 1.0 / float(scale)
     blocks = list(getattr(transformer, "transformer_blocks", None) or ())
     norm_out = getattr(getattr(transformer, "norm_out", None), "norm", None)

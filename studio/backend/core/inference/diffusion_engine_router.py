@@ -236,9 +236,8 @@ def _reachable_intel_arc_render_node() -> bool:
 
 
 def _vulkan_gpu_for_cpu_torch() -> bool:
-    """True when torch is CPU-only but the host has a GPU the Vulkan sd.cpp build can render on:
-    an AMD card, an Intel Arc, or any Intel GPU once the llama.cpp backend is set to Vulkan. Never
-    beside NVIDIA, which Vulkan could enumerate first, nor under a mask Vulkan does not read (#13666)."""
+    """CPU-only torch with a GPU Vulkan sd.cpp can use (AMD, Intel Arc, or Intel once llama.cpp
+    backend is Vulkan); never beside NVIDIA or under a mask Vulkan does not read (13666)."""
     if not sd_cpp_vulkan_fallback_enabled():
         return False
     if (sys.platform, platform.machine().lower()) not in _VULKAN_SD_CPP_PLATFORMS:

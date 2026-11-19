@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stream text-encoder layers through the card while a DiT training run encodes its captions.
-
-The conditioning phase used to move each whole bf16 text encoder onto the card (Qwen3-VL 17.5 GB for Qwen-Image-2.1,
-UMT5-XXL 11.4 GB for Wan2.2, Qwen3 8 GB for FLUX.2 klein 4B), which is more than the nf4 training loop needs, so the
-encoder, not training, decided whether a run fit. Here the encoder's non-layer weights (embeddings, norms, any vision
-tower) go to the card and its decoder layers stay on the host: each layer is copied in on a side stream ``DEPTH``
-layers ahead and dropped after its forward. Compute still runs on the card with the same weights and kernels, so the
-embeddings are bit-identical to the whole-module path.
-
-``UNSLOTH_DIFFUSION_TRAIN_TE_STREAM``: ``auto`` (default) streams only when the encoders do not fit in free VRAM, and
-then only as many layers as needed; ``on`` streams every layer; ``off`` is the whole-module move.
-"""
+"""Streams text-encoder layers to the card during DiT captioning; UNSLOTH_DIFFUSION_TRAIN_TE_STREAM:
+auto (default) streams only the layers needed when encoders do not fit free VRAM; on streams all;
+off is whole-module; embeddings bit-identical to it."""
 
 from __future__ import annotations
 
@@ -339,10 +330,8 @@ def _plan_resident(layer_bytes: list[int], budget: int) -> int:
 
 
 def place_text_encoders(pipe: Any, device: str) -> list[str]:
-    """Stream the host-resident text encoders of ``pipe`` per ``te_stream_mode()``; returns the attrs it streamed.
-
-    Encoders it does not stream are left for the caller's whole-module move: quantized or already-placed encoders,
-    a non-CUDA device, ROCm under ``auto``, a layout with no layer list, or encoders that fit."""
+    """Stream host-resident encoders per te_stream_mode() and return the attrs streamed; skip
+    quantized or placed encoders, non-CUDA, ROCm under auto, no layer list, or encoders that fit."""
     mode = te_stream_mode()
     if mode == "off" or device != "cuda":
         return []

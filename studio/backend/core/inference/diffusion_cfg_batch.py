@@ -19,13 +19,9 @@ COMPILED_RESIDENT_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED"
 # 0: any graph a paired call compiles turns pairing off for the load, the first render included
 CFG_PAIR_COMPILE_WARMUP_ENV = "UNSLOTH_DIFFUSION_CFG_PAIR_COMPILE_WARMUP"
 
-# The CFG policy of every denoiser class Studio loads (test_diffusion_cfg_batch_policy pins it to diffusion_families
-# and video_families): exactly one of the three tables below.
-#
-# Batched by this router: the forward keeps no state between calls and both branches share every per-step input but
-# the text conditioning (diffusers 0.42.1 pipelines: same latent object, cond then uncond call). FLUX.3 batches only
-# when both prompts land in the same 80-token window (its transformer attends the padding, so a padded branch would
-# not be the same computation); a shorter negative keeps that shape plain.
+# FLUX.3 pairs CFG branches only when both prompts fit one 80-token window (padding would change its
+# output); diffusers 0.42.1 pipelines; a shorter negative stays plain;
+# test_diffusion_cfg_batch_policy pins each class to one table.
 STATELESS_CLASSES = frozenset(
     {
         "Flux2Transformer2DModel",
@@ -60,9 +56,7 @@ NOT_BATCHABLE: dict[str, str] = {
     "runs eager",
     "CosmosTransformer3DModel": "Anima's modular guider runs each branch as its own guider batch "
     "(prepare_models before each call)",
-    # Measured (Colab L4, 1024x1024, 8 steps): 1.817 vs 1.454 s/step eager, 1.312 vs 1.078 compiled. A single call
-    # packs each prompt at its own caption length with no mask; the doubled call pads both to the longer one and runs
-    # masked attention.
+    # Batching is slower: the doubled call pads both prompts to the longer one and masks attention.
     "Lumina2Transformer2DModel": "measured slower batched: the doubled call pads both captions and runs masked "
     "attention (L4 +25% eager, +22% compiled)",
 }

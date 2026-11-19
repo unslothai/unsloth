@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Image generation queue: full generate requests wait here and run one at a time through the normal generate path.
-
-In-process only, so it survives a page reload but not a server restart. Every call happens on the event loop, so
-the job list needs no lock. Each account sees and edits only its own jobs."""
+"""In-process image queue, one at a time on the event loop (no lock); lost on server restart; each
+account sees and edits only its own jobs."""
 
 from __future__ import annotations
 

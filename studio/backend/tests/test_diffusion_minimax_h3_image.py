@@ -1376,9 +1376,8 @@ def test_the_fp16_int8_blocks_rescale_in_float32(h3i):
 
 
 def test_the_fp16_block_stream_runs_rescaled_past_the_fp16_range(h3i):
-    """The H3 residual stream outgrows float16 (the first block alone writes ~1e5 on a real render): with the rows
-    entering at 1/4096, the blocks writing at 1/4096 and the stream norms' eps at 1/4096^2, the velocity matches the
-    float32 forward where plain float16 reads inf / NaN."""
+    """H3 stream outgrows fp16; scaling rows and block writes by 1/4096 and norm eps by 1/4096^2
+    avoids inf/NaN."""
     import torch
 
     pytest.importorskip("torchao")
@@ -1939,8 +1938,7 @@ def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, m
 
 
 def test_int8_attention_stays_off_where_it_loses_the_race(h3i, release, monkeypatch):
-    """A card where the INT8 route times slower than the native one keeps native; UNSLOTH_H3_IMAGE_INT8_ATTENTION=1
-    skips the race and forces it."""
+    """Losing race stays native; UNSLOTH_H3_IMAGE_INT8_ATTENTION=1 forces INT8 with no race."""
     from core.inference import diffusion_attention as da
 
     root, _ref, te = release
