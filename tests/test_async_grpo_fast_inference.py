@@ -554,6 +554,21 @@ def test_top_logprobs_are_keyed_by_token_id_as_trl_reads_them(served):
     assert [list(_by_token_id([t])[0]) for t in zero] == [[6], [7]]
 
 
+def test_a_sampled_token_missing_from_the_logprobs_is_refused_not_substituted():
+    # The first entry is another token's logprob: returning it would feed TRL a wrong behaviour logprob.
+    entry = {
+        900: types.SimpleNamespace(logprob = -0.25),
+        8: types.SimpleNamespace(logprob = -3.0),
+    }
+    assert server_module._sampled_logprob([entry], 0, 8) == -3.0
+    with pytest.raises(ValueError, match = "no logprob for sampled token 7 at position 0"):
+        server_module._sampled_logprob([entry], 0, 7)
+    completion = types.SimpleNamespace(token_ids = [7], logprobs = [entry], finish_reason = "length")
+    output = types.SimpleNamespace(request_id = "r", outputs = [completion])
+    with pytest.raises(ValueError, match = "sampled token 7"):
+        server_module.UnslothAsyncVLLMServer.finish(output)
+
+
 def test_metrics_report_kv_capacity_and_load_in_vllm_format(served):
     import re
 

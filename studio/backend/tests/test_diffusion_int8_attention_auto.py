@@ -416,8 +416,7 @@ def test_a_lost_race_gives_every_module_back_its_own_processor(card, monkeypatch
 
 
 def test_a_won_race_keeps_only_the_engaged_strided_processors(card, monkeypatch):
-    """Won where the card has a kernel: those modules run the strided processor; the head dim with no kernel gets its
-    own processor back."""
+    """Only head dims with a kernel keep the strided processor; the rest get their own back."""
     pipe, stocks = _swapping_pipe(card, monkeypatch)
     assert I.install_auto(pipe, _TARGET) == 3
     blocks = list(pipe.transformer.blocks)
@@ -728,9 +727,8 @@ def test_a_bucket_decision_applies_only_to_plans_that_also_had_sinks(monkeypatch
 
 
 def test_after_a_capture_no_plan_races_or_moves_a_route(monkeypatch):
-    """A CUDA graph that recorded an undecided sink-route plan replays the sink path: from then on a plan with sinks
-    keeps that path without a race (so no route or processor changes under a recorded graph), one without sinks
-    runs the kernels without it (the same bits); a new pipeline races again."""
+    """A recorded CUDA graph fixes the sink path: sink plans keep it, sink-free plans run without it
+    with the same bits; no route moves under it; a new pipeline races again."""
     import contextlib
 
     I.forget_plans()

@@ -1139,6 +1139,23 @@ def _block_varlen_prepare(
         kwargs.get("attention_mask"), seq_info[1], total, window
     ):
         return None
+    if (
+        torch.version.hip is not None
+        and dtype in (torch.float16, torch.bfloat16)
+        and head_dim <= 256
+        and not _varlen_in_graph(
+            hidden_states.device.index,
+            dtype,
+            head_dim,
+            n_heads,
+            n_kv_heads,
+            window,
+            active_flash_impl(),
+        )
+    ):
+        # ROCm builds whose flash varlen disagrees with its fake kernel (gfx1151, torch 2.11) cannot run it
+        # in the graph, and a traced call would attend over the dense mask: the eager wrapper runs varlen.
+        return _LEAVE_BLOCK
     _, cu_seqlens, max_seqlen = seq_info
     # The segment count changes every step: one graph for all of them.
     torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)

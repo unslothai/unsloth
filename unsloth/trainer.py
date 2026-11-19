@@ -2171,9 +2171,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
             # Ring cannot keep packed rows apart: packing goes off below, as before 'auto' existed.
             is_ring_context_parallel = cp_backend == "ring"
-            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an
-            # automatic padding-free choice would fail the first CP step.
-            # A deferred (string) model is classified by its resolved config's model types.
+            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses refuse packed batches (auto
+            # padding-free would fail); string models are classified by their config's model types.
             if cp_backend == "ulysses":
                 from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
                 ulysses_packing_blocker = _ulysses_packing_blocker(

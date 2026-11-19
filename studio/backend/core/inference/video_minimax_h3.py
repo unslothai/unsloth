@@ -522,8 +522,7 @@ def fit_h3_reference_image(image: Any, *, width: int, height: int, policy: str) 
 
 @functools.lru_cache(maxsize = None)
 def _h3_sized_reference_setup_class(base: type) -> type:
-    """Ref2VA setup step that takes the request's references as Studio prepared them: images and video frames at
-    their size, soundtracks at their full length."""
+    """Ref2VA setup: request images and frames keep Studio's size, soundtracks full length."""
 
     class StudioSizedRef2VASetupStep(base):
         def __call__(self, components: Any, state: Any) -> Any:

@@ -2786,6 +2786,13 @@ class TrainingBackend:
         with self._lock:
             return self._run_finished_locked()
 
+    def wait_for_finished_worker(self, timeout: float = _STOP_GRACE_S) -> None:
+        with self._lock:
+            proc = self._proc
+            if proc is None or not self._run_finished_locked():
+                return
+        proc.join(timeout = timeout)
+
     def is_training_active(self) -> bool:
         # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded.
         if getattr(self, "_new_job_spawn_id", None) is not None or getattr(

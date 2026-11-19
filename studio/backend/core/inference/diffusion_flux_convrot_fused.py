@@ -190,6 +190,17 @@ def merge_qkv(transformer: Any, logger: Any = None) -> int:
     return count
 
 
+def is_replica_record(key: str, value: Any) -> bool:
+    """The merged QKV buffer lives outside the module tree, so a deep copy would leave it on the source card."""
+    return key == _QKV_ATTR
+
+
+def rebuild_replica(source: Any, replica: Any) -> int:
+    if not fused_qkv_count(source):
+        return 0
+    return merge_qkv(replica)
+
+
 def fused_qkv_count(transformer: Any) -> int:
     if transformer is None:
         return 0

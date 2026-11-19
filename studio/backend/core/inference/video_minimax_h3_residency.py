@@ -295,8 +295,7 @@ def _repin_leaves_in(
     keys: set,
     depth: int = 0,
 ) -> tuple[Any, int]:
-    """``src`` with only its inner tensors stored in one of ``keys`` re-pinned (exact copies); the others are shared.
-    Returns ``(src, 0)`` when none is."""
+    """Re-pins inner tensors of src stored in keys (exact copies); returns (src, 0) if none."""
     from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
     if depth < 4 and is_traceable_wrapper_subclass(src):

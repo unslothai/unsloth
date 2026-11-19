@@ -73,6 +73,7 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
         "flux.2-dev",
         "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
         "minimax-h3",
         "minimax-h3-image",
@@ -85,7 +86,7 @@ TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset(f.name for f in _VIDEO_REGI
 
 # flow_shift defaults to auto to reproduce inference sigmas; dynamic-shift schedulers and MiniMax-H3 otherwise train unshifted.
 AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset(
-    {"qwen-image", "qwen-image-2.1", "ltx-2", "minimax-h3"}
+    {"qwen-image", "qwen-image-2.1", "ltx-2", "ltx-2.5", "minimax-h3"}
 )
 
 # Video latents are allocated on the family's spatial compression grid, so a training resolution off that grid
@@ -227,9 +228,14 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     family = _resolve_trainable_family(base_model, model_family)
-    from core.inference.video_families import assert_ltx_pick_supported
+    from core.inference.video_families import (
+        assert_local_pipeline_family,
+        assert_ltx_pick_supported,
+    )
 
     assert_ltx_pick_supported(family, base_model)
+    # "ltx-2" must not train a local LTX-2.5 pipeline, nor vice versa.
+    assert_local_pipeline_family(base_model, family)
     return family
 
 
@@ -263,10 +269,6 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
     _refuse_component_only_repo(base_model)
     # Like component-only refusal: the family is trainable, but the loader cannot open this repo.
     _refuse_ltx23_training_base(base_model)
-    # Before either branch: model_family="ltx-2" must not train a local LTX-2.5 pipeline.
-    from core.inference.video_families import assert_local_pipeline_not_ltx25
-
-    assert_local_pipeline_not_ltx25(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -299,7 +301,11 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
     vid = detect_video_family(base_model)
     if vid is None and is_local_diffusers:
         from core.inference.video_families import local_cosmos3_pipeline_family
-        local_family = local_cosmos3_pipeline_family(base_model)
+        from core.inference.video_families import local_ltx_pipeline_family
+
+        local_family = local_cosmos3_pipeline_family(base_model) or local_ltx_pipeline_family(
+            base_model
+        )
         vid = detect_video_family("", override = local_family) if local_family else None
     if vid is not None:
         if vid.name not in TRAINABLE_VIDEO_FAMILIES:
@@ -477,6 +483,13 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
+    "ltx-2.5": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     # DiffSynth-Studio's Wan recipe; 704 is TI2V-5B's native short edge.
     "wan2.2-ti2v-5b": {
         "lora_rank": 32,
@@ -563,6 +576,12 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
+    "ltx-2.5": {
+        "params": "22B",
+        "qlora_vram_gb": 24,
+        "gated": False,
+        "note": "Video: trains a style LoRA on still images; runs on the Video page's distilled model.",
+    },
     # Measured on a B200 (nf4, 704px, rank 32): run peaks at 11.6 GB during the one-time UMT5-XXL encode.
     "wan2.2-ti2v-5b": {
         "params": "5B",
@@ -622,6 +641,7 @@ _DIT_TRAIN_FAMILIES = frozenset(
         "flux.2-dev",
         "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
     }
 )
@@ -2036,6 +2056,7 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         "black-forest-labs/flux.2-klein-base-9b",
         # A video family, so the image-side inference allowlist never covered it; safetensors-only, no remote code.
         "lightricks/ltx-2",
+        "lightricks/ltx-2.5-diffusers",
         # MiniMax-H3's official base, for the same reason: safetensors-only, no remote code.
         "minimaxai/minimax-h3",
         "wan-ai/wan2.2-ti2v-5b-diffusers",
@@ -2044,10 +2065,16 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
 
 # LTX-2.3 repos are single-file checkpoints the trainer cannot load; refuse before eviction.
 _LTX23_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.3", "lightricks/ltx-2.3-fp8")
+_LTX25_SINGLE_FILE_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.5",)
 
 
 def _refuse_ltx23_training_base(base_model: str) -> None:
     """Raise for an LTX-2.3 base: the family routing accepts it, the training loader cannot."""
+    if str(base_model or "").strip().lower() in _LTX25_SINGLE_FILE_TRAIN_UNSUPPORTED:
+        raise ValueError(
+            f"'{base_model}' ships LTX-2.5 as single-file checkpoints, which cannot be a training base: the "
+            f"trainer loads a diffusers pipeline. Train from 'Lightricks/LTX-2.5-Diffusers' instead."
+        )
     if str(base_model or "").strip().lower() not in _LTX23_TRAIN_UNSUPPORTED:
         return
     raise ValueError(

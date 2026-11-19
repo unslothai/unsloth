@@ -67,8 +67,7 @@ def audio_transcription_messages(
     label: str,
     n_images: int = 0,
 ) -> list:
-    """System/user/assistant chat turns that train an audio-input model to transcribe ``audio``,
-    with one image slot per image of the row ahead of the audio."""
+    """Chat turns training an audio-input model to transcribe audio; n_images image slots precede it."""
     return [
         {
             "role": "system",

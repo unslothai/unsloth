@@ -488,6 +488,10 @@ class StepPolicy:
             return self.generation_a16
         return False
 
+    def compile_key(self) -> tuple:
+        """Compile guard key; a CFG replica shares this object (diffusion_multigpu._shared_state_key)."""
+        return (bool(self.generation_a16), bool(self.reasoner_a16))
+
 
 _POLICY_FIELDS = (
     "schema_version",

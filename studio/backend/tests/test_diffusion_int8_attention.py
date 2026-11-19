@@ -52,8 +52,7 @@ needs_kernel = pytest.mark.skipif(
 
 
 def _card_dtype():
-    """What Studio's pipelines run in on this card: sm75 has no bf16 (Inductor and the fused SDPA kernels refuse
-    it), so fp16 there."""
+    """bf16 from sm80 on this card, else fp16: sm75 has no bf16 for Inductor or fused SDPA."""
     return torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
 
 
@@ -72,8 +71,7 @@ def _clean(monkeypatch):
 
 
 def rotate_ref(x):
-    """The quantisers' rotation on the last dim: fixed signs, then a Hadamard transform over every ROT_GROUP
-    channels (the head dim where that is smaller)."""
+    """Fixed sign flips, then a Hadamard over each ROT_GROUP channels (head dim if smaller)."""
     D = x.shape[-1]
     G = min(I.ROT_GROUP, D)
     cols = torch.arange(D, device = x.device)
@@ -160,10 +158,9 @@ def reference_quantise(
 
 
 def reference_v_range(vh, vstep, nvc, vrows):
-    """(centre, gain, clip) per head in fp64, as the quantisers' v_range: the full range of every channel, or, where
-    at least half the channels have a full range more than SINK_RATIO (2) times their range without the stats chunk
-    that holds the head's largest |v| (an attention sink), that robust range widened by SINK_MARGIN (2) (at most the
-    full range), clipped."""
+    """Per-head (centre, gain, clip) in fp64: full channel range, unless at least half the channels
+    exceed SINK_RATIO (2) x their range without the largest-|v| chunk; then robust range widened
+    by SINK_MARGIN (2), at most full range, clipped."""
     BH, Sk, D = vh.shape
     lo, hi = vh[:, ::vstep].amin(1), vh[:, ::vstep].amax(1)
     vc, vg = 0.5 * (hi + lo), (0.5 * (hi - lo)).clamp_min(1e-12)
@@ -456,9 +453,8 @@ def _cpu_inductor_missing() -> str:
 @pytest.mark.parametrize("heads_first", [False, True], ids = ["bshd", "heads_first"])
 @pytest.mark.parametrize("dynamic", [False, True], ids = ["static", "dynamic"])
 def test_the_native_fallback_keeps_the_fake_layout_under_inductor(sdpa, heads_first, dynamic):
-    """The fake promises a contiguous ``[B, S, H, D]`` and Inductor asserts those strides on the real output, so
-    the native fallback must hand back that layout, not SDPA's permuted ``[B, H, S, D]``. opcheck does not catch
-    this: only a compiled graph executing the op does."""
+    """Native fallback must return contiguous [B, S, H, D], not SDPA permuted [B, H, S, D]: Inductor
+    asserts those strides and opcheck misses them; only a compiled graph catches it."""
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
     I.int8_attention_op()
@@ -592,9 +588,8 @@ ORDERINGS = ("qkw", "pvw", "spread")
 
 
 def test_the_orderings_reach_the_kernel_as_defines():
-    """qkw / pvw / spread are per-card config keys that become compile-time defines; a config without them
-    compiles the kernel as it was. Head dim 128 on sm120 (all three) and on sm75 (the two product orders: its one
-    stage has no next tile to spread) are the configs that set them."""
+    """qkw, pvw and spread are per-card keys that become compile-time defines; configs without them
+    compile the kernel as before; head dim 128 sets all three on sm120 and two on sm75."""
     tuned = {((12, 0), 128): {"QKW": 1, "PVW": 8, "SPREAD": 5}, ((7, 5), 128): {"QKW": 1, "PVW": 8}}
     for capability in sorted(SHARED_LIMIT):
         for head_dim in I.HEAD_DIMS:
@@ -830,9 +825,7 @@ def test_a_launch_plan_is_keyed_by_everything_it_depends_on(monkeypatch):
 
 
 def test_v_range_over_every_key_keeps_a_short_sequence_accurate(monkeypatch):
-    """16 tokens, one of them with V thirty times the rest (a text refiner call). With the range of V taken over
-    every 8th key (keys 0 and 8 here) the gain of most channels came out far too small and the error is more than
-    four times larger; over every key it is as accurate as a long call."""
+    """V range over every 8th key gives too small gains and 4x the error; over every key it is accurate."""
     q, k, v = I.probe_inputs("cpu", torch.float32, 16, 2, 128)
     v = v.clone()
     v[:, 3] *= 30.0
@@ -1598,11 +1591,9 @@ def _sink_case(
 @pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
 @pytest.mark.parametrize("sinks", [(4097, 4098), (1,), (2, 3)])
 def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
-    """A few V keys 60x out in most channels set the per-channel range of every key: a head with them takes the range
-    without the stats chunk of its largest |v|, clips that chunk in place and adds the clipped-off parts back after
-    the kernel. Its error against fp32 stays within 4x that of the same call without the sinks (3.1x at most over
-    these cases on T4 / A100 / L4, the kernel equal to its fp64 model; 5.5x or more with the range over every key),
-    the kernel matches its torch model, and the heads without sinks keep the full range (no clipped keys)."""
+    """A few V keys 60x out set the range of every key: sink heads clip that chunk and add the
+    clipped parts back after the kernel; error within 4x of no sinks (3.1x at most on T4, A100,
+    L4; 5.5x or more with the range over every key); heads without sinks keep the full range."""
     shape = (1, 4128, 4, head_dim)
     dtype = _card_dtype()
     config = _cuda_config(head_dim)
@@ -1695,9 +1686,8 @@ def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sink
 
 @needs_kernel
 def test_a_new_prompt_length_learns_its_own_sinks(monkeypatch):
-    """A plan whose query and key counts share a DECIDE_BUCKET with a decided sink-free plan does not take that
-    decision at once: it learns from its own first calls on the sink path (a sink-free head gets the same bits), so a
-    sink-free verdict never applies to a call with sinks."""
+    """Plans sharing a DECIDE_BUCKET with a decided sink-free plan learn their own sink verdict from
+    their first sink-path calls; a sink-free verdict never applies to a call with sinks."""
     monkeypatch.setattr(I, "_sink_race", lambda *a, **k: pytest.fail("no sinks: no race"))
     config = _cuda_config(128)
     I.forget_plans()
@@ -1879,9 +1869,8 @@ def test_the_sink_race_never_takes_a_path_with_a_non_finite_error():
 
 
 def test_a_plan_that_decides_torch_attention_takes_its_bucket_out_of_the_raced_routes(monkeypatch):
-    """A plan that decides torch's attention raises the token floor of every raced route on its card and head dim
-    past its DECIDE_BUCKET, so those calls leave the op (and its compiled graph) for good; the decision holds for the
-    bucket's other plans, and a pipeline load forgets both."""
+    """Deciding torch attention lifts the token floor of raced routes past DECIDE_BUCKET for good
+    and for the other plans in that bucket; a pipeline load forgets both."""
     from core.inference import diffusion_int8_attention_dispatch as D
 
     class Event:
@@ -1923,8 +1912,7 @@ def test_a_plan_that_decides_torch_attention_takes_its_bucket_out_of_the_raced_r
 
 
 def test_the_races_time_the_path_of_a_plan_without_sinks(monkeypatch):
-    """The races time on probe inputs (no attention sinks): inside _median_ms every kernel call takes the path a plan
-    without sinks runs and counts toward no decision, so the routing of the families without sinks is what it was;
+    """Probe timing inside _median_ms takes the sink-free path and counts toward no decision;
     outside it the plan decides again."""
 
     class Event:
@@ -2157,10 +2145,7 @@ def test_the_output_does_not_drift_with_the_key_count(flush_tail):
 @pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_the_sm75_instructions_give_the_same_bits(head_dim, dtype):
-    """sm75 computes each 16x8x32 product as four 8x8x16 ones on the same operand registers, copies tiles with plain
-    loads and reads the Q operands from global memory: the same integers, so the same output bits as every other
-    card (the sm75 code runs on later cards too, which is how this is checked off a T4). A T4 cannot run the sm80
-    instructions: there the sm75 variants are compared with the shipped config only."""
+    """sm75 variants match other cards bit for bit; on a T4 they are compared to the shipped config."""
     q, k, v = I.probe_inputs("cuda", dtype, 2500, 3, head_dim, seed = 5)
     config = {k_: v_ for k_, v_ in _cuda_config(head_dim).items() if k_ != "max_registers"}
     ref = I.int8_attention(q, k, v)

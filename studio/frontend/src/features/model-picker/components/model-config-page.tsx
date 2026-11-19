@@ -606,6 +606,17 @@ function GgufContextLengthSetting({
   );
   const shown = draft == null ? value : fromSlider(draft);
   const isAuto = shown === 0;
+  const reset = isAuto ? null : (
+    <button
+      type="button"
+      onClick={() => onChange(0)}
+      className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      aria-label="Reset context to Auto"
+      title="Reset to Auto"
+    >
+      <HugeiconsIcon icon={ArrowTurnBackwardIcon} className="size-4" strokeWidth={2} />
+    </button>
+  );
   const label = (
     // The hint and reset float after the label, so the slider's left gap counts from its text.
     <div className="relative flex shrink-0 items-center">
@@ -623,21 +634,7 @@ function GgufContextLengthSetting({
             ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
             : ""}
         </InfoHint>
-        {isAuto ? null : (
-          <button
-            type="button"
-            onClick={() => onChange(0)}
-            className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label="Reset context to Auto"
-            title="Reset to Auto"
-          >
-            <HugeiconsIcon
-              icon={ArrowTurnBackwardIcon}
-              className="size-4"
-              strokeWidth={2}
-            />
-          </button>
-        )}
+        {stacked ? null : reset}
       </span>
     </div>
   );
@@ -666,7 +663,8 @@ function GgufContextLengthSetting({
       />
     ) : null;
   const input = (
-    <div className="ml-auto flex shrink-0 items-center">
+    <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      {stacked ? reset : null}
       <NumericValueInput
         ref={inputRef}
         value={isAuto ? autoValue : shown}
@@ -1209,6 +1207,180 @@ function AdvancedGroup({
   );
 }
 
+const GGUF_VISION_HINT =
+  "Loads the vision projector so the model can read images. Turning it off " +
+  "frees that VRAM for more layers on the GPU. Text generation is unaffected " +
+  "either way.";
+
+const MLX_VISION_HINT =
+  "Lets the model read images. Turning it off stops image input and frees the " +
+  "memory the vision weights hold. Text generation works either way. Adapters " +
+  "and models that take audio keep it on.";
+
+function VisionRow({
+  config,
+  update,
+  hint,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  hint: string;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Vision</span>
+        <InfoHint>{hint}</InfoHint>
+      </div>
+      <Switch
+        className="shrink-0"
+        aria-label="Vision"
+        checked={!config.disableVision}
+        onCheckedChange={(checked) => update({ disableVision: !checked })}
+      />
+    </div>
+  );
+}
+
+const GGUF_REASONING_BUDGET_HINT =
+  "Maximum thinking tokens. Leave blank for unlimited; 0 turns reasoning off.";
+
+const MLX_REASONING_BUDGET_HINT =
+  "Maximum thinking tokens per reply. Leave blank for unlimited; 0 closes the " +
+  "thinking block as soon as it opens. While a budget is set, replies decode " +
+  "without a speculative drafter.";
+
+function ReasoningBudgetRows({
+  config,
+  update,
+  hint,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  hint: string;
+}) {
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Reasoning Budget</span>
+          <InfoHint>{hint}</InfoHint>
+        </div>
+        {/* Blank, not -1: a literal -1 made the next digit typed read -15 and clamp back. */}
+        <input
+          type="number"
+          min={-1}
+          max={2_147_483_647}
+          step={1}
+          value={config.reasoningBudget === -1 ? "" : config.reasoningBudget}
+          placeholder="unlimited"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw === "") {
+              update({ reasoningBudget: -1 });
+              return;
+            }
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed)) {
+              update({
+                reasoningBudget: Math.max(-1, Math.min(2_147_483_647, parsed)),
+              });
+            }
+          }}
+          aria-label="Reasoning Budget"
+          className={NUMBER_INPUT_CLASS}
+        />
+      </div>
+
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
+          <InfoHint>
+            Optional text added before the end-of-thinking tag when the budget
+            runs out.
+          </InfoHint>
+        </div>
+        <input
+          type="text"
+          value={config.reasoningBudgetMessage}
+          placeholder="None"
+          onChange={(event) => {
+            if (isReasoningBudgetMessageValid(event.target.value)) {
+              update({ reasoningBudgetMessage: event.target.value });
+            }
+          }}
+          aria-label="Reasoning Budget Message"
+          className={TEXT_INPUT_CLASS}
+        />
+      </div>
+    </>
+  );
+}
+
+const MLX_BATCH_HINT =
+  "Most prompt tokens one prefill step reads across replies started together. " +
+  "Leave blank to read every waiting reply at once. Lower values hold less " +
+  "memory at once; below the micro-batch size, replies are read one at a time.";
+
+const MLX_CACHE_RAM_HINT =
+  "Memory in MiB kept for reusing earlier prompts, so a returning conversation " +
+  "is not read again. Leave blank for the default (15% of the memory the GPU may " +
+  "use); 0 turns it off. It comes out of the memory the model and its context can use.";
+
+const MLX_MICRO_BATCH_HINT =
+  "Prompt tokens each prefill step reads. Leave blank for the default (2048). " +
+  "Larger values read long prompts faster but use more memory; when experts " +
+  "are read from disk, Unsloth's own step is the most it uses.";
+
+/** A blank-means-default count, clamped to the batch bounds llama.cpp and MLX share. */
+function BatchCountRow({
+  label,
+  hint,
+  ariaLabel,
+  value,
+  onChange,
+  min = N_BATCH_MIN,
+  max = N_BATCH_MAX,
+}: {
+  label: string;
+  hint: string;
+  ariaLabel: string;
+  value: number | null | undefined;
+  onChange: (value: number | null) => void;
+  min?: number;
+  max?: number;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>{label}</span>
+        <InfoHint>{hint}</InfoHint>
+      </div>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={1}
+        value={value ?? ""}
+        placeholder="auto"
+        onChange={(event) => {
+          const raw = event.target.value;
+          if (raw === "") {
+            onChange(null);
+            return;
+          }
+          const parsed = Number.parseInt(raw, 10);
+          if (Number.isFinite(parsed)) {
+            onChange(Math.max(min, Math.min(max, parsed)));
+          }
+        }}
+        aria-label={ariaLabel}
+        className={NUMBER_INPUT_CLASS}
+      />
+    </div>
+  );
+}
+
 const GGUF_PARALLEL_HINT =
   "Decode slots (--parallel) for concurrent requests. Leave blank for the server " +
   "default. More slots share the context pool and use more VRAM.";
@@ -1669,6 +1841,9 @@ function MlxAdvancedSettings({
       ) : null}
         </div>
       )}
+      {servedByMlx && (
+        <VisionRow config={config} update={update} hint={MLX_VISION_HINT} />
+      )}
       {servedByMlx && (int8PrefillAvailable || config.mlxInt8Prefill) && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -1720,6 +1895,42 @@ function MlxAdvancedSettings({
       )}
       {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
+      )}
+      {servedByMlx && (
+        <BatchCountRow
+          label="Batch Size"
+          hint={MLX_BATCH_HINT}
+          ariaLabel="Prompt batch size"
+          value={config.nBatch}
+          onChange={(nBatch) => update({ nBatch })}
+        />
+      )}
+      {servedByMlx && (
+        <BatchCountRow
+          label="Micro-batch Size"
+          hint={MLX_MICRO_BATCH_HINT}
+          ariaLabel="Prompt micro-batch size"
+          value={config.nUbatch}
+          onChange={(nUbatch) => update({ nUbatch })}
+        />
+      )}
+      {servedByMlx && (
+        <BatchCountRow
+          label="Cache RAM"
+          hint={MLX_CACHE_RAM_HINT}
+          ariaLabel="Prompt cache size in MiB"
+          value={config.cacheRam}
+          onChange={(cacheRam) => update({ cacheRam })}
+          min={0}
+          max={CACHE_RAM_MAX}
+        />
+      )}
+      {servedByMlx && (
+        <ReasoningBudgetRows
+          config={config}
+          update={update}
+          hint={MLX_REASONING_BUDGET_HINT}
+        />
       )}
       {servedByMlx && (
         <MlxOffloadSettings
@@ -2069,22 +2280,7 @@ function GgufAdvancedSettings({
       />
 
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Vision</span>
-            <InfoHint>
-              Loads the vision projector so the model can read images. Turning
-              it off frees that VRAM for more layers on the GPU. Text generation
-              is unaffected either way.
-            </InfoHint>
-          </div>
-          <Switch
-            className="shrink-0"
-            aria-label="Vision"
-            checked={!config.disableVision}
-            onCheckedChange={(checked) => update({ disableVision: !checked })}
-          />
-        </div>
+        <VisionRow config={config} update={update} hint={GGUF_VISION_HINT} />
       )}
       {!isDiffusion && (
         <EngramTableRow config={config} update={update} source={engramSource} />
@@ -2334,66 +2530,11 @@ function GgufAdvancedSettings({
 
       <AdvancedGroup title="Output">
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Reasoning Budget</span>
-            <InfoHint>
-              Maximum thinking tokens. Leave blank for unlimited; 0 turns
-              reasoning off.
-            </InfoHint>
-          </div>
-          {/* Blank, not -1: a literal -1 made the next digit typed read -15 and clamp back. */}
-          <input
-            type="number"
-            min={-1}
-            max={2_147_483_647}
-            step={1}
-            value={config.reasoningBudget === -1 ? "" : config.reasoningBudget}
-            placeholder="unlimited"
-            onChange={(event) => {
-              const raw = event.target.value;
-              if (raw === "") {
-                update({ reasoningBudget: -1 });
-                return;
-              }
-              const parsed = Number.parseInt(raw, 10);
-              if (Number.isFinite(parsed)) {
-                update({
-                  reasoningBudget: Math.max(
-                    -1,
-                    Math.min(2_147_483_647, parsed),
-                  ),
-                });
-              }
-            }}
-            aria-label="Reasoning Budget"
-            className={NUMBER_INPUT_CLASS}
-          />
-        </div>
-      )}
-
-      {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
-            <InfoHint>
-              Optional text added before the end-of-thinking tag when the budget
-              runs out.
-            </InfoHint>
-          </div>
-          <input
-            type="text"
-            value={config.reasoningBudgetMessage}
-            placeholder="None"
-            onChange={(event) => {
-              if (isReasoningBudgetMessageValid(event.target.value)) {
-                update({ reasoningBudgetMessage: event.target.value });
-              }
-            }}
-            aria-label="Reasoning Budget Message"
-            className={TEXT_INPUT_CLASS}
-          />
-        </div>
+        <ReasoningBudgetRows
+          config={config}
+          update={update}
+          hint={GGUF_REASONING_BUDGET_HINT}
+        />
       )}
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
@@ -3479,6 +3620,7 @@ export function ModelConfigPage({
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
+          cacheRam: targetIsMlx ? (runtimeConfig.cacheRam ?? null) : null,
           // Same substitution as applyPerModelConfigToRuntime: no per-model override sends null
           // (read as Auto) while the selector shows the global fallback, so a global Off row
           // charged an 11 GB DSpark sidecar.

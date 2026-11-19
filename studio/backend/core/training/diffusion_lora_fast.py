@@ -280,14 +280,14 @@ def plan_dequant_cache(
         allocated = torch.cuda.memory_allocated()
         reserved = torch.cuda.memory_reserved()
     except Exception:  # noqa: BLE001 -- no probe: only a pinned budget caches
-        cache.plan(pinned or 0)
+        cache.plan(pinned or 0, pinned = pinned is not None)
         return
     opt_state = max(0, allocated - pre_opt_alloc)
     transient = int(max(0, step_peak - pre_opt_alloc) * max(1.0, act_scale))
     cache.transient = transient
     cache.margin = max(_MARGIN_MIN_BYTES, int(total * _MARGIN_FRAC))
     if pinned is not None:
-        cache.plan(pinned)
+        cache.plan(pinned, pinned = True)
         return
     need = pre_opt_alloc + transient + opt_state
     cache.plan(dequant_budget_bytes(free = free, reserved = reserved, peak_alloc = need, total = total))
@@ -388,16 +388,36 @@ class Nf4DequantCache:
         self.transient = 0  # the next step's activations, from step 1
         self.margin = _MARGIN_MIN_BYTES
         self.extra_reserved = 0  # bytes another planner keeps for itself (see ``reserve``)
+        self.planned = int(budget)  # the step-1 plan before any reservation
+        self.pinned = False
         self.shrinks = 0
 
-    def plan(self, budget: int) -> None:
+    def plan(
+        self,
+        budget: int,
+        pinned: bool = False,
+    ) -> None:
         self.budget = max(0, int(budget))
         self.cap = self.budget
+        self.planned = self.budget
+        self.pinned = bool(pinned)
         self.full = self.used >= self.budget
 
-    def reserve(self, nbytes: int) -> None:
-        """Bytes held on top of step 1's activations from step 2 on (budgeted checkpointing)."""
+    def reserve(
+        self,
+        nbytes: int,
+        from_plan: bool = False,
+    ) -> int:
+        """Bytes budgeted checkpointing holds from step 2 on. ``from_plan``: re-plan to the plan less our share of
+        them (never for a pinned budget). Returns the bytes evicted."""
         self.extra_reserved = max(0, int(nbytes))
+        if not from_plan or self.pinned:
+            return 0
+        self.cap = max(0, self.planned - int(self.extra_reserved * _BUDGET_FRAC))
+        self.budget = min(self.budget, self.cap)
+        evicted = self._evict(self.used - self.budget) if self.used > self.budget else 0
+        self.full = self.used >= self.budget
+        return evicted
 
     def _evict(self, nbytes: int) -> int:
         freed = 0
@@ -497,4 +517,5 @@ class Nf4DequantCache:
             "misses": self.misses,
             "shrinks": self.shrinks,
             "lent": self.lent,
+            "reserved_gib": round(self.extra_reserved / GIB, 3),
         }

@@ -6050,6 +6050,8 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
         return [{"type": "function", "function": {"name": "web_search"}}]
@@ -6101,6 +6103,8 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -6199,6 +6203,8 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -6227,6 +6233,8 @@ def _select_only(*names):
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": name}} for name in names]
 
@@ -6441,6 +6449,8 @@ def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -6822,6 +6832,8 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -8617,9 +8629,10 @@ def test_parallel_slots_are_stored_and_reach_either_backend():
     assert gguf["n_parallel"] == 8
     safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
     assert safetensors["n_parallel"] == 8
-    for flag in ("n_batch", "n_ubatch"):
+    # MLX reads these too: its prefill step, its batched-prefill cap and its prompt cache size.
+    for flag in ("n_batch", "n_ubatch", "cache_ram"):
         stored = settings.normalize_model_override({flag: 512})
-        assert flag not in settings.model_override_load_kwargs(stored, is_gguf = False)
+        assert settings.model_override_load_kwargs(stored, is_gguf = False)[flag] == 512
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
     LoadRequest(model_path = "unsloth/B", **safetensors)
 

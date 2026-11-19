@@ -10,6 +10,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import ast
 import atexit
+import base64
 import bisect
 import collections
 import weakref
@@ -19,6 +20,7 @@ import ctypes
 import errno
 import functools
 import hashlib
+import io
 import itertools
 import json
 import logging
@@ -2354,8 +2356,7 @@ def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Option
 
 # Transport errors can beat the child to reapable; a request cannot wait the 5s MTP reload spends.
 _RESPAWN_REAP_GRACE_S = 1.0
-# Extra --fit-target per mid-session GPU OOM of one load: an identical respawn hits the same
-# allocation once the conversation is replayed (#16177).
+# Extra --fit-target per mid-session OOM; an identical respawn repeats the allocation (#16177).
 _GPU_OOM_HEADROOM_STEP_MIB = 1024.0
 _GPU_OOM_HEADROOM_MAX_STRIKES = 3
 
@@ -2443,11 +2444,17 @@ _FIXED_IMAGE_TOKENS = {"gemma3": 256}
 
 
 def _image_token_price(backend, part: dict) -> int:
-    """One image's prompt cost for the fit and tool-result sizing (#14968): the admission ceiling,
-    unless a known projector gives a closer upper bound (the ceiling evicts history that fits)."""
+    """One image's prompt cost for the fit and tool-result sizing (#14968): llama-server's own count
+    for a size it has counted, else the admission ceiling unless a known projector gives a closer
+    upper bound (the ceiling evicts history that fits)."""
     ceiling = _mcp_image_tokens(backend)
     if ceiling <= 0:
         return 0
+    counts = getattr(backend, "_image_token_counts", None)
+    if counts:
+        dims = image_dimensions(part)
+        if dims in counts:
+            return counts[dims]
     projector = str(getattr(backend, "_mmproj_projector_type", None) or "").strip().lower()
     fixed = _FIXED_IMAGE_TOKENS.get(projector)
     if fixed:
@@ -8905,6 +8912,8 @@ class LlamaCppBackend:
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # clip.projector_type set at load; the family whose image-token ceiling KV admission sizes images against.
         self._mmproj_projector_type: Optional[str] = None
+        # Image tokens per (width, height) as llama-server counts them; None once it can't say.
+        self._image_token_counts: Optional[dict] = {}
         # clip.has_vision_encoder, set at load; True keeps an undeclared projector capable.
         self._mmproj_accepts_image: bool = True
         # Set in _kill_process (monotonic); load_model reads it to decide whether to wait for VRAM reclaim.
@@ -9003,6 +9012,54 @@ class LlamaCppBackend:
 
     def _price_image(self, part: dict) -> int:
         return _image_token_price(self, part)
+
+    def image_tokens(self, width: int, height: int) -> Optional[int]:
+        """Prompt tokens a width x height image costs here, from llama-server's tokenizer alone
+        (the vision encoder is not run). None when the server cannot say."""
+        counts = self._image_token_counts
+        if counts is None or not self.is_vision:
+            return None
+        if (width, height) in counts:
+            return counts[(width, height)]
+        from PIL import Image
+
+        def tokens(size) -> Optional[int]:
+            content = [{"type": "text", "text": "image"}]
+            if size:
+                buffer = io.BytesIO()
+                # Bilevel: only the size is counted, and an 8-bit raster this large would cost hundreds of MB.
+                Image.new("1", size, 1).save(buffer, format = "PNG")
+                url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+                content.append({"type": "image_url", "image_url": {"url": url}})
+            reply = client.post(
+                f"{self.base_url}/v1/chat/completions/input_tokens",
+                json = {"messages": [{"role": "user", "content": content}]},
+            )
+            if reply.status_code in (404, 405, 501):
+                raise LookupError
+            count = reply.json().get("input_tokens") if reply.status_code == 200 else None
+            return count if type(count) is int else None
+
+        try:
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+                base = tokens(None)
+                count = tokens((width, height)) if base is not None else None
+        except LookupError:
+            if self._image_token_counts is counts:
+                self._image_token_counts = None
+            return None
+        except Exception as exc:  # noqa: BLE001 -- a busy or restarting server is asked again later
+            logger.debug("image token count failed: %s", exc)
+            return None
+        if count is None:
+            return None
+        counts[(width, height)] = count - base
+        return counts[(width, height)]
 
     def _countable_messages(self, messages: list[dict]) -> list[dict]:
         """The counting copy every fit and size probe uses: images charged, audio and video dropped."""
@@ -11331,9 +11388,8 @@ class LlamaCppBackend:
         *,
         lenient: bool = False,
     ) -> int:
-        """On-disk bytes llama-server reads for ``model_path``: with an external Engram table,
-        that table instead of the quant's own table shard, which may still be on disk.
-        ``lenient`` counts what it can read (progress, placement) instead of raising."""
+        """On-disk bytes llama-server reads; with an external Engram table, that table replaces the
+        quant's own shard; lenient counts what it can read instead of raising."""
         if self._ple_path_for(model_path) is None:
             if lenient:
                 return _gguf_set_bytes(Path(model_path))
@@ -12812,11 +12868,9 @@ class LlamaCppBackend:
         n_cpu_moe: int = 0,
         cpu_child: bool = False,
     ) -> int:
-        """Weight bytes a full-offload Windows ROCm APU load puts in the BIOS carve-out, which
-        Windows does not count as RAM; 0 unless the placement and carve-out are both known.
-
-        The carve-out comes from the registry, never the HIP total: PAL adds 50-75% of the WDDM
-        shared heap (Windows RAM) to it. Host-pinned inputs (token_embd, per-layer tables) get no credit."""
+        """Carve-out bytes of a Windows ROCm APU full-offload load, read from the registry, never
+        the HIP total (PAL adds 50-75% of WDDM shared heap); 0 unless placement and carve-out are
+        known; host-pinned inputs get no credit."""
         if sys.platform != "win32" or not model_size or model_size <= 0 or not model_path:
             return 0
         if cpu_child or not self._amd_apu_wants_unified_memory(gpu_indices):
@@ -29586,18 +29640,21 @@ class LlamaCppBackend:
                     else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
                 )
                 self._mmproj_projector_type = None
+                self._image_token_counts = {}
                 if launch_mmproj_path or os.path.isfile(_mmproj_probe):
                     try:
                         from utils.models.gguf_metadata import (
                             mmproj_capabilities,
-                            read_mmproj_projector_type,
+                            read_mmproj_vision_projector_type,
                         )
 
                         has_audio, accepts_image = mmproj_capabilities(_mmproj_probe)
                         self._mmproj_has_audio = has_audio
                         self._mmproj_accepts_image = accepts_image
                         # KV admission needs the projector family to look up per-image token cost.
-                        self._mmproj_projector_type = read_mmproj_projector_type(_mmproj_probe)
+                        self._mmproj_projector_type = read_mmproj_vision_projector_type(
+                            _mmproj_probe
+                        )
                     except Exception as e:
                         logger.debug(f"mmproj capability read failed: {e}")
 
@@ -34841,8 +34898,7 @@ class LlamaCppBackend:
             intent.model_identifier.lower()
         ):
             return False
-        # The Engram table is part of the weights. load_model has already turned a request for
-        # the quant's own table into none.
+        # Engram table is weight data; load_model already maps the quant's own table to none.
         if (intent.engram_precision or "").upper() != (
             getattr(self, "_engram_precision", None) or ""
         ).upper():
@@ -36341,8 +36397,7 @@ class LlamaCppBackend:
         saved = _SlotLaunchFingerprint(*saved)
         saved_regime = manifest.get("long_rope")
         if saved == current:
-            # Preserve strict reuse for older manifests, but never restore across
-            # a known switch hidden by identical requested and advertised sizes.
+            # Old manifests keep strict reuse; never restore across a hidden long_rope switch.
             return "long_rope" not in manifest or saved_regime is self._slot_long_rope
         neutral = {"requested_n_ctx": None, "effective_context_length": None}
         if saved._replace(**neutral) != current._replace(**neutral):
@@ -42863,8 +42918,7 @@ class LlamaCppBackend:
             )
             if system_text:
                 template_messages = [{"role": "system", "content": system_text}] + template_messages
-            # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
-            # A memo hit has no text for on_prompt.
+            # Memo skipped with prefer_native or on_prompt; a hit has no text for on_prompt.
             memo_key = (
                 None
                 if prefer_native or on_prompt is not None

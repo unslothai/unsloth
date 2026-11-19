@@ -14,6 +14,12 @@ from typing import Optional
 
 _TTL_S = 60.0
 _cache: dict[tuple[str, str], tuple[float, bool]] = {}
+# An editor whose MCP server answered is installed, wherever it lives.
+_connected: set[str] = set()
+
+
+def note_connected(builtin_id: str) -> None:
+    _connected.add(builtin_id)
 
 
 def _env_path(name: str, default: str = "") -> Path:
@@ -68,6 +74,60 @@ def _epic_launcher_has_unreal() -> bool:
     )
 
 
+def _engine_root_exists(root: str) -> bool:
+    # Entries outlive deleted engines.
+    root = root.strip().strip('"')
+    try:
+        return bool(root) and (Path(root).expanduser() / "Engine").is_dir()
+    except (
+        OSError,
+        ValueError,
+    ):  # unreadable parent or NUL byte: keep looking
+        return False
+
+
+def _unreal_registered_engine() -> bool:
+    """Unreal's engine registry, used by source builds: HKCU\\Software\\Epic Games\\Unreal Engine\\Builds on
+    Windows, [Installations] in Epic's Install.ini elsewhere."""
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Software\Epic Games\Unreal Engine\Builds"
+            ) as key:
+                index = 0
+                while True:
+                    try:
+                        _name, value, _kind = winreg.EnumValue(key, index)
+                    except OSError:  # no more values
+                        return False
+                    if isinstance(value, str) and _engine_root_exists(value):
+                        return True
+                    index += 1
+        except (ImportError, OSError):
+            return False
+    if sys.platform == "darwin":
+        ini = Path("~/Library/Application Support/Epic/UnrealEngine/Install.ini").expanduser()
+    elif sys.platform.startswith("linux"):
+        ini = Path("~/.config/Epic/UnrealEngine/Install.ini").expanduser()
+    else:
+        return False
+    try:
+        raw = ini.read_bytes()
+    except OSError:
+        return False
+    # Unreal saves ASCII as UTF-8 and anything else as UTF-16 with a BOM.
+    encoding = "utf-16" if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+    in_section = False
+    for line in raw.decode(encoding, errors = "replace").splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            in_section = line.lower() == "[installations]"
+        elif in_section and "=" in line and _engine_root_exists(line.split("=", 1)[1]):
+            return True
+    return False
+
+
 def _detect(builtin_id: str, configured_path: str) -> bool:
     if configured_path and Path(configured_path).expanduser().exists():
         return True
@@ -83,6 +143,8 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
                 "/var/lib/flatpak/app/org.blender.Blender",
                 "~/.local/share/flatpak/app/org.blender.Blender",
                 "~/.steam/steam/steamapps/common/Blender",
+                "~/blender-*/blender",
+                "/opt/blender*/blender",
             ]
         )
     if builtin_id == "godot":
@@ -95,19 +157,25 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
                 "~/.local/share/flatpak/app/org.godotengine.Godot",
                 "/snap/bin/godot*",
                 "~/.steam/steam/steamapps/common/Godot Engine",
+                "~/Godot_v4*",
+                "/opt/godot*/Godot_v4*",
             ]
         )
     if builtin_id == "unity":
         return any(glob.glob(str(Path(root).expanduser() / "*")) for root in _unity_hub_dirs())
     if builtin_id == "unreal":
-        return _epic_launcher_has_unreal() or _any(
-            [
-                str(_env_path("ProgramFiles", "C:/Program Files") / "Epic Games/UE_*"),
-                "/Users/Shared/Epic Games/UE_*",
-                "~/UnrealEngine*",
-                "~/Epic Games/UE_*",
-                "/opt/UnrealEngine*",
-            ]
+        return (
+            _epic_launcher_has_unreal()
+            or _unreal_registered_engine()
+            or _any(
+                [
+                    str(_env_path("ProgramFiles", "C:/Program Files") / "Epic Games/UE_*"),
+                    "/Users/Shared/Epic Games/UE_*",
+                    "~/UnrealEngine*",
+                    "~/Epic Games/UE_*",
+                    "/opt/UnrealEngine*",
+                ]
+            )
         )
     if builtin_id == "figma":
         return bool(shutil.which("figma-linux")) or _any(
@@ -128,6 +196,8 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
 
 def is_installed(builtin_id: str, configured_path: str = "") -> Optional[bool]:
     """True / False from a cheap file-system look; None when the look itself failed, so no hint is shown."""
+    if builtin_id in _connected:
+        return True
     key = (builtin_id, configured_path)
     cached = _cache.get(key)
     if cached and time.monotonic() - cached[0] < _TTL_S:

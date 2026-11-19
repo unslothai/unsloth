@@ -1326,12 +1326,14 @@ export function TranslatePage() {
     // Read-only meanwhile; a swap or history pick still wins.
     const before = useTranslateStore.getState().source;
     try {
-      const { text } = await extractDocumentText(file);
+      const { text, warning } = await extractDocumentText(file);
       if (useTranslateStore.getState().source !== before) {
         return;
       }
-      if (text.trim()) loadText(text);
-      else toast.error(t("translate.fileNotText"));
+      if (text.trim()) {
+        loadText(text);
+        if (warning) toast.warning(warning);
+      } else toast.error(t("translate.fileNotText"));
     } catch (error) {
       toast.error(
         error instanceof Error && error.message
@@ -1343,9 +1345,8 @@ export function TranslatePage() {
     }
   };
 
-  // The page scrolls inside the layout's <main>. Mark that element while Translate is mounted so its
-  // stable gutter needs no main:has(.translate-page), which Chromium re-matched across the whole chat
-  // thread on every keystroke.
+  // Marking main on mount spares main:has(.translate-page), which Chromium re-matched per
+  // keystroke.
   useLayoutEffect(() => {
     const host = document
       .querySelector(".translate-page")

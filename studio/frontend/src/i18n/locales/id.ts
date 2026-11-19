@@ -179,6 +179,7 @@ export const id = {
       add: "Tambah",
       cancel: "Batal",
       removeSite: "Hapus {site}",
+      hostOnly: "Hanya host ini, bukan subdomainnya",
       permissionsNote:
         "Hanya situs yang memiliki izin sendiri yang muncul di sini. Tindakan mencakup proses masuk, pengiriman formulir, dan tombol untuk membeli, mengirim, atau menghapus.",
       siteInvalid: "Masukkan situs seperti example.com atau *.example.com.",
@@ -977,7 +978,6 @@ export const id = {
     copy: "Salin",
     addScheduledTask: "Tambahkan tugas terjadwal…",
     compact: "Padatkan percakapan",
-    compactQueued: "Pemadatan diminta untuk pesan berikutnya",
     compactEmpty: "Belum ada yang dapat dipadatkan",
     compactUnsupported:
       "Pemadatan memerlukan model GGUF atau MLX yang mendukung alat",
@@ -1865,6 +1865,12 @@ export const id = {
         "Akses penuh menonaktifkan sandbox. Pengaturan ini berlaku lagi saat Anda memilih tingkat lain.",
       learnMore: "Pelajari lebih lanjut",
       managedNote: "Pemilik server Unsloth ini yang menyiapkan sandbox OS.",
+      trustedFoldersTitle: "Folder tepercaya",
+      trustedFoldersLabel: "Jalankan tanpa bertanya",
+      trustedFoldersDescription: "Python dan Terminal dapat membaca dan menjalankan file di folder ini tanpa meminta persetujuan, hanya di chat Anda sendiri. Menulis ke folder ini tetap meminta persetujuan. Satu folder per baris.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Tidak dapat memuat folder tepercaya.",
+      trustedFoldersSaveError: "Tidak dapat menyimpan folder tepercaya.",
     },
     debugging: {
       description: "Baca log Unsloth tanpa meninggalkan aplikasi.",
@@ -3399,6 +3405,10 @@ export const id = {
         fitOnDeviceOnly: "Hanya tampilkan model yang muat",
         fitOnDeviceOnlyDescription:
           "Sembunyikan model yang terlalu besar untuk memori GPU dan RAM perangkat ini di pemilih model dan Hub. Model yang sudah diunduh tetap terlihat.",
+        pickerExpandLoaded: "Tampilkan daftar model lengkap",
+        pickerExpandLoadedDescription: "Buka pemilih model pada daftar lengkap saat model dimuat, bukan hanya model yang dimuat. Membuka atau menutup pemilih juga mengubah pengaturan ini.",
+        pickerMonochromeIcons: "Ikon model monokrom",
+        pickerMonochromeIconsDescription: "Tampilkan logo model dan penyedia dalam hitam, putih, dan abu-abu di pemilih model.",
       },
       menu: {
         title: "Menu chat",

@@ -184,7 +184,6 @@ def test_dit_trainer_guards_the_preview_vae_a_warm_cache_loads(monkeypatch, tmp_
     monkeypatch.setattr(dit, "_build_latent_cache", lambda *_a, **_k: [object()])
     monkeypatch.setattr(dit, "plan_samples", lambda *_a: types.SimpleNamespace(encode_texts = ["p"]))
     monkeypatch.setattr("core.training.diffusion_train_extras.source_revision", lambda *_a: "local")
-    monkeypatch.setattr(dit, "PersistentConditioningCache", lambda *_a: object())
     monkeypatch.setattr(
         dit,
         "_load_warm_conditioning",

@@ -57,6 +57,7 @@ def test_specs_cover_the_dit_families():
         "flux.2-dev",
         "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
     }
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets

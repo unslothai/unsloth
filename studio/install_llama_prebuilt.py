@@ -11527,8 +11527,7 @@ def _missing_cuda_runtime_wheels(install_dir: Path) -> tuple[str, ...]:
         return ()
     major = match.group(1)
     if kind == "linux-cuda":
-        # The detector selection uses: a second, narrower scan would call a runtime that
-        # selection found (an Ollama or versioned toolkit dir) missing.
+        # A second, narrower scan would call a runtime that selection found missing.
         return () if f"cuda{major}" in detected_linux_runtime_lines()[0] else wheels
     site_packages = Path(sysconfig.get_paths()["purelib"])
     roots = [install_dir, site_packages / "torch" / "lib", site_packages / "nvidia"]
@@ -11592,13 +11591,9 @@ def _install_cuda_runtime_wheels(wheels: tuple[str, ...]) -> bool:
 
 
 def _linux_cuda_runtime_wheels_to_supply(host: HostInfo) -> tuple[str, ...]:
-    """The wheels a Linux NVIDIA host needs before selection can pick a CUDA bundle, else ().
-
-    linux_cuda_choice_from_release only takes a CUDA bundle whose runtime line is on disk, so a
-    host with the driver and nothing else selects none and falls back to a source build. The
-    line supplied is the newest one the driver runs; CUDA 13 dropped pre-Turing GPUs, which
-    take CUDA 12.
-    """
+    """Wheels a Linux NVIDIA host needs before selection, else (); selection takes only a CUDA
+    bundle whose runtime line is on disk, else a source build; the line is the newest the driver
+    runs; CUDA 13 drops pre-Turing GPUs, which take CUDA 12."""
     if not (host.is_linux and host.is_x86_64 and host.has_usable_nvidia):
         return ()
     pre_turing = any(int(sm) < _TURING_MIN_SM for sm in normalize_compute_caps(host.compute_caps))

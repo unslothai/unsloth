@@ -881,6 +881,18 @@ def test_add_structure_tokens_inline_triple_backticks_do_not_open_a_fence():
         assert TextPreprocessor().add_structure_tokens(line + block) == line + tagged
 
 
+def test_empty_fence_ends_before_the_next_heading_and_code_block():
+    text = "```python\n```\n# Setup\n```\n# shell comment\n```"
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|code|python|><|/code|>\n<|chapter|>Setup<|/chapter|>\n"
+        "<|code||># shell comment<|/code|>"
+    )
+    text = "```python\n```\n```bash\necho\n```"
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|code|python|><|/code|>\n<|code|bash|>echo<|/code|>"
+    )
+
+
 def test_add_structure_tokens_closer_fills_its_line():
     text = (
         "1. Install\n\n   ```bash\n   # deps\n   pip install unsloth\n   ```\n\n"
@@ -933,4 +945,5 @@ if __name__ == "__main__":
     test_add_structure_tokens_inline_triple_backticks_do_not_open_a_fence()
     test_add_structure_tokens_closer_fills_its_line()
     test_add_structure_tokens_unclosed_long_fence_line_is_linear()
+    test_empty_fence_ends_before_the_next_heading_and_code_block()
     sys.exit(0 if success else 1)
