@@ -195,7 +195,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange, onClose }: {
       {config?.installed === false && !config.is_enabled && (
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-xs leading-relaxed text-muted-foreground">{copy.name} was not found on this computer.</p>
-          <Button size="sm" variant="outline" onClick={() => openInstallGuide(copy.guide, onClose)}>Guide to Install</Button>
+          <Button size="sm" variant="outline" disabled={locked} onClick={() => openInstallGuide(copy.guide, onClose)}>Guide to Install</Button>
         </div>
       )}
       {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom {copy.name} server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}

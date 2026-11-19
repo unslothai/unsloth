@@ -153,7 +153,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange, onClose }: {
       {config?.installed === false && !config.is_enabled && (
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-xs leading-relaxed text-muted-foreground">Blender was not found on this computer. Install it, or set its path in Advanced settings.</p>
-          <Button size="sm" variant="outline" onClick={() => openInstallGuide("blender", onClose)}>Guide to Install</Button>
+          <Button size="sm" variant="outline" disabled={locked} onClick={() => openInstallGuide("blender", onClose)}>Guide to Install</Button>
         </div>
       )}
       {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom Blender server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
