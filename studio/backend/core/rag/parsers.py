@@ -1337,30 +1337,44 @@ def _docx_run_text(run) -> str:
     )
 
 
-def _docx_superscript(run) -> bool:
-    align = run.find(f"{_W}rPr/{_W}vertAlign")
-    return (
-        align is not None
-        and align.get(_W + "val") == "superscript"
-        and run.find(_W + "footnoteReference") is None
-        and run.find(_W + "endnoteReference") is None
-    )
+def _docx_superscripts(p) -> list:
+    find = getattr(_docx_xpath, "superscripts", None)
+    if find is None:
+        from lxml import etree
+
+        # a note reference is a citation mark, not an exponent
+        find = _docx_xpath.superscripts = etree.XPath(
+            ".//w:r[w:rPr/w:vertAlign/@w:val = 'superscript']"
+            "[not(w:footnoteReference | w:endnoteReference)]",
+            namespaces = {"w": _W[1:-1]},
+        )
+    return find(p)
 
 
 def _docx_paragraph_text(paragraph) -> str:
     """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag, and equations."""
+    p = paragraph._p
+    nodes = (
+        node
+        for node in p.iter(_W + "r", *_DOCX_MATH)
+        if not _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH)
+    )
+    superscripts = _docx_superscripts(p)
+    if not superscripts:
+        return "".join(
+            _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
+            for node in nodes
+        )
     from ..inference._html_to_md import _raise_superscript
 
-    p = paragraph._p
+    superscripts = set(superscripts)
     parts: list[str] = []
     raised = None
-    for node in p.iter(_W + "r", *_DOCX_MATH):
-        if _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH):
-            continue
-        superscript = node.tag not in _DOCX_MATH and _docx_superscript(node)
+    for node in nodes:
         text = _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
         if not text:
             continue
+        superscript = node in superscripts
         if raised is not None and not superscript:
             _raise_superscript(parts, raised)
             raised = None
