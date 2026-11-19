@@ -780,8 +780,7 @@ class FastDecisionModel:
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
-        # None keeps the caller's RNG (#14327); pass an int for a fixed LoRA init.
-        random_state = None,
+        random_state = 3407,  # unsloth_zoo's MLX LoRA needs an int seed
         max_seq_length = None,
         use_rslora = False,
         use_dora = False,

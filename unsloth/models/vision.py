@@ -4584,7 +4584,7 @@ class FastBaseModel:
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
-        # None keeps the caller's RNG so LoRA→merge→LoRA stages do not all re-init lora_A from 3407 (#14327).
+        # None keeps the caller's RNG (#14327); pass an int for a fixed LoRA init.
         random_state = None,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,

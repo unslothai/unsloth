@@ -295,6 +295,33 @@ def test_lora_freezes_a_16_bit_encoder_and_trains_the_head_in_fp32(checkpoint):
         FastDecisionModel.get_peft_model(model)
 
 
+def test_lora_init_leaves_the_rng_unless_random_state_is_set(checkpoint):
+    import random
+
+    import numpy as np
+
+    def load():
+        return FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)[0]
+
+    def adapters(model, **kwargs):
+        model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 4, **kwargs)
+        return {n: p.detach().clone() for n, p in model.named_parameters() if "lora_A" in n}
+
+    def state():
+        return np.random.get_state()[1].copy(), random.getstate()
+
+    model = load()
+    random.seed(1), np.random.seed(1), torch.manual_seed(1)
+    before = state()
+    adapters(model)
+    after = state()
+    # LoRA init draws only from torch, so a moved numpy or python RNG means a reseed (#14327).
+    assert np.array_equal(after[0], before[0]) and after[1] == before[1]
+
+    first, second = adapters(load(), random_state = 3407), adapters(load(), random_state = 3407)
+    assert first and all(torch.equal(first[n], second[n]) for n in first)
+
+
 @pytest.mark.parametrize("lora", [True, False])
 def test_head_learning_rate_and_weight_decay(checkpoint, tmp_path, lora):
     model, tokenizer = FastDecisionModel.from_pretrained(

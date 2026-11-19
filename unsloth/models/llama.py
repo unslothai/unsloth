@@ -4246,8 +4246,7 @@ class FastLlamaModel:
         layers_pattern = None,
         finetune_last_n_layers = None,
         use_gradient_checkpointing = "unsloth",
-        # None keeps the caller's RNG so LoRA→merge→LoRA stages do not all re-init lora_A from 3407 (#14327).
-        # Pass an int (e.g. 3407) for the previous deterministic default.
+        # None keeps the caller's RNG (#14327); pass an int for a fixed LoRA init.
         random_state = None,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
