@@ -187,8 +187,8 @@ _CUDA_FAILED: dict = {}
 STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 _KINDS: dict = {}  # torch dtype -> _OUT_KIND, filled on first use (torch is imported lazily)
-# Card verdicts and long / mid race floors persist per card + toolchain + these sources; sink decisions stay per
-# load. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+# Card verdicts and long / mid race floors persist per card + toolchain + these sources; sink race verdicts persist
+# per DiT class + checkpoint too (none for a DiT of no known checkpoint). UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
 PERSIST_SOURCES = (
     "diffusion_int8_attention.py",
     "diffusion_int8_attention_cuda.py",
