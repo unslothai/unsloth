@@ -10,10 +10,19 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { usePlatformStore } from "@/config/env";
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
 } from "@/features/auth";
+import {
+  formatParamCount,
+  hfApiToken,
+  resolveOwnerProviderLogo,
+  useHfTokenStore,
+  useOnlineStatus,
+} from "@/features/hub";
+import { useHubFeed } from "@/features/hub/hooks/use-hub-feed";
 import { browserAccountKey } from "@/lib/account-transition";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { MicIcon } from "@/lib/mic-icon";
@@ -34,7 +43,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowUpIcon } from "lucide-react";
-import { type FC, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type FC,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 // Per account, so each user on a shared browser gets the card once. Listed in
 // ACCOUNT_KEYED_PREFIXES so sign-ins keep it, and kept out of Reset preferences:
@@ -89,7 +104,7 @@ function subscribe(listener: () => void): () => void {
 }
 
 const FEATURES = [
-  { icon: GridViewIcon, label: "Every model in one place" },
+  { icon: GridViewIcon, label: "Easy browsing and switching" },
   { icon: Download01Icon, label: "Download in one pick" },
   { icon: Brain03Icon, label: "Reasoning built in" },
   { icon: StarIcon, label: "Favorites and settings" },
@@ -200,7 +215,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
             <Button
               variant="primary"
               size="hero"
-              className="mt-2 gap-1"
+              className="mt-2 gap-1.5 px-6 py-3 text-base"
               onClick={() => {
                 openPickerOnClose.current = true;
                 setOpen(false);
@@ -298,93 +313,147 @@ const CardArt: FC = () => (
 );
 
 /** The composer, its model chip, and the picker it opens, drawn with live theme colours. */
-/** The composer with its chip open, drawn with the real picker's and composer's icons and surfaces. */
-const DialogHero: FC = () => (
-  <div
-    aria-hidden="true"
-    className="relative mx-auto mt-2 h-[calc(240px*var(--ui-space-scale,1))] max-sm:h-[calc(254px*var(--ui-space-scale,1))] w-full max-w-[calc(460px*var(--ui-space-scale,1))]"
-  >
-    <div className="absolute inset-x-0 bottom-4 flex flex-col gap-3 rounded-[calc(22px*var(--ui-space-scale,1))] bg-white px-3 pt-3 pb-2.5 shadow-[var(--composer-shadow)] dark:bg-card">
-      <span className="px-1.5 text-muted-foreground text-xs">Ask anything</span>
-      <div className="flex items-center gap-1.5 text-muted-foreground">
-        <HugeiconsIcon
-          icon={PlusSignIcon}
-          className="size-4.5 shrink-0 stroke-[1.75px]"
-        />
-        <span className="flex-1" />
-        <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-muted-foreground/10 py-1.5 pr-3 pl-2 font-medium text-foreground text-sm">
-          <LogoDot src="/provider-logos/google-g.svg" className="size-4" />
-          <span className="min-w-0 truncate">gemma-4-E4B-it</span>
-          <span className="shrink-0 text-muted-foreground">Thinking</span>
-        </span>
-        <MicIcon className="mx-1 size-4.5 shrink-0" />
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
-          <ArrowUpIcon className="size-4 stroke-2" />
-        </span>
-      </div>
-    </div>
+const GOOGLE_MARK = "/provider-logos/google-g.svg";
 
-    <div className="absolute top-0 right-10 z-10 flex w-[calc(264px*var(--ui-space-scale,1))] max-w-[calc(100%-2.5rem)] flex-col gap-2 rounded-2xl bg-white p-2 shadow-[var(--popup-shadow)] dark:bg-card">
-      <div className="flex items-center gap-3.5 px-2 pt-1 text-muted-foreground">
-        <HugeiconsIcon
-          icon={StarIcon}
-          strokeWidth={1.75}
-          className="size-3.5"
-        />
-        <HugeiconsIcon
-          icon={Navigation05Icon}
-          strokeWidth={1.75}
-          className="size-3.5"
-        />
-        <span className="relative text-foreground">
+interface HeroRow {
+  name: string;
+  logo: string;
+  detail: string;
+}
+
+// Offline, or before the Hub answers: the shape of Unsloth's trending list.
+const FALLBACK_ROWS: readonly HeroRow[] = [
+  { name: "gemma-4-E4B-it-GGUF", logo: GOOGLE_MARK, detail: "8B" },
+  { name: "Qwen3.5-9B-GGUF", logo: "/hub/profile/logo/qwen.png", detail: "9B" },
+  {
+    name: "DeepSeek-R1-0528-Qwen3-8B-GGUF",
+    logo: "/hub/profile/logo/deepseek.svg",
+    detail: "8B",
+  },
+];
+
+/** The top of Model Hub's Trending Now (same feed and cache), keeping rows with a maker mark. */
+function useTrendingRows(): readonly HeroRow[] {
+  const online = useOnlineStatus();
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const accessToken = hfApiToken(useHfTokenStore((s) => s.token));
+  const { trending } = useHubFeed({
+    accessToken,
+    online,
+    enabled: true,
+    deviceType,
+  });
+  return useMemo(() => {
+    const rows = trending.results.flatMap((model): HeroRow[] => {
+      const [owner, repo] = model.id.split("/");
+      const mark = resolveOwnerProviderLogo(owner, repo);
+      if (!(mark && repo)) {
+        return [];
+      }
+      return [
+        {
+          name: repo,
+          logo: mark.id === "google" ? GOOGLE_MARK : mark.logoPath,
+          detail: model.totalParams ? formatParamCount(model.totalParams) : "",
+        },
+      ];
+    });
+    return rows.length >= 3 ? rows.slice(0, 3) : FALLBACK_ROWS;
+  }, [trending.results]);
+}
+
+/** The composer with its chip open, drawn with the real picker's and composer's icons and surfaces. */
+const DialogHero: FC = () => {
+  const rows = useTrendingRows();
+  const chosen = rows[0];
+  return (
+    <div
+      aria-hidden="true"
+      className="relative mx-auto mt-2 h-[calc(240px*var(--ui-space-scale,1))] max-sm:h-[calc(254px*var(--ui-space-scale,1))] w-full max-w-[calc(460px*var(--ui-space-scale,1))]"
+    >
+      <div className="absolute inset-x-0 bottom-4 flex flex-col gap-3 rounded-[calc(22px*var(--ui-space-scale,1))] bg-white px-3 pt-3 pb-2.5 shadow-[var(--composer-shadow)] dark:bg-card">
+        <span className="px-1.5 text-muted-foreground text-xs">
+          Ask anything
+        </span>
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <HugeiconsIcon
+            icon={PlusSignIcon}
+            className="size-4.5 shrink-0 stroke-[1.75px]"
+          />
+          <span className="flex-1" />
+          <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-muted-foreground/10 py-1.5 pr-3 pl-2 font-medium text-foreground text-sm">
+            <LogoDot src={chosen.logo} className="size-4" />
+            <span className="min-w-0 truncate">{chosen.name}</span>
+            <span className="shrink-0 text-muted-foreground">Thinking</span>
+          </span>
+          <MicIcon className="mx-1 size-4.5 shrink-0" />
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+            <ArrowUpIcon className="size-4 stroke-2" />
+          </span>
+        </div>
+      </div>
+
+      <div className="absolute top-0 right-10 z-10 flex w-[calc(264px*var(--ui-space-scale,1))] max-w-[calc(100%-2.5rem)] flex-col gap-2 rounded-2xl bg-white p-2 shadow-[var(--popup-shadow)] dark:bg-card">
+        <div className="flex items-center gap-3.5 px-2 pt-1 text-muted-foreground">
+          <HugeiconsIcon
+            icon={StarIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+          <span className="relative text-foreground">
+            <HugeiconsIcon
+              icon={Navigation05Icon}
+              strokeWidth={1.75}
+              className="size-3.5"
+            />
+            <span className="absolute inset-x-0 -bottom-1.5 h-0.5 rounded-full bg-primary" />
+          </span>
           <HugeiconsIcon
             icon={Download01Icon}
             strokeWidth={1.75}
             className="size-3.5"
           />
-          <span className="absolute inset-x-0 -bottom-1.5 h-0.5 rounded-full bg-primary" />
-        </span>
-        <HugeiconsIcon
-          icon={CloudIcon}
-          strokeWidth={1.75}
-          className="size-3.5"
-        />
-        <LogoDot src="/provider-logos/google-g.svg" className="size-3.5" />
-        <LogoDot src="/hub/profile/logo/qwen.png" className="size-3.5" />
-      </div>
-      <div className="flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1.5 text-muted-foreground text-ui-11">
-        <HugeiconsIcon
-          icon={Search01Icon}
-          strokeWidth={1.75}
-          className="size-3"
-        />
-        <span className="flex-1">Search on device models</span>
-        <HugeiconsIcon
-          icon={FilterMailIcon}
-          strokeWidth={1.75}
-          className="size-3"
-        />
-      </div>
-      <div className="flex flex-col">
-        {MOCK_ROWS.map((row) => (
-          <div
-            key={row.name}
-            className={cn(
-              "flex items-center gap-2 rounded-lg px-2 py-1.5 text-foreground text-ui-11",
-              "active" in row && row.active && "bg-muted-foreground/10",
-            )}
-          >
-            <LogoDot src={row.logo} className="size-4" />
-            <span className="min-w-0 flex-1 truncate">{row.name}</span>
-            {"active" in row && row.active ? (
-              <span className="size-1.5 rounded-full bg-primary" />
-            ) : null}
-            <span className="rounded-md bg-muted px-1.5 font-mono text-muted-foreground text-ui-11">
-              {row.quant}
-            </span>
-          </div>
-        ))}
+          <HugeiconsIcon
+            icon={CloudIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+          <LogoDot src="/provider-logos/google-g.svg" className="size-3.5" />
+          <LogoDot src="/hub/profile/logo/qwen.png" className="size-3.5" />
+        </div>
+        <div className="flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1.5 text-muted-foreground text-ui-11">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            strokeWidth={1.75}
+            className="size-3"
+          />
+          <span className="flex-1">Search models to download</span>
+          <HugeiconsIcon
+            icon={FilterMailIcon}
+            strokeWidth={1.75}
+            className="size-3"
+          />
+        </div>
+        <div className="flex flex-col">
+          {rows.map((row, index) => (
+            <div
+              key={row.name}
+              className={cn(
+                "flex items-center gap-2 rounded-lg px-2 py-1.5 text-foreground text-ui-11",
+                index === 0 && "bg-muted-foreground/10",
+              )}
+            >
+              <LogoDot src={row.logo} className="size-4" />
+              <span className="min-w-0 flex-1 truncate">{row.name}</span>
+              {row.detail ? (
+                <span className="rounded-md bg-muted px-1.5 font-mono text-muted-foreground text-ui-11">
+                  {row.detail}
+                </span>
+              ) : null}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
