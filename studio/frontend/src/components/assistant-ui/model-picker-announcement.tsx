@@ -215,7 +215,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
             <Button
               variant="primary"
               size="hero"
-              className="mt-2 gap-1.5 px-6 py-3 text-base"
+              className="mt-2 gap-1.5 px-5.5 py-2.5 text-[0.95rem]"
               onClick={() => {
                 openPickerOnClose.current = true;
                 setOpen(false);
