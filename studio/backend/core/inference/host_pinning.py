@@ -98,7 +98,7 @@ def consume_cuda_error() -> None:
                 fn = ctypes.CDLL(None).cudaGetLastError
             except AttributeError:
                 # loaded RTLD_LOCAL: open the exact libcudart this process already mapped
-                with open("/proc/self/maps") as maps:
+                with open("/proc/self/maps", encoding = "utf-8") as maps:
                     path = next(ln.split()[-1] for ln in maps if "libcudart.so" in ln)
                 fn = ctypes.CDLL(path).cudaGetLastError
             fn.argtypes = []
