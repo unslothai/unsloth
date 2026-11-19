@@ -219,3 +219,23 @@ def test_a_chunk_whose_race_kept_cublas_declines_before_any_code(monkeypatch):
     rows = 2048
     assert layer._forward_cutlass16(_x2(rows), layer.rot_h, rows) is None
     assert calls == []
+
+
+def test_the_fused_forward_routes_through_the_cutlass_path(monkeypatch):
+    layer = _layer()
+    _plan(layer, 3, 4)
+    calls = []
+    nq._FUSED_STATE["codes"] = _codes_spy(calls)
+    monkeypatch.setattr(
+        nq, "_fused_w8a8", lambda device = None: lambda *a: pytest.fail("compiled rows ran")
+    )
+    monkeypatch.setattr(cut, "native_tile", lambda *a: 3)
+    monkeypatch.setattr(
+        cut,
+        "native_gemm",
+        lambda xq, wq, xs, ws, t: torch.ones(xq.shape[0], wq.shape[0], dtype = torch.float16),
+    )
+    x = torch.randn(2, 32, 512).to(torch.float16)
+    out = layer._forward_fused(x)
+    assert out.shape == (2, 32, 128) and bool((out == 1).all())
+    assert calls == [((64, 512), True)] and nq._CUT16_CALLS[0] == 1

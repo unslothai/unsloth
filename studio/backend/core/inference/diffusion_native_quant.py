@@ -862,6 +862,8 @@ def native_linear_class():
             entry = _cut._NATIVE_PLAN.get(
                 (x2.device.index, int(self.weight_q.shape[0]), int(self.weight_q.shape[1]))
             )
+            if not entry:
+                return None
             # Same row budget as the fused path: never codes for every row at once.
             chunk = _INT_MM_FUSED_CHUNK_ELEMS // max(self.in_features, self.out_features)
             parts = (
@@ -869,7 +871,7 @@ def native_linear_class():
                 if rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS
                 else torch.tensor_split(x2, -(-rows // chunk))
             )
-            if not entry or any(
+            if any(
                 entry.get(
                     max(_cut._RACE_M)
                     if part.shape[0] >= _cut._NATIVE_LARGE_M
