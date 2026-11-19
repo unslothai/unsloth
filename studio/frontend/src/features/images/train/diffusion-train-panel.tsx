@@ -117,6 +117,7 @@ import {
 } from "./diffusion-train-deploy";
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
+import { runningTrainingSelection } from "./diffusion-train-restore";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 import {
   MediaGenerationPresetControl,
@@ -925,6 +926,25 @@ export function DiffusionTrainPanel({
     const id = window.setInterval(() => void poll(), 1500);
     return () => window.clearInterval(id);
   }, [active, poll]);
+
+  // After a reload the page defaults to FLUX.1-dev; show the running job's family and base instead, once per job.
+  const seededRunJob = useRef<string | null>(null);
+  useEffect(() => {
+    const jobKey = status?.job_id ?? "";
+    if (seededRunJob.current === jobKey) return;
+    const run = runningTrainingSelection(status, families);
+    if (!run) return;
+    seededRunJob.current = jobKey;
+    seededFromLoaded.current = true;
+    seededBaseFamily.current = run.familyName;
+    setFamilyName(run.familyName);
+    if (run.baseModel) {
+      baseDirty.current = true;
+      const known = families.find((f) => f.name === run.familyName)?.base_repos.includes(run.baseModel);
+      setBaseChoice(known ? run.baseModel : CUSTOM_BASE);
+      if (!known) setCustomBase(run.baseModel);
+    }
+  }, [status, families, setFamilyName, setBaseChoice]);
 
   // The backend keeps the terminal status until the next start, so dismissal is local.
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
