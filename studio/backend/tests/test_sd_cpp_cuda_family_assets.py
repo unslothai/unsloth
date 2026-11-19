@@ -477,10 +477,20 @@ def test_an_unwritable_record_keeps_the_new_coverage(monkeypatch, tmp_path):
     stem = f"sd-{TAG}-linux-x64-cuda12-older"
     _install_split(monkeypatch, tmp_path, _tar_bundle(stem))
 
-    def _deny(*a, **k):
-        raise PermissionError("read-only record")
+    import builtins
 
-    monkeypatch.setattr(sdmod.json, "dump", _deny)
+    def _deny(
+        path,
+        mode = "r",
+        *a,
+        **k,
+    ):
+        # A locked / read-only record: the write is refused before anything is truncated.
+        if "w" in mode and Path(path).name == sdmod.INSTALL_RECORD:
+            raise PermissionError("read-only record")
+        return builtins.open(path, mode, *a, **k)
+
+    monkeypatch.setattr(sdmod, "open", _deny, raising = False)
     sdmod._write_install_record(
         tmp_path, accelerator = "cuda", repo = "r", tag = TAG, asset = "n", cuda_sms = ["86", "120"]
     )
@@ -490,6 +500,7 @@ def test_an_unwritable_record_keeps_the_new_coverage(monkeypatch, tmp_path):
         assert sdmod.install_is_stale(tmp_path) is False
         # Once anything rewrites the record, the file is the newer answer again.
         rec = sdmod.read_install_record(tmp_path)
+        assert rec["cuda_sms"] == ["70", "75", "80", "86", "89"]
         rec["repo"] = "rewritten"
         (tmp_path / sdmod.INSTALL_RECORD).write_text(json.dumps(rec))
         assert sdmod.install_is_stale(tmp_path) is True
