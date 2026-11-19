@@ -1927,21 +1927,6 @@ export function ComposerModelPicker({
     return map;
   }, [hubResults]);
   const noGpu = !(inferenceGpu.memoryTotalGb > 0);
-  const { scrollRef: hubScrollRef, sentinelRef: hubSentinelRef } =
-    useHubInfiniteScroll(hubSearch.fetchMore, hubSearch.scannedCount, {
-      enabled: open && online && onRecommended && hubSearch.hasMore,
-      isFetching: hubSearch.isLoading || hubSearch.isLoadingMore,
-      resultCount: hubResults.length,
-      resetKey: hubQuery,
-    });
-  const attachList = useCallback(
-    (node: HTMLDivElement | null) => {
-      listRef.current = node;
-      hubScrollRef.current = node;
-      setListEl(node);
-    },
-    [hubScrollRef],
-  );
   const recommended = useMemo<ModelOption[]>(() => {
     // The header picker's runtime gate; vLLM loads compressed-tensors checkpoints the gate refuses.
     const supported = (r: (typeof hubResults)[number]) =>
@@ -2806,6 +2791,26 @@ export function ComposerModelPicker({
     collapsedSections,
     foundRows,
   ]);
+  const hubOrgFilter = orgFilterApplies(viewed) ? orgFilter : null;
+  // Only rows the org filter shows count as progress, else unrelated pages keep resetting the fetch cap.
+  const hubShownCount = hubOrgFilter
+    ? foundRows.filter((row) => row.kind === "hub").length
+    : hubResults.length;
+  const { scrollRef: hubScrollRef, sentinelRef: hubSentinelRef } =
+    useHubInfiniteScroll(hubSearch.fetchMore, hubSearch.scannedCount, {
+      enabled: open && online && onRecommended && hubSearch.hasMore,
+      isFetching: hubSearch.isLoading || hubSearch.isLoadingMore,
+      resultCount: hubShownCount,
+      resetKey: hubOrgFilter ? `${hubQuery}\u0000${hubOrgFilter}` : hubQuery,
+    });
+  const attachList = useCallback(
+    (node: HTMLDivElement | null) => {
+      listRef.current = node;
+      hubScrollRef.current = node;
+      setListEl(node);
+    },
+    [hubScrollRef],
+  );
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
     onFoldersChange: source?.onFoldersChange,
