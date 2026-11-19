@@ -1027,11 +1027,9 @@ class LemonadeNpuBackend:
         return bool(self.hardware().get("supported")) and self._installed_lemond() is not None
 
     def model_path_for_name(self, name: str, *, start_runtime: bool) -> Optional[str]:
-        """`lemonade:<id>` for the model whose Hugging Face repo or repo name is name, or None.
-
-        The loaded model answers without I/O; the others are read from the catalog when the
-        runtime is running, or ``start_runtime`` lets it start.
-        """
+        """lemonade:<id> for the model whose HF repo or repo name is name, or None; the loaded model
+        answers without I/O; others are read from the catalog when the runtime runs, or
+        start_runtime lets it start."""
         if not looks_like_npu_display_name(name):
             return None
         loaded = self.loaded_model

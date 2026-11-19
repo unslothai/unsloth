@@ -4,7 +4,6 @@
 import { strFromU8, unzipSync } from "fflate";
 import { OPEN_DOCUMENT_SPREADSHEET_MIME } from "./open-document-accept";
 const OFFICE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
-const STYLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:style:1.0";
 const TABLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
 const TEXT_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
 const OPEN_DOCUMENT_CELL_VALUE_ATTRIBUTES = [
@@ -19,26 +18,10 @@ export const MAX_OPEN_DOCUMENT_ARCHIVE_BYTES = 50 * 1024 * 1024;
 export const MAX_OPEN_DOCUMENT_XML_BYTES = 10 * 1024 * 1024;
 const MAX_REPEATED_OPEN_DOCUMENT_ROWS = 100;
 const MAX_REPEATED_OPEN_DOCUMENT_COLUMNS = 100;
-const MAX_OPEN_DOCUMENT_COLUMN_INDEX = Number.MAX_SAFE_INTEGER;
 
 export type OpenDocumentAttachmentContent = {
   label: "ODS" | "ODT";
   text: string;
-};
-
-type HiddenOpenDocumentColumnRange = {
-  start: number;
-  end: number;
-};
-
-type HiddenOpenDocumentColumnRanges = {
-  ranges: HiddenOpenDocumentColumnRange[];
-  nextColumn: number;
-};
-
-type OpenDocumentXmlFiles = {
-  contentXml: string;
-  stylesXml?: string;
 };
 
 type OpenDocumentHiddenState = "hidden" | "visible" | "unset";
@@ -48,11 +31,10 @@ export async function readOpenDocumentAttachmentContent(
   filename: string,
   contentType: string,
 ): Promise<OpenDocumentAttachmentContent> {
-  const { contentXml, stylesXml } = await readOpenDocumentXmlFiles(file);
-  const doc = parseOpenDocumentXml(contentXml, filename);
-  const stylesDoc = stylesXml
-    ? parseOpenDocumentXml(stylesXml, `${filename}:styles.xml`)
-    : undefined;
+  const doc = parseOpenDocumentXml(
+    await readOpenDocumentContentXml(file),
+    filename,
+  );
   const isSpreadsheet =
     contentType === OPEN_DOCUMENT_SPREADSHEET_MIME ||
     filename.toLowerCase().endsWith(".ods");
@@ -60,7 +42,7 @@ export async function readOpenDocumentAttachmentContent(
   return {
     label: isSpreadsheet ? "ODS" : "ODT",
     text: isSpreadsheet
-      ? extractOpenDocumentSpreadsheetText(doc, stylesDoc)
+      ? extractOpenDocumentSpreadsheetText(doc)
       : extractOpenDocumentText(doc),
   };
 }
@@ -86,17 +68,14 @@ export async function readActiveOpenDocumentAttachmentContent(
   }
 }
 
-async function readOpenDocumentXmlFiles(
-  file: File,
-): Promise<OpenDocumentXmlFiles> {
+async function readOpenDocumentContentXml(file: File): Promise<string> {
   assertOpenDocumentArchiveSize(file);
 
   let files: Record<string, Uint8Array>;
   try {
     files = unzipSync(new Uint8Array(await file.arrayBuffer()), {
       filter: (entry) => {
-        const shouldRead =
-          entry.name === "content.xml" || entry.name === "styles.xml";
+        const shouldRead = entry.name === "content.xml";
         if (shouldRead) {
           assertOpenDocumentXmlSize(file.name, entry.name, entry.originalSize);
         }
@@ -117,15 +96,8 @@ async function readOpenDocumentXmlFiles(
     throw new Error(`OpenDocument file is missing content.xml: ${file.name}`);
   }
 
-  const styles = files["styles.xml"];
   assertOpenDocumentXmlSize(file.name, "content.xml", content.length);
-  if (styles) {
-    assertOpenDocumentXmlSize(file.name, "styles.xml", styles.length);
-  }
-  return {
-    contentXml: strFromU8(content),
-    stylesXml: styles ? strFromU8(styles) : undefined,
-  };
+  return strFromU8(content);
 }
 
 function assertOpenDocumentArchiveSize(file: File): void {
@@ -176,36 +148,22 @@ function extractOpenDocumentText(doc: XMLDocument): string {
     .join("\n\n");
 }
 
-function extractOpenDocumentSpreadsheetText(
-  doc: XMLDocument,
-  stylesDoc?: XMLDocument,
-): string {
-  const hiddenTableStyles = collectHiddenOpenDocumentTableStyles(
-    doc,
-    stylesDoc,
-  );
+function extractOpenDocumentSpreadsheetText(doc: XMLDocument): string {
   const body =
     doc.getElementsByTagNameNS(OFFICE_NAMESPACE, "body")[0] ??
     doc.documentElement;
   const tables = getOpenDocumentChildElements(body, OFFICE_NAMESPACE, [
     "spreadsheet",
-  ])
-    .flatMap((spreadsheet) =>
-      getOpenDocumentChildElements(spreadsheet, TABLE_NAMESPACE, ["table"]),
-    )
-    .filter(
-      (table) =>
-        !isHiddenOpenDocumentElement(table) &&
-        !hasHiddenOpenDocumentTableStyle(table, hiddenTableStyles),
-    );
+  ]).flatMap((spreadsheet) =>
+    getOpenDocumentChildElements(spreadsheet, TABLE_NAMESPACE, ["table"]),
+  );
 
   return tables.map(extractOpenDocumentTableText).filter(Boolean).join("\n\n");
 }
 
 function extractOpenDocumentTableText(table: Element): string {
-  const hiddenColumns = collectHiddenOpenDocumentColumns(table).ranges;
-  const rows = collectOpenDocumentTableRows(table).flatMap((row) =>
-    extractOpenDocumentRowText(row, hiddenColumns),
+  const rows = collectOpenDocumentTableRows(table).flatMap(
+    extractOpenDocumentRowText,
   );
 
   if (rows.length === 0) {
@@ -216,33 +174,23 @@ function extractOpenDocumentTableText(table: Element): string {
   return name ? `[Sheet: ${name}]\n${rows.join("\n")}` : rows.join("\n");
 }
 
-function extractOpenDocumentRowText(
-  row: Element,
-  hiddenColumns: HiddenOpenDocumentColumnRange[],
-): string[] {
+function extractOpenDocumentRowText(row: Element): string[] {
   const cells = getOpenDocumentChildElements(row, TABLE_NAMESPACE, [
     "table-cell",
     "covered-table-cell",
   ]);
-  const rowCells: string[] = [];
-  let columnIndex = 0;
-
-  for (const cell of cells) {
-    const isCoveredCell = cell.localName === "covered-table-cell";
-    const repeat = getOpenDocumentRepeatCount(
-      cell,
-      "number-columns-repeated",
-      MAX_OPEN_DOCUMENT_COLUMN_INDEX,
-    );
-    appendOpenDocumentVisibleCells(
-      rowCells,
-      hiddenColumns,
-      columnIndex,
-      repeat,
-      isCoveredCell ? "" : extractOpenDocumentCellText(cell),
-    );
-    columnIndex = advanceOpenDocumentColumnIndex(columnIndex, repeat);
-  }
+  const rowCells = cells.flatMap((cell) =>
+    repeatOpenDocumentValue(
+      cell.localName === "covered-table-cell"
+        ? ""
+        : extractOpenDocumentCellText(cell),
+      getOpenDocumentRepeatCount(
+        cell,
+        "number-columns-repeated",
+        MAX_REPEATED_OPEN_DOCUMENT_COLUMNS,
+      ),
+    ),
+  );
 
   const line = rowCells.join("\t").replace(/\t+$/g, "");
 
@@ -258,32 +206,6 @@ function extractOpenDocumentRowText(
       MAX_REPEATED_OPEN_DOCUMENT_ROWS,
     ),
   );
-}
-
-function appendOpenDocumentVisibleCells(
-  rowCells: string[],
-  hiddenColumns: HiddenOpenDocumentColumnRange[],
-  columnIndex: number,
-  repeat: number,
-  text: string,
-): void {
-  let emitted = 0;
-  for (
-    let i = 0;
-    i < repeat && emitted < MAX_REPEATED_OPEN_DOCUMENT_COLUMNS;
-    i++
-  ) {
-    const hiddenEnd = getHiddenOpenDocumentColumnEnd(
-      hiddenColumns,
-      columnIndex + i,
-    );
-    if (hiddenEnd === null) {
-      rowCells.push(text);
-      emitted++;
-    } else {
-      i += hiddenEnd - columnIndex - i - 1;
-    }
-  }
 }
 
 function repeatOpenDocumentValue<T>(value: T, count: number): T[] {
@@ -500,9 +422,6 @@ function collectOpenDocumentTableRows(root: Element): Element[] {
   const rows: Element[] = [];
 
   for (const child of getOpenDocumentChildElementNodes(root)) {
-    if (isHiddenOpenDocumentElement(child)) {
-      continue;
-    }
     if (
       child.namespaceURI === TABLE_NAMESPACE &&
       child.localName === "table-row"
@@ -519,155 +438,6 @@ function collectOpenDocumentTableRows(root: Element): Element[] {
   }
 
   return rows;
-}
-
-function collectHiddenOpenDocumentColumns(
-  root: Element,
-  hidden = false,
-  startColumn = 0,
-): HiddenOpenDocumentColumnRanges {
-  const ranges: HiddenOpenDocumentColumnRange[] = [];
-  let column = startColumn;
-
-  for (const child of getOpenDocumentChildElementNodes(root)) {
-    if (child.namespaceURI !== TABLE_NAMESPACE) {
-      continue;
-    }
-
-    const childHidden = hidden || isHiddenOpenDocumentElement(child);
-    if (child.localName === "table-column") {
-      const repeat = getOpenDocumentRepeatCount(
-        child,
-        "number-columns-repeated",
-        MAX_OPEN_DOCUMENT_COLUMN_INDEX,
-      );
-      const nextColumn = advanceOpenDocumentColumnIndex(column, repeat);
-      if (childHidden) {
-        ranges.push({ start: column, end: nextColumn });
-      }
-      column = nextColumn;
-    } else if (
-      ["table-column-group", "table-columns", "table-header-columns"].includes(
-        child.localName,
-      )
-    ) {
-      const childRanges = collectHiddenOpenDocumentColumns(
-        child,
-        childHidden,
-        column,
-      );
-      ranges.push(...childRanges.ranges);
-      column = childRanges.nextColumn;
-    }
-  }
-
-  return { ranges, nextColumn: column };
-}
-
-function getHiddenOpenDocumentColumnEnd(
-  ranges: HiddenOpenDocumentColumnRange[],
-  column: number,
-): number | null {
-  for (const range of ranges) {
-    if (column < range.start) {
-      return null;
-    }
-    if (column < range.end) {
-      return range.end;
-    }
-  }
-
-  return null;
-}
-
-function advanceOpenDocumentColumnIndex(
-  column: number,
-  repeat: number,
-): number {
-  return Math.min(column + repeat, MAX_OPEN_DOCUMENT_COLUMN_INDEX);
-}
-
-function collectOpenDocumentElements(
-  root: Element,
-  namespaceUri: string,
-  localNames: string[],
-): Element[] {
-  const matches: Element[] = [];
-
-  for (const child of getOpenDocumentChildElementNodes(root)) {
-    if (isHiddenOpenDocumentElement(child)) {
-      continue;
-    }
-
-    if (
-      child.namespaceURI === namespaceUri &&
-      localNames.includes(child.localName)
-    ) {
-      matches.push(child);
-    } else {
-      matches.push(
-        ...collectOpenDocumentElements(child, namespaceUri, localNames),
-      );
-    }
-  }
-
-  return matches;
-}
-
-function collectHiddenOpenDocumentTableStyles(
-  doc: XMLDocument,
-  stylesDoc?: XMLDocument,
-): Set<string> {
-  const hidden = new Set<string>();
-  const styles = [
-    ...collectOpenDocumentElements(doc.documentElement, STYLE_NAMESPACE, [
-      "style",
-    ]),
-    ...(stylesDoc
-      ? collectOpenDocumentElements(
-          stylesDoc.documentElement,
-          STYLE_NAMESPACE,
-          ["style"],
-        )
-      : []),
-  ];
-
-  for (const style of styles) {
-    const name = getOpenDocumentAttribute(style, STYLE_NAMESPACE, "name");
-    if (
-      !name ||
-      getOpenDocumentAttribute(style, STYLE_NAMESPACE, "family") !== "table"
-    ) {
-      continue;
-    }
-
-    const hidesTable =
-      getOpenDocumentAttribute(style, TABLE_NAMESPACE, "display") === "false" ||
-      getOpenDocumentChildElements(style, STYLE_NAMESPACE, [
-        "table-properties",
-      ]).some(
-        (properties) =>
-          getOpenDocumentAttribute(properties, TABLE_NAMESPACE, "display") ===
-          "false",
-      );
-    if (hidesTable) {
-      hidden.add(name);
-    }
-  }
-
-  return hidden;
-}
-
-function hasHiddenOpenDocumentTableStyle(
-  table: Element,
-  hiddenTableStyles: Set<string>,
-): boolean {
-  const styleName = getOpenDocumentAttribute(
-    table,
-    TABLE_NAMESPACE,
-    "style-name",
-  );
-  return styleName !== null && hiddenTableStyles.has(styleName);
 }
 
 function getOpenDocumentChildElements(

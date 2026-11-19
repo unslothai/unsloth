@@ -356,6 +356,63 @@ test("a Hub-routed single-file checkpoint keys its recipe on the selected file",
   );
 });
 
+test("distilled checkpoints get their publishers' recipes, not their family's", () => {
+  for (const id of [
+    "hunyuanvideo-community/HunyuanImage-2.1-Distilled-Diffusers",
+    "hunyuanimage2.1_distilled_bf16.safetensors",
+    "dit/hunyuanimage2.1-distilled.safetensors",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 8, guidance: 3.25 }, id);
+  }
+  assert.deepEqual(defaultsFor("hunyuanvideo-community/HunyuanImage-2.1-Diffusers"), { steps: 50, guidance: 3.25 });
+  assert.deepEqual(defaultsFor("anima-turbo-v1.1.safetensors"), { steps: 10, guidance: 1 });
+  assert.equal(
+    defaultsKeyFor("circlestone-labs/Anima", "anima", "split_files/diffusion_models/anima-turbo-v1.1.safetensors"),
+    "split_files/diffusion_models/anima-turbo-v1.1.safetensors",
+  );
+  for (const id of ["lodestones/Chroma1-Flash", "Chroma1-HD-Flash.safetensors", "silveroxides/Chroma1-Flash-GGUF"]) {
+    assert.deepEqual(defaultsFor(id), { steps: 16, guidance: 1 }, id);
+  }
+});
+
+test("a base file in a Turbo / Flash folder or repo keeps the backend's recipe, not the distilled one", () => {
+  for (const [repo, file] of [
+    ["/home/me/.cache/anima-turbo", "anima-base-v1.0.safetensors"],
+    ["/home/me/.cache/anima-turbo", "anima-aesthetic-v1.1.safetensors"],
+    ["/models/chroma1-flash", "Chroma1-HD.safetensors"],
+  ]) {
+    assert.deepEqual(defaultsFor(defaultsKeyFor(repo, "auto", file)), { steps: 9, guidance: 0 }, `${repo} ${file}`);
+  }
+  // The file naming the distilled checkpoint, or a component file naming none, still gets it.
+  assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima", "auto", "anima-turbo-v1.1.safetensors")), {
+    steps: 10,
+    guidance: 1,
+  });
+  assert.deepEqual(
+    defaultsFor(defaultsKeyFor("/models/anima-turbo", "auto", "transformer/diffusion_pytorch_model.safetensors")),
+    { steps: 10, guidance: 1 },
+  );
+  assert.deepEqual(defaultsFor(defaultsKeyFor("lodestones/Chroma1-Flash", "auto", null)), { steps: 16, guidance: 1 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima-turbo", "auto", "my_merge.safetensors")), {
+    steps: 10,
+    guidance: 1,
+  });
+});
+
+test("a local safetensors pick keys its defaults on the selected file, not its folder", () => {
+  // The page passes the picked file, so a base Anima file in a Turbo folder gets the fallback the loaded recipe replaces.
+  const pick = "/models/anima-turbo/anima-base-v1.0.safetensors";
+  assert.deepEqual(defaultsFor(defaultsKeyFor(pick, "auto", "anima-base-v1.0.safetensors")), { steps: 9, guidance: 0 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima/anima-turbo-v1.1.safetensors", "auto", "anima-turbo-v1.1.safetensors")), {
+    steps: 10,
+    guidance: 1,
+  });
+  const page = readFileSync(new URL("../src/features/images/images-page.tsx", import.meta.url), "utf8");
+  const branch = page.slice(page.indexOf('id.toLowerCase().endsWith(".safetensors")'));
+  const call = branch.slice(0, branch.indexOf('kind: "single_file"'));
+  assert.match(call, /applyImageModelDefaults\(id, nextFamilyOverride, false, filename\)/);
+});
+
 test("Kromoss picks take the MOSS-Image recipe", () => {
   for (const id of ["lodestones/Kromoss", "molbal/Kromoss-GGUF", "kromoss-Q8_0.gguf"]) {
     assert.deepEqual(defaultsFor(id), { steps: 25, guidance: 2.5 }, id);

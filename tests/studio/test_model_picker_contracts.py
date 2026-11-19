@@ -1002,20 +1002,26 @@ def test_fixed_layer_gguf_pins_displayed_context():
     """A loaded auto-fit GGUF saved with Manual fixed GPU layers must pin its shown context, else a
     fresh load sends native/0 and recreates the OOM."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "const pinFixedLayerContext =" in src
-    assert 'loadableConfig.gpuMemoryMode === "manual"' in src
-    assert "customContextLength: activeLoadedContext" in src
+    assert re.search(
+        r"const fixedLayerPin = fixedLayerContextPin\(\{[^}]*"
+        r"gpuMemoryMode: loadableConfig\.gpuMemoryMode \?\? gpuMemoryModeFallback,[^}]*"
+        r"gpuLayers: loadableConfig\.gpuLayers,",
+        src,
+    )
+    assert "{ ...loadableConfig, customContextLength: fixedLayerPin }" in src
 
 
 def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
-    """pinFixedLayerContext is computed from the render-time config, before a same-click
-    GPU Layers draft is committed."""
+    """The render-time pin is computed before a same-click GPU Layers draft is committed, so
+    Apply recomputes it from the committed config."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "const effectivePinFixedLayerContext =" in src
-    assert 'effectiveConfig.gpuMemoryMode === "manual"' in src
-    assert "effectiveConfig.gpuLayers != null" in src
-    assert "effectiveConfig.customContextLength == null" in src
-    assert "{ ...effectiveConfig, customContextLength: activeLoadedContext }" in src
+    assert re.search(
+        r"const effectiveFixedLayerPin = fixedLayerContextPin\(\{[^}]*"
+        r"gpuMemoryMode: effectiveConfig\.gpuMemoryMode \?\? gpuMemoryModeFallback,[^}]*"
+        r"gpuLayers: effectiveConfig\.gpuLayers,",
+        src,
+    )
+    assert "{ ...effectiveConfig, customContextLength: effectiveFixedLayerPin }" in src
 
 
 def test_blur_cache_cleared_on_every_settled_render():
@@ -2384,15 +2390,15 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "n_ubatch?: number | null;" in api_types
     # One rule for every load path: omitted when blank, since an explicit null reads as set and
     # strips inherited -b / -ub.
+    # MLX reads the same two fields (#18426), so the gate may widen to MLX but must keep GGUF and
+    # must not send them to an engine that ignores them.
     load_request = " ".join(_read("features/chat/lib/load-request.ts").split())
-    assert (
-        "...(target.isGguf && settings.nBatch != null ? { n_batch: settings.nBatch } : {}),"
-        in load_request
-    )
-    assert (
-        "...(target.isGguf && settings.nUbatch != null ? { n_ubatch: settings.nUbatch } : {}),"
-        in load_request
-    )
+    for field, key in (("nBatch", "n_batch"), ("nUbatch", "n_ubatch")):
+        assert re.search(
+            rf"\.\.\.\(\(?target\.isGguf(?: \|\| mlx\))? && settings\.{field} != null "
+            rf"\? \{{ {key}: settings\.{field} \}} : \{{\}}\),",
+            load_request,
+        ), f"{key} is no longer sent, only when set, on a GGUF load"
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "pendingLoadConfig?.nBatch" in runtime
     assert "nBatch: loadNBatch, nUbatch: loadNUbatch," in runtime
@@ -2446,9 +2452,12 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
     assert "n_ubatch = payload.n_ubatch," in route
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert '("n_batch", "n_ubatch")' in store
-    gguf_block = store.split("    if is_gguf:", 1)[1]
-    assert 'kwargs["n_batch"] = override["n_batch"]' in gguf_block
-    assert 'kwargs["n_ubatch"] = override["n_ubatch"]' in gguf_block
+    # Read through the builder rather than its source: the fields may be copied for GGUF alone or
+    # for GGUF and MLX alike (#18426).
+    assert _override_load_kwargs({"n_batch": 1024, "n_ubatch": 256}, is_gguf = True) == {
+        "n_batch": 1024,
+        "n_ubatch": 256,
+    }
     # A stored pass-through -b / -ub must not outrank the first-class field, and survives without one.
     build = _override_load_kwargs
     stored = ["-b", "512", "-ub", "256", "--threads", "4"]
@@ -2921,12 +2930,17 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     assert "apiLoadable: apiAutoSwitchMayLoad([id, loadId], meta.isLora)," in handoff
     assert "apiLoadable: apiAutoSwitchMayLoad([modelId], isLora)," in handoff
     predicate = " ".join(_read("features/model-picker/model-config/model-identity.ts").split())
-    assert "return !isLora && !ids.some(isOllamaLinkPath);" in predicate
+    # An Ollama MLX tag's checkpoint is indexed by the resolver, so only a materialized .gguf link is
+    # unloadable by the API (#18253).
+    assert "return !isLora && !ids.some(isMaterializedOllamaLink);" in predicate
     backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
-    assert "!isOllamaLinkPath(entry.modelId) &&" in backfill
+    assert "!isMaterializedOllamaLink(entry.modelId) &&" in backfill
 
     identity = _read("features/hub/lib/model-identity.ts")
     assert 'new Set([".studio_links", "ollama_links"])' in identity
+    assert "return isOllamaLinkPath(modelId) && !isOllamaMlxModelId(modelId);" in " ".join(
+        identity.split()
+    )
     resolver = _read_backend("core/inference/local_model_resolver.py")
     assert 'seg in (".studio_links", "ollama_links")' in resolver, "the rule this mirrors"
 

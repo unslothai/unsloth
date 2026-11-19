@@ -946,6 +946,35 @@ def _make_lora_optimizer(
     return make_lora_optimizer(params, lr, resume_optimizer_class)
 
 
+def _drain_stop_queue(stop_queue: Any, event_queue: Any) -> Any:
+    """Drain the queue and return the last stop message (True or a dict with save=False); else False.
+    A {"vram": "lend" | "return"} message is the parent asking for the GPU room the trainer keeps idle
+    (the DiT dequant cache): served here, between steps, and acknowledged; never a stop."""
+    got: Any = None
+    saw = False
+    try:
+        while not stop_queue.empty():
+            msg = stop_queue.get_nowait()
+            if isinstance(msg, dict) and "vram" in msg:
+                _serve_vram_request(msg, event_queue)
+                continue
+            got = msg
+            saw = True
+    except Exception:  # noqa: BLE001 -- an empty/closed queue just means "keep going"
+        pass
+    return got if saw else False
+
+
+def _serve_vram_request(msg: dict, event_queue: Any) -> None:
+    ack: dict = {"kind": msg.get("vram")}
+    try:
+        from .diffusion_lora_fast import handle_vram_request
+        ack = handle_vram_request(str(msg.get("vram")))
+    except Exception as exc:  # noqa: BLE001 -- the parent must still hear back, never wait out its timeout
+        ack["error"] = str(exc)
+    event_queue.put({"type": "vram_request_ack", "seq": msg.get("seq"), "ts": time.time(), **ack})
+
+
 def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Unexpected exceptions become an error event on the queue, not a silent subprocess crash."""
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -954,16 +983,7 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         event_queue.put(ev)
 
     def should_stop() -> Any:
-        # Drain the queue and return the last stop message (True or a dict with save=False); else False.
-        got: Any = None
-        saw = False
-        try:
-            while not stop_queue.empty():
-                got = stop_queue.get_nowait()
-                saw = True
-        except Exception:  # noqa: BLE001 -- an empty/closed queue just means "keep going"
-            pass
-        return got if saw else False
+        return _drain_stop_queue(stop_queue, event_queue)
 
     try:
         # normalized() validates the family; the registry sends DiT families to their own trainer.

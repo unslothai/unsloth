@@ -2004,8 +2004,7 @@ def revoke_internal_api_key(key_id: int) -> bool:
 
 
 def delete_internal_api_key(key_id: int) -> bool:
-    """Delete an internal key row and its account copy. For keys minted per call, which would
-    otherwise leave one inactive row behind for every call."""
+    """Delete an internal key and its account copy; per-call keys would pile up inactive rows."""
     conn = get_connection()
     try:
         conn.execute(

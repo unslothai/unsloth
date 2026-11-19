@@ -466,6 +466,7 @@ _SITE_LINK_MARKER_TAIL = re.compile(r"\x00[0-9a-f]+:\d+:[se]\x00$")
 # parts a base lookup reads back: enough for delimiters and link markers, bounded on hostile pages
 _SUP_BASE_SCAN_PARTS = 8
 _SUP_BASE_SCAN_CHARS = 128
+_SUP_BASE_ENDS = ")]}|）］｝"
 # a caret binds one token: a signed number or one letter goes bare, anything longer in parentheses
 _BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
 # split cents: $19<sup>99</sup> is a price, not an exponent
@@ -513,6 +514,66 @@ def _visible_tail(text: str) -> str:
         if trimmed == text:
             return text
         text = trimmed
+
+
+def _note_reference(attr_dict: dict) -> bool:
+    return (
+        any(
+            token in _FOOTNOTE_CLASSES
+            or any(
+                part == "fn" or part.startswith(_FOOTNOTE_CLASS_PREFIXES)
+                for part in _CLASS_PART_SPLIT.split(token)
+            )
+            for token in (attr_dict.get("class") or "").lower().split()
+        )
+        or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
+    )
+
+
+def _sup_exponent(base: str, raw: str, shown: str, after_price: int) -> str | None:
+    visible = shown.strip(_MD_DELIMITERS)
+    if (
+        not visible
+        or "\n" in visible
+        or visible[0] == "["
+        # $19<sup>.99</sup> / €19<sup>,99</sup> are split cents; 10<sup>.5</sup> with no currency is a power
+        or (visible[0] in ".," and after_price)
+        or not any(c.isalnum() for c in visible)
+        or visible.lower() in _PLAIN_SUFFIXES
+        or (
+            len(_last_word(base)) > 1
+            and _CITATION_LIST.fullmatch(visible)
+            and ("–" in visible or not _THOUSANDS.fullmatch(visible))
+        )
+        or (base[-1] == "2" and visible.lower() in _SECOND_SUFFIXES)
+        or (
+            (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
+            and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
+        )
+        or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
+        # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
+        or (len(visible) == after_price and visible.isdigit())
+    ):
+        return None
+    # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
+    bare = _BARE_EXPONENT.fullmatch(visible) or (
+        visible.startswith("(") and visible.endswith(")") and visible.count("(") == 1
+    )
+    return f"^{raw}" if bare else f"^({raw})"
+
+
+def _raise_superscript(parts: list[str], start: int) -> None:
+    before = parts[max(start - _SUP_BASE_SCAN_PARTS, 0) : start]
+    # the joined tail: Word splits runs mid-word, and the citation rule reads the whole last word
+    base = "".join(part[-_SUP_BASE_SCAN_CHARS:] for part in before)[-_SUP_BASE_SCAN_CHARS:]
+    if not base or not (base[-1].isalnum() or base[-1] in _SUP_BASE_ENDS):
+        return
+    after_price = _MarkdownRenderer._after_price(before) if base[-1].isdigit() else 0
+    joined = "".join(parts[start:])
+    raw = joined.strip()
+    exponent = _sup_exponent(base, raw, raw, after_price)
+    if exponent is not None:
+        parts[start:] = [exponent + joined[len(joined.rstrip()) :]]
 
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
@@ -1219,7 +1280,7 @@ class _MarkdownRenderer(HTMLParser):
             part = _visible_tail(part)
             if part:
                 base = part[-1]
-                return part if base.isalnum() or base in ")]}|）］｝" else ""
+                return part if base.isalnum() or base in _SUP_BASE_ENDS else ""
         return ""
 
     @staticmethod
@@ -1254,36 +1315,9 @@ class _MarkdownRenderer(HTMLParser):
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
-        visible = shown.strip(_MD_DELIMITERS)
-        if (
-            not visible
-            or "\n" in visible
-            or visible[0] == "["
-            # $19<sup>.99</sup> / €19<sup>,99</sup> are split cents; 10<sup>.5</sup> with no currency is a power
-            or (visible[0] in ".," and after_price)
-            or not any(c.isalnum() for c in visible)
-            or visible.lower() in _PLAIN_SUFFIXES
-            or (
-                len(_last_word(base)) > 1
-                and _CITATION_LIST.fullmatch(visible)
-                and ("–" in visible or not _THOUSANDS.fullmatch(visible))
-            )
-            or (base[-1] == "2" and visible.lower() in _SECOND_SUFFIXES)
-            or (
-                (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
-                and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
-            )
-            or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
-            # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
-            or (len(visible) == after_price and visible.isdigit())
-        ):
+        exponent = _sup_exponent(base, raw, shown, after_price)
+        if exponent is None:
             return
-        # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
-        token = shown.strip(_MD_DELIMITERS)
-        bare = _BARE_EXPONENT.fullmatch(token) or (
-            token.startswith("(") and token.endswith(")") and token.count("(") == 1
-        )
-        exponent = f"^{raw}" if bare else f"^({raw})"
         exponent += joined[len(joined.rstrip()) :]
         target[start:] = [exponent]
         # headings are teed into these copies; a stale one renders "E=mc2" or skews the prose gate
@@ -2055,17 +2089,7 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "sup":
             target = self._emit_target()
-            reference = (
-                any(
-                    token in _FOOTNOTE_CLASSES
-                    or any(
-                        part == "fn" or part.startswith(_FOOTNOTE_CLASS_PREFIXES)
-                        for part in _CLASS_PART_SPLIT.split(token)
-                    )
-                    for token in (attr_dict.get("class") or "").lower().split()
-                )
-                or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
-            )
+            reference = _note_reference(attr_dict)
             # past the cap nothing is tracked, so the stack stays bounded on hostile pages
             if len(self._sup_starts) < _MAX_SUP_DEPTH:
                 self._sup_starts.append(
@@ -2816,14 +2840,12 @@ _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 # absent text = no generated span cells, so a pass needs no span-free scoring re-render
 _SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
 _NOSCRIPT_TAG = re.compile(r"<(/?)noscript\b", re.IGNORECASE)
-# html.unescape raises once a decimal reference has more digits, leading zeros included, than
-# int()'s limit, which Python never sets below 640
+# html.unescape raises past int()'s digit limit (never below 640), leading zeros included.
 _LONG_DECIMAL_REF = re.compile(r"&#([0-9]{641,})")
 
 
 def _short_decimal_ref(match: re.Match[str]) -> str:
-    """The reference without its leading zeros, or &#65533 (U+FFFD, what html.unescape gives past
-    U+10FFFF) when 8 or more digits remain."""
+    """Leading zeros dropped; 8+ digits give U+FFFD, as html.unescape does past U+10FFFF."""
     digits = match.group(1).lstrip("0") or "0"
     return "&#" + (digits if len(digits) < 8 else "65533")
 

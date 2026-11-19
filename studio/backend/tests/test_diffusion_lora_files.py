@@ -390,8 +390,7 @@ def test_moss_and_anima_have_a_lora_loader():
 
 @pytest.mark.parametrize("use_stream", [False, True])
 def test_lokr_attached_under_group_offload_moves_with_its_group(tmp_path, use_stream):
-    """A LoKR attached at generate time to a group-offloaded transformer: the groups are rebuilt, so the factors onload
-    with their block, and again on unload."""
+    """LoKR attached under group offload: groups rebuild, so factors move with their block."""
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")
     from diffusers.hooks import apply_group_offloading

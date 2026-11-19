@@ -117,9 +117,8 @@ def build_pair_layout(
     min_saved = None,
     max_segment_cap = None,
 ):
-    """PairLayout for ``input_ids`` ``[2B, L]`` (right padded, row ``i`` paired with ``i + B``), or
-    None. Each row keeps at least one own token; positions stay the column index.
-    """
+    """PairLayout for input_ids [2B, L] (right padded, row i paired with row i + B), or None. Each
+    row keeps at least one own token; positions stay the column index."""
     from ..utils.prefix_grouper_kernel import build_seg_info_multigroup
 
     if not (isinstance(input_ids, torch.Tensor) and isinstance(attention_mask, torch.Tensor)):

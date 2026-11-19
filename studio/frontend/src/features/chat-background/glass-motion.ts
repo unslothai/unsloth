@@ -176,9 +176,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     holdMotion(null, SETTLE_MS);
   };
 
-  // A key or a press redraws the window like any motion: typing a character, pasting, an IME step or a click
-  // that opens a reasoning block would otherwise compute every blur on screen again for each of its frames.
-  // The standing glass, and the surface the event lands in (a dialog's search field, a menu), pause with it.
+  // A key or press pauses glass like any motion, or every blur on screen recomputes each frame.
   const onInteraction = (event: Event) => {
     const target = event.target;
     const own = isElement(target) ? target.closest(GLASS_MOTION_SURFACES) : null;
@@ -195,9 +193,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     if (isElement(el) && timers.has(el)) holdMotion(el, SETTLE_MS);
   };
 
-  // Menus, dialogs and tooltips mount into portals on <body>. Marking them before their first frame keeps
-  // even that frame (the costliest: the blur is created) free of the blur. Only body's own children are
-  // watched, not the subtree, so streaming chat text never wakes this.
+  // Portal popups are marked before their first frame; only body's children are watched.
   const onMutations = (records: MutationRecord[]) => {
     for (const record of records) {
       for (const node of record.addedNodes) {

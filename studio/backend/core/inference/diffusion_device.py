@@ -118,6 +118,13 @@ def install_frame_pad_fix(
     return patched
 
 
+def mps_synchronize() -> None:
+    """A blocking read waits on the stream's serial queue; torch.mps.synchronize() (torch <= 2.13) commits
+    off it and aborts ("already committed command buffer") while another thread copies (pytorch#197836)."""
+    import torch
+    torch.zeros(1, device = "mps").cpu()
+
+
 def install_vae_sync(
     pipe: Any,
     target: DiffusionDeviceTarget,
@@ -137,11 +144,10 @@ def install_vae_sync(
     ]
     if not modules:
         return False
-    import torch
 
     def _sync(_module, _args, _output) -> None:
         try:
-            torch.mps.synchronize()
+            mps_synchronize()
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 

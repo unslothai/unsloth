@@ -989,8 +989,8 @@ def test_mlx_trainer_accepts_trl_style_positional_args():
         tokenizer = None,
     )
 
-    assert trainer.args is args
     assert trainer.args.output_dir == "trl-outputs"
+    assert trainer.args.max_steps == 2
     assert trainer.train_dataset == []
 
 
@@ -1373,7 +1373,7 @@ def test_mlx_torch_cuda_compatibility_shim():
     assert cuda_stats.name == stats.name
     assert cuda_stats.total_memory == stats.total_memory
     assert torch.cuda.get_device_name(0) == stats.name
-    assert torch.cuda.max_memory_reserved() == int(used * 1024 * 1024 * 1024)
+    assert round(torch.cuda.max_memory_reserved() / 1024**3, 3) == used
     assert torch.cuda.max_memory_allocated() == torch.cuda.max_memory_reserved()
     assert 0 <= torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
     assert torch.cuda.memory_allocated() == torch.cuda.memory_reserved()
@@ -1400,3 +1400,17 @@ def test_mlx_torch_cuda_compatibility_shim():
     batch = BatchEncoding({"input_ids": tensor})
     assert batch.to("cuda") is batch
     assert batch.to(device = "cuda") is batch
+
+
+def test_mlx_torch_cuda_current_memory_never_exceeds_peak():
+    _import_mlx_unsloth()
+    torch = pytest.importorskip("torch")
+    import mlx.core as mx
+
+    held = mx.ones((64 * 1024,))
+    mx.eval(held)
+    assert 0 < torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
+    assert torch.cuda.max_memory_allocated() >= mx.get_peak_memory()
+
+    torch.cuda.reset_peak_memory_stats()
+    assert 0 < torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()

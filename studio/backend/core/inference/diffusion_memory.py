@@ -2524,8 +2524,7 @@ def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
 
 
 def _holds_fp8_stored(module: Any) -> bool:
-    """Whether ``module`` holds fp8-STORED or packed nvfp4 / mxfp8 Linears; codes and scales are buffers, so a
-    parameter scan reads it dense."""
+    """Module holds fp8-stored or packed nvfp4/mxfp8 Linears (codes in buffers, not params)."""
     if module is None:
         return False
     try:
@@ -3799,6 +3798,15 @@ def learned_peak_label(
     ):
         if value is not None:
             label = f"{label}|{name}:{value}"
+    # AdaLN precompute keeps the modulation weights off the card: its peaks never size a load without it.
+    transformer = getattr(pipe, "transformer", None)
+    state = (
+        getattr(transformer, "__dict__", {}).get("_unsloth_adaln")
+        if transformer is not None
+        else None
+    )
+    if state is not None and getattr(state, "active", False):
+        label = f"{label}|adaln:on"
     return label
 
 
@@ -4298,9 +4306,8 @@ def _streamed_phase_seed(
 
 
 def _top_level_group_mib(pipe: Any) -> Optional[int]:
-    """MiB of the largest denoiser's weights outside its block stacks (``ModuleList`` / ``Sequential`` children):
-    block-level group offload keeps them in one top-level group that is onloaded for the whole forward when it is not
-    resident, beside the block window. None when unreadable."""
+    """MiB of the largest denoiser weights outside block stacks: one top-level group onloaded for
+    the whole forward when not resident, beside the block window; None when unreadable"""
     try:
         import torch
 
@@ -5507,12 +5514,13 @@ def release_resident_groups(
     denoisers_only: bool = False,
     reason: str = "an oversized request",
     device: Any = None,
+    encoders_only: bool = False,
 ) -> Optional[Callable[[], None]]:
     """Stream resident offload groups again until ``need_mib`` is freed (text encoders first, then the denoiser's
     blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
     A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
-    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them).
-    ``device``: only modules resident on that card."""
+    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them);
+    ``encoders_only`` streams only theirs (``diffusion_te_residency``). ``device``: only modules resident on that card."""
     released: list = []
     streamed: set = set()
 
@@ -5546,6 +5554,7 @@ def release_resident_groups(
             for m in (getattr(pipe, "components", {}) or {}).values()
             if getattr(m, "_unsloth_resident_room", None)
             and not (denoisers_only and _is_text_encoder_module(pipe, m))
+            and not (encoders_only and not _is_text_encoder_module(pipe, m))
         ]
         if device is not None:
             from .diffusion_vae_oom import _same_card
@@ -8123,11 +8132,9 @@ REGISTERED_SLAB_ENV = "UNSLOTH_DIFFUSION_REGISTERED_SLABS"
 def registered_pinned_empty(
     nbytes: int, fill: Optional[Callable[[Any], None]] = None
 ) -> Optional[Any]:
-    """Page-locked uint8 host tensor in registered memory, or None (use torch's pinned allocator).
-    Torch's allocator faults pages on one thread (~18 s for MiniMax-H3); ``zero_`` here faults them in parallel.
-    ``fill(buf)``, when given, writes every byte before registering, in place of the zero fill: the copy faults the
-    pages, saving a full write pass (an 8 GB H3 conditioner pin: 3.8 -> 3.4 s hot, 6.1 -> 4.1 s cold, A100 VM).
-    Its errors propagate."""
+    """Page-locked uint8 host tensor or None; zeroing faults pages in parallel (torch pinned
+    allocator faults on one thread, ~18 s for MiniMax-H3); fill(buf) replaces zero fill; its
+    errors propagate"""
     if (os.environ.get(REGISTERED_SLAB_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     if int(nbytes) <= 0 or not _fast_pin_supported():

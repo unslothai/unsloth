@@ -2579,9 +2579,8 @@ def _mlx_audio_rows(
     image_col = _RESOLVE_IMAGE_COLUMN,
     warn = None,
 ) -> tuple:
-    """The CUDA transcription rows, with each clip left decoded so zoo can check its rate, and
-    the row's images (a mixed audio + image dataset) beside them. Returns (rows, image column);
-    an eval split takes the train split's image column, None for none."""
+    """CUDA transcription rows with clips left decoded for the zoo rate check, plus row images
+    beside them; returns (rows, image column); eval takes the train image column, None for none."""
     from datasets import Audio
     from unsloth_zoo.mlx.utils import audio_extractor_sampling_rate
 
@@ -3232,6 +3231,13 @@ def _resolve_mlx_max_grad_norm(value):
     return value
 
 
+_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL = (
+    "Audio dataset training on Apple Silicon needs an audio-input model such as "
+    "Gemma 3n or Gemma 4; text-to-speech and speech-recognition checkpoints are not "
+    "supported on MLX yet."
+)
+
+
 def _run_mlx_training(
     event_queue,
     stop_queue,
@@ -3324,6 +3330,20 @@ def _run_mlx_training(
     is_dataset_audio = bool(config.get("is_dataset_audio", False)) and not (
         is_cpt or config.get("format_type") == "raw"
     )
+    from utils.models import detect_audio_type
+
+    audio_type = (
+        detect_audio_type(
+            model_load_name,
+            hf_token,
+            local_files_only = model_local_only,
+            revision = model_revision,
+        )
+        if is_dataset_audio
+        else None
+    )
+    if audio_type not in (None, "audio_vlm"):
+        raise ValueError(_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL)
     use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
     # Before the download/load below: unlike the CUDA path, this needs none of the model.
     # A continued adapter keeps its own targets, and CPT builds its adapter from target_modules alone.
@@ -3486,11 +3506,7 @@ def _run_mlx_training(
     model._is_vlm_model = is_vlm
     if is_dataset_audio and not is_vlm:
         # zoo trains audio only as input to an audio-capable vision-language model.
-        raise ValueError(
-            "Audio dataset training on Apple Silicon needs an audio-input model such as "
-            "Gemma 3n or Gemma 4; text-to-speech and speech-recognition checkpoints are not "
-            "supported on MLX yet."
-        )
+        raise ValueError(_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL)
     vision_image_size = config.get("vision_image_size")
     # DeepSeek OCR uses a coupled preset tuple; skip resize like the Torch path.
     _model_name_lower = str(config.get("model_name", "")).lower()
@@ -4358,6 +4374,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
+    # The NF4 dequant cache (unsloth/kernels/dequant_cache.py) fills the GPU's free memory, which Studio reads
+    # to keep or load a chat model during training: off in the worker unless the user's environment sets it.
+    os.environ.setdefault("UNSLOTH_NF4_DEQUANT_CACHE", "0")
     # Until unsloth is imported below; transformers is first imported well before that.
     metadata_scan_cache = _install_metadata_scan_cache()
 

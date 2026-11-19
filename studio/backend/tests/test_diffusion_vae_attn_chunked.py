@@ -420,9 +420,7 @@ def test_half_math_runs_in_the_autocast_dtype(rocm, monkeypatch):
 
 
 def _flux1_vae_scale_qkv(dtype):
-    """512 px FLUX.1 / Z-Image VAE mid-block shape (4096 tokens, head 512) at its real magnitudes: q / k entries up to
-    ~1600 / ~900 put every score near 1e6 (the real decoder measures 1e6 to 5e7), far past fp16's 65504, while the
-    softmax over the small per-key differences stays well conditioned."""
+    """Real VAE magnitudes: scores near 1e6 overflow fp16's 65504; the softmax stays well conditioned."""
     g = torch.Generator().manual_seed(0)
     q, k, v = (torch.randn(1, 1, 4096, 512, generator = g) for _ in range(3))
     q[..., :16] = 1600.0

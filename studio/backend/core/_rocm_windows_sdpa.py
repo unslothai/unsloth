@@ -59,8 +59,7 @@ _ORIGINALS: dict = {}  # str token -> wrapped SDPA (a graph constant, unlike a f
 
 
 def _math_only(token: str, query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
-    """allow_in_graph (as unsloth.import_fixes does): Dynamo cannot enter the lock, and the restore must use the
-    run-time backends, not the trace-time ones."""
+    """allow_in_graph: Dynamo can't enter the lock; restore run-time, not trace-time, backends."""
     _math_on()
     try:
         return _ORIGINALS[token](query, key, value, *args, **kwargs)

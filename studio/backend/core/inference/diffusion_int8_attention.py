@@ -634,23 +634,39 @@ def register_route(index: int, head_dim: int, raise_floor: Callable) -> None:
 def _drop_routes(plan: dict) -> None:
     _, Sq, Sk, _, D = plan["shape"]
     floor = (min(Sq, Sk) // DECIDE_BUCKET + 1) * DECIDE_BUCKET
+    restored = raised = 0
     for index, head_dim, raise_floor in list(_ROUTES):
         if index == plan["index"] and head_dim == D:
-            raise_floor(floor)
+            if raise_floor(floor):
+                restored += 1
+            else:
+                raised += 1
+    if restored or raised:
+        _log().info(
+            "diffusion.int8_attention: torch attention beat the sink path on cuda:%d at %d tokens: %d attention "
+            "modules back on their stock processor, %d below %d tokens stay on %s",
+            plan["index"],
+            min(Sq, Sk),
+            restored,
+            raised,
+            floor,
+            BACKEND,
+        )
 
 
 def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
     """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
     its calls compile as they did before the install; any other raises its token floor."""
 
-    def raise_floor(tokens: int) -> None:
+    def raise_floor(tokens: int) -> bool:
         stock = getattr(proc, "_unsloth_stock", None)
         if stock is not None and module is not None and getattr(module, "processor", None) is proc:
             module.processor = stock
-            return
+            return True
         proc._unsloth_int8_min_tokens = max(
             int(getattr(proc, "_unsloth_int8_min_tokens", 0)), tokens
         )
+        return False
 
     return raise_floor
 
@@ -945,15 +961,9 @@ def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int, sinks: b
 
 
 def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
-    """(path, call index) for this call of ``plan``: True the attention-sink path, False the kernels without it, or
-    "native" torch's attention. Every call takes the sink path until the plan's SINK_DECIDE_AT-th; from then on a
-    plan none of whose first SINK_LEARN_CALLS calls had a head that clipped V (an attention sink) runs the kernels
-    without the path, instruction for instruction the ones from before it, with no residual launch (a head without
-    sinks gets the same bits either way; one that would still clip takes the full range, as before). A plan with
-    sinks keeps the path where ``race`` (timed on the deciding call's own inputs) finds it still faster than torch's
-    attention by RACE_MARGIN, and runs torch's attention otherwise (no race: it keeps the path). The races and the
-    early calls aside, the same calls in the same order take the same paths. Called on the device of the plan; a CUDA
-    graph capture keeps what the plan has decided."""
+    """Returns (path, call index): sink path until SINK_DECIDE_AT, then dropped if the first
+    SINK_LEARN_CALLS calls never clipped V; race keeps it or falls to torch; native is torch;
+    CUDA graph capture keeps the decision"""
     import torch
 
     forced = getattr(_RACE, "path", None)
@@ -1012,11 +1022,8 @@ def _sink_race(
     index: int,
     forced: bool = False,
 ) -> Any:
-    """The path a plan whose first calls clipped takes, timed on this call like the card race (interleaved, median):
-    the faster of the sink path and the kernels without it (only where their error against torch's attention here is
-    within PLAIN_ERROR_SLACK of the sink path's) where it beats torch's attention by RACE_MARGIN, else "native".
-    ``forced`` (a forced request): the INT8 paths only, torch's attention neither timed nor taken. The verdict is
-    logged."""
+    """Timed on this call: faster of sink or plain INT8 if it beats torch by RACE_MARGIN, else
+    native; forced: INT8 paths only, torch's attention neither timed nor taken."""
     import torch
 
     stream = _raw_stream(index)
@@ -1073,13 +1080,8 @@ def _pick_path(
     err: dict,
     forced: bool = False,
 ) -> Any:
-    """_sink_race's verdict from its median milliseconds (incumbent, sinks, plain) and errors (sinks, plain). The
-    kernels without the sink path (the ones from before it) stay where their error is within PLAIN_ERROR_SLACK of the
-    sink path's and the sink path is not faster by RACE_MARGIN: a near tie keeps the old path's output. The path
-    taken must beat torch's attention by RACE_MARGIN, else torch's attention. A path whose error is not finite (a NaN
-    or inf output) is never taken; the kernels without the sink path then stand alone where theirs is finite.
-    ``forced``: the first of those INT8 paths, never torch's attention (the kernels without the sink path where
-    neither error is finite: the ones a forced request ran before the path)."""
+    """Verdict from median ms and errors: a path must beat torch attention by RACE_MARGIN else
+    torch; a near tie keeps the old path; non-finite errors never win; forced never uses torch"""
     finite = {name: math.isfinite(err[name]) for name in ("sinks", "plain")}
     if not finite["sinks"]:
         order = ["plain"] if finite["plain"] else []
@@ -2367,6 +2369,26 @@ def int8_attention_count(transformer: Any) -> int:
     return sum(
         1 for m in int8_processors(transformer) if getattr(m.processor, "_unsloth_int8", False)
     )
+
+
+# The backend a strided install raced (None: native), kept on the pipeline: the status names it once no module routes.
+INCUMBENT_ATTR = "_unsloth_int8_incumbent"
+
+
+def live_backend(pipe: Any, engaged: Any) -> Any:
+    """``engaged`` while any module still routes to the kernel, else the incumbent after a sink race dropped them."""
+    if engaged != BACKEND or pipe is None or not hasattr(pipe, INCUMBENT_ATTR):
+        return engaged
+    dits = [getattr(pipe, name, None) for name in ("transformer", "transformer_2")]
+    if any(int8_attention_count(t) for t in dits if t is not None):
+        return engaged
+    try:
+        from .diffusion_int8_attention_dispatch import routed_count
+        if routed_count(pipe):
+            return engaged
+    except Exception:  # noqa: BLE001 - no dispatch route: the strided census decides
+        pass
+    return getattr(pipe, INCUMBENT_ATTR)
 
 
 def engaged_implementations(transformer: Any) -> set:

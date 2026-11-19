@@ -102,11 +102,17 @@ def missing_files(
 
 
 def _relative(model: AudioCppModel, repo_path: str) -> Path:
-    """A variant file's path below the model's own folder: the umbrella folder prefix dropped."""
+    """A variant file's path below the model root: the spec package's root directory dropped, else
+    the umbrella folder prefix."""
     path = repo_path.replace("\\", "/")
-    prefix = f"{model.folder}/" if model.folder else ""
+    root = model.variant.root.strip("/")
+    prefix = f"{root}/" if root else (f"{model.folder}/" if model.folder else "")
     if prefix and path.startswith(prefix):
         path = path[len(prefix) :]
+    elif root:
+        # The runtime reads a package's files beside its primary GGUF: one outside the root has no place.
+        from core.inference.audio_cpp_server import AudioCppUnavailableError
+        raise AudioCppUnavailableError(f"Refusing the model file path {repo_path!r}.")
     parts = path.split("/")
     # Repo file names are untrusted: "embeddings/..\\..\\x" would land outside the farm.
     if any(p in ("", ".", "..") or ":" in p for p in parts):

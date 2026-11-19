@@ -45,7 +45,8 @@ test("unsupported: both switches off, each saying why and offering the speakers 
     [false, true, false, true],
   );
   assert.match(timestamps.hint, /plain text/);
-  assert.match(speakers.hint, /MOSS-Transcribe-Diarize and VibeVoice-ASR/);
+  assert.match(speakers.hint, /cannot tell speakers apart/);
+  assert.doesNotMatch(`${timestamps.hint} ${speakers.hint}`, /MOSS|VibeVoice|Qwen|Parakeet/);
   assert.equal(speakers.suggestSpeakersModel, true);
   assert.deepEqual([request, notice], [off, null]);
 });

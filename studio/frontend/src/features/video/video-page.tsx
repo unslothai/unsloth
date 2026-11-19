@@ -220,9 +220,11 @@ import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
   denseTransformerBuildLabel,
+  engagedAttentionBackend,
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
+  resolvedRequestSelectValue,
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
@@ -772,8 +774,8 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
       <BuildRow
         label="Attention"
         value={
-          status.attention_backend
-            ? formatResolvedValue("attention_backend", status.attention_backend)
+          engagedAttentionBackend(status)
+            ? formatResolvedValue("attention_backend", engagedAttentionBackend(status))
             : "Native SDPA"
         }
       />
@@ -2014,7 +2016,7 @@ function VideoGenerator({
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
     if (memory) setMemoryMode(memory);
-    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+    const attention = resolvedRequestSelectValue(record.attention_backend, (v) =>
       // Map the dispatcher's name back to the option.
       (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
         (o) => o === v || `_native_${o}` === v,

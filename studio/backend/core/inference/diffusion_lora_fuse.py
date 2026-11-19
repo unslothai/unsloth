@@ -83,9 +83,7 @@ def _plan(denoisers: list) -> Optional[list]:
 
 
 def _delta_fp32(layer: Any, adapter: str) -> Any:
-    """``scale * (B @ A)`` computed in fp32. PEFT's ``get_delta_weight`` multiplies in the adapter dtype on the GPU
-    (one bf16 rounding before the add); here its own math runs on fp32 copies of A and B, which are put back as they
-    were, so the layout rules (fan_in_fan_out, conv kernels) stay PEFT's."""
+    """scale * (B @ A) in fp32 to skip PEFT's bf16 rounding; layout rules stay PEFT's."""
     import torch
 
     mods = [
