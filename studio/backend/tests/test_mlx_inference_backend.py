@@ -12883,7 +12883,7 @@ class _BudgetTokenizer:
         return list(self.VOCAB[text])
 
 
-# The model prefers wants[i] at step i (1 opens a block itself).
+# The model prefers wants[i] at step i (1 opens a block itself); -n: a grammar allows only n.
 @pytest.mark.parametrize(
     "budget,message,markers,prompt,wants,expected",
     [
@@ -12892,6 +12892,7 @@ class _BudgetTokenizer:
         (1, "", ("<ch>", "</ch>"), "user<ch>", [9] * 6, [9, 7, 9, 9, 9, 9]),
         (3, "", None, "user", [9] * 6, [9] * 6),
         (1, "", None, "user", [1, 9, 9, 9, 9], [1, 9, 2, 9, 9]),
+        (0, "Wrap up.", None, "user<think>", [-2, 9, 9], [2, 9, 9]),
     ],
 )
 def test_a_reasoning_budget_forces_the_closer_once_spent(
@@ -12903,8 +12904,8 @@ def test_a_reasoning_budget_forces_the_closer_once_spent(
     make = lambda b, m: make_reasoning_budget_processor(_BudgetTokenizer(), b, message, m, prompt)
     processor, tokens = make(budget, markers), [10, 11, 12]
     for want in wants:
-        logits = mx.zeros((1, 16))
-        logits[:, want] = 1.0
+        logits = mx.zeros((1, 16)) if want > 0 else mx.full((1, 16), -float("inf"))
+        logits[:, abs(want)] = 1.0
         tokens.append(int(mx.argmax(processor(mx.array(tokens), logits), axis = -1).item()))
     assert tokens[3:] == expected
     # Muse Glimmer's markers name block recipients; "user" is no closer to force.

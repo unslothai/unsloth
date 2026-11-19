@@ -81,6 +81,10 @@ def make_reasoning_budget_processor(
         import mlx.core as mx
 
         wanted = forced[state["forcing"]]
+        if logits[..., wanted].max().item() == -float("inf"):
+            # An earlier processor, a grammar at its own reasoning cap, forbids it and ends the block.
+            state.update(forcing = None, inside = False, done = True)
+            return logits
         keep = mx.arange(logits.shape[-1]) == wanted
         return mx.where(keep, logits, mx.array(-float("inf"), dtype = logits.dtype))
 
