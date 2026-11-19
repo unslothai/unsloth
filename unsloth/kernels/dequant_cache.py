@@ -680,6 +680,9 @@ def _matmul_impl(
         W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, X.shape[0]
     )
     if XA is None:
+        if Wd.dtype != X.dtype:
+            # nf4_matmul cast X to the autocast dtype, as autocast casts both matmul operands: Wd too.
+            Wd = Wd.to(X.dtype)
         return torch.matmul(X, Wd.t())
     if _lora_first_addmm is None:
         _bind_lora_first()
@@ -752,6 +755,9 @@ def _bind_lora_first():
         _lora_first_addmm = fn
 
 
+_AUTOCAST_FLOATS = (torch.float32, torch.float16, torch.bfloat16)
+
+
 def nf4_matmul(
     X,
     W,
@@ -765,6 +771,15 @@ def nf4_matmul(
         shape = X.shape
         out = nf4_matmul(X.reshape(-1, shape[-1]), W, quant_state, XA, Bt, alpha)
         return out.view(*shape[:-1], out.shape[-1])
+    if XA is None:
+        # The op is opaque to autocast, which would cast both operands of the torch.matmul it replaces to the
+        # autocast dtype (an fp16 X under bf16 autocast overflowed in fp16): apply that cast here, where it is
+        # traced. The lora-first form replaces an opaque op already, which autocast does not cast either.
+        device = X.device.type
+        if torch.is_autocast_enabled(device) and X.dtype in _AUTOCAST_FLOATS:
+            dtype = torch.get_autocast_dtype(device)
+            if X.dtype != dtype:
+                X = X.to(dtype)
     return torch.ops.unsloth.nf4_cached_matmul(X, W, *_parts(quant_state), XA, Bt, float(alpha))
 
 
