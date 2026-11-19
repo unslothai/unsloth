@@ -54,7 +54,14 @@ import { useAudioSeparateStore } from "../stores/audio-separate-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import {
   CLIP_ICON_COLUMN,
-  CLIPS_HEADER_LINK,
+  CLIP_ROW,
+  CLIP_ROW_DURATION,
+  CLIP_ROW_ICON,
+  CLIP_ROW_MENU,
+  CLIP_ROW_PIN,
+  CLIP_ROW_SELECT,
+  CLIP_ROW_TILE,
+  ClipsDeleteAll,
   CLIPS_LIST,
   CLIPS_TITLE_INSET,
   CLIPS_TOP_ROW,
@@ -494,13 +501,7 @@ export function SeparateOutput({
         countMore={hasMore}
         action={
           groups.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => void handleClearGallery()}
-              className={CLIPS_HEADER_LINK}
-            >
-              Clear all
-            </button>
+            <ClipsDeleteAll noun="separations" onConfirm={handleClearGallery} />
           ) : null
         }
       >
@@ -599,13 +600,13 @@ export function SeparateOutput({
                 // Shell, not a button: the pin badge and dots menu are buttons and cannot nest.
                 <div
                   key={group.groupId}
-                  className="group relative flex items-center gap-1 rounded-md ps-3 pe-1 transition-colors hover:bg-wash-3"
+                  className={CLIP_ROW}
                 >
                   <span
                     aria-hidden="true"
-                    className="grid w-[calc(40px*var(--ui-space-scale,1))] shrink-0 place-items-center text-muted-foreground"
+                    className={CLIP_ROW_TILE}
                   >
-                    <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5" />
+                    <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.75} className={CLIP_ROW_ICON} />
                   </span>
                   <button
                     type="button"
@@ -613,7 +614,7 @@ export function SeparateOutput({
                       const first = group.stems[0];
                       if (first) selectClip(first.id);
                     }}
-                    className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 ps-2 text-left"
+                    className={CLIP_ROW_SELECT}
                   >
                     <span className="grid min-w-0 flex-1 gap-0.5">
                       <span className="truncate text-ui-13" title={group.title}>
@@ -629,18 +630,18 @@ export function SeparateOutput({
                           : `${group.stems.length} of ${group.expectedStems} stems`}
                       </span>
                     </span>
-                    <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+                    <span className={CLIP_ROW_DURATION}>
                       {formatClipDuration(group.durationS)}
                     </span>
                   </button>
                   {group.pinned && (
                     <GalleryPinBadge
                       noun="clip"
-                      className="static shrink-0"
+                      className={CLIP_ROW_PIN}
                       onUnpin={() => pinGroup(group, false)}
                     />
                   )}
-                  {groupMenu(group, "row")}
+                  <span className={CLIP_ROW_MENU}>{groupMenu(group, "row")}</span>
                 </div>
               );
             })}

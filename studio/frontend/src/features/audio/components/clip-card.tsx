@@ -19,6 +19,7 @@ import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import { AUDIO_WORKFLOWS, type AudioWorkflowId } from "../workflows";
 import {
   CLIP_ICON_COLUMN,
+  CLIP_PLAY_BUTTON,
   CLIPS_TITLE_INSET,
   CLIPS_TOP_ROW,
 } from "./clips-card";
@@ -64,6 +65,7 @@ export function ClipCard({
   peaks,
   onDownload,
   menu,
+  variations,
   status,
   focusOnMount = false,
   onFocused,
@@ -77,6 +79,8 @@ export function ClipCard({
   peaks: readonly number[] | null;
   onDownload: (() => void) | null;
   menu?: ReactNode;
+  /** The switch between takes of one run, under the title. */
+  variations?: ReactNode;
   status?: string;
   focusOnMount?: boolean;
   onFocused?: () => void;
@@ -99,9 +103,9 @@ export function ClipCard({
         {player ? null : (
           <Button
             type="button"
-            variant="dark"
+            variant="ghost"
             size="icon"
-            className={cn("shrink-0 rounded-full", CLIP_ICON_COLUMN)}
+            className={cn(CLIP_PLAY_BUTTON, CLIP_ICON_COLUMN)}
             title={playing ? "Pause" : "Play"}
             aria-label={playing ? `Pause ${title}` : `Play ${title}`}
             disabled={!src}
@@ -127,21 +131,25 @@ export function ClipCard({
             {status ? ` · ${status}` : ""}
           </p>
         </div>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          title="Download"
-          aria-label="Download audio clip"
-          disabled={!onDownload}
-          onClick={onDownload ?? undefined}
-          className="shrink-0 rounded-full"
-        >
-          <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
-        </Button>
-        {menu}
+        {/* One cluster, pulled out so its icons end on the edge the waveform's time ends on. */}
+        <div className="-me-1 flex shrink-0 items-center">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Download"
+            aria-label="Download audio clip"
+            disabled={!onDownload}
+            onClick={onDownload ?? undefined}
+            className="rounded-full text-muted-foreground"
+          >
+            <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
+          </Button>
+          {menu}
+        </div>
       </div>
+      {variations}
       {player ?? (
-        <div className={CLIPS_TITLE_INSET}>
+        <div className={cn(CLIPS_TITLE_INSET, "pe-1")}>
           <Waveform
             peaks={peaks}
             durationS={durationS}
@@ -149,6 +157,7 @@ export function ClipCard({
             label={title || "audio clip"}
             size="lg"
             hidePlay={true}
+            timeAlign="end"
             controlRef={control}
             onPositionChange={onPosition}
           />

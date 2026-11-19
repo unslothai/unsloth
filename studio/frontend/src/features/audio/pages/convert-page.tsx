@@ -343,6 +343,7 @@ export function ConvertFooter({
 
 function useSourceSide(clip: AudioGalleryClip | null): {
   src?: string;
+  fileUrl?: string;
   unavailable?: string;
 } {
   const savedUrl = clip?.source_saved
@@ -350,7 +351,11 @@ function useSourceSide(clip: AudioGalleryClip | null): {
     : null;
   const sourceId = clip?.source_clip_id ?? clip?.source_input_id ?? null;
   const kind = clip?.source_clip_id ? "clip" : "input";
-  const [side, setSide] = useState<{ src?: string; unavailable?: string }>({});
+  const [side, setSide] = useState<{
+    src?: string;
+    fileUrl?: string;
+    unavailable?: string;
+  }>({});
   useEffect(() => {
     if (!savedUrl && !sourceId) {
       setSide({ unavailable: "The source is not saved with this clip." });
@@ -363,10 +368,15 @@ function useSourceSide(clip: AudioGalleryClip | null): {
     const original = sourceId
       ? sourceFileUrl({ kind, id: sourceId, name: "", durationS: null })
       : null;
+    // The URL that answered, so the bars can be drawn from it.
+    let fileUrl = original ?? (savedUrl as string);
     const fetchSide = (): Promise<Blob> =>
       original
         ? fetchAudioBlob(original).catch((error) => {
-            if (savedUrl) return fetchAudioBlob(savedUrl);
+            if (savedUrl) {
+              fileUrl = savedUrl;
+              return fetchAudioBlob(savedUrl);
+            }
             throw error;
           })
         : fetchAudioBlob(savedUrl as string);
@@ -374,7 +384,7 @@ function useSourceSide(clip: AudioGalleryClip | null): {
       .then((blob) => {
         if (cancelled) return;
         url = URL.createObjectURL(blob);
-        setSide({ src: url });
+        setSide({ src: url, fileUrl });
       })
       .catch(() => {
         if (!cancelled)
@@ -418,7 +428,11 @@ export function ConvertOutput({
           key={clip.id}
           ariaLabel="Compare the source and the converted voice"
           a={{ label: "Source", ...sourceSide }}
-          b={{ label: "Converted", src }}
+          b={{
+            label: "Converted",
+            src,
+            fileUrl: `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/file`,
+          }}
           side={compareSide === "source" ? "a" : "b"}
           onSideChange={(side) =>
             setCompareSide(side === "a" ? "source" : "converted")

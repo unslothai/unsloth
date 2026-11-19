@@ -1,13 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { type Ref, useCallback, useRef } from "react";
+import { PauseIcon } from "@/lib/media-control-icons";
+import { cn } from "@/lib/utils";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { PlayIcon } from "lucide-react";
+import { type Ref, useCallback, useEffect, useRef, useState } from "react";
+import { useClipPeaks } from "./ab-compare";
+import { CLIP_ICON_COLUMN, CLIP_PLAY_BUTTON } from "./clips-card";
 import { type ABPlayback, nextPlayback } from "./convert-ab-compare-state";
+import { PlaybackTime, WaveformBars } from "./waveform";
+
+const SEEK_STEP_SECONDS = 5;
 
 export interface ABSide {
   label: string;
   src?: string;
+  /** Server URL to draw bars from when `src` is an object URL, which cannot be fetched again. */
+  fileUrl?: string;
   unavailable?: string;
 }
 
@@ -26,17 +38,13 @@ export function ABCompare({
   side: ABSideId;
   onSideChange: (side: ABSideId) => void;
   ariaLabel: string;
-  playerRef?: Ref<HTMLAudioElement>;
+  /** The play button, so a fresh clip can take focus. */
+  playerRef?: Ref<HTMLButtonElement>;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const setAudio = useCallback(
-    (element: HTMLAudioElement | null) => {
-      audioRef.current = element;
-      if (typeof playerRef === "function") playerRef(element);
-      else if (playerRef) playerRef.current = element;
-    },
-    [playerRef],
-  );
+  const [playing, setPlaying] = useState(false);
+  const [position, setPosition] = useState(0);
+  const [duration, setDuration] = useState(0);
   const pendingRef = useRef<ABPlayback | null>(null);
 
   const shownSide: ABSideId =
@@ -47,6 +55,35 @@ export function ABCompare({
         : side;
   const current = shownSide === "a" ? a : b;
   const src = current.unavailable ? undefined : current.src;
+  const barsSrc = src ? (current.fileUrl ?? src) : null;
+  const peaks = useClipPeaks([barsSrc]);
+  const bars = barsSrc ? (peaks[barsSrc] ?? null) : null;
+
+  // A new side starts from the top unless a switch carries the moment over (handleLoadedMetadata).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the source is the trigger, not an input.
+  useEffect(() => {
+    setPlaying(false);
+    setPosition(0);
+    setDuration(0);
+  }, [src]);
+
+  const toggle = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) audio.play().catch(() => setPlaying(false));
+    else audio.pause();
+  }, []);
+
+  const seekTo = useCallback(
+    (seconds: number) => {
+      const audio = audioRef.current;
+      if (!audio || duration <= 0) return;
+      const next = Math.min(duration, Math.max(0, seconds));
+      audio.currentTime = next;
+      setPosition(next);
+    },
+    [duration],
+  );
 
   const switchTo = useCallback(
     (next: string) => {
@@ -69,11 +106,16 @@ export function ABCompare({
 
   const handleLoadedMetadata = useCallback(() => {
     const audio = audioRef.current;
+    if (!audio) return;
+    setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
     const pending = pendingRef.current;
-    if (!audio || !pending) return;
+    if (!pending) return;
     pendingRef.current = null;
     const { seek, resume } = nextPlayback(pending, audio.duration);
-    if (seek > 0) audio.currentTime = seek;
+    if (seek > 0) {
+      audio.currentTime = seek;
+      setPosition(seek);
+    }
     if (resume) {
       // Autoplay rules may refuse.
       audio.play().catch(() => undefined);
@@ -96,15 +138,66 @@ export function ABCompare({
         ]}
       />
       {src ? (
-        // biome-ignore lint/a11y/useMediaCaption: generated speech has no caption track; the clip's text is shown above it.
-        <audio
-          ref={setAudio}
-          controls={true}
-          src={src}
-          preload="metadata"
-          onLoadedMetadata={handleLoadedMetadata}
-          className="w-full rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        />
+        // The clip card's own row: play disc, bars, time. One hidden element plays whichever side is shown.
+        <div className="flex items-center gap-3 pe-1">
+          <Button
+            ref={playerRef}
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={cn(CLIP_PLAY_BUTTON, CLIP_ICON_COLUMN)}
+            title={playing ? "Pause" : "Play"}
+            aria-label={playing ? `Pause ${current.label}` : `Play ${current.label}`}
+            onClick={toggle}
+          >
+            {playing ? (
+              <HugeiconsIcon icon={PauseIcon} className="size-4" />
+            ) : (
+              <PlayIcon className="size-4" />
+            )}
+          </Button>
+          <WaveformBars
+            peaks={bars}
+            fraction={duration > 0 ? Math.min(1, position / duration) : 0}
+            label={current.label}
+            className="h-[calc(56px*var(--ui-space-scale,1))]"
+            barWidth={3}
+            valueNow={position}
+            valueMax={duration}
+            onSeek={(next) => seekTo(next * duration)}
+            onKeyDown={(event) => {
+              if (event.key === " ") {
+                event.preventDefault();
+                toggle();
+              } else if (event.key === "ArrowRight") {
+                event.preventDefault();
+                seekTo(position + SEEK_STEP_SECONDS);
+              } else if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                seekTo(position - SEEK_STEP_SECONDS);
+              } else if (event.key === "Home") {
+                event.preventDefault();
+                seekTo(0);
+              }
+            }}
+          />
+          <PlaybackTime position={position} duration={duration} align="end" />
+          {/* biome-ignore lint/a11y/useMediaCaption: generated speech has no caption track; the clip's text is shown above it. */}
+          <audio
+            ref={audioRef}
+            src={src}
+            preload="metadata"
+            className="hidden"
+            onLoadedMetadata={handleLoadedMetadata}
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onEnded={() => {
+              setPlaying(false);
+              setPosition(0);
+            }}
+            onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
+          />
+        </div>
       ) : (
         <output className="flex h-12 w-full items-center justify-center rounded-full border border-border text-ui-12 text-muted-foreground">
           {current.unavailable ?? "Loading audio…"}

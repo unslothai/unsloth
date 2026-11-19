@@ -40,7 +40,12 @@ import {
   sanitizeSpeakerName,
   speakerLabel,
 } from "../transcript-model";
-import { CLIP_ICON_COLUMN, CLIPS_TITLE_INSET, ClipsIconTile } from "./clips-card";
+import {
+  CLIP_ICON_COLUMN,
+  CLIP_PLAY_BUTTON,
+  CLIPS_TITLE_INSET,
+  ClipsIconTile,
+} from "./clips-card";
 import { FieldLabel } from "./field";
 import { Waveform, type WaveformControl } from "./waveform";
 import { decodePeaks } from "./waveform-decode";
@@ -255,9 +260,9 @@ export function TranscriptView({
         {playable ? (
           <Button
             type="button"
-            variant="dark"
+            variant="ghost"
             size="icon"
-            className={cn("shrink-0 rounded-full", CLIP_ICON_COLUMN)}
+            className={cn(CLIP_PLAY_BUTTON, CLIP_ICON_COLUMN)}
             title={playing ? "Pause" : "Play"}
             aria-label={playing ? "Pause the audio" : "Play the audio"}
             disabled={!ready}

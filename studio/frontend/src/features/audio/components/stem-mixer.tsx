@@ -36,7 +36,12 @@ import {
   stemMixerReducer,
 } from "./stem-mixer-state";
 import type { StemMixerProps } from "./stem-mixer-types";
-import { CLIP_ICON_COLUMN, CLIPS_TITLE_INSET, CLIPS_TOP_ROW } from "./clips-card";
+import {
+  CLIP_ICON_COLUMN,
+  CLIP_PLAY_BUTTON,
+  CLIPS_TITLE_INSET,
+  CLIPS_TOP_ROW,
+} from "./clips-card";
 import { WaveformBars } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
 import { ArrowUpIcon, PlayIcon } from "lucide-react";
@@ -134,9 +139,9 @@ export function StemMixer({
         <Button
           ref={playRef}
           type="button"
-          variant="dark"
+          variant="ghost"
           size="icon"
-          className={cn("shrink-0 rounded-full", CLIP_ICON_COLUMN)}
+          className={cn(CLIP_PLAY_BUTTON, CLIP_ICON_COLUMN)}
           title={playing ? "Pause" : "Play all stems"}
           aria-label={playing ? "Pause stems" : "Play stems"}
           disabled={!ready}
@@ -161,54 +166,57 @@ export function StemMixer({
             </span>
           </p>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="Download all stems"
-          title="Download all"
-          className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground"
-          disabled={stems.some((stem) => !stem.src)}
-          onClick={onDownloadAll}
-        >
-          <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
-        </Button>
-        {sendTargets.length > 0 ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label="Send a stem to"
-                title="Send to"
-                className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground"
-              >
-                <ArrowUpIcon strokeWidth={1.75} className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {stems.map((stem) => (
-                <DropdownMenuSub key={stem.clipId}>
-                  <DropdownMenuSubTrigger disabled={!stem.src}>
-                    <span>{stem.label}</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent>
-                    {sendTargets.map((target) => (
-                      <DropdownMenuItem
-                        key={target.id}
-                        onSelect={() => onSend(target, stem.clipId)}
-                      >
-                        {target.label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
-        {actions}
+        {/* One cluster, ending on the edge the stem rows' download icons end on. */}
+        <div className="-me-1 flex shrink-0 items-center">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Download all stems"
+            title="Download all"
+            className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+            disabled={stems.some((stem) => !stem.src)}
+            onClick={onDownloadAll}
+          >
+            <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
+          </Button>
+          {sendTargets.length > 0 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Send a stem to"
+                  title="Send to"
+                  className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+                >
+                  <ArrowUpIcon strokeWidth={1.75} className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {stems.map((stem) => (
+                  <DropdownMenuSub key={stem.clipId}>
+                    <DropdownMenuSubTrigger disabled={!stem.src}>
+                      <span>{stem.label}</span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      {sendTargets.map((target) => (
+                        <DropdownMenuItem
+                          key={target.id}
+                          onSelect={() => onSend(target, stem.clipId)}
+                        >
+                          {target.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          {actions}
+        </div>
       </header>
       <ul className={cn("grid gap-2", CLIPS_TITLE_INSET)}>
         {stems.map((stem) => {

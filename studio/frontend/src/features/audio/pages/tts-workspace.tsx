@@ -55,9 +55,16 @@ import {
 } from "../components/clip-card";
 import { Field } from "../components/field";
 import {
-  CLIPS_HEADER_LINK,
   CLIPS_LIST,
+  CLIP_ROW,
+  CLIP_ROW_DURATION,
+  CLIP_ROW_ICON,
+  CLIP_ROW_MENU,
+  CLIP_ROW_PIN,
+  CLIP_ROW_SELECT,
+  CLIP_ROW_TILE,
   ClipsCard,
+  ClipsDeleteAll,
   ClipsCardEmpty,
 } from "../components/clips-card";
 import { PromptExamples } from "../components/prompt-examples";
@@ -282,6 +289,13 @@ export function TtsRailFields({
       {/* Always shown: where the model loads is an advanced choice on every audio page. */}
       <AdvancedDisclosure
         flush={true}
+        // The description belongs to the heading, so it sits close under it and the fields start a step below;
+        // the footer's own padding is the gap to Generate.
+        classNames={{
+          root: "gap-1 pb-0",
+          body: "gap-5",
+          description: "text-ui-12 leading-normal",
+        }}
         open={advancedOpen}
         onOpenChange={setAdvancedOpen}
         description={
@@ -639,7 +653,7 @@ export function TtsOutput({
     renderPlayer?: (
       clip: AudioGalleryClip,
       src: string,
-      focusRef: ((element: HTMLAudioElement | null) => void) | undefined,
+      focusRef: ((element: HTMLElement | null) => void) | undefined,
     ) => ReactNode;
     useAgainLabel?: string;
     showCopyText?: boolean;
@@ -753,13 +767,7 @@ export function TtsOutput({
         countMore={hasMore}
         action={
           clips.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => void handleClearGallery()}
-              className={CLIPS_HEADER_LINK}
-            >
-              Clear all
-            </button>
+            <ClipsDeleteAll noun="clips" onConfirm={handleClearGallery} />
           ) : null
         }
       >
@@ -780,14 +788,16 @@ export function TtsOutput({
               }
             }}
           >
-            <VariationChips
-              siblings={siblings}
-              selectedId={selectedClip.id}
-              onSelect={selectClip}
-            />
             <ClipCard
               // Keyed per clip: a reused player kept the old clip's position.
               key={selectedClip.id}
+              variations={
+                <VariationChips
+                  siblings={siblings}
+                  selectedId={selectedClip.id}
+                  onSelect={selectClip}
+                />
+              }
               title={selectedClip.prompt}
               model={selectedClip.model}
               createdAt={selectedClip.created_at}
@@ -866,7 +876,7 @@ export function TtsOutput({
                   key={clip.id}
                   {...historyReorder.tileProps(clip.id)}
                   className={cn(
-                    "group relative flex items-center gap-1 rounded-md ps-3 pe-1 transition-colors hover:bg-wash-3",
+                    CLIP_ROW,
                     clip.id === selectedId && "bg-wash-3 hover:bg-wash-3",
                     historyReorder.draggingId === clip.id && "opacity-40",
                     nested && "ml-4",
@@ -884,23 +894,28 @@ export function TtsOutput({
                         : `Play ${clip.prompt}`
                     }
                     onClick={() => void rowPreview.toggle(clip.id)}
-                    className="group/play relative mx-1.5 grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-wash-8 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className={cn(
+                      CLIP_ROW_TILE,
+                      "group/play relative transition-colors hover:bg-wash-8 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    )}
                   >
                     {rowPreview.playingId === clip.id ? (
                       <HugeiconsIcon
                         icon={PauseIcon}
-                        className="size-3.5 text-foreground"
+                        className="size-4 text-foreground"
                       />
                     ) : (
                       <>
                         <HugeiconsIcon
                           icon={AiSpeechIcon}
+                          strokeWidth={1.75}
                           className={cn(
-                            "size-3.5 transition-opacity group-hover:opacity-0 group-focus-visible/play:opacity-0 pointer-coarse:opacity-0",
+                            CLIP_ROW_ICON,
+                            "transition-opacity group-hover:opacity-0 group-focus-visible/play:opacity-0 pointer-coarse:opacity-0",
                             clip.id === selectedId && "text-foreground",
                           )}
                         />
-                        <PlayIcon className="absolute size-3.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible/play:opacity-100 pointer-coarse:opacity-100" />
+                        <PlayIcon className="absolute ml-0.5 size-4 fill-current opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible/play:opacity-100 pointer-coarse:opacity-100" />
                       </>
                     )}
                   </button>
@@ -908,7 +923,7 @@ export function TtsOutput({
                     type="button"
                     onClick={() => selectClip(clip.id)}
                     aria-current={clip.id === selectedId ? "true" : undefined}
-                    className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 ps-2 text-left"
+                    className={CLIP_ROW_SELECT}
                   >
                     <span className="grid min-w-0 flex-1 gap-0.5">
                       <span
@@ -926,18 +941,20 @@ export function TtsOutput({
                         badge={clipBadge?.(clip, "history")}
                       />
                     </span>
-                    <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+                    <span className={CLIP_ROW_DURATION}>
                       {formatClipDuration(clip.duration_s)}
                     </span>
                   </button>
                   {clip.pinned && (
                     <GalleryPinBadge
                       noun="clip"
-                      className="static shrink-0"
+                      className={CLIP_ROW_PIN}
                       onUnpin={() => void handleTogglePin(clip.id, false)}
                     />
                   )}
-                  {clipMenu(clip, "row")}
+                  <span className={CLIP_ROW_MENU}>
+                    {clipMenu(clip, "row")}
+                  </span>
                 </div>
               ),
             )}
