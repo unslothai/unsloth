@@ -1956,3 +1956,107 @@ def test_status_response_models_keep_graph_engagement():
         dumped = model.model_validate({"graph_engagement": counters}).model_dump()
         assert dumped["graph_engagement"] == counters
         assert model.model_validate({}).model_dump()["graph_engagement"] is None
+
+
+# --- Opt-in real-step warm-up (UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP=1) ---
+
+
+def test_real_warmup_is_off_by_default(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    module = _FakeDiT()
+    handle = _armed(module)
+    handle(_t(value = 1.0), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert handle.stats["real_warmups"] == 0
+    assert handle.stats["captures"] == 1
+    assert module.calls == cg.WARMUP_ITERS + 1
+
+
+def test_real_warmup_runs_no_discarded_forward(stub_torch, monkeypatch):
+    monkeypatch.setenv(cg.REAL_WARMUP_ENV, "1")
+    module = _FakeDiT()
+    handle = _armed(module)
+    for i in range(cg.WARMUP_ITERS):
+        out = handle(_t(value = float(i)), timestep = _t((1,), value = 10.0), return_dict = False)
+        # a real step: the module ran once and its output is what the caller gets
+        assert module.calls == i + 1
+        assert out[0].value == ("out", i + 1)
+    assert handle.stats["real_warmups"] == cg.WARMUP_ITERS
+    assert handle.stats["captures"] == 0 and handle.stats["replays"] == 0
+    # the warm-ups ran on copies laid out like the capture statics, never on the caller's tensors
+    assert all(seen[0].tag != "live" or seen[0].copied_from for seen in module.seen)
+
+    handle(_t(value = 9.0), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert handle.stats["captures"] == 1 and handle.stats["replays"] == 1
+    # only the recording pass ran the module: no side-stream warm-up before it
+    assert module.calls == cg.WARMUP_ITERS + 1
+
+    handle(_t(value = 11.0), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert handle.stats["replays"] == 2
+    assert module.calls == cg.WARMUP_ITERS + 1
+
+
+def test_real_warmup_starts_over_after_reset(stub_torch, monkeypatch):
+    monkeypatch.setenv(cg.REAL_WARMUP_ENV, "1")
+    module = _FakeDiT()
+    handle = _armed(module)
+    for i in range(cg.WARMUP_ITERS + 1):
+        handle(_t(value = float(i)), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert handle.stats["captures"] == 1
+    handle.reset()
+    before = module.calls
+    handle(_t(value = 5.0), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert (
+        handle.stats["captures"] == 1
+    )  # nothing recorded yet: the new weights warm on a real step first
+    assert handle.stats["real_warmups"] == cg.WARMUP_ITERS + 1
+    assert module.calls == before + 1
+
+
+def test_real_cuda_real_warmup_matches_eager_bit_for_bit(monkeypatch):
+    torch = pytest.importorskip("torch")
+    if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    import torch.nn as nn
+
+    monkeypatch.setenv(cg.REAL_WARMUP_ENV, "1")
+
+    class TinyDiT(nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.proj_in = nn.Linear(dim, dim)
+            self.act = nn.SiLU()
+            self.proj_out = nn.Linear(dim, dim)
+            self.runs = 0
+
+        def forward(
+            self,
+            hidden_states,
+            timestep,
+            return_dict = True,
+        ):
+            self.runs += 1
+            out = self.proj_out(self.act(self.proj_in(hidden_states))) + timestep
+            if return_dict:
+                return types.SimpleNamespace(sample = out)
+            return (out,)
+
+    torch.manual_seed(0)
+    dim = 64
+    module = TinyDiT(dim).to("cuda", torch.bfloat16).eval()
+    handle = cg.GraphedForward(module).enable()
+    try:
+        steps = cg.WARMUP_ITERS + 3
+        for _ in range(steps):
+            hidden = torch.randn(2, 8, dim, device = "cuda", dtype = torch.bfloat16)
+            timestep = torch.randn(1, 1, device = "cuda", dtype = torch.bfloat16)
+            with torch.inference_mode():
+                want = handle.orig(hidden_states = hidden, timestep = timestep, return_dict = False)[0]
+                got = module(hidden_states = hidden, timestep = timestep, return_dict = False)[0]
+            assert torch.equal(got, want)
+        assert handle.stats["real_warmups"] == cg.WARMUP_ITERS
+        assert handle.stats["captures"] == 1
+        assert handle.stats["replays"] == 3
+        # steps reference calls + WARMUP_ITERS real warm-ups + one recording pass; the default path adds WARMUP_ITERS
+        assert module.runs == steps + cg.WARMUP_ITERS + 1
+    finally:
+        handle.disable()

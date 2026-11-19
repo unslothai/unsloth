@@ -54,6 +54,14 @@ MAX_GRAPHS_PER_MODULE = 4
 
 # Three per the PyTorch docs. The warmup forces lazy allocations OUTSIDE the capture.
 WARMUP_ITERS = 3
+# Opt-in (1): a resident key's first real steps are its warm-ups, so no forward is run and thrown away before the
+# recording (three per key on the first render of a load). Unset keeps the side-stream warm-ups.
+REAL_WARMUP_ENV = "UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP"
+
+
+def real_warmup_enabled() -> bool:
+    return (os.environ.get(REAL_WARMUP_ENV) or "").strip().lower() in _TRUE_TOKENS
+
 
 _TRUE_TOKENS = ("1", "true", "yes", "on")
 
@@ -1171,6 +1179,8 @@ class GraphedForward:
         self.cache: dict = {}
         self.cap_hit = False
         self._warmed: dict = {}
+        # Resident only, per graph key: real steps run eagerly on capture-layout copies before the recording.
+        self._real_warm: dict = {}
         # Keys recorded before: a placement change re-records them with no warm-up (same shapes, new addresses).
         self._recorded: dict = {}
         # Offloaded only, per graph key: seen count, eager/graph spans, verdict ('' kept, else drop reason).
@@ -1195,6 +1205,7 @@ class GraphedForward:
             "pool_bytes": 0,
             "planned_eager": 0,
             "shape_warmups": 0,
+            "real_warmups": 0,
             "evictions": 0,
             "speed_eager": 0,
             "length_eager": 0,
@@ -1291,6 +1302,7 @@ class GraphedForward:
         self._scope_captures.clear()
         self._render_scopes.clear()
         self._open_warmups.clear()
+        self._real_warm.clear()  # new weights may compile a new variant: its first real steps warm it again
         if getattr(self, "fallback_handle", None) is not None:
             try:
                 self.fallback_handle.reset()
@@ -1696,6 +1708,25 @@ class GraphedForward:
                 ):
                     # The eager reference for _judge_keys, timed with CUDA events and never waited on.
                     return self._timed_eager(call, args, kwargs, key)
+            if (
+                self.placement is None
+                and self.warmup > 0
+                and real_warmup_enabled()
+                and self._real_warm.get(key, 0) < self.warmup
+            ):
+                # Resident: this real step is one of the key's warm-ups (compile, lazy allocations), run on copies
+                # laid out like the capture statics so the recording meets no new compiled variant.
+                self._real_warm[key] = self._real_warm.get(key, 0) + 1
+                while len(self._real_warm) > 4 * self.max_graphs:
+                    self._real_warm.pop(next(iter(self._real_warm)))
+                self.stats["real_warmups"] += 1
+                if self.plan is not None:
+                    self._warmed[key] = None
+                    self._open_warmups.add(key)
+                live = []
+                spec = _flatten((args, kwargs), live)
+                warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
+                return call(*warm_args, **warm_kwargs)
             if self.plan is not None and self.stats["captures"] and key not in self._warmed:
                 # A new prompt length: this real step is the new shape's warm-up; the next one records.
                 self._warmed[key] = None
@@ -1934,6 +1965,14 @@ class GraphedForward:
             self.placement is not None
             and key is not None
             and int((getattr(self, "_judge", {}).get(key) or {}).get("seen", 0)) >= 1
+        )
+        # Resident keys warmed by their own first real steps record at once too.
+        warm = warm or (
+            self.placement is None
+            and key is not None
+            and self.warmup > 0
+            and real_warmup_enabled()
+            and int(getattr(self, "_real_warm", {}).get(key, 0)) >= self.warmup
         )
         with _recording_step():
             if not recapture and not warm:
