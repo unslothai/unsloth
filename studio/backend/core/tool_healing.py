@@ -7,8 +7,8 @@ import itertools
 import json
 import re
 
-# Markerless forms are indistinguishable from quoted prose, so execution-class tools, create_skill
-# and update_memory need a wrapper. Same rule for mcp__*. Must cover the route's _LOCAL_CODE_TOOLS.
+# Markerless forms read like quoted prose, so these tools and mcp__* need a wrapper.
+# Must cover the route's _LOCAL_CODE_TOOLS.
 EXECUTION_CLASS_TOOL_NAMES = frozenset(
     {"python", "terminal", "edit_file", "create_skill", "update_memory"}
 )
