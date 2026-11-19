@@ -938,12 +938,13 @@ _STREAM_ESTIMATES: "weakref.WeakKeyDictionary[Any, dict]" = weakref.WeakKeyDicti
 # One card plus a CFG replica instead of a split. When a load's default request is guided (two denoiser branches per
 # step, or one doubled call), the replica runs the second branch on another card at the same time, so a step costs one
 # forward plus whatever the primary streams. A layer split runs both branches one card after the other (its blocks do
-# not overlap), and a companion split runs both on the primary. Kaggle 2x T4, Wan 2.2 TI2V-5B at 832x480x49: layer
-# split 5.30 s/step, replica beside a group-offloaded primary 3.71 s/step (1.43x). ``0`` restores the split-first
-# order; ``force`` takes the replica layout whenever a copy fits, unpriced.
+# not overlap), and a companion split runs both on the primary. Kaggle 2x T4, Wan 2.2 TI2V-5B at 832x480x49, 10 steps,
+# 3 runs each: layer split 4.84-5.04 s/step, one group-offloaded card plus the replica 3.84-3.95 s/step (1.29x), the
+# primary's allocated peak the same 10.9 GiB as one card alone. ``0`` restores the split-first order; ``force`` takes
+# the replica layout whenever a copy fits, unpriced.
 CFG_REPLICA_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_CFG_REPLICA_PLACEMENT"
 # The replica layout must be predicted this much faster than the placement it replaces. The FLOP price under-reads a
-# real step (T4 Wan 5B: 1.88 s priced, 2.65 s measured), so the real margin is wider than the predicted one.
+# real forward (T4, Wan 2.2 5B at 5070 tokens: 1.13 s priced, about 2.5 s measured), so the real margin is wider.
 REPLICA_MIN_GAIN = 1.05
 # The room ``_replica_reserve_mib`` always leaves on the replica card (1 GiB): it also holds a block working set up to
 # that size, so only a larger working set adds to a replica's need.

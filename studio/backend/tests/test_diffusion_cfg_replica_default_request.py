@@ -47,6 +47,18 @@ def test_image_default_request(family, repo, guided):
     assert noted.steps and noted.steps > 0
 
 
+def test_klein_base_runs_cfg_with_its_own_negative_prompt():
+    # Flux2KleinPipeline runs both branches above guidance 1 though Studio passes no negative prompt (Kaggle 2x T4:
+    # 38 replica calls in two 20-step renders)
+    pipe = _Pipe()
+    fam = _image_family("flux.2-klein")
+    image._note_multigpu_default_request(
+        pipe, fam, "black-forest-labs/FLUX.2-klein-base-4B", fam.name
+    )
+    noted = mg.default_request(pipe)
+    assert noted.guided is True and noted.steps == 20
+
+
 def test_distilled_klein_checkpoint_is_unguided():
     pipe = _Pipe()
     pipe.config = types.SimpleNamespace(is_distilled = True)

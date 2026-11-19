@@ -706,6 +706,11 @@ def _negative_prompt_engaged(family: DiffusionFamily, guidance: float) -> bool:
     return threshold is None or float(guidance) > threshold
 
 
+# Families whose pipeline runs both guidance branches above guidance 1 with its own empty negative prompt, though
+# Studio passes none (Flux2KleinPipeline: do_classifier_free_guidance = guidance > 1 and not is_distilled).
+_CFG_WITHOUT_NEGATIVE_PROMPT_FAMILIES = frozenset(("flux.2-klein",))
+
+
 def _note_multigpu_default_request(
     pipe: Any, family: DiffusionFamily, *identifiers: Optional[str]
 ) -> None:
@@ -717,13 +722,18 @@ def _note_multigpu_default_request(
         distilled = family.name == "flux.2-klein" and bool(
             getattr(getattr(pipe, "config", None), "is_distilled", False)
         )
-        guided = bool(
-            family.uses_guidance and not distilled and _negative_prompt_engaged(family, guidance)
+        own_negative = (
+            family.name in _CFG_WITHOUT_NEGATIVE_PROMPT_FAMILIES and float(guidance) > 1.0
         )
-        if not family.uses_negative_prompt or not family.uses_guidance or distilled:
-            why = "guidance-distilled or embedded guidance, no negative branch"
-        else:
+        guided = bool(
+            family.uses_guidance
+            and not distilled
+            and (own_negative or _negative_prompt_engaged(family, guidance))
+        )
+        if guided or (family.uses_negative_prompt and family.uses_guidance and not distilled):
             why = f"default guidance {float(guidance):g}"
+        else:
+            why = "guidance-distilled or embedded guidance, no negative branch"
     except Exception:  # noqa: BLE001 - unknown: the placement keeps its split-first order
         guided, steps, why = None, None, ""
     note_default_request(pipe, guided = guided, steps = steps, why = why)
