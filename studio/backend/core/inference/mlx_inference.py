@@ -4888,7 +4888,12 @@ class _TextBatchSession:
             # mlx-lm batches token ids only: the image prefills here, and stays out of the token-keyed cache.
             cache = backend._make_row_cache()
             all_tokens = prefill_image_prompt(
-                backend._model, backend._tokenizer, plan.prompt, [image], cache
+                backend._model,
+                backend._tokenizer,
+                plan.prompt,
+                [image],
+                cache,
+                **backend._prefill_step_kwargs(prefill_image_prompt),
             )
             prefix, remainder, cache_key = all_tokens[:-1], all_tokens[-1:], None
             if row_kwargs["max_new_tokens"] is None:

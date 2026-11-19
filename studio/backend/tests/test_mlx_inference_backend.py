@@ -3583,7 +3583,7 @@ def test_an_image_turn_through_mlx_lm_feeds_its_embeddings_outside_the_prompt_ca
 def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypatch):
     from core.inference import mlx_inference
 
-    inserted, rendered = [], []
+    inserted, rendered, steps = [], [], []
     generator = SimpleNamespace(
         insert = lambda prompts, **kw: inserted.append((prompts, kw)) or [len(inserted)],
         remove = lambda *_a, **_k: {},
@@ -3591,7 +3591,8 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     )
     generate = types.ModuleType("mlx_lm.generate")
     generate.BatchGenerator = lambda *_a, **_k: generator
-    _zoo_image_prefill(monkeypatch, prefill_image_prompt = lambda *_a: [1, 5, 5, 2])
+    prefill = lambda *_a, **step: steps.append(step) or [1, 5, 5, 2]
+    _zoo_image_prefill(monkeypatch, prefill_image_prompt = prefill)
     backend = mlx_inference.MLXInferenceBackend()
     backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
     backend._is_vlm, backend._reads_vision = False, True
@@ -3607,7 +3608,9 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     image, messages = object(), [{"role": "user", "content": "hi"}]
     backend._unset_generation_budget = lambda prompt, tokens: 100 - len(tokens)
     session.admit({"messages": messages}, 0)
+    backend._prefill_step = 64  # the load's Micro-batch Size
     session.admit({"messages": messages, "image": image, "max_new_tokens": None}, 1)
+    assert steps == [{"prefill_step_size": 64}]
     assert rendered[0] == messages and {"type": "image"} in rendered[1][-1]["content"]
     assert [kw["max_tokens"] for _prompts, kw in inserted] == [[4], [96]]
     assert [(prompts, kw["caches"], kw["all_tokens"]) for prompts, kw in inserted] == [
