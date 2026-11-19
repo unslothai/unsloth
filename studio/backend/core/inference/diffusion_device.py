@@ -118,6 +118,14 @@ def install_frame_pad_fix(
     return patched
 
 
+def mps_synchronize() -> None:
+    """Wait for queued Metal work via a blocking read, which runs on the stream's serial queue.
+    torch.mps.synchronize() commits off that queue (torch <= 2.13, pytorch#197836) and aborts with
+    "commit an already committed command buffer" while another thread copies off the device."""
+    import torch
+    torch.zeros(1, device = "mps").cpu()
+
+
 def install_vae_sync(
     pipe: Any,
     target: DiffusionDeviceTarget,
@@ -137,12 +145,10 @@ def install_vae_sync(
     ]
     if not modules:
         return False
-    import torch
 
     def _sync(_module, _args, _output) -> None:
         try:
-            # torch.mps.synchronize() skips the stream's queue and aborts under a second thread.
-            torch.zeros(1, device = "mps").cpu()
+            mps_synchronize()
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 
