@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useComposerModelPickerSource } from "@/components/assistant-ui/composer-model-picker/context";
+import { MascotImg, publicAssetUrl } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,11 +13,18 @@ import {
 import { useShortcutLabel } from "@/features/settings/hooks/use-shortcut";
 import { cn } from "@/lib/utils";
 import {
+  ArrowDown01Icon,
+  ArrowRight01Icon,
   Brain03Icon,
   Cancel01Icon,
+  CloudIcon,
+  Compass01Icon,
   Download01Icon,
   GridViewIcon,
+  Search01Icon,
+  SparklesIcon,
   StarIcon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type FC, useRef, useState, useSyncExternalStore } from "react";
@@ -43,7 +51,9 @@ function dismiss(): void {
   } catch {
     // storage unavailable
   }
-  for (const listener of listeners) listener();
+  for (const listener of listeners) {
+    listener();
+  }
 }
 
 function subscribe(listener: () => void): () => void {
@@ -52,8 +62,9 @@ function subscribe(listener: () => void): () => void {
     if (
       event.key === MODEL_PICKER_ANNOUNCEMENT_DISMISSED_KEY ||
       event.key === null
-    )
+    ) {
       listener();
+    }
   };
   window.addEventListener("storage", onStorage);
   return () => {
@@ -66,24 +77,42 @@ const FEATURES = [
   {
     icon: GridViewIcon,
     title: "Every model in one place",
-    body: "Favorites, Discover models, On Device and Connected models, plus a tab for each maker and connection.",
+    body: "Favorites, Discover, On Device and Connected models, with a tab per maker and connection.",
   },
   {
     icon: Download01Icon,
-    title: "Download and load in one pick",
-    body: "Discover lists models recommended for this device. Pick a quant and it downloads and loads; models that will not fit are dimmed.",
+    title: "One pick to download and run",
+    body: "Discover shows models suited to this device. Choose a quant and it downloads and loads.",
   },
   {
     icon: Brain03Icon,
     title: "Reasoning beside the model",
-    body: "Set the effort level or turn thinking on and off, and switch quantizations, right under the list.",
+    body: "Set the effort level, turn thinking on or off, and switch quantizations.",
   },
   {
     icon: StarIcon,
     title: "Favorites and Run settings",
-    body: "Star models and drag them into order. The gear opens Run settings without leaving the picker.",
+    body: "Star models, drag them into order, and tune Run settings without leaving the picker.",
   },
 ] as const;
+
+const MOCK_ROWS = [
+  { logo: "/hub/profile/logo/qwen.png", name: "Qwen3-14B", quant: "Q4_K_M" },
+  {
+    logo: "/hub/profile/logo/google.png",
+    name: "gemma-4-E4B-it",
+    quant: "UD-Q4_K_XL",
+    active: true,
+  },
+  {
+    logo: "/hub/profile/logo/deepseek.svg",
+    name: "DeepSeek-R1",
+    quant: "Q8_0",
+  },
+] as const;
+
+const GLOW =
+  "pointer-events-none absolute inset-0 bg-[radial-gradient(var(--glow-shape),color-mix(in_oklab,var(--primary)_var(--glow-strength),transparent),transparent_70%)]";
 
 /** Below the new-chat composer: a card that opens a dialog about the composer model picker. */
 export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
@@ -96,46 +125,61 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
   const shortcut = useShortcutLabel("openModelPicker");
 
   // Chat only: Translate browses, and Compare and the API page own their selection.
-  if (!source || source.browseOnly || source.selection) return null;
+  if (!source || source.browseOnly || source.selection) {
+    return null;
+  }
 
   return (
     <>
       {!dismissed && (
         <div
           className={cn(
-            "flex justify-center px-2 fade-in slide-in-from-bottom-1 animate-in duration-300",
+            "flex justify-center px-2 fade-in slide-in-from-bottom-2 animate-in duration-500",
             className,
           )}
           data-model-picker-announcement=""
         >
-          <div className="relative w-full max-w-[calc(400px*var(--ui-space-scale,1))]">
+          <div className="relative w-full max-w-[calc(460px*var(--ui-space-scale,1))]">
             <button
               type="button"
               onClick={() => setOpen(true)}
-              className="flex w-full items-center gap-4 rounded-2xl bg-muted/40 py-3.5 pr-4 pl-5 text-left ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="group relative flex w-full items-center gap-4 overflow-hidden rounded-[calc(22px*var(--ui-space-scale,1))] bg-muted/50 py-4 pr-3 pl-5 text-left shadow-[0_1px_2px_rgb(0_0_0/0.04),0_8px_24px_-12px_rgb(0_0_0/0.18)] ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-edge-gain,1)),transparent)] transition-[background-color,box-shadow,transform] duration-200 hover:-translate-y-px hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <span className="flex min-w-0 flex-1 flex-col gap-1">
-                <span className="font-heading font-medium text-foreground text-sm">
-                  New model picker
+              <span
+                className={GLOW}
+                style={{
+                  ["--glow-shape" as string]: "70% 120% at 100% 50%",
+                  ["--glow-strength" as string]: "16%",
+                }}
+              />
+              <span className="relative flex min-w-0 flex-1 flex-col items-start gap-1.5">
+                <NewBadge />
+                <span className="font-heading font-semibold text-[0.975rem] text-foreground tracking-[-0.01em]">
+                  Meet the new model picker
                 </span>
-                <span className="text-muted-foreground text-xs leading-snug">
-                  Pick, download and tune models right from the composer.{" "}
-                  <span className="whitespace-nowrap font-medium text-foreground">
-                    Learn more
-                  </span>
+                <span className="text-muted-foreground text-xs leading-relaxed">
+                  Pick, download and tune models right from the composer.
+                </span>
+                <span className="mt-0.5 inline-flex items-center gap-1 font-medium text-primary text-xs">
+                  Learn more
+                  <HugeiconsIcon
+                    icon={ArrowRight01Icon}
+                    strokeWidth={2}
+                    className="size-3.5 transition-transform duration-200 group-hover:translate-x-0.5"
+                  />
                 </span>
               </span>
-              <CardArt className="h-[calc(52px*var(--ui-space-scale,1))] w-auto shrink-0 text-foreground/60" />
+              <CardArt />
             </button>
             <button
               type="button"
               onClick={dismiss}
               aria-label="Dismiss"
-              className="absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full bg-muted-foreground/80 text-background shadow-sm transition-colors hover:bg-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full bg-background text-muted-foreground shadow-sm ring-1 ring-border transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <HugeiconsIcon
                 icon={Cancel01Icon}
-                strokeWidth={2.5}
+                strokeWidth={2.25}
                 className="size-3"
               />
             </button>
@@ -144,28 +188,30 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
       )}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="gap-0 px-6 pt-6 pb-6 sm:max-w-[calc(30rem*var(--ui-space-scale,1))]"
+          className="gap-0 p-3 pb-6 sm:max-w-[calc(35rem*var(--ui-space-scale,1))]"
           onCloseAutoFocus={(event) => {
-            if (!openPickerOnClose.current) return;
+            if (!openPickerOnClose.current) {
+              return;
+            }
             openPickerOnClose.current = false;
             // The card is gone by now; focus belongs to the picker's search instead.
             event.preventDefault();
             source.onOpenChange(true);
           }}
         >
-          <DialogArt className="mx-auto mt-2 h-auto w-full max-w-[calc(300px*var(--ui-space-scale,1))] text-foreground/70" />
-          <div className="mt-5 flex flex-col items-center gap-2 text-center">
-            <span className="font-medium text-primary text-sm">New</span>
-            <DialogTitle className="text-balance font-semibold text-2xl leading-tight tracking-[-0.01em]">
-              Choose models from the composer
+          <DialogHero />
+          <div className="mt-6 flex flex-col items-center gap-2.5 px-4 text-center">
+            <NewBadge label="New in Studio" />
+            <DialogTitle className="text-balance font-heading font-semibold text-[1.65rem] leading-tight tracking-[-0.02em]">
+              Meet the new model picker
             </DialogTitle>
-            <DialogDescription className="text-balance">
+            <DialogDescription className="max-w-[calc(26rem*var(--ui-space-scale,1))] text-balance leading-relaxed">
               Click the model chip in the composer to switch models, quants and
               reasoning without leaving the chat
               {shortcut ? (
                 <>
                   , or press{" "}
-                  <kbd className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-foreground text-xs">
+                  <kbd className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-foreground text-xs ring-1 ring-border/60">
                     {shortcut}
                   </kbd>
                 </>
@@ -175,7 +221,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
             <Button
               variant="primary"
               size="hero"
-              className="mt-3"
+              className="group mt-2 gap-1.5"
               onClick={() => {
                 openPickerOnClose.current = true;
                 dismiss();
@@ -183,30 +229,34 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               }}
             >
               Open model picker
+              <HugeiconsIcon
+                icon={ArrowRight01Icon}
+                strokeWidth={2}
+                className="size-4 transition-transform duration-200 group-hover:translate-x-0.5"
+              />
             </Button>
           </div>
-          <ul className="mt-6 flex flex-col rounded-2xl bg-muted/50 px-4">
-            {FEATURES.map((feature, index) => (
+          <ul className="mt-6 grid gap-2 px-3 sm:grid-cols-2">
+            {FEATURES.map((feature) => (
               <li
                 key={feature.title}
-                className={cn(
-                  "flex items-start gap-3.5 py-3.5",
-                  index > 0 && "border-border/60 border-t",
-                )}
+                className="flex items-start gap-3 rounded-2xl bg-muted/50 p-3.5 ring-1 ring-border/40"
               >
-                <HugeiconsIcon
-                  icon={feature.icon}
-                  strokeWidth={1.75}
-                  className="mt-0.5 size-5 shrink-0 text-muted-foreground"
-                />
-                <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                  <HugeiconsIcon
+                    icon={feature.icon}
+                    strokeWidth={1.9}
+                    className="size-4"
+                  />
+                </span>
+                <span className="flex min-w-0 flex-col gap-0.5">
                   <span className="font-medium text-foreground text-sm">
                     {feature.title}
                   </span>
-                  <span className="text-muted-foreground text-xs leading-snug">
+                  <span className="text-muted-foreground text-xs leading-relaxed">
                     {feature.body}
                   </span>
-                </div>
+                </span>
               </li>
             ))}
           </ul>
@@ -216,90 +266,152 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
   );
 };
 
-/** The picker panel and the composer chip, joined by a dotted line. */
-const CardArt: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    viewBox="0 0 120 60"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.25}
-    strokeLinecap="round"
-    className={className}
-    aria-hidden="true"
-  >
-    <rect x="3" y="4" width="54" height="52" rx="6" />
-    <circle cx="12" cy="16" r="2.5" />
-    <path d="M18 16h28" />
-    <rect
-      x="7"
-      y="23.5"
-      width="46"
-      height="13"
-      rx="4"
-      className="fill-primary/20 stroke-primary"
-    />
-    <circle cx="12" cy="30" r="2.5" className="stroke-primary" />
-    <path d="M18 30h24" className="stroke-primary" />
-    <circle cx="12" cy="44" r="2.5" />
-    <path d="M18 44h20" />
-    <path
-      d="M58 30C72 30 78 34 80 40"
-      strokeWidth={2}
-      strokeDasharray="0 4"
-      className="stroke-primary"
-    />
-    <rect x="72" y="42" width="45" height="15" rx="7.5" />
-    <circle cx="80" cy="49.5" r="2.5" />
-    <path d="M86 49.5h18" />
-    <path d="M108 48l2.5 2.5L113 48" />
-  </svg>
+const NewBadge: FC<{ label?: string }> = ({ label = "New" }) => (
+  <span className="inline-flex items-center gap-1 rounded-full bg-primary/12 px-2 py-0.5 font-semibold text-primary text-ui-11 tracking-wide">
+    <HugeiconsIcon icon={SparklesIcon} strokeWidth={2} className="size-3" />
+    {label}
+  </span>
 );
 
-/** The composer with its model chip, and the picker panel it opens. */
-const DialogArt: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    viewBox="0 0 320 172"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
+const LogoDot: FC<{ src: string; className?: string }> = ({
+  src,
+  className,
+}) => (
+  <img
+    src={publicAssetUrl(src)}
+    alt=""
+    draggable={false}
+    className={cn(
+      "shrink-0 rounded-full bg-white object-contain ring-1 ring-black/5",
+      className,
+    )}
+  />
+);
+
+/** A tilted mini picker with the magnifying-glass sloth peeking over it. */
+const CardArt: FC = () => (
+  <span
     aria-hidden="true"
+    className="relative block h-[calc(92px*var(--ui-space-scale,1))] w-[calc(140px*var(--ui-space-scale,1))] shrink-0"
   >
-    <rect x="22" y="6" width="156" height="104" rx="12" />
-    <circle cx="38" cy="22" r="4" className="fill-primary stroke-primary" />
-    <circle cx="52" cy="22" r="4" />
-    <circle cx="66" cy="22" r="4" />
-    <circle cx="80" cy="22" r="4" />
-    <circle cx="94" cy="22" r="4" />
-    <path d="M22 34h156" />
-    <circle cx="38" cy="48" r="4.5" />
-    <path d="M50 48h70" />
-    <path d="M162 45l1.2 2.5 2.8.4-2 2 .5 2.8-2.5-1.3-2.5 1.3.5-2.8-2-2 2.8-.4z" />
-    <rect
-      x="28"
-      y="59"
-      width="144"
-      height="18"
-      rx="6"
-      className="fill-primary/15 stroke-primary"
+    <span className="absolute top-1 left-0 flex w-[calc(118px*var(--ui-space-scale,1))] -rotate-3 flex-col gap-0.5 rounded-xl bg-background p-1.5 shadow-[0_6px_20px_-8px_rgb(0_0_0/0.35)] ring-1 ring-border/70 transition-transform duration-300 group-hover:-rotate-1">
+      {MOCK_ROWS.map((row) => (
+        <span
+          key={row.name}
+          className={cn(
+            "flex items-center gap-1.5 rounded-lg px-1.5 py-1",
+            "active" in row && row.active && "bg-primary/12",
+          )}
+        >
+          <LogoDot src={row.logo} className="size-3.5" />
+          <span
+            className={cn(
+              "h-1.5 flex-1 rounded-full",
+              "active" in row && row.active
+                ? "bg-primary/70"
+                : "bg-muted-foreground/25",
+            )}
+          />
+          {"active" in row && row.active ? (
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2.5}
+              className="size-3 text-primary"
+            />
+          ) : (
+            <span className="size-3" />
+          )}
+        </span>
+      ))}
+    </span>
+    <MascotImg
+      src="Sloth emojis/sloth magnify final.png"
+      className="absolute -right-1 -bottom-1 size-16 drop-shadow-[0_4px_8px_rgb(0_0_0/0.25)] transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:rotate-3"
     />
-    <circle cx="38" cy="68" r="4.5" className="stroke-primary" />
-    <path d="M50 68h86" className="stroke-primary" />
-    <circle cx="38" cy="90" r="4.5" />
-    <path d="M50 90h56" />
-    <path
-      d="M184 58C226 58 252 84 252 128"
-      strokeWidth={2.5}
-      strokeDasharray="0 6"
-      className="stroke-primary"
+  </span>
+);
+
+/** The composer, its model chip, and the picker it opens, drawn with live theme colours. */
+const DialogHero: FC = () => (
+  <div
+    aria-hidden="true"
+    className="relative h-[calc(236px*var(--ui-space-scale,1))] overflow-hidden rounded-[calc(20px*var(--ui-space-scale,1))] bg-muted/40 ring-1 ring-border/50"
+  >
+    <span
+      className={GLOW}
+      style={{
+        ["--glow-shape" as string]: "90% 80% at 65% 0%",
+        ["--glow-strength" as string]: "30%",
+      }}
     />
-    <rect x="8" y="118" width="304" height="50" rx="16" />
-    <path d="M26 136h92" className="opacity-50" />
-    <rect x="200" y="140" width="98" height="20" rx="10" />
-    <circle cx="211" cy="150" r="4" />
-    <path d="M220 150h52" />
-    <path d="M281 148l3 3 3-3" />
-  </svg>
+    <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(color-mix(in_oklab,var(--foreground)_14%,transparent)_1px,transparent_1px)] bg-size-[calc(16px*var(--ui-space-scale,1))_calc(16px*var(--ui-space-scale,1))] [mask-image:linear-gradient(to_bottom,black,transparent_85%)]" />
+
+    <MascotImg
+      src="Sloth emojis/UnSloth Sparkling large.png"
+      className="absolute top-5 left-6 size-24 -rotate-6 drop-shadow-[0_8px_16px_rgb(0_0_0/0.25)] max-sm:top-auto max-sm:right-5 max-sm:bottom-[calc(62px*var(--ui-space-scale,1))] max-sm:left-auto max-sm:size-16 max-sm:rotate-6"
+    />
+
+    <div className="absolute top-7 right-16 flex w-[calc(250px*var(--ui-space-scale,1))] max-sm:right-auto max-sm:left-4 max-sm:w-[calc(224px*var(--ui-space-scale,1))] flex-col gap-1.5 rounded-2xl bg-background p-2 shadow-[0_18px_40px_-16px_rgb(0_0_0/0.45)] ring-1 ring-border/70">
+      <div className="flex items-center gap-3 px-1.5 pt-0.5 text-muted-foreground">
+        <HugeiconsIcon icon={StarIcon} className="size-3.5" />
+        <HugeiconsIcon icon={Compass01Icon} className="size-3.5" />
+        <span className="relative text-primary">
+          <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+          <span className="absolute inset-x-0 -bottom-1 h-0.5 rounded-full bg-primary" />
+        </span>
+        <HugeiconsIcon icon={CloudIcon} className="size-3.5" />
+      </div>
+      <div className="flex items-center gap-1.5 rounded-lg bg-muted px-2 py-1 text-muted-foreground text-ui-11">
+        <HugeiconsIcon icon={Search01Icon} className="size-3" />
+        Search on device models
+      </div>
+      <div className="flex flex-col gap-0.5">
+        {MOCK_ROWS.map((row) => (
+          <div
+            key={row.name}
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-1.5 py-1 text-ui-11",
+              "active" in row && row.active
+                ? "bg-primary/12 text-foreground"
+                : "text-foreground/80",
+            )}
+          >
+            <LogoDot src={row.logo} className="size-4" />
+            <span className="min-w-0 flex-1 truncate font-medium">
+              {row.name}
+            </span>
+            <span className="rounded-md bg-muted px-1 font-mono text-muted-foreground text-ui-11">
+              {row.quant}
+            </span>
+            {"active" in row && row.active ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2.5}
+                className="size-3 text-primary"
+              />
+            ) : (
+              <span className="size-3" />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+
+    <div className="absolute inset-x-4 bottom-4 flex h-[calc(52px*var(--ui-space-scale,1))] items-end justify-between rounded-2xl bg-background px-3.5 pb-2.5 shadow-[0_10px_30px_-14px_rgb(0_0_0/0.4)] ring-1 ring-border/70">
+      <span className="absolute top-2.5 left-4 text-muted-foreground text-xs">
+        Ask anything
+      </span>
+      <span />
+      <span className="flex items-center gap-1.5 rounded-full bg-primary/12 py-0.5 pr-2 pl-1 font-medium text-foreground text-ui-11 ring-1 ring-primary/50">
+        <LogoDot src="/hub/profile/logo/google.png" className="size-4" />
+        gemma-4-E4B-it
+        <span className="text-muted-foreground">Thinking</span>
+        <HugeiconsIcon
+          icon={ArrowDown01Icon}
+          strokeWidth={2}
+          className="size-3 text-muted-foreground"
+        />
+      </span>
+    </div>
+  </div>
 );
