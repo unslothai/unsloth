@@ -18,6 +18,7 @@ _ENVS = (
     "UNSLOTH_DIFFUSION_SD_CPP",
     "UNSLOTH_DIFFUSION_SD_CPP_MPS",
     "UNSLOTH_DIFFUSION_SD_CPP_INSTALL",
+    "UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK",
 )
 
 
@@ -368,7 +369,13 @@ def test_predict_engine_falls_back_when_install_is_disabled_and_nothing_is_insta
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, None)
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
-    assert r.predict_engine(detect_family("z-image"), model_kind = "gguf") == ENGINE_DIFFUSERS
+    # Refused, as the load refuses it, instead of planning the dense diffusers set for a CPU GGUF.
+    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load"):
+        r.predict_engine(detect_family("z-image"), model_kind = "gguf")
+    assert (
+        r.predict_engine(detect_family("z-image"), model_kind = "gguf", engine = "diffusers")
+        == ENGINE_DIFFUSERS
+    )
 
 
 @pytest.mark.parametrize(
@@ -428,7 +435,10 @@ def test_the_prediction_agrees_with_the_selection_about_an_incapable_build(monke
     _set_runnable(monkeypatch)
     _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old3", marker = False))
     fam = detect_family("qwen-image-2.1")
-    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS
+    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load"):
+        r.predict_engine(fam, model_kind = "gguf")
+    with pytest.raises(ValueError, match = "predates"):
+        r.select_and_activate_engine(fam, model_kind = "gguf")
     _set_binary(monkeypatch, None)
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
@@ -447,7 +457,8 @@ def test_the_prediction_counts_the_upgrade_a_load_performs_for_a_moved_pin(monke
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
     assert moved == [old]
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
-    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS
+    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load"):
+        r.predict_engine(fam, model_kind = "gguf")
 
 
 # ── per-load engine pick (/images/load's ``engine``) ──────────────────────────

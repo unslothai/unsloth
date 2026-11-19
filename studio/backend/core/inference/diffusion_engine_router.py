@@ -1029,6 +1029,8 @@ def select_and_activate_engine(
     if requested == ENGINE_SD_CPP or native_gguf_only(fam, model_kind):
         # Refuse before anything unloads rather than silently fall back to diffusers.
         raise ValueError(f"The native sd.cpp engine cannot load this model here: {reason}.")
+    if off_torch is None and cpu_gguf_stays_native(fam, model_kind, backend, requested):
+        raise ValueError(_cpu_gguf_refusal(reason))
     if before_fallback is not None:
         before_fallback()
     return _activate(ENGINE_DIFFUSERS, reason)
@@ -1037,6 +1039,27 @@ def select_and_activate_engine(
 def native_gguf_only(fam: Optional[DiffusionFamily], model_kind: Optional[str]) -> bool:
     """A GGUF of a family whose transformer-only files load natively only (``native_transformer_files_only``)."""
     return model_kind == "gguf" and bool(getattr(fam, "native_transformer_files_only", False))
+
+
+# Kill switch for cpu_gguf_stays_native: "1" restores the old silent diffusers fallback.
+CPU_GGUF_DIFFUSERS_FALLBACK_ENV = "UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK"
+
+
+def cpu_gguf_stays_native(
+    fam: Optional[DiffusionFamily],
+    model_kind: Optional[str],
+    backend: Optional[str],
+    requested: Optional[str],
+) -> bool:
+    """An automatic GGUF load on a CPU-only torch of a family sd.cpp serves. The Hub plan stages the native files
+    for it (GGUF + VAE + GGUF encoder); a diffusers fallback would instead fetch the dense bf16 encoder and
+    configs inline (11.8 GB for FLUX.3 Klein) to run them on torch CPU, so a native failure is refused, not
+    silently swapped. An explicit diffusers pick, the engine env and the native disable still reach diffusers."""
+    if model_kind != "gguf" or backend != "cpu" or requested is not None or fam is None:
+        return False
+    if os.environ.get(CPU_GGUF_DIFFUSERS_FALLBACK_ENV, "").strip().lower() in _ENABLE_TOKENS:
+        return False
+    return family_sd_cpp_supported(fam)
 
 
 def refuse_engine_pick(
@@ -1207,8 +1230,23 @@ def predict_engine(
             else f"no usable sd.cpp build here supports '{fam.name}'"
         )
         raise ValueError(f"The native sd.cpp engine cannot load this model here: {why}.")
+    if (
+        choice != ENGINE_SD_CPP
+        and off_torch_sd_cpp_device(backend) is None
+        and cpu_gguf_stays_native(fam, model_kind, backend, requested)
+    ):
+        # The same refusal selection gives, so the plan never stages the dense diffusers set for it.
+        raise ValueError(_cpu_gguf_refusal("native sd.cpp binary unavailable"))
     lora_guard(choice)
     return choice
+
+
+def _cpu_gguf_refusal(reason: str) -> str:
+    return (
+        f"The native sd.cpp engine cannot load this model here: {reason}. On a CPU-only device a GGUF runs on "
+        "the native engine; loading it with Diffusers instead downloads the full-precision text encoder and "
+        "runs on PyTorch CPU. Choose the Diffusers engine to load it that way anyway."
+    )
 
 
 def family_buildable_here(
