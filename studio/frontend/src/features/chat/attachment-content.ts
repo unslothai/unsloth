@@ -2138,7 +2138,8 @@ function collectHtmlBlockText(
   const start = tag === "ol" ? Number.parseInt(element.getAttribute("start") ?? "", 10) : Number.NaN;
   let number = Number.isNaN(start) ? (reversed ? Array.from(element.childNodes).filter(isItem).length : 1) : start;
   const format = tag === "ol" ? lookUp(HTML_LIST_FORMATS, element.getAttribute("type") ?? "") : undefined;
-  let tail = HTML_BLOCK_TAGS.has(tag) ? "\n" : before;
+  // a link's text starts fresh, so a footnote <a><sup>1</sup></a> has no base
+  let tail = HTML_BLOCK_TAGS.has(tag) ? "\n" : tag === "a" ? "" : before;
   const text = Array.from(element.childNodes)
     .map((child) => {
       const inner = collectHtmlBlockText(child, preformatted, groupSpans, tail);
@@ -2154,10 +2155,16 @@ function collectHtmlBlockText(
       return `\n${label}. ${inner.trimStart()}`;
     })
     .join("");
-  if (tag === "sup" && !isNoteReference(element.getAttribute("class"), element.getAttribute("role"))) {
+  if (tag === "sup" && !isNoteReference(element.getAttribute("class"), element.getAttribute("role")) && !containsLink(element)) {
     return raiseSuperscript(before, text);
   }
   return HTML_BLOCK_TAGS.has(tag) ? `\n${text}\n` : text;
+}
+
+function containsLink(node: Node): boolean {
+  return Array.from(node.childNodes).some(
+    (child) => child.nodeType === ELEMENT_NODE && ((child as Element).tagName.toLowerCase() === "a" || containsLink(child)),
+  );
 }
 
 const HTML_ROW_GROUP_TAGS = new Set(["table", "thead", "tbody", "tfoot"]);

@@ -188,7 +188,8 @@ class _Stripper(HTMLParser):
         self.labels: list[str] = []
         self.nonce = secrets.token_hex(4)
         self._label: str | None = None
-        self._sups: list[tuple[int, list[str], int]] = []
+        self._sups: list[list] = []
+        self._anchor: tuple[int, list[str], int] | None = None
 
     def _in_table(self) -> bool:
         return bool(self._tables) and not self._skip and not self._deep
@@ -394,10 +395,23 @@ class _Stripper(HTMLParser):
             self._flush()
         elif tag == "sup" and not self._skip:
             from ..inference._html_to_md import _MAX_SUP_DEPTH, _note_reference
+
             while self._sups and self._sups[-1][0] >= index:
                 self._sups.pop()
-            if len(self._sups) < _MAX_SUP_DEPTH and not _note_reference(dict(attrs)):
-                self._sups.append((index, self._line, len(self._line)))
+            # a footnote link around or inside the sup (Pandoc, Python-Markdown, GitHub) is a reference
+            anchor = self._anchor
+            linked = (
+                anchor is not None
+                and anchor[0] in self._tag_positions.get("a", ())
+                and anchor[1] is self._line
+                and anchor[2] == len(self._line)
+            )
+            if len(self._sups) < _MAX_SUP_DEPTH and not linked and not _note_reference(dict(attrs)):
+                self._sups.append([index, self._line, len(self._line), False])
+        elif tag == "a" and not self._skip:
+            self._anchor = (index, self._line, len(self._line))
+            for sup in self._sups:
+                sup[3] = True
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -455,8 +469,8 @@ class _Stripper(HTMLParser):
         while self._sups and self._sups[-1][0] > index:
             self._sups.pop()
         if self._sups and self._sups[-1][0] == index:
-            _, line, start = self._sups.pop()
-            if line is self._line:
+            _, line, start, linked = self._sups.pop()
+            if line is self._line and not linked:
                 _raise_superscript(line, start)
 
     def handle_data(self, data):

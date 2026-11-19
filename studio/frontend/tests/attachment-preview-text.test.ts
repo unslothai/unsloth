@@ -367,6 +367,28 @@ test("extractHtmlAttachmentText keeps superscript exponents", async () => {
   );
 });
 
+test("extractHtmlAttachmentText keeps footnote links as references", async () => {
+  const sup = (child: StubNode) => ({ ...element("sup", child), getAttribute: () => null });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "p",
+          textNode("Smith"),
+          sup(element("a", textNode("1"))),
+          textNode(" and Lee"),
+          element("a", sup(textNode("3"))),
+          textNode(" cover "),
+          element("a", textNode("40 km"), sup(textNode("2"))),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, "Smith1 and Lee3 cover 40 km^2");
+});
+
 test("extractHtmlAttachmentText keeps the indentation of preformatted code", async () => {
   const extracted = await withStubDom(
     () =>

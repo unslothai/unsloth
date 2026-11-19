@@ -1236,6 +1236,17 @@ def test_html_keeps_superscript_exponents(tmp_path):
     )
 
 
+def test_html_footnote_links_stay_references(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<p>Smith<sup id="fnref:1"><a class="footnote-ref" href="#fn:1">1</a></sup>,'
+        ' Jones<sup><a href="#user-content-fn-2" data-footnote-ref>2</a></sup> and'
+        ' Lee<a href="#fn3" class="footnote-ref"><sup>3</sup></a> cover'
+        ' <a href="/area">40 km<sup>2</sup></a>.</p>',
+    )
+    assert text == "Smith1, Jones2 and Lee3 cover 40 km^2."
+
+
 def test_html_adjacent_buttons_stay_separate_words(tmp_path):
     text = _parse_html(
         tmp_path, "<p>Click <button>Accept</button><button>Decline</button> to go on.</p>"
