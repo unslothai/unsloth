@@ -42,6 +42,8 @@ def _load(*names, **env):
         # Unmerges FSDP2 streamed layers when a save raises; these fixtures never stream.
         "_unmerge_flags_on_error": lambda streamed: contextlib.nullcontext(),
         "nullcontext": contextlib.nullcontext,
+        # unsloth_save_model frees the training-time NF4 dequant cache first (#18285); none here.
+        "_release_nf4_dequant_cache": lambda: None,
         # Full saves add bare Params4bit quant state (fused 4-bit experts); none in these fixtures.
         "PeftModel": type("PeftModel", (), {}),
         "_save_bare_params4bit_quant_state": lambda model: contextlib.nullcontext(),

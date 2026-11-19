@@ -607,19 +607,78 @@ def test_resume_of_a_finished_checkpoint_is_refused(run_dir):
         dc.preflight_resume(str(run_dir), identity = run.identity, target_steps = 500)
 
 
+def _opt_step_loops(source: str) -> list[str]:
+    """Each optimizer-step loop as ``for <iter>`` or ``while <test> from <init> by <advance>``."""
+    loops = []
+    for parent in ast.walk(ast.parse(source)):
+        body = getattr(parent, "body", None)
+        if not isinstance(body, list):
+            continue
+        init = None
+        for node in body:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "opt_step"
+            ):
+                init = ast.unparse(node.value)
+            elif (
+                isinstance(node, ast.For)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == "opt_step"
+            ):
+                loops.append(f"for {ast.unparse(node.iter)}")
+            elif isinstance(node, ast.While) and "opt_step" in ast.unparse(node.test):
+                # A while loop (fp16 skips do not count a step) must advance opt_step by one and nothing else.
+                advance = sorted(
+                    {
+                        ast.unparse(a.value)
+                        for a in ast.walk(node)
+                        if isinstance(a, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == "opt_step" for t in a.targets)
+                    }
+                    | {
+                        f"+= {ast.unparse(a.value)}"
+                        for a in ast.walk(node)
+                        if isinstance(a, ast.AugAssign)
+                        and isinstance(a.target, ast.Name)
+                        and a.target.id == "opt_step"
+                    }
+                )
+                loops.append(f"while {ast.unparse(node.test)} from {init} by {advance}")
+    return loops
+
+
 def test_both_trainers_loop_from_the_resumed_step():
     # The real loops are GPU-only, so guard their bound structurally against range(cfg.train_steps).
     backend = Path(__file__).resolve().parent.parent
     for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
         source = (backend / "core" / "training" / name).read_text(encoding = "utf-8")
-        loops = [
-            ast.unparse(node.iter)
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.For)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "opt_step"
-        ]
-        assert loops == ["range(resumed, cfg.train_steps)"], f"{name}: {loops}"
+        loops = _opt_step_loops(source)
+        assert loops in (
+            ["for range(resumed, cfg.train_steps)"],
+            ["while opt_step < cfg.train_steps from resumed by ['done']"],
+        ), f"{name}: {loops}"
+    # done is the one step just applied, so the while form counts up by one from the resumed step.
+    dit_source = (backend / "core" / "training" / "diffusion_dit_trainer.py").read_text(
+        encoding = "utf-8"
+    )
+    if "while opt_step < cfg.train_steps" in dit_source:
+        assert "done = opt_step + 1" in dit_source
+
+
+def test_opt_step_loop_matcher_rejects_a_loop_from_zero():
+    # The matcher itself must catch the bug it guards against, in both loop shapes.
+    assert _opt_step_loops("for opt_step in range(cfg.train_steps):\n    pass\n") == [
+        "for range(cfg.train_steps)"
+    ]
+    assert _opt_step_loops(
+        "opt_step = 0\nwhile opt_step < cfg.train_steps:\n    done = opt_step + 1\n    opt_step = done\n"
+    ) == ["while opt_step < cfg.train_steps from 0 by ['done']"]
+    assert _opt_step_loops(
+        "opt_step = resumed\nwhile opt_step < cfg.train_steps:\n    opt_step = done\n    opt_step += 2\n"
+    ) == ["while opt_step < cfg.train_steps from resumed by ['+= 2', 'done']"]
 
 
 @pytest.mark.parametrize(

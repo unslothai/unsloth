@@ -238,6 +238,18 @@ def _named_companion(spec_draft_model: str) -> Optional[DrafterSource]:
     return None if kind is None else DrafterSource(_reported(kind), str(snapshot), False)
 
 
+def _bundled_companion(model_dir: Optional[str]) -> Optional[DrafterSource]:
+    """A drafter checkpoint shipped inside the target's, at ``draft/`` (Ollama's Gemma 4 assistants)."""
+    if not model_dir:
+        return None
+    path = os.path.join(model_dir, "draft")
+    config = _read_config(path)
+    kind = companion_kind(config)
+    if kind is None or not _fits(kind, config, _read_config(model_dir)) or not _has_weights(path):
+        return None
+    return DrafterSource(_reported(kind), path, False)
+
+
 def has_builtin_head(model_dir: Optional[str]) -> bool:
     if not model_dir:
         return False
@@ -262,7 +274,8 @@ def resolve_speculation(
     target_name: str,
     allowed = None,
 ) -> SpecResolution:
-    """The drafters an MLX load tries: a named ``spec_draft_model``, then cached companions (any kind under auto) and the built-in head, in ``_COMPANION_ORDER``."""
+    """The drafters an MLX load tries: a named ``spec_draft_model``, then the built-in head, a companion bundled in the
+    checkpoint and cached companions (any kind under auto, in ``_COMPANION_ORDER``)."""
     mode = mlx_spec_mode(speculative_type)
     if mode == "off":
         return SpecResolution(mode)
@@ -282,8 +295,11 @@ def resolve_speculation(
     companions = discover_companions(
         target_name, _read_config(model_dir) if model_dir else {}, allowed
     )
+    bundled = _bundled_companion(model_dir)
     companions = [
-        source for source in companions if (auto or source.kind == kind) and source not in sources
+        source
+        for source in ([bundled] if bundled else []) + companions
+        if (auto or source.kind == kind) and source not in sources
     ]
     if kind == "mtp" and has_builtin_head(model_dir):
         companions.insert(0, DrafterSource("mtp", str(model_dir), True))
