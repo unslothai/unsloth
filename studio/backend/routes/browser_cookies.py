@@ -231,7 +231,6 @@ def site_cookie_state(subject: str, url: str) -> tuple[list, list[tuple[str, str
     """``([epoch, version], page_cookies(...), has_site_cookies(...))``, read together so the version dates both."""
     jar = _jar(subject)
     with jar._cookies_lock:  # type: ignore[attr-defined]
-        # One pass over the jar serves both answers (it runs per navigation and per relayed request).
         site = list(_site_cookies(subject, url))
         return [_EPOCH, _version], _page_entries(site), bool(site)
 

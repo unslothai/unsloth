@@ -143,6 +143,5 @@ def test_one_request_per_distinct_cookie_path(monkeypatch):
     real = cookies._request
     monkeypatch.setattr(cookies, "_request", lambda url: made.append(url) or real(url))
     cookies.site_cookie_state("acct", "https://a.example/a/b")
-    # The page's own Request, then one per path the jar holds.
     assert len(made) == 1 + len(paths)
     assert len(list(jar)) > len(paths)
