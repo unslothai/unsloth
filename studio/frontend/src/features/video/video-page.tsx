@@ -62,9 +62,11 @@ import {
 } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
-import { PytorchInstallButton } from "./pytorch-install-button";
 import { VideoRestylePanel } from "./restyle-panel";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
+import { usePlatformStore } from "@/config/env";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import {
   applyPin,
   fetchNextPage,
@@ -1237,6 +1239,15 @@ export function VideoPage({
   onInitialReady?: () => void;
 }) {
   const hardware = useHardwareInfo();
+  // A Chat only Desktop install gets video from the full install, as Export and Train do. Not on a
+  // GPU-less host: the full install trains on its CPU there and brings no video device.
+  const fullInstall = useFullInstallUpgrade();
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
+  const offerFullInstall =
+    fullInstall !== null &&
+    !cpuTraining &&
+    hardware.videoUnsupportedReason === "pytorch_not_installed";
 
   useEffect(() => {
     if (active && hardware.loaded && hardware.videoSupported === false) {
@@ -1262,11 +1273,22 @@ export function VideoPage({
           className="size-7 shrink-0 text-muted-foreground/70"
         />
         <p className="max-w-sm text-balance">
-          {hardware.videoUnsupportedMessage ??
-            "Video generation is not supported on this machine."}
+          {offerFullInstall
+            ? "Video generation was left out of this install (Chat only). Upgrade to the full install to add it."
+            : (hardware.videoUnsupportedMessage ??
+              "Video generation is not supported on this machine.")}
         </p>
-        {hardware.videoUnsupportedReason === "pytorch_not_installed" && (
-          <PytorchInstallButton />
+        {offerFullInstall && fullInstall && (
+          <>
+            <Button size="sm" onClick={() => setFullInstallOpen(true)}>
+              Upgrade to full install
+            </Button>
+            <FullInstallDialog
+              open={fullInstallOpen}
+              onOpenChange={setFullInstallOpen}
+              onConfirm={() => void fullInstall.repairInstall()}
+            />
+          </>
         )}
       </VideoGate>
     );
