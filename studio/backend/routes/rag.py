@@ -1029,11 +1029,16 @@ def _scanned_page_text(path: str, pages: list) -> tuple[dict[int, str], list[int
     from core.rag import captioner, parsers, pdf_ocr
 
     scanned = [page.page_number for page in pages if page.needs_ocr]
+    # pdf_ocr.ocr_pages takes MUPDF_LOCK even for no pages, stalling text-only reads behind ingestion OCR.
+    if not scanned:
+        return {}, []
     wanted = scanned[: config.OCR_MAX_PAGES]
     texts = {}
-    if wanted and captioner.vision_endpoint() is not None:
+    if captioner.vision_endpoint() is not None:
         texts = captioner.ocr_pages(parsers.render_pdf_pages(path, wanted, dpi = config.OCR_DPI))
-    texts.update(pdf_ocr.ocr_pages(path, [number for number in wanted if number not in texts]))
+    rest = [number for number in wanted if number not in texts]
+    if rest:
+        texts.update(pdf_ocr.ocr_pages(path, rest))
     return texts, [number for number in scanned if number not in texts]
 
 

@@ -311,3 +311,11 @@ def test_a_pdf_of_unreadable_scans_is_refused(rag_home, monkeypatch):
     assert exc.value.status_code == 422
     assert "pages 1, 2 of scan.pdf" in exc.value.detail
     assert _uploads_left() == []
+
+
+def test_text_only_reads_skip_ocr(rag_home, monkeypatch):
+    from core.rag import pdf_ocr
+
+    monkeypatch.setattr(pdf_ocr, "ocr_pages", lambda path, pages: pytest.fail("OCR ran"))
+    result = rag_routes.extract_text(_upload("report.mht", MHT.encode()), subject = "owner")
+    assert "Quarterly" in result["text"]
