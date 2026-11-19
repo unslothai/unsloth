@@ -107,6 +107,30 @@ def _load_decoder(vae_path: str) -> Any:
         return vae
 
 
+# Host RAM one torch decode needs: fp32 decoder activations at full resolution (the 128-channel up blocks hold a few
+# [128, H, W] tensors at once) plus the decoder weights. 4.4 GB was the whole Studio-side peak at 1024 px.
+_DECODE_BYTES_PER_PIXEL = 3072
+_DECODE_FIXED_BYTES = 512 << 20
+_DECODE_RESERVE_BYTES = 1 << 30
+
+
+def decode_bytes(width: int, height: int) -> int:
+    return int(width) * int(height) * _DECODE_BYTES_PER_PIXEL + _DECODE_FIXED_BYTES
+
+
+def fits_host_ram(width: int, height: int) -> bool:
+    """True when one image's torch decode leaves the reserve free in host RAM (unknown RAM: True). Images are
+    decoded one at a time, so the batch size does not change the need."""
+    try:
+        from core.inference.diffusion_memory import _available_system_memory_mib
+        available = _available_system_memory_mib()
+    except Exception:  # noqa: BLE001 -- unreadable is "cannot tell", as for the other host-RAM gates
+        return True
+    if available is None:
+        return True
+    return int(available) << 20 >= decode_bytes(width, height) + _DECODE_RESERVE_BYTES
+
+
 def prepare(vae_path: str) -> None:
     """Load the decoder for ``vae_path`` now (cached); raises when it cannot be built."""
     _load_decoder(vae_path)
@@ -154,13 +178,16 @@ def decode(
                     .permute(0, 1, 4, 2, 5, 3)
                     .reshape(n, c // 4, h * 2, w * 2)
                 )
-                out = vae.decode(
-                    z.contiguous(memory_format = torch.channels_last), return_dict = False
-                )[0]
-                # VaeImageProcessor.postprocess(output_type="pil"): [-1, 1] -> [0, 1] -> round to uint8.
-                pixels = ((out.float() / 2 + 0.5).clamp(0, 1) * 255).round().to(torch.uint8)
-                for frame in pixels.permute(0, 2, 3, 1).contiguous().numpy():
-                    images.append(Image.fromarray(frame, mode = "RGB"))
+                # One image at a time: a batch would multiply the full-resolution activations.
+                for one in z.split(1):
+                    out = vae.decode(
+                        one.contiguous(memory_format = torch.channels_last), return_dict = False
+                    )[0]
+                    # VaeImageProcessor.postprocess(output_type="pil"): [-1, 1] -> [0, 1] -> round to uint8.
+                    pixels = ((out.float() / 2 + 0.5).clamp(0, 1) * 255).round().to(torch.uint8)
+                    for frame in pixels.permute(0, 2, 3, 1).contiguous().numpy():
+                        images.append(Image.fromarray(frame, mode = "RGB"))
+                    del out, pixels
     finally:
         if threads and threads > 0:
             torch.set_num_threads(previous)

@@ -305,3 +305,34 @@ def test_an_unloadable_decoder_skips_the_latent_request(tmp_path):
     b._generate_server(state, **_kwargs())
     assert server.calls == ["png"]
     assert tv.STATS == {"decoded": 0, "fallback": 1}
+
+
+def test_a_host_without_room_for_the_decode_keeps_the_server_decode(tmp_path, monkeypatch):
+    from core.inference import diffusion_memory
+
+    need = tv.decode_bytes(16, 16) + tv._DECODE_RESERVE_BYTES
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: (need >> 20) - 1)
+    server = _Server([_as_wire(torch.zeros(1, 32, 2, 2))])
+    b, state = _backend(tmp_path, server)
+    b._generate_server(state, **_kwargs())
+    assert server.calls == ["png"] and tv.STATS["decoded"] == 0
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: (need >> 20) + 1)
+    assert tv.fits_host_ram(16, 16)
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: None)
+    assert tv.fits_host_ram(1 << 20, 1 << 20), "unknown host RAM is not a refusal"
+
+
+def test_a_batched_latent_decodes_one_image_at_a_time(tmp_path, monkeypatch):
+    _vae, path = _tiny_vae_file(tmp_path)
+    torch.manual_seed(2)
+    latent = torch.randn(3, _TINY["latent_channels"] * 4, 6, 5)
+    vae = tv._load_decoder(path)
+    batches = []
+    real = vae.decode
+    monkeypatch.setattr(
+        vae, "decode", lambda z, **kw: (batches.append(z.shape[0]), real(z, **kw))[1]
+    )
+    together = tv.decode([_as_wire(latent)], path)
+    one_by_one = [tv.decode([_as_wire(latent[i : i + 1])], path)[0] for i in range(3)]
+    assert batches == [1] * 6
+    assert [im.tobytes() for im in together] == [im.tobytes() for im in one_by_one]

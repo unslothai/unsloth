@@ -5166,7 +5166,11 @@ class SdCppDiffusionBackend:
         assert state.server is not None
         total = max(1, int(batch_size))
         # CPU-only FLUX.2 renders: the server returns the final latent and torch decodes it (sd_cpp_torch_vae).
-        torch_vae = {"on": sd_cpp_torch_vae.applies(state, layers = layers)}
+        out_w, out_h = hires_plan.target if hires_plan is not None else (int(width), int(height))
+        torch_vae = {
+            "on": sd_cpp_torch_vae.applies(state, layers = layers)
+            and sd_cpp_torch_vae.fits_host_ram(out_w, out_h)
+        }
 
         def _torch_decoder_ready() -> bool:
             # Load (or reuse) the decoder before asking for a latent: a missing diffusers class or an unreadable
