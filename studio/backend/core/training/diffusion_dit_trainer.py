@@ -3523,6 +3523,11 @@ def _train_dit(
         "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
     ) not in ("1", "true")
 
+    from .diffusion_train_extras import effective_cond_cache_dir  # noqa: PLC0415
+
+    # Unset = the default directory (on unless UNSLOTH_DIFFUSION_TRAIN_COND_CACHE=0); "off" = none.
+    pcache_dir = effective_cond_cache_dir(getattr(cfg, "cond_cache_dir", None))
+
     def _open_pcache():
         # Namespace on the CHECKPOINT: keys carry only content, so caches would cross models.
         from .diffusion_train_extras import source_revision  # noqa: PLC0415
@@ -3531,14 +3536,14 @@ def _train_dit(
         conditioning_key = getattr(spec, "conditioning_key", None)
         encoder = conditioning_key(fetch_cfg) if conditioning_key else ""
         return PersistentConditioningCache(
-            cfg.cond_cache_dir,
+            pcache_dir,
             namespace,
             cfg.resolution,
             **({"text_encoder": encoder} if encoder else {}),
         )
 
     pcache = None
-    if getattr(cfg, "cond_cache_dir", None):
+    if pcache_dir:
         try:
             pcache = _open_pcache()
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal

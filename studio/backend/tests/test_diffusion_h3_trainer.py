@@ -968,7 +968,6 @@ def test_the_knobs_h3_cannot_honour_are_refused_or_normalised():
     refused = {
         "mixed_precision": ("no", "requires bf16"),
         "train_batch_size": (2, "batch size 1"),
-        "cond_cache_dir": ("/tmp/cond", "conditioning cache"),
         "cfg_dropout": (0.1, "guidance-distilled"),
         "weighting_scheme": ("bell", "timestep-weighted"),
         "resolution": (700, "multiples of"),
@@ -976,6 +975,8 @@ def test_the_knobs_h3_cannot_honour_are_refused_or_normalised():
     for field, (value, fragment) in refused.items():
         reason = h3_train_unsupported_reason(_replace(base, **{field: value}))
         assert reason and fragment in reason, f"{field} was accepted: {reason!r}"
+    # The persistent conditioning cache now exists on this path, so a directory is accepted.
+    assert h3_train_unsupported_reason(_replace(base, cond_cache_dir = "/tmp/cond")) is None
 
     from core.training.diffusion_train_common import DiffusionLoraConfig
 
