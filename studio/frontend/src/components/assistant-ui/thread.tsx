@@ -84,6 +84,7 @@ import {
   threadMessageKind,
 } from "@/components/assistant-ui/thread-message-slot";
 import { ComposerModelPicker } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
+import { ModelPickerAnnouncement } from "@/components/assistant-ui/model-picker-announcement";
 import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmation-controls";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
@@ -2914,6 +2915,9 @@ const ThreadWelcome: FC<{
         {composerAtBottom ? (
           <div className="aui-thread-welcome-message flex w-full flex-col justify-center">
             {greetingRow}
+            {!hideComposer && !incognito && (
+              <ModelPickerAnnouncement className="mt-[calc(28px*var(--ui-space-scale,1))]" />
+            )}
           </div>
         ) : (
           <>
@@ -2925,8 +2929,12 @@ const ThreadWelcome: FC<{
               {/* Padding here, not on the spacer, where it would count toward the spacer's share. */}
               <div className="flex flex-col pb-[calc(22px*var(--ui-space-scale,1))]">{greetingRow}</div>
             </div>
-            <div className="aui-thread-welcome-message flex w-full flex-col">
+            <div className="aui-thread-welcome-message relative flex w-full flex-col">
               {!hideComposer && <ComposerAnimated threadId={threadId} />}
+              {/* Out of flow, so the composer stays centred by its own box. */}
+              {!hideComposer && !incognito && (
+                <ModelPickerAnnouncement className="absolute inset-x-0 top-full mt-[calc(28px*var(--ui-space-scale,1))]" />
+              )}
             </div>
             <div
               aria-hidden="true"

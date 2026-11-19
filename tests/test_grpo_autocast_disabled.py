@@ -170,11 +170,35 @@ def test_the_flag_is_recorded_beside_the_dtype():
         assert any(0 < j - i <= 8 for j in flag_at), (i, lines[i].strip())
 
 
+# The GRPO packing leak probe (#18335) can run before the latch on the loss path: unlatched, it runs
+# without autocast rather than in the bfloat16 fallback dtype, which raises on a T4 or V100.
+_UNLATCHED_PROBES = ("_unsloth_grpo_packing_leaks",)
+_ENABLED_READ = r"getattr\(self, \"_autocast_enabled\"[^)]*\)"
+
+
+def _top_level_source(name):
+    node = next(n for n in ast.parse(SRC).body if isinstance(n, ast.FunctionDef) and n.name == name)
+    return ast.get_source_segment(SRC, node)
+
+
 def test_reading_it_tolerates_an_older_trainer():
     """The dtype is cached under `hasattr`, so an instance built before this
     change can reach a call site with only half the state."""
-    for call in re.findall(r"getattr\(self, \"_autocast_enabled\"[^)]*\)", SRC):
+    src = SRC
+    for name in _UNLATCHED_PROBES:
+        src = src.replace(_top_level_source(name), "")
+    calls = re.findall(_ENABLED_READ, src)
+    assert calls, "expected the scoring call sites to read the latched flag"
+    for call in calls:
         assert call.endswith("True)"), call
+
+
+@pytest.mark.parametrize("name", _UNLATCHED_PROBES)
+def test_an_unlatched_probe_runs_without_autocast(name):
+    calls = re.findall(_ENABLED_READ, _top_level_source(name))
+    assert calls, f"{name} no longer reads the latched flag"
+    for call in calls:
+        assert call.endswith("False)"), call
 
 
 def test_force_float32_still_autocasts_in_float16():

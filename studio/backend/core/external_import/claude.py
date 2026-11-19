@@ -125,6 +125,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             expanded.add(line.get("parentUuid"))
         if (
             line.get("type") in ("user", "assistant")
+            and isinstance(line.get("message"), dict)
             and not line.get("isSidechain")
             and not line.get("isMeta")
         ):

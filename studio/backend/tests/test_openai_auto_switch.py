@@ -4658,6 +4658,18 @@ def test_chat_streaming_n_gt_1_rejected_before_switch(monkeypatch):
     assert rec.calls == []
 
 
+def test_chat_conflicting_raw_grammar_rejected_before_switch(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    payload = _chat_request(
+        model = "org/B-GGUF", grammar = 'root ::= "a"', json_schema = {"type": "object"}
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["param"] == "grammar"
+    assert rec.calls == []
+
+
 def test_resolver_cache_stamped_after_slow_build(monkeypatch):
     # Stamp the cache after _build_index, or a slow scan stores an already-expired cache.
     import core.inference.local_model_resolver as r

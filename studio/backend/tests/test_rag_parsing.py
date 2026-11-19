@@ -1470,6 +1470,25 @@ def test_html_hidden_without_tracked_end_keeps_following_text(tmp_path, body):
     assert _parse_html(tmp_path, body).endswith("Current")
 
 
+@pytest.mark.parametrize("role", ["tabpanel", "TabPanel", "region tabpanel"])
+def test_html_hidden_tab_panels_keep_their_text(tmp_path, role):
+    body = (
+        '<div role="tablist"><button role="tab">Debian</button><button role="tab">Arch</button></div>'
+        f'<div role="{role}"><pre>sudo apt install libwebkit2gtk-4.1-dev</pre></div>'
+        f'<div role="{role}" hidden><pre>sudo pacman -S webkit2gtk-4.1</pre></div>'
+        "<p>After</p>"
+    )
+    text = _parse_html(tmp_path, body)
+    assert "sudo apt install libwebkit2gtk-4.1-dev" in text
+    assert "sudo pacman -S webkit2gtk-4.1" in text
+    assert text.endswith("After")
+
+
+def test_html_hidden_non_tab_panels_stay_hidden(tmp_path):
+    body = '<div role="tab" hidden>Obsolete</div><div role="dialog" hidden>Gone</div><p>Current</p>'
+    assert _parse_html(tmp_path, body) == "Current"
+
+
 def test_html_hidden_markup_inside_visible_raw_text_stays_text(tmp_path):
     text = _parse_html(tmp_path, "<textarea><span hidden>Current</span></textarea><p>After</p>")
     assert "Current" in text and text.endswith("After")

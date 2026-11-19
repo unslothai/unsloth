@@ -68,6 +68,7 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
         "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
         "flux.3-klein-base",
@@ -91,7 +92,11 @@ AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset(
 # silently changes the latent geometry. LTX-2: 32x VAE; Wan2.2-TI2V-5B: 16x VAE x 2x2 patch.
 _VIDEO_RESOLUTION_MULTIPLE = 32
 # Image families whose latent grid is coarser than the generic multiple-of-8 check.
-_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {"qwen-image-2.1": 32, "flux.3-klein-base": 16}
+_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {
+    "qwen-image-2.1": 32,
+    "flux.3-klein-base": 16,
+    "moss-image": 16,
+}
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -433,6 +438,14 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth defaults): rank/alpha 32, lr 3e-4, 512px.
     "krea-2": {"lora_rank": 32, "learning_rate": 3e-4, "resolution": 512},
+    # Published MOSS LoRA recipe: rank 32 / lr 1e-4 at 512, rank 16 at 1024.
+    "moss-image": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     # Upstream FLUX.2 DreamBooth uses rank 16 / lr 1e-4; uniform timestep draws need a warmup ramp.
     "flux.2-klein": {
         "lora_rank": 16,
@@ -528,6 +541,12 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Trains on Krea-2-Raw, runs on Turbo.",
     },
+    "moss-image": {
+        "params": "5B",
+        "qlora_vram_gb": 18,
+        "gated": False,
+        "note": "Trains on SFT or Base; the adapter runs on both.",
+    },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
     # Encoder freed before the DiT loads: nf4 peaks at 6.9 GB, bf16 13.1 GB (768 px, rank 32).
@@ -598,6 +617,7 @@ _DIT_TRAIN_FAMILIES = frozenset(
         "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
         "flux.3-klein-base",
@@ -616,7 +636,10 @@ def effective_mixed_precision(cfg: Any) -> str:
     requested = str(getattr(cfg, "mixed_precision", "") or "")
     if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _FLOW_TRAIN_FAMILIES:
         # Record the device-resolved precision, not the request, or identical resumes mismatch.
-        return "bf16" if resolve_train_device() in ("cuda", "xpu") else "no"
+        device = resolve_train_device()
+        if device == "cuda" and dit_fp16_fallback(getattr(cfg, "resolved_family", "")):
+            return "fp16"
+        return "bf16" if device in ("cuda", "xpu") else "no"
     if not torch.cuda.is_available():
         return "no"
     if requested == "bf16" and not native_bf16_supported():
@@ -657,6 +680,38 @@ def flow_bf16_trainable() -> bool:
         )
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
         return False
+
+
+# DiT families with a validated fp16 path on non-bf16 CUDA cards; others keep the bf16 refusal.
+DIT_FP16_TRAIN_FAMILIES: frozenset[str] = frozenset({"flux.2-klein", "z-image", "wan2.2-ti2v-5b"})
+# "0" disables the fallback; "force" uses it on bf16 cards too (parity checks only).
+DIT_FP16_ENV = "UNSLOTH_STUDIO_DIT_FP16"
+
+
+def dit_fp16_fallback(resolved_family: str) -> bool:
+    """Supported family on an NVIDIA GPU without native bf16 (or env ``force``); ROCm excluded. Never raises."""
+    if (resolved_family or "").strip().lower() not in DIT_FP16_TRAIN_FAMILIES:
+        return False
+    mode = os.environ.get(DIT_FP16_ENV, "").strip().lower()
+    if mode in ("0", "off", "false", "no"):
+        return False
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or torch_is_rocm():
+            return False
+        if mode == "force":
+            return True
+        return not flow_bf16_trainable()
+    except Exception:  # noqa: BLE001 -- probe failure -> the old (refusing) behaviour
+        return False
+
+
+def dit_fp16_dense_reason(mode: str) -> str:
+    return (
+        f"base_precision={mode!r} trains in bf16 compute, which this GPU does not have; on this GPU the "
+        "DiT trainer runs fp16 on the nf4 base. Use base_precision='nf4' or 'auto'."
+    )
 
 
 def resolve_train_device() -> str:
@@ -728,6 +783,8 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
     try:
         import torch
         if torch.cuda.is_available() and not flow_bf16_trainable():
+            if dit_fp16_fallback(resolved_family):
+                return None
             return (
                 "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
                 "device does not support bf16. Train the DiT families on a newer GPU."
@@ -936,6 +993,8 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         return reason
     fam = (resolved_family or "").strip().lower()
     mode = (base_precision or "").strip().lower()
+    if mode in ("bf16", "int8", "fp8", "mxfp8") and dit_fp16_fallback(fam):
+        return dit_fp16_dense_reason(mode)
     if fam in _FLOW_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
         # Dense precisions need CUDA; reject here so residents are not evicted first.
         try:
@@ -1059,8 +1118,10 @@ def family_train_infos() -> list[dict[str, Any]]:
             if is_dit
             else None
         )
-        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only.
-        supports_compile = bool(not dit_block) and name in _DIT_TRAIN_FAMILIES
+        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only. The fp16 path trains eager.
+        supports_compile = (
+            bool(not dit_block) and name in _DIT_TRAIN_FAMILIES and not dit_fp16_fallback(name)
+        )
         if not is_dit or dit_block:
             fam_modes: list[str] = []
         else:

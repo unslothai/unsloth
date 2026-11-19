@@ -16,6 +16,7 @@ import {
   type EditorMcpId,
   type McpBuiltinConfig,
   type McpServerConfig,
+  installUnrealTools,
   listMcpBuiltins,
   testEditorMcp,
   updateEditorMcp,
@@ -23,6 +24,38 @@ import {
 } from "./api/mcp-servers-api";
 import { EDITOR_MCP } from "./editor-mcp-catalog";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+
+/** Epic's Unreal MCP can build a level but not save it; this installs Unsloth's save tools into the project. */
+function UnrealToolsInstaller() {
+  const [projectPath, setProjectPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function install() {
+    setBusy(true);
+    setResult(null);
+    try {
+      await installUnrealTools(projectPath.trim());
+      setResult({ ok: true, text: "Installed. Restart Unreal Editor to load the level save tools." });
+    } catch (err) {
+      setResult({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 border-t pt-3">
+      <p>Unreal MCP cannot save levels. Install Unsloth&apos;s level save tools into your project so the model can save what it builds.</p>
+      <Label htmlFor="unreal-tools-project">Unreal project folder</Label>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input id="unreal-tools-project" className="min-w-0 flex-1" value={projectPath} disabled={busy} placeholder="Folder that holds your .uproject file" onChange={(event) => { setProjectPath(event.target.value); setResult(null); }} />
+        <Button size="sm" variant="outline" disabled={busy || !projectPath.trim()} onClick={() => void install()}>Install level save tools</Button>
+      </div>
+      {result && <p role={result.ok ? "status" : "alert"} className={`text-xs ${result.ok ? "" : "text-destructive"}`}>{result.text}</p>}
+    </div>
+  );
+}
 
 export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
   editorId: EditorMcpId;
@@ -186,6 +219,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
             {copy.steps.map((step, index) => <li key={index}>{step}</li>)}
           </ol>
           <p>Keep {copy.name} open, then test the connection above.</p>
+          {copy.installTools && <UnrealToolsInstaller />}
         </div>
         </CollapsibleContent>
       </Collapsible>
