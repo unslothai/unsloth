@@ -14258,7 +14258,7 @@ def mcp_match_exchange(messages: list[dict], tools) -> dict | None:
 
 
 def _mcp_searched_names(messages: list[dict]) -> list[str]:
-    from core.inference.tool_loop_controller import _mcp_tool_search_specs  # noqa: PLC0415 -- import cycle
+    """Names only: the tool loop checks each against the catalog once."""
     search_ids = {
         call.get("id")
         for message in messages
@@ -14267,17 +14267,25 @@ def _mcp_searched_names(messages: list[dict]) -> list[str]:
         if isinstance(call, dict)
         and (call.get("function") or {}).get("name") == MCP_TOOL_SEARCH_NAME
     }
-    return [
-        spec["function"]["name"]
-        for message in messages
-        if isinstance(message, dict)
-        and message.get("role") == "tool"
-        and isinstance(message.get("content"), str)
-        and (
-            message.get("name") == MCP_TOOL_SEARCH_NAME or message.get("tool_call_id") in search_ids
-        )
-        for spec in _mcp_tool_search_specs(message["content"])
-    ]
+    names = {}
+    for message in messages:
+        if not (
+            isinstance(message, dict)
+            and message.get("role") == "tool"
+            and isinstance(message.get("content"), str)
+            and (
+                message.get("name") == MCP_TOOL_SEARCH_NAME
+                or message.get("tool_call_id") in search_ids
+            )
+        ):
+            continue
+        for line in message["content"].splitlines():
+            if line.startswith("  schema: "):
+                try:
+                    names[json.loads(line[len("  schema: ") :])["function"]["name"]] = None
+                except (ValueError, TypeError, KeyError):
+                    continue
+    return list(names)
 
 
 def _runs_local_mcp(server: dict) -> bool:
