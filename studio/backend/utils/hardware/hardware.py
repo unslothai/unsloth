@@ -3875,7 +3875,7 @@ def _rocm_windows_adapter_engine_samples(luid: int) -> Optional[list[tuple[str, 
 
 
 def _rocm_windows_pdh_prune(live: set[int]) -> None:
-    # A driver restart moves every LUID; close the queries no visible device reads any more.
+    # A driver restart moves every LUID.
     with _rocm_win_pdh_lock:
         for luid in [luid for luid in _rocm_win_pdh_queries if luid not in live]:
             entry = _rocm_win_pdh_queries.pop(luid)
@@ -4338,7 +4338,7 @@ def _match_adapter_used_by_hip_luid(
             assigned[positions[0]] = used
             # Counts say how many nodes an ordinal owns, never which. The mask names them (bit i is node i), so the observed phys_N set has to BE those or the LUID covers a node this device does not own; a zero mask names nothing and leaves the count check alone.
             named = {i for i in range(32) if identities[positions[0]][1] >> i & 1}
-            # ROCm 7.14 on Windows sets one bit per physical device, not per node, so a single-node adapter is whole whichever bit it carries.
+            # ROCm 7.14 on Windows sets 1 << physical index, so a single-node adapter is whole whichever bit it carries.
             physes = physes_by_luid.get(luid, set())
             if not named or named == physes or (nodes_by_luid[luid] == 1 and physes == {0}):
                 whole_adapter[positions[0]] = luid
@@ -4956,8 +4956,7 @@ def _rocm_windows_per_device_vram(
         # Counter unavailable: show every GPU with a correct total, used unknown.
         assigned = [None] * len(dev_meta)
 
-    # The engine and temperature reads need only the adapter's LUID, not a VRAM join: when the counters failed (a standard user's
-    # Get-Counter overruns its timeout, #18005) or their rows did not join by LUID, HIP still names each plain adapter. A linked node stays unknown.
+    # Engine and temperature reads need only the LUID: HIP still names each plain adapter when the counters failed or did not join (#18005).
     engine_luid = whole_adapter
     if by_hip is None:
         identities = _rocm_windows_hip_adapter_ids(
