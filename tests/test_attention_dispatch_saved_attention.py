@@ -175,3 +175,122 @@ def test_eager_saving_call_keeps_the_operand_device_guard(monkeypatch):
     monkeypatch.setattr(ad, "_AS_TRACED", [True])
     assert ad._compiling()
     assert ad._on_tensor_device(_X()) == "guard" and entered == [1]
+
+
+# Automatic mode (UNSLOTH_GC_SAVE_ATTENTION unset / =auto): long SDPA training calls only.
+
+
+def _fake_gpu(monkeypatch, capability = (8, 0)):
+    monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
+    monkeypatch.setattr(SA, "_AUTO_ACTIVE", [False])
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: capability)
+
+
+def test_auto_mode_routes_long_calls_on_a_measured_gpu(monkeypatch):
+    _fake_gpu(monkeypatch)
+    call, min_seq = ad._load_saved_attention()
+    assert call is SA.saved_attention_call
+    assert min_seq == SA._AUTO_MIN_SEQ
+    assert SA._AUTO_ACTIVE[0] is True
+
+
+@pytest.mark.parametrize("setting", ["0", "false"])
+def test_auto_mode_kill_switch(monkeypatch, setting):
+    _fake_gpu(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", setting)
+    assert ad._load_saved_attention() == (None, None)
+    assert SA._AUTO_ACTIVE[0] is False
+
+
+def test_auto_mode_off_on_unmeasured_gpu_and_rocm(monkeypatch):
+    _fake_gpu(monkeypatch, (10, 0))
+    assert ad._load_saved_attention() == (None, None)
+    _fake_gpu(monkeypatch, (8, 0))
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    assert ad._load_saved_attention() == (None, None)
+
+
+def test_explicit_setting_routes_every_call(monkeypatch):
+    _fake_gpu(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+    assert ad._load_saved_attention() == (SA.saved_attention_call, None)
+
+
+def test_an_unsloth_zoo_without_auto_mode_stays_off(monkeypatch):
+    import sys
+    import types
+
+    old = types.ModuleType("unsloth_zoo.saved_attention")
+    old.save_attention_enabled = lambda: False
+    old.saved_attention_call = SA.saved_attention_call
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.saved_attention", old)
+    _fake_gpu(monkeypatch)
+    assert ad._load_saved_attention() == (None, None)
+
+
+def _routed(
+    monkeypatch,
+    q_len,
+    backend = None,
+    packed = False,
+):
+    calls = []
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", 16)
+    monkeypatch.setattr(ad, "_saved_attention_call", lambda fn, *t: calls.append(1) or fn(*t))
+    q = torch.randn(1, H, q_len, D)
+    k = torch.randn(1, KV, q_len, D)
+    config = ad.AttentionConfig(backend = backend or ad.SDPA, n_kv_heads = KV, n_groups = H // KV)
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = q_len,
+        kv_seq_len = q_len,
+        n_heads = H,
+        head_dim = D,
+        requires_grad = True,
+        seq_info = (None, None, q_len) if packed else None,
+        attention_mask = None,
+        causal_mask = None,
+        training = True,
+    )
+    routed = ad._auto_saves_attention(config, context)
+    if not packed and config.backend == ad.SDPA:
+        ad.run_attention(config = config, context = context, Q = q, K = k, V = k)
+        assert bool(calls) == routed
+    return routed
+
+
+def test_auto_mode_routes_only_long_unpacked_sdpa_calls(monkeypatch):
+    assert _routed(monkeypatch, 32) is True
+    assert _routed(monkeypatch, 16) is True
+    # Shorter calls keep the plain (traceable) call: no graph break.
+    assert _routed(monkeypatch, 15) is False
+    assert _routed(monkeypatch, 32, backend = ad.XFORMERS) is False
+    assert _routed(monkeypatch, 32, packed = True) is False
+
+
+def test_auto_mode_reuses_through_run_attention(monkeypatch, checkpointing):
+    """End to end on CPU: first step measured, second step kept and reused, same grads."""
+    weights = _weights()
+    full = [_grads(weights, _attend()) for _ in range(2)]
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", S)
+    monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
+    monkeypatch.setattr(SA, "_AUTO_ACTIVE", [True])
+    monkeypatch.setattr(SA, "_BUDGETS", {})
+    monkeypatch.setattr(SA, "_device_peak", lambda device: 1 << 20)
+    monkeypatch.setattr(SA, "_device_capacity", lambda device: 1 << 30)
+    monkeypatch.setattr(SA, "_AUTO_MARGIN_BYTES", 0)
+    monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
+    saved = [_grads(weights, _attend()) for _ in range(2)]
+    for a, b in zip(saved, full):
+        torch.testing.assert_close(a[0], b[0])
+        for x, y in zip(a[1], b[1]):
+            torch.testing.assert_close(x, y)
+    assert [s[2] for s in full] == [4, 4] and [s[2] for s in saved] == [4, 2], dict(
+        SA.SAVED_ATTENTION_STATS
+    )
+    assert SA.SAVED_ATTENTION_STATS["declined_unmeasured"] == 2
+    assert SA.SAVED_ATTENTION_STATS["reused"] == 2
