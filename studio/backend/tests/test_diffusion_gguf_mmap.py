@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The mapped GGUF loader returns exactly what diffusers' copying loader returns, without the whole-file host copy."""
-
 from __future__ import annotations
 
 import os
@@ -33,20 +31,19 @@ def _clean(monkeypatch):
 
 
 def _k_blocks(rng, qtype, rows, cols):
-    """Random K-quant blocks (gguf-py cannot quantize these) with finite fp16 super-scales."""
+    # gguf-py cannot quantize K-quants
     block, size = gguf.GGML_QUANT_SIZES[qtype]
     raw = rng.integers(0, 256, (rows, cols // block, size), dtype = np.uint8)
     scale = np.frombuffer(np.float16(0.01).tobytes(), dtype = np.uint8)
-    if qtype == T.Q4_K:  # d, dmin lead the block
+    if qtype == T.Q4_K:
         raw[..., 0:2] = scale
         raw[..., 2:4] = scale
-    else:  # Q6_K: d ends the block
+    else:
         raw[..., size - 2 : size] = scale
     return raw.reshape(rows, -1)
 
 
 def _write(path, seed = 0):
-    """Q8_0, Q4_K, Q6_K packed rows, F16 / F32 / BF16 tensors, like a transformer-only diffusion GGUF."""
     rng = np.random.default_rng(seed)
     writer = gguf.GGUFWriter(str(path), "flux")
     dense = rng.standard_normal((64, 512)).astype(np.float32)
@@ -76,7 +73,6 @@ def _assert_same(stock, mapped):
 
 
 def _mapping_of(tensor):
-    """Path of the /proc/self/maps entry holding the tensor's first byte ('' = anonymous)."""
     ptr = tensor.data_ptr()
     with open("/proc/self/maps") as fh:
         for line in fh:
@@ -97,7 +93,7 @@ def test_mapped_load_equals_the_stock_copy(tmp_path):
     _assert_same(stock, mapped)
     assert [p for p, _n in gm.MAPPED_LOADS] == [str(path)]
     assert gm.MAPPED_LOADS[0][1] == sum(t.numel() * t.element_size() for t in mapped.values())
-    # diffusers' own state-dict entry point (what from_single_file calls) takes the mapped loader too
+    # from_single_file reads through load_state_dict
     via_state_dict = mlu.load_state_dict(str(path))
     _assert_same(stock, via_state_dict)
     assert len(gm.MAPPED_LOADS) == 2
@@ -124,7 +120,7 @@ def test_writes_stay_private_and_the_file_is_unchanged(tmp_path):
     gm.install_gguf_mmap()
     mapped = mlu.load_gguf_checkpoint(str(path))
     for value in mapped.values():
-        value.as_subclass(torch.Tensor).zero_()  # writable: torch never sees a read-only buffer
+        value.as_subclass(torch.Tensor).zero_()
     del mapped
     assert path.read_bytes() == before
     gm.uninstall_gguf_mmap()
@@ -152,7 +148,7 @@ def test_dequantised_forward_is_bit_identical(tmp_path):
 def test_unsupported_types_are_refused_like_the_stock_loader(tmp_path):
     path = tmp_path / "iq.gguf"
     writer = gguf.GGUFWriter(str(path), "flux")
-    raw = np.zeros((4, 66), dtype = np.uint8)  # IQ2_XXS blocks: diffusers' stock table lacks the type
+    raw = np.zeros((4, 66), dtype = np.uint8)  # IQ2_XXS: not in diffusers' table
     writer.add_tensor("w", raw, raw_shape = raw.shape, raw_dtype = T.IQ2_XXS)
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
@@ -178,7 +174,6 @@ def test_kill_switch_idempotence_and_uninstall(tmp_path, monkeypatch):
     assert gm.install_gguf_mmap() is True
     assert gm.install_gguf_mmap() is True
     path = _write(tmp_path / "m.gguf")
-    # switched off after install: the installed loader hands the read back to the stock one
     monkeypatch.setenv(gm.GGUF_MMAP_ENV, "0")
     _assert_same(stock(str(path)), mlu.load_gguf_checkpoint(str(path)))
     assert gm.MAPPED_LOADS == []

@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF reads on the diffusers path without the whole-file host copy.
+"""GGUF reads as views of a private copy-on-write mapping, not diffusers' whole-file host copy.
 
-diffusers' ``load_gguf_checkpoint`` copies every tensor out of the reader's memory map
-(``torch.from_numpy(tensor.data.copy())``), so the whole file sits in anonymous host memory until the weights reach
-the device: 3.5 GiB of a 5.6 GiB load peak for FLUX.3 klein Q4_K_M on an L4. The mapped loader returns the same
-tensors (same bytes, dtypes, shapes, types, quant types) as views of a private copy-on-write mapping, so untouched
-pages stay page cache the kernel can reclaim, and a write (none on the load path) copies only its own page.
-UNSLOTH_DIFFUSION_GGUF_MMAP=0 restores the copy. Off on Windows, where a mapped file cannot be deleted or replaced.
+UNSLOTH_DIFFUSION_GGUF_MMAP=0 restores the copy. Off on Windows: a mapped file cannot be deleted or replaced.
 """
 
 from __future__ import annotations
@@ -19,11 +14,10 @@ import threading
 from typing import Any
 
 GGUF_MMAP_ENV = "UNSLOTH_DIFFUSION_GGUF_MMAP"
-# The stock body this replaces; any other body (upstream changed it) keeps the stock function.
+# Any other stock body (upstream changed it) is left alone.
 _STOCK_COPY_LINE = "torch.from_numpy(tensor.data.copy())"
 _LOCK = threading.Lock()
 _STATE: dict = {}
-# Files read through the mapped loader in this process (engagement evidence for tests and logs).
 MAPPED_LOADS: list = []
 
 
@@ -42,7 +36,6 @@ def _stock_is_copying(fn: Any) -> bool:
 
 
 def _mapped_load_gguf_checkpoint(gguf_checkpoint_path, return_tensors = False):
-    """``load_gguf_checkpoint`` with tensors viewing a copy-on-write mapping instead of copied out of it."""
     stock = _STATE.get("stock")
     if not gguf_mmap_enabled() and stock is not None:
         return stock(gguf_checkpoint_path, return_tensors)
@@ -51,7 +44,7 @@ def _mapped_load_gguf_checkpoint(gguf_checkpoint_path, return_tensors = False):
     from diffusers.quantizers.gguf.utils import SUPPORTED_GGUF_QUANT_TYPES, GGUFParameter
     from gguf import GGUFReader
 
-    # "c": MAP_PRIVATE, writable views (torch never sees a read-only buffer), the file itself never written.
+    # "c" = MAP_PRIVATE: writable views, the file is never written.
     reader = GGUFReader(gguf_checkpoint_path, "c")
     unquantized = (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16)
     parsed_parameters = {}
@@ -81,12 +74,11 @@ def _mapped_load_gguf_checkpoint(gguf_checkpoint_path, return_tensors = False):
 
 
 def install_gguf_mmap(logger: Any = None) -> bool:
-    """Route diffusers' GGUF reads through the mapped loader; idempotent. False when off or not applicable."""
     if not gguf_mmap_enabled():
         return False
     try:
         from diffusers.models import model_loading_utils as mlu
-    except Exception:  # noqa: BLE001 - no diffusers GGUF support: nothing to replace
+    except Exception:  # noqa: BLE001
         return False
     with _LOCK:
         current = getattr(mlu, "load_gguf_checkpoint", None)
@@ -107,7 +99,6 @@ def install_gguf_mmap(logger: Any = None) -> bool:
 
 
 def uninstall_gguf_mmap() -> None:
-    """Put the stock loader back. Idempotent."""
     try:
         from diffusers.models import model_loading_utils as mlu
     except Exception:  # noqa: BLE001
