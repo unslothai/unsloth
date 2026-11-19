@@ -273,11 +273,46 @@ def _grad_side_inputs(args, kwargs):
     return False
 
 
+# Bumped on every module / parameter registration (PEFT add_adapter), so cached block parameter
+# lists are rebuilt; None until the global hooks are installed, False if this torch has none.
+_PARAMS_GEN = [None]
+
+
+def _bump_params_gen(*args):
+    _PARAMS_GEN[0] += 1
+
+
+def _watch_registrations():
+    if _PARAMS_GEN[0] is not None:
+        return
+    from torch.nn.modules import module as nn_module
+
+    names = (
+        "register_module_module_registration_hook",
+        "register_module_parameter_registration_hook",
+    )
+    registers = [getattr(nn_module, name, None) for name in names]
+    if any(register is None for register in registers):
+        _PARAMS_GEN[0] = False
+        return
+    _PARAMS_GEN[0] = 0
+    for register in registers:
+        register(_bump_params_gen)
+
+
+def _block_params(layer):
+    d = layer.__dict__
+    params = d.get("_unsloth_block_params")
+    _watch_registrations()
+    gen = _PARAMS_GEN[0]
+    if params is None or (gen is not False and d.get("_unsloth_block_params_gen") != gen):
+        params = d["_unsloth_block_params"] = list(layer.parameters())
+        d["_unsloth_block_params_gen"] = gen
+    return params
+
+
 def _trainable(layer):
-    params = layer.__dict__.get("_unsloth_block_params")
-    if params is None:
-        params = layer.__dict__["_unsloth_block_params"] = list(layer.parameters())
-    return any(p.requires_grad for p in params)
+    return any(p.requires_grad for p in _block_params(layer))
 
 
 # The grad-mode trial before a checkpointed block's first no-grad call stands in for the recompute.
@@ -439,26 +474,34 @@ def _clone_outputs(out):
     return pytree.tree_map(lambda x: x.clone() if torch.is_tensor(x) else x, out)
 
 
+def _pool_grad_hook(param):
+    ref = weakref.ref(param)
+
+    def hook(grad):
+        p = ref()
+        if p is None or p.grad is not None:
+            return None
+        return grad.clone()
+
+    return hook
+
+
 def _param_grads_out_of_pool(layer):
-    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it."""
-    if layer.__dict__.get("_unsloth_block_grad_hooks", False):
-        return
-    layer.__dict__["_unsloth_block_grad_hooks"] = True
-
-    def hook_for(param):
-        ref = weakref.ref(param)
-
-        def hook(grad):
-            p = ref()
-            if p is None or p.grad is not None:
-                return None
-            return grad.clone()
-
-        return hook
-
-    for param in layer.parameters():
+    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it.
+    Hooks follow requires_grad at each grad-mode call, not the first call: PEFT's set_adapter /
+    disable_adapter flip it, and the first graphed call can be a reference forward (TRL DPO's "ref"
+    adapter, disable_adapter) with the trained adapter frozen."""
+    if not torch.is_grad_enabled():
+        return  # this call makes no parameter gradient
+    hooked = layer.__dict__.get("_unsloth_block_grad_hooks")
+    if not isinstance(hooked, dict):
+        hooked = layer.__dict__["_unsloth_block_grad_hooks"] = {}
+    for param in _block_params(layer):
         if param.requires_grad:
-            param.register_hook(hook_for(param))
+            seen = hooked.get(id(param))
+            if seen is None or seen() is not param:
+                param.register_hook(_pool_grad_hook(param))
+                hooked[id(param)] = weakref.ref(param)
 
 
 def _in_nonreentrant_checkpoint():
@@ -1643,10 +1686,48 @@ def _training_flex_options(options):
     return options
 
 
+# Memory-efficient SDPA backward ops (masked training calls).
+_EFFICIENT_SDPA_BACKWARD = (
+    "_scaled_dot_product_efficient_attention_backward",
+    "_efficient_attention_backward",
+)
+
+
+def _efficient_backward_keeps_guard():
+    """CUDA torch < 2.14: without torch's (always true) guard the efficient backward copies the bias densely
+    and faults on padded lengths not a multiple of 8 (`attn_bias is not correctly aligned`)."""
+    from packaging.version import Version
+    return torch.version.hip is None and Version(torch.__version__.split("+")[0]) < Version("2.14")
+
+
+# Cache keys do not see the lowering, so graphs cached without the guard must be invalidated.
+_EFFICIENT_BACKWARD_CACHE_TAG = "unsloth/efficient-backward-guard"
+
+
+def _tag_efficient_backward_cache():
+    config = getattr(torch.compiler, "config", None)
+    if config is None or not isinstance(getattr(config, "cache_key_tag", None), str):
+        return False
+    tags = [t for t in config.cache_key_tag.split(",") if t]
+    if _EFFICIENT_BACKWARD_CACHE_TAG in tags:
+        return True
+    value = ",".join(tags + [_EFFICIENT_BACKWARD_CACHE_TAG])
+    try:
+        from ..kernels.triton_launch import set_torch_config, sync_compile_cache_tag_to_workers
+    except Exception:
+        setattr(config, "cache_key_tag", value)
+        return True
+    # Every thread: a reentrant checkpoint recompiles its grad graph on autograd's device thread.
+    set_torch_config(config, "cache_key_tag", value)
+    sync_compile_cache_tag_to_workers()
+    return True
+
+
 def _sdpa_alignment_without_guard():
     """Stop Inductor recompiling a block per `seq_len % 8` class: inside torch 2.14's SDPA lowering only,
     `guard_or_false` becomes `statically_known_true` (False is its documented safe answer), so a dynamic length
     takes the general unaligned path instead of installing a `Mod(s, 8)` guard (20-44 s recompile per layer kind).
+    The memory-efficient backward keeps torch's guard where it needs it (_efficient_backward_keeps_guard).
     UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
     if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
         return False
@@ -1666,9 +1747,18 @@ def _sdpa_alignment_without_guard():
         SizeVarAllocator, "guard_or_false"
     ):
         return False
+    guarded = set()
+    if _efficient_backward_keeps_guard():
+        for name in _EFFICIENT_SDPA_BACKWARD:
+            packet = getattr(torch.ops.aten, name, None)
+            if packet is not None and hasattr(packet, "default"):
+                guarded.add(packet.default)
+        _tag_efficient_backward_cache()
 
     @functools.wraps(original)
     def sdpa_constraint(*args, **kwargs):
+        if args and getattr(args[0], "target", None) in guarded:
+            return original(*args, **kwargs)
         sizevars = V.graph.sizevars
         shadowed = "guard_or_false" in sizevars.__dict__
         previous = sizevars.__dict__.get("guard_or_false")

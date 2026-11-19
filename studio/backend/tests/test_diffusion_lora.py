@@ -467,7 +467,7 @@ def test_diffusers_apply_rejects_unsupported_quant():
     import threading
 
     pipe = _FakePipe()
-    with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         _backend()._apply_loras(
             _fake_state(pipe, kind = "single_file", quant = "fp8"),
             [("styleA", 1.0)],
@@ -505,7 +505,7 @@ def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
     assert pipe.active == (["style", "style_2"], [0.7, 1.0])
     assert pipe.loaded == []  # never reloaded or re-attached
     # A file the bake does not hold still needs a reload with the new selection.
-    with pytest.raises(ValueError, match = "Reload the model with the new adapter selection"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         b._apply_loras(state, [("styleA", 1.0), ("styleC", 1.0)], threading.Event())
     assert pipe.active == (["style", "style_2"], [0.7, 1.0])
 
@@ -558,7 +558,7 @@ def test_baked_weights_stay_fixed_under_a_block_streamed_graph(monkeypatch, mode
     b._apply_loras(state, [("styleA", 1.0), ("styleB", 1.0)], threading.Event())
     for loras in ([("styleA", 1.0)], [("styleA", 0.5), ("styleB", 1.0)], []):
         if refused:
-            with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
+            with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
                 b._apply_loras(state, loras, threading.Event())
             assert pipe._unsloth_loras == baked and pipe.active is None
         else:
@@ -1361,7 +1361,7 @@ def test_merged_adapters_on_an_offloaded_load_need_a_reload(monkeypatch):
 
     b, state, pipe, _net = _merged_lokr_pipe(monkeypatch)
     state.offload_policy = "group"
-    with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         b._apply_loras(state, [("a", 0.5)], threading.Event())
     assert [w for (_n, _p, w) in pipe._unsloth_loras] == [1.0]
 

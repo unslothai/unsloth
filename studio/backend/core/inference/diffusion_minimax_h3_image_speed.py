@@ -108,13 +108,22 @@ def install_h3_image_speed(
     device: Any,
     logger: Any = None,
     int8_policy: Any = None,
+    attention_backend: Optional[str] = None,
 ) -> tuple:
     """Engage the levers after placement, before the first forward; returns the engaged names, never raises.
     ``int8_policy``: the load's ``diffusion_int8_attention.Int8Policy`` (its ``on`` forces the INT8 kernel like the
-    env switch ``1``, its ``off`` keeps it off)."""
+    env switch ``1``, its ``off`` keeps it off). ``attention_backend``: the load's attention pick; an explicit one other
+    than SageAttention replaces the automatic pick here (SageAttention is the DiT blocks' checkpoint route)."""
     levers: list = []
     try:
-        levers = _install(pipe, plan, device, logger, int8_policy)
+        levers = _install(
+            pipe,
+            plan,
+            device,
+            logger,
+            int8_policy,
+            **({"attention_backend": attention_backend} if attention_backend else {}),
+        )
     except Exception as exc:  # noqa: BLE001 - an optimisation: the stock path stays
         if logger is not None:
             logger.warning("diffusion.minimax_h3_image: speed levers skipped: %s", exc)
@@ -170,6 +179,7 @@ def _install(
     device: Any,
     logger: Any,
     int8_policy: Any = None,
+    attention_backend: Optional[str] = None,
 ) -> list:
     import torch
 
@@ -218,9 +228,14 @@ def _install(
     # the block stack's dtype: the fp32 embedders and heads come first in the parameter order
     dtype = _module_dtype(transformer, skip_fp32 = True)
     target = types.SimpleNamespace(device = dev.type, dtype = dtype, torch_device = str(dev))
-    backend = select_attention_backend(target, None, speed_active = True)
+    from .diffusion_minimax_h3_image import explicit_attention_pick
+
+    # an explicit pick replaces the automatic one; SageAttention is the DiT blocks' own route (install_checkpoint_attention)
+    pick = explicit_attention_pick(attention_backend)
+    request = attention_backend if pick not in (None, "sage") else None
+    backend = select_attention_backend(target, request, speed_active = True)
     try:
-        backend = h3_attention_backend(backend, requested = None, target = target)
+        backend = h3_attention_backend(backend, requested = request, target = target)
     except Exception:  # noqa: BLE001 - keep the generic pick
         pass
     engaged = apply_attention_backend(
@@ -228,6 +243,7 @@ def _install(
         backend,
         logger = logger,
         target = target,
+        **({"requested": attention_backend} if pick is not None else {}),
         **({"int8_policy": int8_policy} if int8_policy is not None else {}),
     )
     if engaged:

@@ -3366,17 +3366,20 @@ def _peft_state_dict(model, **kwargs):
     get_peft_model_state_dict = inspect.unwrap(get_peft_model_state_dict)
     raw = model.state_dict(keep_vars = True)
     adapters = kwargs.get("selected_adapters") or list(model.peft_config)
-    known = {id(value) for value in raw.values()}
+    # PEFT selects over local shards: PEFT >= 0.22 gathers selected DTensors into new tensors itself (a
+    # collective), which the identity match below could not trace back, so every sharded factor was dropped.
+    local = {key: value.to_local() if _is_dtensor(value) else value for key, value in raw.items()}
+    sharded = {id(local[key]): key for key, value in raw.items() if _is_dtensor(value)}
     wanted, unmapped = set(), 0
     for adapter in adapters:
         selected = get_peft_model_state_dict(
             model,
-            state_dict = raw,
+            state_dict = local,
             adapter_name = adapter,
             save_embedding_layers = kwargs.get("save_embedding_layers", "auto"),
         )
-        wanted.update(id(value) for value in selected.values())
-        unmapped += sum(_is_dtensor(v) and id(v) not in known for v in selected.values())
+        wanted.update(sharded[id(v)] for v in selected.values() if id(v) in sharded)
+        unmapped += sum(_is_dtensor(v) for v in selected.values())
     if unmapped:
         raise RuntimeError(
             "Unsloth: PEFT selected tensor parallel tensors that are not in the model state dict; "
@@ -3387,7 +3390,7 @@ def _peft_state_dict(model, **kwargs):
     with torch.no_grad():
         for key, value in raw.items():
             if _is_dtensor(value):
-                if id(value) in wanted:
+                if key in wanted:
                     state[key] = _full(value, value, layouts.get(id(value))).detach()
             else:
                 state[key] = value.detach()

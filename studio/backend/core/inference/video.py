@@ -55,8 +55,9 @@ from .diffusion_int8_attention import resolve_policy as int8_attention_policy
 from .diffusion_int8_attention import resolved_entry as int8_resolved_entry
 from .diffusion_attention import (
     SDPA_MATH_ONLY_MESSAGE,
+    annotate_attention_resolved,
     apply_attention_backend,
-    attention_status_reason,
+    attention_resolved_entry,
     install_hunyuan_attention_trim,
     sdpa_math_only,
     _dit_head_dims,
@@ -130,8 +131,10 @@ from .diffusion_multigpu import (
     install_cfg_parallel,
     multigpu_mode,
     is_split as multigpu_is_split,
+    note_default_request,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
+    video_default_tokens,
     set_cfg_parallel_fallback,
     uninstall_cfg_parallel,
     with_load_selection,
@@ -5310,6 +5313,22 @@ def _video_sidecar_card_reserve_mib(pipe: Any, plan: Any = None) -> Optional[dic
     except Exception as exc:  # noqa: BLE001 -- unpriced: one card, the worker's load error surfaces later
         logger.info("video.multigpu: the sidecar encoder could not be priced (%s)", exc)
         return None
+
+
+def _note_video_default_request(fam: Any, pipe: Any) -> None:
+    try:
+        guidance = float(fam.default_guidance)
+        width, height = fam.resolution_presets[0]
+        tokens = video_default_tokens(pipe, int(width), int(height), int(fam.default_num_frames))
+        note_default_request(
+            pipe,
+            guided = guidance > 1.0,
+            steps = int(fam.default_steps),
+            tokens = tokens,
+            why = f"default guidance {guidance:g}",
+        )
+    except Exception:  # noqa: BLE001 - unknown: the placement keeps its split-first order
+        note_default_request(pipe, guided = None)
 
 
 def _video_refine_for_multigpu(
@@ -11545,6 +11564,7 @@ class VideoBackend:
             speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT
         )
         video_refine = lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)  # noqa: E731
+        _note_video_default_request(fam, pipe)
         split_expected = _layer_split_expected(pipe, plan, video_refine)
         # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower.
         quant_forces_compile = transformer_quant_engaged is not None and (
@@ -11939,10 +11959,8 @@ class VideoBackend:
                         if speed_mode is None
                         else "requested",
                     ),
-                    "attention_backend": (
-                        attention_backend,
-                        attention_engaged or "native",
-                        attention_status_reason(attention_backend, attention_engaged),
+                    "attention_backend": attention_resolved_entry(
+                        attention_backend, attention_engaged, views, target = target
                     ),
                     "int8_attention": int8_resolved_entry(
                         int8_policy,
@@ -12023,6 +12041,7 @@ class VideoBackend:
                 }
             )
             int8_annotate_resolved(resolved, int8_policy, views)
+            annotate_attention_resolved(resolved, views)
             # The optimizer's per-step audit, beside the speed_mode entry (same record as the image backend).
             autoopt.record_load_steps(
                 load_audit,
@@ -13613,10 +13632,8 @@ class VideoBackend:
                         else "lossless optimisations only; the denoiser is in the CPU-offload rotation"
                     ),
                 ),
-                "attention_backend": (
-                    attention_backend,
-                    attention_engaged or "native",
-                    attention_status_reason(attention_backend, attention_engaged),
+                "attention_backend": attention_resolved_entry(
+                    attention_backend, attention_engaged, speed_view, target = umem_target
                 ),
                 "int8_attention": int8_resolved_entry(
                     int8_policy,
@@ -13662,6 +13679,7 @@ class VideoBackend:
             }
         )
         int8_annotate_resolved(resolved, int8_policy, speed_view)
+        annotate_attention_resolved(resolved, speed_view)
         autoopt.record_load_steps(
             h3_audit,
             attention = attention_engaged,

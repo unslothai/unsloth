@@ -7628,6 +7628,80 @@ def fix_inductor_reduction_readback_race():
     )
 
 
+def fix_inductor_triton_wrapper_eager_vals():
+    """torch < 2.13: Inductor asserts equal node counts when tracing a mutating Triton kernel decomposition with
+    eager and Inductor values; dynamic shapes can differ (pytorch/pytorch#181735, Gemma2 GEGLU backward). On that
+    assertion retrace with Inductor values and attach eager values, as torch >= 2.13 does."""
+    try:
+        import torch
+        from torch._inductor import pattern_matcher as pm
+    except Exception:
+        return
+    match_cls = getattr(pm, "Match", None)
+    original = getattr(match_cls, "replace_by_example", None)
+    if original is None or getattr(original, "_unsloth_triton_eager_vals", False):
+        return
+    try:
+        source = inspect.getsource(inspect.unwrap(original))
+    except Exception:
+        return
+    # torch >= 2.13 no longer propagates eager values for Triton kernels inside replace_by_example.
+    if "graph_with_eager_vals" not in source or "triton_kernel_wrapper_functional" not in source:
+        return
+    hops = getattr(torch.ops, "higher_order", None)
+    functional = getattr(hops, "triton_kernel_wrapper_functional", None)
+    mutation = getattr(hops, "triton_kernel_wrapper_mutation", None)
+    if functional is None or mutation is None:
+        return
+
+    @functools.wraps(original)
+    def replace_by_example(self, replacement_fn, args, *rest, **kwargs):
+        try:
+            return original(self, replacement_fn, args, *rest, **kwargs)
+        except AssertionError:
+            nodes = getattr(self, "nodes", None) or []
+            if len(nodes) != 1 or nodes[0].target is not functional:
+                raise
+            hop = nodes[0]
+            eager = hop.meta.get("eager_input_vals")
+            if eager is None:
+                raise
+        # The failed attempt only traced, so the graph is unchanged.
+        graph = hop.graph
+        before = set(graph.find_nodes(op = "call_function", target = mutation))
+        del hop.meta["eager_input_vals"]
+        try:
+            out = original(self, replacement_fn, args, *rest, **kwargs)
+        except BaseException:
+            hop.meta["eager_input_vals"] = eager
+            raise
+        inserted = [
+            n for n in graph.find_nodes(op = "call_function", target = mutation) if n not in before
+        ]
+        if len(inserted) == 1:
+            _, eager_kwargs = eager
+            inserted[0].meta["eager_input_vals"] = (
+                (),
+                {k: v for k, v in eager_kwargs.items() if k != "tensors_to_clone"},
+            )
+        else:
+            logger.warning(
+                f"Unsloth: Inductor inserted {len(inserted)} Triton kernel nodes for one decomposition; "
+                "their eager-mode strides were not attached."
+            )
+        STATS_TRITON_EAGER_VALS["fallbacks"] += 1
+        return out
+
+    replace_by_example._unsloth_triton_eager_vals = True
+    match_cls.replace_by_example = replace_by_example
+    logger.info(
+        "Unsloth: Patched Inductor's Triton kernel decomposition for dynamic size-1 dims (pytorch#181735)."
+    )
+
+
+STATS_TRITON_EAGER_VALS = {"fallbacks": 0}
+
+
 def _same_tensor(tensor):
     return tensor
 
@@ -10116,6 +10190,8 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_omni_moe_thinker": "qwen2_moe",
     "qwen3_omni_moe_text": "qwen2_moe",
     "solar_open": "qwen2_moe",
+    # transformers (main, November 2026) aliases Sarvam's MLA MoE to the qwen2_moe conversion.
+    "sarvam_mla": "qwen2_moe",
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
     "UnlimitedOcrTextModel": "qwen2_moe",
@@ -10614,6 +10690,35 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
     return restore
 
 
+def _narrow_regex_leaf_targets(model, before, peft_config):
+    """PEFT >= 0.22 converts a regex target_modules to the bare leaf names it resolves to, so a regex scoped
+    to one layer's projections puts LoRA on every layer's namesakes. A leaf that names only Linears, some of
+    which the regex did not match, goes back to exactly the modules the regex matched."""
+    after = peft_config.target_modules
+    if not isinstance(before, str) or before.lower() == "all-linear":
+        return
+    if after is None or isinstance(after, str):
+        return
+    modules = list(model.named_modules())
+    matched = {name for name, _ in modules if re.fullmatch(before, name)}
+    narrowed = set()
+    for target in after:
+        if not isinstance(target, str) or "." in target:
+            narrowed.add(target)
+            continue
+        hits = [(name, module) for name, module in modules if name.rpartition(".")[-1] == target]
+        if not hits or not all(_is_lora_linear_target(module) for _, module in hits):
+            narrowed.add(target)  # a parameter / non-Linear namesake: PEFT's own scoping applies
+            continue
+        names = {name for name, _ in hits}
+        if names <= matched:
+            narrowed.add(target)
+        else:
+            narrowed.update(names & matched)
+    if narrowed:
+        peft_config.target_modules = narrowed
+
+
 def _patch_peft_moe_keep_linear_targets(twc):
     original_convert = getattr(twc, "convert_peft_config_for_transformers", None)
     if original_convert is None or getattr(
@@ -10628,6 +10733,10 @@ def _patch_peft_moe_keep_linear_targets(twc):
         result = original_convert(peft_config, model, *args, **kwargs)
         if before is None or not hasattr(model, "named_modules"):
             return result
+        try:
+            _narrow_regex_leaf_targets(model, before, peft_config)
+        except Exception as exc:
+            logger.warning("Unsloth: could not keep a regex LoRA target to its matches: %s", exc)
         try:
             restore = _moe_linear_targets_to_restore(twc, model, before, peft_config)
         except Exception as exc:

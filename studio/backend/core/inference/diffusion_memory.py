@@ -3798,6 +3798,15 @@ def learned_peak_label(
     ):
         if value is not None:
             label = f"{label}|{name}:{value}"
+    # AdaLN precompute keeps the modulation weights off the card: its peaks never size a load without it.
+    transformer = getattr(pipe, "transformer", None)
+    state = (
+        getattr(transformer, "__dict__", {}).get("_unsloth_adaln")
+        if transformer is not None
+        else None
+    )
+    if state is not None and getattr(state, "active", False):
+        label = f"{label}|adaln:on"
     return label
 
 
@@ -5505,12 +5514,13 @@ def release_resident_groups(
     denoisers_only: bool = False,
     reason: str = "an oversized request",
     device: Any = None,
+    encoders_only: bool = False,
 ) -> Optional[Callable[[], None]]:
     """Stream resident offload groups again until ``need_mib`` is freed (text encoders first, then the denoiser's
     blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
     A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
-    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them).
-    ``device``: only modules resident on that card."""
+    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them);
+    ``encoders_only`` streams only theirs (``diffusion_te_residency``). ``device``: only modules resident on that card."""
     released: list = []
     streamed: set = set()
 
@@ -5544,6 +5554,7 @@ def release_resident_groups(
             for m in (getattr(pipe, "components", {}) or {}).values()
             if getattr(m, "_unsloth_resident_room", None)
             and not (denoisers_only and _is_text_encoder_module(pipe, m))
+            and not (encoders_only and not _is_text_encoder_module(pipe, m))
         ]
         if device is not None:
             from .diffusion_vae_oom import _same_card
