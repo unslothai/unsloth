@@ -302,6 +302,8 @@ COND_CACHE_OFF_VALUES = frozenset({"off", "none", "false", "0", "no", "disabled"
 DEFAULT_COND_CACHE_SUBDIR = "cache/diffusion-train-cond"
 # Only files this cache wrote are ever evicted, so a user directory holding other files is safe.
 _CACHE_ENTRY_PREFIXES = ("lat_v", "txt_v", "h3clip_v", "h3img_v")
+# A write that would leave less than this free on the cache's disk is skipped (the run then saves its adapter).
+_COND_CACHE_DISK_RESERVE_BYTES = 2 << 30
 
 
 def cond_cache_is_off(value: Any) -> bool:
@@ -500,8 +502,24 @@ class PersistentConditioningCache:
         }
         final = self.path_for(key)
         tmp = final.with_suffix(".tmp")
-        save_file(named, str(tmp), metadata = meta)
-        tmp.replace(final)
+        import shutil  # noqa: PLC0415
+
+        nbytes = sum(t.numel() * t.element_size() for t in named.values())
+        try:
+            if shutil.disk_usage(str(self.root)).free < nbytes + _COND_CACHE_DISK_RESERVE_BYTES:
+                return
+        except OSError:
+            pass
+        try:
+            save_file(named, str(tmp), metadata = meta)
+            tmp.replace(final)
+        except BaseException:
+            # A full disk or a stop mid-write must not leave a partial file the size cap never counts.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
         try:
             size = final.stat().st_size
         except OSError:

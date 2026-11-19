@@ -127,6 +127,62 @@ def test_eviction_never_touches_files_the_cache_did_not_write(tmp_path):
     assert (tmp_path / "notes.safetensors").is_file() and (tmp_path / "readme.txt").is_file()
 
 
+def test_a_write_that_would_fill_the_disk_is_skipped(monkeypatch, tmp_path):
+    import shutil
+
+    cache = PersistentConditioningCache(str(tmp_path), "fam", 64)
+    real = shutil.disk_usage
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda p: real(p)._replace(free = extras._COND_CACHE_DISK_RESERVE_BYTES)
+    )
+    cache.put("txt_v1_a", (torch.ones(8),))
+    assert not cache.has("txt_v1_a")
+    assert list(tmp_path.iterdir()) == []
+    monkeypatch.setattr(shutil, "disk_usage", real)
+    cache.put("txt_v1_a", (torch.ones(8),))
+    assert torch.equal(cache.get("txt_v1_a")[0], torch.ones(8))
+
+
+def test_a_failed_write_leaves_no_partial_file(monkeypatch, tmp_path):
+    import safetensors.torch
+
+    def full_disk(
+        tensors,
+        filename,
+        metadata = None,
+    ):
+        Path(filename).write_bytes(b"partial")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(safetensors.torch, "save_file", full_disk)
+    cache = PersistentConditioningCache(str(tmp_path), "fam", 64)
+    with pytest.raises(OSError):
+        cache.put("txt_v1_a", (torch.ones(8),))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_off_value_passes_a_managed_accounts_path_check(monkeypatch, tmp_path):
+    # The start route writes "off" for the trainer; it names no directory, so the account path check must not 403 it.
+    from fastapi import HTTPException
+
+    from auth import policy
+    from core.training.account_jobs import validate_job_paths
+    from utils.account_context import AccountContext, run_as
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
+    alice = AccountContext("alice-id", "alice")
+    for value in ("off", "OFF", "none"):
+        run_as(alice, validate_job_paths, {"cond_cache_dir": value})
+    run_as(
+        alice,
+        validate_job_paths,
+        {"cond_cache_dir": str(run_as(alice, extras.default_cond_cache_dir))},
+    )
+    with pytest.raises(HTTPException):
+        run_as(alice, validate_job_paths, {"cond_cache_dir": str(tmp_path / "elsewhere")})
+
+
 def test_the_cap_reads_its_env_and_zero_means_unbounded(monkeypatch):
     monkeypatch.setenv(extras.TRAIN_COND_CACHE_MAX_GB_ENV, "1.5")
     assert extras.cond_cache_max_bytes() == int(1.5 * 1024**3)
