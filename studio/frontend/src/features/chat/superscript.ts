@@ -36,13 +36,13 @@ const ZERO_DECIMAL_CURRENCIES = new Set("BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF
 const FOOTNOTE_CLASSES = new Set(["reference", "footnote", "footnote-ref", "noteref", "fn", "cite"]);
 const FOOTNOTE_CLASS_PREFIXES = ["footnote", "noteref", "cite", "citation", "endnote", "fnref", "reference"];
 
-const CITATION_LIST_RE = /^\d+(?:\s*[–,]\s*\d+)+$/;
-const THOUSANDS_RE = /^\d{1,3}(?:,\d{3})+$/;
+const CITATION_LIST_RE = /^\p{Nd}+(?:\s*[–,]\s*\p{Nd}+)+$/u;
+const THOUSANDS_RE = /^\p{Nd}{1,3}(?:,\p{Nd}{3})+$/u;
 const ROMAN_NUMERAL_TAIL_RE = /(?<!\p{L})[IVXLCDM]+$/u;
 const LAST_WORD_RE = /(?<!\p{L})\p{L}+$/u;
-const BARE_EXPONENT_RE = /^[-+−]?(?:\d+(?:[.,]\d+)?|\p{L})$/u;
-const PRICE_TAIL_RE = /(\S)\s?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$/u;
-const CODE_PRICE_TAIL_RE = /\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$/;
+const BARE_EXPONENT_RE = /^[-+−]?(?:\p{Nd}+(?:[.,]\p{Nd}+)?|\p{L})$/u;
+const PRICE_TAIL_RE = /(\S)\s?\p{Nd}(?:[\p{Nd},.'’]|[ \u00a0\u202f]\p{Nd})*$/u;
+const CODE_PRICE_TAIL_RE = /\b([A-Z]{3})[ \u00a0\u202f]?\p{Nd}(?:[\p{Nd},.'’]|[ \u00a0\u202f]\p{Nd})*$/u;
 const ALNUM_RE = /[\p{L}\p{N}]/u;
 const DIGIT_RE = /\p{Nd}/u;
 
@@ -87,7 +87,7 @@ export function raiseSuperscript(before: string, raised: string): string {
     (end === "2" && SECOND_SUFFIXES.has(lower)) ||
     ((DIGIT_RE.test(end) || ROMAN_NUMERAL_TAIL_RE.test(base)) && DIGIT_ORDINAL_SUFFIXES.has(lower)) ||
     SUPERIOR_ABBREVIATIONS.get(word)?.includes(visible) ||
-    (visible.length === price && /^\d+$/.test(visible))
+    (visible.length === price && /^\p{Nd}+$/u.test(visible))
   ) {
     return raised;
   }

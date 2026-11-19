@@ -972,8 +972,8 @@ function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8
       let raised: Element[] = [];
       const raise = () => {
         const text = raised.map(pieceText).join("");
-        // a Word break is a line, not layout: one opening the group keeps it as written
-        const result = /^\s*\n/.test(text) ? text : raiseSuperscript(before, text);
+        // Word whitespace is content, not layout: a group opening with a space, tab or break is no exponent
+        const result = /^\s/.test(text) ? text : raiseSuperscript(before, text);
         if (result !== text) {
           const first = raised.find((piece) => piece.localName === "t");
           for (const piece of raised) {

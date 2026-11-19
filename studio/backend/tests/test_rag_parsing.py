@@ -1010,11 +1010,12 @@ def test_docx_keeps_superscript_exponents(tmp_path):
         f"<w:p>{_r('Due on the 1')}{_sup('st')}{_r(', as noted.')}{_sup('4')}{_r(' H')}"
         f'<w:r><w:rPr><w:vertAlign w:val="subscript"/></w:rPr><w:t>2</w:t></w:r>{_r("O")}</w:p>',
         f"<w:p>{_r('As the clai')}{_r('m')}{_sup('1,2')}{_r(' states.')}</w:p>",
-        f'<w:p>{_r("Line 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:br/><w:t>6</w:t></w:r></w:p>',
+        f'<w:p>{_r("Line 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:br/><w:t>6</w:t></w:r>'
+        f'{_r(" 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:tab/><w:t>6</w:t></w:r></w:p>',
     )
     assert text == (
         "The tank holds 2.5 × 10^6 litres over 40 km^2.\nTolerance is 10^-3 m\nDue on the 1st, as noted.4 H2O\n"
-        "As the claim1,2 states.\nLine 10\n6"
+        "As the claim1,2 states.\nLine 10\n6 10\t6"
     )
 
 

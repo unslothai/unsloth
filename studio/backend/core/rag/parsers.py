@@ -1337,7 +1337,7 @@ def _docx_run_text(run) -> str:
     )
 
 
-_DOCX_LEADING_BREAK = re.compile(r"\s*\n")
+_DOCX_LEADING_SPACE = re.compile(r"\s")
 
 
 def _docx_superscripts(p) -> list:
@@ -1375,8 +1375,8 @@ def _docx_paragraph_text(paragraph) -> str:
     raised = None
 
     def raise_from(start: int) -> None:
-        # a Word break is a line, not layout: one opening the group keeps it as written
-        if not _DOCX_LEADING_BREAK.match("".join(parts[start:])):
+        # Word whitespace is content, not layout: a group opening with a space, tab or break is no exponent
+        if not _DOCX_LEADING_SPACE.match("".join(parts[start:])):
             _raise_superscript(parts, start)
 
     for node in nodes:

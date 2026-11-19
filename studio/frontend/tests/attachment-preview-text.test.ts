@@ -357,13 +357,14 @@ test("extractHtmlAttachmentText keeps superscript exponents", async () => {
           textNode(" and Jones"),
           sup("3", { class: "footnote-ref" }),
         ),
+        element("p", textNode("Price SAR ١٩"), sup("٩٩"), textNode(" for ١٠"), sup("٦")),
       ),
     () => extractHtmlAttachmentText("<html/>"),
   );
 
   assert.equal(
     extracted,
-    "Mass is 1.898×10^27 kg; MAX is 2^53 - 1.\n\n2Tolerance is 10^-3 m over 40 km^2.\n\nHeld on the 21st of June.4 See Smith[2] and Jones3",
+    "Mass is 1.898×10^27 kg; MAX is 2^53 - 1.\n\n2Tolerance is 10^-3 m over 40 km^2.\n\nHeld on the 21st of June.4 See Smith[2] and Jones3\n\nPrice SAR ١٩٩٩ for ١٠^٦",
   );
 });
 
