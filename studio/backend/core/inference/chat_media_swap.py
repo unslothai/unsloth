@@ -1,22 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Image generation from a chat turn when the chat model and the image model cannot both be loaded.
+"""Opt-in chat image swap: save chat KV, evict chat, load image model, render, unload, reload chat + KV.
 
-Opt-in (Settings key ``chat_image_swap``, or ``UNSLOTH_CHAT_IMAGE_SWAP=1``). Runs between two rounds
-of one chat turn, after the model's ``generate_image`` call is complete and before the follow-up
-generation starts, so nothing is streaming from llama-server while it is down:
-
-1. save the chat KV (llama-server slots) to disk;
-2. take the GPU for the image model with the arbiter's own chat evictor;
-3. load the image model, generate;
-4. unload the image model;
-5. reload the chat model with the launch it had (the idle-unload replay path) and restore the KV;
-6. hand the tool result back to the turn.
-
-Every failure after step 2 still runs steps 4 and 5, so the turn always gets its chat model back.
-The orchestration (``RoundTrip``) only sees two small adapters, so it is tested with fakes.
-"""
+Runs between two rounds of one turn, so nothing streams from llama-server while it is down. Every
+failure after the eviction still restores chat."""
 
 from __future__ import annotations
 
@@ -47,10 +35,8 @@ ERR_NO_DEFAULT = (
     "Images page once, or set one in Settings."
 )
 
-# Loading the image model and loading chat back, on top of the render's own limit.
 SWAP_BUDGET_S = 900.0
 
-# The image model the Images page or the API loaded last in this Studio session.
 _last_image_model: Optional[str] = None
 
 
@@ -114,8 +100,6 @@ def default_image_model() -> Optional[str]:
 
 @dataclass
 class ChatSnapshot:
-    """What brings the chat model back exactly as it was launched."""
-
     identity: Any
     launch: Any
     model: Optional[str] = None
@@ -125,12 +109,7 @@ class ChatSnapshot:
 
 @dataclass
 class RoundTrip:
-    """The swap, in order. ``chat`` and ``media`` are adapters (Studio's, or fakes in tests).
-
-    chat:  snapshot() -> ChatSnapshot | None, save_kv(snap, should_abort) -> manifest | None,
-           unload(snap), is_resident(snap) -> bool, reload(snap, manifest), discard_kv(manifest)
-    media: load(name, should_abort), generate(should_abort) -> str, unload()
-    All are coroutines."""
+    """``chat`` / ``media`` are async adapters (Studio's or test fakes)."""
 
     chat: Any
     media: Any
@@ -139,14 +118,9 @@ class RoundTrip:
     events: list = field(default_factory = list)
     timings: dict = field(default_factory = dict)
     on_cancel: Optional[Callable[[], None]] = None
-    # When the render began: the tool's own timeout covers the render, not the swap around it.
     render_started: Optional[float] = None
-    # Held from the KV save until the image model is gone, so a chat request that arrives meanwhile
-    # (another tab, the next message after a Stop) waits for chat to come back instead of finding
-    # no model. Released before the reload, which takes the same gate itself.
+    # Held until the image model is gone so new chat requests wait; released before reload (it takes it too).
     hold_requests: Optional[Callable[[], Any]] = None
-    # When they fit / Always: load the image model beside chat first and swap only if the arbiter
-    # could not keep both (Off evicts chat up front).
     beside_first: bool = False
 
     def stop(self) -> None:
@@ -225,7 +199,7 @@ class RoundTrip:
                 try:
                     await self._step("chat_unloaded", self.chat.unload(snap), model = snap.model)
                 finally:
-                    # A failed eviction may still have taken chat down: then it comes back too.
+                    # A failed eviction may still have taken chat down.
                     unloaded = not await self.chat.is_resident(snap)
                 self._check()
             media_touched = True
@@ -237,8 +211,6 @@ class RoundTrip:
                 )
             finally:
                 if self.beside_first:
-                    # The user's When they fit / Always policy placed it: beside chat when both fit,
-                    # else the arbiter evicted chat for it (fit) or refused the load (always).
                     unloaded = not await self.chat.is_resident(snap)
                     beside = not unloaded
                     if unloaded:
@@ -252,7 +224,6 @@ class RoundTrip:
             error = exc
         finally:
             if beside and error is None:
-                # Both fit: the image model stays loaded as the policy keeps it; the next call is free.
                 media_touched = False
                 self._note("image_kept_beside_chat")
             if media_touched:
@@ -274,7 +245,6 @@ class RoundTrip:
         return result if result is not None else "Error: the image model returned no image."
 
     async def _restore(self, snap: ChatSnapshot, kv) -> None:
-        """Reload chat as it was; one retry, then the turn is told it has no chat model."""
         last: Optional[BaseException] = None
         for attempt in range(2):
             started = time.monotonic()
@@ -290,12 +260,8 @@ class RoundTrip:
         raise ChatNotRestored(f"the chat model could not be loaded back: {last}")
 
 
-# ---------------------------------------------------------------- Studio adapters
-
-
 class StudioChat:
-    """The primary llama.cpp chat model. Never the route unload: that refuses (or cancels) this
-    very turn's generation. The arbiter's evictor is the same one an Images page load uses."""
+    """Never the route unload: it refuses (or cancels) this very turn's generation."""
 
     def __init__(self, subject: str):
         self.subject = subject
@@ -313,7 +279,6 @@ class StudioChat:
         if not llama.is_loaded or getattr(llama, "holds_no_vram", False):
             return None
         if list(model_slots.slots):
-            # Kept extra chat models would be evicted with it and not put back.
             raise SwapUnavailable(
                 "Error: other chat models are kept loaded beside this one; unload them to let chat "
                 "swap to the image model."
@@ -350,8 +315,7 @@ class StudioChat:
         from core.inference import gpu_arbiter
         from utils.account_context import current_account_id
 
-        # A claim with nothing registered: evicts every other resident (chat) under "off", whatever the
-        # user's Keep multiple models policy, and raises if another account is generating.
+        # Evicts chat under "off" regardless of the user's policy; raises if another account is generating.
         await asyncio.to_thread(
             gpu_arbiter.acquire_for,
             gpu_arbiter.DIFFUSION,
@@ -381,7 +345,6 @@ class StudioChat:
 
         stash_for_reload(snap.identity, snap.launch)
         if kv:
-            # The next load of the same GGUF restores it (llama_keepwarm.note_model_loaded).
             stash_unload_kv(kv)
         request = _in_process_request()
         allow_model_switch_for_request(request.scope)
@@ -433,13 +396,11 @@ def _in_process_request():
 
 
 class StudioImage:
-    """The image model, loaded and unloaded the way the media auto-switch and the unload route do."""
-
     def __init__(self, subject: str, render: Callable[[Callable[[], bool]], Awaitable[str]]):
         self.subject = subject
         self._render = render
         self.load_timeout_s = 600.0
-        # The load this swap started, once the gated route admitted it; unload() touches nothing else.
+        # Only this swap's admitted load is ever unloaded.
         self._admitted: Optional[tuple[str, Any]] = None
 
     async def load(self, name: str, should_abort) -> None:
@@ -455,7 +416,6 @@ class StudioImage:
 
         pick = await asyncio.to_thread(_resolve_pick, DIFFUSION, name, IMAGE_TASK)
         if pick is None and os.path.isfile(os.path.join(name, "model_index.json")):
-            # A diffusers folder named by path in the setting: loaded as the Images page loads it.
             from core.inference.media_model_index import MediaModelPick
             pick = MediaModelPick(name, name, None, "pipeline")
         if pick is None:
@@ -496,7 +456,6 @@ class StudioImage:
         from core.inference.media_switch_backends import backend_for
 
         if self._admitted is None:
-            # The gated route refused the load (another account's model, the arbiter): nothing here is ours.
             return
         name, pick = self._admitted
         engine = get_active_diffusion_engine()
@@ -524,8 +483,7 @@ class StudioImage:
 
 
 def chat_can_swap() -> bool:
-    """Cheap check for offering the tool (runs on the event loop, so no model index scan): swap on
-    and a GGUF chat model loaded. A missing default image model is the tool's own error."""
+    """Runs on the event loop: no model index scan here."""
     if not swap_enabled():
         return False
     try:
@@ -545,9 +503,7 @@ def run_in_tool(
     stop_render: Callable[[], None],
     swap_budget_s: float = SWAP_BUDGET_S,
 ) -> str:
-    """Runs the round trip on the server loop from the tool's thread; polls the turn's cancel.
-    ``render_limit_s`` is the tool's timeout, counted from the render's start; the loads around it
-    get ``swap_budget_s`` on top."""
+    """``render_limit_s`` counts from the render's start; the loads get ``swap_budget_s`` on top."""
     import concurrent.futures
 
     from state import active_generations
@@ -557,7 +513,6 @@ def run_in_tool(
     if name is None:
         return ERR_NO_DEFAULT
     if active_generations.count() > 1:
-        # Another chat is streaming from the same llama-server: unloading it would end that one.
         return "Error: another chat is generating on this model. Try again when it finishes."
     subject = getattr(account, "username", None) or "unsloth"
     from core.inference.load_policy import LoadPolicy
@@ -565,21 +520,17 @@ def run_in_tool(
     try:
         load_policy = LoadPolicy(getattr(account, "load_policy", LoadPolicy.ANY))
     except ValueError:
-        load_policy = (
-            LoadPolicy.NEVER
-        )  # an unknown value is the strictest reading, as current_load_policy
+        load_policy = LoadPolicy.NEVER
     from core.inference.media_switch_backends import load_takes_the_gpu
 
     on_gpu = load_takes_the_gpu()
-    # An inference-only key may neither load nor unload; the chat's own tools key may only load beside chat (a CPU
-    # image device never takes chat's GPU). Refused before any eviction or load.
+    # A non-ANY key may only load beside chat (CPU image device); refused before any eviction.
     if load_policy is LoadPolicy.NEVER or (load_policy is not LoadPolicy.ANY and on_gpu):
         return ERR_LOAD_POLICY
     from core.inference.gpu_residency import current_policy
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     policy = current_policy()
-    # A CPU image device (sd.cpp or diffusers on the CPU) never takes chat's GPU: load it beside.
     trip = RoundTrip(
         chat = StudioChat(subject),
         media = StudioImage(subject, render),

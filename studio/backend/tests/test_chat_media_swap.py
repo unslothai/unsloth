@@ -107,7 +107,6 @@ class FakeImage:
         self.loaded = False
 
     async def load(self, name, should_abort):
-        # Chat must be off the GPU before the image model is placed.
         assert self.chat is None or not self.chat.resident
         self.log.add("image.load", name)
         if self.block == "load":
@@ -155,7 +154,6 @@ def test_order_of_operations_and_same_settings():
         "image.unload",
         "chat.reload",
     ]
-    # Reloaded with the identity and launch it was snapshotted with, and the KV saved before unload.
     assert chat.loaded_with == (("org/Qwen-GGUF", "Q4_K_M", "org/Qwen-GGUF"), LAUNCH, KV)
     assert chat.resident and not media.loaded
     assert set(trip.timings) >= {
@@ -475,8 +473,7 @@ def test_default_image_model_order(monkeypatch):
 
 
 def test_request_gate_held_until_image_is_gone():
-    """New chat requests wait while chat is away; the gate is free again before the reload,
-    which takes it itself."""
+    """New chat requests wait while chat is away; the gate is freed before the reload."""
     import contextlib
 
     log = Log()
@@ -524,8 +521,7 @@ def test_request_gate_held_until_image_is_gone():
 
 
 class ArbiterImage(FakeImage):
-    """Loads under When they fit / Always: the arbiter keeps chat when both fit, else evicts it
-    (fit) or refuses the load (always)."""
+    """fit / always: chat kept when both fit, else evicted (fit) or the load refused (always)."""
 
     def __init__(
         self,
@@ -571,7 +567,6 @@ def test_fit_policy_swaps_when_the_arbiter_evicts_chat():
     kinds = [e[0] for e in log]
     assert kinds == ["chat.save_kv", "image.load", "image.generate", "image.unload", "chat.reload"]
     assert chat.loaded_with[2] == KV and not media.loaded
-    # Evicted by the image load itself, so it is noted right after it.
     assert trip.events[:3] == ["chat_kv_saved", "image_loaded", "chat_unloaded"]
 
 

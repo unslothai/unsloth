@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat tool: one image on the loaded image model for the caller's account. Loads or unloads models only
-with the opt-in chat image swap (chat_media_swap), when no image model is loaded."""
+"""Chat tool: one image on the loaded image model; loads/unloads models only via the opt-in chat_media_swap"""
 
 from __future__ import annotations
 
@@ -277,7 +276,6 @@ def _result_text(response, prompt: str, workdir: str, account) -> str:
 
 
 def _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop) -> str:
-    """No image model loaded: swap the chat model out for the default image model and back."""
     from fastapi import HTTPException
 
     from core.inference import chat_media_swap
@@ -309,7 +307,6 @@ def _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, l
             return _http_error(exc)
         return await asyncio.to_thread(_result_text, response, prompt, workdir, account)
 
-    # The tool timeout bounds the render; the swap's loads have their own budget on top.
     limit = _MAX_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
     return chat_media_swap.run_in_tool(
         loop = loop,

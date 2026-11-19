@@ -51090,8 +51090,6 @@ async def load_diffusion_model(
         with preparing_load("image", request.load_token):
             loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
         from core.inference.chat_media_swap import remember_image_model
-
-        # The chat image swap's default when no model is set for it.
         remember_image_model(request.display_repo_id or request.model_path)
     except HTTPException as exc:
         # A raising load skips both wrappers, and the inner loader doesn't know inventory handles.
