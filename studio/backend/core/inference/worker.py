@@ -701,6 +701,16 @@ def _loaded_auto_map(backend, mc) -> bool | None:
         return None
 
 
+def _loaded_model_type(model) -> Optional[str]:
+    for cfg in (getattr(model, "config", None), getattr(model, "_config", None)):
+        model_type = (
+            cfg.get("model_type") if isinstance(cfg, dict) else getattr(cfg, "model_type", None)
+        )
+        if isinstance(model_type, str) and model_type:
+            return model_type
+    return None
+
+
 @_in_token_rejection_scope
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     _restore_token_environment()
@@ -877,6 +887,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         model_info[_ctx_field] = int(_ctx_value)
                 except Exception as _ctx_exc:
                     logger.warning("%s forward failed: %s", _ctx_field, _ctx_exc)
+            # The checkpoint actually loaded (an adapter's base, an MLX precision folder), not the repo asked for.
+            model_info["model_type"] = _loaded_model_type(_entry.get("model"))
             # Tri-state: None means the backend does not answer, not False.
             if _entry.get("context_length_enforced") is not None:
                 model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])

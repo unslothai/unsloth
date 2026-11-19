@@ -1969,7 +1969,7 @@ def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
     return extra_args_image_max_tokens(extra_args)
 
 
-# Per-projector image caps from llama.cpp set_limit_image_tokens (keys: clip.projector_type); no universal default, absent families use the default.
+# Per image-tower caps from llama.cpp set_limit_image_tokens; absent families use the default.
 _MMPROJ_IMAGE_TOKEN_MAX = {
     "qwen2vl_merger": 4096,
     "qwen2.5vl_merger": 4096,
@@ -1983,8 +1983,8 @@ _MMPROJ_IMAGE_TOKEN_MAX = {
     "lightonocr": 1024,
     "kimivl": 1024,
     "minimax_m3": 576,
-    "gemma4v": 280,
-    "gemma4uv": 280,
+    "gemma4v": 1120,
+    "gemma4uv": 1120,
     "lfm2": 256,
 }
 
@@ -6261,8 +6261,35 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
 _computer_use_withheld: "str | None" = None
 
 
-def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
+def _loaded_model_type(name, entry = None) -> str:
+    """The loaded local model's config ``model_type``: as the worker loaded it, else read from disk; "" if unknown."""
+    if (entry or {}).get("model_type"):
+        return str(entry["model_type"])
+    try:
+        from utils.paths import normalize_path
+        from utils.transformers_version import _config_json_from_hf_cache
+
+        path = Path(os.path.expanduser(normalize_path(name or ""))) / "config.json"
+        if path.is_file():
+            with open(path, encoding = "utf-8") as f:
+                config = json.load(f)
+        else:
+            config = _config_json_from_hf_cache(name or "")
+        return str((config or {}).get("model_type") or "")
+    except Exception:
+        return ""
+
+
+def _computer_use_tool(
+    payload,
+    can_show_and_see: bool,
+    engine = None,
+    encoder: "Optional[str | Callable[[], str]]" = None,
+) -> "dict | None":
+    """`engine`: the local backend whose image-token counts size screenshots. `encoder`: the local
+    model's image tower ("" if unknown) or a callable reading it, None for a cloud model."""
     from core.inference.computer_use import computer_tool, policy
+    from core.inference.computer_use.budget import ImageBudget
     from state import computer_use as computer_state
 
     if not (can_show_and_see and policy.offered()):
@@ -6277,12 +6304,19 @@ def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
             _computer_use_withheld = reason
             logger.info("computer use not offered: %s", reason)
         return None
-    mode = policy.coordinate_mode(getattr(payload, "model", None))
+    if callable(encoder):
+        encoder = encoder()
+    mode = policy.coordinate_mode(getattr(payload, "model", None), encoder)
     computer_state.set_coordinates(
         computer_state.session_key(
             getattr(payload, "thread_id", None) or getattr(payload, "session_id", None)
         ),
         mode,
+        (
+            ImageBudget(engine.image_tokens, lambda: getattr(engine, "context_length", None))
+            if engine is not None
+            else None
+        ),
     )
     return computer_tool(mode)
 
@@ -6295,6 +6329,8 @@ async def _select_request_tools(
     checkpoint_fitted: bool = False,
     supports_vision: bool = False,
     ui_events: bool = True,
+    engine = None,
+    encoder: "Optional[str | Callable[[], str]]" = None,
 ) -> list[dict]:
     """Empty result skips the loop, so a model-emitted built-in call cannot ride an empty allow-list."""
     from core.inference.tools import (
@@ -6327,7 +6363,7 @@ async def _select_request_tools(
         if COMPUTER_TOOL_NAME in payload.enabled_tools:
             # Only where the approval card can be shown.
             computer = await asyncio.to_thread(
-                _computer_use_tool, payload, ui_events and supports_vision
+                _computer_use_tool, payload, ui_events and supports_vision, engine, encoder
             )
             if computer is not None:
                 # First, or a small model with code tools scripts the mouse in Python instead.
@@ -34264,6 +34300,8 @@ async def produce_openai_chat_completions(
                 supports_vision = bool(getattr(llama_backend, "is_vision", False)),
                 tools_on = _tools_on,
                 mcp_allowed = _mcp_allowed,
+                engine = llama_backend,
+                encoder = getattr(llama_backend, "_mmproj_projector_type", None) or "",
                 # Process policy says a reset is possible somewhere, not that this request can do one.
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
                 ui_events = _ui_events,
@@ -36362,6 +36400,9 @@ async def produce_openai_chat_completions(
             supports_vision = bool(_sf_model_info.get("is_vision")),
             checkpoint_fitted = _sf_fit_overflow is not None,
             ui_events = _ui_events,
+            encoder = functools.partial(
+                _loaded_model_type, backend.active_model_name, _sf_model_info
+            ),
         )
         _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Refuse the loop when nothing survived so built-in calls can't use the empty allow-list.
@@ -44500,6 +44541,7 @@ async def _mlx_count_chat_tokens(
                 mcp_allowed = False,
                 supports_vision = bool(entry.get("is_vision")),
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                encoder = functools.partial(_loaded_model_type, active, entry),
             )
         ) + _mcp_tools
         # With no tools left the completion skips the loop, so use the plain render, not an empty catalog.
@@ -45083,6 +45125,8 @@ async def chat_count_tokens(
             mcp_allowed = _mcp_allowed,
             supports_vision = bool(getattr(llama_backend, "is_vision", False)),
             checkpoint_fitted = _rolling_context_policy(payload) is not None,
+            engine = llama_backend,
+            encoder = getattr(llama_backend, "_mmproj_projector_type", None) or "",
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
