@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sqlite3
 from unittest.mock import AsyncMock
 
@@ -197,19 +198,35 @@ async def test_a_connected_blender_off_path_has_its_executable_kept(monkeypatch,
 
 
 @pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
-@pytest.mark.parametrize("case", ["world_writable", "not_blender", "missing", "relative"])
+@pytest.mark.parametrize(
+    "case",
+    ["world_writable", "not_blender", "missing", "relative", "link_to_other", "writable_parent"],
+)
 def test_a_reported_executable_that_could_be_planted_is_not_kept(tmp_path, case):
-    path = tmp_path / ("tool" if case == "not_blender" else "blender")
-    if case != "missing":
+    folder = tmp_path / "dir"
+    folder.mkdir()
+    path = folder / ("tool" if case == "not_blender" else "blender")
+    if case == "link_to_other":
+        path.symlink_to(shutil.which("true") or "/bin/true")  # root-owned target, swappable link
+    elif case != "missing":
         path.write_text("#!/bin/sh\n")
         path.chmod(0o777 if case == "world_writable" else 0o755)
+    if case == "writable_parent":
+        folder.chmod(0o777)
     reported = "blender" if case == "relative" else str(path)
-    assert service._own_blender(reported) is False
-    path.write_text("#!/bin/sh\n")
-    path.chmod(0o755)
-    if case == "not_blender":
-        return
-    assert service._own_blender(str(path)) is True
+    assert service._own_blender(reported) is None
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
+def test_a_kept_executable_is_its_canonical_path(tmp_path):
+    real = tmp_path / "blender-5.3.0-linux-x64" / "blender"
+    real.parent.mkdir()
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o775)  # umask 002 with a per-user group
+    link = tmp_path / "blender"
+    link.symlink_to(real)
+    assert service._own_blender(str(real)) == os.path.realpath(real)
+    assert service._own_blender(str(link)) == os.path.realpath(real)
 
 
 @pytest.mark.asyncio

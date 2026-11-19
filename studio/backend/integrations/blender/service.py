@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import sys
+from typing import Optional
 
 from core.inference.mcp_client import (
     join_stdio_command,
@@ -94,21 +95,46 @@ async def _bridge_version(port):
         await writer.wait_closed()
 
 
-def _own_blender(path) -> bool:
-    """Anything on 127.0.0.1 can answer the bridge port and Studio later runs this path: own blender* only."""
+def _not_plantable(st) -> bool:
+    """Owned by this user or root; writable by nobody else (own primary group or a sticky directory is fine)."""
+    if st.st_uid not in (0, os.getuid()):
+        return False
+    if stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX:
+        return True
+    return not (st.st_mode & 0o002) and not (st.st_mode & 0o020 and st.st_gid != os.getgid())
+
+
+def _parents(path: str):
+    while True:
+        yield path
+        up = os.path.dirname(path)
+        if up == path:
+            return
+        path = up
+
+
+def _own_blender(path) -> Optional[str]:
+    """Anything on 127.0.0.1 can answer the bridge port and Studio later runs this path: the canonical path of an
+    own blender* executable, else None (a symlink or a writable parent could be swapped after the check)."""
     if not isinstance(path, str) or not os.path.isabs(path):
-        return False
-    if not os.path.basename(path).lower().startswith("blender"):
-        return False
+        return None
     try:
-        st = os.stat(path)
+        real = os.path.realpath(path, strict = True)
+        st = os.stat(real)
     except (OSError, ValueError):
-        return False
-    if not stat.S_ISREG(st.st_mode) or not os.access(path, os.X_OK):
-        return False
-    if hasattr(os, "getuid") and (st.st_uid not in (0, os.getuid()) or st.st_mode & 0o022):
-        return False
-    return True
+        return None
+    if not os.path.basename(real).lower().startswith("blender"):
+        return None
+    if not stat.S_ISREG(st.st_mode) or not os.access(real, os.X_OK):
+        return None
+    if hasattr(os, "getuid"):
+        try:
+            chain = [st] + [os.stat(d) for d in _parents(os.path.dirname(real))]
+        except OSError:
+            return None
+        if not all(_not_plantable(item) for item in chain):
+            return None
+    return real
 
 
 async def probe(
@@ -145,8 +171,9 @@ async def probe(
             result.blender_ready = True
             note_connected("blender")
             # An unpacked Linux tarball is not on PATH: report the running Blender for the CLI tools.
-            if not settings.blender_path and not shutil.which("blender") and _own_blender(binary):
-                result.blender_path = binary
+            own = _own_blender(binary)
+            if not settings.blender_path and not shutil.which("blender") and own:
+                result.blender_path = own
         except Exception:
             result.blender_ready = False
             result.blender_error = f"Blender is not connected on port {settings.port}. Enable its MCP add-on, then retry."
