@@ -123,8 +123,8 @@ SUPPORTS_FALCON_H1 = transformers_version >= Version("4.53.0")
 SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
-# 5.18.0 is the only version with a real 4-bit SenseNova-Loop load behind it; 5.17.0 untested.
-SUPPORTS_SENSENOVA_LOOP = transformers_version >= Version("5.18.0")
+# Both 5.17.0 and 5.18.0 have a real 4-bit SenseNova-Loop load behind them; lower untested.
+SUPPORTS_SENSENOVA_LOOP = transformers_version >= Version("5.17.0")
 # unsloth_zoo cannot share these models' vLLM weights with the training model.
 VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
 # model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
@@ -1888,8 +1888,8 @@ class FastLanguageModel(FastLlamaModel):
         if model_type == "sensenova_loop" and not SUPPORTS_SENSENOVA_LOOP:
             raise ImportError(
                 f"Unsloth: Your transformers version of {transformers_version} does not support SenseNova-Loop.\n"
-                f"The minimum required version is 5.18.0\n"
-                f'Try `pip install --upgrade "transformers>=5.18.0"`\n'
+                f"The minimum required version is 5.17.0\n"
+                f'Try `pip install --upgrade "transformers>=5.17.0"`\n'
                 f"to obtain the latest transformers build, then restart this session."
             )
 
@@ -2882,6 +2882,8 @@ class FastModel(FastBaseModel):
         NIGHTLY = (
             '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
         )
+        # Set by the sensenova_loop branch below; read again after the load.
+        _sensenova_int8 = False
         if "pixtral" in model_types_all and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
         elif "qwen2_5" in model_types_all and transformers_version < Version("4.49.0"):
@@ -3012,12 +3014,24 @@ class FastModel(FastBaseModel):
         elif "sensenova_loop" in model_types_all:
             if not SUPPORTS_SENSENOVA_LOOP:
                 raise RuntimeError(
-                    "Unsloth: SenseNova-Loop only works on transformers >= 5.18.0." + LATEST
+                    "Unsloth: SenseNova-Loop only works on transformers >= 5.17.0." + LATEST
                 )
             # (a) The loop forward accepts a DynamicCache only (it rebuilds empty foreign
             # caches itself), so keep static-cache generation off; the fp32 MHC routers
             # ride _keep_in_fp32_modules on the remote classes, nothing to set here.
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            # (c) Converted checkpoints load the token table as int8 end to end, so the
+            # plain 4-bit load never materializes the bf16 table; stock checkpoints keep
+            # the post-load conversion fallback. Adapter loads skip the detection.
+            if not is_peft:
+                from .sensenova_loop import prepare_sensenova_loop_int8_load
+
+                _sensenova_int8 = prepare_sensenova_loop_int8_load(
+                    model_name,
+                    model_config,
+                    token = token,
+                    revision = base_revision,
+                )
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
@@ -3579,7 +3593,7 @@ class FastModel(FastBaseModel):
             # default and the mistral-regex tokenizer fix; see models/sensenova_loop.py.
             from .sensenova_loop import register_sensenova_loop
 
-            register_sensenova_loop(model, tokenizer)
+            register_sensenova_loop(model, tokenizer, require_int8 = _sensenova_int8)
 
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(

@@ -29,11 +29,12 @@ except:
 try:
     from .sensenova_loop import (
         SENSENOVA_LOOP_MODEL_TYPE,
+        convert_sensenova_loop_checkpoint,
         is_sensenova_loop_config_dict,
         register_sensenova_loop,
     )
 except:
-    # guarded like falcon_h1; the module imports torch only, the 5.18 floor is in the loader
+    # guarded like falcon_h1; the module imports torch only, the 5.17 floor is in the loader
     pass
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from .speculative import get_mtp_head
