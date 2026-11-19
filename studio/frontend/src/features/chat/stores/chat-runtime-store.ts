@@ -6541,6 +6541,11 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
     if (event.key === CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY || event.key === null) {
       useChatRuntimeStore.setState({ researchMcpSources: loadResearchMcpSources() });
     }
+    if (event.key === CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY || event.key === null) {
+      useChatRuntimeStore.setState({
+        researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
+      });
+    }
   });
 }
 

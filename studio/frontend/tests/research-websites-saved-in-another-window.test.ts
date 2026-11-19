@@ -14,6 +14,7 @@ register("./store-settings-resolver.mjs", import.meta.url);
 const { settingsHttp } = await import("./helpers/store-stubs/settings-http.ts");
 const {
   CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY,
+  CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
   CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
   useChatRuntimeStore,
 } = await import("../src/features/chat/stores/chat-runtime-store.ts");
@@ -66,4 +67,9 @@ test("research sources added in another window show up in this one", () => {
   assert.deepEqual(useChatRuntimeStore.getState().researchMcpSources, [
     { serverId: "docs", tool: "search" },
   ]);
+});
+
+test("a request time limit set in another window shows up in this one", () => {
+  writeFromAnotherWindow(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, 600);
+  assert.equal(useChatRuntimeStore.getState().researchModelTimeoutSeconds, 600);
 });
