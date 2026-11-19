@@ -253,7 +253,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
-import { npuMarkOwner, npuPickerRows } from "./npu-rows";
+import { npuMarkOwner, npuNoticeShown, npuPickerRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -2783,7 +2783,7 @@ export function ComposerModelPicker({
     if (viewed === RECOMMENDED_TAB && npuCatalog) {
       const npuShown =
         foundRows.some((row) => row.section === "npu") ||
-        (!npuCatalog.ready && !query);
+        (npuNoticeShown(npuCatalog) && !query);
       return npuShown ? ["npu", "recommended"] : [];
     }
     return [];
@@ -5150,7 +5150,7 @@ export function ComposerModelPicker({
         section === "npu" &&
         viewed === RECOMMENDED_TAB &&
         npuCatalog &&
-        !npuCatalog.ready
+        npuNoticeShown(npuCatalog)
       ) {
         out.push(<NpuSetupNotice key="npu-setup" catalog={npuCatalog} />);
       }

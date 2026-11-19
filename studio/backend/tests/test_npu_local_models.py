@@ -148,6 +148,25 @@ def test_a_registered_folder_inside_the_walk_is_listed_once(monkeypatch):
     assert [m.folder for m in nlm.account_local_models()] == [folder]
 
 
+def test_an_unreadable_registered_folder_is_skipped_not_raised(monkeypatch, tmp_path):
+    # A scan folder Studio cannot read (no permission, a drive that went offline) raises from
+    # is_symlink() / is_file(); that used to fail /api/npu/models for every NPU model.
+    blocked = tmp_path / "blocked"
+    save = tmp_path / "elsewhere" / "Qwen3-0.6B-ft"
+    save.mkdir(parents = True)
+    folder = _converted().rename(save / nlm.EXPORT_SUBFOLDER)
+    is_symlink = Path.is_symlink
+
+    def denied(path):
+        if blocked in (path, *path.parents):
+            raise PermissionError(13, "Permission denied", str(path))
+        return is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", denied)
+    monkeypatch.setattr(nlm, "_registered_folders", lambda: [blocked, save])
+    assert [m.folder for m in nlm.account_local_models()] == [folder]
+
+
 def test_another_accounts_registered_conversion_is_not_listed(monkeypatch):
     folder = run_as(BOB, _converted)
     monkeypatch.setattr(nlm, "_registered_folders", lambda: [folder])

@@ -22,6 +22,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.export.q4nx import SOURCE_FILE
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 LOCAL_PREFIX = "local-"
 LOCAL_SIZE = "q4nx"
@@ -257,16 +260,20 @@ def account_local_models() -> list[LocalQ4nx]:
     # A GGUF export with Q4NX on registers its save folder; the conversion sits in npu-q4nx under it.
     candidates = (c for f in _registered_folders() for c in (f, f / EXPORT_SUBFOLDER))
     for folder in candidates:
-        key = os.path.normcase(str(folder.resolve()))
-        if (
-            key not in seen
-            and not folder.is_symlink()
-            and not _is_junction(folder)
-            and (folder / "model.q4nx").is_file()
-            and within_account(folder)
-        ):
-            seen.add(key)
-            found.append(_describe(folder, exports_root()))
+        try:
+            key = os.path.normcase(str(folder.resolve()))
+            if (
+                key not in seen
+                and not folder.is_symlink()
+                and not _is_junction(folder)
+                and (folder / "model.q4nx").is_file()
+                and within_account(folder)
+            ):
+                seen.add(key)
+                found.append(_describe(folder, exports_root()))
+        except OSError as exc:
+            # A scan folder that is unreadable or offline must not fail every NPU listing.
+            logger.warning("Skipping scan folder %s for converted NPU models: %s", folder, exc)
     return sorted(found, key = lambda model: model.display.lower())
 
 

@@ -117,6 +117,8 @@ class LemonadeServer:
         self.port: Optional[int] = None
         self.api_key: Optional[str] = None
         self._process: Optional[subprocess.Popen] = None
+        # Exit status of the last lemond stopped; a Windows code integrity block arrives as one.
+        self.last_returncode: Optional[int] = None
         self._tail: deque[str] = deque(maxlen = 200)
         # Never reset, so a mark taken before a restart still counts the new lines.
         self._lines_seen = 0
@@ -314,7 +316,9 @@ class LemonadeServer:
                             "Unsloth is shutting down; not starting Lemonade."
                         )
                     continue
-                raise LemonadeUnavailable(f"Lemonade did not start. Last output:\n{tail}")
+                error = LemonadeUnavailable(f"Lemonade did not start. Last output:\n{tail}")
+                error.returncode = self.last_returncode
+                raise error
 
     def _start_once(self, timeout: float) -> bool:
         """Spawn lemond on a fresh port and wait for it; False (with the child gone) if it never got ready."""
@@ -554,6 +558,7 @@ class LemonadeServer:
         except Exception as exc:  # noqa: BLE001 -- best-effort teardown
             logger.warning("Error stopping Lemonade: %s", exc)
         finally:
+            self.last_returncode = proc.returncode
             self._process = None
             self.port = None
             self.api_key = None

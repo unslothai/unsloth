@@ -424,6 +424,70 @@ def test_a_catalog_error_body_is_an_error_not_an_empty_catalog(npu, monkeypatch)
         npu.catalog()
 
 
+def _restarted(npu) -> nb.LemonadeNpuBackend:
+    """An enabled NPU after a Studio restart: ready, with lemond not running yet."""
+    npu.enable()
+    npu.shutdown()
+    restarted = nb.LemonadeNpuBackend(root = npu.root)
+    assert restarted.status()["ready"] is True
+    return restarted
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX execute bit")
+def test_a_lemond_that_cannot_be_spawned_is_an_npu_error(npu):
+    restarted = _restarted(npu)
+    lemond = npu.installer.binary
+    lemond.chmod(0o644)
+    try:
+        with pytest.raises(nb.NpuError, match = "Lemonade could not start .*Permission denied"):
+            restarted.catalog()
+    finally:
+        lemond.chmod(0o755)
+        restarted.shutdown()
+
+
+def test_a_lemond_that_stops_answering_is_an_npu_error(npu, monkeypatch):
+    npu.enable()
+
+    def gone(self, method, path, **kwargs):
+        raise LemonadeUnavailable(f"Lemonade request {path} failed: Connection refused")
+
+    monkeypatch.setattr(LemonadeServer, "request", gone)
+    with pytest.raises(nb.NpuError, match = "Listing NPU models failed: .*Connection refused"):
+        npu.catalog()
+
+
+def _exited(returncode: int) -> LemonadeUnavailable:
+    error = LemonadeUnavailable("Lemonade did not start. Last output:\n")
+    error.returncode = returncode
+    return error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        # CreateProcess refusing lemond.exe under Smart App Control or WDAC.
+        OSError(22, "An Application Control policy has blocked this file", None, 4551),
+        # lemond spawned, then the loader killed it with the SAC / WDAC NTSTATUS.
+        _exited(0xC0E90002),
+    ],
+)
+def test_a_windows_code_integrity_block_names_its_fix(npu, monkeypatch, error):
+    restarted = _restarted(npu)
+
+    def blocked(self, timeout = 60.0):
+        raise error
+
+    monkeypatch.setattr(LemonadeServer, "start", blocked)
+    with pytest.raises(
+        nb.NpuError, match = "Windows blocked part of the local model runtime"
+    ) as caught:
+        restarted.catalog()
+    assert "Smart App Control" in str(caught.value)
+    assert str(npu.installer.binary.parent) in str(caught.value)
+    restarted.shutdown()
+
+
 def test_unload_then_delete(npu):
     npu.enable()
     list(npu.download("qwen3-0.6b-FLM"))
