@@ -176,7 +176,7 @@ _I8GEMM_PLATFORMS = {"linux_x86_64": "manylinux_2_28_x86_64", "win_amd64": "win_
 
 
 def int8_gemm_platform_supported() -> bool:
-    """Whether this host's platform tag has an int8 GEMM wheel at all; decided without importing torch."""
+    """Whether an int8 GEMM wheel exists for this platform, without importing torch."""
     return wheel_platform_tag() in _I8GEMM_PLATFORMS
 
 
