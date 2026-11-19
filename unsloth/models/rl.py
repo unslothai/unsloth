@@ -254,6 +254,57 @@ def _caller_sampling_only(model, kwargs):
     return {**kwargs, "generation_config": generation_config, "use_model_defaults": False}
 
 
+def _loss_only_eval_keeps_nothing(trainer, prediction_loss_only) -> bool:
+    args = getattr(trainer, "args", None)
+    if args is None:
+        return False
+    if prediction_loss_only is None:
+        prediction_loss_only = getattr(args, "prediction_loss_only", False)
+    if not prediction_loss_only or getattr(args, "batch_eval_metrics", False):
+        return False
+    return "inputs" not in (getattr(args, "include_for_metrics", None) or ())
+
+
+def _patch_loss_only_eval_flush(trainer_class) -> None:
+    """Loss-only eval keeps no logits, labels or inputs on the GPU, so the eval_accumulation_steps
+    offload has nothing to move and its torch.cuda.empty_cache() only hands cached blocks back to the
+    driver for the next batch to allocate again. Skip that flush for loss-only eval; restore after."""
+    original = getattr(trainer_class, "evaluation_loop", None)
+    if original is None or getattr(original, "_unsloth_loss_only_no_flush", False):
+        return
+    try:
+        parameters = inspect.signature(original).parameters
+    except (TypeError, ValueError):
+        return
+    if "prediction_loss_only" not in parameters:
+        return
+    names = list(parameters)
+
+    @functools.wraps(original)
+    def evaluation_loop(self, *args, **kwargs):
+        if "prediction_loss_only" in kwargs:
+            prediction_loss_only = kwargs["prediction_loss_only"]
+        else:
+            index = names.index("prediction_loss_only") - 1
+            prediction_loss_only = args[index] if len(args) > index else None
+        train_args = getattr(self, "args", None)
+        saved = getattr(train_args, "eval_accumulation_steps", None)
+        if (
+            saved is None
+            or os.environ.get("UNSLOTH_EVAL_EMPTY_CACHE", "0") == "1"
+            or not _loss_only_eval_keeps_nothing(self, prediction_loss_only)
+        ):
+            return original(self, *args, **kwargs)
+        train_args.eval_accumulation_steps = None
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            train_args.eval_accumulation_steps = saved
+
+    evaluation_loop._unsloth_loss_only_no_flush = True
+    trainer_class.evaluation_loop = evaluation_loop
+
+
 def PatchRL(FastLanguageModel):
     try:
         from trl.models.utils import unwrap_model_for_generation
@@ -457,6 +508,7 @@ def PatchRL(FastLanguageModel):
     if ppo_module is not None and hasattr(ppo_module, unwrap):
         setattr(ppo_module, unwrap, unsloth_unwrap_model_for_generation)
     Trainer.prediction_step = unsloth_prediction_step
+    _patch_loss_only_eval_flush(Trainer)
 
 
 grpo_selective_log_softmax = RL_REPLACEMENTS["grpo_selective_log_softmax"]
