@@ -3654,11 +3654,8 @@ def _peft_trained_layout(root, saved, adapter):
 
 
 def _legacy_lora_b_configs(root, directories):
-    """Collective: {adapter: adapter_config.json} for each adapter with fused expert LoRA, read before
-    anything is loaded so Zoo's convert_legacy_lora_b can repack a grouped_by_expert lora_B after it, as
-    Zoo's PEFT load path (repack_legacy_lora_b_after_load) does. An explicit UNSLOTH_MOE_LORA_B_LAYOUT
-    skips, as there. An unreadable config raises on every rank: the layout is unknown, so a load could
-    pair the expert columns wrongly."""
+    """Collective: {adapter: adapter_config.json} for fused expert LoRA adapters, so a grouped_by_expert
+    lora_B can be repacked after load as Zoo's PEFT path does. Unreadable config raises on every rank."""
     try:
         from unsloth_zoo.temporary_patches.moe_utils import (
             _has_fused_expert_lora,
@@ -3671,7 +3668,6 @@ def _legacy_lora_b_configs(root, directories):
     import json
 
     configs, error = {}, None
-    # The model's structure, the same on every rank: no fused expert LoRA, no vote.
     directories = [(a, d) for a, d in directories if _has_fused_expert_lora(root, a)]
     if not directories:
         return {}
@@ -3698,8 +3694,7 @@ def _legacy_lora_b_configs(root, directories):
 
 
 def _repack_legacy_lora_b(root, configs):
-    """Zoo's convert_legacy_lora_b on the loaded weights: grouped_by_expert lora_B (per each adapter's
-    layout marker) to rank_major, in place. Returns how many tensors moved."""
+    """Repack loaded grouped_by_expert lora_B to rank_major in place; returns tensors moved."""
     if not configs:
         return 0
     from torch.distributed.tensor.experimental import implicit_replication
@@ -3712,10 +3707,8 @@ def _repack_legacy_lora_b(root, configs):
 
 
 def _repack_legacy_lora_b_optimizer(optimizer):
-    """The restored optimizer state of each lora_B _repack_legacy_lora_b moved, in the same column order
-    (Zoo's repack_optimizer_state_for_legacy_lora_b, which Zoo's Trainer resume wrapper runs; the native
-    hook bypasses it). Consumes the per-parameter marker, so a second call is a no-op; none set, nothing
-    moves. Returns (moved, reset)."""
+    """Permute restored optimizer state of repacked lora_B to match (the native hook bypasses Zoo's
+    Trainer resume wrapper). Consumes the marker, so a second call is a no-op. Returns (moved, reset)."""
     if not any(
         getattr(p, "_unsloth_lora_b_repacked", None) is not None
         for group in getattr(optimizer, "param_groups", ())
@@ -3725,7 +3718,7 @@ def _repack_legacy_lora_b_optimizer(optimizer):
     from torch.distributed.tensor.experimental import implicit_replication
     from unsloth_zoo.temporary_patches.moe_utils import repack_optimizer_state_for_legacy_lora_b
 
-    with implicit_replication():  # Zoo's plain permutation index against the sharded moments
+    with implicit_replication():
         moved, reset = repack_optimizer_state_for_legacy_lora_b(optimizer)
     if moved or reset:
         _print_rank0(

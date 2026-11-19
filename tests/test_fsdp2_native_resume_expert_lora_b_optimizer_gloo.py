@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 resume of a grouped_by_expert expert LoRA (override unset) repacks lora_B to rank_major;
-the restored Adam moments must move with it, so the resumed next step equals the uninterrupted one."""
+"""Native FSDP2 resume repacking grouped_by_expert lora_B must move the Adam moments with it."""
 
 import multiprocessing
 import os
@@ -47,7 +46,6 @@ def _full(model, detach = True):
 
 
 def _step(model, optimizer, targets, rank_major):
-    """One Adam step on a loss of the per-expert deltas: the same objective in either lora_B layout."""
     optimizer.zero_grad()
     deltas = _expert_deltas(_full(model, detach = False), rank_major = rank_major)
     loss = sum((deltas[name] * targets[name]).sum() for name in targets)
@@ -84,7 +82,6 @@ def _case(rank, world, tmp):
         return {"skip": repr(e)}
     import torch.distributed as dist
 
-    # Trained (and saved) under the grouped_by_expert override.
     os.environ["UNSLOTH_MOE_LORA_B_LAYOUT"] = "grouped_by_expert"
     checkpoint = os.path.join(tmp, "checkpoint")
     optimizer_pt = os.path.join(tmp, "optimizer.pt")
@@ -108,7 +105,6 @@ def _case(rank, world, tmp):
     _step(trained, optimizer, targets, rank_major = False)
     want = _expert_deltas(_full(trained), rank_major = False)
 
-    # Resumed with the override unset: lora_B is repacked to rank_major on load.
     os.environ.pop("UNSLOTH_MOE_LORA_B_LAYOUT")
     got = {}
     for fmt in FORMATS:
@@ -176,7 +172,6 @@ def test_native_resume_repacks_adam_state_with_grouped_by_expert_lora_b():
         for fmt in FORMATS:
             got = res["got"][fmt]
             for name, want in res["want"].items():
-                # The load itself already matched before the optimizer fix.
                 torch.testing.assert_close(got["loaded"][name], res["saved"][name], rtol = 0, atol = 0)
                 torch.testing.assert_close(
                     got["stepped"][name], want, rtol = 1e-6, atol = 1e-9, msg = f"{fmt} {name}"

@@ -163,8 +163,7 @@ def _expert_deltas(
     rank_major,
     num_experts = 4,
 ):
-    """{lora_B name: [E, out, in]} unscaled per-expert B_e @ A_e; lora_A rows are expert-major in both
-    layouts, lora_B columns are e * r + j grouped_by_expert and j * E + e rank_major."""
+    """{lora_B name: [E, out, in]} per-expert B_e @ A_e; lora_B column is e*r+j grouped, j*E+e rank_major."""
     out = {}
     for name, b in params.items():
         if ".lora_B." not in name:
@@ -181,9 +180,6 @@ def _expert_deltas(
 
 
 def test_native_resume_repacks_grouped_by_expert_lora_b_without_override():
-    """An adapter saved under UNSLOTH_MOE_LORA_B_LAYOUT=grouped_by_expert, resumed with it unset, is
-    repacked to rank_major from its adapter_config.json marker, as Zoo's PEFT load path does: the
-    per-expert deltas equal the saved ones."""
     results = _run("legacy_to_default")
     for rank, res in enumerate(results):
         assert "error" not in res, (rank, res["error"])
@@ -196,7 +192,6 @@ def test_native_resume_repacks_grouped_by_expert_lora_b_without_override():
 
 
 def test_native_resume_refuses_expert_lora_without_layout_marker_file():
-    """No adapter_config.json, so the lora_B layout is unknown: refused on every rank, not loaded."""
     results = _run("legacy_no_config")
     for rank, res in enumerate(results):
         assert "error" in res, rank
