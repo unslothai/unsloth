@@ -8088,6 +8088,16 @@ html:not(.dark) .glass-lens-rim .glass-lens-copy {
 [data-glass-lens-host="static"] {
   position: relative;
 }
+/* The Desktop frame's glass is its ::before at z-index 1: its lens sits on that, under the sidebar, and isolating the frame would drop the strip corner under the conversation. */
+[data-windows-glass-frame][data-glass-lens-host] {
+  isolation: auto;
+}
+[data-windows-glass-frame] > .glass-lens {
+  z-index: 1;
+}
+html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-windows-glass-frame][data-glass-lens-host] > [data-slot="sidebar-inner"] {
+  z-index: 2;
+}
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-composer-surface[data-glass-lens-host] {
   --composer-shadow: none;
 }

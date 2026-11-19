@@ -517,6 +517,10 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 		"[data-chat-model-controls] > .unsloth-model-selector-trigger",
 		'[data-slot$="menu-content"]',
 		'[data-slot="popover-content"]',
+		".tooltip-compact",
+		".tooltip-rich",
+		"[data-glass-float]",
+		".aui-thread-scroll-to-bottom",
 		'[data-wallpaper-route="page"] .elevated-card',
 	])
 		assert.ok(LENS_HOSTS.includes(host), host);
@@ -532,6 +536,9 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	// The lens paints at z-index -1, so each host is its own stacking context.
 	assert.match(css, /\[data-glass-lens-host\] \{\n  isolation: isolate;\n\}\n\[data-glass-lens-host="static"\] \{\n  position: relative;\n\}/);
+	// The frame's ::before (z-index 1) draws its glass, so its lens sits above that and below the sidebar, without isolation.
+	assert.match(css, /\[data-windows-glass-frame\]\[data-glass-lens-host\] \{\n  isolation: auto;\n\}\n\[data-windows-glass-frame\] > \.glass-lens \{\n  z-index: 1;\n\}/);
+	assert.match(css, /\[data-windows-glass-frame\]\[data-glass-lens-host\] > \[data-slot="sidebar-inner"\] \{\n  z-index: 2;\n\}/);
 	assert.doesNotMatch(css, /:has\(> \.glass-lens\)/);
 	for (const file of ["background.tsx", "backdrop.tsx"]) {
 		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");

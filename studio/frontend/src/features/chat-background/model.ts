@@ -69,6 +69,10 @@ export const LENS_HOSTS = [
 	'[data-slot="combobox-content"]',
 	'[data-slot="popover-content"]',
 	'[data-slot="hover-card-content"]',
+	".tooltip-compact",
+	".tooltip-rich",
+	"[data-glass-float]",
+	".aui-thread-scroll-to-bottom",
 	'[data-wallpaper-route="page"] .elevated-card',
 	'[data-wallpaper-route="page"] .library-card',
 ].join(", ");
