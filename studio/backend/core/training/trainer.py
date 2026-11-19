@@ -4921,6 +4921,17 @@ class UnslothTrainer:
                     vocab_size = vocab_size,
                     completion_only_loss = completion_only,
                 )
+            elif (
+                raw_text_mode
+                and config_args.get("packing")
+                and eval_dataset is not None
+                and eval_final_format != "raw_text"
+            ):
+                # Raw text packs wrapped, which would join a formatted eval split's examples across rows.
+                logger.info(
+                    "Formatted eval dataset beside raw text: eval sequence packing turned off\n"
+                )
+                config_args["eval_packing"] = False
 
             # Plain-text single-pass runs tokenize in DataLoader workers; other runs keep eager .map().
             self._online_prewarm_batches = 0

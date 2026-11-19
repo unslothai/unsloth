@@ -52,7 +52,13 @@ for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 
 
-def _sft_args(monkeypatch, tmp_path, final_format, packing):
+def _sft_args(
+    monkeypatch,
+    tmp_path,
+    final_format,
+    packing,
+    eval_final_format = None,
+):
     built = []
 
     class _FakeSFTConfig:
@@ -91,9 +97,15 @@ def _sft_args(monkeypatch, tmp_path, final_format, packing):
     trainer.tokenizer = SimpleNamespace(chat_template = "{{ messages }}")
 
     rows = [{"text": "a long document"}, {"text": "another long document"}]
+    dataset = {"dataset": rows, "final_format": final_format}
+    extra = {}
+    if eval_final_format is not None:
+        dataset["eval_final_format"] = eval_final_format
+        extra["eval_dataset"] = rows
     with contextlib.suppress(AttributeError, TypeError, ValueError, KeyError):
         trainer._train_worker(
-            {"dataset": rows, "final_format": final_format},
+            dataset,
+            **extra,
             packing = packing,
             batch_size = 2,
             gradient_accumulation_steps = 1,
@@ -119,3 +131,13 @@ def test_packed_raw_text_wraps_overflow_into_the_next_row(monkeypatch, tmp_path)
 def test_other_runs_keep_the_default_packing_strategy(monkeypatch, tmp_path, final_format, packing):
     args = _sft_args(monkeypatch, tmp_path, final_format, packing)
     assert args.packing_strategy == "bfd"
+
+
+@pytest.mark.parametrize(
+    "eval_final_format,eval_packing", [("chatml_conversations", False), ("raw_text", None)]
+)
+def test_a_formatted_eval_split_beside_packed_raw_text_is_scored_unpacked(
+    monkeypatch, tmp_path, eval_final_format, eval_packing
+):
+    args = _sft_args(monkeypatch, tmp_path, "raw_text", True, eval_final_format)
+    assert args.kwargs.get("eval_packing") is eval_packing
