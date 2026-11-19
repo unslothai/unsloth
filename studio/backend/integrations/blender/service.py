@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import functools
 import json
 import os
 import shutil
@@ -96,12 +97,25 @@ async def _bridge_version(port):
 
 
 def _not_plantable(st) -> bool:
-    """Owned by this user or root; writable by nobody else (own primary group or a sticky directory is fine)."""
+    """Owned by this user or root; writable by nobody else (a private group or a sticky directory is fine)."""
     if st.st_uid not in (0, os.getuid()):
         return False
     if stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX:
         return True
-    return not (st.st_mode & 0o002) and not (st.st_mode & 0o020 and st.st_gid != os.getgid())
+    return not (st.st_mode & 0o002) and not (st.st_mode & 0o020 and not _private_group(st.st_gid))
+
+
+@functools.lru_cache(maxsize = 8)
+def _private_group(gid: int) -> bool:
+    """No other account is in the group (a primary gid is often shared: macOS staff)."""
+    try:
+        import grp, pwd  # noqa: E401, PLC0415 (POSIX only)
+        others = set(grp.getgrgid(gid).gr_mem) - {pwd.getpwuid(os.getuid()).pw_name}
+        return not others and not any(
+            p.pw_gid == gid and p.pw_uid != os.getuid() for p in pwd.getpwall()
+        )
+    except (ImportError, KeyError, OSError):
+        return False
 
 
 def _parents(path: str):

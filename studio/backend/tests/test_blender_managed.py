@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sqlite3
+import types
 from unittest.mock import AsyncMock
 
 import pytest
@@ -222,11 +223,36 @@ def test_a_kept_executable_is_its_canonical_path(tmp_path):
     real = tmp_path / "blender-5.3.0-linux-x64" / "blender"
     real.parent.mkdir()
     real.write_text("#!/bin/sh\n")
-    real.chmod(0o775)  # umask 002 with a per-user group
+    real.chmod(0o755)
     link = tmp_path / "blender"
     link.symlink_to(real)
     assert service._own_blender(str(real)) == os.path.realpath(real)
     assert service._own_blender(str(link)) == os.path.realpath(real)
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
+@pytest.mark.parametrize("private", [True, False])
+def test_group_write_is_trusted_only_for_a_private_group(monkeypatch, tmp_path, private):
+    real = tmp_path / "blender"
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o775)  # umask 002
+    monkeypatch.setattr(service, "_private_group", lambda gid: private)
+    assert (service._own_blender(str(real)) is not None) is private
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX groups")
+def test_a_shared_primary_group_is_not_private(monkeypatch):
+    import grp, pwd  # noqa: E401
+
+    me = pwd.getpwuid(os.getuid())
+    service._private_group.cache_clear()
+    monkeypatch.setattr(grp, "getgrgid", lambda gid: types.SimpleNamespace(gr_mem = []))
+    monkeypatch.setattr(pwd, "getpwall", lambda: [me, types.SimpleNamespace(pw_gid = 20, pw_uid = 501)])
+    try:
+        assert service._private_group(20) is False  # another user's primary group too (macOS staff)
+        assert service._private_group(999999) is True
+    finally:
+        service._private_group.cache_clear()
 
 
 @pytest.mark.asyncio
