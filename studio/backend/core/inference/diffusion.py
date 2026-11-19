@@ -11511,7 +11511,6 @@ class DiffusionBackend:
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = (
                         str(speed_mode or "").strip().lower() != SPEED_OFF
-                        # No tensor cores (GTX 16xx) or UNSLOTH_DIFFUSION_VAE_FP32=1: keep the fp32 upcast.
                         and not prefers_fp32_decode(target)
                         and enable_fp16_vae_decode(pipe, target, logger = logger)
                     )

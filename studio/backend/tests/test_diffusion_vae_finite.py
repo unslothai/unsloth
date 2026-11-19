@@ -179,7 +179,6 @@ def test_injected_nan_redecodes_fp32_from_the_same_latents_and_stays(cls, caplog
     assert got.dtype is torch.float32 and bool(torch.isfinite(got).all())
     torch.testing.assert_close(got, want, rtol = 0, atol = 0)
     assert vfin.STATS["retries"] == 1 and "not finite" in caplog.text
-    # Stored weights never left 16 bits.
     assert {p.dtype for p in vae.parameters()} == {torch.float16}
     with torch.no_grad():
         vae.decode(z, return_dict = False)
@@ -221,7 +220,6 @@ def test_fp32_from_the_start(monkeypatch, how):
         want_enc = ref.encode(x.float()).latent_dist.mean
     assert calls == [torch.float32] and vfin.STATS["retries"] == 0
     torch.testing.assert_close(got, want, rtol = 0, atol = 0)
-    # Encoded in fp32, handed back in the VAE's 16-bit dtype (img2img feeds the latents to a 16-bit denoiser).
     torch.testing.assert_close(dist.mean, want_enc.to(torch.float16), rtol = 0, atol = 0)
     for d in (dist, tup):
         assert {d.parameters.dtype, d.mean.dtype, d.std.dtype, d.var.dtype} == {torch.float16}

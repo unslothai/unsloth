@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""16-bit image VAE decode safety net. A decode that comes back NaN / Inf from finite latents is decoded again in
-fp32 from the same latents, and every later decode of that VAE stays fp32; non-finite latents raise a message that
-names the denoiser instead. GPUs without tensor cores (GTX 16xx, MX450 / MX550, TU117 Quadro / T-series, pre-Volta)
-decode and encode in fp32 from the start: fp16 convolutions there are widely reported to produce NaN / black images.
-The weights stay stored in 16 bits (cast per call), so memory placement and offload are unchanged.
+"""16-bit VAE decode safety net: a non-finite decode from finite latents is redone (and stays) fp32; GPUs without
+tensor cores decode/encode in fp32 from the start. Weights stay stored in 16 bits.
 UNSLOTH_DIFFUSION_VAE_FP32: auto (default) | 1 = always fp32 | 0 = off (stock 16-bit decode, no retry)."""
 
 from __future__ import annotations
@@ -32,16 +29,12 @@ NONFINITE_LATENTS_MESSAGE = (
     "of this model."
 )
 
-# Turing parts built without tensor cores: TU116 (GTX 1650 Super / 1660 / Ti / Super) and TU117 (GTX 1630 / 1650 /
-# Ti, MX450, MX550, Quadro T400 / T600 / T1000 / T1200 / T2000, T500 / T550 / T600 / T1000 laptop). They report
-# compute capability 7.5 like the RTX 20xx and the Tesla T4, which do have tensor cores, so only the name tells them
-# apart. Pre-Volta (capability below 7.0) has none either.
+# TU116/TU117 lack tensor cores but report capability 7.5 like RTX 20xx / T4, so only the name tells them apart.
 _NO_TENSOR_CORE_NAME = re.compile(
     r"\bGTX\s*16\d\d\b|\bMX\s*[45]\d0\b|\b(?:Quadro\s+)?T(?:400|500|550|600|1000|1200|2000)\b",
     re.IGNORECASE,
 )
 
-# Engagement counters (tests and evidence): renders whose 16-bit decode was retried, decodes run in fp32.
 STATS = {"retries": 0, "fp32_decodes": 0, "nonfinite_latents": 0}
 
 
@@ -55,7 +48,6 @@ def vae_fp32_mode() -> str:
 
 
 def lacks_tensor_cores(name: Optional[str], capability: Optional[tuple]) -> bool:
-    """True for an NVIDIA GPU with no tensor cores, from its name and compute capability."""
     try:
         major, minor = int(capability[0]), int(capability[1])
     except Exception:  # noqa: BLE001 - unknown capability: keep the 16-bit decode (the retry still guards it)
@@ -83,7 +75,6 @@ def target_lacks_tensor_cores(target: Any) -> bool:
 
 
 def prefers_fp32_decode(target: Any) -> bool:
-    """Whether this load decodes in fp32 from the start (forced, or a GPU without tensor cores)."""
     mode = vae_fp32_mode()
     return mode == MODE_ALWAYS or (mode == MODE_AUTO and target_lacks_tensor_cores(target))
 
@@ -100,7 +91,6 @@ def _cast_floats(
     dtype: Any,
     depth: int = 0,
 ) -> Any:
-    """``obj`` with its float tensors in ``dtype``, walking tuples, outputs and latent distributions in place."""
     import torch
 
     if torch.is_tensor(obj):
@@ -119,7 +109,7 @@ def _cast_floats(
                 setattr(obj, k, v)
         return obj
     fields = getattr(obj, "__dict__", None)
-    if isinstance(fields, dict):  # DiagonalGaussianDistribution: parameters, mean, logvar, std, var
+    if isinstance(fields, dict):
         for k, v in list(fields.items()):
             if torch.is_tensor(v) and v.is_floating_point():
                 fields[k] = v.to(dtype)
@@ -137,8 +127,7 @@ def install_finite_decode(
     target: Any,
     logger: Any = None,
 ) -> Optional[str]:
-    """Wrap ``pipe.vae.decode``; returns the mode engaged ("fp32" or "retry"), None when not installed. A VAE whose
-    weights are fp32 at call time passes straight through."""
+    """Returns the mode engaged ("fp32" or "retry"), None when not installed."""
     mode = vae_fp32_mode()
     vae = getattr(pipe, "vae", None)
     if mode == MODE_OFF or vae is None:
@@ -215,7 +204,7 @@ def install_finite_decode(
             dtype = _first_dtype(vae)
             with fp32_keeping_storage(vae, encode_parts):
                 out = encode(x.to(torch.float32), *args, **kwargs)
-            # Arithmetic in fp32, latents handed back in the VAE's dtype: img2img feeds them to a 16-bit denoiser.
+            # img2img feeds the latents to a 16-bit denoiser.
             return _cast_floats(out, dtype)
 
         vae.encode = fp32_encode
