@@ -301,7 +301,9 @@ def test_lora_init_leaves_the_rng_unless_random_state_is_set(checkpoint):
     import numpy as np
 
     def load():
-        return FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)[0]
+        return FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)[
+            0
+        ]
 
     def adapters(model, **kwargs):
         model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 4, **kwargs)
