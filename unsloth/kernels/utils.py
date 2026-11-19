@@ -2181,9 +2181,7 @@ from . import dequant_cache as _dequant_cache
 
 def _dequantize_lora_weight(W, W_quant, rows, use_global_buffer, dtype):
     if _is_exl3_quant_state(W_quant):
-        return _dequantize_for_lora(
-            W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype
-        )
+        return _dequantize_for_lora(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
     return _dequant_cache.dequantize(
         W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype, rows = rows
     )
@@ -2271,9 +2269,7 @@ def matmul_lora(
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             if W_quant is not None:
-                W = _dequantize_lora_weight(
-                    W, W_quant, X.shape[0], use_global_buffer, dtype
-                )
+                W = _dequantize_lora_weight(W, W_quant, X.shape[0], use_global_buffer, dtype)
             out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
         elif (
             W_quant is not None
@@ -2288,9 +2284,7 @@ def matmul_lora(
         else:
             # Unquantized, fast_dequantize returns W as is (FP8 never takes this branch).
             if W_quant is not None:
-                W = _dequantize_lora_weight(
-                    W, W_quant, X.shape[0], use_global_buffer, dtype
-                )
+                W = _dequantize_lora_weight(W, W_quant, X.shape[0], use_global_buffer, dtype)
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
             elif (
@@ -2309,9 +2303,7 @@ def matmul_lora(
     elif out is None and _dequant_cache.traced_route(W, W_quant):
         out = _dequant_cache.nf4_matmul(X, W, W_quant)
     else:
-        W = _dequantize_lora_weight(
-            W, W_quant, X.shape[0], use_global_buffer, dtype
-        )
+        W = _dequantize_lora_weight(W, W_quant, X.shape[0], use_global_buffer, dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
