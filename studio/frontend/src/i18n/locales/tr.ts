@@ -179,6 +179,7 @@ export const tr = {
       add: "Ekle",
       cancel: "İptal",
       removeSite: "Kaldır: {site}",
+      hostOnly: "Yalnızca bu ana bilgisayar, alt alan adları hariç",
       permissionsNote:
         "Burada yalnızca kendi izinleri olan siteler görünür. Eylemler; oturum açma, form gönderme ve satın alan, gönderen veya silen düğmelerdir.",
       siteInvalid: "example.com veya *.example.com gibi bir site girin.",
@@ -971,8 +972,8 @@ export const tr = {
   chatMenu: {
     more: "Sohbet seçenekleri",
     copy: "Kopyala",
+    addScheduledTask: "Zamanlanmış görev ekle…",
     compact: "Konuşmayı sıkıştır",
-    compactQueued: "Sıkıştırma bir sonraki mesaj için istendi",
     compactEmpty: "Henüz sıkıştırılacak bir şey yok",
     compactUnsupported:
       "Sıkıştırma için araç desteği olan bir GGUF veya MLX modeli gerekir",
@@ -1861,6 +1862,12 @@ export const tr = {
       learnMore: "Daha fazla bilgi",
       managedNote:
         "İşletim sistemi korumalı alanını bu Unsloth sunucusunun sahibi ayarlar.",
+      trustedFoldersTitle: "Güvenilen klasörler",
+      trustedFoldersLabel: "Sormadan çalıştır",
+      trustedFoldersDescription: "Python ve Terminal bu klasörlerdeki dosyaları onay istemeden okuyabilir ve çalıştırabilir, yalnızca kendi sohbetlerinizde. Bu klasörlere yazmak yine onay ister. Her satıra bir klasör.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Güvenilen klasörler yüklenemedi.",
+      trustedFoldersSaveError: "Güvenilen klasörler kaydedilemedi.",
     },
     debugging: {
       description: "Unsloth günlüklerini uygulamadan çıkmadan okuyun.",
@@ -2290,7 +2297,7 @@ export const tr = {
       modelAliases: {
         sectionTitle: "Model takma adları (OpenAI API)",
         description:
-          "API istemcileri için fast-chat veya code gibi sabit adlar. Bir takma adı belirten istek, takma adın işaret ettiği modelle yanıtlanır; böylece model değiştirdiğinizde bağlı uygulamalar çalışmaya devam eder. Bir takma adın modelini yükleyebilmesi için Modeli isteğe göre değiştir seçeneğini açın.",
+          "API istemcilerinin modelin tam adı yerine kullanabileceği kısa adlar.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Takma ad",
         modelAriaLabel: "Takma adın işaret ettiği model",
@@ -2299,6 +2306,13 @@ export const tr = {
         add: "Takma ad ekle",
         loadError: "Model takma adları yüklenemedi.",
         saveError: "Model takma adları kaydedilemedi.",
+        contextLength: "Bağlam uzunluğu",
+        kvCacheType: "KV önbelleği türü",
+        speculativeDecoding: "Spekülatif kod çözme",
+        savedSetting: "Kayıtlı ayar",
+        loadSettings: "Yükleme ayarları",
+        loadSettingsHint:
+          "Yalnızca GGUF modelleri için. Boş bırakılan alanlar modelin kayıtlı ayarlarını kullanır.",
       },
       previewSharing: {
         sectionTitle: "Önizleme paylaşımı",
@@ -3389,6 +3403,10 @@ export const tr = {
         fitOnDeviceOnly: "Yalnızca sığan modelleri göster",
         fitOnDeviceOnlyDescription:
           "Model seçicide ve Hub'da bu cihazın GPU belleği ve RAM'i için çok büyük modelleri gizleyin. İndirilen modeller görünür kalır.",
+        pickerExpandLoaded: "Tam model listesini göster",
+        pickerExpandLoadedDescription: "Bir model yüklüyken model seçiciyi yalnızca yüklü model yerine tam listeyle aç. Seçiciyi genişletmek veya daraltmak da bu ayarı değiştirir.",
+        pickerMonochromeIcons: "Tek renkli model simgeleri",
+        pickerMonochromeIconsDescription: "Model seçicide model ve sağlayıcı logolarını siyah, beyaz ve gri olarak göster.",
       },
       menu: {
         title: "Sohbet menüsü",
@@ -5174,6 +5192,8 @@ export const tr = {
   translate: {
     title: "Çeviri",
     detectLanguage: "Dili algıla",
+    detectedLanguage: "{language} (algılandı)",
+    detectedTab: "{language} - Algılandı",
     sourceLanguage: "Kaynak dil",
     targetLanguage: "Hedef dil",
     recentTargets: "Son kullanılanlar",
@@ -5184,15 +5204,19 @@ export const tr = {
     translate: "Çevir",
     stop: "Durdur",
     sourceLabel: "Çevrilecek metin",
-    sourcePlaceholder: "Metin yazın veya yapıştırın ya da bir metin dosyası bırakın",
+    sourcePlaceholder: "Metin yazın veya yapıştırın ya da bir belge veya görsel bırakın",
     outputLabel: "Çeviri",
     outputEmpty: "Çeviri burada görünür.",
     firstRunHint: "İlk çeviride {model} ({size}) indirilir. Sonrasında bu cihazda, çevrimdışı çalışır.",
+    charLimit: "En fazla {max} karakter",
+    readingFile: "{name} okunuyor…",
+    downloadConfirmTitle: "{model} indirilsin mi?",
+    downloadConfirm: "İndir",
     clear: "Temizle",
     paste: "Yapıştır",
-    openFile: "Metin dosyası aç",
-    dropFile: "Çevirmek için bir metin dosyası bırakın",
-    fileNotText: "Burada yalnızca metin dosyaları açılabilir.",
+    openFile: "Belge veya görsel aç",
+    dropFile: "Metnini çevirmek için bir dosya bırakın",
+    fileNotText: "Bu dosyada çevrilecek metin yok.",
     truncated: "Yalnızca ilk {max} karakter tutuldu.",
     copy: "Çeviriyi kopyala",
     copied: "Kopyalandı",
@@ -5321,6 +5345,7 @@ export const tr = {
       intervalHours: "Aralık (saat)",
       hourlyNote: "İlk çalıştırma, kaydettikten bir aralık sonra yapılır. Aralığı değiştirmek veya devam ettirmek beklemeyi yeniden başlatır.",
       createTitle: "Görev zamanla",
+      repliesInChat: "Her çalıştırma “{title}” sohbetinde yanıt verir.",
       editTitle: "Zamanlanmış görevi düzenle",
       name: "Ad",
       namePlaceholder: "Ad (isteğe bağlı)",
@@ -5833,6 +5858,12 @@ export const tr = {
       readVideoFailed: "Video okunamadı ({status}).",
       openFileFailed: "Dosya açılamadı",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Dışa aktarma türü",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Q4NX'e dönüştür",
   },
   exportDecision: {
     title: "Karar modeli",

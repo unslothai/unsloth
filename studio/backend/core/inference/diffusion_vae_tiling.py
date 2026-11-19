@@ -113,7 +113,9 @@ DECODE_MIB_PER_LATENT_BY_CLASS = {
 }
 DECODE_MIB_PER_LATENT_BY_RATIO = {8: (0.27, 0.18), 16: (1.7, 0.43), 32: (1.3, 1.3)}
 # Strip decode 16-bit peak = slope MiB per latent + four strip buffers; bounds measured tiles 48-256 (L4, A100, T4).
-DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS = {"AutoencoderKLFlux2": 0.048}
+# AutoencoderKL (FLUX.1 / SDXL decoders, same largest pass per latent as FLUX.2's): 929 / 3233 MiB at 128 / 256
+# latents (G4, L4); a decoder with a larger largest pass per latent scales the slope (diffusion_vae_strips).
+DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS = {"AutoencoderKLFlux2": 0.048, "AutoencoderKL": 0.048}
 DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
 FREE_FRACTION = 0.75
@@ -313,9 +315,7 @@ def host_budget_disabled() -> bool:
 
 
 def _host_free_mib(vae: Any, z: Any) -> Optional[tuple[float, float]]:
-    """``_free_mib`` for a CPU / MPS decode: the planner's safe budget of the live reading (MPS: available RAM and
-    Metal's working set less what Metal holds; CPU: available RAM; each less the planner reserve), after the fp32
-    output accumulator. None elsewhere, under the kill switch, or with no reading."""
+    """Host free MiB for a CPU/MPS decode, net of planner reserve and fp32 output accumulator; else None."""
     kind = getattr(getattr(z, "device", None), "type", None)
     if kind not in ("cpu", "mps") or host_budget_disabled():
         return None
@@ -366,6 +366,14 @@ def _strips(vae: Any) -> bool:
         return False
 
 
+def _strips_slope(vae: Any) -> float:
+    """The class's strip slope, scaled up for a decoder whose largest pass per latent exceeds the measured one's."""
+    from .diffusion_vae_strips import _REF_PASS_ELEMS_PER_LATENT, largest_pass_elems
+
+    slope = DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__]
+    return slope * max(1.0, largest_pass_elems(vae.decoder, 1, 1) / _REF_PASS_ELEMS_PER_LATENT)
+
+
 def strips_decode_mib(vae: Any, z: Any, height: int, width: int) -> Optional[float]:
     """16-bit peak MiB of the strip decode of a (height, width) latent tile, or None when that decode would not take
     the strip path (not engaged, fp32, or a tile small enough that its largest pass fits in one strip)."""
@@ -377,7 +385,7 @@ def strips_decode_mib(vae: Any, z: Any, height: int, width: int) -> Optional[flo
         strip = strip_elems(z.device)
         if largest_pass_elems(vae.decoder, height, width) < 2 * strip:
             return None
-        slope = DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__]
+        slope = _strips_slope(vae)
         return slope * int(height) * int(width) + 4 * strip * 2 / 2**20
     except Exception:  # noqa: BLE001
         return None
@@ -391,7 +399,7 @@ def _strips_tile_area(vae: Any, z: Any, budget_mib: float) -> Optional[int]:
         from .diffusion_vae_strips import strip_elems
 
         const = 4 * strip_elems(z.device) * 2 / 2**20
-        area = int((budget_mib - const) / DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__])
+        area = int((budget_mib - const) / _strips_slope(vae))
         side = int(area**0.5)
         return area if area > 0 and strips_decode_mib(vae, z, side, side) is not None else None
     except Exception:  # noqa: BLE001
@@ -696,7 +704,6 @@ def _log_stock_fallback(vae: Any, reason: str) -> None:
 
 
 def _log_full_map_once(vae: Any, engaged: bool, reason: str) -> None:
-    """Log once per VAE and outcome which decode a FLUX.2-class tiled request took, and why."""
     logger = vae.__dict__.get("_unsloth_wide_logger")
     seen = vae.__dict__.setdefault("_unsloth_full_map_logged", set())
     if logger is None or engaged in seen:
@@ -721,8 +728,8 @@ def full_map_decode(
     z: Any,
     return_dict: bool = True,
 ) -> Any:
-    """FLUX.2-class whole-map decode when its peak fits ``FREE_FRACTION`` of free memory (per-tile GroupNorm stats
-    shift colour); None to tile."""
+    """Whole-map decode of a VAE ``strips.full_map_ok`` reproduces, when its peak fits ``FREE_FRACTION`` of free
+    memory (per-tile GroupNorm stats shift colour); None to tile."""
     try:
         import torch
 

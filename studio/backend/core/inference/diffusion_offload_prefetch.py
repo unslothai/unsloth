@@ -12,7 +12,7 @@ import threading
 import weakref
 from collections import deque
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Sequence
 
 ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
 PREFETCH_DEPTH_ENV = "UNSLOTH_DIFFUSION_PREFETCH_DEPTH"
@@ -1374,6 +1374,9 @@ class PrefetchedListStreamer:
         self.pinned_bytes = 0
         self.replaced_bytes = 0
         self.arena: Any = None
+        # earlier arenas whose slabs reused groups still hold (``stream_module_list(..., reuse = ...)``)
+        self.arenas: list = []
+        self._fresh: list = []
         # matches ModuleListStreamer, whose release path clears ``_host``
         self._host: dict = {}
 
@@ -1384,21 +1387,52 @@ class PrefetchedListStreamer:
         return out
 
     def remove(self) -> None:
+        for group in self._unhook(offload = False).values():
+            cpu = getattr(group, "cpu_param_dict", None)
+            if isinstance(cpu, dict):
+                cpu.clear()
+        self.arenas = []
+
+    def detach(self) -> dict:
+        """Unhook, keeping pinned copies as ``{id(block): group}`` for ``stream_module_list(reuse = ...)``
+        (pass ``arenas`` as ``reuse_arenas``)."""
+        out = self._unhook(offload = True)
+        self.streamed = 0
+        return out
+
+    def _unhook(self, offload: bool) -> dict:
         for handle in self.handles:
             handle.remove()
         self.handles = []
         pf = self.prefetcher
         if pf is not None and getattr(pf, "active", False):
             pf.end()
+        if offload and pf is not None and callable(getattr(pf, "drop_carried", None)):
+            pf.drop_carried()  # a copy carried into the next forward goes back with the rest
+        out = {}
         for group in self.groups:
             for name in ("onload_", "offload_", "_unsloth_prefetch_onload", "_unsloth_prefetcher"):
                 group.__dict__.pop(name, None)
-            cpu = getattr(group, "cpu_param_dict", None)
-            if isinstance(cpu, dict):
-                cpu.clear()
+            if offload:
+                try:
+                    type(group).offload_(group)  # every member back on its host copy
+                except Exception:  # noqa: BLE001 - already offloaded
+                    pass
+            leader = getattr(group, "offload_leader", None)
+            out[id(leader)] = group
         self.groups = []
         self.prefetcher = None
+        if self.arena is not None:
+            self.arenas = list(getattr(self, "arenas", [])) + [self.arena]
         self.arena = None
+        return out
+
+
+def _module_device(module: Any) -> Any:
+    import torch
+    for t in list(module.parameters()) + list(module.buffers()):
+        return t.device
+    return torch.device("cpu")
 
 
 def _list_stream_refusal(device: Any) -> Optional[str]:
@@ -1450,32 +1484,36 @@ def stream_module_list(
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
     release_after_forward: bool = False,
+    reuse: Optional[dict] = None,
+    reuse_arenas: Sequence[Any] = (),
 ) -> Optional[PrefetchedListStreamer]:
     """A ``PrefetchedListStreamer`` over ``blocks``, or None (nothing changed) when it does not apply or cannot pin.
     Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given. ``replaces_counted``:
     pins replace host copies the caller already counts, so only the live budget bounds them.
-    ``release_after_forward``: empty the copy stream's cache after each forward (once-per-request owners)."""
+    ``release_after_forward``: empty the copy stream's cache after each forward (once-per-request owners).
+    ``reuse``: ``PrefetchedListStreamer.detach()`` of an earlier streamer over the same blocks: its groups keep their
+    pinned copies (only the blocks new to the streamed set are pinned and counted), ``reuse_arenas`` their slabs."""
     import torch
 
     refused = _list_stream_refusal(device)
     blocks = list(blocks)
     resident = max(0, min(len(blocks), int(resident)))
     streamed = blocks[resident:]
+    reuse = dict(reuse or {})
+    fresh = [b for b in streamed if id(b) not in reuse]
     if refused is None and not streamed:
         refused = "nothing streams"
-    need = replaced = 0
+    need = replaced = kept_bytes = 0
     if refused is None:
         from .diffusion_memory import _pin_budget_mib, _storage_nbytes
 
         need = sum(
-            sum(_storage_nbytes(t))
-            for b in streamed
-            for t in list(b.parameters()) + list(b.buffers())
+            sum(_storage_nbytes(t)) for b in fresh for t in list(b.parameters()) + list(b.buffers())
         )
+        kept_bytes = sum(int(_group_nbytes(reuse[id(b)])) for b in streamed if id(b) in reuse)
         budget = _pin_budget_mib()
         replaced = need if replaces_counted and pin_replaces_host_enabled() else 0
-        # only where the credit is what lets the pin fit (that owner streamed pageable before): pinned owners keep
-        # their cache as they did
+        # Only where the credit lets the pin fit; pinned owners keep their cache as before.
         release_after_forward = bool(
             release_after_forward
             and replaced
@@ -1508,6 +1546,8 @@ def stream_module_list(
         return None
     onload = torch.device(device)
     streamer = PrefetchedListStreamer()
+    # a failure puts newly streamed members back here
+    origin: dict = {}
     try:
         from .diffusion_memory import install_group_offload_buffer_restore
 
@@ -1515,27 +1555,35 @@ def stream_module_list(
         install_group_offload_buffer_restore()
         from .diffusion_pinned_arena import packable_bytes, pinned_arena_for_group_offload
 
-        for block in streamed:
+        for block in fresh:
+            origin[id(block)] = _module_device(block)
             block.to("cpu")
-        tensors = [t for b in streamed for t in list(b.parameters()) + list(b.buffers())]
+        tensors = [t for b in fresh for t in list(b.parameters()) + list(b.buffers())]
         try:
             expected = packable_bytes(tensors)
         except Exception:  # noqa: BLE001 - whole slabs, as without a size
             expected = None
-        stream = torch.cuda.Stream(device = onload)
+        stream = next(
+            (g.stream for g in reuse.values() if getattr(g, "stream", None) is not None),
+            None,
+        ) or torch.cuda.Stream(device = onload)
+        streamer.arenas = list(reuse_arenas)
         with pinned_arena_for_group_offload(expected_bytes = expected) as arena:
             for block in streamed:
-                group = group_cls(
-                    modules = [block],
-                    offload_device = torch.device("cpu"),
-                    onload_device = onload,
-                    offload_leader = block,
-                    onload_leader = block,
-                    non_blocking = True,
-                    stream = stream,
-                    record_stream = True,
-                    low_cpu_mem_usage = False,
-                )
+                group = reuse.get(id(block))
+                if group is None:
+                    group = group_cls(
+                        modules = [block],
+                        offload_device = torch.device("cpu"),
+                        onload_device = onload,
+                        offload_leader = block,
+                        onload_leader = block,
+                        non_blocking = True,
+                        stream = stream,
+                        record_stream = True,
+                        low_cpu_mem_usage = False,
+                    )
+                    streamer._fresh.append(group)
                 type(group).offload_(group)
                 streamer.groups.append(group)
         streamer.arena = arena
@@ -1586,14 +1634,19 @@ def stream_module_list(
         streamer.handles.append(owner.register_forward_hook(_eager(_end), always_call = True))
         streamer.prefetcher = pf
         streamer.streamed = len(streamed)
-        streamer.pinned_bytes = int(need)
+        streamer.pinned_bytes = int(need) + int(kept_bytes)
         streamer.replaced_bytes = int(replaced)
         bump_placement_epoch()
     except Exception as exc:  # noqa: BLE001 - the caller's pageable streamer takes the members as they are now
-        streamer.remove()
-        for block in streamed:
+        detached = streamer._unhook(offload = False)
+        for group in streamer._fresh:
+            cpu = getattr(group, "cpu_param_dict", None)
+            if isinstance(cpu, dict):
+                cpu.clear()
+        del detached
+        for block in fresh:
             try:
-                block.to("cpu")
+                block.to(origin.get(id(block)) or "cpu")
             except Exception:  # noqa: BLE001
                 pass
         if logger is not None:

@@ -4935,7 +4935,12 @@ class ModelConfig:
                 return None
             target = gguf_file
             resolved_variant = Path(gguf_file).name
-        elif gguf_hint is None and not audio_cpp_models.is_umbrella_id(identifier):
+        elif (
+            gguf_hint is None
+            and not audio_cpp_models.is_umbrella_id(identifier)
+            # A repo the runtime's own spec names is audio.cpp's whatever its GGUF headers say.
+            and not audio_cpp_models.is_spec_vouched_id(identifier)
+        ):
             return None
         else:
             target = identifier

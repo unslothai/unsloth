@@ -107,11 +107,14 @@ def install_h3_image_speed(
     plan: Any,
     device: Any,
     logger: Any = None,
+    int8_policy: Any = None,
 ) -> tuple:
-    """Engage the levers after placement, before the first forward; returns the engaged names, never raises."""
+    """Engage the levers after placement, before the first forward; returns the engaged names, never raises.
+    ``int8_policy``: the load's ``diffusion_int8_attention.Int8Policy`` (its ``on`` forces the INT8 kernel like the
+    env switch ``1``, its ``off`` keeps it off)."""
     levers: list = []
     try:
-        levers = _install(pipe, plan, device, logger)
+        levers = _install(pipe, plan, device, logger, int8_policy)
     except Exception as exc:  # noqa: BLE001 - an optimisation: the stock path stays
         if logger is not None:
             logger.warning("diffusion.minimax_h3_image: speed levers skipped: %s", exc)
@@ -127,7 +130,8 @@ def install_h3_image_speed(
 
 def _dit_streamer_keeps_parameters(pipe: Any) -> bool:
     """Only the pinned streamer copies into the same parameters; ``ModuleListStreamer`` swaps in new ones per call,
-    so the GEMM would always fall back while the row pads were already lost."""
+    so the GEMM would always fall back while the row pads were already lost. A ``ModuleListStreamer`` with nothing
+    left to stream (every block resident: the pinned one refuses "nothing streams") swaps no parameter either."""
     from .diffusion_minimax_h3_image import ModuleListStreamer
 
     streamers = [
@@ -135,10 +139,38 @@ def _dit_streamer_keeps_parameters(pipe: Any) -> bool:
         for s in getattr(pipe, "_unsloth_h3_streamers", None) or ()
         if getattr(s, "_unsloth_role", None) == "transformer"
     ]
-    return bool(streamers) and not any(isinstance(s, ModuleListStreamer) for s in streamers)
+    return bool(streamers) and not any(
+        isinstance(s, ModuleListStreamer) and int(getattr(s, "streamed", 1) or 0) > 0
+        for s in streamers
+    )
 
 
-def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
+def int8_gemm_route(
+    placement: Optional[str],
+    *,
+    fp16_contract: bool = False,
+    keeps_parameters: bool = False,
+    streamed_gemm: bool = True,
+) -> Optional[str]:
+    """Which int8 GEMM a placement gets: "resident" (``h3_int8_gemm``, with the fused QKV / SwiGLU levers),
+    "streamed" (``h3_int8_gemm_streamed``, taken per call while the weight is on the card), or None (stock path).
+    ``keeps_parameters``: the DiT streamer copies into the same parameters, or streams nothing."""
+    if fp16_contract:
+        return None
+    if placement in _RESIDENT_PLACEMENTS:
+        return "resident"
+    if placement == "stream" and streamed_gemm and keeps_parameters:
+        return "streamed"
+    return None
+
+
+def _install(
+    pipe: Any,
+    plan: Any,
+    device: Any,
+    logger: Any,
+    int8_policy: Any = None,
+) -> list:
     import torch
 
     transformer = getattr(pipe, "transformer", None)
@@ -155,19 +187,21 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
     fp16_contract = bool(transformer.__dict__.get(FP16_CONTRACT_ATTR))
     if fp16_contract:
         resident = False
+    route = int8_gemm_route(
+        getattr(plan, "placement", None),
+        fp16_contract = fp16_contract,
+        keeps_parameters = getattr(plan, "placement", None) == "stream"
+        and _dit_streamer_keeps_parameters(pipe),
+        streamed_gemm = streamed_gemm_enabled(),
+    )
     if resident and _fuse_qkv(transformer, logger):
         levers.append("h3_fused_qkv")
-    if resident:
+    if route == "resident":
         from . import diffusion_int8_gemm as int8_gemm
         if int8_gemm.install(transformer, logger):
             _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
             levers.append("h3_int8_gemm")
-    elif (
-        getattr(plan, "placement", None) == "stream"
-        and not fp16_contract
-        and streamed_gemm_enabled()
-        and _dit_streamer_keeps_parameters(pipe)
-    ):
+    elif route == "streamed":
         from . import diffusion_int8_gemm as int8_gemm
         if int8_gemm.install(transformer, logger, device = dev):
             _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
@@ -189,14 +223,20 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
         backend = h3_attention_backend(backend, requested = None, target = target)
     except Exception:  # noqa: BLE001 - keep the generic pick
         pass
-    engaged = apply_attention_backend(pipe, backend, logger = logger, target = target)
+    engaged = apply_attention_backend(
+        pipe,
+        backend,
+        logger = logger,
+        target = target,
+        **({"int8_policy": int8_policy} if int8_policy is not None else {}),
+    )
     if engaged:
         levers.append(f"attention={engaged}")
     from . import diffusion_int8_attention as int8_attention
 
     fused = engaged in ("_native_cudnn", "_native_flash")
     # the env switch also engages over a default SDPA pick (sm75, gfx1151), with the stock q/k norm + RoPE
-    int8_forced = int8_attention.mode() == "force"
+    int8_forced = int8_attention.mode(int8_policy) == "force"
     if (
         (fused or int8_forced)
         and not fp16_contract
@@ -217,7 +257,12 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
         if shared_qkv_count(transformer):
             levers.append("h3_shared_qkv_quant")
         if int8_forced and int8_attention.install_int8_attention(
-            transformer, device = dev, dtype = dtype, force = True, logger = logger
+            transformer,
+            device = dev,
+            dtype = dtype,
+            force = True,
+            logger = logger,
+            **({"policy": int8_policy} if int8_policy is not None else {}),
         ):
             levers.append("h3_int8_attention")
     if not compile_enabled():

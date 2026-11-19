@@ -82,7 +82,13 @@ def main(out_dir):
         json.dump({"names": names, "losses": losses, "grad_norms": grad_norms}, f)
     print(f"RANK_OK find_unused={find_unused}", flush = True)
     if distributed:
+        # Rank 0 hosts the TCPStore, so no rank leaves before the other is done with it.
+        dist.barrier()
         dist.destroy_process_group()
+        # Teardown can wedge on a gloo C++ thread past the parent's timeout, so exit with os._exit.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 if __name__ == "__main__":

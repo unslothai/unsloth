@@ -32,6 +32,7 @@ on:
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
       - 'tests/conftest.py'
+      - 'tests/python/test_mlx_public_trainer_api.py'
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       - '.github/workflows/mlx-ci.yml'
@@ -73,6 +74,7 @@ on:
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
       - 'tests/conftest.py'
+      - 'tests/python/test_mlx_public_trainer_api.py'
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       - '.github/workflows/mlx-ci.yml'
@@ -233,6 +235,13 @@ jobs:
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           python -m pytest -v --tb=short tests/test_mlx_inference_backend.py
+
+      # Every case skips off the MLX backend, so a real Mac is the only place they execute.
+      - name: MLX public trainer API tests
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python -m pytest -v --tb=short tests/python/test_mlx_public_trainer_api.py
 
       # `train` writes per-phase timing and peak memory to train_metrics.json for regression tracking.
       - name: MLX export round-trip — TRAIN + SAVE 3 formats

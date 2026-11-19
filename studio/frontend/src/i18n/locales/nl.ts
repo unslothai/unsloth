@@ -179,6 +179,7 @@ export const nl = {
       add: "Toevoegen",
       cancel: "Annuleren",
       removeSite: "{site} verwijderen",
+      hostOnly: "Alleen deze host, niet de subdomeinen",
       permissionsNote:
         "Alleen sites met eigen toestemmingen worden hier weergegeven. Acties zijn inloggen, formulierverzendingen en knoppen waarmee iets wordt gekocht, verzonden of verwijderd.",
       siteInvalid: "Voer een site in zoals example.com of *.example.com.",
@@ -986,8 +987,8 @@ export const nl = {
   chatMenu: {
     more: "Chatopties",
     copy: "Kopiëren",
+    addScheduledTask: "Geplande taak toevoegen…",
     compact: "Gesprek comprimeren",
-    compactQueued: "Comprimeren aangevraagd voor het volgende bericht",
     compactEmpty: "Nog niets om te comprimeren",
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
@@ -1885,6 +1886,12 @@ export const nl = {
       learnMore: "Meer informatie",
       managedNote:
         "De eigenaar van deze Unsloth-server stelt de OS-sandbox in.",
+      trustedFoldersTitle: "Vertrouwde mappen",
+      trustedFoldersLabel: "Uitvoeren zonder te vragen",
+      trustedFoldersDescription: "Python en Terminal mogen bestanden in deze mappen lezen en uitvoeren zonder om goedkeuring te vragen, alleen in je eigen chats. Schrijven naar deze mappen vraagt nog steeds om goedkeuring. Eén map per regel.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "De vertrouwde mappen konden niet worden geladen.",
+      trustedFoldersSaveError: "De vertrouwde mappen konden niet worden opgeslagen.",
     },
     debugging: {
       description: "Lees de Unsloth-logboeken zonder de app te verlaten.",
@@ -2327,7 +2334,7 @@ export const nl = {
       modelAliases: {
         sectionTitle: "Modelaliassen (OpenAI API)",
         description:
-          "Vaste namen voor API-clients, zoals fast-chat of code. Een verzoek dat een alias noemt, wordt verwerkt door het model waarnaar die verwijst, zodat verbonden apps blijven werken wanneer je van model wisselt. Schakel Model wisselen per verzoek in zodat een alias zijn model kan laden.",
+          "Korte namen die API-clients kunnen gebruiken in plaats van de volledige modelnaam.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Aliasnaam",
         modelAriaLabel: "Model waarnaar de alias verwijst",
@@ -2336,6 +2343,13 @@ export const nl = {
         add: "Alias toevoegen",
         loadError: "Kan de modelaliassen niet laden.",
         saveError: "Kan de modelaliassen niet opslaan.",
+        contextLength: "Contextlengte",
+        kvCacheType: "Type KV-cache",
+        speculativeDecoding: "Speculatieve decodering",
+        savedSetting: "Opgeslagen instelling",
+        loadSettings: "Laadinstellingen",
+        loadSettingsHint:
+          "Alleen voor GGUF-modellen. Lege velden gebruiken de opgeslagen instellingen van het model.",
       },
       previewSharing: {
         sectionTitle: "Voorbeelden delen",
@@ -3432,6 +3446,10 @@ export const nl = {
         fitOnDeviceOnly: "Alleen modellen tonen die passen",
         fitOnDeviceOnlyDescription:
           "Modellen die te groot zijn voor het GPU-geheugen en RAM van dit apparaat verbergen in de modelkiezer en de Hub. Gedownloade modellen blijven zichtbaar.",
+        pickerExpandLoaded: "Volledige modellijst tonen",
+        pickerExpandLoadedDescription: "Open de modelkiezer op de volledige lijst terwijl een model is geladen, in plaats van alleen het geladen model. Het uit- of samenvouwen van de kiezer wijzigt deze instelling ook.",
+        pickerMonochromeIcons: "Monochrome modelpictogrammen",
+        pickerMonochromeIconsDescription: "Toon logo's van modellen en providers in zwart, wit en grijs in de modelkiezer.",
       },
       menu: {
         title: "Chatmenu",
@@ -5224,6 +5242,8 @@ export const nl = {
   translate: {
     title: "Vertalen",
     detectLanguage: "Taal herkennen",
+    detectedLanguage: "{language} (gedetecteerd)",
+    detectedTab: "{language} - Gedetecteerd",
     sourceLanguage: "Vertalen uit",
     targetLanguage: "Vertalen naar",
     recentTargets: "Recent",
@@ -5234,15 +5254,19 @@ export const nl = {
     translate: "Vertalen",
     stop: "Stoppen",
     sourceLabel: "Te vertalen tekst",
-    sourcePlaceholder: "Typ of plak tekst, of sleep een tekstbestand hierheen",
+    sourcePlaceholder: "Typ of plak tekst, of sleep een document of afbeelding hierheen",
     outputLabel: "Vertaling",
     outputEmpty: "De vertaling verschijnt hier.",
     firstRunHint: "Bij de eerste vertaling wordt {model} ({size}) gedownload. Daarna werkt het offline op dit apparaat.",
+    charLimit: "Max. {max} tekens",
+    readingFile: "{name} lezen…",
+    downloadConfirmTitle: "{model} downloaden?",
+    downloadConfirm: "Downloaden",
     clear: "Wissen",
     paste: "Plakken",
-    openFile: "Een tekstbestand openen",
-    dropFile: "Sleep een tekstbestand hierheen om het te vertalen",
-    fileNotText: "Hier kunnen alleen tekstbestanden worden geopend.",
+    openFile: "Een document of afbeelding openen",
+    dropFile: "Sleep een bestand hierheen om de tekst te vertalen",
+    fileNotText: "Dit bestand bevat geen tekst om te vertalen.",
     truncated: "Alleen de eerste {max} tekens zijn behouden.",
     copy: "Vertaling kopiëren",
     copied: "Gekopieerd",
@@ -5371,6 +5395,7 @@ export const nl = {
       intervalHours: "Interval (uren)",
       hourlyNote: "De eerste uitvoering vindt één interval na het opslaan plaats. Het interval wijzigen of hervatten start de wachttijd opnieuw.",
       createTitle: "Een taak plannen",
+      repliesInChat: "Elke uitvoering antwoordt in ‘{title}’.",
       editTitle: "Geplande taak bewerken",
       name: "Naam",
       namePlaceholder: "Naam (optioneel)",
@@ -5892,6 +5917,12 @@ export const nl = {
       readVideoFailed: "Kan de video niet lezen ({status}).",
       openFileFailed: "Kan het bestand niet openen",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Exporttype",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Converteren naar Q4NX",
   },
   exportDecision: {
     title: "Beslissingsmodel",

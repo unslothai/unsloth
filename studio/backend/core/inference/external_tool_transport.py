@@ -54,11 +54,10 @@ class OAICompatTransport:
         first_turn_overrides: dict[str, Any] | None = None,
         **request_kwargs: Any,
     ) -> None:
-        """``message_fitter`` may be a coroutine function or an async generator function that
-        yields progress lines and then its ``(messages, max_tokens, line)`` result.
-        ``overflow_refitter`` has the same shape and compacts harder: it runs once per request,
-        when the provider refuses a turn as too long before any output.
-        ``first_turn_overrides`` replace request kwargs on the first provider turn only."""
+        """message_fitter may be coroutine or async generator yielding progress lines then
+        (messages, max_tokens, line); overflow_refitter same shape, runs once per request when
+        provider refuses as too long before output; first_turn_overrides replace kwargs on turn 1
+        only"""
         self._client = client
         self._model = model
         self._continue_final_message = continue_final_message

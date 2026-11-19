@@ -169,7 +169,13 @@ def test_auto_route_stays_off(card, monkeypatch, case):
     elif case == "dispatch_off":
         monkeypatch.setenv(D.DISPATCH_ENV, "0")
     elif case == "rocm":
+        # a gfx arch with no ROCM_AUTO_DITS entry
         monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: True)
+        monkeypatch.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda *a, **k: types.SimpleNamespace(gcnArchName = "gfx1100"),
+        )
     elif case == "cpu":
         target = types.SimpleNamespace(device = "cpu", dtype = torch.bfloat16)
     elif case == "no_transformer":
@@ -178,6 +184,37 @@ def test_auto_route_stays_off(card, monkeypatch, case):
     assert not card.seen and not card.strided
     if case != "no_transformer":
         assert _flags(pipe) == [(False, 0)] * 4
+
+
+def test_rocm_listed_dit_races_the_triton_kernel(card, monkeypatch):
+    """A DiT in ROCM_AUTO_DITS races the Triton kernel with the switch unset; unlisted FLUX.3 keeps its processors."""
+    import sys
+
+    from core.inference import rocm_bf16
+
+    monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: True)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda *a, **k: types.SimpleNamespace(gcnArchName = "gfx1151"),
+    )
+    monkeypatch.setattr(
+        I, "implementation", lambda index, head_dim: "triton" if head_dim in (64, 128) else None
+    )
+    card.found = {"ok": True, "min_tokens": 0, "impl": "triton"}
+    shipped_linux = D.ROCM_AUTO_DITS[("gfx1151", "linux")]
+    monkeypatch.setattr(
+        D, "ROCM_AUTO_DITS", {("gfx1151", sys.platform): frozenset({"Flux3Transformer2DModel"})}
+    )
+    pipe = _pipe()
+    assert I.install_auto(pipe, _TARGET) == 3
+    assert _flags(pipe) == [(True, D.MIN_TOKENS)] * 3 + [(False, 0)]
+    assert card.seen and all(timed for *_, timed in card.seen)
+    card.seen.clear()
+    monkeypatch.setattr(D, "ROCM_AUTO_DITS", {("gfx1151", sys.platform): shipped_linux})
+    pipe = _pipe()
+    assert I.install_auto(pipe, _TARGET) == 0 and not card.seen
+    assert _flags(pipe) == [(False, 0)] * 4
 
 
 def test_apply_attention_backend_races_only_an_automatic_pick(card, monkeypatch):
@@ -379,8 +416,7 @@ def test_a_lost_race_gives_every_module_back_its_own_processor(card, monkeypatch
 
 
 def test_a_won_race_keeps_only_the_engaged_strided_processors(card, monkeypatch):
-    """Won where the card has a kernel: those modules run the strided processor; the head dim with no kernel gets its
-    own processor back."""
+    """Only head dims with a kernel keep the strided processor; the rest get their own back."""
     pipe, stocks = _swapping_pipe(card, monkeypatch)
     assert I.install_auto(pipe, _TARGET) == 3
     blocks = list(pipe.transformer.blocks)
@@ -691,9 +727,8 @@ def test_a_bucket_decision_applies_only_to_plans_that_also_had_sinks(monkeypatch
 
 
 def test_after_a_capture_no_plan_races_or_moves_a_route(monkeypatch):
-    """A CUDA graph that recorded an undecided sink-route plan replays the sink path: from then on a plan with sinks
-    keeps that path without a race (so no route or processor changes under a recorded graph), one without sinks
-    runs the kernels without it (the same bits); a new pipeline races again."""
+    """A recorded CUDA graph fixes the sink path: sink plans keep it, sink-free plans run without it
+    with the same bits; no route moves under it; a new pipeline races again."""
     import contextlib
 
     I.forget_plans()

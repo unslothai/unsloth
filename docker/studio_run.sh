@@ -62,10 +62,25 @@ case "${1:-}" in
 esac
 
 unset UNSLOTH_STUDIO_PASSWORD
+# Managed accounts' tools run as uid 0 and can read /run; delete the plaintext once stored.
+if [[ -e "$INITIAL" ]] && password_stored; then
+    rm -f "$INITIAL"
+fi
 if [[ -s "$INITIAL" ]] && ! password_stored; then
     # byte for byte: $(<file) would drop a trailing newline the CLI is meant to see
     IFS= read -r -d '' UNSLOTH_STUDIO_PASSWORD < "$INITIAL" || true
     export UNSLOTH_STUDIO_PASSWORD
+    # The CLI stores it before binding. $$ becomes the CLI at the exec below: once it is
+    # gone without storing (bad password, crash) the file stays for the respawn.
+    _wait="${UNSLOTH_STUDIO_PASSWORD_WAIT:-600}"
+    [[ "$_wait" =~ ^[0-9]+$ ]] || _wait=600
+    (
+        for (( _i = 0; _i < 10#$_wait; _i++ )); do
+            if password_stored; then rm -f "$INITIAL"; exit 0; fi
+            kill -0 "$$" 2>/dev/null || { password_stored && rm -f "$INITIAL"; exit 0; }
+            sleep 1
+        done
+    ) < /dev/null > /dev/null 2>&1 &
 fi
 # Default -H 0.0.0.0 so a published -p is reachable; the container is the boundary.
 # UNSLOTH_STUDIO_SECURE=1: --secure (Cloudflare only, loopback bind, fails closed).

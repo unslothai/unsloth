@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallel, one or more stages per rank (every torch schedule, pp_schedules.py); LoRA first; order
-pp outermost then dp then tp, split before parallelizing; save_adapter is collective, rank 0 writes; param
-names unchanged."""
+"""Pipeline parallel, one or more stages per rank (any torch schedule); LoRA first, split before
+parallelizing; order pp, dp, tp; save_adapter collective, rank 0 writes; param names unchanged."""
 
 from __future__ import annotations
 
@@ -877,6 +876,13 @@ def _moe_aux_plan(parts):
     return _MoEAux(inner, config, router_class, index, num_experts, top_k, routers)
 
 
+def _router_aux_requested(ctx, config):
+    on = getattr(ctx, "output_router_logits", None)
+    if on is None:
+        on = getattr(config, "output_router_logits", False)
+    return bool(on)
+
+
 def _router_aux_coef(moe):
     """Read per step: trainers rewrite the coef after the split."""
     if type(moe.owner).__name__ in _PP_MOE_AUX_WRAPPERS:
@@ -955,6 +961,74 @@ def _forward_has_router_aux(inner):
     return False
 
 
+def _router_aux_coef_of(inner, text):
+    coef = getattr(inner, "router_aux_loss_coef", None)
+    if not isinstance(coef, (int, float)) or isinstance(coef, bool):
+        coef = getattr(text, "router_aux_loss_coef", None)
+    return coef if isinstance(coef, (int, float)) and not isinstance(coef, bool) else None
+
+
+def _router_aux_off(
+    inner,
+    text,
+    output_router_logits = None,
+):
+    """True when output_router_logits is off (call's value, else config's) or the coefficient is zero."""
+    if not hasattr(text, "output_router_logits"):
+        return False  # no transformers switch for it: not known to be off
+    on = output_router_logits
+    if on is None:
+        on = getattr(text, "output_router_logits", False)
+    return not on or _router_aux_coef_of(inner, text) == 0
+
+
+def _uncarried_moe_owner(model, parts = None):
+    """The MoE CausalLM whose aux loss pp does not carry (so trained only with it off), else None."""
+    parts = parts if parts is not None else _find_parts(model)
+    inner = parts.inner
+    name = type(inner).__name__
+    if name in _PP_MOE_AUX_FAMILIES or name in _PP_MOE_NO_AUX_FAMILIES:
+        return None
+    if _moe_marker(_text_config(model), parts.layers) is None:
+        return None
+    return inner
+
+
+def _uncarried_router_aux_message(inner, what):
+    return (
+        f"Unsloth: pipeline parallelism trains {type(inner).__name__} (mixture-of-experts) only with its router "
+        f"auxiliary loss off, but {what}: the loss is carried between stages only for "
+        f"{', '.join(_PP_MOE_AUX_FAMILIES)}, so the last stage would add it over its own layers' routers only. "
+        "Turn it off (router_aux_loss_coef = 0.0 in SFTConfig, which TRL >= 1.x otherwise sets from the "
+        "architecture; or model.config.output_router_logits = False with a plain Trainer), or use native FSDP2 "
+        "(UNSLOTH_FSDP2=1)."
+    )
+
+
+def _refuse_uncarried_router_aux(ctx, kwargs):
+    """Stage forward: a mixture-of-experts model allowed with its auxiliary loss off refuses once it is turned on
+    (a Trainer that enables it after the split); with a zero coefficient the stages skip the router logits."""
+    inner = ctx.uncarried_moe
+    if inner is None:
+        return
+    text = (
+        inner.config.get_text_config() if hasattr(inner.config, "get_text_config") else inner.config
+    )
+    requested = kwargs.get("output_router_logits")
+    if requested is None:
+        requested = getattr(ctx, "output_router_logits", None)
+    if not _router_aux_off(inner, text, requested):
+        raise ValueError(
+            _uncarried_router_aux_message(
+                inner,
+                "output_router_logits is on with router_aux_loss_coef = "
+                f"{_router_aux_coef_of(inner, text)}",
+            )
+        )
+    if hasattr(text, "output_router_logits"):
+        kwargs["output_router_logits"] = False
+
+
 def _refuse_unsupported(
     model,
     parts,
@@ -983,6 +1057,13 @@ def _refuse_unsupported(
                 f"Unsloth: {type(inner).__name__} is listed as having no router auxiliary loss, but its forward "
                 "adds one; pipeline parallelism would drop that term."
             )
+        marker = None
+    if (
+        marker is not None
+        and _uncarried_moe_owner(model, parts) is not None
+        and _router_aux_off(inner, text)
+    ):
+        # Aux loss off: nothing to carry; the stage forward refuses if it is turned on later.
         marker = None
     if marker is not None:
         moe = _moe_aux_plan(parts) if allow_moe else None
@@ -1366,7 +1447,8 @@ def _tower_adapter_state(model, parts):
 
 
 class _PPLayerTableSlice(nn.Module):
-    """This rank's layers' columns of embed_tokens_per_layer; lookups zero-fill the other layers."""
+    """This rank's layers' columns of embed_tokens_per_layer; lookups zero-fill the other layers. Rows come out in
+    the dtype the table itself returns: forced float32 (float16 weights) upcasts before the scale, as one GPU does."""
 
     def __init__(self, source, owned, layers, width):
         super().__init__()
@@ -1383,13 +1465,17 @@ class _PPLayerTableSlice(nn.Module):
             self.register_buffer("embed_scale", scale.detach().clone(), persistent = False)
         self.padding_idx = getattr(source, "padding_idx", None)
         self.__dict__["_pp_layers"] = (tuple(owned), layers, width)
+        self.__dict__["_pp_out_dtype"] = _embedding_output_dtype(source)
 
     def forward(self, input_ids):
         owned, layers, width = self._pp_layers
         rows = torch.nn.functional.embedding(input_ids, self.weight, self.padding_idx)
+        dtype = self.__dict__.get("_pp_out_dtype") or self.weight.dtype
+        if rows.dtype != dtype:
+            rows = rows.to(dtype)
         scale = self._buffers.get("embed_scale")
         if scale is not None:
-            rows = rows * scale.to(self.weight.dtype)
+            rows = rows * scale.to(dtype)
         out = rows.new_zeros((*input_ids.shape, layers, width))
         index = torch.tensor(owned, dtype = torch.long, device = rows.device)
         return out.index_copy(-2, index, rows.view(*input_ids.shape, len(owned), width))
@@ -1437,7 +1523,9 @@ def _ple_project(
         ctx.ple_output = projection[:, :, ctx.end :]
     if per_layer_inputs is None:
         return projection
-    return (projection + per_layer_inputs.to(projection.dtype)) * decoder.per_layer_input_scale
+    # As the model's own project_per_layer_inputs: no cast, so float16 projections meet forced float32 per-layer
+    # inputs in float32 (a float16 sum rounds every layer's input and moved Gemma-4 T4 step-1 gradients 2x).
+    return (projection + per_layer_inputs) * decoder.per_layer_input_scale
 
 
 def _install_per_layer_inputs(pp_stage, parts, owned, kept):
@@ -1546,6 +1634,9 @@ class _StageContext:
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
+        # Per-step request (None: config decides); pp_env._router_aux_request.
+        self.output_router_logits = None
+        self.uncarried_moe = None
         self.ple = None
         self.ple_input = None
         self.ple_output = None
@@ -1764,13 +1855,13 @@ class _PPStageModule(nn.Module):
 
     def _router_statistics(self, captured, carry, attention_mask, device):
         """This stage's load-balancing statistics added to the received ones (`carry`, from the previous
-        stage), or None when the auxiliary loss is off (config.output_router_logits)."""
+        stage), or None when the auxiliary loss is off (output_router_logits: the step's, else the config's)."""
         ctx = self._pp_ctx
         moe = ctx.moe
-        if not getattr(moe.config, "output_router_logits", False):
+        if not _router_aux_requested(ctx, moe.config):
             return None
         if torch.is_grad_enabled():  # checkpointing can be turned on after the split
-            _refuse_aux_with_reentrant_checkpointing(self, moe.config)
+            _refuse_aux_with_reentrant_checkpointing(self, moe.config, on = True)
         expected = sum(moe.routers.get(i, 0) for i in range(ctx.start, ctx.end))
         if len(captured) != expected:
             raise RuntimeError(
@@ -1815,10 +1906,11 @@ class _PPStageModule(nn.Module):
             if ctx.num_items_in_batch is not None:
                 kwargs["num_items_in_batch"] = ctx.num_items_in_batch
             if moe is not None:
-                # The model would add an auxiliary loss over the last stage's routers only: it is formed
-                # here from every stage's statistics instead.
+                # Aux loss would cover only last-stage routers; formed here from all stages.
                 kwargs["output_router_logits"] = False
                 ctx.router_logits = []
+            else:
+                _refuse_uncarried_router_aux(ctx, kwargs)
             if ctx.stage_forward is not None:
                 return self._model_stage_forward(input_ids, kwargs)
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
@@ -1871,8 +1963,7 @@ class _PPStageModule(nn.Module):
             )
             if stats is None:  # auxiliary loss off: nothing to carry (a zero placeholder)
                 if carry:
-                    # Still tied to the received carry: torch 2.10 / 2.11 pipelining needs a gradient for every
-                    # received input (a zero one here).
+                    # torch 2.10/2.11 pipelining needs a grad per received input; zero here.
                     stats = carry[0].to(device) * 0
                 else:
                     stats = torch.zeros(2 * moe.num_experts + 1, dtype = torch.float32, device = device)
@@ -1952,18 +2043,22 @@ def _check_torch_pipelining():
             )
 
 
-def _refuse_aux_with_reentrant_checkpointing(model, config):
-    """Reentrant checkpointing (transformers' default, Unsloth smart checkpointing) runs the first layer forward
-    under no_grad, so the captured router logits carry no graph and the auxiliary loss would add its value but
-    no gradient."""
-    if not getattr(config, "output_router_logits", False):
+def _refuse_aux_with_reentrant_checkpointing(
+    model,
+    config,
+    on = None,
+):
+    """Reentrant checkpointing (transformers' default, Unsloth smart) runs the first layer under
+    no_grad, so router logits carry no graph; the aux loss adds its value but no gradient."""
+    if not (getattr(config, "output_router_logits", False) if on is None else on):
         return
     if non_reentrant_checkpointing_only(model) is False:
         raise ValueError(
             "Unsloth: pipeline parallelism carries the router auxiliary loss only with gradient checkpointing "
             "off or torch's non-reentrant checkpointing (gradient_checkpointing_kwargs = {'use_reentrant': "
-            "False}); reentrant checkpointing would drop its gradient. Or set config.output_router_logits = "
-            "False to train without the auxiliary loss."
+            "False}); reentrant checkpointing would drop its gradient. Or train without the auxiliary loss "
+            "(router_aux_loss_coef = 0.0 in SFTConfig, or config.output_router_logits = False with a plain "
+            "Trainer)."
         )
 
 
@@ -2298,8 +2393,7 @@ class PipelineParallel:
                 if self.ctx.ple is not None:
                     example_out = (example_out, per_layer(self.bounds[index][1]))
             if moe is not None:
-                # The router load-balancing statistics travel with the hidden states (gradient back to
-                # every stage's routers).
+                # Router stats travel with hidden states; gradients reach all stages' routers.
                 stats = torch.empty(
                     (2 * moe.num_experts + 1,),
                     dtype = torch.float32,
@@ -2358,9 +2452,10 @@ class PipelineParallel:
         optimizer.zero_grad between steps). Returns the batch loss (sum over tokens / num_items_in_batch,
         unscaled) on every rank.
 
-        A mixture-of-experts model with config.output_router_logits adds router_aux_loss_coef x the
-        load-balancing loss of each micro-batch (over all stages' routers), as gradient accumulation over the
-        same micro-batches does in one process; their sum (without the coefficient) is in last_aux_loss.
+        A mixture-of-experts model with output_router_logits on (the trainer's request, else the config's) adds
+        router_aux_loss_coef x the load-balancing loss of each micro-batch (over all stages' routers), as gradient
+        accumulation over the same micro-batches does in one process; their sum (without the coefficient) is in
+        last_aux_loss.
 
         With FSDP2 over a dp mesh, each dp replica passes its own slice of the global batch (pp / tp peers the
         same one); num_items_in_batch is the token count of the whole global batch (default: this slice's
@@ -2514,7 +2609,7 @@ class PipelineParallel:
             dist.all_reduce(total, group = dp_group)  # each replica's sum / global tokens
         if self.ctx.moe is not None:
             # Sum over micro-batches of the router load-balancing loss (unscaled by router_aux_loss_coef;
-            # 0 with config.output_router_logits off). The returned loss already holds coef x this.
+            # 0 with output_router_logits off). The returned loss already holds coef x this.
             self.last_aux_loss = total[1]
         return total[0]
 
@@ -2866,9 +2961,8 @@ def _default_activation_dtype(model, parts):
 
 
 def _local_stage_modules(pp_stage, parts, owned):
-    """One _PPStageModule per local stage of a multi-stage rank. Every one runs the same model; while stage k
-    runs, this rank's layers of its other stages are swapped for pass-throughs and, unless k is the first
-    stage, the embedding for its stub (so it is not looked up for nothing)."""
+    """One _PPStageModule per local stage. While stage k runs, this rank's layers of its other
+    stages become pass-throughs; the embedding becomes a stub unless k is the first stage."""
     layers = parts.layers
     stand_ins = {i: _PPPassThrough(i, pp_stage.ctx, layers[i]) for i in owned}
     embed_owner = _owner(parts.decoder, parts.embed) if pp_stage.is_first else None
@@ -3085,6 +3179,8 @@ def apply_pipeline_parallel(
         if kept is None:
             # Dropped: hold only the stubs, so the towers' GPU memory is freed.
             parts = pp_stage.parts = dataclasses.replace(parts, towers = stubs)
+    if moe is None:
+        pp_stage.ctx.uncarried_moe = _uncarried_moe_owner(model, parts)
     if moe is not None:
         # This stage's routers report their logits into the context while its forward runs.
         pp_stage.ctx.moe = moe

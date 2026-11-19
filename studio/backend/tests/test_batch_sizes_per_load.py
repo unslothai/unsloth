@@ -129,7 +129,7 @@ def test_override_store_round_trip():
     assert normalize_model_override({"n_batch": 0, "n_ubatch": True}) == {}
     kwargs = model_override_load_kwargs(entry, is_gguf = True)
     assert kwargs["n_batch"] == 4096 and kwargs["n_ubatch"] == 1024
-    assert "n_batch" not in model_override_load_kwargs(entry, is_gguf = False)
+    assert model_override_load_kwargs(entry, is_gguf = False) == entry  # MLX reads both
 
 
 def test_fast_path_intent_strips_inherited_batch_flags_when_field_set():

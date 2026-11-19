@@ -144,6 +144,9 @@ def test_install_gated_off_cpu_and_by_env(monkeypatch):
     assert "forward" not in vae.decoder.__dict__
     other = diffusers.AutoencoderKL(block_out_channels = (32, 64), norm_num_groups = 16)
     monkeypatch.delenv(S.STRIPS_ENV)
+    monkeypatch.setenv(
+        S.KL_STRIPS_ENV, "0"
+    )  # the AutoencoderKL family is taken by structure unless switched off
     assert S.install(other) is False
 
 
@@ -155,6 +158,10 @@ def _cuda_triton() -> bool:
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_strip_decode_matches_fused_cuda(monkeypatch, dtype):
     import copy
+
+    # fp32 means fp32: sm80+ runs fp32 convs / matmuls in TF32 by default, and strips of other shapes pick other algorithms
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
 
     monkeypatch.setattr(S, "STRIP_ELEMS", 1 << 10)
     src = _vae(CONFIGS[0]).to("cuda", dtype)
@@ -200,15 +207,19 @@ def test_planner_prices_the_strip_decode_only_when_it_runs(monkeypatch):
 
 def test_auto_policy_by_card_and_free_vram(monkeypatch):
     monkeypatch.delenv(S.STRIPS_ENV, raising = False)
-    S._card_always.cache_clear()
+    monkeypatch.delenv(S.STRIP_UPSAMPLE_ENV, raising = False)
+    S._card_cap.cache_clear()
     caps = {0: (8, 9), 1: (8, 0), 2: (7, 5), 3: (9, 0)}
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i: caps[i])
     on = [S.always_on(torch.device("cuda", i)) for i in range(4)]
-    S._card_always.cache_clear()
+    assert on == [True, True, True, False]  # the carried-bias upsample made A100 no slower
+    monkeypatch.setenv(S.STRIP_UPSAMPLE_ENV, "0")
+    on = [S.always_on(torch.device("cuda", i)) for i in range(4)]
+    S._card_cap.cache_clear()
     assert on == [True, False, True, False]
     monkeypatch.setenv(S.STRIPS_ENV, "1")
     assert S.always_on(torch.device("cuda", 1))
-    S._card_always.cache_clear()
+    S._card_cap.cache_clear()
 
     from core.inference import diffusion_vae_tiling as vt
 

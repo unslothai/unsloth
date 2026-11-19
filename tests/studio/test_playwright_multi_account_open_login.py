@@ -47,8 +47,7 @@ def _driver(monkeypatch):
 
 
 class ScriptedPage:
-    """Each goto takes the next outcome: None loads /login, a URL is where the app's redirect lands
-    before the abort, and an exception class is raised."""
+    """Each goto: None loads /login, a URL is where a redirect lands, an exception is raised."""
 
     def __init__(self, base_url: str, outcomes: list):
         self.base_url = base_url

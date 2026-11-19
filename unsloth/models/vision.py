@@ -283,6 +283,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
+from ._frozen_prefix import install_frozen_prefix_skip
 from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
@@ -737,6 +738,23 @@ def _hook_no_placement_ancestors(model):
     return hooked
 
 
+def _host_read_tensor_names(model):
+    """Names of CPU input embedding tensors TP sharded loading read into host (tp_native._mark_host_loaded)."""
+    names = set()
+    try:
+        marked_model = bool(model.__dict__.get("_unsloth_tp_host_load_model", False))
+        embed = model.get_input_embeddings() if marked_model else None
+        for name, p in model.named_parameters(remove_duplicate = False):
+            if p.device.type == "cpu" and (
+                p.__dict__.get("_unsloth_tp_host_loaded", False)
+                or (embed is not None and any(p is q for q in embed.parameters()))
+            ):
+                names.add(name)
+    except Exception:
+        return set()
+    return names
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -771,6 +789,8 @@ def _attach_bnb_multidevice_hooks(
         _unplaced = no_placement_tensor_names(model)
     except Exception:
         _unplaced = set()
+    # Host-read TP embeddings are served from host: dispatch would meta-offload them.
+    _unplaced = set(_unplaced) | _host_read_tensor_names(model)
     try:
         all_devs = {p.device for n, p in model.named_parameters() if n not in _unplaced}
     except Exception as exc:
@@ -1090,7 +1110,7 @@ def _pin_device_to_decoder(model):
         def _unsloth_device(self):
             if getattr(self, "_unsloth_embedding_offloaded", False):
                 for param in self.parameters():
-                    if param.device.type != "cpu":
+                    if param.device.type not in ("cpu", "meta"):
                         return param.device
             return original.fget(self)
 
@@ -2508,6 +2528,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 cache_implementation = "static"
     if do_bfloat16_mixed_precision:
         cache_implementation = None
+    # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
+    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
+    if kwargs.get("past_key_values") is not None or any(
+        (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
+        for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
+    ):
+        cache_implementation = None
     # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
     force_dynamic_cache = kwargs.get(
         "past_key_values"
@@ -2523,7 +2550,6 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         force_dynamic_cache = False
 
-    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     compile_decode = (
         cache_implementation == "static"
         and not force_dynamic_cache
@@ -5383,6 +5409,11 @@ class FastBaseModel:
             if patch_medias_processor is not None:
                 patch_medias_processor(tokenizer)
         # FSDP2 packs 4-bit weights in a float dtype, which the dtype passes in here would cast.
+        try:
+            from .tp_native import cast_host_read_tables
+            cast_host_read_tables(model, do_forced_float32, correct_dtype)
+        except Exception:
+            pass
         with packed_4bit_as_uint8(model, enabled = fsdp2_requested()):
             model, tokenizer = patch_model_and_tokenizer(
                 model,
@@ -5653,6 +5684,7 @@ class FastBaseModel:
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
+            install_frozen_prefix_skip(model)
             # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
@@ -6147,6 +6179,7 @@ class FastBaseModel:
         enable_fp8_lora(model)
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+        install_frozen_prefix_skip(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
         # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
         _ignore_block_swap_params_for_ddp(model)
@@ -6341,6 +6374,10 @@ class FastBaseModel:
             )
         _tensor_parallel_for_inference(model)
         restore_fp8_lora_for_inference(model)
+        # Training's NF4 dequant cache (kernels/dequant_cache.py) would hold memory generation may need.
+        from ..kernels.dequant_cache import clear_dequant_cache
+
+        clear_dequant_cache()
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):

@@ -770,10 +770,9 @@ def _one_card_rejection(plan: Any, primary: int) -> PlacementCandidate:
     )
 
 
-# Automatic placement order: one card (plus a second-card copy for guided steps / even batches) before a layer split,
-# when a copy fits and streaming the denoiser on one card is hidden behind its compute: a layer split adds no
-# parallelism (its blocks run one card after the other), so it only removes the stream, and below this exposed share
-# the cards' own speed spread (T4s 10% apart under the same load) decides instead.
+# One card plus a copy before a layer split when a copy fits and streaming is hidden; below
+# STREAM_HIDDEN_FRACTION exposed, card speed spread (T4s 10% apart) decides instead; splits add no
+# parallelism
 STREAM_HIDDEN_FRACTION = 0.05
 STREAM_GATE_ENV = "UNSLOTH_DIFFUSION_SPLIT_STREAM_GATE"
 _GEMM_PROBES: dict = {}
@@ -898,10 +897,9 @@ def _hidden_stream_reason(pipe: Any, plan: Any, sizes: dict, selection: Any) -> 
     if exposed >= STREAM_HIDDEN_FRACTION:
         return None
     if streamed > 0:
-        # The primary would stream part of the denoiser while the partner could hold it whole: a single image then
-        # depends on which card runs cooler (FLUX.1-dev split -7.7% to +4.4%, Klein-9B 0% to +14% across T4 VMs), so
-        # main's split stays and one image is never slower than main. The order applies when the primary holds the
-        # whole denoiser (only encoders stream), where one card is the resident speed and the copy adds batches.
+        # Split vs whole depends on which card runs cooler (FLUX.1-dev -7.7% to +4.4%, Klein-9B 0%
+        # to +14% on T4 VMs), so main split stays and no image is slower than main; applies when
+        # primary holds whole denoiser
         return None
     return (
         f"one card plus a copy on cuda:{partner}: streaming is hidden behind compute ({_gib(streamed)} per step in "
@@ -1088,10 +1086,7 @@ def refine_plan_for_multigpu(
                 logger = log,
             )
 
-        # A split that fits at 85% of the primary's safe budget keeps that cut (its slack pays for unpriced reference
-        # requests). One that does not is retried with the primary at the full safe budget a one-card resident plan
-        # gets, since the planner already charges it the overhead and the whole request's activations. Secondaries
-        # keep the 85% margin: their one-block working set does not grow with the request.
+        # Retry at the primary's full safe budget if the 85% margin fails; secondaries keep 85%.
         safe_primary = max(int(primary_limit), int(budget) - reserve.get(primary, 0))
         roomier = safe_primary > int(primary_limit)
         from .diffusion_layer_split_plan import _DECLINES, FIT_DECLINE, _record_decline

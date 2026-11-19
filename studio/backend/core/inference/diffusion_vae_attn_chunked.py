@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 VAE's
-math SDPA keeps bf16 (what ``allow_fp16_bf16_reduction_math_sdp`` runs, computed per call without that process-wide
-flag) instead of upcasting q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the fp32
-upcast). fp16 always upcasts: the FLUX.1 / Z-Image VAE's mid-block scores reach 1e6 to 5e7, past fp16's 65504."""
+"""Query-chunked VAE attention on ROCm/MPS (no fused SDPA takes head dim 384/512), exact; ROCm bf16
+keeps bf16 in math SDPA (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps fp32 upcast); fp16 always upcasts, as
+scores reach 5e7 past 65504"""
 
 from __future__ import annotations
 

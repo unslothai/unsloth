@@ -49,6 +49,14 @@
 	min-height: round(up, 1lh + 16px * var(--ui-space-scale, 1), 1px);
 }
 
+/* Padding keeps descenders unclipped. */
+@utility cap-centered {
+	@supports (text-box: trim-both cap alphabetic) {
+		text-box: trim-both cap alphabetic;
+		padding-block: 0.3em;
+	}
+}
+
 @utility size-control {
 	width: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
 	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
@@ -3784,6 +3792,10 @@ html[data-chat-font] .aui-root {
 	.composer-tab-line {
 		background: var(--control-accent);
 	}
+	/* Letter tiles are canvases. */
+	.picker-mono :is(img, canvas) {
+		filter: grayscale(1);
+	}
 	.composer-list-thumb {
 		background: oklch(0.5 0 0 / 0.54);
 	}
@@ -3860,6 +3872,37 @@ html[data-chat-font] .aui-root {
 		.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after {
 			content: attr(data-pill-label);
 			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-(--tooltip-fg) shadow-(--tooltip-shadow);
+		}
+
+		/* The icon chip opens the picker, which has Eject. */
+		@media (width < 48rem) {
+			.composer-model-chip [data-eject-hit] {
+				pointer-events: none;
+			}
+			.composer-model-chip [data-eject-hit] > span {
+				visibility: visible !important;
+			}
+			.composer-model-chip [data-eject-hit] > svg {
+				visibility: hidden !important;
+			}
+			.composer-model-chip[data-pill-detail]:not([data-state="open"]):hover::after {
+				content: attr(data-pill-label) " · " attr(data-pill-detail);
+			}
+			.composer-model-chip[data-pill-label]:not([data-state="open"]):hover::after {
+				left: auto;
+				right: 0;
+				translate: none;
+				max-width: calc(100vw - 2rem);
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+		}
+		/* A tap leaves :hover stuck. */
+		@media (width < 48rem) and (hover: none) {
+			.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after,
+			.composer-model-chip[data-pill-detail]:not([data-state="open"]):hover::after {
+				content: none;
+			}
 		}
 	}
 
@@ -5437,26 +5480,46 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 /* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
 @supports selector(::-webkit-scrollbar) {
-	.aui-thread-root [data-streamdown="code-block-body"] {
+	:is([data-streamdown="code-block"], [data-streamdown="code-block-body"]) {
 		scrollbar-width: auto;
 		scrollbar-color: auto;
 	}
 }
 
-.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar {
+:is([data-streamdown="code-block"], [data-streamdown="code-block-body"])::-webkit-scrollbar {
 	height: 6px;
 }
 
-.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+:is([data-streamdown="code-block"], [data-streamdown="code-block-body"])::-webkit-scrollbar-thumb:horizontal {
 	background: transparent;
 }
 
-.aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+[data-streamdown="code-block"]:is(:hover, :focus-within)::-webkit-scrollbar-thumb:horizontal,
+[data-streamdown="code-block"]:is(:hover, :focus-within) [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
-.dark .aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+.dark [data-streamdown="code-block"]:is(:hover, :focus-within)::-webkit-scrollbar-thumb:horizontal,
+.dark [data-streamdown="code-block"]:is(:hover, :focus-within) [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
 	background: oklch(0.72 0 0 / 0.4);
+}
+
+/* A classic page scrollbar must not narrow the Translate panes. */
+main[data-translate-page] {
+	scrollbar-gutter: stable;
+}
+
+/* Dark keeps its wash: --accent would read as a second selection colour. */
+html.dark .translate-page .hub-tab-toggle-pill {
+	background-color: rgb(255 255 255 / calc(0.09 * var(--contrast-wash-gain, 1)));
+}
+
+/* Firefox has no per-axis thumb, so the whole bar waits for hover there. */
+@supports not selector(::-webkit-scrollbar) {
+	[data-streamdown="code-block"]:not(:hover, :focus-within),
+	[data-streamdown="code-block"]:not(:hover, :focus-within) [data-streamdown="code-block-body"] {
+		scrollbar-color: transparent transparent;
+	}
 }
 
 /* Classic, not overlay: a wide chat table shows it scrolls before it is touched. */
@@ -6887,6 +6950,13 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
+/* Glass: wash the unmasked thread root so the header strip matches the thread. */
+html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
+  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
+}
+html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) > .aui-thread-viewport {
+  background: transparent;
+}
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting {
   position: relative;
   isolation: isolate;
@@ -7587,7 +7657,7 @@ html[data-glass="macos"] :is(.chat-header-fade, [data-slot="window-titlebar-deco
 html[data-glass] {
   --glass-menu-fill: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%), var(--glass-menu-floor)) * var(--glass-opacity, 1))), transparent);
 }
-html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, .find-bar-surface, .glass-float-surface) {
   --sidebar: var(--glass-menu-fill);
   --dropdown-lift-surface: var(--glass-menu-fill);
   --dropdown-lift-accent: var(--glass-hover);
@@ -7607,8 +7677,12 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
   backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
 }
-html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, .find-bar-surface, .glass-float-surface) {
   background-image: var(--glass-glow, none), var(--glass-sheen);
+}
+/* Unlayered, to beat these surfaces' shadow utilities. */
+html[data-glass^="liquid"][data-glass-menus] :is(.find-bar-surface, .glass-float-surface) {
+  box-shadow: var(--glass-rim), var(--glass-lift);
 }
 /* Its fill is pinned (layered !important) to a surface resolved on <html>. */
 html[data-glass][data-glass-menus] .browser-menu[data-slot] {
@@ -7617,7 +7691,7 @@ html[data-glass][data-glass-menus] .browser-menu[data-slot] {
 }
 /* The base dropdown shadows are !important inside @layer utilities, which beats any unlayered !important; only a more specific rule in that layer wins. */
 @layer utilities {
-html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, .find-bar-surface, .glass-float-surface) {
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
 /* Outranks the flat dark .sidebar-menu shadow. */
@@ -7625,7 +7699,7 @@ html[data-glass^="liquid"][data-glass-menus].dark .unsloth-plus-menu.sidebar-men
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
 }
-html[data-glass^="liquid"][data-glass-menus]:not(.dark) :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+html[data-glass^="liquid"][data-glass-menus]:not(.dark) :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, .find-bar-surface, .glass-float-surface) {
   --glass-hover: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 html[data-glass][data-glass-menus] :is([role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):is([data-highlighted], :focus-visible) {
@@ -7900,6 +7974,11 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-
 html[data-glass] :is([data-slot="chat-settings-panel"], [data-slot$="popover-content"], [data-slot="dialog-content"], [data-slot="sheet-content"], [data-slot$="menu-content"]) .sticky {
   -webkit-backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
   backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
+}
+/* The connection model list's edge fade is a mask, which leaves its pinned header's frost see-through. */
+html[data-glass] ul:has(> [data-fold-header][data-stuck]) {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
 }
 /* A glass menu's fill is see-through, so a pinned Run settings row painting it again reads as a darker block: one blurred layer per row frosts what scrolls under it instead. */
 html[data-glass][data-glass-menus] .composer-run-settings :is([data-config-header-row], [data-pinned-footer]) {
@@ -8304,10 +8383,3 @@ html.dark[data-glass="liquid-3d"][data-glass-cpu] :is(.unsloth-composer-surface,
   --glass-glow: linear-gradient(rgb(255 255 255 / .06), rgb(255 255 255 / .016) 12px, transparent 26px), linear-gradient(to top, rgb(255 255 255 / .032), transparent 24px);
 }
 
-/* Audio's settings rail shares the sidebar surface: a faint seam marks the boundary and fades out at both ends.
-   The Audio page sets the root attribute while it is shown (no :has() on the root). */
-html[data-audio-attached-rail] [data-sidebar="sidebar"] {
-	--audio-seam: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-seam-gain, 1)), var(--sidebar));
-	border-right: 1px solid transparent;
-	border-image: linear-gradient(to bottom, transparent, var(--audio-seam) 18%, var(--audio-seam) 82%, transparent) 1;
-}

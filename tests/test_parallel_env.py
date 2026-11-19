@@ -924,7 +924,29 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     with pytest.raises(
         NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp only"
     ):
-        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "gpt_oss"}))
+        caps.check(
+            _q(pp = 2, pp_schedule = "gpipe", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+        )
+    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*no gloo parity run"):
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "mixtral"}))
+    # gpt-oss pp with aux loss off runs; with it on the note names the switch.
+    gpt_oss_q = {**moe_q, "family": "gpt_oss", "attention": "eager", "windowed": True}
+    for extra in ({}, {"memory": "gc"}, {"memory": "unsloth_offload", "mode": "qlora"}):
+        query = _q(pp = 2, pp_schedule = "gpipe", **{**gpt_oss_q, **extra})
+        assert caps.cell_status(query)[0] == "supported", extra
+        caps.check(query)
+    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*router_aux_loss_coef = 0.0"):
+        caps.check(
+            _q(
+                pp = 2,
+                pp_schedule = "gpipe",
+                router_aux_loss = True,
+                memory = "unsloth_offload",
+                **gpt_oss_q,
+            )
+        )
+    with pytest.raises(NotImplementedError, match = r"no numeric parity"):
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**gpt_oss_q, "attention": "sdpa"}))
     with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x schedule"):
         caps.check(_q(pp = 2, pp_schedule = "interleaved", **moe_q))
     with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x mode"):
@@ -1118,8 +1140,7 @@ def test_router_aux_loss_after_init_is_refused_under_cp_for_each_trl_trainer(kin
 
 
 def _strict_sft(monkeypatch, inits):
-    """A trainer whose __init__ takes no unknown keyword, like TRL's SFTTrainer: a CP option left in the
-    constructor kwargs is a TypeError there."""
+    """__init__ rejects unknown keywords, like TRL's SFTTrainer: CP option left in kwargs is a TypeError."""
     import trl
 
     class SFTTrainer:

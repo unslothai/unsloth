@@ -491,6 +491,14 @@
       "reason": "Iterates fixed packaging / pip._vendor.packaging module names."
     },
     {
+      "file": "studio/install_python_stack.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "86a4baabc0246936",
+      "count": 1,
+      "reason": "Loads studio/install_hnsw_prebuilt.py from the fixed sibling path HNSW_INSTALLER (derived from __file__); no caller or Hub input selects the module name or path."
+    },
+    {
       "file": "unsloth/__init__.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -825,6 +833,14 @@
       "digest": "59e72c01edb14c86",
       "count": 1,
       "reason": "Module-level __getattr__ for the lazily loaded command names: the module name comes only from the literal _LAZY_ATTRIBUTES table of unsloth_cli.commands.* modules, and an unknown name raises AttributeError before any import."
+    },
+    {
+      "file": "unsloth_cli/_npu.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "20120c388ba71a53",
+      "count": 1,
+      "reason": "npu_detected() loads Studio's own studio/backend/utils/hardware/npu.py from a fixed path next to this package (Path(__file__).parents[1]); no user, network or checkpoint input chooses the file, and any failure returns False."
     },
     {
       "file": "unsloth_cli/_studio_deps.py",

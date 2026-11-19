@@ -522,8 +522,7 @@ def fit_h3_reference_image(image: Any, *, width: int, height: int, policy: str) 
 
 @functools.lru_cache(maxsize = None)
 def _h3_sized_reference_setup_class(base: type) -> type:
-    """Ref2VA setup step that takes the request's references as Studio prepared them: images and video frames at
-    their size, soundtracks at their full length."""
+    """Ref2VA setup: request images and frames keep Studio's size, soundtracks full length."""
 
     class StudioSizedRef2VASetupStep(base):
         def __call__(self, components: Any, state: Any) -> Any:
@@ -1674,8 +1673,15 @@ def amdgpu_vram_free_bytes(
     pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
 ) -> Optional[int]:
     """Free VRAM of the amdgpu card at pci_slot, or the sole one; None without both readings."""
+    return amdgpu_vram_reading(pci_slot, sysfs_root)[0]
+
+
+def amdgpu_vram_reading(
+    pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
+) -> "tuple[Optional[int], Optional[int]]":
+    """(free, total) VRAM bytes of the amdgpu card at pci_slot, or the sole one; (None, None) without both."""
     want = pci_slot.lower() if pci_slot else None
-    found: list[int] = []
+    found: list[tuple[int, int]] = []
     for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_vram_total"):
         device = total_path.parent
         if _sysfs_int(device / "vendor") != 0x1002:
@@ -1687,9 +1693,9 @@ def amdgpu_vram_free_bytes(
         total = _sysfs_int(total_path)
         used = _sysfs_int(device / "mem_info_vram_used")
         if total is None or used is None:
-            return None
-        found.append(max(total - used, 0))
-    return found[0] if len(found) == 1 else None
+            return None, None
+        found.append((max(total - used, 0), total))
+    return found[0] if len(found) == 1 else (None, None)
 
 
 def amdgpu_gtt_free_bytes(

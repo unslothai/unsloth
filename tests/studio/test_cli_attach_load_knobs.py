@@ -188,6 +188,29 @@ def test_inferred_reload_warns_that_it_unloads_for_every_session(monkeypatch, ca
     assert "unloads the current model for every attached session" in capsys.readouterr().out
 
 
+def test_another_quant_without_model_loads_with_its_saved_settings(monkeypatch):
+    """Another quant is another checkpoint: the resident's settings describe a different one."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": True,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "gguf_variant": "Q8_0",
+            "requested_context_length": 4096,
+            "cache_type_kv": "q8_0",
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(gguf_variant = "Q4_K_M"))
+
+    assert sent(server) == {
+        "model_path": RESIDENT["id"],
+        "gguf_variant": "Q4_K_M",
+        "use_saved_settings": True,
+    }
+
+
 def test_active_model_decides_the_resident_not_list_order(monkeypatch):
     """active_model, not catalog order, names the resident."""
     server = FakeServer(
@@ -396,7 +419,7 @@ def test_a_freshly_started_server_is_not_reloaded(monkeypatch):
 
 
 def test_omitted_default_flags_are_not_forwarded(monkeypatch):
-    """A bare --model load sends only model_path."""
+    """A bare --model load sends only model_path, leaving the rest to the saved settings."""
     server = FakeServer(
         [dict(RESIDENT)],
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
@@ -404,7 +427,7 @@ def test_omitted_default_flags_are_not_forwarded(monkeypatch):
 
     start_cli._resolve_model(BASE, KEY, "unsloth/Qwen3-14B", start_cli.LoadOptions())
 
-    assert sent(server) == {"model_path": "unsloth/Qwen3-14B"}
+    assert sent(server) == {"model_path": "unsloth/Qwen3-14B", "use_saved_settings": True}
 
 
 def _registered_command_name(command) -> str:

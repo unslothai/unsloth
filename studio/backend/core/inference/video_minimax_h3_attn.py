@@ -34,8 +34,7 @@ STRIDED_SAGE_BACKENDS = frozenset({"sage", "sage_hub"})
 
 
 def strided_install_backend(backend: Any) -> bool:
-    """Whether a load that engaged ``backend`` should install the strided processor: cuDNN / flash SDPA, or a Sage
-    backend unless UNSLOTH_H3_STRIDED_SAGE=0."""
+    """Strided processor for cuDNN or flash SDPA, and Sage unless UNSLOTH_H3_STRIDED_SAGE=0."""
     value = _backend_value(backend)
     if value in (_CUDNN, _FLASH):
         return True
@@ -164,6 +163,7 @@ def _strided_processor_for(base: Any) -> Any:
         # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
+        _unsloth_int8_sinks = 0
 
         def __call__(
             self,
@@ -234,11 +234,15 @@ def _strided_processor_for(base: Any) -> Any:
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                hidden_states = _i8.int8_attention_call(query, key, value)
+                mode = self._unsloth_int8_sinks
+                hidden_states = (
+                    _i8.int8_attention_call(query, key, value, mode)
+                    if mode
+                    else _i8.int8_attention_call(query, key, value)
+                )
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             elif sage:
-                # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot
-                # take still run native there)
+                # NHD in and out via guarded dispatch; calls Sage cannot take still run native.
                 hidden_states = dispatch(
                     query,
                     key,

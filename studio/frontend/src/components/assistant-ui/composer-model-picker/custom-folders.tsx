@@ -30,7 +30,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 const ICON_BUTTON =
-  "grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground";
+  "grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-8";
 
 function Hint({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -135,23 +135,24 @@ export function useCustomFolders({
     [onFoldersChange],
   );
 
-  const actions = (
-    <Hint label="Add a folder to scan for models">
-      <button
-        type="button"
-        aria-label="Add a custom folder"
-        onClick={() => void browse()}
-        disabled={busy}
-        className={cn(ICON_BUTTON, "disabled:opacity-40")}
-      >
-        <HugeiconsIcon
-          icon={PlusSignIcon}
-          strokeWidth={1.75}
-          className="size-3"
-        />
-      </button>
-    </Hint>
-  );
+  const actions =
+    folders.length === 0 ? null : (
+      <Hint label="Add a folder to scan for models">
+        <button
+          type="button"
+          aria-label="Add a custom folder"
+          onClick={() => void browse()}
+          disabled={busy}
+          className={cn(ICON_BUTTON, "disabled:opacity-40")}
+        >
+          <HugeiconsIcon
+            icon={PlusSignIcon}
+            strokeWidth={1.75}
+            className="size-3"
+          />
+        </button>
+      </Hint>
+    );
 
   const registered = new Set(folders.map((f) => f.path));
   const suggestions = recommended.filter((p) => !registered.has(p));
@@ -162,7 +163,7 @@ export function useCustomFolders({
         return (
           <div
             key={folder.id}
-            className="group/folder flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full pr-[calc(6px*var(--ui-space-scale,1))] pl-3 hover:bg-sidebar-accent"
+            className="group/folder flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 max-md:h-9 items-center gap-2 rounded-full pr-[calc(6px*var(--ui-space-scale,1))] pl-3 hover:bg-sidebar-accent"
           >
             <HugeiconsIcon
               icon={Folder02Icon}
@@ -195,7 +196,7 @@ export function useCustomFolders({
                 aria-label={`Remove folder ${folder.path}`}
                 className={cn(
                   ICON_BUTTON,
-                  "opacity-0 group-hover/folder:opacity-100 focus-visible:opacity-100",
+                  "opacity-0 group-hover/folder:opacity-100 focus-visible:opacity-100 max-md:opacity-100",
                 )}
               >
                 <HugeiconsIcon

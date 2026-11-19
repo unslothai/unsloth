@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from stat import S_ISREG
 
 import threading
 import uuid
@@ -18,6 +19,7 @@ from urllib.parse import quote, unquote
 from loggers import get_logger
 
 from hub.schemas.inventory import LocalModelInfo
+from hub.services.models import ollama_mlx
 from hub.services.models.common import (
     _capabilities_for_format,
     _local_inventory_id,
@@ -32,6 +34,8 @@ from hub.utils.paths import (
 logger = get_logger(__name__)
 
 _OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:"
+# Tags in Ollama's MLX format, kept apart so the GGUF-only handling of manifest refs never sees them.
+_OLLAMA_MLX_REF_PREFIX = "ollama-mlx:"
 _OLLAMA_LINK_DIR_NAMES = frozenset((".studio_links", "ollama_links"))
 _OLLAMA_BLOB_NAME_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+-"
@@ -57,12 +61,24 @@ _OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
     }
 )
 
-# `image.draft` only feeds speculative decoding; `image.embed` is deprecated and ignored by ollama.
-_OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = frozenset(
+# Ollama's legacy-tree downgrade anchor lists its manifests-v2 blobs as layers only so an older
+# daemon's GC keeps them (manifest.WriteLegacyAnchor); a list pull adds both types.
+_OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES = frozenset(
     {
-        "application/vnd.ollama.image.draft",
-        "application/vnd.ollama.image.embed",
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.ollama.manifest.list.v2+json",
     }
+)
+
+# `image.draft` only feeds speculative decoding; `image.embed` is deprecated and ignored by ollama.
+_OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = (
+    frozenset(
+        {
+            "application/vnd.ollama.image.draft",
+            "application/vnd.ollama.image.embed",
+        }
+    )
+    | _OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES
 )
 
 _OLLAMA_ADMITTED_LAYER_MEDIA_TYPES = (
@@ -87,13 +103,18 @@ class OllamaModelLease:
             self._lock.release()
 
 
-def _ollama_manifest_ref(tag_file: Path) -> str:
-    return f"{_OLLAMA_MANIFEST_REF_PREFIX}{quote(str(tag_file), safe = '')}"
+def _ollama_manifest_ref(tag_file: Path, prefix: str = _OLLAMA_MANIFEST_REF_PREFIX) -> str:
+    return f"{prefix}{quote(str(tag_file), safe = '')}"
 
 
 def is_ollama_manifest_ref(ref: str) -> bool:
     """True when *ref* is an opaque ``ollama-manifest:`` inventory reference."""
     return ref.startswith(_OLLAMA_MANIFEST_REF_PREFIX)
+
+
+def is_ollama_mlx_ref(ref: str) -> bool:
+    """True when *ref* names an Ollama tag in its MLX format, loaded as a checkpoint directory."""
+    return isinstance(ref, str) and ref.startswith(_OLLAMA_MLX_REF_PREFIX)
 
 
 def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ...]:
@@ -158,6 +179,25 @@ def _ollama_links_roots(ollama_dir: Path) -> tuple[Path, ...]:
         ollama_dir / ".studio_links",
         cache_root() / "ollama_links" / digest,
         tmp_root() / "ollama_links" / digest,
+    )
+
+
+def _ollama_mlx_links_root(ollama_dir: Path) -> Path:
+    """The links root an MLX build goes in, chosen without writing, so a scan can name the checkpoint."""
+    roots = _ollama_links_roots(ollama_dir)
+    for root in roots:
+        existing = root
+        while not existing.exists() and existing != existing.parent:
+            existing = existing.parent
+        if os.access(existing, os.W_OK | os.X_OK):
+            return root
+    return roots[0]
+
+
+def _ollama_mlx_checkpoint_path(ollama_dir: Path, rel: Path, model_id: str) -> Path:
+    canonical = Path(os.path.realpath(ollama_dir))
+    return ollama_mlx.checkpoint_path(
+        _ollama_mlx_links_root(canonical) / _manifest_stem_hash(rel), model_id
     )
 
 
@@ -311,6 +351,7 @@ def _ollama_model_info_from_manifest(
     config_digest = config.get("digest", "")
     model_type = ""
     file_type = ""
+    cfg: dict = {}
     if config_digest and blobs_dir.is_dir():
         config_blob = _ollama_blob_path(blobs_dir, config_digest)
         if config_blob is not None and _safe_is_file(config_blob):
@@ -326,6 +367,27 @@ def _ollama_model_info_from_manifest(
     layers = manifest.get("layers") or []
     if not isinstance(layers, list):
         return None
+
+    if ollama_mlx.is_mlx_manifest(layers):
+        if reject_unsupported_layers:
+            return invalid_manifest(
+                "the tag is in Ollama's MLX format, which llama.cpp does not load"
+            )
+        try:
+            updated_at = tag_file.stat().st_mtime
+        except OSError:
+            updated_at = None
+        return ollama_mlx.model_info(
+            repo_name = repo_name,
+            tag = tag,
+            checkpoint = str(
+                _ollama_mlx_checkpoint_path(ollama_dir, rel, f"ollama/{repo_name}:{tag}")
+            ),
+            tag_file = tag_file,
+            config = cfg,
+            layers = layers,
+            updated_at = updated_at,
+        )
 
     unsupported_layers = _unsupported_ollama_layer_media_types(layers)
     if unsupported_layers:
@@ -545,16 +607,11 @@ def _known_ollama_dirs() -> List[Path]:
     return known_dirs
 
 
-def ollama_manifest_ref_for_path(model_path: str) -> Optional[str]:
-    """The manifest reference *model_path* names, or None when it names no Ollama tag."""
-    if is_ollama_manifest_ref(model_path):
-        return model_path
-    link = Path(model_path)
-    if not any(part in _OLLAMA_LINK_DIR_NAMES for part in link.parts):
-        return None
+def _tag_file_for_link_dir(link_dir: Path) -> Optional[Path]:
+    """The manifest whose links *link_dir* (``<links root>/<manifest hash>``) holds."""
     for ollama_dir in _known_ollama_dirs():
         if not any(
-            path_is_same_or_child(link.parent, root) for root in _ollama_links_roots(ollama_dir)
+            path_is_same_or_child(link_dir, root) for root in _ollama_links_roots(ollama_dir)
         ):
             continue
         manifests_root = ollama_dir / "manifests"
@@ -563,11 +620,47 @@ def ollama_manifest_ref_for_path(model_path: str) -> Optional[str]:
                 if not _safe_is_file(tag_file):
                     continue
                 rel = _manifest_rel_path(tag_file, manifests_root)
-                if rel is not None and _manifest_stem_hash(rel) == link.parent.name:
-                    return _ollama_manifest_ref(tag_file)
+                if rel is not None and _manifest_stem_hash(rel) == link_dir.name:
+                    return tag_file
         except OSError as e:
             logger.debug("Could not walk Ollama manifests under %s: %s", manifests_root, e)
     return None
+
+
+def ollama_manifest_ref_for_path(model_path: str) -> Optional[str]:
+    """The manifest reference *model_path* names, or None when it names no Ollama tag."""
+    if is_ollama_manifest_ref(model_path):
+        return model_path
+    link = Path(model_path)
+    # Only a .gguf link stands for its tag; an MLX tag's checkpoint is ``ollama_mlx_ref_for_path``'s.
+    if link.suffix.lower() != ".gguf" or not any(
+        part in _OLLAMA_LINK_DIR_NAMES for part in link.parts
+    ):
+        return None
+    tag_file = _tag_file_for_link_dir(link.parent)
+    return _ollama_manifest_ref(tag_file) if tag_file is not None else None
+
+
+def ollama_mlx_ref_for_path(model_path: str) -> Optional[str]:
+    """The internal reference of the MLX tag whose checkpoint path *model_path* is, built or not."""
+    path = Path(model_path)
+    if not any(part in _OLLAMA_LINK_DIR_NAMES for part in path.parts):
+        return None
+    tag_file = _tag_file_for_link_dir(path.parent.parent)
+    if tag_file is None:
+        return None
+    ref = _ollama_manifest_ref(tag_file, _OLLAMA_MLX_REF_PREFIX)
+    try:
+        _, _, info = _ollama_model_ref_info(ref)
+    except ValueError:
+        return None
+    checkpoint = Path(info.id)
+    # The scan's spelling of the path, or another spelling of the same place.
+    if (path.parent.name, path.name) != (checkpoint.parent.name, checkpoint.name) or (
+        os.path.realpath(path.parent.parent) != os.path.realpath(checkpoint.parent.parent)
+    ):
+        return None
+    return ref
 
 
 def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
@@ -578,10 +671,14 @@ def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
 
 
 def _validated_ollama_manifest_location(ref: str) -> tuple[Path, Path]:
-    if not ref.startswith(_OLLAMA_MANIFEST_REF_PREFIX):
+    prefix = next(
+        (p for p in (_OLLAMA_MANIFEST_REF_PREFIX, _OLLAMA_MLX_REF_PREFIX) if ref.startswith(p)),
+        None,
+    )
+    if prefix is None:
         raise ValueError("Not an Ollama manifest reference")
     try:
-        tag_file = Path(os.path.realpath(unquote(ref[len(_OLLAMA_MANIFEST_REF_PREFIX) :])))
+        tag_file = Path(os.path.realpath(unquote(ref[len(prefix) :])))
     except (OSError, ValueError) as e:
         raise ValueError(f"Invalid Ollama manifest reference: {e}") from e
     ollama_dir = _ollama_dir_for_manifest(tag_file)
@@ -609,10 +706,10 @@ def _ollama_model_ref_info(ref: str) -> tuple[Path, dict, LocalModelInfo]:
         ollama_dir,
         tag_file,
         materialize_links = False,
-        reject_unsupported_layers = True,
+        reject_unsupported_layers = not is_ollama_mlx_ref(ref),
         manifest = manifest,
     )
-    if info is None:
+    if info is None or is_ollama_mlx_ref(ref) != (info.model_format == "safetensors"):
         raise ValueError("Could not resolve Ollama model from manifest")
     return ollama_dir, manifest, info
 
@@ -694,6 +791,72 @@ def acquire_ollama_model_ref(ref: str) -> OllamaModelLease:
         raise
 
 
+def ollama_mlx_json_reader(ref: str):
+    """A reader of the MLX tag's JSON layers by name, None for one it lacks or cannot parse;
+    raises when a tensor blob is gone, since the build would then fail."""
+    ollama_dir, manifest, _ = _ollama_model_ref_info(ref)
+    for layer in manifest.get("layers") or []:
+        if isinstance(layer, dict) and layer.get("mediaType") == ollama_mlx.TENSOR_MEDIA_TYPE:
+            blob = _ollama_blob_path(ollama_dir / "blobs", layer.get("digest"))
+            if blob is None or not _safe_is_file(blob):
+                raise ValueError(f"Ollama blob for {layer.get('name')} is missing")
+    layers = ollama_mlx._json_layers(manifest.get("layers") or [])
+
+    def read(name: str):
+        blob = _ollama_blob_path(ollama_dir / "blobs", (layers.get(name) or {}).get("digest"))
+        if blob is None or not _safe_is_file(blob) or blob.stat().st_size > 1 << 20:
+            return None
+        try:
+            return json.loads(blob.read_text(encoding = "utf-8-sig"))
+        except (OSError, ValueError):
+            return None
+
+    return read
+
+
+def acquire_ollama_mlx_ref(ref: str) -> OllamaModelLease:
+    """Builds the MLX checkpoint for an ``ollama-mlx:`` *ref* if its manifest has none yet, holding
+    the tag until the caller releases the lease, so a delete cannot remove it mid-load."""
+    if not is_ollama_mlx_ref(ref):
+        raise ValueError("Not an Ollama MLX reference")
+    ollama_dir, _, info = _ollama_model_ref_info(ref)
+    tag_file, _ = _validated_ollama_manifest_location(ref)
+    lock = _materialization_lock(tag_file, ollama_dir)
+    lock.acquire()
+    try:
+        # The manifest and config are read again under the lock: a pull may have replaced them.
+        manifest_bytes = tag_file.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("layers"), list):
+            raise ValueError("Invalid Ollama manifest")
+        config = manifest.get("config") if isinstance(manifest.get("config"), dict) else {}
+        config_blob = _ollama_blob_path(ollama_dir / "blobs", config.get("digest"))
+        if config_blob is None or not _safe_is_file(config_blob):
+            raise ValueError("Ollama MLX model config blob is missing")
+        ollama_config = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
+        if not isinstance(ollama_config, dict):
+            raise ValueError("Ollama MLX model config blob is not an object")
+        path = ollama_mlx.materialize(
+            Path(info.id).parent.parent,
+            ollama_dir / "blobs",
+            _ollama_blob_path,
+            manifest_bytes,
+            ollama_config,
+            info.model_id,
+        )
+        return OllamaModelLease(path, lock)
+    except BaseException:
+        lock.release()
+        raise
+
+
+def materialize_ollama_mlx_ref(ref: str) -> str:
+    """The tag's checkpoint path, built for its current manifest."""
+    lease = acquire_ollama_mlx_ref(ref)
+    lease.release()
+    return lease.path
+
+
 def _manifest_digests(manifest: object) -> set[str]:
     if not isinstance(manifest, dict):
         return set()
@@ -703,6 +866,90 @@ def _manifest_digests(manifest: object) -> set[str]:
         for entry in entries
         if isinstance(entry, dict) and isinstance(entry.get("digest"), str)
     }
+
+
+def _is_file_or_missing(path: Path) -> bool:
+    """``Path.is_file`` that raises unless the path is missing (3.14's returns False on EIO)."""
+    try:
+        return S_ISREG(path.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def _manifest_tree_files(root: Path) -> list[Path]:
+    """Files under *root*, following dir symlinks once; raises on any error but a missing *root*
+    (``rglob`` / ``os.walk`` silently skip unreadable and symlinked dirs)."""
+    files: list[Path] = []
+    pending, seen = [root], set()
+    while pending:
+        directory = pending.pop()
+        real = os.path.realpath(directory)
+        if real in seen:
+            continue
+        seen.add(real)
+        try:
+            with os.scandir(directory) as it:
+                entries = list(it)
+        except FileNotFoundError:
+            if directory == root:
+                continue
+            raise
+        for entry in entries:
+            (pending if entry.is_dir() else files).append(Path(entry.path))
+    return files
+
+
+def _manifest_closure_digests(blobs_dir: Path, manifest: object, strict: bool) -> set[str]:
+    """Digests *manifest* keeps alive via list children and anchor layers; ``strict`` raises on an unreadable child."""
+    digests: set[str] = set()
+    pending, seen = [manifest], set()
+    while pending:
+        current = pending.pop()
+        if not isinstance(current, dict):
+            continue
+        digests |= _manifest_digests(current)
+        layers = current.get("layers")
+        children = current.get("manifests")
+        children = children if isinstance(children, list) else []
+        # A list child is a digest reference or, as manifest.resolveLocalManifestReference allows, inline.
+        pending.extend(children)
+        for entry in [*(layers if isinstance(layers, list) else []), *children]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("digest"), str):
+                continue
+            if entry not in children and entry.get("mediaType") not in (
+                _OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES
+            ):
+                continue
+            digests.add(entry["digest"])
+            if entry["digest"] in seen:
+                continue
+            seen.add(entry["digest"])
+            blob = _ollama_blob_path(blobs_dir, entry["digest"])
+            try:
+                present = blob is not None and _is_file_or_missing(blob)
+            except OSError:
+                if strict:
+                    raise
+                present = False
+            if not present:
+                # A pull downloads one list child; the others are not on disk.
+                continue
+            try:
+                pending.append(json.loads(blob.read_text(encoding = "utf-8-sig")))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                if strict:
+                    raise
+    return digests
+
+
+def _ollama_v2_manifest_path(ollama_dir: Path, rel: Path) -> Optional[Path]:
+    """The manifests-v2 entry newer Ollama keeps beside a legacy tag (manifest.V2PathForName)."""
+    if len(rel.parts) != 4:
+        return None
+    host, *rest = rel.parts
+    if host.lower() in ("registry.ollama.ai", "ollama.com"):
+        host = "ollama.com"
+    return ollama_dir / "manifests-v2" / host.replace(":", "%3A") / Path(*rest)
 
 
 def ollama_model_ref_link_dirs(ref: str) -> list[Path]:
@@ -729,29 +976,65 @@ def delete_ollama_model_ref(ref: str) -> None:
         raise OllamaModelBusy("A model load is using this Ollama model")
     try:
         manifests_root = ollama_dir / "manifests"
+        v2_root = ollama_dir / "manifests-v2"
+        blobs_dir = ollama_dir / "blobs"
         link_dirs = ollama_model_ref_link_dirs(ref)
         try:
             manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
             raise ValueError(f"Could not read Ollama manifest: {e}") from e
-        owned = _manifest_digests(manifest)
-        for other in manifests_root.rglob("*"):
-            if not _safe_is_file(other) or os.path.realpath(other) == str(tag_file):
-                continue
+        owned = _manifest_closure_digests(blobs_dir, manifest, strict = False)
+        rel = _manifest_rel_path(tag_file, manifests_root)
+        v2_file = _ollama_v2_manifest_path(ollama_dir, rel) if rel is not None else None
+        if v2_file is not None and not path_is_same_or_child(v2_file.parent, v2_root):
+            v2_file = None
+        # ``ollama rm`` drops both trees: leaving the v2 entry would point Ollama at deleted blobs.
+        v2_tag = v2_file if v2_file is not None and _safe_is_file(v2_file) else None
+        if v2_tag is not None:
             try:
-                owned -= _manifest_digests(json.loads(other.read_text(encoding = "utf-8-sig")))
+                data = v2_tag.read_bytes()
+                owned.add(f"sha256:{hashlib.sha256(data).hexdigest()}")
+                owned |= _manifest_closure_digests(
+                    blobs_dir, json.loads(data.decode("utf-8-sig")), strict = False
+                )
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                pass
+        # v2 entries are compared by path: an ``ollama cp`` alias links the same manifest blob.
+        try:
+            others = [
+                *(
+                    p
+                    for p in _manifest_tree_files(manifests_root)
+                    if os.path.realpath(p) != str(tag_file)
+                ),
+                *(p for p in _manifest_tree_files(v2_root) if p != v2_tag),
+            ]
+        except OSError:
+            others, owned = [], set()
+        for other in others:
+            try:
+                if not _is_file_or_missing(other):
+                    continue
+                data = other.read_bytes()
+                owned.discard(f"sha256:{hashlib.sha256(data).hexdigest()}")
+                owned -= _manifest_closure_digests(
+                    blobs_dir, json.loads(data.decode("utf-8-sig")), strict = True
+                )
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 # An unreadable manifest might reference any blob, so keep them all.
                 owned = set()
                 break
         tag_file.unlink()
-        parent = tag_file.parent
-        while parent != manifests_root and path_is_same_or_child(parent, manifests_root):
-            try:
-                parent.rmdir()
-            except OSError:
-                break
-            parent = parent.parent
+        if v2_tag is not None:
+            v2_tag.unlink()
+        for tag, root in ((tag_file, manifests_root), (v2_tag, v2_root)):
+            parent = tag.parent if tag is not None else root
+            while parent != root and path_is_same_or_child(parent, root):
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
         for digest in owned:
             blob = _ollama_blob_path(ollama_dir / "blobs", digest)
             if blob is not None:

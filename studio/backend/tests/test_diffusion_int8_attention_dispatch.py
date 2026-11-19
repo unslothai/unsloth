@@ -571,8 +571,7 @@ def test_long_verdict_thresholds(monkeypatch):
 
 
 def test_extra_races_time_on_the_probed_card(monkeypatch):
-    """A secondary card's mid / long race must run with that card current: the timing events record on the current
-    device's stream."""
+    """Extra races must run with the probed card current; timing events record on its stream."""
     current = [None]
     seen = []
 
@@ -741,12 +740,70 @@ def test_triton_stand_in_races_even_by_name(monkeypatch):
     } == {3072}
 
 
-def test_rocm_auto_stays_off(monkeypatch):
+def _rocm_arch(monkeypatch, arch):
     from core.inference import rocm_bf16
-
-    seen = _fake_cuda(monkeypatch)
     monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: True)
-    assert D.install(_Pipe(_wan_dit()), _TARGET) == 0 and not seen
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a, **k: types.SimpleNamespace(gcnArchName = arch)
+    )
+
+
+def _rocm_table(
+    monkeypatch,
+    *dits,
+    platform = None,
+):
+    import sys
+    monkeypatch.setattr(
+        D, "ROCM_AUTO_DITS", {("gfx1151", platform or sys.platform): frozenset(dits)}
+    )
+
+
+def test_rocm_auto_races_a_listed_dit_on_its_arch_and_os(monkeypatch):
+    """Switch unset: a listed DiT races the Triton kernel (timed, never forced) and keeps the race's floor."""
+    pipe = _Pipe(
+        _wan_dit()
+    )  # built before the card is faked (diffusers' lazy imports probe Triton)
+    seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0}, impl = "triton")
+    monkeypatch.setattr(D, "MIN_TOKENS", 1024)
+    _rocm_arch(monkeypatch, "gfx1151:sramecc-:xnack-")
+    _rocm_table(monkeypatch, "WanTransformer3DModel")
+    assert D.install(pipe, _TARGET) == 4
+    assert seen and all(s["timed"] for s in seen)
+    assert {
+        m.processor._attention_backend.min_tokens for m in D.routable_modules(pipe.transformer)
+    } == {1024}
+
+
+def test_rocm_auto_stays_off_elsewhere(monkeypatch):
+    """Other arch / unreadable arch / other OS / unlisted DiT / lost race keep the incumbent; switch 1 still routes."""
+    pipes = [_Pipe(_wan_dit()) for _ in range(7)]
+    seen = _fake_cuda(monkeypatch, impl = "triton")
+    _rocm_table(monkeypatch, "WanTransformer3DModel")
+    for arch, pipe in zip(("gfx1100", "gfx942:sramecc+:xnack-", ""), pipes):
+        _rocm_arch(monkeypatch, arch)
+        assert D.install(pipe, _TARGET) == 0 and not seen, arch
+    _rocm_arch(monkeypatch, "gfx1151")
+    _rocm_table(monkeypatch, "QwenImage21Transformer2DModel")
+    assert D.install(pipes[3], _TARGET) == 0 and not seen
+    _rocm_table(monkeypatch, "WanTransformer3DModel", platform = "another-os")
+    assert D.install(pipes[4], _TARGET) == 0 and not seen
+    _rocm_table(monkeypatch, "WanTransformer3DModel")
+    _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": None}, impl = "triton")
+    _rocm_arch(monkeypatch, "gfx1151")
+    monkeypatch.setattr(D, "long_verdict", lambda *a, **k: None)
+    assert D.install(pipes[5], _TARGET) == 0
+    _rocm_arch(monkeypatch, "gfx1100")
+    monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
+    assert D.install(pipes[6], _TARGET) == 4
+
+
+def test_rocm_auto_table_is_the_measured_one():
+    """ROCM_AUTO_DITS as measured on gfx1151: Qwen-Image-2.1 and Wan on Linux, Qwen-Image-2.1 on Windows."""
+    assert D.ROCM_AUTO_DITS == {
+        ("gfx1151", "linux"): {"QwenImage21Transformer2DModel", "WanTransformer3DModel"},
+        ("gfx1151", "win32"): {"QwenImage21Transformer2DModel"},
+    }
 
 
 def test_install_never_raises(monkeypatch):

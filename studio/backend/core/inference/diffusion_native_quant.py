@@ -143,7 +143,9 @@ def _bench_int8pack_vs_dense(layer: Any, dtype: Any, device: Any) -> tuple:
     scale = layer.weight_scale.view(torch.float32).to(device).to(dtype).contiguous()
     w = (w_q.to(dtype) * scale.unsqueeze(1)).contiguous()
     x = torch.randn(_INT8PACK_PROBE_ROWS, layer.in_features, dtype = dtype, device = device)
-    sync = torch.mps.synchronize if device.type == "mps" else (lambda: None)
+    from .diffusion_device import mps_synchronize
+
+    sync = mps_synchronize if device.type == "mps" else (lambda: None)
     kernel = lambda: torch._weight_int8pack_mm(x, w_q, scale)
     dense = lambda: torch.nn.functional.linear(x, w)
     kernel()
@@ -458,9 +460,8 @@ def _autocast_on(x: Any) -> bool:
 
 
 def fused_w8a8_serves(module: Any) -> bool:
-    """Whether ``module`` holds native int8 W8A8 linears that the compiled function serves (CUDA, not ROCm, an
-    inductor runtime, not disabled and not failed). It never runs inside a CUDA-graph capture, so a captured step
-    bakes those linears' eager kernels instead. Never raises."""
+    """Whether int8 W8A8 linears run the compiled function (CUDA, not ROCm, inductor, not disabled
+    or failed); never inside CUDA-graph capture (eager kernels baked); never raises"""
     try:
         if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
             return False
@@ -593,9 +594,8 @@ def native_linear_class():
                     and weight.is_floating_point()
                     and weight.dtype != cast
                 ):
-                    # A manual-cast Linear stores bf16 for a float16 / float32 compute: round to the compute dtype
-                    # first, as a load widened on the host would have (bf16 -> float16 is not exact), so the
-                    # codes are the same either way.
+                    # Round to the compute dtype first, as a host-widened load would, so the codes
+                    # match either way.
                     weight = weight.to(cast)
                 with torch.no_grad():
                     w = weight.float()

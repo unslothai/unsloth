@@ -907,7 +907,7 @@ with sync_playwright() as p:
         pinned = [e for e in entries if _as_int(e.get("customContextLength")) == native_default]
 
         # Not every stored context is a phantom pin: model-config-page.tsx pins the active context on purpose
-        # for a manual GPU-layer placement (pinFixedLayerContext), which includes every CPU-only runner.
+        # for a manual GPU-layer placement (fixedLayerContextPin), which includes every CPU-only runner.
         expected_pin = [
             e
             for e in pinned

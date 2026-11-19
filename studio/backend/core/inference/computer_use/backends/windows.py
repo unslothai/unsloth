@@ -32,6 +32,11 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _MONITORINFOF_PRIMARY = 1
 _CREATE_NO_WINDOW = 0x08000000
 _GA_ROOT = 2
+_GWL_EXSTYLE = -20
+_WS_EX_TRANSPARENT = 0x00000020
+_WS_EX_LAYERED = 0x00080000
+_CLICK_THROUGH = _WS_EX_LAYERED | _WS_EX_TRANSPARENT
+_DWMWA_CLOAKED = 14
 _RESOLVE_TTL_S = 60.0
 _START_INDEX_TTL_S = 600.0
 _START_INDEX_SCRIPT = "Get-StartApps | ForEach-Object { $_.Name + [char]9 + $_.AppID }"
@@ -138,6 +143,19 @@ class WindowsBackend(Backend):
             ctypes.POINTER(wintypes.RECT),
             wintypes.LPARAM,
         )
+        self._window_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows.argtypes = [self._window_proc, wintypes.LPARAM]
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsIconic.argtypes = [wintypes.HWND]
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongW.restype = wintypes.LONG
+        try:
+            self._dwmapi: Any = ctypes.WinDLL("dwmapi")
+            self._dwmapi.DwmGetWindowAttribute.argtypes = [
+                wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+            ]  # fmt: skip
+        except OSError:
+            self._dwmapi = None
         user32.EnumDisplayMonitors.argtypes = [
             wintypes.HDC,
             ctypes.c_void_p,
@@ -440,6 +458,39 @@ class WindowsBackend(Backend):
             hwnd = self._user32.WindowFromPoint(wintypes.POINT(int(round(x)), int(round(y))))
         root = self._user32.GetAncestor(hwnd, _GA_ROOT) if hwnd else None
         return self._window(root) if root else None
+
+    def _cloaked(self, hwnd: Any) -> bool:
+        """A suspended Store app or one on another virtual desktop is "visible" but not shown."""
+        if self._dwmapi is None:
+            return False
+        cloaked = wintypes.DWORD(0)
+        found = self._dwmapi.DwmGetWindowAttribute(
+            hwnd, _DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
+        )
+        return found == 0 and bool(cloaked.value)
+
+    def window_stack(self) -> Optional[list[tuple[Any, tuple[float, float, float, float]]]]:
+        user32 = self._user32
+        found: list[tuple[Any, tuple[float, float, float, float]]] = []
+
+        def visit(hwnd, _data):
+            if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd) or self._cloaked(hwnd):
+                return True
+            # Clicks pass through a layered window only when it is also transparent.
+            if (user32.GetWindowLongW(hwnd, _GWL_EXSTYLE) & _CLICK_THROUGH) == _CLICK_THROUGH:
+                return True
+            rect = wintypes.RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                found.append(
+                    (hwnd, (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top))
+                )
+            return True
+
+        # Top-level windows come in z-order, topmost first.
+        with self._dpi_aware():
+            if not user32.EnumWindows(self._window_proc(visit), 0):
+                return None
+        return found
 
     def resolve_app(self, name: str) -> str:
         # One call resolves a name for its gate, its card and its run: each lookup starts PowerShell.

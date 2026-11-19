@@ -218,8 +218,7 @@ _CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
 _CLAUDE_COMPACT_BUFFER = 3_000
 # claude 2.1 ignores a smaller CLAUDE_CODE_AUTO_COMPACT_WINDOW and warns about it on every launch.
 _CLAUDE_MIN_AUTO_COMPACT_WINDOW = 100_000
-# Headroom for the agent's token estimate running low: 10% of the window, so a 1M window keeps
-# ~33k free (96%, near Claude Code's own ~967K) instead of 100k.
+# Headroom in case the agent's token estimate runs low: 10% of the window, capped at 32_768.
 _CLAUDE_COMPACT_HEADROOM_MAX = 32_768
 
 
@@ -2199,6 +2198,60 @@ def _resident_serves_variant(status: dict, wanted: Optional[str]) -> bool:
     return str(resident).strip().lower() == str(wanted).strip().lower()
 
 
+# Carried field -> strip_shadowing_flags groups a sent copy makes the server strip from inherited extras.
+_EXTRAS_SHADOW_GROUPS = {
+    "max_seq_length": ("strip_context",),
+    "cache_type_kv": ("strip_cache",),
+    "speculative_type": ("strip_spec",),
+    "spec_draft_n_max": ("strip_spec",),
+    "chat_template_override": ("strip_template",),
+    "tensor_parallel": ("strip_split_mode",),
+    "tensor_split": ("strip_tensor_split",),
+    "gpu_memory_mode": ("strip_offload",),
+    "gpu_layers": ("strip_offload",),
+    "n_cpu_moe": ("strip_offload",),
+    "reasoning_budget": ("strip_reasoning_budget",),
+    "reasoning_budget_message": ("strip_reasoning_budget_message",),
+    "n_batch": ("strip_batch",),
+    "n_ubatch": ("strip_ubatch",),
+    "load_mode": ("strip_load_mode", "strip_load_mode_aliases"),
+    "ctx_checkpoints": ("strip_ctx_checkpoints",),
+    "cache_ram": ("strip_cache_ram",),
+    "spec_draft_cache_type": ("strip_spec_draft_cache",),
+}
+
+
+def _fields_extras_override(extras, carried: dict) -> set:
+    """The carried fields one of ``extras`` overrides; all of them when the flags cannot be read here."""
+    if not extras:
+        return set()
+    try:
+        ensure_studio_backend_path(seed_cache_env = False)
+        from core.inference.llama_server_args import selects_spec_type, strip_shadowing_flags
+    except ImportError:
+        return set(carried)
+    off = dict.fromkeys(
+        (group for groups in _EXTRAS_SHADOW_GROUPS.values() for group in groups), False
+    )
+    present = {
+        group for group in off if strip_shadowing_flags(extras, **{**off, group: True}) != extras
+    }
+    overridden = {
+        name for name in carried if present.intersection(_EXTRAS_SHADOW_GROUPS.get(name, ()))
+    }
+    # Left home, "off" reloads as auto; stripping a disabled drafter's tuning flags changes nothing.
+    if carried.get("speculative_type") == "off" and not selects_spec_type(extras):
+        overridden.discard("speculative_type")
+    return overridden
+
+
+def _names_another_quant(status: dict, load: LoadOptions) -> bool:
+    """Whether the load asks for a different quant than the resident runs: another checkpoint, with saved settings of its own."""
+    return bool(load.gguf_variant and _resident_variant(status)) and not _resident_serves_variant(
+        status, load.gguf_variant
+    )
+
+
 def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset) -> bool:
     """Whether applying these settings can restart the resident. Unproven equality counts as a difference: a silent restart is worse than a spurious warning."""
     if not status:
@@ -2278,6 +2331,7 @@ def _resolve_model(
         status_snapshot = _inference_status(base, key)
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
         inferred_differs = _load_settings_differ(status_snapshot, load, overrides)
+        same_checkpoint = not _names_another_quant(status_snapshot, load)
         # preload_check deliberately survives: it is the only gate before the load evicts the shared model (_require_gguf_for_codex runs after _connect returns). An older server answers this listing from the full catalog, which also carries cached-but-unloaded entries (loaded == False); matching one would skip /api/inference/load and leave the agent pointed at a model that is not resident, so only attach to an entry that is actually loaded.
     loaded_match = next(
         (
@@ -2310,6 +2364,7 @@ def _resolve_model(
                     if status_snapshot.get(field)
                 )
             )
+            same_checkpoint = same_checkpoint and not _names_another_quant(status_snapshot, load)
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
         # A load of a model already served replaces it in its own slot, which may not be the primary.
         active = loaded_match or next((m for m in models if m.get("loaded") is not False), None)
@@ -2492,11 +2547,13 @@ def _resolve_model(
             )
         if attach_public_id is not None or loaded_match is not None:
             # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
-            carried = _resident_runtime_payload(status_snapshot, payload)
+            carried = _resident_runtime_payload(status_snapshot, payload) if same_checkpoint else {}
             if attach_public_id is None:
-                # Omitted extras are inherited server-side, shadow-stripped against the fields sent: a copied list would beat --context-length, and a carried field would strip an extra that won. So extras mean no carry.
-                if not same_checkpoint or status_snapshot.get("requested_llama_extra_args"):
-                    carried = {}
+                # Extras are inherited server-side and shadow-stripped against sent fields, so a carried field would strip its group's flags.
+                for name in _fields_extras_override(
+                    status_snapshot.get("requested_llama_extra_args"), carried
+                ):
+                    carried.pop(name, None)
                 carried.pop("llama_extra_args", None)
                 # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
                 if {**payload, **carried}.get("gpu_memory_mode") != "manual":
@@ -2507,6 +2564,9 @@ def _resolve_model(
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
             if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
+        if not same_checkpoint or (attach_public_id is None and loaded_match is None):
+            # Nothing of this checkpoint is resident to carry from; named fields still win.
+            payload["use_saved_settings"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
         except Exception:
