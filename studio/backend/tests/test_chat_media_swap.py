@@ -620,3 +620,102 @@ def test_tier_choice(monkeypatch, server_loop, policy, on_gpu, beside):
         stop_render = lambda: None,
     )
     assert seen["beside"] is beside
+
+
+@pytest.mark.parametrize(
+    "load_policy, on_gpu, refused",
+    [
+        ("never", True, True),
+        ("never", False, True),
+        ("beside_only", True, True),
+        ("beside_only", False, False),
+        ("bogus", False, True),
+        ("any", True, False),
+    ],
+)
+def test_the_credential_load_policy_gates_the_swap(
+    monkeypatch, server_loop, load_policy, on_gpu, refused
+):
+    """An inference-only key may neither load nor unload; the chat tools key only loads beside chat."""
+    import dataclasses
+
+    import core.inference.media_switch_backends as backends
+
+    log, box = Log(), {}
+    _patch_adapters(monkeypatch, log, box)
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: on_gpu)
+    if not on_gpu:
+        monkeypatch.setattr(FakeImage, "load", ArbiterImage.load)
+        monkeypatch.setattr(FakeImage, "fits", True, raising = False)
+    result = swap.run_in_tool(
+        loop = server_loop,
+        account = dataclasses.replace(OWNER, load_policy = load_policy),
+        render = None,
+        cancel_event = None,
+        render_limit_s = 5,
+        stop_render = lambda: None,
+    )
+    if refused:
+        assert result == swap.ERR_LOAD_POLICY and log == []
+    else:
+        assert result.startswith("Generated"), result
+
+
+class _Engine:
+    def __init__(self, loading = ()):
+        self.unloads = 0
+        self.loading = tuple(loading)
+        self.is_loaded = False
+
+    def unload(self):
+        self.unloads += 1
+
+    def loading_repo_ids(self):
+        return self.loading
+
+
+def _studio_image_unload(
+    monkeypatch,
+    *,
+    admitted,
+    status,
+    loading = (),
+):
+    from core.inference import diffusion_engine_router as router
+    from core.inference import flux3_prompt_upsampler as pup
+    from core.inference import gpu_arbiter
+    from core.inference import media_switch_backends as backends
+    from core.inference.media_model_index import MediaModelPick
+
+    engine = _Engine(loading)
+    monkeypatch.setattr(router, "get_active_diffusion_engine", lambda: engine)
+    monkeypatch.setattr(pup, "stop_for_handover", lambda: None)
+    monkeypatch.setattr(gpu_arbiter, "release_if", lambda *a, **k: None)
+    monkeypatch.setattr(
+        backends,
+        "backend_for",
+        lambda owner: type("B", (), {"status": staticmethod(lambda: status)})(),
+    )
+    image = swap.StudioImage("unsloth", render = None)
+    if admitted:
+        image._admitted = (
+            "unsloth/sdxl-turbo",
+            MediaModelPick("unsloth/sdxl-turbo", "unsloth/sdxl-turbo"),
+        )
+    asyncio.run(image.unload())
+    return engine.unloads
+
+
+def test_cleanup_unloads_only_the_load_this_swap_admitted(monkeypatch):
+    ours = {"loaded": True, "repo_id": "unsloth/sdxl-turbo"}
+    other = {"loaded": True, "repo_id": "black-forest-labs/FLUX.2-klein-4B"}
+    # The gated route refused the load (another account's model is generating): nothing of ours to unload.
+    assert _studio_image_unload(monkeypatch, admitted = False, status = other) == 0
+    # Admitted, but another model is resident or loading now: left alone.
+    assert _studio_image_unload(monkeypatch, admitted = True, status = other) == 0
+    assert (
+        _studio_image_unload(monkeypatch, admitted = True, status = {}, loading = ("someone/else",)) == 0
+    )
+    # Our model resident, or our own load failed half way: unloaded.
+    assert _studio_image_unload(monkeypatch, admitted = True, status = ours) == 1
+    assert _studio_image_unload(monkeypatch, admitted = True, status = {"loaded": False}) == 1

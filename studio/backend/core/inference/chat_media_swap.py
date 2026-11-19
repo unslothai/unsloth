@@ -38,6 +38,10 @@ SWAP_ENV = "UNSLOTH_CHAT_IMAGE_SWAP"
 SWAP_MODEL_ENV = "UNSLOTH_CHAT_IMAGE_SWAP_MODEL"
 
 ERR_STOPPED = "Error: image generation was stopped."
+ERR_LOAD_POLICY = (
+    "Error: this credential may not load or unload models, so chat cannot swap to the image model. "
+    "Load the image model on the Images page, or use a key allowed to switch models."
+)
 ERR_NO_DEFAULT = (
     "Error: no image model is loaded and no default image model is set for chat. Pick one on the "
     "Images page once, or set one in Settings."
@@ -435,6 +439,8 @@ class StudioImage:
         self.subject = subject
         self._render = render
         self.load_timeout_s = 600.0
+        # The load this swap started, once the gated route admitted it; unload() touches nothing else.
+        self._admitted: Optional[tuple[str, Any]] = None
 
     async def load(self, name: str, should_abort) -> None:
         from core.inference.gpu_arbiter import DIFFUSION
@@ -458,6 +464,7 @@ class StudioImage:
         if await asyncio.to_thread(is_edit_only, pick):
             raise RuntimeError(f"'{pick.model_id}' only edits images")
         await _start_load(DIFFUSION, pick, self.subject)
+        self._admitted = (name, pick)
         backend = backend_for(DIFFUSION)
         deadline = time.monotonic() + self.load_timeout_s
         while True:
@@ -485,7 +492,30 @@ class StudioImage:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
         from core.inference.gpu_arbiter import DIFFUSION, release_if
 
+        from core.inference.media_model_index import resident_is_pick
+        from core.inference.media_switch_backends import backend_for
+
+        if self._admitted is None:
+            # The gated route refused the load (another account's model, the arbiter): nothing here is ours.
+            return
+        name, pick = self._admitted
         engine = get_active_diffusion_engine()
+        status = await asyncio.to_thread(backend_for(DIFFUSION).status) or {}
+        if status.get("loaded") and not resident_is_pick(status, name, pick):
+            logger.info(
+                "chat image swap: '%s' is resident, not this swap's load; left loaded",
+                status.get("repo_id"),
+            )
+            return
+        ours = {
+            pick.model_id.strip().lower(),
+            pick.model_path.strip().lower(),
+            name.strip().lower(),
+        }
+        loading = {str(r).strip().lower() for r in (engine.loading_repo_ids() or ()) if r}
+        if loading and not (loading & ours):
+            logger.info("chat image swap: another load is in flight; left alone")
+            return
         await asyncio.to_thread(engine.unload)
         await asyncio.to_thread(pup.stop_for_handover)
         await asyncio.to_thread(
@@ -530,14 +560,26 @@ def run_in_tool(
         # Another chat is streaming from the same llama-server: unloading it would end that one.
         return "Error: another chat is generating on this model. Try again when it finishes."
     subject = getattr(account, "username", None) or "unsloth"
+    from core.inference.load_policy import LoadPolicy
+
+    try:
+        load_policy = LoadPolicy(getattr(account, "load_policy", LoadPolicy.ANY))
+    except ValueError:
+        load_policy = (
+            LoadPolicy.NEVER
+        )  # an unknown value is the strictest reading, as current_load_policy
+    from core.inference.media_switch_backends import load_takes_the_gpu
+
+    on_gpu = load_takes_the_gpu()
+    # An inference-only key may neither load nor unload; the chat's own tools key may only load beside chat (a CPU
+    # image device never takes chat's GPU). Refused before any eviction or load.
+    if load_policy is LoadPolicy.NEVER or (load_policy is not LoadPolicy.ANY and on_gpu):
+        return ERR_LOAD_POLICY
     from core.inference.gpu_residency import current_policy
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-    from core.inference.media_switch_backends import load_takes_the_gpu
-
     policy = current_policy()
     # A CPU image device (sd.cpp or diffusers on the CPU) never takes chat's GPU: load it beside.
-    on_gpu = load_takes_the_gpu()
     trip = RoundTrip(
         chat = StudioChat(subject),
         media = StudioImage(subject, render),
