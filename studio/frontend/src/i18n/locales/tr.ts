@@ -179,6 +179,7 @@ export const tr = {
       add: "Ekle",
       cancel: "İptal",
       removeSite: "Kaldır: {site}",
+      hostOnly: "Yalnızca bu ana bilgisayar, alt alan adları hariç",
       permissionsNote:
         "Burada yalnızca kendi izinleri olan siteler görünür. Eylemler; oturum açma, form gönderme ve satın alan, gönderen veya silen düğmelerdir.",
       siteInvalid: "example.com veya *.example.com gibi bir site girin.",

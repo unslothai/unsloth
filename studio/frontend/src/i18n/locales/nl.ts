@@ -179,6 +179,7 @@ export const nl = {
       add: "Toevoegen",
       cancel: "Annuleren",
       removeSite: "{site} verwijderen",
+      hostOnly: "Alleen deze host, niet de subdomeinen",
       permissionsNote:
         "Alleen sites met eigen toestemmingen worden hier weergegeven. Acties zijn inloggen, formulierverzendingen en knoppen waarmee iets wordt gekocht, verzonden of verwijderd.",
       siteInvalid: "Voer een site in zoals example.com of *.example.com.",

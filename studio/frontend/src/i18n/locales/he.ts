@@ -174,6 +174,7 @@ export const he = {
       add: "הוספה",
       cancel: "ביטול",
       removeSite: "הסרת {site}",
+      hostOnly: "המארח הזה בלבד, לא תת-הדומיינים שלו",
       permissionsNote: "כאן מופיעים רק אתרים עם הרשאות משלהם. פעולות הן התחברויות, שליחת טפסים ולחצנים שקונים, שולחים או מוחקים.",
       siteInvalid: "יש להזין אתר כמו example.com או *.example.com.",
     },

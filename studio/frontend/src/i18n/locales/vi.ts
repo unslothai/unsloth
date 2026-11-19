@@ -179,6 +179,7 @@ export const vi = {
       add: "Thêm",
       cancel: "Hủy",
       removeSite: "Xóa {site}",
+      hostOnly: "Chỉ máy chủ này, không gồm tên miền phụ",
       permissionsNote:
         "Chỉ những trang web có quyền riêng mới xuất hiện ở đây. Hành động gồm đăng nhập, gửi biểu mẫu và các nút mua, gửi hoặc xóa.",
       siteInvalid: "Nhập một trang web như example.com hoặc *.example.com.",

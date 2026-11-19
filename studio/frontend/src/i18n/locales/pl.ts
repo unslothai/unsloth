@@ -179,6 +179,7 @@ export const pl = {
       add: "Dodaj",
       cancel: "Anuluj",
       removeSite: "Usuń {site}",
+      hostOnly: "Tylko ten host, bez jego subdomen",
       permissionsNote:
         "Wyświetlane są tylko witryny z własnymi uprawnieniami. Działania to logowania, wysyłanie formularzy oraz przyciski, które kupują, wysyłają lub usuwają.",
       siteInvalid: "Wpisz witrynę, np. example.com lub *.example.com.",

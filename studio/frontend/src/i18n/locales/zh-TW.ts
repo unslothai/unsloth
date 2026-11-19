@@ -176,6 +176,7 @@ export const zhTW = {
       add: "新增",
       cancel: "取消",
       removeSite: "移除 {site}",
+      hostOnly: "僅此主機，不含其子網域",
       permissionsNote:
         "這裡只會列出設有專屬權限的網站。「動作」指登入、表單送出，以及購買、傳送或刪除用的按鈕。",
       siteInvalid: "請輸入網站，例如 example.com 或 *.example.com。",
