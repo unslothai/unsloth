@@ -85,25 +85,53 @@ def reset_cache() -> None:
 _get_last_error: Any = None
 
 
+def _resolve_get_last_error() -> Any:
+    """``cudaGetLastError`` (``hipGetLastError`` on ROCm) of the runtime torch already loaded."""
+    import ctypes
+    import sys
+
+    import torch
+
+    hip = bool(getattr(torch.version, "hip", None))
+    sym = "hipGetLastError" if hip else "cudaGetLastError"
+    if sys.platform == "win32":
+        import glob
+        import os
+
+        # torch's wheels ship the runtime DLL next to torch's own; loading it again returns the mapped module
+        pattern = "amdhip64*.dll" if hip else "cudart64_*.dll"
+        for path in sorted(
+            glob.glob(os.path.join(os.path.dirname(torch.__file__), "lib", pattern))
+        ):
+            fn = getattr(ctypes.CDLL(path), sym, None)
+            if fn is not None:
+                return fn
+        return None
+    try:
+        # torch usually loads the runtime globally, so the symbol resolves without naming the library
+        return getattr(ctypes.CDLL(None), sym)
+    except AttributeError:
+        # loaded RTLD_LOCAL: open the exact runtime library this process already mapped
+        lib = "libamdhip64.so" if hip else "libcudart.so"
+        with open("/proc/self/maps", encoding = "utf-8") as maps:
+            path = next(ln.split()[-1] for ln in maps if lib in ln)
+        return getattr(ctypes.CDLL(path), sym)
+
+
 def consume_cuda_error() -> None:
-    """Clear this thread's pending CUDA runtime error after a handled failure (a refused ``cudaHostRegister``):
-    left pending, the thread's next kernel launch raises it. Never raises."""
+    """Clear this thread's pending CUDA / HIP runtime error after a handled failure (a refused
+    ``cudaHostRegister``): left pending, the thread's next kernel launch raises it. Never raises."""
     global _get_last_error
     try:
         if _get_last_error is None:
             import ctypes
 
-            try:
-                # torch usually loads the CUDA runtime globally, so the symbol resolves without naming the library
-                fn = ctypes.CDLL(None).cudaGetLastError
-            except AttributeError:
-                # loaded RTLD_LOCAL: open the exact libcudart this process already mapped
-                with open("/proc/self/maps", encoding = "utf-8") as maps:
-                    path = next(ln.split()[-1] for ln in maps if "libcudart.so" in ln)
-                fn = ctypes.CDLL(path).cudaGetLastError
+            fn = _resolve_get_last_error()
+            if fn is None:
+                return
             fn.argtypes = []
             fn.restype = ctypes.c_int
             _get_last_error = fn
         _get_last_error()
-    except Exception:  # noqa: BLE001 - no runtime symbol (CPU / ROCm build): nothing is pending
+    except Exception:  # noqa: BLE001 - no runtime symbol (CPU build): nothing is pending
         pass

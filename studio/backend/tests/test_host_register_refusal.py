@@ -32,6 +32,40 @@ def test_consume_calls_cuda_get_last_error_once_resolved(monkeypatch):
     assert calls == [1]
 
 
+@pytest.mark.parametrize(
+    "hip, platform, want",
+    [
+        (None, "linux", "cudaGetLastError"),
+        ("6.4", "linux", "hipGetLastError"),
+        (None, "win32", "cudaGetLastError"),
+        ("6.4", "win32", "hipGetLastError"),
+    ],
+)
+def test_the_resolver_asks_the_runtime_torch_runs_on(monkeypatch, tmp_path, hip, platform, want):
+    import ctypes
+    import sys
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / ("amdhip64_6.dll" if hip else "cudart64_12.dll")).write_bytes(b"")
+    opened = []
+
+    class _Lib:
+        def __init__(self, path):
+            opened.append(path)
+
+        def __getattr__(self, name):
+            return name
+
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(torch, "__file__", str(tmp_path / "__init__.py"))
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(ctypes, "CDLL", _Lib)
+    assert hp._resolve_get_last_error() == want
+    if platform == "win32":
+        assert len(opened) == 1 and str(lib) in opened[0]
+
+
 def test_a_refused_registration_consumes_the_pending_error(monkeypatch):
     calls = []
     holder = object.__new__(mem._RegisteredHostBuffer)
