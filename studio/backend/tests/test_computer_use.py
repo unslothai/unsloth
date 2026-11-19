@@ -365,6 +365,23 @@ def test_only_a_local_engine_sizes_the_screenshots(desktop, monkeypatch):
         assert session.coordinates == ("grid" if local else "pixels")
 
 
+def test_the_encoder_is_read_only_when_computer_use_is_asked_for(desktop, monkeypatch):
+    from routes import inference as routes
+
+    monkeypatch.setattr(routes, "_enabled_agent_skills", lambda: [])
+    reads = []
+    encoder = lambda: reads.append(1) or "qwen2_5_vl"
+    payload = routes.ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
+    payload.thread_id = SESSION
+    for tools, expected in (([], 0), (["computer"], 1)):
+        payload.enabled_tools = tools
+        asyncio.run(routes._select_request_tools(
+            payload, tools_on = True, supports_vision = True, encoder = encoder, mcp_allowed = False,
+        ))  # fmt: skip
+        assert len(reads) == expected
+    assert state.session(state.session_key(SESSION)).coordinates == "pixels"
+
+
 def test_each_capture_takes_its_display_shape_and_zoom_maps_by_desktop(desktop, monkeypatch):
     portrait = Display(2, 1280, 0, 800, 1280, False)
     monkeypatch.setattr(desktop, "displays", lambda: [Display(1, 0, 0, 1280, 800, True), portrait])
