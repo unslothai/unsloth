@@ -412,6 +412,8 @@ def _fit_with_instruction_pins(
     messages,
     *,
     anchor_ids = None,
+    argument_anchor_ids = None,
+    reserve_anchor_ids = None,
     on_compacting = None,
     **kwargs,
 ):
@@ -429,9 +431,46 @@ def _fit_with_instruction_pins(
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
+    # Evict results only after reclaiming code/arguments from completed calls.
+    # The normal fit runs before the later reply-room rescue, which otherwise
+    # discovers the saving after the findings have already been discarded.
+    if (
+        not kwargs.get("replay_only")
+        and (kwargs.get("context_length") or 0) > 1
+        and kwargs.get("count_tokens") is not None
+    ):
+        target = max(
+            1,
+            prompt_budget(kwargs.get("context_length") or 0, kwargs.get("max_tokens"))
+            - max(0, int(kwargs.get("prompt_reserve_tokens") or 0)),
+        )
+        try:
+            compacted, count = compact_completed_tool_arguments(
+                messages,
+                preserve_failed = True,
+                protected_message_ids = anchors | pins | set(argument_anchor_ids or ()),
+            )
+            # No extra tokenizer request when there are no reclaimable arguments.
+            if count:
+                before_tokens = kwargs["count_tokens"](messages)
+                if before_tokens > target and kwargs["count_tokens"](compacted) < before_tokens:
+                    messages = compacted
+        except Exception:
+            logger.debug("Pre-eviction argument compaction failed", exc_info = True)
+    # Optional room for a future result must not displace results already in hand.
+    # These extra anchors are released when retrying without that optional reserve.
+    reserve_anchors = set(reserve_anchor_ids or ()) if kwargs.get("prompt_reserve_tokens") else set()
     fitted, truncation = _fit_context(
-        messages, protected_message_ids = (anchors | pins) or None, **kwargs
+        messages, protected_message_ids = (anchors | pins | reserve_anchors) or None, **kwargs
     )
+    # A result reserve must never refuse a prompt that otherwise fits.
+    if kwargs.get("prompt_reserve_tokens") and truncation and not truncation.get("fits"):
+        return _fit_with_instruction_pins(
+            messages, anchor_ids = anchor_ids, argument_anchor_ids = argument_anchor_ids,
+            reserve_anchor_ids = reserve_anchor_ids,
+            on_compacting = on_compacting,
+            **{**kwargs, "prompt_reserve_tokens": 0},
+        )
     # Only a refusal returning the ORIGINAL messages was already failing; a rescue is servable.
     if (
         not kwargs.get("replay_only")
@@ -38876,6 +38915,7 @@ class LlamaCppBackend:
         _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())
         # Recall once per request, or each refit stacks more recalled turns.
         _conversation_recall_done = False
+        _deferred_conversation_recall = False
         # Apply the sticky boundary once; refits run on already-fitted history.
         _sticky_boundary_applied = False
         # Later fits run on the cut history, so the cut stays put even without a saved thread.
@@ -38888,6 +38928,7 @@ class LlamaCppBackend:
         # has to be told which branch is live, and the client's messages are the answer.
         # Restored dicts are new; both branch lists match by identity.
         _request_branch: list[dict] = list(conversation)
+        _request_message_ids = {id(message) for message in conversation}
         # ...and everything this request adds to it. A long agent run can evict its own
         # earlier tool exchange, which is archived; filtered against the messages the
         # client sent, that document looks like an abandoned branch and is refused, so the
@@ -39314,6 +39355,88 @@ class LlamaCppBackend:
                 return None
             return max(0, max_tokens - _accumulated_completion_tokens - spent_this_attempt)
 
+        from core.inference.working_evidence import WorkingEvidence
+
+        _working_evidence = WorkingEvidence(_request_branch)
+        _working_evidence_seconds = 0.0
+
+        def _archive_current_context(current, before, **archive_kwargs):
+            """Archive normally, then retain a bounded handover of this request's findings."""
+            nonlocal _working_evidence_seconds
+            nonlocal _accumulated_completion_tokens
+            nonlocal _accumulated_predicted_ms, _accumulated_predicted_n
+            result = _archive_and_recall(current, before, **archive_kwargs)
+            if (
+                context_overflow != "truncate_oldest"
+                or not self._effective_context_length
+                or _working_evidence_seconds >= 60.0
+                or (cancel_event and cancel_event.is_set())
+            ):
+                return result
+            expired = threading.Event()
+            combined = _CombinedCancelEvent(expired, cancel_event) if cancel_event else expired
+
+            def generate_record(record_messages, limit):
+                nonlocal _working_evidence_seconds
+                nonlocal _accumulated_completion_tokens
+                nonlocal _accumulated_predicted_ms, _accumulated_predicted_n
+                started = time.monotonic()
+                timer = threading.Timer(max(0.01, 60.0 - _working_evidence_seconds), expired.set)
+                timer.daemon = True
+                timer.start()
+                try:
+                    report = _compaction_reporter(perf_callback)
+                    if report is not None:
+                        report()
+                    for event in self.generate_chat_completion(
+                        record_messages, temperature = 0, seed = seed,
+                        max_tokens = limit, enable_thinking = False,
+                        context_overflow = None, cancel_event = combined,
+                        _allow_respawn_retry = False,
+                    ):
+                        if isinstance(event, dict) and event.get("type") == "metadata":
+                            usage = _backfill_usage_from_timings(
+                                event.get("usage"), event.get("timings")
+                            ) or {}
+                            _accumulated_completion_tokens += int(usage.get("completion_tokens") or 0)
+                            timing = event.get("timings") or {}
+                            _accumulated_predicted_ms += float(timing.get("predicted_ms") or 0)
+                            _accumulated_predicted_n += int(timing.get("predicted_n") or 0)
+                        yield event
+                finally:
+                    timer.cancel()
+                    _working_evidence_seconds += time.monotonic() - started
+
+            count_prompt = archive_kwargs.get("count_tokens") or (
+                lambda fitted: self.count_chat_tokens(
+                    neutralize_control_markup_in_messages(
+                        self._countable_messages(fitted), _markup_cache, self.markup_profile
+                    ), None, _last_sent_tools or tools, strict = True,
+                    chat_template_kwargs = _reasoning_kw,
+                )
+            )
+            updated, anchor = _working_evidence.preserve(
+                result["conversation"], before,
+                context_length = self._effective_context_length,
+                prompt_budget = prompt_budget(self._effective_context_length, max_tokens),
+                count_summary = lambda record: self.count_chat_tokens(
+                    neutralize_control_markup_in_messages(record, None, self.markup_profile),
+                    strict = True,
+                    chat_template_kwargs = self._request_reasoning_kwargs(False, None, None),
+                ),
+                count_prompt = count_prompt, generate = generate_record,
+                cancelled = combined.is_set, completion_budget = _loop_budget_left(0),
+            )
+            if anchor is not None:
+                # Respawn callers consume counts only; keep their fitted list current too.
+                current[:] = updated
+                result["conversation"] = current
+                result["recalled"] = True
+                result["anchored"] = [*result["anchored"], anchor]
+                result["counts"] = {**result["counts"], "working_evidence": True}
+                _rolling_anchor_ids.add(id(anchor))
+            return result
+
         # A forced function applies until the model produces it; execution or denial resolves it.
         _forced_choice_resolved = _auto_satisfies_forced_choice
         # Continuations get a credit so they don't consume the caller's tool budget.
@@ -39406,6 +39529,17 @@ class LlamaCppBackend:
             _iteration_max_tokens = (
                 _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
             )
+            conversation, _evidence_anchor = _working_evidence.refresh(
+                conversation,
+                count_prompt = lambda fitted: self.count_chat_tokens(
+                    neutralize_control_markup_in_messages(
+                        self._countable_messages(fitted), _markup_cache, self.markup_profile
+                    ), None, safe_tools, strict = True, chat_template_kwargs = _reasoning_kw,
+                ),
+                prompt_budget = prompt_budget(self._effective_context_length or 0, _iteration_max_tokens),
+            )
+            if _evidence_anchor is not None:
+                _rolling_anchor_ids.add(id(_evidence_anchor))
             _preflight_context_length = None
             _preflight_succeeded = False
             if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -39473,7 +39607,7 @@ class LlamaCppBackend:
                             truncation.get("prompt_tokens_after") or 0
                         ) - sum(self._estimate_countable_message(m) for m in conversation)
                     if truncation:
-                        _recalled = _archive_and_recall(
+                        _recalled = _archive_current_context(
                             conversation,
                             _before_fit,
                             branch_messages = _extend_live_branch(_before_fit),
@@ -39662,7 +39796,7 @@ class LlamaCppBackend:
                     if truncation:
                         # Cards with a first tool_args event; later fragments stream so big payloads don't look frozen.
                         truncation.update(
-                            _archive_and_recall(
+                            _archive_current_context(
                                 conversation,
                                 _before_respawn_fit,
                                 thread_id = thread_id,
@@ -41245,6 +41379,108 @@ class LlamaCppBackend:
                         if decision_slot is not None:
                             abort_tool_decision(decision_slot, approval_id)
 
+                    # Price the generated call before executing it. A fit before generation
+                    # cannot reserve output reliably because the call's arguments are unknown.
+                    if context_overflow == "truncate_oldest" and self._effective_context_length:
+                        _pending_probe = {
+                            "role": "tool", "name": decision.tool_name, "content": "",
+                            "tool_call_id": decision.tool_call_id,
+                        }
+                        try:
+                            _pending_before = list(conversation)
+                            _pending_fitted, _pending_cut = _fit_with_instruction_pins(
+                                [*conversation, _pending_probe],
+                                argument_anchor_ids = {id(assistant_msg)},
+                                reserve_anchor_ids = {
+                                    id(message) for message in conversation
+                                    if message.get("role") == "tool"
+                                    and id(message) not in _request_message_ids
+                                },
+                                on_compacting = _compaction_reporter(perf_callback),
+                                context_length = self._effective_context_length,
+                                max_tokens = _iteration_max_tokens,
+                                prompt_reserve_tokens = min(
+                                    2048, self._effective_context_length // 4
+                                ),
+                                count_tokens = lambda fitted: self.count_chat_tokens(
+                                    neutralize_control_markup_in_messages(
+                                        self._countable_messages(fitted),
+                                        _markup_cache, self.markup_profile,
+                                    ),
+                                    None, safe_tools, strict = True,
+                                    chat_template_kwargs = _reasoning_kw,
+                                ),
+                                estimate_message = self._estimate_countable_message,
+                                anchor_ids = _rolling_anchor_ids,
+                                keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
+                                can_reset = _can_reset_epoch(
+                                    thread_id, _backend_supports_tools(self),
+                                    tools_withheld = _memory_tool_withheld(thread_id, tools),
+                                ),
+                                recall_offered = "search_conversation" in _enabled_tool_names,
+                                **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
+                            )
+                            if (
+                                (_pending_cut is None or _pending_cut.get("fits"))
+                                and not (_pending_cut or {}).get("dropped_messages")
+                                and _pending_fitted[-1] is _pending_probe
+                            ):
+                                # Argument-only compaction has no eviction boundary.
+                                conversation[:] = _pending_fitted[:-1]
+                            if (
+                                _pending_cut and _pending_cut.get("fits")
+                                and _pending_cut.get("dropped_messages")
+                                and _pending_fitted[-1] is _pending_probe
+                            ):
+                                conversation[:] = _pending_fitted[:-1]
+                                _archived = _archive_current_context(
+                                    conversation, _pending_before, thread_id = thread_id,
+                                    branch_messages = _extend_live_branch(_pending_before),
+                                    query_messages = _request_branch,
+                                    style = "inline", recall_done = _conversation_recall_done,
+                                    # The action was chosen before this fit. Give its result
+                                    # priority; recall only after that result has been priced.
+                                    force_recall = False,
+                                    recall_budget_tokens = _retrieval_budget(
+                                        self._effective_context_length, _iteration_max_tokens,
+                                        int(_pending_cut.get("prompt_tokens_after") or 0)
+                                        + min(2048, self._effective_context_length // 4),
+                                        reply_returns = True,
+                                    ),
+                                    count_tokens = lambda fitted: self.count_chat_tokens(
+                                        neutralize_control_markup_in_messages(
+                                            self._countable_messages(fitted),
+                                            _markup_cache, self.markup_profile,
+                                        ),
+                                        None, safe_tools, strict = True,
+                                        chat_template_kwargs = _reasoning_kw,
+                                    ),
+                                    background = True,
+                                )
+                                conversation[:] = _archived["conversation"]
+                                _deferred_conversation_recall = not _conversation_recall_done
+                                if _archived["recalled"]:
+                                    _conversation_recall_done = True
+                                    _rolling_anchor_ids.update(id(m) for m in _archived["anchored"])
+                                for _recall_event in _archived["events"]:
+                                    yield _recall_event
+                                _pending_cut = {**_pending_cut, **_archived["counts"]}
+                                _loop_cut = True
+                                if _records_boundary(_pending_cut):
+                                    _pending_cut.update(_boundary_metadata(
+                                        conversation, _request_branch, compaction_headroom_ratio
+                                    ))
+                                yield {"type": "context_truncated", **_pending_cut}
+                                # The fit can rebuild the assistant dictionary.
+                                assistant_msg = next(
+                                    m for m in reversed(conversation)
+                                    if m.get("role") == "assistant"
+                                    and any(c.get("id") == decision.tool_call_id
+                                            for c in m.get("tool_calls", []))
+                                )
+                        except Exception:
+                            logger.debug("Pending tool result fit failed", exc_info = True)
+
                     # Conservative estimate only decides whether to run the exact count, never whether to refuse; base64 is about 1 char per token.
                     _unservable_text: Optional[str] = None
                     # Set when the gate runs an oversized call rather than refusing, since compaction will reclaim room.
@@ -41855,6 +42091,48 @@ class LlamaCppBackend:
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
 
+                if _deferred_conversation_recall and not _conversation_recall_done:
+                    _deferred_conversation_recall = False
+                    try:
+                        def _count_after_tool(fitted):
+                            return self.count_chat_tokens(
+                                neutralize_control_markup_in_messages(
+                                    self._countable_messages(fitted),
+                                    _markup_cache, self.markup_profile,
+                                ),
+                                None, safe_tools, strict = True,
+                                chat_template_kwargs = _reasoning_kw,
+                            )
+
+                        # Keep the live result and next action's headroom before
+                        # spending any spare space on older recalled conversation.
+                        _after_tool_budget = _retrieval_budget(
+                            self._effective_context_length, _iteration_max_tokens,
+                            _count_after_tool(conversation)
+                            + min(2048, self._effective_context_length // 4),
+                            reply_returns = True,
+                        )
+                        _after_tool_recall = _archive_current_context(
+                            conversation, conversation,
+                            thread_id = thread_id, style = "inline",
+                            recall_done = False,
+                            branch_messages = _extend_live_branch(conversation),
+                            query_messages = _request_branch,
+                            recall_budget_tokens = _after_tool_budget,
+                            count_tokens = _count_after_tool,
+                            background = True,
+                        )
+                        conversation[:] = _after_tool_recall["conversation"]
+                        if _after_tool_recall["recalled"]:
+                            _conversation_recall_done = True
+                            _rolling_anchor_ids.update(
+                                id(m) for m in _after_tool_recall["anchored"]
+                            )
+                        for _recall_event in _after_tool_recall["events"]:
+                            yield _recall_event
+                    except Exception:
+                        logger.debug("Deferred conversation recall failed", exc_info = True)
+
                 # Loop-ending turn offers no tools, so this notice must not ask for a retry; it rides the result.
                 _over_cap_final = bool(_over_cap) and (
                     tool_controller.force_final_answer
@@ -42073,6 +42351,17 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
+        conversation, _evidence_anchor = _working_evidence.refresh(
+            conversation,
+            count_prompt = lambda fitted: self.count_chat_tokens(
+                neutralize_control_markup_in_messages(
+                    self._countable_messages(fitted), None, self.markup_profile
+                ), None, _final_tools, strict = True, chat_template_kwargs = _reasoning_kw,
+            ),
+            prompt_budget = prompt_budget(self._effective_context_length or 0, _final_max_tokens),
+        )
+        if _evidence_anchor is not None:
+            _rolling_anchor_ids.add(id(_evidence_anchor))
         _final_preflight_context_length = None
         _final_preflight_succeeded = False
         if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -42124,7 +42413,7 @@ class LlamaCppBackend:
                 )
                 _sticky_boundary_applied = True
                 if truncation:
-                    _recalled = _archive_and_recall(
+                    _recalled = _archive_current_context(
                         conversation,
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
@@ -42286,7 +42575,7 @@ class LlamaCppBackend:
                 if truncation:
                     # Archive only; see the iteration respawn refit above.
                     truncation.update(
-                        _archive_and_recall(
+                        _archive_current_context(
                             conversation,
                             _before_respawn_fit,
                             thread_id = thread_id,

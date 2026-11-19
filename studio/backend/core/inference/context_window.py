@@ -699,7 +699,9 @@ def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]
 
 
 def compact_completed_tool_arguments(
-    messages: list[dict], *, protect_last: int = 0
+    messages: list[dict], *, protect_last: int = 0,
+    preserve_failed: bool = False,
+    protected_message_ids: Optional[set[int]] = None,
 ) -> tuple[list[dict], int]:
     """Rewrite only what is REPLAYED; the stored thread and the arguments the tool received stay
     byte-identical. Only answered calls are touched, oldest first; ``protect_last`` holds
@@ -712,7 +714,11 @@ def compact_completed_tool_arguments(
     out: list[dict] = []
     compacted_calls = 0
     for index, message in enumerate(messages):
-        calls = message.get("tool_calls") if index < limit else None
+        calls = (
+            message.get("tool_calls")
+            if index < limit and id(message) not in (protected_message_ids or ())
+            else None
+        )
         if message.get("role") != "assistant" or not isinstance(calls, list) or not calls:
             out.append(message)
             continue
@@ -723,10 +729,19 @@ def compact_completed_tool_arguments(
             if not isinstance(function, dict) or (index, str(call.get("id") or "")) not in answered:
                 new_calls.append(call)
                 continue
+            reply = answered[(index, str(call.get("id") or ""))]
+            if preserve_failed and isinstance(reply, str):
+                head = reply[:200].strip().lower()
+                if head.startswith("exit code") or any(
+                    marker in head
+                    for marker in (*_FAILED_REPLY_MARKERS, "timed out", "timeout", "cancelled", "canceled")
+                ):
+                    new_calls.append(call)
+                    continue
             replacement = _compacted_arguments(
                 str(function.get("name") or ""),
                 function.get("arguments"),
-                reply = answered[(index, str(call.get("id") or ""))],
+                reply = reply,
             )
             if replacement is None:
                 new_calls.append(call)
@@ -895,6 +910,7 @@ def fit_rolling_context(
     count_tokens: Callable[[list[dict]], int],
     protected_message_ids: Optional[set[int]] = None,
     reserve_tokens: int = 0,
+    prompt_reserve_tokens: int = 0,
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,
     headroom_ratio: Optional[float] = None,
@@ -906,7 +922,9 @@ def fit_rolling_context(
     if context_length <= 1:
         return messages, None
 
-    prompt_target = prompt_budget(context_length, max_tokens)
+    prompt_target = max(
+        1, prompt_budget(context_length, max_tokens) - max(0, int(prompt_reserve_tokens))
+    )
     fitted = list(messages)
     initial_tokens = count_tokens(fitted)
     current_tokens = initial_tokens

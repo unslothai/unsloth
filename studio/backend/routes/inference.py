@@ -5794,7 +5794,12 @@ _TOOL_WEB_EXPANDED_TIP = (
 )
 _TOOL_CODE_TIP = (
     "Use code execution for math, calculations, data processing, or to parse "
-    "and analyze information from tool results."
+    "and analyze information from tool results. "
+    "For long documents or paged output, extract the requested facts in code and save "
+    "the accumulated findings to a file. Print a compact table with all requested fields, "
+    "preserving exact identifiers and complete conditions. Track which parts were processed "
+    "so you can resume from the saved findings after context compaction. Read back the "
+    "accumulated findings and verify coverage before giving the final answer."
 )
 # Small models claim to be sandboxed from priors, so state the local environment outright.
 _LOCAL_CODE_TOOLS = ("python", "terminal", "edit_file")

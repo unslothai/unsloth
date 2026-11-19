@@ -227,7 +227,7 @@ function ToolResultLimitRow() {
     };
   }, [t]);
 
-  const save = async (maxChars: number) => {
+  const save = async (maxChars: number | null) => {
     setSaving(true);
     setError(null);
     try {
@@ -254,12 +254,10 @@ function ToolResultLimitRow() {
   return (
     <SettingsRow
       label={t("settings.chat.toolResultLimit")}
-      description={t("settings.chat.toolResultLimitDescription", {
-        count: (
-          settings?.defaultChars ?? 16000
-        ).toLocaleString(),
+      description={t("settings.chat.toolResultLimitAdaptiveDescription")}
+      hint={t("settings.chat.toolResultLimitAdaptiveHint", {
+        count: (settings?.defaultChars ?? 16000).toLocaleString(),
       })}
-      hint={t("settings.chat.toolResultLimitHint")}
       below={
         note ? (
           <span
@@ -277,11 +275,14 @@ function ToolResultLimitRow() {
       }
     >
       <Select
-        value={settings ? String(settings.maxChars) : undefined}
+        value={settings ? (settings.automatic ? "auto" : String(settings.maxChars)) : undefined}
         disabled={!settings || saving || settings.lockedByEnvironment}
         onValueChange={(value) => {
-          const next = Number(value);
-          if (settings && next !== settings.maxChars) void save(next);
+          const next = value === "auto" ? null : Number(value);
+          if (
+            settings &&
+            (next === null ? !settings.automatic : settings.automatic || next !== settings.maxChars)
+          ) void save(next);
         }}
       >
         <SelectTrigger
@@ -291,14 +292,13 @@ function ToolResultLimitRow() {
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
+          <SelectItem value="auto">
+            {t("settings.chat.toolResultLimitAutomatic")}
+          </SelectItem>
           {settings
             ? toolResultLimitChoices(settings).map((choice) => (
                 <SelectItem key={choice} value={String(choice)}>
-                  {choice === settings.defaultChars
-                    ? t("settings.chat.toolResultLimitDefault", {
-                        count: choice.toLocaleString(),
-                      })
-                    : choice.toLocaleString()}
+                  {choice.toLocaleString()}
                 </SelectItem>
               ))
             : null}

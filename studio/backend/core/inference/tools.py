@@ -13440,7 +13440,9 @@ PYTHON_TOOL = {
     "type": "function",
     "function": {
         "name": "python",
-        "description": "Execute Python code in a sandbox and return stdout/stderr."
+        "description": "Execute Python code in a sandbox and return stdout/stderr. "
+        "Each call starts a fresh process: imports and variables do not persist; files do. "
+        "Include the imports and inputs required by each call."
         + _SANDBOX_PATHS_NOTE,
         "parameters": {
             "type": "object",
@@ -17571,7 +17573,12 @@ def _result_char_budget(cap: int) -> int:
 def _tool_result_char_budget() -> int:
     """The terminal/python cap, sized to the window. See `_result_char_budget`."""
     cap = _tool_result_max_chars()
-    if not _request_context_tokens():
+    ctx = _request_context_tokens()
+    if ctx and _request_result_room() is not None and _can_measure_tokens(ctx, "x"):
+        # The measured token budget controls automatic output. Explicit settings
+        # and operator limits remain hard character caps.
+        return tool_result_limit.MAX_MAX_CHARS if tool_result_limit.is_automatic() else cap
+    if not ctx:
         # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
         cap = min(cap, _MAX_OUTPUT_CHARS)
     return _result_char_budget(cap)
@@ -17837,6 +17844,7 @@ def _exact_prefix_chars(
     token_budget: float,
     ctx: int,
     floor: int | None = None,
+    fallback_chars: int | None = None,
 ) -> int:
     """Shrinks chars until the prefix costs token_budget (tokenizer when one serves); never grows"""
     if floor is None:
@@ -17846,7 +17854,7 @@ def _exact_prefix_chars(
         return chars
     counter = _loaded_token_counter(ctx)
     if counter is None:
-        return chars
+        return min(chars, fallback_chars) if fallback_chars is not None else chars
     # Returns a measured fit, the caller's estimate, or the floor, never an unmeasured shrink:
     # cutting prose off dense-then-English output raises the remaining density.
     previous = None  # the last (chars, tokens) pair, for the secant step below
@@ -17854,7 +17862,7 @@ def _exact_prefix_chars(
         # A count that already fits can skip pricing the baseline. See `_count`.
         spent = counter(text[:chars], token_budget)
         if spent is None:
-            return chars  # nothing to measure with; the estimate stands, as before
+            return min(chars, fallback_chars) if fallback_chars is not None else chars
         if spent <= token_budget:
             return chars  # measured, not assumed
         fitted = int(chars * token_budget / spent)
@@ -17911,10 +17919,13 @@ def _dense_char_limit(
     """Lowers the cap for dense text, since English-sized caps can cost most of the prompt budget."""
     ctx = _window_context_tokens()
     room = _request_result_room()
+    if room is not None and room <= 0:
+        return 0
     if room is None and (not ctx or len(text) <= _MIN_PAGE_CHARS):
         # Nothing measured, so the cap is the only budget; the reserve uses the usual 4 chars/token.
         return max(0, max_chars - int(reserve_tokens * 4))
-    if room is not None and not _can_measure_tokens(ctx or 0, text):
+    measured_room = room is not None and _can_measure_tokens(ctx or 0, text)
+    if room is not None and not measured_room:
         # Nothing here can measure this model's tokens, and 4 chars/token undercharges dense ASCII;
         # halve so a wrong estimate errs short.
         room = int(room * _UNMEASURED_ROOM_MARGIN)
@@ -17936,11 +17947,29 @@ def _dense_char_limit(
             return min(max_chars, room_chars)
         # Bottomed at zero so a full thread gets the cheap stub, not the ~90-token notice.
         floor = min(floor, _exact_prefix_chars(text, room_chars, float(room), ctx, 0))
+    fallback = (
+        min(max_chars, _dense_prefix_chars(text, share * _UNMEASURED_ROOM_MARGIN))
+        if measured_room else None
+    )
+    if fallback is not None:
+        floor = min(floor, fallback)
     fitted = _dense_prefix_chars(text, share)
-    # Measured when possible; the floor goes with it or a nearly full thread gets 2,000 chars.
-    fitted = _exact_prefix_chars(text, min(fitted, max_chars), share, ctx, floor)
-    # An explicit cap smaller than the floor still wins.
-    return min(max_chars, max(floor, fitted))
+    fitted = _exact_prefix_chars(
+        text, min(fitted, max_chars), share, ctx, floor,
+        fallback_chars = fallback,
+    )
+    fitted = min(max_chars, max(floor, fitted))
+    if measured_room and min(len(text), max_chars) > fitted:
+        # Prose can fit more than four characters/token. Expand only to a measured
+        # fit, leaving a little framing headroom; do not shrink already-fitting
+        # short results or their error details to pay for this optional expansion.
+        expanded = _exact_prefix_chars(
+            text, min(len(text), max_chars), max(0.0, float(room) - 64), ctx, 0,
+            fallback_chars = min(fitted, fallback),
+        )
+        return max(fitted, expanded)
+    return fitted
+
 
 
 def _truncate_page_text(text: str, max_chars: int) -> str:
@@ -22358,6 +22387,7 @@ def _truncate(
     hint: str = "",
     reserve_tokens: float = 0.0,
     omitted: "tuple[int, int]" = (0, 0),
+    reader: str = "terminal",
 ) -> str:
     # Resolved per call: an import-time default freezes before any model loads.
     if limit is None:
@@ -22387,7 +22417,10 @@ def _truncate(
     # Notice charged only now that it is certain, and only against a priced room; legacy character
     # caps always appended it past the cap.
     if _request_result_room() is not None:
-        limit = _dense_char_limit(text, cap, cost + _RESULT_NOTICE_RESERVE)
+        limit = _dense_char_limit(
+            text, cap, cost + _RESULT_NOTICE_RESERVE
+            + (64 if reader == "python" and workdir and scope is not None else 0)
+        )
     if limit <= 0 and len(_zero_room_stub(size, None, True)) >= len(text):
         # Before the spill: no file for output that is never cut.
         return text + hint
@@ -22413,7 +22446,12 @@ def _truncate(
         # No +1 when the head ends in a newline, or the hint skips a line.
         shown = 0 if not head else head.count("\n") + (0 if head.endswith("\n") else 1)
         total = text.count("\n") + 1 + omitted[1]
-        resume = f"sed -n '{shown + 1},{shown + max(1, shown)}p' {spill}"
+        resume = (
+            f"with open({spill!r}, encoding='utf-8') as f: "
+            f"print(''.join(f.readlines()[{shown}:{shown + max(1, shown)}]), end='')"
+            if reader == "python"
+            else f"sed -n '{shown + 1},{shown + max(1, shown)}p' {spill}"
+        )
         where = f"showing lines 1-{shown} of {total}"
     else:
         # Cut mid-line: resume by byte offset, which is what `tail -c` counts.
@@ -22421,7 +22459,12 @@ def _truncate(
         # Byte length of the next chunk's characters so `head -c` never splits a code point.
         chunk = text[len(head) : len(head) * 2 or None]
         span = len(chunk.encode("utf-8", "surrogatepass"))
-        resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, span)}"
+        resume = (
+            f"with open({spill!r}, encoding='utf-8') as f: "
+            f"print(f.read()[{len(head)}:{max(1, len(head) * 2)}], end='')"
+            if reader == "python"
+            else f"tail -c +{offset + 1} {spill} | head -c {max(1, span)}"
+        )
         where = f"showing the first {len(head)} chars of {size}"
     # Always kept: the only thing telling the model its written files survive.
     common = (
@@ -22429,7 +22472,7 @@ def _truncate(
         f"total. {_capitalise(_spill_phrase(spill, complete))}, and any files the code "
         "wrote persist in the working directory"
     )
-    if not _posix_tools_available():
+    if reader != "python" and not _posix_tools_available():
         # cmd-only Windows lacks sed/tail/head; do not promise paging.
         return head + common + ".)" + hint
     return head + common + f" -- continue with:\n  {resume})" + hint
@@ -23931,6 +23974,7 @@ def _timed_out_result(
     workdir: str | None,
     scope: "str | None",
     omitted: "tuple[int, int]" = (0, 0),
+    reader: str = "terminal",
 ) -> str:
     """Output comes first, since a finished card shows the live stream when the result is a prefix of it."""
     ended = _truncate(f"Execution timed out after {timeout} seconds.")
@@ -23945,6 +23989,7 @@ def _timed_out_result(
         scope = scope,
         reserve_tokens = _text_token_cost(f"\n{ended}", ctx),
         omitted = omitted,
+        reader = reader,
     )
     result = f"{head}\n{ended}"
     # With the retry nudge, a stub or short head served whole can overrun a room the status fits.
@@ -24140,7 +24185,7 @@ def _python_exec(
             _note_tool_execution(prepared.execution_record)
         # A run that wrote its file then hung still produced it.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted)
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted, reader = "python")
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -24162,7 +24207,10 @@ def _python_exec(
         # Before the fit: defusing inserts characters, growing the result after measurement.
         result = _defuse_sentinels(result)
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint, omitted = omitted)
+            _truncate(
+                result, workdir = spill_dir, scope = spill_scope, hint = hint,
+                omitted = omitted, reader = "python",
+            )
             if result.strip()
             else "(no output)" + hint
         )
