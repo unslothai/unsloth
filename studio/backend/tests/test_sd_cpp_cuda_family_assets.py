@@ -488,6 +488,11 @@ def test_an_unwritable_record_keeps_the_new_coverage(monkeypatch, tmp_path):
     try:
         # The file still names the older bundle; this process installed one that serves sm_120.
         assert sdmod.install_is_stale(tmp_path) is False
+        # Once anything rewrites the record, the file is the newer answer again.
+        rec = sdmod.read_install_record(tmp_path)
+        rec["repo"] = "rewritten"
+        (tmp_path / sdmod.INSTALL_RECORD).write_text(json.dumps(rec))
+        assert sdmod.install_is_stale(tmp_path) is True
     finally:
         sdmod._INSTALLED_CUDA_SMS_MEMO.clear()
         sdmod._INSTALLED_PIN_MEMO.clear()
