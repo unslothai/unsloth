@@ -3320,6 +3320,10 @@ export const sv = {
         fitOnDeviceOnly: "Visa bara modeller som får plats",
         fitOnDeviceOnlyDescription:
           "Döljer modeller som är för stora för enhetens GPU-minne och RAM i modellväljaren och Hub. Hämtade modeller visas fortfarande.",
+        pickerExpandLoaded: "Visa hela modellistan",
+        pickerExpandLoadedDescription: "Öppna modellväljaren på hela listan när en modell är inläst, i stället för bara den inlästa modellen. Att fälla ut eller fälla ihop väljaren ändrar också den här inställningen.",
+        pickerMonochromeIcons: "Enfärgade modellikoner",
+        pickerMonochromeIconsDescription: "Visa modell- och leverantörslogotyper i svart, vitt och grått i modellväljaren.",
       },
       menu: {
         title: "Chattmeny",

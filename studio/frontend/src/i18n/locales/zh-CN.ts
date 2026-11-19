@@ -3115,6 +3115,10 @@ export const zhCN = {
         fitOnDeviceOnly: "仅显示可运行的模型",
         fitOnDeviceOnlyDescription:
           "在模型选择器和 Hub 中隐藏超出本设备显存和内存容量的模型。已下载的模型仍会显示。",
+        pickerExpandLoaded: "显示完整模型列表",
+        pickerExpandLoadedDescription: "加载模型后，模型选择器打开时显示完整列表，而不是只显示已加载的模型。展开或收起选择器也会更改此设置。",
+        pickerMonochromeIcons: "单色模型图标",
+        pickerMonochromeIconsDescription: "在模型选择器中以黑、白、灰显示模型和提供商标志。",
       },
       menu: {
         title: "聊天菜单",

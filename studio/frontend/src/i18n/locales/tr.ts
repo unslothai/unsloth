@@ -3403,6 +3403,10 @@ export const tr = {
         fitOnDeviceOnly: "Yalnızca sığan modelleri göster",
         fitOnDeviceOnlyDescription:
           "Model seçicide ve Hub'da bu cihazın GPU belleği ve RAM'i için çok büyük modelleri gizleyin. İndirilen modeller görünür kalır.",
+        pickerExpandLoaded: "Tam model listesini göster",
+        pickerExpandLoadedDescription: "Bir model yüklüyken model seçiciyi yalnızca yüklü model yerine tam listeyle aç. Seçiciyi genişletmek veya daraltmak da bu ayarı değiştirir.",
+        pickerMonochromeIcons: "Tek renkli model simgeleri",
+        pickerMonochromeIconsDescription: "Model seçicide model ve sağlayıcı logolarını siyah, beyaz ve gri olarak göster.",
       },
       menu: {
         title: "Sohbet menüsü",

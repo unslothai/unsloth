@@ -3441,6 +3441,10 @@ export const pl = {
         fitOnDeviceOnly: "Pokazuj tylko mieszczące się modele",
         fitOnDeviceOnlyDescription:
           "Ukrywaj w wyborze modelu i centrum modele zbyt duże dla pamięci GPU i RAM tego urządzenia. Pobrane modele pozostają widoczne.",
+        pickerExpandLoaded: "Pokaż pełną listę modeli",
+        pickerExpandLoadedDescription: "Gdy model jest załadowany, otwieraj wybór modelu na pełnej liście zamiast tylko załadowanego modelu. Rozwinięcie lub zwinięcie wyboru również zmienia to ustawienie.",
+        pickerMonochromeIcons: "Monochromatyczne ikony modeli",
+        pickerMonochromeIconsDescription: "Pokazuj logo modeli i dostawców w czerni, bieli i szarości w wyborze modelu.",
       },
       menu: {
         title: "Menu czatu",

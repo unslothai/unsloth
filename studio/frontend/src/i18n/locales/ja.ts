@@ -3143,6 +3143,10 @@ export const ja = {
         fitOnDeviceOnly: "収まるモデルのみ表示",
         fitOnDeviceOnlyDescription:
           "このデバイスの GPU メモリと RAM に収まらないモデルを、モデル選択と Hub で非表示にします。ダウンロード済みのモデルは引き続き表示されます。",
+        pickerExpandLoaded: "モデル一覧をすべて表示",
+        pickerExpandLoadedDescription: "モデルが読み込まれているときは、読み込み済みのモデルだけでなく全一覧でモデル選択を開きます。モデル選択を展開または折りたたむと、この設定も変わります。",
+        pickerMonochromeIcons: "モノクロのモデルアイコン",
+        pickerMonochromeIconsDescription: "モデル選択で、モデルとプロバイダーのロゴを黒、白、グレーで表示します。",
       },
       menu: {
         title: "チャットメニュー",

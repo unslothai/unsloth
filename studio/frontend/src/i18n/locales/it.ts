@@ -3076,6 +3076,10 @@ export const it = {
         fitOnDeviceOnly: "Mostra solo i modelli compatibili",
         fitOnDeviceOnlyDescription:
           "Nasconde nel selettore dei modelli e nell'Hub i modelli troppo grandi per la memoria GPU e la RAM di questo dispositivo. I modelli scaricati restano visibili.",
+        pickerExpandLoaded: "Mostra l'elenco completo dei modelli",
+        pickerExpandLoadedDescription: "Apre il selettore dei modelli sull'elenco completo quando un modello è caricato, invece che solo sul modello caricato. Espandere o comprimere il selettore cambia anche questa impostazione.",
+        pickerMonochromeIcons: "Icone dei modelli monocromatiche",
+        pickerMonochromeIconsDescription: "Mostra i loghi di modelli e fornitori in nero, bianco e grigio nel selettore dei modelli.",
       },
       menu: {
         title: "Menu della chat",

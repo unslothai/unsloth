@@ -3240,6 +3240,10 @@ export const he = {
         fitOnDeviceOnly: "הצג רק מודלים שמתאימים",
         fitOnDeviceOnlyDescription:
           "הסתר בבורר המודלים וב-Hub מודלים גדולים מדי לזיכרון ה-GPU וה-RAM של מכשיר זה. מודלים שהורדו נשארים גלויים.",
+        pickerExpandLoaded: "הצג את רשימת המודלים המלאה",
+        pickerExpandLoadedDescription: "פתח את בורר המודלים על הרשימה המלאה כשמודל טעון, במקום רק המודל הטעון. הרחבה או כיווץ של הבורר משנים גם את ההגדרה הזו.",
+        pickerMonochromeIcons: "סמלי מודלים בצבע אחד",
+        pickerMonochromeIconsDescription: "הצג לוגו של מודלים וספקים בשחור, לבן ואפור בבורר המודלים.",
       },
       menu: {
         title: "תפריט צ'אט",

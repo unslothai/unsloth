@@ -3173,6 +3173,10 @@ export const ptBR = {
         fitOnDeviceOnly: "Mostrar apenas modelos que cabem",
         fitOnDeviceOnlyDescription:
           "Oculta no seletor de modelos e no Hub os modelos grandes demais para a memória da GPU e a RAM deste dispositivo. Os modelos baixados continuam visíveis.",
+        pickerExpandLoaded: "Mostrar a lista completa de modelos",
+        pickerExpandLoadedDescription: "Abre o seletor de modelos na lista completa enquanto um modelo está carregado, em vez de apenas o modelo carregado. Expandir ou recolher o seletor também altera esta configuração.",
+        pickerMonochromeIcons: "Ícones de modelos monocromáticos",
+        pickerMonochromeIconsDescription: "Mostra os logotipos de modelos e provedores em preto, branco e cinza no seletor de modelos.",
       },
       menu: {
         title: "Menu do chat",

@@ -3405,6 +3405,10 @@ export const id = {
         fitOnDeviceOnly: "Hanya tampilkan model yang muat",
         fitOnDeviceOnlyDescription:
           "Sembunyikan model yang terlalu besar untuk memori GPU dan RAM perangkat ini di pemilih model dan Hub. Model yang sudah diunduh tetap terlihat.",
+        pickerExpandLoaded: "Tampilkan daftar model lengkap",
+        pickerExpandLoadedDescription: "Buka pemilih model pada daftar lengkap saat model dimuat, bukan hanya model yang dimuat. Membuka atau menutup pemilih juga mengubah pengaturan ini.",
+        pickerMonochromeIcons: "Ikon model monokrom",
+        pickerMonochromeIconsDescription: "Tampilkan logo model dan penyedia dalam hitam, putih, dan abu-abu di pemilih model.",
       },
       menu: {
         title: "Menu chat",
