@@ -82,8 +82,7 @@ def _one_budget(total, free, reserved, peak, pre, post):
     return fl.dequant_budget_bytes(free, reserved, peak + (post - pre), total)
 
 
-# Colab T4 fp16 klein (15 GiB card, the observed case): the cache planned 7.44 GiB and the gc plan kept all 25
-# blocks (7.1 GiB); L4 klein at 1024 px, where the gc plan alone can fill the whole headroom; A100-40 Wan.
+# Observed T4 fp16 klein (cache 7.44 GiB + 25 kept blocks 7.1 GiB), L4 klein 1024 px, A100-40 Wan.
 CASES = {
     "t4_klein_512": dict(
         total = 15 * GIB,
@@ -130,7 +129,6 @@ def test_both_planners_sum_within_one_budget(monkeypatch, case):
     margin = max(2 * GIB, int(c["total"] * 0.10))
     step2 = c["peak"] + (c["post"] - c["pre"]) + budget.kept_bytes + cache.budget
     assert step2 <= c["free"] + c["reserved"] - margin
-    # Rebalancing from step 2 on also leaves the kept activations alone.
     assert cache.extra_reserved == budget.kept_bytes
     assert len(planned) == 1 and planned[0]["budget_gib"] == round(cache.budget / GIB, 3)
 
@@ -184,11 +182,9 @@ def test_reserve_cuts_the_plan_evicts_and_hands_back_on_fallback():
         cache.entries[i] = torch.empty(0)
         cache.sizes[i] = 100 * MIB
     cache.used = 600 * MIB
-    # A 700 MiB reservation leaves 300 MiB of the plan: the newest entries go.
     assert cache.reserve(700 * MIB, from_plan = True) == 300 * MIB
     assert cache.budget == cache.cap == 300 * MIB and cache.used == 300 * MIB and cache.full
     assert sorted(cache.entries) == [0, 1, 2]
-    # Without from_plan a reservation only narrows rebalancing, as before.
     other = fl.Nf4DequantCache()
     other.plan(1000 * MIB)
     assert other.reserve(700 * MIB) == 0 and other.budget == other.cap == 1000 * MIB
@@ -223,8 +219,7 @@ def test_without_a_cache_the_gc_plan_is_mains(monkeypatch, case):
 
 
 def test_no_device_queries_beyond_mains(monkeypatch):
-    # The joint plan reads memory once at step 1, like main; later steps keep main's one rebalance probe and the
-    # reservation itself never touches the device.
+    # One memory read at step 1, like main; the reservation never touches the device.
     c = CASES["l4_klein_1024"]
     calls = {
         "mem_get_info": 0,
