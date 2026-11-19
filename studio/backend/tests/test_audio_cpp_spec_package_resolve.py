@@ -166,3 +166,19 @@ def test_a_partly_downloaded_package_is_not_a_downloaded_model(hub, monkeypatch)
     [model] = acm.downloaded_models()
     assert (model.id, model.unsupported) == (ZONOS_REPO, None)
     assert [f.path for f in model.variant.files] == list(ZONOS_PTQ)
+
+
+def test_a_local_gguf_of_a_split_package_needs_its_other_files_beside_it(
+    hub, monkeypatch, tmp_path
+):
+    package = {"id": "pkg", "format": "gguf", "files": ["main.gguf", "codec.gguf"]}
+    spec = {"family": "split_tts", "tasks": ["tts"], "packages": [package]}
+    _use_specs(monkeypatch, {"split_tts": spec})
+    main = _put(tmp_path / "local", "main.gguf", _gguf_bytes(family = "split_tts", spec = spec))
+
+    alone = acm.resolve(str(main), network = False)
+    assert alone is not None and alone.unsupported == acm.LOCAL_PACKAGE_INCOMPLETE
+
+    _put(tmp_path / "local", "codec.gguf", _gguf_bytes())
+    acm.forget()
+    assert acm.resolve(str(main), network = False).unsupported is None

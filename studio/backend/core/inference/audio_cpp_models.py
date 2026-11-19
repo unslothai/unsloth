@@ -724,6 +724,7 @@ _RUNTIME_GATED_FAMILIES = frozenset(("mira_tts", "sopro_tts", "xtts_v2", "zonos3
 
 _MULTI_FILE_PACKAGE = "This model ships as a multi-file package Unsloth Studio cannot load yet."
 PACKAGE_INCOMPLETE = "This repository does not publish every file this model package needs."
+LOCAL_PACKAGE_INCOMPLETE = "This model needs the other files of its package in the same folder."
 
 _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     # eSpeak-ng is linked statically (GPL-3.0-or-later) in the Unsloth bundles.
@@ -1749,6 +1750,26 @@ def _package_variants(
             )
         )
     return variants
+
+
+def _local_package_complete(spec: Optional[dict], local_path: str) -> bool:
+    """False when a local GGUF belongs to a package of several GGUFs and one is not beside it."""
+    path = Path(local_path)
+    split = [
+        (p, f)
+        for p in spec_packages.spec_packages(spec)
+        if len(p.gguf_files) > 1
+        for f in p.gguf_files
+        if Path(f).name.lower() == path.name.lower()
+    ]
+    for package, own in split:
+        depth = len(Path(spec_packages._local(package.strip_prefix, own)).parts)
+        root = path.parents[depth - 1] if depth <= len(path.parents) else path.parent
+        if all(
+            (root / spec_packages._local(package.strip_prefix, f)).is_file() for f in package.files
+        ):
+            return True
+    return not split
 
 
 def spec_package_variants(
@@ -2795,6 +2816,12 @@ def _resolve_uncached(
         unloadable = [v for v in variants if _unloadable_reason(v.primary)]
         variants = [v for v in variants if not _unloadable_reason(v.primary)]
     unsupported = policy.unsupported
+    if (
+        ref.local_path
+        and not policy.package
+        and not _local_package_complete(spec or embedded, ref.local_path)
+    ):
+        unsupported = unsupported or LOCAL_PACKAGE_INCOMPLETE
     if not variants and unloadable:
         unsupported = unsupported or _unloadable_reason(unloadable[0].primary)
         default = unloadable[0]
