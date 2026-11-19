@@ -348,9 +348,11 @@ from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_gguf_exact import install_exact_dequant
 from .diffusion_gguf_lowbit import install_lowbit_iq
 from .diffusion_attention import (
+    annotate_attention_resolved,
     apply_attention_backend,
-    attention_status_reason,
+    attention_resolved_entry,
     auto_attention_reason,
+    live_attention_entry,
     normalize_attention_backend,
     sdpa_math_only,
     sdpa_subquadratic_confirmed,
@@ -2140,6 +2142,16 @@ _NATIVE_ONLY_FIRST_BUILD = {
     MOSS_IMAGE_FAMILY_NAME: "upstream master-975",
     MINIMAX_H3_IMAGE_FAMILY_NAME: "upstream master-1088",
 }
+
+
+def _h3_image_attention_engaged(levers: Any) -> Optional[str]:
+    """What the MiniMax-H3-Image load engaged on its attention: the DiT blocks' checkpoint route, else the speed pick."""
+    picks = {}
+    for lever in levers or ():
+        name, _, value = str(lever).partition("=")
+        if value and name in ("checkpoint_attention", "attention"):
+            picks.setdefault(name, value)
+    return picks.get("checkpoint_attention") or picks.get("attention")
 
 
 def _family_default_ids(fam: Any) -> tuple:
@@ -8883,6 +8895,7 @@ class DiffusionBackend:
                         load_token = _load_token,
                         loras = loras,
                         int8_policy = int8_policy,
+                        attention_backend = attention_backend,
                     )
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
@@ -11943,10 +11956,8 @@ class DiffusionBackend:
                                 ),
                                 te_outcome.status,
                             ),
-                            "attention_backend": (
-                                attention_backend,
-                                attention_engaged or "native",
-                                attention_status_reason(attention_backend, attention_engaged),
+                            "attention_backend": attention_resolved_entry(
+                                attention_backend, attention_engaged, pipe, target = target
                             ),
                             "int8_attention": int8_resolved_entry(
                                 int8_policy,
@@ -11983,6 +11994,7 @@ class DiffusionBackend:
                         }
                     )
                     int8_annotate_resolved(resolved, int8_policy, pipe)
+                    annotate_attention_resolved(resolved, pipe)
                     if transformer_quant_artifact is not None:
                         # Beside ``source``, never in it: the frontend branches on "auto"/"explicit".
                         resolved["transformer_quant"]["artifact"] = transformer_quant_artifact
@@ -12211,6 +12223,7 @@ class DiffusionBackend:
         text_encoder_quant_explicit: bool = False,
         loras: Any = None,
         int8_policy: Any = None,
+        attention_backend: Optional[str] = None,
     ) -> dict[str, Any]:
         """MiniMax-H3-Image load under the transition slot and state lock (the previous model is already evicted).
         LoRAs named in the load are merged into the DiT weights before quantization (``diffusion_minimax_h3_image``)."""
@@ -12242,6 +12255,7 @@ class DiffusionBackend:
             local_files_only = local_files_only,
             check_cancelled = lambda: self._raise_if_load_cancelled(load_token),
             int8_policy = int8_policy,
+            attention_backend = attention_backend,
         )
         if baked:
             pipe._unsloth_loras = baked
@@ -12290,9 +12304,21 @@ class DiffusionBackend:
                 "source": "auto",
                 "reason": "; ".join(plan.reasons),
             },
-            **build_resolved_record({"int8_attention": int8_resolved_entry(int8_policy, pipe)}),
+            **build_resolved_record(
+                {
+                    "int8_attention": int8_resolved_entry(int8_policy, pipe),
+                    # read off the DiT's attention modules: the blocks' checkpoint route, the rest the speed pick
+                    "attention_backend": attention_resolved_entry(
+                        attention_backend,
+                        _h3_image_attention_engaged(report.speed_levers),
+                        pipe,
+                        target = target,
+                    ),
+                }
+            ),
         }
         int8_annotate_resolved(resolved, int8_policy, pipe)
+        annotate_attention_resolved(resolved, pipe)
         state = _LoadState(
             pipe = pipe,
             family = fam,
@@ -14925,9 +14951,25 @@ class DiffusionBackend:
         # Keep the badge in step with the state it describes: the top-level field moved, so leaving `resolved` on the
         # load-time value would make the panel report an attention backend that is no longer the one running.
         if isinstance(state.resolved, dict) and "attention_backend" in state.resolved:
-            entry = dict(state.resolved["attention_backend"])
-            entry["value"] = attention_engaged or "native"
-            object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
+            previous = state.resolved["attention_backend"]
+            requested = (
+                previous.get("requested")
+                if isinstance(previous, dict) and previous.get("source") == "explicit"
+                else state.attention_request
+            )
+            fresh = build_resolved_record(
+                {
+                    "attention_backend": attention_resolved_entry(
+                        requested, attention_engaged, state.pipe, target = target
+                    )
+                }
+            )
+            annotate_attention_resolved(fresh, state.pipe)
+            object.__setattr__(
+                state,
+                "resolved",
+                {**state.resolved, "attention_backend": fresh["attention_backend"]},
+            )
         if isinstance(state.resolved, dict) and "int8_attention" in state.resolved:
             policy = getattr(state, "int8_policy", None)
             fresh = build_resolved_record(
@@ -16847,6 +16889,13 @@ class DiffusionBackend:
             entry = dict(resolved["attention_backend"])
             entry["value"] = attention_backend or "native"
             resolved = {**resolved, "attention_backend": entry}
+        if isinstance(resolved, dict) and isinstance(resolved.get("attention_backend"), dict):
+            # re-read off the attention modules: a race that dropped modules since the load moves the badge too
+            live = live_attention_entry(
+                resolved["attention_backend"], state.pipe, state.attention_backend
+            )
+            if live is not resolved["attention_backend"]:
+                resolved = {**resolved, "attention_backend": live}
         lora_gate = dict(
             engine = "diffusers",
             family = state.family.name,

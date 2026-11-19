@@ -4660,6 +4660,18 @@ def _attention_processors(module: Any) -> list:
     ]
 
 
+def explicit_attention_pick(requested: Any) -> Optional[str]:
+    """The load's explicit attention alias ("sage", "native", "cudnn", ...), or None when Studio picks (unset, "auto",
+    "unsloth_int8", which is the INT8 attention control's On, or an unknown name)."""
+    from .diffusion_attention import ATTN_AUTO, normalize_attention_backend
+
+    try:
+        alias = normalize_attention_backend(requested)
+    except ValueError:
+        return None
+    return None if alias in (ATTN_AUTO, "unsloth_int8") else alias
+
+
 def install_checkpoint_attention(
     pipe: Any,
     device: Any,
@@ -4667,16 +4679,26 @@ def install_checkpoint_attention(
     scheme: Optional[str] = None,
     logger: Any = None,
     int8_policy: Any = None,
+    attention_backend: Optional[str] = None,
 ) -> Optional[str]:
     """Route the DiT blocks to the declared backend (SageAttention must pass its probe here first); the token refiner
-    keeps its own. Returns the engaged backend, or None with every processor unchanged."""
+    keeps its own. Returns the engaged backend, or None with every processor unchanged. ``attention_backend``: the
+    load's pick; an explicit "sage" pins SageAttention on the blocks (no race against native, and INT8 only when its
+    control is On), any other explicit pick keeps the checkpoint's SageAttention off."""
     import torch
 
     log = logger if logger is not None else _LOG
     transformer = getattr(pipe, "transformer", None)
     if transformer is None or getattr(pipe, ATTENTION_SAVED_ATTR, None):
         return None
-    want = checkpoint_attention_wanted(transformer, scheme)
+    pick = explicit_attention_pick(attention_backend)
+    want = (
+        checkpoint_attention_wanted(transformer, scheme)
+        if pick is None
+        else "sage"
+        if pick == "sage"
+        else None
+    )
     dev = torch.device(device)
     if want is None or dev.type != "cuda":
         return None
@@ -4699,6 +4721,8 @@ def install_checkpoint_attention(
             want,
             logger = log,
             target = target,
+            # an explicit pick is never raced over by the dispatch route
+            **({"requested": attention_backend} if pick is not None else {}),
             # only a load's own policy: a direct call keeps the env switch, as before
             **({"int8_policy": int8_policy} if int8_policy is not None else {}),
         )
@@ -4711,7 +4735,8 @@ def install_checkpoint_attention(
     if not sage_on:
         restore()
         setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
-    forced = (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
+    # the env switch, or the user's own SageAttention pick, pins it: no race against native
+    forced = pick == "sage" or (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
         "1",
         "on",
         "true",
@@ -5174,11 +5199,13 @@ def load_minimax_h3_image_pipeline(
     plan_height: int = 2048,
     loras: Sequence[tuple] = (),
     int8_policy: Any = None,
+    attention_backend: Optional[str] = None,
 ) -> Any:
     """A ready ``MiniMaxH3ImagePipeline`` for ``repo_id`` (Hub id or local folder) placed for ``device``.
 
     ``int8_policy``: the load's ``diffusion_int8_attention.Int8Policy`` (or ``int8_attention`` request) for Studio's
-    INT8 attention kernel; None reads the env switch.
+    INT8 attention kernel; None reads the env switch. ``attention_backend``: the load's attention pick (see
+    ``install_checkpoint_attention``).
 
     ``loras``: ``[(path, weight), ...]`` merged into the dense DiT weights at load, before quantization, so every
     placement and speed lever runs them unchanged; a load with LoRAs therefore streams the release DiT (the hosted
@@ -5441,10 +5468,22 @@ def load_minimax_h3_image_pipeline(
         early_streamer.remove()
     from .diffusion_minimax_h3_image_speed import install_h3_image_speed
 
-    speed_levers = install_h3_image_speed(pipe, plan, device, logger, int8_policy = int8_policy)
+    speed_levers = install_h3_image_speed(
+        pipe,
+        plan,
+        device,
+        logger,
+        int8_policy = int8_policy,
+        **({"attention_backend": attention_backend} if attention_backend else {}),
+    )
     speed_levers = tuple(speed_levers) + install_h3_image_vae_canvas(vae, device, logger)
     int8_attention = install_checkpoint_attention(
-        pipe, device, scheme = scheme, logger = logger, int8_policy = int8_policy
+        pipe,
+        device,
+        scheme = scheme,
+        logger = logger,
+        int8_policy = int8_policy,
+        **({"attention_backend": attention_backend} if attention_backend else {}),
     )
     if int8_attention:
         speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)

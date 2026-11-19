@@ -55,8 +55,9 @@ from .diffusion_int8_attention import resolve_policy as int8_attention_policy
 from .diffusion_int8_attention import resolved_entry as int8_resolved_entry
 from .diffusion_attention import (
     SDPA_MATH_ONLY_MESSAGE,
+    annotate_attention_resolved,
     apply_attention_backend,
-    attention_status_reason,
+    attention_resolved_entry,
     install_hunyuan_attention_trim,
     sdpa_math_only,
     _dit_head_dims,
@@ -11940,10 +11941,8 @@ class VideoBackend:
                         if speed_mode is None
                         else "requested",
                     ),
-                    "attention_backend": (
-                        attention_backend,
-                        attention_engaged or "native",
-                        attention_status_reason(attention_backend, attention_engaged),
+                    "attention_backend": attention_resolved_entry(
+                        attention_backend, attention_engaged, views, target = target
                     ),
                     "int8_attention": int8_resolved_entry(
                         int8_policy,
@@ -12024,6 +12023,7 @@ class VideoBackend:
                 }
             )
             int8_annotate_resolved(resolved, int8_policy, views)
+            annotate_attention_resolved(resolved, views)
             # The optimizer's per-step audit, beside the speed_mode entry (same record as the image backend).
             autoopt.record_load_steps(
                 load_audit,
@@ -13615,10 +13615,8 @@ class VideoBackend:
                         else "lossless optimisations only; the denoiser is in the CPU-offload rotation"
                     ),
                 ),
-                "attention_backend": (
-                    attention_backend,
-                    attention_engaged or "native",
-                    attention_status_reason(attention_backend, attention_engaged),
+                "attention_backend": attention_resolved_entry(
+                    attention_backend, attention_engaged, speed_view, target = umem_target
                 ),
                 "int8_attention": int8_resolved_entry(
                     int8_policy,
@@ -13664,6 +13662,7 @@ class VideoBackend:
             }
         )
         int8_annotate_resolved(resolved, int8_policy, speed_view)
+        annotate_attention_resolved(resolved, speed_view)
         autoopt.record_load_steps(
             h3_audit,
             attention = attention_engaged,
