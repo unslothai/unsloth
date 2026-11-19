@@ -34,7 +34,6 @@ def test_a_cold_first_run_writes_where_the_second_run_reads(monkeypatch, tmp_pat
         encode_prompts = lambda pipe, caps, device: [(torch.ones(2),)] * len(caps)
     )
 
-    # Run 1: nothing on disk yet, then load_conditioners downloads the snapshot.
     first = reopen()
     assert "unresolved" in first.family
     encoded = dit._encode_prompts_cached(spec, None, ["a cat"], "cpu", first)
@@ -43,7 +42,6 @@ def test_a_cold_first_run_writes_where_the_second_run_reads(monkeypatch, tmp_pat
     (refs / "main").write_text("0123456789abcdef0123")
     rekeyed = dit._rekey_conditioning_cache(first, reopen, {"a cat": encoded[0]})
 
-    # Run 2: the revision now resolves.
     second = reopen()
     assert "unresolved" not in second.family
     assert (

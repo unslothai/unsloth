@@ -36,7 +36,6 @@ from core.training.diffusion_train_common import (
 
 FAMILY = "ltx-2.5"
 PACK = "Lightricks/LTX-2.5-Diffusers"
-# The ungated mirror training fetches from: the distilled DiT only, no transformer_full/.
 MIRROR = "unsloth/LTX-2.5-FP8"
 
 
@@ -110,7 +109,6 @@ PACK_LISTING = (
     "vocoder/diffusion_pytorch_model.safetensors",
 )
 
-# The pack's scheduler/scheduler_config.json (the distilled DiT's), and Lightricks/LTX-2's.
 LTX25_SCHEDULER = {
     "base_image_seq_len": 1024,
     "base_shift": 0.95,
@@ -224,7 +222,6 @@ def test_conditioning_stages_one_copy_of_the_small_components_only():
         "vae",
         "vocoder",
     }
-    # The connectors' indexed shard set, not also the 6.3 GB unsharded duplicate.
     assert "connectors/diffusion_pytorch_model.safetensors" not in files
     assert "connectors/diffusion_pytorch_model.safetensors.index.json" in files
     for name in files:
@@ -686,7 +683,6 @@ def test_tiny_end_to_end_trains_the_dev_dit_and_bakes_on_the_distilled_one(tiny_
     sidecar = json.loads(published[0].with_suffix(".json").read_text(encoding = "utf-8"))
     assert sidecar["families"] == [FAMILY]
 
-    # The Video page bakes it into the DISTILLED DiT; the delta scales with the slider weight.
     def baked(weight):
         distilled = LTX2VideoTransformer3DModel.from_pretrained(tiny_pack / "transformer")
         before = distilled.transformer_blocks[0].attn1.to_q.weight.detach().clone()
@@ -720,7 +716,6 @@ def test_resuming_onto_another_dit_is_refused(tiny_trainer, tmp_path, monkeypatc
     moments from silently continuing on the distilled base (or the reverse)."""
     from core.training.diffusion_checkpoint import ResumeError
 
-    # A completed run retires its bundles; keep checkpoint-2 as a crash after the save would.
     monkeypatch.setattr(dit, "retire_own_checkpoints", lambda *a, **k: None)
     from utils.paths import outputs_root
 
@@ -793,7 +788,6 @@ def test_switching_the_encoder_precision_misses_the_caption_cache(
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
     tiny_trainer.run("bf16", cond_cache_dir = cache)
     assert len(tiny_trainer.clients) == 2, "the bf16 run reused the int8 captions"
-    # Each precision then has its own warm entries.
     tiny_trainer.run("bf16_again", cond_cache_dir = cache)
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
     tiny_trainer.run("int8_again", cond_cache_dir = cache)

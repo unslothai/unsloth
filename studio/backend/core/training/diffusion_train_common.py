@@ -298,7 +298,6 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
         from core.inference.video_families import local_cosmos3_pipeline_family
         from core.inference.video_families import local_ltx_pipeline_family
 
-        # Unversioned local LTX folder: model_index.json tells 2.x from 2.5.
         local_family = local_cosmos3_pipeline_family(base_model) or local_ltx_pipeline_family(
             base_model
         )
@@ -558,7 +557,6 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
-    # A100-80 nf4 512px r32: peak 22.9 GB in the caption pass (int8 Gemma 4 worker); loop 11.7 GB.
     "ltx-2.5": {
         "params": "22B",
         "qlora_vram_gb": 24,
@@ -1997,7 +1995,6 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         "black-forest-labs/flux.2-klein-base-9b",
         # A video family, so the image-side inference allowlist never covered it; safetensors-only, no remote code.
         "lightricks/ltx-2",
-        # LTX-2.5's Diffusers pack, for the same reason.
         "lightricks/ltx-2.5-diffusers",
         # MiniMax-H3's official base, for the same reason: safetensors-only, no remote code.
         "minimaxai/minimax-h3",
@@ -2007,7 +2004,6 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
 
 # LTX-2.3 repos are single-file checkpoints the trainer cannot load; refuse before eviction.
 _LTX23_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.3", "lightricks/ltx-2.3-fp8")
-# Split single-file release: train from the Diffusers pack instead.
 _LTX25_SINGLE_FILE_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.5",)
 
 

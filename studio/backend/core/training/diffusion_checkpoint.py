@@ -50,7 +50,6 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("family", "model family"),
     ("base_model", "base model"),
     ("base_revision", "base model revision"),
-    # LTX-2.5 picks its DiT at load (dev or distilled, upstream or mirror); both have the adapter's shapes.
     ("base_dit", "base DiT"),
     ("base_dit_revision", "base DiT revision"),
     ("dataset_fingerprint", "training images"),
@@ -117,7 +116,6 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "max_grad_norm",
         # Known only to the DiT trainer; unknown means cannot-tell, leaving route preflight and SDXL alone.
         "base_precision_effective",
-        # Resolved only at load, so the route preflight leaves them unknown.
         "base_dit",
         "base_dit_revision",
     }
@@ -186,7 +184,6 @@ class CheckpointIdentity:
     base_precision_effective: Optional[str] = None
     # Gated bases fetch from an ungated mirror with different SHAs, so record which repo.
     base_revision_repo: Optional[str] = None
-    # "<repo>:<subfolder>" of the DiT the trainer resolved at load (LTX-2.5 only), and that repo's revision.
     base_dit: Optional[str] = None
     base_dit_revision: Optional[str] = None
 
@@ -293,7 +290,6 @@ class CheckpointIdentity:
             if a in (None, "") and field in _LEGACY_IDENTITY_DEFAULTS:
                 a = _LEGACY_IDENTITY_DEFAULTS[field]
             if a in (None, "") and field == "base_dit" and b not in (None, ""):
-                # A bundle from before the field trained the default: the dev DiT of its own base.
                 a = default_base_dit(self)
             # None / "" is "cannot tell", NOT falsiness: a lora_dropout of 0.0 is a real value and the commonest one,
             # so truthiness would skip exactly the 0.0-against-0.15 comparison that matters.
@@ -453,7 +449,6 @@ def with_resolved_base_precision(
     return replace(identity, base_precision_effective = value)
 
 
-# What a bundle without ``base_dit`` trained: LTX-2.5's default, the dev DiT of the base it names.
 _DEFAULT_DIT_SUBFOLDER = {"ltx-2.5": "transformer_full"}
 
 

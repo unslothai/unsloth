@@ -309,8 +309,6 @@ class PersistentConditioningCache:
         self.root = Path(cache_dir).expanduser()
         self.family = _sanitize(family)
         self.resolution = int(resolution)
-        # Encoder precision / source, for a family that picks it per run; empty keeps the existing text keys.
-        # Hashed so a long source (repo, file, revision) keeps file names short; the prefix stays readable.
         self.text_encoder = (
             f"{_sanitize(text_encoder)[:16]}-{hashlib.sha1(text_encoder.encode()).hexdigest()[:10]}"
             if text_encoder

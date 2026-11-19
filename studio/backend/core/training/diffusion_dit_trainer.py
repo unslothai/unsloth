@@ -181,9 +181,7 @@ class _FamilySpec:
     sample_forward_kwargs: Optional[dict] = None
     # cfg -> FlowMatchEuler scheduler. None = load scheduler/ (only valid if it IS FlowMatchEuler; Wan ships UniPC).
     training_scheduler: Optional[Callable[..., Any]] = None
-    # cfg -> what besides the base decides the caption tensors (the encoder's precision and source), for the cache key.
     conditioning_key: Optional[Callable[..., str]] = None
-    # cfg -> (repo, subfolder) of the DiT a family resolves at load; recorded in the checkpoint identity.
     dit_source: Optional[Callable[..., tuple]] = None
     # Saver takes ``adapter_metadata``; without it diffusers' loader assumes lora_alpha == rank.
     save_takes_metadata: bool = False
@@ -2023,8 +2021,6 @@ def _ltx2_save(
     )
 
 
-# LTX-2.5: LTX-2.3 DiT layout. Gemma 4 needs the transformers 5.10 sidecar, so captions go through the Video page's
-# encoder worker, which exits before the DiT loads. Trains the dev DiT (model card) unless UNSLOTH_LTX25_TRAIN_DIT=distilled.
 LTX25_TRAIN_DIT_ENV = "UNSLOTH_LTX25_TRAIN_DIT"
 _LTX25_DEV_SUBFOLDER = "transformer_full"
 _LTX25_DISTILLED_SUBFOLDER = "transformer"
@@ -2215,7 +2211,6 @@ def _ltx25_load_conditioners(cfg, device, weight_dtype):
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
-    # VAE stays on host until the encoder worker exits.
     pipe.vae.to(dtype = torch.float32)
     pipe.connectors.to(device)
     install_remote_encode_prompt(pipe, _ltx25_start_encoder(cfg, device))
@@ -3420,7 +3415,6 @@ def _train_dit(
         encoded = _encode_prompts_cached(spec, pipe, to_encode + extra, device, pcache)
         caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
         all_embeds = dict(zip(to_encode + extra, encoded))
-        # Before the latents are written: the namespace read before a first download says "unresolved".
         pcache = _rekey_conditioning_cache(pcache, _open_pcache, all_embeds)
         sample_embeds = {t: all_embeds[t] for t in sample_texts}
         _free_text_encoders(pipe)
