@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Linux desktop app turns the children of svg.animate-spin, not the svg (WebKitGTK's compositor
-// wobbles a rotating layer). Browsers keep rotating the svg: a non-compositor rotation stalls when
-// the main thread does.
+// WebKitGTK wobbles a rotating layer, so the Linux app animates the svg children, not the svg.
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
