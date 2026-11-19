@@ -3,7 +3,7 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -55,21 +55,27 @@ export const CLIPS_HEADER_LINK =
 
 export function ClipsDeleteAll({
   noun,
+  active,
   onConfirm,
 }: {
   /** Plural, lower case: "clips", "separations". */
   noun: string;
+  /** The page stays mounted off-route and the dialog portals to body: close it when hidden. */
+  active: boolean;
   onConfirm: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!active) setOpen(false);
+  }, [active]);
   return (
     <>
       <button type="button" onClick={() => setOpen(true)} className={CLIPS_HEADER_LINK}>
         <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-3.5" />
         Delete all
       </button>
-      <AlertDialog open={open} onOpenChange={(next) => (busy ? undefined : setOpen(next))}>
+      <AlertDialog open={active && open} onOpenChange={(next) => (busy ? undefined : setOpen(next))}>
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete all {noun}?</AlertDialogTitle>

@@ -453,7 +453,7 @@ export function TranscriptGallery({
       </div>
         ) : null}
       </ClipsCard>
-      <AlertDialog open={confirmingClear} onOpenChange={setConfirmingClear}>
+      <AlertDialog open={active && confirmingClear} onOpenChange={setConfirmingClear}>
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete all transcripts?</AlertDialogTitle>

@@ -769,7 +769,7 @@ export function TtsOutput({
         countMore={hasMore}
         action={
           clips.length > 0 ? (
-            <ClipsDeleteAll noun="clips" onConfirm={handleClearGallery} />
+            <ClipsDeleteAll noun="clips" active={active} onConfirm={handleClearGallery} />
           ) : null
         }
       >

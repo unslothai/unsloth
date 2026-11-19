@@ -54,8 +54,10 @@ export function ABCompare({
         : side;
   const current = shownSide === "a" ? a : b;
   const src = current.unavailable ? undefined : current.src;
-  const barsSrc = src ? (current.fileUrl ?? src) : null;
-  const peaks = useClipPeaks([barsSrc]);
+  const barsFor = (s: ABSide) => (s.unavailable || !s.src ? null : (s.fileUrl ?? s.src));
+  // Both sides at once, so switching reuses each decode instead of fetching it again.
+  const peaks = useClipPeaks([barsFor(a), barsFor(b)]);
+  const barsSrc = src ? barsFor(current) : null;
   const bars = barsSrc ? (peaks[barsSrc] ?? null) : null;
 
   // A new side starts from the top unless a switch carries the moment over (handleLoadedMetadata).

@@ -527,7 +527,7 @@ export function SeparateOutput({
         countMore={hasMore}
         action={
           groups.length > 0 ? (
-            <ClipsDeleteAll noun="separations" onConfirm={handleClearGallery} />
+            <ClipsDeleteAll noun="separations" active={active} onConfirm={handleClearGallery} />
           ) : null
         }
       >
