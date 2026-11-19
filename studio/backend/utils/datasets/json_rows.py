@@ -51,7 +51,7 @@ def json_rows_features(files):
                     if schema is None
                     else pa.unify_schemas([schema, chunk], promote_options = "permissive")
                 )
-    except (OSError, ValueError, TypeError, pa.ArrowException):
+    except (OSError, ValueError, TypeError, OverflowError, pa.ArrowException):
         return None
     return None if schema is None else Features.from_arrow_schema(schema)
 

@@ -189,3 +189,10 @@ def test_date_strings_load_as_written(tmp_path):
 
     assert _load(jsonl, tmp_path).to_list() == rows
     assert _load(str(array), tmp_path).to_list() == rows
+
+
+def test_dates_next_to_an_int_past_int64_still_load(tmp_path):
+    path = tmp_path / "big.jsonl"
+    path.write_text('{"date": "1945-05-08", "id": 9223372036854775808}\n', encoding = "utf-8")
+
+    assert len(_load(str(path), tmp_path)) == 1
