@@ -40,6 +40,32 @@ def _stack():
     return torch
 
 
+# Per-test hang guard: the whole file runs in about 100 s on CPU, so a test past this is stuck, not slow.
+_TEST_TIMEOUT_S = 300
+pytestmark = pytest.mark.timeout(_TEST_TIMEOUT_S)
+
+
+@pytest.fixture(autouse = True)
+def _fail_fast_on_a_hang(request):
+    """pytest-timeout honours the mark above. Without it, faulthandler dumps every thread's stack and ends the
+    run, so a hang names its frame instead of blocking for hours."""
+    if request.config.pluginmanager.hasplugin("timeout"):
+        yield
+        return
+    import faulthandler
+
+    try:  # pytest's dup of the real stderr; fd 2 is the capture file, which an exit would discard
+        from _pytest.faulthandler import fault_handler_stderr_fd_key
+        fd = request.config.stash[fault_handler_stderr_fd_key]
+    except (ImportError, KeyError):
+        fd = sys.__stderr__.fileno()
+    faulthandler.dump_traceback_later(_TEST_TIMEOUT_S, exit = True, file = fd)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+
+
 @pytest.fixture(autouse = True)
 def _picture_one_at_its_own_size(monkeypatch):
     """Picture 1 keeps its own size here (the reference edit workflow's 4 MP rescale would make every CPU edit render
