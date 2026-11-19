@@ -1,6 +1,12 @@
 # SenseNova-Loop registration notes (draft)
 
-Branch `feat/sensenova-loop`, drafted for human review. Not pushed, no PR.
+Branch `feat/sensenova-loop`, drafted for human review. Not pushed, no PR. Rebased
+2026-11-18 onto unslothai/unsloth main `ecd154d378` (2300 commits after the original
+clone base `e7bf2e9a20`); the rebase was clean, and the chain entries moved with
+upstream (floor guard loader.py:1888, env chain entry loader.py:3014, post-load call
+loader.py:3598, llama.py:5628/5684-5707, vision.py:4703). Upstream's new
+`deepseek_v41` entry in the same env chain coexists without overlap; the four-commit
+logical structure is preserved.
 
 Target: `sensenova/SenseNova-Loop-9B-Preview`, class
 `SenseNovaLoopForConditionalGeneration`, config model_type `sensenova_loop` (text_config
@@ -27,14 +33,14 @@ entries, fp32 MHC router params confirmed, KV 57,344 B/token, coherent output, p
   checkpoint's `auto_map` already points at its own classes, and the existing remote-code
   chain (trust passthrough, compiler self-gating via `_config_uses_remote_code`) is reused
   unchanged.
-- `unsloth/models/loader.py`: floor constant `SUPPORTS_SENSENOVA_LOOP` (line 120),
-  FastLanguageModel chain floor guard (line 1825), FastModel env chain entry with the
+- `unsloth/models/loader.py`: floor constant `SUPPORTS_SENSENOVA_LOOP` (line 127),
+  FastLanguageModel chain floor guard (line 1888), FastModel env chain entry with the
   floor raise, the static-generation env var and the converted-checkpoint detection
-  (line 2921), FLA advisory prefix (line 899), post-load `register_sensenova_loop` call
-  (line 3476).
-- `unsloth/models/llama.py`: `patch_peft_model` chain entry with SwiGLU (line 5271),
-  composite-safe `_decoder_layers` resolution and fused-path exclusion (lines 5330-5339),
-  fused LoRAMLP exclusion in the patch loop (line 5351).
+  (line 3014), FLA advisory prefix (line 928), post-load `register_sensenova_loop` call
+  (line 3598).
+- `unsloth/models/llama.py`: `patch_peft_model` chain entry with SwiGLU (line 5628),
+  composite-safe `_decoder_layers` resolution and fused-path exclusion
+  (lines 5684-5694), fused LoRAMLP exclusion in the patch loop (line 5707).
 - `unsloth/models/__init__.py`: guarded export like `falcon_h1` (lines 29-38).
 
 ## Gap (a): generation cache type
