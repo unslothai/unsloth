@@ -796,6 +796,16 @@ def _owner_device(model: Any, site_name: str) -> Any:
         parts.pop()
 
 
+def _group_host_copy(go: Any, t: Any, low_cpu_mem_usage: bool) -> Any:
+    """``ModuleGroup._to_cpu`` where diffusers has it; older diffusers (0.36, the Python < 3.10 pin) build the same copy
+    inline in ``_init_cpu_param_dict``."""
+    to_cpu = getattr(go.ModuleGroup, "_to_cpu", None)
+    if to_cpu is not None:
+        return to_cpu(t, low_cpu_mem_usage)
+    host = t.data.cpu()
+    return host if low_cpu_mem_usage else host.pin_memory()
+
+
 def _rebuild_streamed(model: Any, restored: list) -> set:
     """Registers restored modules with the offload machinery that streams their block, as if they had been there
     when it was built: each param / buffer gets its host copy in the owning diffusers group's ``cpu_param_dict``
@@ -835,8 +845,8 @@ def _rebuild_streamed(model: Any, restored: list) -> set:
         onloaded = any(t.device.type != "cpu" for t in others)
         for t in list(orig.parameters()) + list(orig.buffers()):
             if getattr(group, "stream", None) is not None:
-                group.cpu_param_dict[t] = go.ModuleGroup._to_cpu(
-                    t, bool(getattr(group, "low_cpu_mem_usage", False))
+                group.cpu_param_dict[t] = _group_host_copy(
+                    go, t, bool(getattr(group, "low_cpu_mem_usage", False))
                 )
             if onloaded:
                 t.data = t.data.to(group.onload_device)

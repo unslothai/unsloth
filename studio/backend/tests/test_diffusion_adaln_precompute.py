@@ -712,3 +712,27 @@ def test_small_host_route_declines():
     setattr(pipe, SMALL_HOST_ATTR, {"reason": "dense load does not fit", "components": {}})
     assert ap.install(model, pipe, requested = ap.MODE_ON, offloaded = True) is False
     assert not any(isinstance(m, ap.AdaLNTable) for m in model.modules())
+
+
+def test_streamed_restore_without_moduleGroup_to_cpu(tmp_path, monkeypatch):
+    """diffusers 0.36 (the Python < 3.10 pin) has no ``ModuleGroup._to_cpu``: the restore builds the same host copy
+    its own ``_init_cpu_param_dict`` does (``.data.cpu()``, pinned unless low_cpu_mem_usage)."""
+    from diffusers.hooks import group_offloading as go
+
+    from core.inference import diffusion as D
+    from core.inference.diffusion_offload_prefetch import _group_tensors
+
+    model = _flux()
+    pipe = _keep(_Pipe(torch.linspace(1000.0, 30.0, 4)))
+    pipe.transformer = model
+    assert ap.install(model, pipe, requested = ap.MODE_ON)
+    groups, _pf = _group_offloaded(model)
+    monkeypatch.delattr(go.ModuleGroup, "_to_cpu", raising = False)
+    path = _lora_file(tmp_path, ["transformer.transformer_blocks.0.norm1.linear.lora_A.weight"])
+    D._adaln_before_loras(types.SimpleNamespace(cuda_graphs = ()), pipe, [("m", path, 1.0)], None)
+    assert not ap.installed(model)
+    lin = model.transformer_blocks[0].norm1.linear
+    assert isinstance(lin, torch.nn.Linear)
+    assert all(t in g.cpu_param_dict for g in groups for t in _group_tensors(g))
+    host = next(g for g in groups if lin.weight in g.cpu_param_dict).cpu_param_dict[lin.weight]
+    assert torch.equal(host, lin.weight.data)
