@@ -1705,6 +1705,8 @@ class GraphedForward:
                 scope in getattr(self, "_sealed_scopes", ())
                 and (self.placement is None or key not in self._recorded)
                 and not (self.plan is not None and key in self._open_warmups)
+                # a key the first render already ran (real warm-ups it did not finish) records, as it would have then
+                and key not in getattr(self, "_real_warm_closed", ())
             ):
                 # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
                 # render. (An offloaded key it recorded before re-records after its weights moved, as before.)

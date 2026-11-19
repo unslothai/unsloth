@@ -1683,6 +1683,33 @@ def test_a_step_dependent_key_seals_only_when_the_render_ends(stub_torch, monkey
     assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 1
 
 
+def test_real_warmup_branch_seen_briefly_still_records_after_the_scope_seals(
+    stub_torch, monkeypatch
+):
+    """A step-keyed branch that runs only 1-3 times in the first render (two protected steps of eight) has not
+    finished its real warm-ups when the render seals its image scope: it records on the next render instead of
+    running eager until reset, while a new prompt length is still refused."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    module = _len_dit("QwenImageTransformer2DModel")
+    branch = {"v": "a"}
+    setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, lambda: branch["v"])
+    handle = _armed(module, max_graphs = 8)
+    flags = ("a", "a", "a", "a", "b", "b", "a", "a")
+    for i, flag in enumerate(flags):
+        branch["v"] = flag
+        _step(handle, 3, value = float(i))
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is True and handle.stats["captures"] == 1
+    for i, flag in enumerate(flags):
+        branch["v"] = flag
+        _step(handle, 3, value = float(i))
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
+    branch["v"] = "a"
+    _step(handle, 15)
+    assert handle.stats["length_eager"] == 1, "a new prompt length after the seal still runs eager"
+
+
 class _RefDiT(_LenDiT):
     def forward(
         self,
