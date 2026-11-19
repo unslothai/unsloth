@@ -1321,7 +1321,7 @@ def test_codex_keeps_images_tools_viewed_and_generated(codex_home):
         ),
         ("image_generation", {"image_b64": PNG, "image_mime": "image/png"}),
     ]
-    assert calls[2]["args"] == {"prompt": "A flat login icon"}
+    assert calls[2]["args"] == {"prompt": "A flat login icon", "_server_tool": True}
     assert messages[-1]["content"] == [{"type": "text", "text": "Done."}]
 
 

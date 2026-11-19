@@ -232,7 +232,10 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
                             str(payload.get("id") or message_id),
                             {
                                 "name": "image_generation",
-                                "input": {"prompt": str(payload.get("revised_prompt") or "")},
+                                "input": {
+                                    "prompt": str(payload.get("revised_prompt") or ""),
+                                    "_server_tool": True,
+                                },
                             },
                         ),
                         "result": {"image_b64": image, "image_mime": _mime(image) or "image/png"},
