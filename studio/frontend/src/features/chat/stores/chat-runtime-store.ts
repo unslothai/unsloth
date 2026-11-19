@@ -6534,17 +6534,20 @@ const clearChatFullAccessOnAuthChange = () => useChatRuntimeStore.getState().cle
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
   window.addEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
+  const crossWindowSettings = [
+    [CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, "researchWebsitePolicy", loadResearchWebsitePolicy],
+    [CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY, "researchMcpSources", loadResearchMcpSources],
+    [CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, "researchModelTimeoutSeconds", loadResearchModelTimeoutSeconds],
+  ] as const;
   window.addEventListener("storage", (event) => {
-    if (event.key === CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY || event.key === null) {
-      useChatRuntimeStore.setState({ researchWebsitePolicy: loadResearchWebsitePolicy() });
-    }
-    if (event.key === CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY || event.key === null) {
-      useChatRuntimeStore.setState({ researchMcpSources: loadResearchMcpSources() });
-    }
-    if (event.key === CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY || event.key === null) {
-      useChatRuntimeStore.setState({
-        researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
-      });
+    for (const [key, field, load] of crossWindowSettings) {
+      if (event.key !== key && event.key !== null) continue;
+      // Counts as an edit, so an older settings GET still in flight cannot write it back.
+      scalarSettingMutationVersions[field] += 1;
+      useChatRuntimeStore.setState((state) => ({
+        [field]: load(),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      }));
     }
   });
 }
