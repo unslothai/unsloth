@@ -5625,6 +5625,9 @@ class FastLlamaModel:
             apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "falcon_h1":
             apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "sensenova_loop":
+            # Qwen3_5 SwiGLU MLPs under the loop wrapper.
+            apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "qwen3moe":
             apply_lora_mlp = apply_lora_mlp_swiglu
         else:
@@ -5678,9 +5681,17 @@ class FastLlamaModel:
             else apply_lora_mlp
         )
 
-        # The fused kernels assume 16-bit base weights; float32 falls back to PEFT's own forward.
+        # Composite wrappers (sensenova_loop) keep the decoder under
+        # model.model.model.language_model, so resolve the flat layer list once.
+        _decoder_layers = getattr(model.model.model, "layers", None)
+        if _decoder_layers is None:
+            _decoder_layers = model.model.model.language_model.layers
+        # The fused kernels assume 16-bit base weights; float32 falls back to PEFT's own
+        # forward. sensenova_loop is excluded the same way until fused LoRAMLP is proven on
+        # twice-executed loop layers (its first layer is linear attention, no self_attn).
         float32_base = (
-            _base_weight_dtype(model.model.model.layers[0].self_attn.q_proj) == torch.float32
+            model_type == "sensenova_loop"
+            or _base_weight_dtype(_decoder_layers[0].self_attn.q_proj) == torch.float32
         )
         # Fused kernels read `.weight` directly, bypassing FSDP's unshard hook, so under FSDP1 they see shard
         # views (#409). FSDP2 unshards each block before its forward; the wrap is re-checked once built.
@@ -5692,9 +5703,10 @@ class FastLlamaModel:
             and not float32_base
             and not fused_lora_declined_for_fsdp
         ):
-            for idx, layer in enumerate(model.model.model.layers):
-                if model_type != "falcon_h1":
-                    # LoRAMLP.apply has no gate/down multiplier support yet, so falcon h1 is not patched for now.
+            for idx, layer in enumerate(_decoder_layers):
+                if model_type not in ("falcon_h1", "sensenova_loop"):
+                    # LoRAMLP.apply has no gate/down multiplier support yet, so falcon h1 is
+                    # not patched for now; sensenova_loop's loop layers are unproven there.
 
                     mlp_module = layer.mlp
                     gate_proj = mlp_module.gate_proj
@@ -5776,7 +5788,7 @@ class FastLlamaModel:
             lora_dropout, bias, float32_base, fsdp = fused_lora_declined_for_fsdp
         ) + _lora_variant_note(model, active_adapter)
         logger.warning_once(
-            f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
+            f"Unsloth {__version__} patched {len(_decoder_layers)} layers with "
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",
         )
         if n_qkv + n_o + n_mlp > 0:

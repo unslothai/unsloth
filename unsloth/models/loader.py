@@ -123,6 +123,8 @@ SUPPORTS_FALCON_H1 = transformers_version >= Version("4.53.0")
 SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
+# 5.18.0 is the only version with a real 4-bit SenseNova-Loop load behind it; 5.17.0 untested.
+SUPPORTS_SENSENOVA_LOOP = transformers_version >= Version("5.18.0")
 # unsloth_zoo cannot share these models' vLLM weights with the training model.
 VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
 # model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
@@ -923,7 +925,7 @@ DISABLE_COMPILE_MODEL_NAMES = [
 ]
 
 # Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the flash-linear-attention Triton kernels, so no install is needed; transformers falls back to the much slower pure PyTorch path only when they cannot be enabled.
-FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid")
+FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid", "sensenova_loop")
 _fla_advised = False
 
 
@@ -1880,6 +1882,16 @@ class FastLanguageModel(FastLlamaModel):
 
         if modelscope_pending_download is not None:
             snapshot_download(modelscope_pending_download)
+
+        # SenseNova-Loop is remote code (auto_map) over qwen3_5 with no native patcher, so a
+        # supported version falls through to the FastModel delegation below; guard the floor.
+        if model_type == "sensenova_loop" and not SUPPORTS_SENSENOVA_LOOP:
+            raise ImportError(
+                f"Unsloth: Your transformers version of {transformers_version} does not support SenseNova-Loop.\n"
+                f"The minimum required version is 5.18.0\n"
+                f'Try `pip install --upgrade "transformers>=5.18.0"`\n'
+                f"to obtain the latest transformers build, then restart this session."
+            )
 
         if model_type == "llama":
             scaling_type = None
@@ -2997,6 +3009,15 @@ class FastModel(FastBaseModel):
                     ";"
                 )
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        elif "sensenova_loop" in model_types_all:
+            if not SUPPORTS_SENSENOVA_LOOP:
+                raise RuntimeError(
+                    "Unsloth: SenseNova-Loop only works on transformers >= 5.18.0." + LATEST
+                )
+            # (a) The loop forward accepts a DynamicCache only (it rebuilds empty foreign
+            # caches itself), so keep static-cache generation off; the fp32 MHC routers
+            # ride _keep_in_fp32_modules on the remote classes, nothing to set here.
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
@@ -3552,6 +3573,13 @@ class FastModel(FastBaseModel):
 
         if resize_model_vocab is not None:
             _resize_vocab(model, resize_model_vocab)
+
+        if "sensenova_loop" in model_types_all:
+            # Remote-code looped Qwen3.5: the int8 token table, the DynamicCache generation
+            # default and the mistral-regex tokenizer fix; see models/sensenova_loop.py.
+            from .sensenova_loop import register_sensenova_loop
+
+            register_sensenova_loop(model, tokenizer)
 
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(
