@@ -3651,6 +3651,64 @@ def _peft_trained_layout(root, saved, adapter):
     return _from_vanilla(root, saved, adapter)
 
 
+def _legacy_lora_b_configs(root, directories):
+    """Collective: {adapter: adapter_config.json} for each adapter with fused expert LoRA, read before
+    anything is loaded so Zoo's convert_legacy_lora_b can repack a grouped_by_expert lora_B after it, as
+    Zoo's PEFT load path (repack_legacy_lora_b_after_load) does. An explicit UNSLOTH_MOE_LORA_B_LAYOUT
+    skips, as there. An unreadable config raises on every rank: the layout is unknown, so a load could
+    pair the expert columns wrongly."""
+    try:
+        from unsloth_zoo.temporary_patches.moe_utils import (
+            _has_fused_expert_lora,
+            convert_legacy_lora_b,  # noqa: F401
+        )
+    except Exception:  # noqa: BLE001 - Zoo before the rank_major lora_B packing has one layout
+        return {}
+    if os.environ.get("UNSLOTH_MOE_LORA_B_LAYOUT"):
+        return {}
+    import json
+
+    configs, error = {}, None
+    # The model's structure, the same on every rank: no fused expert LoRA, no vote.
+    directories = [(a, d) for a, d in directories if _has_fused_expert_lora(root, a)]
+    if not directories:
+        return {}
+    for adapter, directory in directories:
+        path = os.path.join(directory, "adapter_config.json")
+        try:
+            with open(path, "r", encoding = "utf-8") as f:
+                configs[adapter] = json.load(f)
+        except Exception as exc:  # noqa: BLE001
+            error = (
+                f"Unsloth: native FSDP2 resume cannot read {path} ({type(exc).__name__}: {exc}), so "
+                f"the fused MoE expert lora_B layout of adapter {adapter!r} is unknown; set "
+                f"UNSLOTH_MOE_LORA_B_LAYOUT to the layout it was saved in."
+            )
+            break
+    group, usable = _dcp_group(root)
+    if usable and not _all_ranks_agree(error is None, group):
+        raise ValueError(
+            error or "Unsloth: another rank could not read this checkpoint's expert LoRA layout."
+        )
+    if error is not None:
+        raise ValueError(error)
+    return configs
+
+
+def _repack_legacy_lora_b(root, configs):
+    """Zoo's convert_legacy_lora_b on the loaded weights: grouped_by_expert lora_B (per each adapter's
+    layout marker) to rank_major, in place. Returns how many tensors moved."""
+    if not configs:
+        return 0
+    from torch.distributed.tensor.experimental import implicit_replication
+    from unsloth_zoo.temporary_patches.moe_utils import convert_legacy_lora_b
+
+    with implicit_replication():  # Zoo's plain permutation index against the sharded lora_B
+        return sum(
+            convert_legacy_lora_b(root, adapter, config) for adapter, config in configs.items()
+        )
+
+
 def _check_checkpoint_tables(root, checkpoint):
     """Collective: the frozen table provenance of a Trainer checkpoint's adapters (frozen_tables.json at the
     checkpoint for "default", in <checkpoint>/<name> for the others) against the model's tables, before anything is
@@ -3711,7 +3769,7 @@ def native_load_model_checkpoint(model, checkpoint):
         # the keys. Active adapters first, so shared tensors (resized embeddings) come from them.
         active_names = [a for a in adapters if a in peft_config]
         adapters = active_names + [a for a in peft_config if a not in active_names]
-        sources = []
+        sources, directories = [], []
         for adapter in adapters:
             directory = checkpoint if adapter == "default" else os.path.join(checkpoint, adapter)
             if adapter not in active_names and not _has_checkpoint_weights(directory):
@@ -3719,10 +3777,13 @@ def native_load_model_checkpoint(model, checkpoint):
                 continue
             saved = _read_checkpoint_weights(directory)[0]
             sources.append((adapter, _peft_trained_layout(root, saved, adapter)))
+            directories.append((adapter, directory))
+        legacy_lora_b = _legacy_lora_b_configs(root, directories)
         is_adapter = True
     else:
         saved, is_adapter = _read_checkpoint_weights(checkpoint)
         sources = [(adapter, saved) for adapter in adapters] or [(None, saved)]
+        legacy_lora_b = {}
     owner_of = _adapter_owner(root, adapters)
     loaded = {adapter for adapter, _ in sources}
     save_keys = (
@@ -3774,6 +3835,12 @@ def native_load_model_checkpoint(model, checkpoint):
         mapped,
         options = StateDictOptions(full_state_dict = True, strict = False),
     )
+    repacked = _repack_legacy_lora_b(root, legacy_lora_b)
+    if repacked:
+        _print_rank0(
+            f"Unsloth: native FSDP2 resume repacked {repacked} fused MoE expert lora_B tensors saved "
+            f"grouped_by_expert to PEFT's rank_major layout."
+        )
     _print_rank0(
         f"Unsloth: native FSDP2 resumed {n_loaded} {'adapter ' if is_adapter else ''}tensors from "
         f"{checkpoint}."
