@@ -155,7 +155,6 @@ test("Discover keeps the NPU notice when a ready runtime fails to list its model
   assert.equal(npuNoticeShown(null), false);
   assert.equal(npuNoticeShown({ ready: false, listError: null }), true);
   assert.equal(npuNoticeShown({ ready: true, listError: null }), false);
-  // e.g. Lemonade blocked from starting: without the notice the NPU section vanished silently.
   assert.equal(
     npuNoticeShown({ ready: true, listError: "Listing NPU models failed" }),
     true,

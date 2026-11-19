@@ -117,8 +117,6 @@ class LemonadeServer:
         self.port: Optional[int] = None
         self.api_key: Optional[str] = None
         self._process: Optional[subprocess.Popen] = None
-        # Exit status of the last lemond that died before it was ready (a Windows code integrity
-        # block arrives as one); None when it was still running at the deadline.
         self.last_returncode: Optional[int] = None
         self._tail: deque[str] = deque(maxlen = 200)
         # Never reset, so a mark taken before a restart still counts the new lines.
@@ -318,7 +316,6 @@ class LemonadeServer:
                         )
                     continue
                 if self.last_returncode is None and not self._stop_requested.is_set():
-                    # Still running at the deadline: the exit status would be our own kill.
                     message = f"Lemonade did not answer its health check within {timeout:g} s."
                 else:
                     message = "Lemonade did not start."

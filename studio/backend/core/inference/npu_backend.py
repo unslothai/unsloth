@@ -145,10 +145,8 @@ _FAIL_FAST_TEXT = re.compile(r"0xc0000602\b", re.IGNORECASE)
 
 
 def _lemonade_start_error(binary: Path, exc: Exception) -> str:
-    """What to tell the user when lemond would not start: a Windows block names its fix."""
     reason = code_integrity_block_reason(exc)
     if reason == _FAIL_FAST:
-        # The classifier matches the status before any policy wording; look for that wording alone.
         reason = code_integrity_block_reason(_FAIL_FAST_TEXT.sub("", str(exc)))
     if reason is not None and reason != _FAIL_FAST:
         return code_integrity_user_message(str(binary.parent), reason)
@@ -696,7 +694,6 @@ class LemonadeNpuBackend:
             try:
                 self._server.start()
             except (LemonadeUnavailable, OSError) as exc:
-                # OSError: the spawn itself failed, e.g. Smart App Control refusing lemond.exe.
                 self._server = None
                 raise NpuError(_lemonade_start_error(binary, exc)) from exc
             return self._server
@@ -828,7 +825,6 @@ class LemonadeNpuBackend:
         try:
             response = server.request("GET", "/v1/models?show_all=true", timeout = 60.0)
         except LemonadeUnavailable as exc:
-            # lemond exited or stopped answering after it started (crashed, killed, shutting down).
             raise NpuError(f"Listing NPU models failed: {exc}") from exc
         if _failed(response):
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")

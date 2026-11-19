@@ -425,7 +425,6 @@ def test_a_catalog_error_body_is_an_error_not_an_empty_catalog(npu, monkeypatch)
 
 
 def _restarted(npu) -> nb.LemonadeNpuBackend:
-    """An enabled NPU after a Studio restart: ready, with lemond not running yet."""
     npu.enable()
     npu.shutdown()
     restarted = nb.LemonadeNpuBackend(root = npu.root)
@@ -473,9 +472,7 @@ def _exited(returncode: int) -> LemonadeUnavailable:
 @pytest.mark.parametrize(
     "error",
     [
-        # CreateProcess refusing lemond.exe under Smart App Control or WDAC.
         OSError(22, "An Application Control policy has blocked this file", None, 4551),
-        # lemond spawned, then the loader killed it with the SAC / WDAC NTSTATUS.
         _exited(0xC0E90002),
     ],
 )
@@ -493,7 +490,6 @@ def test_a_windows_code_integrity_block_names_its_fix(npu, monkeypatch, error):
 
 
 def test_a_fail_fast_exit_alone_is_a_crash_not_a_policy_block(npu, monkeypatch):
-    # An ordinary crash can also exit with 0xC0000602; only policy wording in the output makes it a block.
     restarted = _restarted(npu)
     crashed = _exited(0xC0000602)
     monkeypatch.setattr(LemonadeServer, "start", _raising(crashed))
@@ -1118,7 +1114,6 @@ def test_stop_interrupts_a_start_that_never_becomes_ready(tmp_path):
 @pytest.mark.parametrize(
     "script, returncode, reason",
     [
-        # Alive but never healthy: the kill at the deadline must not read as lemond's own exit.
         ("exec sleep 60", None, "did not answer its health check within 1 s"),
         ("exit 3", 3, "did not start"),
     ],

@@ -178,13 +178,10 @@ def base_of(folder: Path) -> Optional[str]:
 
 
 def _own_file(path: Path) -> bool:
-    """A plain file inside the acting account: a link could hand over another account's weights.
-
-    Raises PermissionError rather than reading a denied file as missing (Path.is_file() on Python
-    3.14 returns False for it), so the caller skips the folder instead of calling it incomplete.
-    """
+    """A plain file inside the acting account: a link could hand over another account's weights."""
     from utils.paths.storage_roots import within_account
 
+    # Not is_file(): Python 3.14 reads a denied file as missing; PermissionError skips the folder.
     try:
         mode = path.lstat().st_mode
     except (FileNotFoundError, NotADirectoryError):
@@ -248,7 +245,6 @@ def find_local_models(root: Path) -> list[LocalQ4nx]:
                 if within_account(path):
                     found.append(_describe(path, root))
             except OSError as exc:
-                # Listable but not inspectable (no execute bit, a denied file): skip, list the rest.
                 logger.warning("Skipping converted NPU model folder %s: %s", path, exc)
         elif len(path.parts) - base_depth >= _MAX_DEPTH:
             dirs[:] = []
@@ -286,7 +282,6 @@ def account_local_models() -> list[LocalQ4nx]:
                 seen.add(key)
                 found.append(_describe(folder, exports_root()))
         except OSError as exc:
-            # A scan folder that is unreadable or offline must not fail every NPU listing.
             logger.warning("Skipping scan folder %s for converted NPU models: %s", folder, exc)
     return sorted(found, key = lambda model: model.display.lower())
 

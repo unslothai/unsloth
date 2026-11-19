@@ -163,8 +163,6 @@ def test_an_uninspectable_conversion_in_the_exports_is_skipped_not_raised():
 
 
 def test_an_unreadable_registered_folder_is_skipped_not_raised(monkeypatch, tmp_path):
-    # A scan folder Studio cannot read (no permission, a drive that went offline) raises from
-    # is_symlink() / is_file(); that used to fail /api/npu/models for every NPU model.
     blocked = tmp_path / "blocked"
     save = tmp_path / "elsewhere" / "Qwen3-0.6B-ft"
     save.mkdir(parents = True)
