@@ -1016,6 +1016,9 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                         _decisions()[key] = verdict
                         if known is None and race is not None:
                             _persist_sink_verdict(plan, verdict)
+                    if verdict == "native" and fresh and _routes_used(plan):
+                        # moving the routes would put another plan's used INT8 calls on torch's attention next render
+                        verdict = True
                     if verdict is not True and plan.get("live_seen"):
                         # a render already used this plan's sink-path outputs where V clipped: keep the path for the
                         # load (the next render repeats the seed); the verdict decides the next plans and loads
@@ -1204,8 +1207,9 @@ def _learn_now(plan: dict, i8: Any, n: Optional[int]) -> Any:
                     False  # the same bits as the sink path this and the earlier calls took
                 )
             return True
-        if known == "native" and (n or _bucket_ran(plan)):
-            # earlier INT8 outputs of this bucket were used: torch's attention would change them on the next render
+        if known == "native" and (n or _bucket_ran(plan) or _routes_used(plan)):
+            # earlier INT8 outputs of this bucket, or of another plan on the routes torch's attention would move, were
+            # used: torch's attention would change them on the next render
             known = True
         fresh = plan["decision"] + (True,) not in _decisions()
         _decisions()[plan["decision"] + (True,)] = known
@@ -1221,6 +1225,23 @@ def _learn_now(plan: dict, i8: Any, n: Optional[int]) -> Any:
         if path == "native" and fresh:
             _drop_routes(plan)
     return path
+
+
+def _routes_used(plan: dict) -> bool:
+    """Whether another plan on the routes ``_drop_routes(plan)`` would move (same card, same head dim) already ran a
+    call this load: raising their floor or restoring the stock processor would change those outputs."""
+    try:
+        dim = plan["shape"][4]
+    except Exception:  # noqa: BLE001 - a plan without its shape moves no route
+        return False
+    return any(
+        other is not plan
+        and other.get("index") == plan.get("index")
+        and (other.get("shape") or (None,) * 5)[4] == dim
+        and other.get("calls", 0)
+        for other in _plans().values()
+        if isinstance(other, dict)
+    )
 
 
 def _bucket_ran(plan: dict) -> bool:

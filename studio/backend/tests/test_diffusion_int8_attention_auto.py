@@ -665,6 +665,25 @@ def test_a_verdict_published_mid_learning_keeps_a_used_clipped_sink_path(monkeyp
     assert I._decisions()[plan["decision"] + (True,)] == (True if verdict == "native" else verdict)
 
 
+def test_a_native_verdict_never_moves_routes_another_used_plan_runs_on(monkeypatch):
+    """Graphs off, two resolutions in one load: a persisted torch verdict for the second plan's bucket would raise
+    the shared floor (or restore the stock processor) under the first plan's used INT8 calls, so it keeps the kernels."""
+    plan = _fake_plan(mode = I.MODE_RACE, shape = (1, 8192, 8192, 2, 8))
+    launched = _recording_kernels(monkeypatch, plan, clipped = (0,))
+    earlier = _fake_plan(mode = I.MODE_RACE, shape = (1, 4096, 4096, 2, 8), calls = 40, sinks = True)
+    earlier["decision"] = ("other bucket", I.MODE_RACE)
+    I._plans()["earlier"] = earlier
+    _known(plan, "native", "persisted")
+    monkeypatch.setattr(
+        I,
+        "_drop_routes",
+        lambda plan: pytest.fail("no route moves under another plan's used calls"),
+    )
+    q = torch.zeros(1, 4, 2, 8)
+    I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
+    assert plan["sinks"] is True and launched == [("quant", True), ("attn", True)]
+
+
 def test_a_pending_thrown_away_clip_does_not_keep_the_sink_path(monkeypatch):
     """A pending clip from a thrown-away graph warm-up is not a used output: the published verdict is taken."""
     plan = _fake_plan(mode = I.MODE_RACE)
