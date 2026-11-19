@@ -14,7 +14,7 @@ from typing import Optional
 
 _TTL_S = 60.0
 _cache: dict[tuple[str, str], tuple[float, bool]] = {}
-# Editors whose MCP server answered in this backend's lifetime: running proves installed, wherever it lives.
+# An editor whose MCP server answered is installed, wherever it lives.
 _connected: set[str] = set()
 
 
