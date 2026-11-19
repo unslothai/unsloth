@@ -52,9 +52,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
-// Per account, so each user on a shared browser gets the card once. Listed in
-// ACCOUNT_KEYED_PREFIXES so sign-ins keep it, and kept out of Reset preferences:
-// only the X dismisses it, for good.
+// Per account; in ACCOUNT_KEYED_PREFIXES and not in Reset preferences, so only the X ever hides it.
 export const MODEL_PICKER_INTRO_DISMISSED_PREFIX =
   "unsloth_model_picker_intro_dismissed:";
 
@@ -126,7 +124,6 @@ const MOCK_ROWS = [
   },
 ] as const;
 
-/** Below the new-chat composer: a card that opens a dialog about the composer model picker. */
 export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
   className,
 }) => {
@@ -275,7 +272,6 @@ const LogoDot: FC<{ src: string; className?: string }> = ({
   />
 );
 
-/** A tilted mini picker with the magnifying-glass sloth peeking over it. */
 const CardArt: FC = () => (
   <span
     aria-hidden="true"
@@ -314,7 +310,6 @@ const CardArt: FC = () => (
   </span>
 );
 
-/** The composer, its model chip, and the picker it opens, drawn with live theme colours. */
 const GOOGLE_MARK = "/provider-logos/google-g.svg";
 
 interface HeroRow {
@@ -338,8 +333,7 @@ const FALLBACK_ROWS: readonly HeroRow[] = [
   },
 ];
 
-// The top trending chat model leads; then the top Google and DeepSeek ones, so one maker never fills the list.
-// Provider-logo ids, each with its offline stand-in.
+// After the trending leader, the top Google and DeepSeek rows (provider-logo ids, offline stand-in index).
 const FEATURED_MAKERS = [
   ["google", 1],
   ["deepseek-ai", 2],
@@ -393,7 +387,7 @@ function useTrendingRows(): readonly HeroRow[] {
   }, [trending.results]);
 }
 
-/** The composer with its chip open, drawn with the real picker's and composer's icons and surfaces. */
+/** Mirrors the real picker and composer: keep its icons and surfaces in step with theirs. */
 const DialogHero: FC = () => {
   const rows = useTrendingRows();
   const chosen = rows[0];
