@@ -315,3 +315,48 @@ test("a failed re-read is retried even if this tab wrote meanwhile", async () =>
   await sync.poll();
   assert.equal(recovered, 2, "the other device's write is read again");
 });
+
+test("a poll answered after this tab's own write does not roll the baseline back", async () => {
+  let snapshot: RemoteHistoryRevision = { revision: 10, threads: { a: 3 } };
+  let release: (() => void) | null = null;
+  let hold = false;
+  let historyChanges = 0;
+  const sync = createRemoteHistorySync({
+    fetchRevision: async () => {
+      const taken = snapshot;
+      if (hold) await new Promise<void>((resolve) => (release = resolve));
+      return taken;
+    },
+    onHistoryChanged: () => {
+      historyChanges += 1;
+    },
+    isVisible: () => true,
+  });
+  let recovered = 0;
+  sync.watch({
+    threadId: () => "a",
+    isIdle: () => true,
+    onThreadChanged: () => {
+      recovered += 1;
+    },
+  });
+  await sync.poll();
+
+  // The poll reads the counters before the write lands and answers after its response.
+  hold = true;
+  const late = sync.poll();
+  sync.noteOwnWrite(ownWrite("a", [3, 4], [10, 11]));
+  snapshot = { revision: 11, threads: { a: 4 } };
+  hold = false;
+  (release as (() => void) | null)?.();
+  await late;
+  await sync.poll();
+  assert.equal(recovered, 0);
+  assert.equal(historyChanges, 0);
+
+  // A later write from elsewhere is still read.
+  snapshot = { revision: 12, threads: { a: 5 } };
+  await sync.poll();
+  assert.equal(recovered, 1);
+  assert.equal(historyChanges, 1);
+});

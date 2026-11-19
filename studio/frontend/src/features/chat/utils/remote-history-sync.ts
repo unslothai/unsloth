@@ -70,6 +70,8 @@ export function createRemoteHistorySync(
   let historyRevision: number | null = null;
   const historySteps: OwnSteps = new Map();
   const threadSteps = new Map<string, OwnSteps>();
+  // Bumped per own write: a poll sent before one may answer with counters it already passed.
+  let ownWrites = 0;
   let inFlight: Promise<void> | null = null;
   // An older server has no endpoint: stop asking.
   let unsupported = false;
@@ -80,6 +82,7 @@ export function createRemoteHistorySync(
       const id = watcher.threadId?.();
       if (id) ids.add(id);
     }
+    const writesAtSend = ownWrites;
     let result: RemoteHistoryRevision | null;
     try {
       result = await deps.fetchRevision([...ids]);
@@ -90,13 +93,18 @@ export function createRemoteHistorySync(
       unsupported = true;
       return;
     }
+    const overtaken = ownWrites !== writesAtSend;
     if (historyRevision !== null) {
       historyRevision = advance(historySteps, historyRevision);
     }
-    if (historyRevision !== null && result.revision !== historyRevision) {
-      deps.onHistoryChanged();
+    if (overtaken && historyRevision !== null && result.revision < historyRevision) {
+      // Stale snapshot: an own write already moved past it.
+    } else {
+      if (historyRevision !== null && result.revision !== historyRevision) {
+        deps.onHistoryChanged();
+      }
+      historyRevision = result.revision;
     }
-    historyRevision = result.revision;
     for (const [watcher, read] of watchers) {
       let seen = read;
       const id = watcher.threadId?.() ?? null;
@@ -116,6 +124,7 @@ export function createRemoteHistorySync(
         watchers.set(watcher, seen);
       }
       if (seen.revision === revision) continue;
+      if (overtaken && revision < seen.revision) continue;
       if (watcher.isIdle && !watcher.isIdle()) continue;
       const before = seen.revision;
       watchers.set(watcher, { threadId: id, revision, reading: revision });
@@ -160,6 +169,7 @@ export function createRemoteHistorySync(
     watching: () => watchers.size > 0 && !unsupported,
     noteOwnWrite({ threadId, thread, history }) {
       if (watchers.size === 0) return;
+      ownWrites++;
       addStep(historySteps, history);
       if (historyRevision !== null) {
         historyRevision = advance(historySteps, historyRevision);
