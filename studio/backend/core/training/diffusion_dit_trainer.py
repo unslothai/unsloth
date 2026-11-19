@@ -976,12 +976,39 @@ def _flux_forward(
     return FluxPipeline._unpack_latents(model_pred, h * 8, w * 8, 8)
 
 
-def _flux_save(pipe_cls, out_dir, transformer_lora_layers):
-    from diffusers import FluxPipeline
-    FluxPipeline.save_lora_weights(
+def _save_transformer_lora(
+    save,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+) -> None:
+    """``save_lora_weights`` with the adapter's LoraConfig in the header when this diffusers takes it: without it the
+    loader assumes lora_alpha == rank, so an adapter trained at another alpha reloads at the wrong strength."""
+    import inspect
+
+    kwargs = {}
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,
         weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
+    )
+
+
+def _flux_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
+    from diffusers import FluxPipeline
+    _save_transformer_lora(
+        FluxPipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1096,12 +1123,15 @@ def _qwen_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
     return QwenImagePipeline._unpack_latents(pred, h * 8, w * 8, 8)
 
 
-def _qwen_save(pipe_cls, out_dir, transformer_lora_layers):
+def _qwen_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import QwenImagePipeline
-    QwenImagePipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        QwenImagePipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1169,12 +1199,15 @@ def _zimage_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, de
     return -torch.stack(out, dim = 0).squeeze(2)
 
 
-def _zimage_save(pipe_cls, out_dir, transformer_lora_layers):
+def _zimage_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import ZImagePipeline
-    ZImagePipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        ZImagePipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1255,12 +1288,15 @@ def _krea2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
     return pred.reshape(bsz, c, 1, h, w)
 
 
-def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
+def _krea2_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import Krea2Pipeline
-    Krea2Pipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        Krea2Pipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1605,21 +1641,27 @@ def _flux2_forward(
     return unpacked
 
 
-def _flux2_save(pipe_cls, out_dir, transformer_lora_layers):
+def _flux2_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import Flux2Pipeline
-    Flux2Pipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        Flux2Pipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
-def _flux2_klein_save(pipe_cls, out_dir, transformer_lora_layers):
+def _flux2_klein_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import Flux2KleinPipeline
-    Flux2KleinPipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        Flux2KleinPipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -2147,20 +2189,8 @@ def _ltx2_save(
     transformer_lora_layers,
     adapter_metadata = None,
 ):
-    import inspect
-
-    save = _ltx2_pipeline_cls().save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        _ltx2_pipeline_cls().save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -2628,6 +2658,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux_collate,
         forward = _flux_forward,
         save = _flux_save,
+        save_takes_metadata = True,
         latent_shape = _vae8_latent_shape,
         decode_latents = _flux_decode_latents,
         sample_forward_kwargs = {"guidance": 3.5},
@@ -2645,6 +2676,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _qwen_collate,
         forward = _qwen_forward,
         save = _qwen_save,
+        save_takes_metadata = True,
         latent_shape = _qwen_latent_shape,
         decode_latents = _qwen_decode_latents,
     ),
@@ -2661,6 +2693,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _zimage_collate,
         forward = _zimage_forward,
         save = _zimage_save,
+        save_takes_metadata = True,
         latent_shape = _vae8_latent_shape,
         decode_latents = _flux_decode_latents,
     ),
@@ -2677,6 +2710,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _krea2_collate,
         forward = _krea2_forward,
         save = _krea2_save,
+        save_takes_metadata = True,
         latent_shape = _qwen_latent_shape,
         decode_latents = _qwen_decode_latents,
     ),
@@ -2713,6 +2747,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux2_collate,
         forward = _flux2_forward,
         save = _flux2_klein_save,
+        save_takes_metadata = True,
         latent_shape = _flux2_latent_shape,
         decode_latents = _flux2_decode_latents,
     ),
@@ -2769,6 +2804,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux2_collate,
         forward = _flux2_forward,
         save = _flux2_save,
+        save_takes_metadata = True,
         latent_shape = _flux2_latent_shape,
         decode_latents = _flux2_decode_latents,
         # Flux2Pipeline's default guidance_scale, which Studio's FLUX.2-dev inference also uses.
