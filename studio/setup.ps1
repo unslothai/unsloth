@@ -8613,9 +8613,8 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
     } elseif ($_rocmPair.Stale) {
         substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
         $_rocmImportedBefore = $_rocmPair.Healthy
-        # Set the install manifest aside during the replacement, so an interrupted one is never certified complete
-        # and the next update re-runs the dependency pass. As in the XPU swap: a manifest that cannot be moved
-        # stays valid through the replacement, so nothing is installed then.
+        # Set the manifest aside so an interrupted replacement is never certified complete. As in the XPU swap, a
+        # manifest that cannot be moved stays valid, so nothing is installed then.
         $_rocmManifest = Join-Path $VenvDir "unsloth_install_manifest.json"
         $_rocmHeld = "$_rocmManifest.triton-pending"
         $_rocmHasHeld = $false
@@ -8666,11 +8665,8 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
                     $stackExit = if ($_rocmTritonExit -ne 0) { $_rocmTritonExit } else { 1 }
                 }
             }
-            # A pairing that only warns leaves triton no worse than before: a working 3.9 costs fused flex decode, and a
-            # triton that did not import before still does not, so the backend keeps torch.compile off. Neither stops
-            # Studio, and the fast path's Test-RocmTritonPairingNeedsPass retries the pairing on the next update.
-            # Dropping the manifest here instead made Desktop refuse to start (studio_install_incomplete) while setup
-            # exited 0, and every repair dropped it again.
+            # A pairing that only warns leaves triton no worse than before, and Test-RocmTritonPairingNeedsPass retries it
+            # next update. Dropping the manifest here left Desktop stuck on studio_install_incomplete after every repair.
             if ($_rocmHasHeld -and $stackExit -eq 0) {
                 try {
                     Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop

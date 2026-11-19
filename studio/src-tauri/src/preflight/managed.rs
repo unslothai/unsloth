@@ -1392,7 +1392,6 @@ pub(super) async fn probe_managed_install() -> ManagedProbe {
     result
 }
 
-/// None when the managed install is ready, else the probe's reason for the repair error.
 pub async fn managed_install_not_ready_reason() -> Option<String> {
     not_ready_reason(probe_managed_install().await)
 }

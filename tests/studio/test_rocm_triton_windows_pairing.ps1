@@ -196,8 +196,7 @@ Remove-Item Env:UV_REQUIRE_HASHES, Env:PIP_REQUIRE_HASHES -ErrorAction SilentlyC
 $script:HashSeen = @()
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30"
 Check "an unset PIP_REQUIRE_HASHES is 0 during the install and unset after" ($script:HashSeen[0] -eq "|0" -and $null -eq [Environment]::GetEnvironmentVariable('PIP_REQUIRE_HASHES'))
-# Exit 0 that leaves the old version (a uv config override) warns. The install that worked before still works, so its
-# manifest is put back: Desktop refuses to start a venv without one, and the fast path retries the pairing.
+# Exit 0 that leaves the old version (a uv config override) warns and keeps the manifest Desktop needs to start.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.9.0.post30"; Imports = $true }
 Check "exit 0 with 3.9 still installed warns, keeps the manifest, setup continues" ((Repaired $r) -and $r.Manifest -and $r.StackExit -eq 0 -and $r.Pending -eq 0)
 # A replacement that fails part way and breaks a working triton fails setup and is never certified.
