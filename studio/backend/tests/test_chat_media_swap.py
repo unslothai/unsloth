@@ -264,6 +264,18 @@ def test_a_chat_admitted_before_the_gate_stops_the_swap():
     assert chat.resident
 
 
+def test_a_running_media_job_stops_the_swap_before_chat_is_touched():
+    """A video rendering beside chat is never evicted (and cancelled) to make room for the image."""
+    log = Log()
+    chat = FakeChat(log)
+    media = FakeImage(log, chat = chat)
+    trip = _trip(chat, media, media_busy = lambda: True)
+    with pytest.raises(swap.SwapUnavailable, match = "image or video job is running"):
+        asyncio.run(trip.run())
+    assert [entry[0] for entry in log] == []
+    assert chat.resident
+
+
 @pytest.mark.parametrize("where", ["load", "generate"])
 def test_cancel_mid_swap_restores_chat(where):
     log = Log()

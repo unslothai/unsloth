@@ -36,6 +36,7 @@ ERR_NO_DEFAULT = (
 )
 
 ERR_BUSY = "Error: another chat is generating on this model. Try again when it finishes."
+ERR_MEDIA_BUSY = "Error: an image or video job is running. Try again when it finishes."
 
 SWAP_BUDGET_S = 900.0
 
@@ -132,6 +133,8 @@ class RoundTrip:
     # True while this turn is the only generation; re-read under the gate, which stops new admissions but does not
     # drain a chat admitted before it.
     still_alone: Optional[Callable[[], bool]] = None
+    # True while an image or video load or render is running: the swap never evicts around one.
+    media_busy: Optional[Callable[[], bool]] = None
     beside_first: bool = False
 
     def stop(self) -> None:
@@ -198,6 +201,8 @@ class RoundTrip:
         try:
             if self.still_alone is not None and not self.still_alone():
                 raise SwapUnavailable(ERR_BUSY)
+            if self.media_busy is not None and await asyncio.to_thread(self.media_busy):
+                raise SwapUnavailable(ERR_MEDIA_BUSY)
             return await self._run_held(snap, gate, total)
         finally:
             await gate.aclose()
@@ -532,6 +537,19 @@ def chat_can_swap() -> bool:
         return False
 
 
+def _media_busy() -> bool:
+    """A load or render on the image or the video backend (video jobs never enter ``active_generations``)."""
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_switch_backends import backend_busy, backend_for, other_backend_busy
+
+    try:
+        if backend_busy(backend_for(DIFFUSION)):
+            return True
+    except Exception:  # noqa: BLE001 -- an unavailable backend has nothing running
+        pass
+    return other_backend_busy(DIFFUSION)
+
+
 def run_in_tool(
     *,
     loop: asyncio.AbstractEventLoop,
@@ -581,6 +599,7 @@ def run_in_tool(
         on_cancel = stop_render,
         hold_requests = inference_lifecycle_gate,
         still_alone = lambda: active_generations.count() <= 1,
+        media_busy = _media_busy,
         beside_first = policy in ("fit", "always") or not on_gpu,
     )
 
