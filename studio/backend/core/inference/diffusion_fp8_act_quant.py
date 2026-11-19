@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One-pass static e4m3 activation quantiser for the ModelOpt FP8 Linear (diffusion_modelopt_fp8).
-
-The eager formula ``clamp(x.float() / input_scale, -448, 448).to(float8_e4m3fn)`` runs as four kernels over an fp32
-copy of the activation; this kernel reads the activation once and writes the codes once. IEEE division (div_rn), the
-same clamp and round-to-nearest-even cast, NaN kept with its sign: byte-identical codes, checked per device on every
-bf16 / fp16 bit pattern before first use (``verified``)."""
+"""One-pass static e4m3 activation quantiser for the ModelOpt FP8 Linear: byte-identical to the eager
+``clamp(x.float() / input_scale, -448, 448).to(float8_e4m3fn)``, verified per device before first use."""
 
 from __future__ import annotations
 
@@ -20,10 +16,9 @@ _BLOCK = 2048
 _WARPS = 4
 
 _LOCK = threading.Lock()
-# verified: device index -> bool (None until checked); calls: kernel launches; reason: why a device fell back
 _STATE: dict = {"verified": {}, "calls": 0, "reason": ""}
 
-try:  # module scope: a missing Triton leaves the eager formula in charge
+try:
     import triton
     import triton.language as tl
 except Exception:  # noqa: BLE001
@@ -41,8 +36,7 @@ if triton is not None:
         # torch.clamp keeps NaN; a comparison select does too (NaN compares false)
         y = tl.where(y > 448.0, 448.0, y)
         y = tl.where(y < -448.0, -448.0, y)
-        # Round to e4m3 in integer arithmetic, nearest even, as torch's cast does: Triton's own f32 -> e4m3 cast
-        # is not single-rounded on every arch (sm_89 codes differed from torch's while sm_100 matched).
+        # Integer RNE rounding: Triton's f32 -> e4m3 cast is not single-rounded on every arch (sm_89 differed from torch).
         bits = y.to(tl.uint32, bitcast = True)
         sign = ((bits >> 24) & 0x80).to(tl.uint8)
         mag_bits = bits & 0x7FFFFFFF
@@ -90,8 +84,7 @@ def _launch(x2: Any, scale: Any) -> Any:
 
 
 def _verify(device: Any) -> bool:
-    """Every bf16 and fp16 bit pattern (inf, NaN of both signs, subnormals) over scales from 2^-20 to 2^6 and
-    random ones, plus random fp32: the kernel's codes must equal the eager formula's byte for byte."""
+    """Kernel codes must equal the eager formula's byte for byte on every bf16 / fp16 bit pattern."""
     import torch
 
     bits = torch.arange(-(1 << 15), 1 << 15, dtype = torch.int32, device = device).to(torch.int16)
@@ -118,7 +111,6 @@ def _verify(device: Any) -> bool:
 
 
 def ready(device: Any) -> bool:
-    """The kernel may serve this CUDA device (sm_89+ e4m3 casts; verified once per device)."""
     if triton is None or not enabled():
         return False
     index = device.index
@@ -139,8 +131,7 @@ def ready(device: Any) -> bool:
 
 
 def quantize_static(x2: Any, scale: Any) -> Optional[Any]:
-    """e4m3 codes of a 2-D activation (bf16 / fp16 / fp32, contiguous, CUDA) for a device fp32 scale; None: the
-    caller runs the eager formula (traced, CPU, unverified device, kill switch)."""
+    """e4m3 codes of a 2-D CUDA activation, or None: the caller runs the eager formula."""
     import torch
 
     if (

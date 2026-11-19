@@ -631,8 +631,7 @@ def fp8_linear_class():
             fast: bool = False,
         ) -> Any:
             """e4m3 codes of ``x / input_scale``, rounded once from float32, in row chunks so the float32 copy stays
-            small next to the activation. ``fast`` (the W8A8 GEMM runs): one fused pass, the same codes byte for
-            byte (diffusion_fp8_act_quant)."""
+            small next to the activation. ``fast``: one fused pass, same codes (diffusion_fp8_act_quant)."""
             scale = self.input_scale.view(torch.float32)
             if fast:
                 from .diffusion_fp8_act_quant import quantize_static
