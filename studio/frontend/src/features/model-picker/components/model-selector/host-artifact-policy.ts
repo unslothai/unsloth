@@ -17,19 +17,22 @@ export function classifyHost({
   deviceBackend,
   budgetKnown,
   denseQuantSupported,
+  appleSilicon,
 }: {
   deviceType?: string | null;
   deviceBackend?: string | null;
   budgetKnown?: boolean;
   denseQuantSupported?: boolean;
+  appleSilicon?: boolean;
 }): HostClass {
   const backend = (deviceBackend ?? "").trim().toLowerCase();
   // Backend outranks the OS: deviceType can be the browser's platform (config/env.ts).
   if (backend && budgetKnown && ACCELERATED_BACKENDS.has(backend)) {
     return denseQuantSupported ? "dense-quant" : "accelerated";
   }
-  // Outranks the Mac fallback: an Intel Mac has no MPS.
-  if (backend === "cpu" && budgetKnown) return "cpu-only";
+  // Outranks the Mac fallback: an Intel Mac has no MPS. Apple Silicon reports cpu while its MLX stack is
+  // unusable, yet diffusers still runs dense rows on MPS there, so it keeps "gguf-only".
+  if (backend === "cpu" && budgetKnown && !appleSilicon) return "cpu-only";
   // Modular Diffusers needs mem_get_info, which torch.mps lacks.
   if (deviceType === "mac") return "gguf-only";
   if (!(backend && budgetKnown)) return "unknown";

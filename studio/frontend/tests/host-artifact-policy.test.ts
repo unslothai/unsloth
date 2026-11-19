@@ -108,6 +108,11 @@ test("a Mac is gguf-only unless its backend is a confirmed CPU", () => {
   // An Intel Mac (no MPS) resolves the diffusion target to cpu, where the backend refuses the dense rows.
   assert.equal(classifyHost({ deviceType: "mac", deviceBackend: "cpu", budgetKnown: true }), "cpu-only");
   assert.equal(classifyHost({ deviceType: "mac", deviceBackend: "cpu", budgetKnown: false }), "gguf-only");
+  // Apple Silicon with an unusable MLX stack reports cpu, but diffusers runs dense rows on MPS there.
+  assert.equal(
+    classifyHost({ deviceType: "mac", deviceBackend: "cpu", budgetKnown: true, appleSilicon: true }),
+    "gguf-only",
+  );
 });
 
 test("a host still being discovered is unknown, not CPU-only", () => {
