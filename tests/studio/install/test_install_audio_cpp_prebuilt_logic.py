@@ -1053,9 +1053,41 @@ def test_accelerator_env_is_an_explicit_request(monkeypatch, tmp_path):
     )
 
 
-def test_an_unknown_accelerator_env_falls_back_to_auto(monkeypatch, capsys):
+def _install_cpu_on_a_cuda_host(monkeypatch, tmp_path):
+    release = _release(tmp_path, CPU_ZIP)
+    asked, resolve = _resolve_recording(release, covers = ("cpu", "cuda"))
+    _stub_install_io(monkeypatch)
+    monkeypatch.setattr(M, "resolve", resolve)
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
+    _real_head(monkeypatch, FORK_TAG)
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_ACCELERATOR", "cpu")
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_ACCELERATOR")
+    return asked
+
+
+def test_an_update_without_the_env_keeps_the_accelerator_chosen_at_install(
+    monkeypatch, tmp_path, capsys
+):
+    asked = _install_cpu_on_a_cuda_host(monkeypatch, tmp_path)
+    capsys.readouterr()
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    assert f"audio.cpp: already matches {CPU_ZIP}" in capsys.readouterr().out
+    assert asked == ["cpu"]
+    record = json.loads((tmp_path / "audio.cpp" / M.INSTALL_RECORD).read_text())
+    assert (record["accelerator"], record["accelerator_request"]) == ("cpu", "cpu")
+
+
+def test_an_explicit_auto_env_still_detects_over_the_installed_request(monkeypatch, tmp_path):
+    asked = _install_cpu_on_a_cuda_host(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_ACCELERATOR", "auto")
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    assert asked == ["cpu", "cuda"]
+
+
+def test_an_unknown_accelerator_env_falls_back_to_auto(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("UNSLOTH_AUDIO_CPP_ACCELERATOR", "rocm")
-    assert M._accelerator_from_env() == "auto"
+    assert M._accelerator_from_env(tmp_path) == "auto"
     assert "ignoring UNSLOTH_AUDIO_CPP_ACCELERATOR" in capsys.readouterr().err
 
 
