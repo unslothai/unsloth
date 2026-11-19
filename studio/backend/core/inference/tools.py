@@ -14204,6 +14204,14 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     else:
         # A new pin goes last and stays: the block changes once for it, not on every image or forced turn.
         names = list(dict.fromkeys(held + [spec["function"]["name"] for spec in listing[1:]]))
+        held_cost = _text_token_cost(
+            json.dumps(listing[:1] + [by_name[name] for name in names], separators = (",", ":")), ctx
+        )
+        # Past the share (a refreshed schema grew, or pins piled up): the block changes anyway, so re-fit it.
+        if held_cost > ctx * _MCP_TOOL_PRELOAD_SHARE:
+            names = [
+                spec["function"]["name"] for spec in _mcp_fill(listing, held, by_name, ctx)[1:]
+            ]
     _mcp_hold(names, ctx)
     _mcp_note_matches(specs, by_name, listing[0], names, ctx)
     return listing[:1] + [by_name[name] for name in names]

@@ -2678,6 +2678,39 @@ def test_mcp_listing_refits_the_held_tools_to_a_smaller_window(tmp_path, monkeyp
     assert _names(_thread_listing(tools_mod, searching // 2, chat)) == ["mcp_tool_search", ping]
 
 
+def test_mcp_listing_refits_the_held_tools_when_a_schema_grows(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    sizes = {"ping": 40, "create-pages": 40}
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if text.startswith("["):
+            return sum(
+                cost(json.dumps(item, separators = (",", ":")), ctx) for item in json.loads(text)
+            )
+        if '"name":"mcp_tool_search"' in text:
+            return 0
+        for name, size in sizes.items():
+            if text.startswith("{") and f'"name":"mcp__srv1__{name}"' in text:
+                return size
+        return 1000 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 100 / searching)
+    ping, create = "mcp__srv1__ping", "mcp__srv1__create-pages"
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    monkeypatch.setattr(
+        tools_mod, "_mcp_ranked", lambda specs, query: ([names.index(ping), names.index(create)], 0)
+    )
+    chat = [{"role": "user", "content": "first"}]
+
+    assert _names(_thread_listing(tools_mod, searching, chat)) == ["mcp_tool_search", ping, create]
+    sizes["ping"] = 90
+    assert _names(_thread_listing(tools_mod, searching, chat)) == ["mcp_tool_search", ping]
+
+
 def test_mcp_listing_follows_a_change_of_subject_with_the_message(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
 
