@@ -318,6 +318,38 @@ function writeExpanded(expanded: boolean): void {
   }
 }
 
+// Each model's own quant-list choice; others follow Settings > Expand quantizations.
+const QUANTS_OPEN_KEY = "unsloth_composer_picker_quants_open";
+const QUANTS_OPEN_MAX = 200;
+
+function readQuantsOpen(): ReadonlyMap<string, boolean> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(QUANTS_OPEN_KEY) ?? "{}");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return new Map();
+    }
+    return new Map(
+      Object.entries(raw).filter(
+        (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
+      ),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function writeQuantsOpen(map: ReadonlyMap<string, boolean>): void {
+  try {
+    const entries = [...map].slice(-QUANTS_OPEN_MAX);
+    localStorage.setItem(
+      QUANTS_OPEN_KEY,
+      JSON.stringify(Object.fromEntries(entries)),
+    );
+  } catch {
+    // Storage blocked.
+  }
+}
+
 function readTab(): string | null {
   try {
     return localStorage.getItem(TAB_KEY);
@@ -1642,9 +1674,6 @@ export function ComposerModelPicker({
   const [devicePartials, setDevicePartials] = useState<
     ReadonlyMap<string, GgufVariantDetail[]>
   >(() => new Map());
-  const [foldedQuants, setFoldedQuants] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
   const [offer, setOffer] = useState<{
     key: string;
     quants: GgufVariantDetail[] | null;
@@ -1757,6 +1786,9 @@ export function ComposerModelPicker({
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
+  const [quantsOpenByRow, setQuantsOpenByRow] = useState(readQuantsOpen);
+  const quantsOpenFor = (key: string) =>
+    quantsOpenByRow.get(key) ?? expandQuantizations;
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   const showMemoryBar = useChatRuntimeStore((s) => s.showMemoryBar);
@@ -3193,7 +3225,7 @@ export function ComposerModelPicker({
         row.kind === "gguf" &&
         !row.favoriteQuant &&
         variantCount(row) > 1 &&
-        expandQuantizations !== foldedQuants.has(row.key) &&
+        quantsOpenFor(row.key) &&
         updatesReadAt.current.get(row.key) !== quantsEpoch,
     );
     if (queue.length === 0) {
@@ -3265,8 +3297,8 @@ export function ComposerModelPicker({
     open,
     shownRows,
     deviceQuants,
-    foldedQuants,
     expandQuantizations,
+    quantsOpenByRow,
     quantsEpoch,
   ]);
 
@@ -3304,11 +3336,12 @@ export function ComposerModelPicker({
       return;
     }
     if (!row.favoriteQuant && variantCount(row) > 1) {
-      setFoldedQuants((prev) => {
-        const next = new Set(prev);
-        if (!next.delete(row.key)) {
-          next.add(row.key);
-        }
+      setQuantsOpenByRow((prev) => {
+        const next = new Map(prev);
+        const open = next.get(row.key) ?? expandQuantizations;
+        next.delete(row.key);
+        next.set(row.key, !open);
+        writeQuantsOpen(next);
         return next;
       });
       return;
@@ -4157,11 +4190,8 @@ export function ComposerModelPicker({
     const savedTarget = savedMeta
       ? modelConfigTarget(row.id, savedMeta, row.label)
       : undefined;
-    // `foldedQuants` holds the rows toggled away from the "Expand quantizations" setting.
     const quantsOpen =
-      !row.favoriteQuant &&
-      manyQuants &&
-      expandQuantizations !== foldedQuants.has(row.key);
+      !row.favoriteQuant && manyQuants && quantsOpenFor(row.key);
     // Discover GGUFs star by quant; a multi-quant device row stars the repo.
     const canStar = !(
       quiet ||

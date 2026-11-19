@@ -3169,7 +3169,7 @@ export const en = {
         title: "Model selection",
         expandQuantizations: "Expand quantizations",
         expandQuantizationsDescription:
-          "Show GGUF quantizations in On Device without opening each model.",
+          "Open each GGUF's quantization list in On Device by default. Opening or closing one model's list is remembered for that model.",
         showAllQuantizations: "All quantizations",
         showAllQuantizationsDescription:
           "Include quantizations that are not downloaded in On Device.",

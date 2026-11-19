@@ -1133,7 +1133,7 @@ test("an interrupted quant counts as a variant, so the row names no quant", () =
   // A click folds both open, as for two whole quants.
   assert.match(
     picker,
-    /if \(!row\.favoriteQuant && variantCount\(row\) > 1\) \{\s+setFoldedQuants/,
+    /if \(!row\.favoriteQuant && variantCount\(row\) > 1\) \{\s+setQuantsOpenByRow/,
   );
 });
 
@@ -1575,7 +1575,7 @@ test("an open on-device quant list asks the Hub for updates, as the header picke
   );
   assert.match(
     picker,
-    /expandQuantizations !== foldedQuants\.has\(row\.key\) &&\s*updatesReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
+    /quantsOpenFor\(row\.key\) &&\s*updatesReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
   );
   assert.match(
     picker,
@@ -1627,7 +1627,7 @@ test("a pinned-quant row reads its repo's disk state, opens its own Run settings
   );
   assert.match(
     picker,
-    /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*foldedQuants,\s*expandQuantizations,\s*quantsEpoch,\s*\]\);/,
+    /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*expandQuantizations,\s*quantsOpenByRow,\s*quantsEpoch,\s*\]\);/,
   );
 });
 
@@ -1870,5 +1870,22 @@ test("the fit-only filter and the row warning share the measured verdict", () =>
   assert.ok(
     picker.indexOf("const hubCheckpointFit = useMemo") <
       picker.indexOf("const foundRows = useMemo"),
+  );
+});
+
+test("each model remembers its own quant list; others follow the setting, on by default", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /quantsOpenByRow\.get\(key\) \?\? expandQuantizations/);
+  assert.match(
+    picker,
+    /const open = next\.get\(row\.key\) \?\? expandQuantizations;[\s\S]*?next\.set\(row\.key, !open\);\s+writeQuantsOpen\(next\);/,
+  );
+  assert.doesNotMatch(picker, /setExpandQuantizations\(/);
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(
+    store,
+    /expandQuantizations: loadBool\(CHAT_EXPAND_QUANTIZATIONS_KEY, true\)/,
   );
 });
