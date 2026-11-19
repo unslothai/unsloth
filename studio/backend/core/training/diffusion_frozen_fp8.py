@@ -197,7 +197,10 @@ def _define_grad_input_op():
     return grad_input
 
 
-_grad_input_mm = _define_grad_input_op()
+try:
+    _grad_input_mm = _define_grad_input_op()
+except Exception:  # noqa: BLE001 -- a torch without torch.library.custom_op keeps the inline copy
+    _grad_input_mm = None
 
 
 @torch._dynamo.allow_in_graph  # as torchao's float8 matmul: inlining the Function trips a dynamo freevar assert
@@ -217,7 +220,7 @@ class _FrozenFp8MM(torch.autograd.Function):
         q, s_row = ctx.saved_tensors
         # The weight scale sits on the reduction dim of grad_y @ W, so it folds into grad_y; mat2 must be column-major.
         gq, sg = _rowwise_quant(gy.float() * s_row)
-        if BACKWARD_WEIGHTS.active:
+        if BACKWARD_WEIGHTS.active and _grad_input_mm is not None:
             gx = _grad_input_mm(gq, q).float() * sg
         else:
             gx = _unit_scaled_mm(gq, q.t().contiguous().t()).float() * sg
