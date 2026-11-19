@@ -8881,6 +8881,20 @@ main()
         if ($NoticeArch) { return "cuda-notice" }
         return "cuda"
     }
+    # setup.ps1's Resolve-ShadowingGfxPick for the arch beside NVIDIA, so both scripts install for the same
+    # card: a shadowing iGPU listed first defers to a wheel-backed discrete one unless a mask chose it.
+    function Resolve-MixedHostShadowingArch {
+        param([AllowNull()][string]$Picked, [AllowNull()][string[]]$Arches)
+        $shadowing = @("gfx90c", "gfx1013", "gfx1033", "gfx1035", "gfx1036", "gfx1103", "gfx1153")
+        if (-not $Picked -or $shadowing -notcontains $Picked) { return $Picked }
+        foreach ($mask in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
+            if ($null -ne $mask) { return $Picked }
+        }
+        foreach ($arch in @($Arches | Where-Object { $_ })) {
+            if ($shadowing -notcontains $arch -and ($archFamilyMap.ContainsKey($arch) -or $multiArchGfx -contains $arch)) { return $arch }
+        }
+        return $Picked
+    }
     # The card the notice names: the first probed arch with wheels that is not an iGPU, so an iGPU
     # listed first does not hide a discrete card. iGPUs: setup.ps1's ShadowingIntegratedGfx plus Strix.
     function Get-MixedHostNoticeArch {
@@ -9392,6 +9406,11 @@ main()
     $MixedHostRoute = $null
     $MixedHostAmdArch = $null
     if ($ProbeAmdBesideNvidia) {
+        $_mixedPicked = Resolve-MixedHostShadowingArch -Picked $ROCmGfxArch -Arches $_hipAllArches
+        if ($_mixedPicked -ne $ROCmGfxArch) {
+            $ROCmGfxArch = $_mixedPicked; $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"; $ROCmGpuName = $null
+            $AmdHasGpuWheels = $true
+        }
         $MixedHostRoute = Get-MixedHostTorchRoute -AmdHasGpuWheels $AmdHasGpuWheels `
             -ForceRocm (Test-RocmTorchExplicitlyRequested) -CudaMaskHidesNvidia $nvMaskHidesAll `
             -NoticeArch (Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_hipAllArches)))

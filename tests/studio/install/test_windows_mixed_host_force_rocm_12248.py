@@ -48,6 +48,7 @@ INSTALL_HELPERS = functions(
     "Test-RocmTorchExplicitlyRequested",
     "Get-MixedHostTorchRoute",
     "Get-MixedHostNoticeArch",
+    "Resolve-MixedHostShadowingArch",
     "Write-CudaMaskHidesAmdWarning",
     "Write-MixedHostCudaNotice",
 )
@@ -169,6 +170,35 @@ class TestInstallPs1Decision:
         )
         assert "selecting ROCm PyTorch over CUDA" in kv["SAID"]
         assert "ROCm reads CUDA_VISIBLE_DEVICES too" in kv["SAID"]
+
+    def test_force_installs_for_the_discrete_card_behind_a_shadowing_igpu(self):
+        kv = _install_decision(
+            "gfx1036", True, hip_arches = ("gfx1036", "gfx1201"), UNSLOTH_FORCE_ROCM_TORCH = "1"
+        )
+        assert kv["ROUTE"] == "rocm" and kv["ARCH"] == "gfx1201"
+
+    def test_force_reaches_a_discrete_card_behind_an_igpu_with_no_wheels(self):
+        kv = _install_decision(
+            "gfx90c", False, hip_arches = ("gfx90c", "gfx1100"), UNSLOTH_FORCE_ROCM_TORCH = "1"
+        )
+        assert kv["ROUTE"] == "rocm" and kv["ARCH"] == "gfx1100"
+
+    @pytest.mark.parametrize("mask", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"])
+    def test_a_mask_keeps_the_igpu_pick_as_setup_ps1_does(self, mask):
+        kv = _install_decision(
+            "gfx1036",
+            True,
+            hip_arches = ("gfx1036", "gfx1201"),
+            UNSLOTH_FORCE_ROCM_TORCH = "1",
+            **{mask: "0"},
+        )
+        assert kv["ARCH"] == "gfx1036"
+
+    def test_strix_is_not_a_shadowing_igpu(self):
+        kv = _install_decision(
+            "gfx1151", True, hip_arches = ("gfx1151", "gfx1201"), UNSLOTH_FORCE_ROCM_TORCH = "1"
+        )
+        assert kv["ARCH"] == "gfx1151"
 
     def test_force_alone_does_not_warn_about_a_mask(self):
         kv = _install_decision("gfx1201", True, UNSLOTH_FORCE_ROCM_TORCH = "1")
@@ -446,3 +476,13 @@ def test_hipinfo_beside_nvidia_ignores_a_cuda_mask_naming_nvidia_cards(beside, e
     )
     assert kv["SEEN"] == seen
     assert kv["AFTER"] == env["CUDA_VISIBLE_DEVICES"]
+
+
+def test_install_ps1_shadowing_list_matches_setup_ps1():
+    import re
+
+    setup = slice_between(SETUP_SRC, "$script:ShadowingIntegratedGfx = @(", ")")
+    install = slice_between(
+        _function_source(INSTALL_SRC, "Resolve-MixedHostShadowingArch"), "$shadowing = @(", ")"
+    )
+    assert re.findall(r"gfx\w+", install) == re.findall(r"gfx\w+", setup)
