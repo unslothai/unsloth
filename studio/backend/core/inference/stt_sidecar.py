@@ -1048,6 +1048,18 @@ def _lend_diffusion_training_vram(device: Optional[str], reason: str):
         return contextlib.nullcontext()
 
 
+def _lend_image_text_encoder_vram(device: Optional[str], reason: str) -> int:
+    """A CUDA load beside an idle image model: its resident text encoders stream from the host first
+    (``diffusion_te_residency``); they come back before a later image encode once the render fits again."""
+    if device != "cuda":
+        return 0
+    try:
+        from core.inference.diffusion_te_residency import lend_from_loaded_engine
+        return lend_from_loaded_engine(reason)
+    except Exception:  # noqa: BLE001 -- coordination is best-effort; the load behaves as before
+        return 0
+
+
 def _clear_device_cache(device: Optional[str], collect: bool = True) -> None:
     """collect=False only for a caller that just collected and dropped nothing since; a full gc pass costs about a second on a long-lived backend."""
     if collect:
@@ -1555,6 +1567,7 @@ class WhisperSttSidecar:
 
                 retry_on_cpu = False
                 try:
+                    _lend_image_text_encoder_vram(device, "dictation model load")
                     with _lend_diffusion_training_vram(device, "dictation model load"):
                         candidate = self._build_model(
                             str(snapshot_path), device, dtype, cancel_event
