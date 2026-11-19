@@ -126,8 +126,7 @@ def _iter_quantization_methods(quantization):
 
 
 def _save_or_push_model(model, tokenizer, args, is_mlx):
-    requested = args.save_model or args.save_gguf or args.push_model or args.push_gguf
-    if not requested:
+    if not (args.save_model or args.save_gguf or args.push_model or args.push_gguf):
         print("Warning: The model is not saved!")
         return
 
