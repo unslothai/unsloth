@@ -932,7 +932,8 @@ function linearizeDocxMathParts(select: DocxPartSelect): Record<string, Uint8Arr
   return Object.keys(rewritten).length ? rewritten : null;
 }
 
-const DOCX_RUN_TEXT = new Map([["tab", "\t"], ["br", "\n"], ["cr", "\n"]]);
+const DOCX_RUN_TEXT = new Map([["tab", "\t"], ["br", "\n"], ["cr", "\n"], ["noBreakHyphen", "-"]]);
+const MC_NAMESPACE = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const pieceText = (piece: Element) =>
   piece.localName === "t" ? (piece.textContent ?? "") : (DOCX_RUN_TEXT.get(piece.localName) ?? "");
 
@@ -950,9 +951,11 @@ function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8
     const root = doc.documentElement;
     const w = root?.namespaceURI ?? "";
     if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
-    // runs the reader drops (tracked deletions and moves, ruby text, placeholders) neither raise nor serve as a base
+    // runs a reader may drop (tracked deletions and moves, ruby text, placeholders, one of two
+    // compatibility branches: the body reads mc:Fallback, notes mc:Choice) neither raise nor serve as a base
     const visibleIn = (run: Element, p: Element) => {
       for (let node = run.parentNode as Element | null; node; node = node.parentNode as Element | null) {
+        if (node.namespaceURI === MC_NAMESPACE) return false;
         if (node.namespaceURI !== w) continue;
         if (node.localName === "p") return node === p;
         if (DOCX_NOTE_SKIP.has(node.localName) || (node.localName === "sdt" && isDocxPlaceholder(node, w))) return false;

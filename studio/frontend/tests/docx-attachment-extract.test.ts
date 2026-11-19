@@ -222,6 +222,8 @@ test("extractDocxAttachmentText keeps superscript exponents", async () => {
     `<w:p>${run("Tolerance is 10")}${sup("-")}${sup("3")}${run(" m")}</w:p>` +
     `<w:p>${run("Due on the 1")}${sup("st")}${run(", as noted.")}${sup("4")}${run(" H")}${run("2", "subscript")}${run("O")}</w:p>` +
     `<w:p>${run("Moved 10")}${sup("6")}<w:moveFrom w:id="1">${sup("2")}</w:moveFrom>${run(" and 10")}<w:moveFrom w:id="2">${sup("2")}</w:moveFrom>${sup("6")}</w:p>` +
+    `<w:p>${run("Sign 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:noBreakHyphen/><w:t>3</w:t></w:r>${run(" and 10")}` +
+    `<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="w14">${sup("6")}</mc:Choice><mc:Fallback>${sup("6")}</mc:Fallback></mc:AlternateContent></w:p>` +
     `<w:p>${run("Split 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>6</w:t><w:br/><w:t>3</w:t></w:r>${run(" and clai")}${run("m")}${sup("1,2")}</w:p>` +
     `</w:body></w:document>`;
   await withDocxGlobals(async () => {
@@ -235,7 +237,7 @@ test("extractDocxAttachmentText keeps superscript exponents", async () => {
     );
     assert.equal(
       text.trim(),
-      "The tank holds 2.5 × 10^6 litres over 40 km^2.\n\nTolerance is 10^-3 m\n\nDue on the 1st, as noted.4 H2O\n\nMoved 10^6 and 10^6\n\nSplit 106\n3 and claim1,2",
+      "The tank holds 2.5 × 10^6 litres over 40 km^2.\n\nTolerance is 10^-3 m\n\nDue on the 1st, as noted.4 H2O\n\nMoved 10^6 and 10^6\n\nSign 10^-3 and 106\n\nSplit 106\n3 and claim1,2",
     );
   });
 });
