@@ -164,6 +164,25 @@ class _DocumentRopeIndex:
             for name, value in (("image_token_id", 1), ("video_token_id", 2))
         ]
 
+    def __getstate__(self):
+        # Spawned DataLoader workers pickle the collator: send the class and config, not the bound model
+        # (its weights, or local hooks that cannot pickle). get_rope_index reads only self.config.
+        state = dict(self.__dict__)
+        owner = getattr(self.get_rope_index, "__self__", None)
+        if isinstance(owner, torch.nn.Module):
+            state["get_rope_index"] = (type(owner), getattr(owner, "config", None))
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if isinstance(self.get_rope_index, tuple):
+            cls, config = self.get_rope_index
+            # Weightless instance: the class's get_rope_index and helpers, over the same config.
+            view = cls.__new__(cls)
+            torch.nn.Module.__init__(view)
+            view.config = config
+            self.get_rope_index = view.get_rope_index
+
     def _token_types(self, input_ids):
         types = torch.zeros_like(input_ids, dtype = torch.int32)
         for token_id, value in self.token_types:
