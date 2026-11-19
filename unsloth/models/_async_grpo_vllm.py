@@ -49,8 +49,14 @@ def _logprob(value):
 
 
 def _sampled_logprob(logprobs, position, token_id):
+    # vLLM always records the sampled token; any other entry is another token's logprob and would corrupt the
+    # importance ratio TRL builds from these, so refuse instead of substituting it.
     entry = logprobs[position]
-    return _logprob(entry[token_id] if token_id in entry else next(iter(entry.values())))
+    if token_id not in entry:
+        raise ValueError(
+            f"Unsloth: vLLM returned no logprob for sampled token {token_id} at position {position}."
+        )
+    return _logprob(entry[token_id])
 
 
 def _top_logprobs(entry, num_top_logprobs):

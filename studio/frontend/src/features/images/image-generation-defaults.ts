@@ -62,7 +62,14 @@ const MODEL_DEFAULTS: Array<{
   { match: "mossimage", steps: 25, guidance: 2.5 },
   { match: "kromoss", steps: 25, guidance: 2.5 },
   { match: "lumina", steps: 50, guidance: 4 },
+  // Distilled checkpoints use their publishers' recipes; each must precede its family's key.
+  { match: "hunyuanimage-2.1-distilled", steps: 8, guidance: 3.25 },
+  { match: "hunyuanimage2.1-distilled", steps: 8, guidance: 3.25 },
   { match: "hunyuanimage", steps: 50, guidance: 3.25 },
+  { match: "anima-turbo", steps: 10, guidance: 1 },
+  { match: "chroma1-hd-flash", steps: 16, guidance: 1 },
+  { match: "chroma1-flash", steps: 16, guidance: 1 },
+  { match: "chroma-flash", steps: 16, guidance: 1 },
   { match: "hidream-i1-dev", steps: 28, guidance: 0 },
   { match: "hidream-i1-fast", steps: 16, guidance: 0 },
   { match: "hidream", steps: 50, guidance: 5 },
@@ -124,6 +131,26 @@ export function defaultSizeFor(repoId: string): { width: number; height: number 
 // files are flux3_image_klein_*.safetensors), and the backend refuses a checkpoint of the other variant.
 const FAMILY_NAMES_THE_VARIANT = new Set(["flux.3-klein", "flux.3-klein-base"]);
 
+// Keys naming one distilled checkpoint of a family, with the family's name: a selected file naming the family but not
+// the checkpoint is another checkpoint of it, whatever its Turbo / Flash folder or repo says.
+const DISTILLED_CHECKPOINT_FAMILY: Readonly<Record<string, string>> = {
+  "hunyuanimage-2.1-distilled": "hunyuanimage",
+  "hunyuanimage2.1-distilled": "hunyuanimage",
+  "anima-turbo": "anima",
+  "chroma1-hd-flash": "chroma",
+  "chroma1-flash": "chroma",
+  "chroma-flash": "chroma",
+};
+
+function fileNamesOtherCheckpoint(repoId: string, ggufFilename: string): boolean {
+  const fold = (text: string) => text.replace(/[-_.\s]+/g, "-");
+  const id = repoId.toLowerCase();
+  const hit = MODEL_DEFAULTS.find((entry) => id.includes(entry.match) || fold(id).includes(fold(entry.match)));
+  const family = hit ? DISTILLED_CHECKPOINT_FAMILY[hit.match] : undefined;
+  const file = ggufFilename.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  return family !== undefined && file.includes(family);
+}
+
 /** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. A GGUF
  * filename that names a model outranks its repo, as on the backend: one repo can hold several checkpoints
  * (realrebelai/KREA-2_GGUFs ships BASE/Krea-2-Base-* beside TURBO/Krea-2-Turbo-*). */
@@ -131,6 +158,8 @@ export function defaultsKeyFor(repoId: string, familyOverride: unknown, ggufFile
   const family = explicitFamily(familyOverride);
   if (family && FAMILY_NAMES_THE_VARIANT.has(family)) return family;
   if (ggufFilename && defaultsFor(ggufFilename) !== DEFAULT_GEN) return ggufFilename;
+  // A base file in a Turbo / Flash folder or repo: the backend reports that file's recipe once loaded.
+  if (ggufFilename && fileNamesOtherCheckpoint(repoId, ggufFilename)) return family ?? ggufFilename;
   return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (family ?? repoId);
 }
 

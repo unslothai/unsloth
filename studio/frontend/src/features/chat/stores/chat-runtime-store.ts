@@ -190,6 +190,9 @@ export const CHAT_EXPAND_QUANTIZATIONS_KEY =
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
 export const CHAT_SHOW_MEMORY_BAR_KEY = "unsloth_chat_show_memory_bar";
+export const PICKER_EXPAND_LOADED_KEY = "unsloth_composer_picker_expand_loaded";
+export const PICKER_MONOCHROME_ICONS_KEY =
+  "unsloth_composer_picker_monochrome_icons";
 export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
@@ -260,11 +263,13 @@ function loadResearchModelTimeoutSeconds(): number {
   }
 }
 
-function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
+function loadResearchWebsitePolicy(
+  stored = readStorageValue(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY),
+): ResearchWebsitePolicy {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_WEBSITE_POLICY;
   try {
     const parsed = JSON.parse(
-      window.localStorage.getItem(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) || "{}",
+      stored || "{}",
     ) as Partial<ResearchWebsitePolicy>;
     return {
       allowedDomains: Array.isArray(parsed.allowedDomains)
@@ -283,12 +288,14 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   }
 }
 
-function loadResearchMcpSources(): ResearchMcpSource[] {
+function loadResearchMcpSources(
+  stored = readStorageValue(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY),
+): ResearchMcpSource[] {
   if (typeof window === "undefined") return [];
   try {
     return normalizeResearchMcpSources(
       JSON.parse(
-        window.localStorage.getItem(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY) || "[]",
+        stored || "[]",
       ),
     );
   } catch {
@@ -566,6 +573,19 @@ function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
     intoAny[key] = merged;
   }
 }
+
+const CROSS_WINDOW_SETTINGS = [
+  [CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, "researchWebsitePolicy", loadResearchWebsitePolicy],
+  [CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY, "researchMcpSources", loadResearchMcpSources],
+  [
+    CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
+    "researchModelTimeoutSeconds",
+    (raw: string) => (isSupportedResearchModelTimeout(Number(raw)) ? Number(raw) : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS),
+  ],
+] as const;
+
+// Edits only: a settings load also rewrites the value keys, with whatever the server had when it answered.
+export const CROSS_WINDOW_EDIT_KEY = "unsloth_chat_cross_window_setting_edit";
 
 async function flushSettingsPatch(keepalive = false): Promise<void> {
   if (Object.keys(pendingPatch).length === 0) return;
@@ -884,10 +904,14 @@ function flushPreHydrationSettings(): void {
 function persistSetting(key: string, raw: string): void {
   const mirrored = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
   const writeGlobal = () => {
-    if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
+    const changed = readStorageValue(key) !== raw;
+    if (!mirroredSettingsHydrated || changed) {
       mirrorSettingToBackend(key, raw);
     }
     writeStorageValue(key, raw);
+    if (changed && CROSS_WINDOW_SETTINGS.some(([crossKey]) => crossKey === key)) {
+      writeStorageValue(CROSS_WINDOW_EDIT_KEY, JSON.stringify({ key, raw, nonce: Math.random() }));
+    }
   };
   if (
     mirrored &&
@@ -2752,6 +2776,8 @@ type ChatRuntimeStore = {
   expandQuantizations: boolean;
   showAllQuantizations: boolean;
   showMemoryBar: boolean;
+  pickerExpandLoaded: boolean;
+  pickerMonochromeIcons: boolean;
   fitOnDeviceOnly: boolean;
   loadedIsMultimodal: boolean;
   loadedIsDiffusion: boolean;
@@ -2952,6 +2978,8 @@ type ChatRuntimeStore = {
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setShowMemoryBar: (value: boolean) => void;
+  setPickerExpandLoaded: (value: boolean) => void;
+  setPickerMonochromeIcons: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
@@ -4629,9 +4657,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedGpuIndexKind: null,
   loadedGpuIds: null,
   loadedGpuIndexKind: null,
-  expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
+  expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, true),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
   showMemoryBar: loadBool(CHAT_SHOW_MEMORY_BAR_KEY, false),
+  pickerExpandLoaded: loadBool(PICKER_EXPAND_LOADED_KEY, false),
+  pickerMonochromeIcons: loadBool(PICKER_MONOCHROME_ICONS_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -6482,6 +6512,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveBool(CHAT_SHOW_MEMORY_BAR_KEY, showMemoryBar);
     set({ showMemoryBar });
   },
+  setPickerExpandLoaded: (pickerExpandLoaded) => {
+    saveBool(PICKER_EXPAND_LOADED_KEY, pickerExpandLoaded);
+    set({ pickerExpandLoaded });
+  },
+  setPickerMonochromeIcons: (pickerMonochromeIcons) => {
+    saveBool(PICKER_MONOCHROME_ICONS_KEY, pickerMonochromeIcons);
+    set({ pickerMonochromeIcons });
+  },
   setFitOnDeviceOnly: (fitOnDeviceOnly) => {
     saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
     set({ fitOnDeviceOnly });
@@ -6534,6 +6572,25 @@ const clearChatFullAccessOnAuthChange = () => useChatRuntimeStore.getState().cle
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
   window.addEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
+  window.addEventListener("storage", (event) => {
+    if (event.key !== CROSS_WINDOW_EDIT_KEY || !event.newValue) return;
+    let edit: { key?: unknown; raw?: unknown };
+    try {
+      edit = JSON.parse(event.newValue);
+    } catch {
+      return;
+    }
+    const match = CROSS_WINDOW_SETTINGS.find(([key]) => key === edit.key);
+    if (!match || typeof edit.raw !== "string") return;
+    const [, field, parse] = match;
+    // Counts as an edit here too, so an older settings GET still in flight cannot write it back.
+    scalarSettingMutationVersions[field] += 1;
+    useChatRuntimeStore.setState((state) => ({
+      // The record's own value: by now another window's settings load may have recached the old one.
+      [field]: parse(edit.raw as string),
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    }));
+  });
 }
 
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);

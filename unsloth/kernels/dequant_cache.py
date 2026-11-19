@@ -95,7 +95,7 @@ def cache_mode():
 
 
 _lock = threading.RLock()
-# key (packed storage pointer, dtype) -> [storage weakref, version, absmax pointer, stream, dense [N, K]]
+# key (packed storage pointer, dtype) -> [storage weakref, version, scales key, stream, dense [N, K]]
 _CACHE = collections.OrderedDict()
 _BUDGET = {}  # device index -> bytes the cache may hold (set at safe points only)
 _TRANSIENT = {}  # device index -> largest step peak above the resident memory seen so far
@@ -130,6 +130,36 @@ def _storage_ref(W):
         return StorageWeakRef(W.untyped_storage())
     except Exception:
         return None
+
+
+def _offset_key(offset):
+    # A nested state's offset may be a Python scalar (_unpack_quant_state accepts it): key it by value.
+    if offset is None:
+        return None
+    if isinstance(offset, torch.Tensor):
+        return (offset.data_ptr(), offset._version)
+    return ("value", float(offset))
+
+
+def _scales_key(
+    absmax,
+    absmax2 = None,
+    offset = None,
+):
+    """Address and version of every scale tensor W decodes with (absmax; nested quantization's absmax2 and
+    offset): a replaced quant state or an in-place write to one of them changes it. Host reads only."""
+    try:
+        if absmax2 is None and offset is None:
+            return (absmax.data_ptr(), absmax._version)
+        return (
+            absmax.data_ptr(),
+            absmax._version,
+            None if absmax2 is None else (absmax2.data_ptr(), absmax2._version),
+            _offset_key(offset),
+        )
+    except RuntimeError:
+        # Inference tensors carry no version counter (and cannot be written in place outside inference mode).
+        return (absmax.data_ptr(), None)
 
 
 def _raw_stream(index):
@@ -480,10 +510,12 @@ def _lookup(
     decode,
     dtype,
     rows = 0,
+    absmax2 = None,
+    offset = None,
 ):
     """Dense [N, K] for the packed W (or its .t() view), from the cache or decode(); decode(fresh) returns the
     oriented result of fast_dequantize. Returns the oriented tensor like fast_dequantize. rows: the matmul's
-    row count (tokens), which sizes the step's activations."""
+    row count (tokens), which sizes the step's activations. absmax2 / offset: nested quantization's scales."""
     index = W.device.index
     if rows > _ROWS_NEW.get(index, 0) and not _EVALUATING[0]:
         _ROWS_NEW[index] = rows
@@ -499,22 +531,24 @@ def _lookup(
         return decode(False)
     # Hit path kept short: it runs for every frozen linear, three times per micro-batch.
     entry = _CACHE.get((W.data_ptr(), dtype))
+    scales = _scales_key(absmax, absmax2, offset)
     if entry is not None:
         _guard(index)
-        # Same packed storage and version, but a replaced quant state (new absmax) is a different weight.
+        # Same packed storage and version, but a replaced quant state (new absmax) or scales written in place
+        # (absmax, or the nested absmax2 / offset) is a different weight.
         if (
             entry[1] == W._version
-            and entry[2] == absmax.data_ptr()
+            and entry[2] == scales
             and entry[3] == _raw_stream(index)
             and not entry[0].expired()
         ):
             STATS["hits"] += 1
             dense = entry[4]
             return dense.t() if W.shape[0] == 1 else dense
-    return _miss(W, absmax, decode, dtype, index)
+    return _miss(W, scales, decode, dtype, index)
 
 
-def _miss(W, absmax, decode, dtype, index):
+def _miss(W, scales, decode, dtype, index):
     global _DISABLED
     _SEEN.add(index)
     key = (W.data_ptr(), dtype)
@@ -522,7 +556,7 @@ def _miss(W, absmax, decode, dtype, index):
     with _lock:
         entry = _CACHE.get(key)
         if entry is not None and (
-            entry[0].expired() or entry[1] != W._version or entry[2] != absmax.data_ptr()
+            entry[0].expired() or entry[1] != W._version or entry[2] != scales
         ):
             _pop(key)  # reloaded / requantized / edited in place: decode again
             STATS["stale"] += 1
@@ -558,7 +592,7 @@ def _miss(W, absmax, decode, dtype, index):
             clear_dequant_cache(oom = True)
             torch.cuda.empty_cache()
             return decode(False)
-        _put(key, [ref, W._version, absmax.data_ptr(), stream, out.t() if W.shape[0] == 1 else out])
+        _put(key, [ref, W._version, scales, stream, out.t() if W.shape[0] == 1 else out])
         STATS["admits"] += 1
         STATS["bytes"] = _cached_bytes()
         return out
@@ -607,7 +641,16 @@ def dequantize(
             return fast_dequantize(W, quant_state, use_global_buffer = False, dtype = dtype)
         return fast_dequantize(W, quant_state, use_global_buffer = use_global_buffer, dtype = dtype)
 
-    return _lookup(W, quant_state.absmax, decode, quant_state.dtype, rows)
+    state2 = getattr(quant_state, "state2", None)
+    return _lookup(
+        W,
+        quant_state.absmax,
+        decode,
+        quant_state.dtype,
+        rows,
+        getattr(state2, "absmax", None),
+        getattr(quant_state, "offset", None),
+    )
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -642,7 +685,7 @@ def _dense_from_parts(
         or torch.cuda.is_current_stream_capturing()
     ):
         return decode(False)
-    return _lookup(W, absmax, decode, dtype, rows)
+    return _lookup(W, absmax, decode, dtype, rows, absmax2, offset)
 
 
 def traced_route(W, quant_state):
@@ -680,6 +723,9 @@ def _matmul_impl(
         W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, X.shape[0]
     )
     if XA is None:
+        if Wd.dtype != X.dtype:
+            # nf4_matmul cast X to the autocast dtype, as autocast casts both matmul operands: Wd too.
+            Wd = Wd.to(X.dtype)
         return torch.matmul(X, Wd.t())
     if _lora_first_addmm is None:
         _bind_lora_first()
@@ -752,6 +798,9 @@ def _bind_lora_first():
         _lora_first_addmm = fn
 
 
+_AUTOCAST_FLOATS = (torch.float32, torch.float16, torch.bfloat16)
+
+
 def nf4_matmul(
     X,
     W,
@@ -765,6 +814,15 @@ def nf4_matmul(
         shape = X.shape
         out = nf4_matmul(X.reshape(-1, shape[-1]), W, quant_state, XA, Bt, alpha)
         return out.view(*shape[:-1], out.shape[-1])
+    if XA is None:
+        # The op is opaque to autocast, which would cast both operands of the torch.matmul it replaces to the
+        # autocast dtype (an fp16 X under bf16 autocast overflowed in fp16): apply that cast here, where it is
+        # traced. The lora-first form replaces an opaque op already, which autocast does not cast either.
+        device = X.device.type
+        if torch.is_autocast_enabled(device) and X.dtype in _AUTOCAST_FLOATS:
+            dtype = torch.get_autocast_dtype(device)
+            if X.dtype != dtype:
+                X = X.to(dtype)
     return torch.ops.unsloth.nf4_cached_matmul(X, W, *_parts(quant_state), XA, Bt, float(alpha))
 
 
@@ -875,6 +933,21 @@ def _user_callbacks(callbacks):
     ]
 
 
+def _has_nf4_weights(model):
+    """True when model holds a bitsandbytes NF4 weight the cache could serve: a parameter's quant state, or a
+    Linear4bit's own copy (FSDP2 all-gathers the packed bytes into a Parameter without it). Once per train()."""
+    try:
+        for module in model.modules():
+            if _is_bnb_nf4(module.__dict__.get("quant_state")):
+                return True
+            for param in module._parameters.values():
+                if _is_bnb_nf4(getattr(param, "quant_state", None)):
+                    return True
+        return False
+    except Exception:
+        return True  # cannot tell: keep the guarded behaviour
+
+
 def _make_callback():
     from transformers.trainer_callback import TrainerCallback
     class UnslothDequantCacheScope(TrainerCallback):
@@ -892,6 +965,9 @@ def _make_callback():
             else:
                 _ACTIVE = 1
             model = kwargs.get("model")
+            if _ACTIVE and isinstance(model, torch.nn.Module) and not _has_nf4_weights(model):
+                # Nothing to cache: no pre-hook (its padded-mask check reads the mask on the host every forward).
+                _ACTIVE = 0
             if _ACTIVE and isinstance(model, torch.nn.Module) and not _HOOKS:
                 try:
                     _HOOKS.append(

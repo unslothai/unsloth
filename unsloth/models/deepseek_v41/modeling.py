@@ -447,9 +447,17 @@ class DeepseekV41HyperConnection(nn.Module):
         return pre, post, comb
 
 
-def hc_pre(x, pre_mix):
-    """model.py:959-962: collapse [b, s, hc, d] to [b, s, d] with pre_mix [b, s, hc]."""
+def _hc_pre_upcast(x, pre_mix):
     return torch.sum(pre_mix.unsqueeze(-1) * x.float(), dim = 2).to(x.dtype)
+
+
+def hc_pre(x, pre_mix):
+    """model.py:959-962: collapse [b, s, hc, d] to [b, s, d] with pre_mix [b, s, hc].
+    An FP32 pre_mix promotes the product to FP32 already, so autograd keeps only x (alive anyway) instead of
+    an FP32 copy of the stream (2x its bf16 bytes). Same values and grads bitwise: bf16 / fp16 to fp32 is exact."""
+    if pre_mix.dtype != torch.float32:
+        return _hc_pre_upcast(x, pre_mix)
+    return torch.sum(pre_mix.unsqueeze(-1) * x, dim = 2).to(x.dtype)
 
 
 def hc_post(x, residual, post, comb):

@@ -131,8 +131,8 @@ import {
 import { type MemoryEstimate, type MlxOffloadablePart } from "../api/memory-estimate";
 import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
+  fixedLayerContextPin,
   resolveEstimateContext,
-  resolveMlxEstimateContext,
   resolveMlxServedWindow,
   shouldRequestMemoryEstimate,
 } from "../model-config/estimate-context";
@@ -606,6 +606,17 @@ function GgufContextLengthSetting({
   );
   const shown = draft == null ? value : fromSlider(draft);
   const isAuto = shown === 0;
+  const reset = isAuto ? null : (
+    <button
+      type="button"
+      onClick={() => onChange(0)}
+      className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      aria-label="Reset context to Auto"
+      title="Reset to Auto"
+    >
+      <HugeiconsIcon icon={ArrowTurnBackwardIcon} className="size-4" strokeWidth={2} />
+    </button>
+  );
   const label = (
     // The hint and reset float after the label, so the slider's left gap counts from its text.
     <div className="relative flex shrink-0 items-center">
@@ -623,21 +634,7 @@ function GgufContextLengthSetting({
             ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
             : ""}
         </InfoHint>
-        {isAuto ? null : (
-          <button
-            type="button"
-            onClick={() => onChange(0)}
-            className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label="Reset context to Auto"
-            title="Reset to Auto"
-          >
-            <HugeiconsIcon
-              icon={ArrowTurnBackwardIcon}
-              className="size-4"
-              strokeWidth={2}
-            />
-          </button>
-        )}
+        {stacked ? null : reset}
       </span>
     </div>
   );
@@ -666,7 +663,8 @@ function GgufContextLengthSetting({
       />
     ) : null;
   const input = (
-    <div className="ml-auto flex shrink-0 items-center">
+    <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      {stacked ? reset : null}
       <NumericValueInput
         ref={inputRef}
         value={isAuto ? autoValue : shown}
@@ -3366,8 +3364,6 @@ export function ModelConfigPage({
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
-  // resolveLoadMaxSeqLength returns 0 for a builtin-default GGUF load, so do not fall back to it.
-  const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
   const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
     minContext,
@@ -3443,18 +3439,17 @@ export function ModelConfigPage({
       setExtraArgsLoadable(true);
     }
   }, [resolvedIsDiffusion]);
-  const pinFixedLayerContext =
-    target.isGguf &&
-    loadableConfig.gpuMemoryMode === "manual" &&
-    loadableConfig.gpuLayers != null &&
-    loadableConfig.gpuLayers >= 0 &&
-    loadableConfig.customContextLength == null &&
-    activeLoadedContext != null;
-  const runtimeConfig = target.isGguf
-    ? pinFixedLayerContext
-      ? { ...loadableConfig, customContextLength: activeLoadedContext }
-      : loadableConfig
-    : loadableConfig;
+  const fixedLayerPin = fixedLayerContextPin({
+    isGguf: target.isGguf === true,
+    gpuMemoryMode: loadableConfig.gpuMemoryMode ?? gpuMemoryModeFallback,
+    gpuLayers: loadableConfig.gpuLayers,
+    customContextLength: loadableConfig.customContextLength,
+    activeLoadedContext,
+  });
+  const runtimeConfig =
+    fixedLayerPin != null
+      ? { ...loadableConfig, customContextLength: fixedLayerPin }
+      : loadableConfig;
   const runtimeGpuMemoryMode =
     runtimeConfig.gpuMemoryMode ?? gpuMemoryModeFallback;
   // Read the classification as a tri-state: an unclassified GGUF may be DiffusionGemma.
@@ -3470,18 +3465,11 @@ export function ModelConfigPage({
           hfToken: hfToken || null,
           nativePathToken,
           // The context Load sends, not the displayed one (which shows 32,768 before the header).
-          nCtx: resolveEstimateContext(
-            runtimeConfig.customContextLength ?? null,
-            activeLoadedContext,
-            (target.isGguf === true &&
-              runtimeGpuMemoryMode === "manual" &&
-              (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0) ||
-              (target.isGguf === true && activePresetSource === "builtin-default"),
-          ),
+          nCtx: resolveEstimateContext(runtimeConfig.customContextLength ?? null),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
           maxSeqLength: target.isGguf
             ? null
-            : resolveMlxEstimateContext(savedContextPin(config)),
+            : resolveEstimateContext(savedContextPin(config)),
           mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
           mlxPleOffload: targetIsMlx ? (runtimeConfig.mlxPleOffload ?? null) : null,
           mlxExpertOffload: targetIsMlx ? (runtimeConfig.mlxExpertOffload ?? null) : null,
@@ -3879,16 +3867,16 @@ export function ModelConfigPage({
             reasoningBudgetMessage: "",
           };
     // Recompute from effectiveConfig: the same-click GPU Layers draft was not yet committed.
-    const effectivePinFixedLayerContext =
-      target.isGguf &&
-      effectiveConfig.gpuMemoryMode === "manual" &&
-      effectiveConfig.gpuLayers != null &&
-      effectiveConfig.gpuLayers >= 0 &&
-      effectiveConfig.customContextLength == null &&
-      activeLoadedContext != null;
+    const effectiveFixedLayerPin = fixedLayerContextPin({
+      isGguf: target.isGguf === true,
+      gpuMemoryMode: effectiveConfig.gpuMemoryMode ?? gpuMemoryModeFallback,
+      gpuLayers: effectiveConfig.gpuLayers,
+      customContextLength: effectiveConfig.customContextLength,
+      activeLoadedContext,
+    });
     const effectiveRuntimeConfig = (hasPending || peerChanged)
-      ? effectivePinFixedLayerContext
-        ? { ...effectiveConfig, customContextLength: activeLoadedContext }
+      ? effectiveFixedLayerPin != null
+        ? { ...effectiveConfig, customContextLength: effectiveFixedLayerPin }
         : effectiveConfig
       : runtimeConfig;
     const effectiveMaxSeqLengthValue =
@@ -4053,7 +4041,7 @@ export function ModelConfigPage({
       return false;
     }
     keepSelection(target);
-    // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
+    // The page stays mounted, so show the fixed-layer pin just saved (else it reads "Auto").
     // Not on a forget: that stored nothing, and pinning here would change the next load.
     // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
     if (

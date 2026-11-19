@@ -179,6 +179,7 @@ export const pl = {
       add: "Dodaj",
       cancel: "Anuluj",
       removeSite: "Usuń {site}",
+      hostOnly: "Tylko ten host, bez jego subdomen",
       permissionsNote:
         "Wyświetlane są tylko witryny z własnymi uprawnieniami. Działania to logowania, wysyłanie formularzy oraz przyciski, które kupują, wysyłają lub usuwają.",
       siteInvalid: "Wpisz witrynę, np. example.com lub *.example.com.",
@@ -985,7 +986,6 @@ export const pl = {
     copy: "Kopiuj",
     addScheduledTask: "Dodaj zaplanowane zadanie…",
     compact: "Kompaktuj rozmowę",
-    compactQueued: "Zażądano kompaktowania przy następnej wiadomości",
     compactEmpty: "Nie ma jeszcze czego kompaktować",
     compactUnsupported:
       "Kompaktowanie wymaga modelu GGUF lub MLX z obsługą narzędzi",
@@ -1880,6 +1880,12 @@ export const pl = {
       learnMore: "Więcej informacji",
       managedNote:
         "Piaskownicę systemu operacyjnego konfiguruje właściciel tego serwera Unsloth.",
+      trustedFoldersTitle: "Zaufane foldery",
+      trustedFoldersLabel: "Uruchamiaj bez pytania",
+      trustedFoldersDescription: "Python i Terminal mogą odczytywać i uruchamiać pliki z tych folderów bez prośby o zgodę, tylko w Twoich własnych czatach. Zapis do nich nadal wymaga zgody. Jeden folder w wierszu.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Nie udało się wczytać zaufanych folderów.",
+      trustedFoldersSaveError: "Nie udało się zapisać zaufanych folderów.",
     },
     debugging: {
       description: "Czytaj dzienniki Unsloth bez opuszczania aplikacji.",

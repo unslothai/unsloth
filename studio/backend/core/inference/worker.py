@@ -701,6 +701,16 @@ def _loaded_auto_map(backend, mc) -> bool | None:
         return None
 
 
+def _loaded_model_type(model) -> Optional[str]:
+    for cfg in (getattr(model, "config", None), getattr(model, "_config", None)):
+        model_type = (
+            cfg.get("model_type") if isinstance(cfg, dict) else getattr(cfg, "model_type", None)
+        )
+        if isinstance(model_type, str) and model_type:
+            return model_type
+    return None
+
+
 @_in_token_rejection_scope
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     _restore_token_environment()
@@ -877,6 +887,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         model_info[_ctx_field] = int(_ctx_value)
                 except Exception as _ctx_exc:
                     logger.warning("%s forward failed: %s", _ctx_field, _ctx_exc)
+            # The checkpoint actually loaded (an adapter's base, an MLX precision folder), not the repo asked for.
+            model_info["model_type"] = _loaded_model_type(_entry.get("model"))
             # Tri-state: None means the backend does not answer, not False.
             if _entry.get("context_length_enforced") is not None:
                 model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])
@@ -1164,17 +1176,40 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
         _handle_generate(backend, cmd, resp_queue, cancel_event)
 
 
-def _decoded_images(backend, encoded) -> list:
+def _screenshot_request(backend, tools) -> bool:
+    """Whether a request offering the computer tool can afford precise screenshots: its images then
+    reach the processor as taken (the parent already caps every other image), under the screenshot
+    budget."""
+    from core.inference.computer_use import COMPUTER_TOOL_NAME
+    from core.inference.computer_use.budget import affords_precision
+
+    if not _backend_declares(backend, "computer_use") or not any(
+        isinstance(tool, dict) and (tool.get("function") or {}).get("name") == COMPUTER_TOOL_NAME
+        for tool in tools or ()
+    ):
+        return False
+    entry = (getattr(backend, "models", {}) or {}).get(getattr(backend, "active_model_name", None))
+    return affords_precision((entry or {}).get("context_length"))
+
+
+def _decoded_images(
+    backend,
+    encoded,
+    as_taken: bool = False,
+) -> list:
     resize = _resize_image
-    if _active_model_is_deepseek_ocr(backend):
+    if as_taken:
+        resize = lambda image: image  # noqa: E731
+    elif _active_model_is_deepseek_ocr(backend):
         from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
         resize = functools.partial(_resize_image, max_size = DEEPSEEK_OCR_MAX_IMAGE_SIDE)
     return [resize(_decode_image(one)) for one in encoded or () if one]
 
 
 def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
-    image = next(iter(_decoded_images(backend, [cmd.get("image_base64")])), None)
-    images = _decoded_images(backend, cmd.get("images_base64"))
+    screenshots = _screenshot_request(backend, cmd.get("tools"))
+    image = next(iter(_decoded_images(backend, [cmd.get("image_base64")], screenshots)), None)
+    images = _decoded_images(backend, cmd.get("images_base64"), screenshots)
 
     gen_kwargs = {
         "messages": cmd["messages"],
@@ -1203,6 +1238,8 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
 
     if cmd.get("image_ordinal") is not None and _backend_declares(backend, "image_ordinal"):
         gen_kwargs["image_ordinal"] = cmd["image_ordinal"]
+    if screenshots:
+        gen_kwargs["computer_use"] = True
 
     for gated in (
         "seed",
@@ -1367,6 +1404,7 @@ def _handle_prompt_cache_resume(
 def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
     """Count prompt tokens for the loaded model and reply with the total."""
     try:
+        screenshots = _screenshot_request(backend, cmd.get("tools"))
         count = backend.count_chat_tokens(
             cmd.get("messages") or [],
             cmd.get("system_prompt") or "",
@@ -1374,7 +1412,8 @@ def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
             enable_thinking = cmd.get("enable_thinking"),
             reasoning_effort = cmd.get("reasoning_effort"),
             preserve_thinking = cmd.get("preserve_thinking"),
-            images = _decoded_images(backend, cmd.get("images_base64")),
+            images = _decoded_images(backend, cmd.get("images_base64"), screenshots),
+            **({"computer_use": True} if screenshots else {}),
         )
     except Exception as exc:
         _send_response(
@@ -1396,6 +1435,17 @@ def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
             "model": backend.active_model_name,
         },
     )
+
+
+def _handle_image_tokens(backend, cmd: dict, resp_queue: Any) -> None:
+    """Tokens one computer-use screenshot of (width, height) costs; no ``tokens`` when unsupported."""
+    reply = {"type": "image_tokens_response", "request_id": cmd.get("request_id")}
+    try:
+        if _backend_declares(backend, "computer_use"):
+            reply["tokens"] = backend.image_tokens(int(cmd["width"]), int(cmd["height"]))
+    except Exception as exc:
+        reply["error"] = str(exc)
+    _send_response(resp_queue, reply)
 
 
 def _decline_count_tokens(
@@ -2420,6 +2470,18 @@ def run_inference_process(
                         _decline_count_tokens(cmd, resp_queue, "A generation is in progress.")
                     else:
                         _handle_count_tokens(backend, cmd, resp_queue)
+                elif cmd_type == "image_tokens":
+                    if batch.rows_in_flight:
+                        _send_response(
+                            resp_queue,
+                            {
+                                "type": "image_tokens_response",
+                                "request_id": cmd.get("request_id"),
+                                "error": "A generation is in progress.",
+                            },
+                        )
+                    else:
+                        _handle_image_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "resolve_prompt":
                     _handle_resolve_prompt(backend, cmd, resp_queue)
                 elif cmd_type in _PROMPT_CACHE_RESUME_METHODS:
@@ -2690,6 +2752,9 @@ def run_inference_process(
 
             elif cmd_type == "count_tokens":
                 _decline_count_tokens(cmd, resp_queue)
+
+            elif cmd_type == "image_tokens":
+                _handle_image_tokens(backend, cmd, resp_queue)
 
             elif cmd_type == "resolve_prompt":
                 _handle_resolve_prompt(backend, cmd, resp_queue)

@@ -370,6 +370,18 @@ export function ChatTab() {
   const setShowMemoryBar = useChatRuntimeStore(
     (state) => state.setShowMemoryBar,
   );
+  const pickerExpandLoaded = useChatRuntimeStore(
+    (state) => state.pickerExpandLoaded,
+  );
+  const setPickerExpandLoaded = useChatRuntimeStore(
+    (state) => state.setPickerExpandLoaded,
+  );
+  const pickerMonochromeIcons = useChatRuntimeStore(
+    (state) => state.pickerMonochromeIcons,
+  );
+  const setPickerMonochromeIcons = useChatRuntimeStore(
+    (state) => state.setPickerMonochromeIcons,
+  );
   const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore(
     (state) => state.setFitOnDeviceOnly,
@@ -930,6 +942,30 @@ export function ChatTab() {
             aria-label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
             checked={fitOnDeviceOnly}
             onCheckedChange={setFitOnDeviceOnly}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerExpandLoaded")}
+          description={t(
+            "settings.chat.modelSelection.pickerExpandLoadedDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerExpandLoaded")}
+            checked={pickerExpandLoaded}
+            onCheckedChange={setPickerExpandLoaded}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+          description={t(
+            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+            checked={pickerMonochromeIcons}
+            onCheckedChange={setPickerMonochromeIcons}
           />
         </SettingsRow>
       </SettingsSection>

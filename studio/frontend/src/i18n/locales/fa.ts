@@ -179,6 +179,7 @@ export const fa = {
       add: "افزودن",
       cancel: "لغو",
       removeSite: "حذف {site}",
+      hostOnly: "فقط همین میزبان، نه زیردامنه\u200cهای آن",
       permissionsNote:
         "فقط سایت‌هایی که مجوزهای مخصوص به خود دارند اینجا نمایش داده می‌شوند. اقدامات شامل ورود به حساب، ارسال فرم‌ها و دکمه‌هایی است که خرید، ارسال یا حذف انجام می‌دهند.",
       siteInvalid: "سایتی مانند example.com یا *.example.com وارد کنید.",
@@ -975,7 +976,6 @@ export const fa = {
     copy: "کپی",
     addScheduledTask: "افزودن کار زمان‌بندی‌شده…",
     compact: "فشرده‌سازی گفتگو",
-    compactQueued: "فشرده‌سازی برای پیام بعدی درخواست شد",
     compactEmpty: "هنوز چیزی برای فشرده‌سازی وجود ندارد",
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",
@@ -1856,6 +1856,12 @@ export const fa = {
       learnMore: "بیشتر بدانید",
       managedNote:
         "مالک این سرور Unsloth سندباکس سیستم‌عامل را راه‌اندازی می‌کند.",
+      trustedFoldersTitle: "پوشه‌های مورد اعتماد",
+      trustedFoldersLabel: "اجرا بدون پرسیدن",
+      trustedFoldersDescription: "Python و ترمینال می‌توانند فایل‌های این پوشه‌ها را بدون درخواست تأیید بخوانند و اجرا کنند، فقط در گفتگوهای خودتان. نوشتن در آن‌ها همچنان تأیید می‌خواهد. هر پوشه در یک خط.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "بارگیری پوشه‌های مورد اعتماد ممکن نشد.",
+      trustedFoldersSaveError: "ذخیرهٔ پوشه‌های مورد اعتماد ممکن نشد.",
     },
     debugging: {
       description: "گزارش‌های Unsloth را بدون خروج از برنامه بخوانید.",

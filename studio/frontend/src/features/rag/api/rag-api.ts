@@ -97,7 +97,7 @@ async function ragUpload(
 export async function extractDocumentText(
   file: File,
   beforeRetry?: () => void,
-): Promise<{ text: string; truncated: boolean }> {
+): Promise<{ text: string; truncated: boolean; warning?: string }> {
   const form = new FormData();
   form.append("file", file);
   const response = await authFetch(
@@ -107,7 +107,7 @@ export async function extractDocumentText(
   );
   const json = await response.json().catch(() => null);
   if (!response.ok) throw ragError(response.status, json);
-  return json as { text: string; truncated: boolean };
+  return json as { text: string; truncated: boolean; warning?: string };
 }
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {

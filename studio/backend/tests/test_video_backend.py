@@ -1919,12 +1919,12 @@ def test_load_installs_the_vae_sync_on_mps(fake_runtime, monkeypatch, device, ho
         torch,
         device,
         types.SimpleNamespace(
-            synchronize = lambda: syncs.append(1),
             recommended_max_memory = lambda: 64 * 1024**3,
             driver_allocated_memory = lambda: 0,
         ),
         raising = False,
     )
+    monkeypatch.setattr("core.inference.diffusion_device.mps_synchronize", lambda: syncs.append(1))
     monkeypatch.setattr(
         "core.inference.video.resolve_diffusion_device_target",
         lambda: DiffusionDeviceTarget(
