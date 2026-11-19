@@ -1337,6 +1337,9 @@ def _docx_run_text(run) -> str:
     )
 
 
+_DOCX_LEADING_BREAK = re.compile(r"\s*\n")
+
+
 def _docx_superscripts(p) -> list:
     find = getattr(_docx_xpath, "superscripts", None)
     if find is None:
@@ -1370,19 +1373,25 @@ def _docx_paragraph_text(paragraph) -> str:
     superscripts = set(superscripts)
     parts: list[str] = []
     raised = None
+
+    def raise_from(start: int) -> None:
+        # a Word break is a line, not layout: one opening the group keeps it as written
+        if not _DOCX_LEADING_BREAK.match("".join(parts[start:])):
+            _raise_superscript(parts, start)
+
     for node in nodes:
         text = _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
         if not text:
             continue
         superscript = node in superscripts
         if raised is not None and not superscript:
-            _raise_superscript(parts, raised)
+            raise_from(raised)
             raised = None
         elif raised is None and superscript:
             raised = len(parts)
         parts.append(text)
     if raised is not None:
-        _raise_superscript(parts, raised)
+        raise_from(raised)
     return "".join(parts)
 
 
