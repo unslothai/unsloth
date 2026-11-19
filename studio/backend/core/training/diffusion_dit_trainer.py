@@ -982,8 +982,7 @@ def _save_transformer_lora(
     transformer_lora_layers,
     adapter_metadata = None,
 ) -> None:
-    """``save_lora_weights`` with the adapter's LoraConfig in the header when this diffusers takes it: without it the
-    loader assumes lora_alpha == rank, so an adapter trained at another alpha reloads at the wrong strength."""
+    # Without the adapter metadata diffusers' loader assumes lora_alpha == rank.
     import inspect
 
     kwargs = {}

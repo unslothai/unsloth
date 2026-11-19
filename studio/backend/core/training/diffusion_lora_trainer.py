@@ -324,8 +324,7 @@ def _mps_available() -> bool:
 
 
 def _unet_lora_metadata_kwargs(save, unet) -> dict:
-    """The U-Net adapter's LoraConfig for the safetensors header, when this diffusers takes it: without it the loader
-    assumes lora_alpha == rank, so a run at another alpha reloads at the wrong strength."""
+    # Without the adapter metadata diffusers' loader assumes lora_alpha == rank.
     import inspect
     try:
         if "unet_lora_adapter_metadata" not in inspect.signature(save).parameters:
