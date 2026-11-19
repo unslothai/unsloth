@@ -52,12 +52,13 @@ function fetchSize(id: string): Promise<number | null> {
     }
     return total > 0 ? total : null;
   })
-    .catch(() => null)
     .then((bytes) => {
       sizes.set(key, bytes);
-      inflight.delete(key);
       return bytes;
-    });
+    })
+    // Not cached: a dropped connection or missing token retries on the next list change.
+    .catch(() => null)
+    .finally(() => inflight.delete(key));
   inflight.set(key, promise);
   return promise;
 }

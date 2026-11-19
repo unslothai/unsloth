@@ -1835,3 +1835,24 @@ test("a measured MLX download size decides its fit warning, not the per-paramete
   );
   assert.match(picker, /curatedSizeBytes: mlx \? bytes : undefined,/);
 });
+
+test("the Show full model list switch applies to an already loaded picker", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const expandLoaded = useChatRuntimeStore\(\(s\) => s\.pickerExpandLoaded\);\s+useEffect\(\(\) => \{\s+if \(residentKeyRef\.current\) \{\s+setExpanded\(expandLoaded\);/,
+  );
+});
+
+test("a failed repo size listing is not cached, so it can retry", () => {
+  const sizes = readSrc(
+    "components/assistant-ui/composer-model-picker/hub-repo-size.ts",
+  );
+  // Only a completed listing is stored; the catch runs after the store.
+  assert.match(
+    sizes,
+    /\.then\(\(bytes\) => \{\s+sizes\.set\(key, bytes\);[\s\S]*?\}\)\s+\/\/[^\n]*\n\s+\.catch\(\(\) => null\)\s+\.finally\(\(\) => inflight\.delete\(key\)\);/,
+  );
+});

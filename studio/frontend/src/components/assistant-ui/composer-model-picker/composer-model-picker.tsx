@@ -1604,6 +1604,13 @@ export function ComposerModelPicker({
     setExpandedState(next);
     writeExpanded(next);
   }, []);
+  // The Settings switch applies to a picker whose model is already loaded.
+  const expandLoaded = useChatRuntimeStore((s) => s.pickerExpandLoaded);
+  useEffect(() => {
+    if (residentKeyRef.current) {
+      setExpanded(expandLoaded);
+    }
+  }, [expandLoaded, setExpanded]);
   // The user's own toggle while a model is loaded: every later load opens the same way.
   const toggleExpanded = useCallback(
     (next: boolean) => {
