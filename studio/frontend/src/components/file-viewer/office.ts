@@ -520,8 +520,9 @@ const digitLayout = memo((format) => {
 /** Excel rounds the 15-digit decimal it shows, halves up; toFixed rounds the binary value, so 1.005 gave "1.00". */
 function decimalFixed(number: number, places: number): string {
   const shifted = number * 10 ** places;
-  // Only a value within reach of a written half (15 digits, so ~1e-14 relative) can round differently.
-  if (!(Math.abs(shifted - Math.floor(shifted) - 0.5) <= 1e-9 + shifted * 1e-13)) return number.toFixed(places);
+  // Only a fraction within reach of a written half (15 digits, ~1e-14 relative) rounds differently; integers keep every digit.
+  const nearHalf = Math.abs(shifted - Math.floor(shifted) - 0.5) <= 1e-9 + shifted * 1e-13;
+  if (Number.isInteger(number) || !nearHalf) return number.toFixed(places);
   const [mantissa, exponent] = number.toExponential(14).split("e");
   const scaled = Math.round(Number(`${mantissa}e${Number(exponent) + places}`));
   // 1e21 and up print as exponents, which the caller already hands to generalText.
