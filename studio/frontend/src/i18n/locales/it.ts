@@ -3948,7 +3948,6 @@ export const it = {
     copy: "Copia",
     addScheduledTask: "Aggiungi attività pianificata…",
     compact: "Compatta conversazione",
-    compactQueued: "Compattazione richiesta per il prossimo messaggio",
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
   },

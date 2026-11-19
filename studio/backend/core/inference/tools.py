@@ -14680,6 +14680,21 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     return _mcp_listing(listed), complete
 
 
+async def _discover_mcp_tools(server: dict) -> list[dict]:
+    if server.get("builtin_id") == "blender":
+        from integrations.blender import runtime_ready
+        from integrations.blender.runtime import ensure_runtime
+        if not runtime_ready():
+            await asyncio.to_thread(ensure_runtime)
+    return await list_tools_async(
+        url = server["url"],
+        headers = parse_server_headers(server),
+        timeout = probe_timeout(server["url"], bool(server.get("use_oauth"))),
+        use_oauth = bool(server.get("use_oauth")),
+        **oauth_client_kwargs(server),
+    )
+
+
 async def get_enabled_mcp_tools(
     include_stdio: bool = True, server_ids: set[str] | None = None
 ) -> list[dict]:
@@ -14702,17 +14717,7 @@ async def get_enabled_mcp_tools(
     ]
     if uncached:
         results = await asyncio.gather(
-            *(
-                list_tools_async(
-                    url = s["url"],
-                    headers = parse_server_headers(s),
-                    timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
-                    use_oauth = bool(s.get("use_oauth")),
-                    **oauth_client_kwargs(s),
-                )
-                for s in uncached
-            ),
-            return_exceptions = True,
+            *(_discover_mcp_tools(s) for s in uncached), return_exceptions = True
         )
         # On-loop re-read so an edit cannot invalidate between it and the cache writes.
         current = {s["id"]: s for s in mcp_servers_db.list_servers()}

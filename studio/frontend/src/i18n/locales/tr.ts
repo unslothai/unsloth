@@ -973,7 +973,6 @@ export const tr = {
     copy: "Kopyala",
     addScheduledTask: "Zamanlanmış görev ekle…",
     compact: "Konuşmayı sıkıştır",
-    compactQueued: "Sıkıştırma bir sonraki mesaj için istendi",
     compactEmpty: "Henüz sıkıştırılacak bir şey yok",
     compactUnsupported:
       "Sıkıştırma için araç desteği olan bir GGUF veya MLX modeli gerekir",

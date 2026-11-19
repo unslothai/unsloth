@@ -985,7 +985,6 @@ export const pl = {
     copy: "Kopiuj",
     addScheduledTask: "Dodaj zaplanowane zadanie…",
     compact: "Kompaktuj rozmowę",
-    compactQueued: "Zażądano kompaktowania przy następnej wiadomości",
     compactEmpty: "Nie ma jeszcze czego kompaktować",
     compactUnsupported:
       "Kompaktowanie wymaga modelu GGUF lub MLX z obsługą narzędzi",

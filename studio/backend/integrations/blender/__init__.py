@@ -19,3 +19,7 @@ def launch_command() -> list[str]:
         str(Path(__file__).resolve().with_name("launcher.py")),
         str(runtime_path()),
     ]
+
+
+def runtime_ready() -> bool:
+    return (runtime_path() / ".ready").is_file()

@@ -13,3 +13,5 @@ export function csvDocument(lines: string[]): string {
 }
 
 export const COMBINED_CSV_HEADER = "chat,title,role,content";
+
+export const PROMPT_LISTS_CSV_HEADER = "list,list_name,order,prompt_text";

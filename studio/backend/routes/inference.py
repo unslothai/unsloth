@@ -41314,6 +41314,8 @@ class _ResponsesReasoningExtractor:
         structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
         if structured_reasoning:
             reasoning_parts.append(structured_reasoning)
+            # The server split the reasoning out, so tags in the answer are literal text.
+            self._parse_think_markers = False
         if text:
             self._buffer += text
             self._fed += len(text)

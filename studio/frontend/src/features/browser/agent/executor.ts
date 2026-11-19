@@ -737,6 +737,7 @@ function permissions(context: Pick<Run, "fullAccess" | "inFile">) {
     : stored;
   if (!context.fullAccess) return saved;
   const allow = (rule: SiteRule): SiteRule => ({
+    ...rule,
     browsing: rule.browsing === "block" ? "block" : "allow",
     actions: "allow",
     downloads: rule.downloads === "block" ? "block" : "allow",

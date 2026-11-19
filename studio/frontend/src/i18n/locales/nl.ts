@@ -988,7 +988,6 @@ export const nl = {
     copy: "Kopiëren",
     addScheduledTask: "Geplande taak toevoegen…",
     compact: "Gesprek comprimeren",
-    compactQueued: "Comprimeren aangevraagd voor het volgende bericht",
     compactEmpty: "Nog niets om te comprimeren",
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
