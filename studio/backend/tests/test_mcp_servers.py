@@ -2527,6 +2527,10 @@ def test_message_matches_send_ranked_schemas_and_keep_ran_tools_callable(
     real_cost = tools_mod._text_token_cost
 
     def cost(text, ctx):
+        if text.startswith("["):
+            return sum(
+                cost(json.dumps(item, separators = (",", ":")), ctx) for item in json.loads(text)
+            )
         if '"name":"mcp_tool_search"' in text:
             return 0
         for name, size in sizes.items():
@@ -2535,7 +2539,7 @@ def test_message_matches_send_ranked_schemas_and_keep_ran_tools_callable(
         return 1000 if text.startswith("{") else real_cost(text, ctx)
 
     monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
-    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 110 / searching)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 150 / searching)
     held, ran, best = (f"mcp__srv1__{name}" for name in sizes)
     rankings = {"first": [held], "second": [best]}
 
@@ -2557,6 +2561,10 @@ def test_message_matches_send_ranked_schemas_and_keep_ran_tools_callable(
     assert f'"name":"{best}"' in block and f'"name":"{ran}"' not in block
     again = _thread_turn(tools_mod, searching, chat)
     assert again[2] == accepted and again[1][-1]["content"] == block
+    # The listing and the matches share one preload share: no room left, no schemas sent.
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 110 / searching)
+    listing, sent, accepted = _thread_turn(tools_mod, searching, chat)
+    assert listing == second and sent == [] and accepted == [ran]
 
 
 def test_mcp_listing_keeps_its_order_when_a_listed_tool_runs(tmp_path, monkeypatch, searching):
@@ -2741,7 +2749,27 @@ def test_match_exchange_needs_a_thread_and_a_preload(tmp_path, monkeypatch, sear
     assert _names(listing) == ["mcp_tool_search"] and sent == [] and matched == []
     monkeypatch.delenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY")
     resumed = [*chat, {"role": "assistant", "content": "Moving"}]
-    assert _thread_turn(tools_mod, searching, resumed)[1:] == ([], [])
+    assert _thread_turn(tools_mod, searching, resumed)[1] == []
+
+
+def test_a_resumed_reply_keeps_the_matched_and_ran_tools_callable(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    move, ping = "mcp__srv1__move-pages", "mcp__srv1__ping"
+    chat = [{"role": "user", "content": "hello"}]
+    first = _thread_listing(tools_mod, searching, chat)
+    assert move not in _names(first) and ping not in _names(first)
+    tools_mod.mcp_record_loaded_tools("thread-1", [ping])
+    chat += [
+        {"role": "assistant", "content": "Hi."},
+        {"role": "user", "content": "Move my roadmap page under the Archive page."},
+    ]
+    _, sent, matched = _thread_turn(tools_mod, searching, chat)
+    assert sent and move in matched and ping in matched
+    resumed = [*chat, {"role": "assistant", "content": "Moving"}]
+    listing, sent, names = _thread_turn(tools_mod, searching, resumed)
+    assert listing == first and sent == [] and names == matched
 
 
 def test_mcp_listing_matches_a_write_verb_to_the_tool_named_with_another(

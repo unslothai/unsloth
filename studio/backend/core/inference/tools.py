@@ -14216,7 +14216,9 @@ def _mcp_note_matches(
     if box is None or _mcp_thread_key() is None:
         return
     best = [name for name in _mcp_best(specs) if name not in listed]
-    matches = _mcp_fill([search], best, by_name, ctx)[1:]
+    # Charged against the listing's own share: the exchange sits in the protected tail, past truncation.
+    base = [search] + [by_name[name] for name in listed]
+    matches = _mcp_fill(base, best, by_name, ctx)[len(base) :]
     names = [spec["function"]["name"] for spec in matches]
     names += [name for name in _mcp_ran(by_name) if name not in listed]
     box.update(matches = matches, names = list(dict.fromkeys(names)))
@@ -14227,13 +14229,14 @@ def mcp_match_exchange(messages: list[dict], tools) -> dict | None:
     search; ``names`` is what the loop accepts beyond the listing: the matches and the tools the thread ran."""
     tool_names = {(t.get("function") or {}).get("name") for t in tools or [] if isinstance(t, dict)}
     box = _MCP_LISTING_MATCHES.get() or {}
-    if MCP_TOOL_SEARCH_NAME not in tool_names or not messages or messages[-1].get("role") != "user":
+    if MCP_TOOL_SEARCH_NAME not in tool_names or not messages:
         return None
     matches, names = box.get("matches") or [], list(box.get("names") or [])
-    if not matches and not names:
+    if not names:
         return None
     exchange = {"events": [], "messages": []}
-    if matches:
+    # A resumed reply ends past the message: no search to add, but the names stay callable.
+    if matches and messages[-1].get("role") == "user":
         exchange = build_synthetic_search_exchange(
             tool_name = MCP_TOOL_SEARCH_NAME,
             call_prefix = "mcp_auto_",
