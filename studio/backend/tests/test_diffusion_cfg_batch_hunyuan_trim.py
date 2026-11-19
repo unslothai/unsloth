@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HunyuanVideo-1.5 padded-text trim under the CFG batch router: the doubled call bypasses the trim pre-hook, so a
-branch the router pads must keep its mask. CPU only."""
+"""HunyuanVideo-1.5 trim under the CFG batch router: a branch the router pads must keep its mask. CPU only."""
 
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ class _Block(torch.nn.Module):
 
 
 class HunyuanVideo15Transformer3DModel(torch.nn.Module):
-    """The flag picks the attention branch exactly as the null-mask processor does: set, the mask is ignored."""
+    """Flag set = mask ignored, as in the null-mask processor."""
 
     def __init__(self):
         super().__init__()

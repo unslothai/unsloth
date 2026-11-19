@@ -1263,9 +1263,8 @@ def _matches(snapshots: list, call: tuple) -> bool:
 
 @contextlib.contextmanager
 def _padded_text_keeps_masks(module: Any, first: dict, second: dict):
-    """HunyuanVideo-1.5's padded-text trim (diffusion_attention) sets its null-mask flag in the OUTER call's pre-hook,
-    judged on that branch alone, and the doubled call bypasses the hook. When ``_pad_text`` pads a branch, its masked
-    zeros must stay masked, so the doubled call runs the masked attention."""
+    """HunyuanVideo-1.5 trim: the doubled call bypasses the pre-hook that set the null-mask flag for one branch, so
+    clear it when ``_pad_text`` padded a branch, else its zero padding is attended."""
     if module is None or getattr(module, "_unsloth_trim_hook", None) is None:
         yield
         return
