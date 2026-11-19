@@ -39,7 +39,6 @@ export type RemoteHistorySync = {
   noteOwnWrite: (write: OwnHistoryWrite) => void;
 };
 
-// Steps a counter took through this tab's own writes, before -> after.
 type OwnSteps = Map<number, number>;
 
 function addStep(steps: OwnSteps, [before, after]: readonly [number, number]) {
@@ -62,7 +61,7 @@ function advance(steps: OwnSteps | undefined, from: number): number {
 export function createRemoteHistorySync(
   deps: RemoteHistorySyncDeps,
 ): RemoteHistorySync {
-  // reading: the revision a re-read in flight was started for; own writes may move the baseline meanwhile.
+  // reading: revision an in-flight re-read was started for.
   const watchers = new Map<
     RemoteHistoryWatcher,
     { threadId: string | null; revision: number | null; reading?: number }

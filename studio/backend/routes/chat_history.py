@@ -817,9 +817,8 @@ class ChatImportLedgerRecordResponse(BaseModel):
 
 # Two 409s mean opposite things (protected: stop resending; thread collision: surface failure); tell them apart by header, not detail; main.py must expose it.
 CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
-# "<thread before>,<thread after>,<history before>,<history after>" around a successful write, read
-# inside its transaction: the tab that wrote advances its /revision baseline only when "before" is
-# what it last saw, so its own write is not mistaken for another device's.
+# "<thread before>,<thread after>,<history before>,<history after>" read inside the write's
+# transaction, so the writing tab can tell its own write from another device's.
 CHAT_REVISION_HEADER = "X-Unsloth-Chat-Revision"
 
 

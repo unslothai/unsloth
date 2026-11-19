@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat writes report the revisions their own transaction moved, so the tab that wrote can tell
-its write from another device's, and an unchanged re-save moves nothing other devices poll."""
+"""Chat writes report their own revision span; an unchanged re-save moves no revision."""
 
 import os
 import sys

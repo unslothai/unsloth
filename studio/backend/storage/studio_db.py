@@ -2685,8 +2685,7 @@ def _probe_chat_revisions(conn: sqlite3.Connection, thread_id: str, end: bool) -
 
 
 def chat_revision_span(probe: dict) -> Optional[tuple[tuple[int, int], tuple[int, int]]]:
-    """((thread, history) before, (thread, history) after) of the probed writes, or None if they
-    did not all commit back to back (another writer may have landed in between)."""
+    """(before, after) (thread, history) revisions, or None if the writes were not back to back."""
     spans = probe["spans"]
     if not spans or any(after is None for _, after in spans):
         return None
@@ -3779,8 +3778,7 @@ def _stored_chat_message_values(
 def _bump_chat_thread_updated_at(
     conn: sqlite3.Connection, thread_id: str, message_created_at: int
 ) -> None:
-    # Skip the write when the value would not change: an UPDATE fires the revision triggers even
-    # when it rewrites a row with what it already holds, and other devices would re-read the chat.
+    # A no-op UPDATE still fires the revision triggers, making other devices re-read the chat.
     conn.execute(
         """
         UPDATE chat_threads
