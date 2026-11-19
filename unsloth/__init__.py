@@ -1488,8 +1488,7 @@ if _IS_MLX:
             )
 
     def _mlx_row_formatting_func(formatting_func, dataset):
-        # CUDA Unsloth calls formatting_func on a batch of column lists; MLX calls it on one row,
-        # where a batched function would index characters, so feed such a function one-row batches.
+        # MLX calls formatting_func per row; a CUDA-style batched one would index characters.
         try:
             if iter(dataset) is dataset:
                 return formatting_func

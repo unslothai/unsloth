@@ -738,7 +738,6 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
 
 
 def test_mlx_trainer_feeds_batched_formatting_func_one_row_batches():
-    """A CUDA-style batched formatting_func must not be indexed into characters on MLX."""
     unsloth = _import_mlx_unsloth()
     rows = [{"problem": "Add 2 and 3.", "answer": "5"}, {"problem": "Halve 8.", "answer": "4"}]
 
