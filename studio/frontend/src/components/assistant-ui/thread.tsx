@@ -1919,8 +1919,7 @@ const PendingCompactionRule: FC = () => {
   const pending = useCompactRequestStore((s) =>
     threadId === null ? false : s.requested[threadId] === true,
   );
-  // Any role: a branch can end on a prompt whose reply failed. Never mid-run, when the request
-  // is either already taken or waits for the next message.
+  // Any role: a reply can fail. Hidden mid-run, when the request is already taken.
   const anchored = useAuiState(
     ({ thread, message }) => message.isLast && !thread.isRunning,
   );
@@ -1936,16 +1935,13 @@ const PendingCompactionRule: FC = () => {
   );
 };
 
-/**
- * The confirmation for /compact and the chat menu: the queued rule is brought into view (the
- * scroll-to-bottom button otherwise sits on it), and a polite status reads it out.
- */
+/** Confirms /compact and the chat menu: scrolls the queued rule out from under the scroll button and announces it. */
 const PendingCompactionStatus: FC<{ threadId: string | null }> = ({ threadId }) => {
   const scrollToBottom = useScrollThreadToBottom();
   const requested = useCompactRequestStore((s) =>
     threadId === null ? false : s.requested[threadId] === true,
   );
-  // Matches the rule: said only while it is on screen.
+  // Mirrors PendingCompactionRule's visibility.
   const idle = useAuiState(({ thread }) => !thread.isRunning && thread.messages.length > 0);
   const cloud = useChatRuntimeStore((s) => isExternalModelId(s.params.checkpoint));
   const aui = useAui();

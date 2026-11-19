@@ -7394,8 +7394,7 @@ export function createOpenAIStreamAdapter(
                 const noticeKind = reallyCompacted
                   ? compactionNoticeKind(chunk.context_truncated)
                   : null;
-                // The divider in the thread records every compaction; a toast is kept for history
-                // dropped without a summary, once per thread per page load.
+                // The divider records every compaction; only dropped history also toasts.
                 if (
                   (noticeKind === "dropped" || noticeKind === "dropped-after-failed-summary") &&
                   resolvedThreadId &&

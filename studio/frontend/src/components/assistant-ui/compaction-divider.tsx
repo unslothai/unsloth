@@ -37,7 +37,6 @@ export const CompactionDivider: FC<
     | { truncation?: undefined; pending: true; onCancel?: () => void }
   ) & { className?: string; /** A cloud connection summarizes instead of starting a checkpoint. */ cloud?: boolean }
 > = ({ truncation, pending, onCancel, className, cloud }) => {
-  // Queued, not done: plain text and a dashed rule, so it never reads as a finished compaction.
   if (pending) {
     return (
       <DividerRule
@@ -103,7 +102,6 @@ export const CompactionDivider: FC<
   );
 };
 
-/** A finished compaction keeps its details on hover and focus; a queued one is plain text. */
 const DividerRule: FC<{
   children?: ReactNode;
   className?: string;

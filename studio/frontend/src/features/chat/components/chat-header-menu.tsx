@@ -227,7 +227,6 @@ function ChatMenuItems({
       toast.info(t("chatMenu.compactUnsupported"));
       return;
     }
-    // The queued rule in the thread is the confirmation.
     requestThreadCompaction(menu.item.id);
   };
   const favorite = useChatFavoritesStore((state) =>
