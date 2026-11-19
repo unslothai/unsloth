@@ -218,6 +218,7 @@ import {
   denseTextEncoderBuildLabel,
   denseTransformerBuildLabel,
   isNativeEngineStatus,
+  engagedAttentionBackend,
   formatResolvedValue,
   isDenseQuantKind,
   isPrecisionRefusal,
@@ -225,6 +226,7 @@ import {
   memoryRecipeValue,
   resolvedBadge,
   resolvedSeedKey,
+  resolvedRequestSelectValue,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import {
@@ -1597,8 +1599,8 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
       <BuildRow
         label="Attention"
         value={
-          status.attention_backend
-            ? formatResolvedValue("attention_backend", status.attention_backend)
+          engagedAttentionBackend(status)
+            ? formatResolvedValue("attention_backend", engagedAttentionBackend(status))
             // sd.cpp reports no attention backend, so "Native SDPA" would be wrong there.
             :
               isNativeEngineStatus(status)
@@ -3949,7 +3951,7 @@ export function ImagesPage({
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
     if (memory) setMemoryMode(memory);
-    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+    const attention = resolvedRequestSelectValue(record.attention_backend, (v) =>
       (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
         (o) => o === v || `_native_${o}` === v,
       ) ?? null,

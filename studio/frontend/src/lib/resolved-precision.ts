@@ -12,10 +12,12 @@ export interface ResolvedControl {
   // "applied" | "fell_back" | "unsupported". Absent on older backends, which only ever applied.
   status?: string;
   reason: string;
-  // int8_attention only: whether Studio's INT8 attention kernel engaged, which build, how many modules.
-  engaged?: boolean;
+  // int8_attention: whether Studio's INT8 attention kernel engaged (boolean), which build, how many modules.
+  // attention_backend: the backend the modules run, its module count (null if uncountable), `routed` counts.
+  engaged?: boolean | string;
   impl?: string | null;
-  modules?: number;
+  modules?: number | null;
+  routed?: Record<string, number>;
 }
 
 export type ResolvedBadgeTone = "auto" | "warn";
@@ -62,6 +64,7 @@ export function formatResolvedValue(key: string, value: string | boolean | null 
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
   if (value === "sage_hub") return "SAGE";
+  if (value === "unsloth_int8") return "INT8";
   // Deferred speed auto: the dense pipe compiles on the 3rd image.
   if (value === "deferred") return "On from 3rd image";
   return value.toUpperCase();
@@ -119,6 +122,29 @@ export function resolvedSelectValue<T extends string>(
   if (source === null) return toOption("none");
   if (typeof source === "boolean") return toOption(source ? "on" : "none");
   return toOption(String(source));
+}
+
+/** The backend the attention modules actually run (not the pick); null for native SDPA. */
+export function engagedAttentionBackend(status: {
+  attention_backend?: string | null;
+  resolved?: Record<string, ResolvedControl> | null;
+}): string | null {
+  const live = status.resolved?.attention_backend?.value;
+  const value = typeof live === "string" && live ? live : status.attention_backend;
+  return value && value !== "native" ? value : null;
+}
+
+/** Keep the user's pick on fallback: the badge says what ran, the next load retries the pick. */
+export function resolvedRequestSelectValue<T extends string>(
+  resolved: ResolvedControl | undefined | null,
+  toOption: (value: string) => T | null,
+): T | null {
+  if (!resolved || resolved.source === "auto" || isResolvedHonored(resolved)) {
+    return resolvedSelectValue(resolved, toOption);
+  }
+  const requested = resolved.requested;
+  if (requested === undefined || requested === null || typeof requested === "boolean") return null;
+  return toOption(String(requested));
 }
 
 /**

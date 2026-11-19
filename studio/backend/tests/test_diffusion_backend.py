@@ -6906,6 +6906,9 @@ def test_diffusion_status_response_carries_resolved():
             "artifact": None,
             "replaced": None,
             "steps": None,
+            "engaged": None,
+            "modules": None,
+            "routed": None,
         }
     }
     assert DiffusionStatusResponse(loaded = False).resolved is None
@@ -6930,6 +6933,9 @@ def test_diffusion_status_response_carries_requested_precision():
             "artifact": None,
             "replaced": None,
             "steps": None,
+            "engaged": None,
+            "modules": None,
+            "routed": None,
         }
     }
 
