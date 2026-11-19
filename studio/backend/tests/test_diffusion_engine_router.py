@@ -370,12 +370,10 @@ def test_predict_engine_falls_back_when_install_is_disabled_and_nothing_is_insta
     _set_binary(monkeypatch, None)
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     # Refused, as the load refuses it, instead of planning the dense diffusers set for a CPU GGUF.
-    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load"):
+    with pytest.raises(ValueError, match = "automatic install is off"):
         r.predict_engine(detect_family("z-image"), model_kind = "gguf")
-    assert (
+    with pytest.raises(ValueError, match = "choose Auto or Native"):
         r.predict_engine(detect_family("z-image"), model_kind = "gguf", engine = "diffusers")
-        == ENGINE_DIFFUSERS
-    )
 
 
 @pytest.mark.parametrize(
@@ -435,7 +433,7 @@ def test_the_prediction_agrees_with_the_selection_about_an_incapable_build(monke
     _set_runnable(monkeypatch)
     _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old3", marker = False))
     fam = detect_family("qwen-image-2.1")
-    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load"):
+    with pytest.raises(ValueError, match = "predates"):
         r.predict_engine(fam, model_kind = "gguf")
     with pytest.raises(ValueError, match = "predates"):
         r.select_and_activate_engine(fam, model_kind = "gguf")
@@ -457,7 +455,7 @@ def test_the_prediction_counts_the_upgrade_a_load_performs_for_a_moved_pin(monke
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
     assert moved == [old]
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
-    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load"):
+    with pytest.raises(ValueError, match = "predates"):
         r.predict_engine(fam, model_kind = "gguf")
 
 
@@ -489,6 +487,10 @@ def test_a_load_can_ask_for_diffusers_on_a_cpu_host(monkeypatch):
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
     assert _select_with(model_kind = "gguf") == ENGINE_SD_CPP
+    # A CPU-only torch runs a natively mapped GGUF on sd.cpp only; the developer kill switch lifts that.
+    with pytest.raises(ValueError, match = "choose Auto or Native"):
+        _select_with(model_kind = "gguf", engine = "diffusers")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK", "1")
     assert _select_with(model_kind = "gguf", engine = "diffusers") == ENGINE_DIFFUSERS
     assert r._fallback_reason == "selected for this load"
     assert (
@@ -540,6 +542,8 @@ def test_native_picks_the_engine_cannot_serve_are_refused(
 
 
 def test_a_diffusers_pick_needs_the_pipeline_class(monkeypatch):
+    # On a GPU torch: a CPU-only one refuses every diffusers pick of a mapped GGUF first.
+    _set_device(monkeypatch, "cuda")
     monkeypatch.setattr(r, "family_pipeline_available", lambda fam: False)
     with pytest.raises(ValueError, match = "Diffusers cannot build the z-image model family"):
         r.refuse_engine_pick(detect_family("z-image"), engine = "diffusers", model_kind = "gguf")
@@ -726,7 +730,9 @@ def test_a_native_pick_honours_the_native_disable(monkeypatch):
         r.predict_engine(fam, model_kind = "gguf", engine = "sd_cpp")
     with pytest.raises(ValueError, match = "disabled on this server"):
         _select_with(model_kind = "gguf", engine = "sd_cpp")
-    assert _select_with(model_kind = "gguf") == ENGINE_DIFFUSERS
+    # CPU-only: the disable leaves a natively mapped GGUF no engine, so it is refused, not sent to diffusers.
+    with pytest.raises(ValueError, match = "UNSLOTH_DIFFUSION_SD_CPP=0"):
+        _select_with(model_kind = "gguf")
     # The administrator's pin still overrides the disable.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
     r.refuse_engine_pick(fam, engine = "sd_cpp", model_kind = "gguf")

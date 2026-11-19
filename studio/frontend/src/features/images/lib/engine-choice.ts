@@ -16,6 +16,10 @@ export const ENGINE_OPTIONS: Array<[EngineChoice, string]> = [
 export const ENGINE_HINT =
   "Which engine runs this GGUF. Auto keeps the host's choice: diffusers on a GPU, native sd.cpp on CPU. Native usually needs less VRAM, but has no torch.compile or quantised fast paths and is often slower on CUDA. Applies on the next load (Reapply).";
 
+/** The hint on a CPU-only host, where a GGUF image model runs on the native engine only. */
+export const ENGINE_HINT_CPU_ONLY =
+  "Which engine runs this GGUF. This device has no GPU PyTorch can use, so GGUF image models run on the native sd.cpp engine only. Applies on the next load (Reapply).";
+
 const KEY = "unsloth:images:engine-by-model";
 
 export function engineModelKey(repoId: string | null | undefined, filename: string | null | undefined): string {
@@ -72,11 +76,29 @@ interface EngineStatus {
   engine?: string | null;
   engine_forced?: string | null;
   native_engine_eligible?: boolean;
+  /** False on a CPU-only torch: a GGUF image model runs on sd.cpp only, so the Diffusers choice is hidden. */
+  gguf_diffusers_allowed?: boolean;
   lora_via_native?: boolean;
   lora_after_reload?: boolean;
   supports_lora?: boolean;
   lora_unavailable_reason?: string | null;
   resolved?: Record<string, { source: string; requested?: string | boolean | null }> | null;
+}
+
+/** Whether this host takes a Diffusers pick for a GGUF; an older backend that does not say keeps it. */
+export function diffusersEngineOffered(status: EngineStatus | null | undefined): boolean {
+  return status?.gguf_diffusers_allowed !== false;
+}
+
+/** The Engine select's options: without Diffusers on a CPU-only host, where the backend refuses it. */
+export function engineOptionsFor(status: EngineStatus | null | undefined): Array<[EngineChoice, string]> {
+  return diffusersEngineOffered(status) ? ENGINE_OPTIONS : ENGINE_OPTIONS.filter(([value]) => value !== "diffusers");
+}
+
+/** A choice this host can honour: a remembered or selected Diffusers pick reads as Auto on a CPU-only host, so it is
+ *  neither shown nor sent (the backend would refuse the load). */
+export function hostEngineChoice(choice: EngineChoice | undefined, status: EngineStatus | null | undefined): EngineChoice | undefined {
+  return choice === "diffusers" && !diffusersEngineOffered(status) ? "auto" : choice;
 }
 
 /** The select shows only for a loaded GGUF the native engine can run. */

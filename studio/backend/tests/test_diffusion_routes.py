@@ -992,6 +992,8 @@ def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
 
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    # The preflight is under test, not the CPU-only GGUF rule (test_cpu_gguf_stays_native): keep the diffusers load.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK", "1")
     monkeypatch.delenv("UNSLOTH_DIFFUSION_ENGINE", raising = False)
     monkeypatch.setattr(engine_router, "_active_engine_name", ENGINE_DIFFUSERS)
     monkeypatch.setattr(engine_router, "_fallback_reason", None)
@@ -1039,7 +1041,14 @@ def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
 
 @pytest.mark.parametrize(
     "device, env",
-    [("cuda", {}), ("cpu", {"UNSLOTH_DIFFUSION_SD_CPP": "0"})],
+    # The CPU leg reaches diffusers through the developer kill switch: a CPU-only GGUF is sd.cpp-only otherwise.
+    [
+        ("cuda", {}),
+        (
+            "cpu",
+            {"UNSLOTH_DIFFUSION_SD_CPP": "0", "UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK": "1"},
+        ),
+    ],
 )
 def test_gated_pick_on_an_engine_switch_keeps_the_previous_model(monkeypatch, device, env):
     """Refusal must run before the engine switch, since switching unloads the resident image model."""

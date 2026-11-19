@@ -528,6 +528,57 @@ def _explicit_threads() -> Optional[int]:
     return None
 
 
+# Why the last sd.cpp start or install failed, so a refusal can name the fix. "dll": a Windows loader status (an
+# imported DLL is missing, the wrong build, or refused to initialise; the win-cpu-x64 build imports the MSVC runtime,
+# MSVCP140 / VCRUNTIME140 / VCOMP140, and ships none of it). "exec": cannot exec, a missing shared library (126/127)
+# or a signal death (SIGILL: the CPU lacks an instruction the build uses). "install": the prebuilt could not be
+# downloaded or extracted. A plain tuple swap, read by the router right after the probe it follows.
+NATIVE_FAILURE_DLL = "dll"
+NATIVE_FAILURE_EXEC = "exec"
+NATIVE_FAILURE_INSTALL = "install"
+_native_start_failure: Optional[tuple[str, str]] = None
+
+_WINDOWS_LOADER_STATUS_NAMES = {
+    0xC0000135: "STATUS_DLL_NOT_FOUND",
+    0xC0000139: "STATUS_ENTRYPOINT_NOT_FOUND",
+    0xC0000142: "STATUS_DLL_INIT_FAILED",
+}
+
+
+def note_native_start_failure(kind: str, detail: str) -> None:
+    global _native_start_failure
+    _native_start_failure = (kind, str(detail))
+
+
+def last_native_start_failure() -> Optional[tuple[str, str]]:
+    """``(kind, detail)`` of the last failed sd.cpp start or install since ``clear_native_start_failure``, or None."""
+    return _native_start_failure
+
+
+def clear_native_start_failure() -> None:
+    global _native_start_failure
+    _native_start_failure = None
+
+
+def classify_start_status(binary: str, returncode: int) -> Optional[tuple[str, str]]:
+    """``(kind, detail)`` when ``returncode`` from a ``--help`` probe means the executable never started, else None."""
+    name = os.path.basename(str(binary))
+    code = returncode + (1 << 32) if returncode < 0 and returncode < -(1 << 16) else returncode
+    if code in _WINDOWS_IMAGE_LOAD_FAILURE_STATUSES:
+        return (
+            NATIVE_FAILURE_DLL,
+            f"{name} exited 0x{code:08X} ({_WINDOWS_LOADER_STATUS_NAMES.get(code, 'loader failure')})",
+        )
+    if code in (126, 127):
+        return (
+            NATIVE_FAILURE_EXEC,
+            f"{name} exited {code} (a shared library or the loader is missing)",
+        )
+    if code < 0:
+        return NATIVE_FAILURE_EXEC, f"{name} was killed by signal {-code}"
+    return None
+
+
 def _server_binary_runnable(binary: str) -> bool:
     """Probes runnability with the server's env before a multi-GB asset download; only OSError or exit 126/127/0xC0000135 means unrunnable."""
     import subprocess
@@ -541,11 +592,16 @@ def _server_binary_runnable(binary: str) -> bool:
                 env = runtime_env(binary),
                 **windows_hidden_subprocess_kwargs(),
             )
-    except OSError:
-        return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
+    except OSError as exc:
+        # cannot exec at all (wrong arch / no execute bit / missing loader)
+        note_native_start_failure(NATIVE_FAILURE_EXEC, f"{os.path.basename(str(binary))}: {exc}")
+        return False
     except Exception:  # noqa: BLE001 -- don't block on a flaky probe
         return True
     # Negative = signal death (e.g. SIGILL); Windows loader failures are large positive codes.
+    failure = classify_start_status(binary, proc.returncode)
+    if failure is not None:
+        note_native_start_failure(*failure)
     return (
         proc.returncode >= 0
         and proc.returncode not in (126, 127)
@@ -2867,6 +2923,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-cli auto-install failed: %s", exc)
+                note_native_start_failure(NATIVE_FAILURE_INSTALL, str(exc))
                 if _incomplete_tree_replacement(exc):
                     # Partial sweep may have removed the fallback; re-find via the usability gate, since a fresh POSIX copy lacks its exec bit until _make_executable runs.
                     refound = find_sd_cpp_binary()
@@ -2912,6 +2969,7 @@ def ensure_sd_server_binary(
                 _path, accelerator = _install_down_the_ladder(_install, accelerator)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
+                note_native_start_failure(NATIVE_FAILURE_INSTALL, str(exc))
                 # Also when only the CLI survives: the following ensure_sd_cpp_binary probe would re-download.
                 if _incomplete_tree_replacement(exc):
                     # The fallback may name a copy the partial sweep removed; a fresh extract skipped _make_executable.
