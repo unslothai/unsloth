@@ -13,6 +13,7 @@ import os
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 pytest.importorskip("torchao.quantization.qat")
 peft = pytest.importorskip("peft")
@@ -113,7 +114,9 @@ def test_dynamic_scheme_still_cached():
     assert memo.qat_weight_memo_stats()["hits"] > hits
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA streams")
+@pytest.mark.skipif(
+    not has_real_cuda() or not torch.cuda.is_available(), reason = "needs CUDA streams"
+)
 def test_cached_weight_not_served_to_another_stream(monkeypatch):
     model = _model().cuda()
     base = _base(model)
