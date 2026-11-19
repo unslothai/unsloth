@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Two per-batch host / device round trips Unsloth adds on its own paths.
-
-1. Packed / padding-free SFT: the collator builds `packed_seq_lengths` on the CPU, the Trainer's dataloader
-   moves it to the GPU, and get_packed_info_from_kwargs then read it back with a blocking `.tolist()` at the
-   start of every micro-batch. The host copy now rides along the move. A meta tensor stands in for the
-   device copy here: it has no data, so any read of it raises, which proves the values come from the host.
-2. Loss-only eval: Unsloth defaults eval_accumulation_steps to 2 (or the GA count), and HF's evaluation_loop
-   then calls torch.cuda.empty_cache() every 2 batches although nothing is kept on the GPU. Counted on CPU.
-"""
+"""Host lengths ride the packed batch device move (meta stand-in raises on any read); loss-only eval skips empty_cache."""
 
 import pytest
 

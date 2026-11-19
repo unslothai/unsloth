@@ -286,10 +286,7 @@ def _mask_padding_free_boundary_labels(batch) -> None:
 
 
 def _carry_host_lengths(before, after) -> None:
-    """Attach the host copy of a CPU `packed_seq_lengths` to its moved device tensor.
-
-    get_packed_info_from_kwargs reads `_unsloth_lengths_tuple` instead of a blocking `.tolist()` on the
-    device copy, which would drain the stream at the start of every packed micro-batch."""
+    """Attach host `packed_seq_lengths` to the moved device tensor, avoiding a blocking `.tolist()`."""
     if not isinstance(before, Mapping) or not isinstance(after, Mapping):
         return
     src = before.get("packed_seq_lengths")
@@ -310,7 +307,6 @@ def _carry_host_lengths(before, after) -> None:
 
 
 def _install_host_lengths_carry() -> None:
-    """Wrap accelerate's dataloader device move (the Trainer's batch move) once; values are unchanged."""
     try:
         import accelerate.data_loader as accelerate_data_loader
     except Exception:

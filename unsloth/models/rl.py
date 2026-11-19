@@ -266,9 +266,7 @@ def _loss_only_eval_keeps_nothing(trainer, prediction_loss_only) -> bool:
 
 
 def _patch_loss_only_eval_flush(trainer_class) -> None:
-    """Loss-only eval keeps no logits, labels or inputs on the GPU, so the eval_accumulation_steps
-    offload has nothing to move and its torch.cuda.empty_cache() only hands cached blocks back to the
-    driver for the next batch to allocate again. Skip that flush for loss-only eval; restore after."""
+    """Skip the eval_accumulation_steps empty_cache() flush for loss-only eval (nothing to offload)."""
     original = getattr(trainer_class, "evaluation_loop", None)
     if original is None or getattr(original, "_unsloth_loss_only_no_flush", False):
         return
