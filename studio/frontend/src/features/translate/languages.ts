@@ -81,8 +81,31 @@ const SPEECH_TAGS: Record<string, string> = {
   tl: "fil",
 };
 
-export function translateSpeechTag(code: string): string {
-  return SPEECH_TAGS[code] ?? code;
+const SPEECH_REGIONS: Record<string, string> = {
+  en: "en-US",
+  fr: "fr-FR",
+  es: "es-ES",
+  pt: "pt-BR",
+  de: "de-DE",
+  nl: "nl-NL",
+  it: "it-IT",
+  ar: "ar-SA",
+};
+
+export function translateSpeechTag(
+  code: string,
+  preferred: readonly string[] = typeof navigator === "undefined"
+    ? []
+    : (navigator.languages ?? []),
+): string {
+  const fixed = SPEECH_TAGS[code];
+  if (fixed) {
+    return fixed;
+  }
+  const own = preferred.find(
+    (tag) => tag.includes("-") && tag.split("-")[0].toLowerCase() === code,
+  );
+  return own ?? SPEECH_REGIONS[code] ?? code;
 }
 
 export function suggestedTargetLanguage(preferred: readonly string[]): string {

@@ -1176,10 +1176,23 @@ def test_a_slot_load_during_a_llama_update_is_refused(backends, monkeypatch):
     assert seen == [True, True, False]
 
 
+def _npu_model(**overrides):
+    """The real NpuModel: a stub drifts each time the class grows (display_name / answers_to, #18147)."""
+    fields = dict(
+        id = "qwen3-0.6b-FLM",
+        checkpoint = "qwen3-0.6b-FLM",
+        size_gb = 0.5,
+        downloaded = True,
+        labels = (),
+        max_context_length = 4096,
+    )
+    return npu_backend.NpuModel(**{**fields, **overrides})
+
+
 def test_a_resident_npu_model_keeps_to_the_primarys_seat(backends, monkeypatch):
     primary, extra = backends
     primary.unload_model()
-    npu_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM")
+    npu_model = _npu_model()
     npu = SimpleNamespace(is_loaded = True, loaded_model = npu_model, resident = lambda: None)
     monkeypatch.setattr(npu_backend, "peek_npu_backend", lambda: npu)
 
@@ -1197,14 +1210,7 @@ def test_the_loaded_models_list_names_the_npu_model_once(backends, monkeypatch):
     model_slots.slots.append(
         model_slots.ExtraSlot(FakeLlama("org/D-GGUF"), FakeOrchestrator(), "owner")
     )
-    npu_model = SimpleNamespace(
-        model_path = "lemonade:qwen3-0.6b-FLM",
-        id = "qwen3-0.6b-FLM",
-        vision = False,
-        max_context_length = 4096,
-        reasoning = False,
-        tools = False,
-    )
+    npu_model = _npu_model()
     resident = SimpleNamespace(model = npu_model, context_length = 4096)
     npu = SimpleNamespace(is_loaded = True, loaded_model = npu_model, resident = lambda: resident)
     monkeypatch.setattr(npu_backend, "peek_npu_backend", lambda: npu)
@@ -1221,7 +1227,7 @@ def test_a_load_over_a_streaming_npu_model_asks_before_stopping_it(monkeypatch, 
 
     npu = SimpleNamespace(
         is_loaded = True,
-        loaded_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM"),
+        loaded_model = _npu_model(),
         resident = lambda: None,
         unload = lambda: None,
     )
@@ -1458,7 +1464,7 @@ def test_reloading_a_kept_model_leaves_the_primarys_npu_model_loaded(
     unloaded = []
     npu = SimpleNamespace(
         is_loaded = True,
-        loaded_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM"),
+        loaded_model = _npu_model(),
         resident = lambda: None,
         unload = lambda: unloaded.append(True),
     )

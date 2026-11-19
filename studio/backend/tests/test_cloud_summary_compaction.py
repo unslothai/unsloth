@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -49,6 +51,8 @@ class _SummarisingHandler(_Handler):
     # Chat turns longer than this many characters are refused the way a provider words it.
     overflow_chars: int | None = None
     summary_finish_reason = "stop"
+    summary_text = _SUMMARY
+    summary_delay_s = 0.0
 
     def do_POST(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length") or 0)
@@ -72,7 +76,9 @@ class _SummarisingHandler(_Handler):
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
         else:
-            payload = _sse(_SUMMARY, self.summary_finish_reason) if summary else _sse("ok")
+            if summary:
+                time.sleep(self.summary_delay_s)
+            payload = _sse(self.summary_text, self.summary_finish_reason) if summary else _sse("ok")
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
@@ -82,6 +88,47 @@ class _SummarisingHandler(_Handler):
 
 class _CutOffSummary(_SummarisingHandler):
     summary_finish_reason = "length"
+
+
+class _StalledSummary(_SummarisingHandler):
+    summary_delay_s = 1.0
+
+
+class _SlowlyStreamedSummary(_SummarisingHandler):
+    """Streams the summary a word at a time, each gap well inside the idle timeout."""
+
+    gap_s = 0.05
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        self.server.recorded.append(body)  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        words = _SUMMARY.split(" ") if _is_summary_call(body) else ["ok"]
+        lines = [
+            "data: "
+            + json.dumps({"choices": [{"index": 0, "delta": {"content": w + " "}}]})
+            + "\n\n"
+            for w in words
+        ]
+        lines.append(
+            "data: "
+            + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+            + "\n\ndata: [DONE]\n\n"
+        )
+        for line in lines:
+            time.sleep(self.gap_s)
+            data = line.encode()
+            self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+            self.wfile.flush()
+        self.wfile.write(b"0\r\n\r\n")
+
+
+class _EmptySummary(_SummarisingHandler):
+    summary_text = ""
 
 
 class _OverflowAt8k(_SummarisingHandler):
@@ -243,6 +290,77 @@ def test_a_cut_off_summary_is_not_asked_for_again_until_compact():
     assert summaries
 
     _, summaries, _ = _bodies(_SummarisingHandler, messages = later, compact_context = True, **options)
+    assert summaries
+    assert studio_db.list_chat_thread_summaries(thread)
+
+
+def test_a_timed_out_summary_is_not_asked_for_again_until_compact(monkeypatch):
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.2)
+    thread = _saved_thread("thread-timed-out-summary")
+    chat = _long_chat()
+    options = dict(thread_id = thread, **_SMALL_TRIGGER)
+    chunks, summaries, _ = _bodies(_StalledSummary, messages = chat, **options)
+    assert summaries
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True and "summarized" not in truncation
+
+    later = [*chat, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
+    chunks, summaries, [sent] = _bodies(_StalledSummary, messages = later, **options)
+    assert summaries == []
+    assert sent["messages"][-1]["content"] == "next"
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True and "summarized" not in truncation
+
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = later, model = "b-model", **options)
+    assert summaries
+
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = later, compact_context = True, **options)
+    assert summaries
+    assert studio_db.list_chat_thread_summaries(thread)
+
+
+def test_a_summary_still_streaming_past_the_idle_timeout_is_kept(monkeypatch):
+    # #18306: the whole summary took longer than the timeout, but the provider never went quiet.
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.3)
+    thread = _saved_thread("thread-slow-summary")
+    chunks, summaries, [sent] = _bodies(_SlowlyStreamedSummary, thread_id = thread, **_SMALL_TRIGGER)
+    assert summaries
+    assert _SUMMARY in _system_text(sent)
+    [truncation] = _truncations(chunks)
+    assert truncation["summarized"] is True and not truncation.get("summary_failed")
+    [record] = studio_db.list_chat_thread_summaries(thread)
+    assert record["summary"] == _SUMMARY
+
+
+def test_a_summary_that_never_ends_hits_the_total_limit_and_closes_the_stream(monkeypatch):
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_TIMEOUT_S", 0.5)
+    closed = []
+
+    async def endless():
+        try:
+            while True:
+                await asyncio.sleep(0.05)
+                yield 'data: {"choices":[{"delta":{"content":"more "}}]}'
+        finally:
+            closed.append(True)
+
+    started = time.monotonic()
+    with pytest.raises(cloud_compaction.SummaryTimedOut):
+        asyncio.run(cloud_compaction.collect_summary(endless()))
+    assert 0.5 <= time.monotonic() - started < 2.0
+    assert closed == [True]
+
+
+def test_a_summary_that_came_back_empty_is_asked_for_again_on_the_next_turn():
+    thread = _saved_thread("thread-empty-summary")
+    chat = _long_chat()
+    options = dict(thread_id = thread, **_SMALL_TRIGGER)
+    _, summaries, _ = _bodies(_EmptySummary, messages = chat, **options)
+    assert summaries
+
+    later = [*chat, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = later, **options)
     assert summaries
     assert studio_db.list_chat_thread_summaries(thread)
 

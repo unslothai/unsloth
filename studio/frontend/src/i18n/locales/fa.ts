@@ -973,6 +973,7 @@ export const fa = {
   chatMenu: {
     more: "گزینه‌های گفتگو",
     copy: "کپی",
+    addScheduledTask: "افزودن کار زمان‌بندی‌شده…",
     compact: "فشرده‌سازی گفتگو",
     compactQueued: "فشرده‌سازی برای پیام بعدی درخواست شد",
     compactEmpty: "هنوز چیزی برای فشرده‌سازی وجود ندارد",
@@ -1855,6 +1856,12 @@ export const fa = {
       learnMore: "بیشتر بدانید",
       managedNote:
         "مالک این سرور Unsloth سندباکس سیستم‌عامل را راه‌اندازی می‌کند.",
+      trustedFoldersTitle: "پوشه‌های مورد اعتماد",
+      trustedFoldersLabel: "اجرا بدون پرسیدن",
+      trustedFoldersDescription: "Python و ترمینال می‌توانند فایل‌های این پوشه‌ها را بدون درخواست تأیید بخوانند و اجرا کنند، فقط در گفتگوهای خودتان. نوشتن در آن‌ها همچنان تأیید می‌خواهد. هر پوشه در یک خط.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "بارگیری پوشه‌های مورد اعتماد ممکن نشد.",
+      trustedFoldersSaveError: "ذخیرهٔ پوشه‌های مورد اعتماد ممکن نشد.",
     },
     debugging: {
       description: "گزارش‌های Unsloth را بدون خروج از برنامه بخوانید.",
@@ -2284,7 +2291,7 @@ export const fa = {
       modelAliases: {
         sectionTitle: "نام‌های مستعار مدل (OpenAI API)",
         description:
-          "نام‌های ثابت برای کلاینت‌های API، مانند fast-chat یا code. درخواستی که یک نام مستعار را ذکر کند، با مدلی که آن نام به آن اشاره دارد پاسخ داده می‌شود، بنابراین برنامه‌های متصل هنگام تعویض مدل‌ها همچنان کار می‌کنند. «تعویض مدل بر اساس درخواست» را روشن کنید تا نام مستعار بتواند مدل خود را بارگذاری کند.",
+          "نام‌های کوتاهی که کلاینت‌های API می‌توانند به‌جای نام کامل مدل استفاده کنند.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "نام مستعار",
         modelAriaLabel: "مدلی که نام مستعار به آن اشاره دارد",
@@ -2293,6 +2300,13 @@ export const fa = {
         add: "افزودن نام مستعار",
         loadError: "بارگذاری نام‌های مستعار مدل ناموفق بود.",
         saveError: "ذخیرهٔ نام‌های مستعار مدل ناموفق بود.",
+        contextLength: "طول زمینه",
+        kvCacheType: "نوع کش KV",
+        speculativeDecoding: "رمزگشایی حدسی",
+        savedSetting: "تنظیم ذخیره‌شده",
+        loadSettings: "تنظیمات بارگذاری",
+        loadSettingsHint:
+          "فقط برای مدل‌های GGUF. فیلدهای خالی از تنظیمات ذخیره‌شدهٔ مدل استفاده می‌کنند.",
       },
       previewSharing: {
         sectionTitle: "اشتراک‌گذاری پیش‌نمایش",
@@ -5148,6 +5162,8 @@ export const fa = {
   translate: {
     title: "ترجمه",
     detectLanguage: "تشخیص زبان",
+    detectedLanguage: "{language} (شناسایی‌شده)",
+    detectedTab: "{language} - شناسایی‌شده",
     sourceLanguage: "ترجمه از",
     targetLanguage: "ترجمه به",
     recentTargets: "اخیر",
@@ -5158,17 +5174,20 @@ export const fa = {
     translate: "ترجمه",
     stop: "توقف",
     sourceLabel: "متن برای ترجمه",
-    sourcePlaceholder:
-      "متن را تایپ یا جای‌گذاری کنید، یا یک فایل متنی را اینجا رها کنید",
+    sourcePlaceholder: "متن را بنویسید یا جای‌گذاری کنید، یا سند یا تصویری را رها کنید",
     outputLabel: "ترجمه",
     outputEmpty: "ترجمه اینجا نمایش داده می‌شود.",
     firstRunHint:
       "اولین ترجمه {model} را دانلود می‌کند ({size}). پس از آن روی همین دستگاه و به‌صورت آفلاین اجرا می‌شود.",
+    charLimit: "حداکثر {max} نویسه",
+    readingFile: "در حال خواندن {name}…",
+    downloadConfirmTitle: "{model} دانلود شود؟",
+    downloadConfirm: "دانلود",
     clear: "پاک کردن",
     paste: "جای‌گذاری",
-    openFile: "باز کردن فایل متنی",
-    dropFile: "برای ترجمه، یک فایل متنی را اینجا رها کنید",
-    fileNotText: "اینجا فقط فایل‌های متنی باز می‌شوند.",
+    openFile: "باز کردن سند یا تصویر",
+    dropFile: "فایلی را رها کنید تا متن آن ترجمه شود",
+    fileNotText: "این فایل متنی برای ترجمه ندارد.",
     truncated: "فقط {max} نویسهٔ اول نگه داشته شد.",
     copy: "کپی ترجمه",
     copied: "کپی شد",
@@ -5302,6 +5321,7 @@ export const fa = {
       intervalHours: "فاصله (ساعت)",
       hourlyNote: "نخستین اجرا یک فاصله پس از ذخیره انجام می‌شود. تغییر فاصله یا ازسرگیری، انتظار را از نو آغاز می‌کند.",
       createTitle: "زمان‌بندی یک وظیفه",
+      repliesInChat: "هر اجرا در «{title}» پاسخ می‌دهد.",
       editTitle: "ویرایش وظیفهٔ زمان‌بندی‌شده",
       name: "نام",
       namePlaceholder: "نام (اختیاری)",
@@ -5816,6 +5836,12 @@ export const fa = {
       readVideoFailed: "خواندن ویدیو ممکن نشد ({status}).",
       openFileFailed: "باز کردن فایل ممکن نشد",
     },
+  },
+  exportTabs: {
+    ariaLabel: "نوع خروجی",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "تبدیل به Q4NX",
   },
   exportDecision: {
     title: "مدل تصمیم‌گیری",

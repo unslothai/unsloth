@@ -2467,20 +2467,89 @@ def test_first_output_budget_is_configurable_and_clamped(monkeypatch):
     monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
 
     def _budget(budgets):
-        model_timeout = float(budgets["modelTimeoutSeconds"])
-        return min(
-            float(
-                budgets.get(
-                    "firstOutputTimeoutSeconds",
-                    research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS,
-                )
-            ),
-            model_timeout,
-        )
+        return research_runs._first_output_budget({"budgets": budgets})
 
     assert _budget({"modelTimeoutSeconds": 900}) == 0.05
     assert _budget({"modelTimeoutSeconds": 900, "firstOutputTimeoutSeconds": 600}) == 600.0
     assert _budget({"modelTimeoutSeconds": 30, "firstOutputTimeoutSeconds": 600}) == 30.0
+    assert _budget({"modelTimeoutSeconds": 0, "firstOutputTimeoutSeconds": 600}) == 600.0
+
+
+def _npu_config(**budgets) -> dict:
+    return {
+        "model": "lemonade:qwen3.6-moe-35b-a3b-FLM",
+        "inferenceRequest": {"model": "lemonade:qwen3.6-moe-35b-a3b-FLM"},
+        "budgets": {"modelTimeoutSeconds": 0, "firstOutputTimeoutSeconds": 120, **budgets},
+    }
+
+
+def test_npu_first_output_budget_covers_the_fastflowlm_queue():
+    """FastFlowLM queues a call behind the chat reply on the NPU, so 120s is not a stall there."""
+    npu_budget = research_runs._NPU_FIRST_OUTPUT_TIMEOUT_SECONDS
+    assert research_runs._first_output_budget(_npu_config()) == npu_budget
+    # Still bounded: a finite run wall clock wins, and a longer configured budget is kept.
+    assert research_runs._first_output_budget(_npu_config(modelTimeoutSeconds = 300)) == 300.0
+    assert research_runs._first_output_budget(_npu_config(firstOutputTimeoutSeconds = 1800)) == 1800.0
+    gguf = {"model": "unsloth/Qwen3-4B-GGUF", "budgets": {"modelTimeoutSeconds": 0}}
+    gguf["budgets"]["firstOutputTimeoutSeconds"] = 120
+    assert research_runs._first_output_budget(gguf) == 120.0
+    # A provider whose model id happens to carry the prefix is not the local NPU.
+    external = _npu_config()
+    external["inferenceRequest"]["providerType"] = "openai"
+    assert research_runs._first_output_budget(external) == 120.0
+
+
+def _silent_then_reply(silence_seconds: float):
+    class _QueuedThenReplies:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            await asyncio.sleep(silence_seconds)
+            for line in _stream_body().split("\n"):
+                yield line
+
+    return _QueuedThenReplies()
+
+
+def test_npu_call_survives_a_queue_longer_than_the_default_budget(monkeypatch):
+    """A first token after the default budget is a finished call on the NPU, a stall elsewhere."""
+    monkeypatch.setattr(research_runs, "_NPU_FIRST_OUTPUT_TIMEOUT_SECONDS", 5.0)
+    supervisor = _make_supervisor(_noop_check_active)
+
+    _install_fake_client(monkeypatch, [_silent_then_reply(0.4)])
+    npu_run = {**_waiting_run(0), "config": _npu_config(firstOutputTimeoutSeconds = 0.1)}
+    report, *_ = asyncio.run(
+        supervisor._stream_completion(npu_run, [{"role": "user"}], report_progress = False)
+    )
+    assert report == "report"
+
+    _install_fake_client(monkeypatch, [_silent_then_reply(0.4)])
+    gguf_run = _waiting_run(0)
+    gguf_run["config"]["budgets"]["firstOutputTimeoutSeconds"] = 0.1
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        asyncio.run(
+            supervisor._stream_completion(gguf_run, [{"role": "user"}], report_progress = False)
+        )
+
+
+def test_a_silent_npu_still_times_out_at_its_ceiling(monkeypatch):
+    """The longer NPU budget is a ceiling, not unlimited: a backend that never answers still fails."""
+    monkeypatch.setattr(research_runs, "_NPU_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.2)
+    _install_fake_client(monkeypatch, [_comment_only_stream(": keep-alive")])
+    supervisor = _make_supervisor(_noop_check_active)
+    run = {**_waiting_run(0), "config": _npu_config(firstOutputTimeoutSeconds = 0.05)}
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+    elapsed = time.monotonic() - started
+    assert 0.15 < elapsed < 5.0, elapsed
 
 
 def test_a_configured_first_output_budget_reaches_the_stream(monkeypatch):

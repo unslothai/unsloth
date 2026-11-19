@@ -3370,6 +3370,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "try:\n"
+            "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
+            "except ImportError:\n"
+            "    _unsloth_install_image_dedup = None\n"
+            "if _unsloth_install_image_dedup is not None:\n"
+            "    _unsloth_install_image_dedup(getattr(self, 'model', None))\n"
+            "pass\n"
+        )
+
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
             "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
@@ -3480,6 +3492,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "auto_find_batch_size": False,  # Cannot work on GRPO
             # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
             "vllm_importance_sampling_correction": False,
+            # None = unset: resolved below to "token_truncate" instead of TRL's "sequence_mask".
+            "vllm_importance_sampling_mode": None,
             # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off.
             "router_aux_loss_coef": 0.0,
             # None = unset, so the dapo check below can tell it from an explicit False.
@@ -3640,6 +3654,20 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 else "    beta = 0.001\n"
             )
             + "\n"
+        )
+
+    # sequence_mask multiplies token ratios over the completion; vLLM logprobs cover only the min_p / top_p kept set,
+    # so every ratio is < 1 and the product shrinks with length (Qwen3-0.6B min_p 0.1: ESS 0.42 vs 0.996 per token).
+    if trainer_file == "grpo_trainer" and "vllm_importance_sampling_mode" in call_args:
+        extra_args += (
+            "if vllm_importance_sampling_mode is None:\n"
+            "    vllm_importance_sampling_mode = 'token_truncate'\n"
+            + (
+                "    if vllm_importance_sampling_correction:\n"
+                "        print(\"Unsloth: vllm_importance_sampling_correction = True now defaults to token-level truncated importance sampling (vllm_importance_sampling_mode = 'token_truncate'). Set vllm_importance_sampling_mode = 'sequence_mask' for TRL's default.\")\n"
+                if "vllm_importance_sampling_correction" in call_args
+                else ""
+            )
         )
 
     # Check dr_grpo loss_type with scale_rewards for GRPO; TRL >= 0.22 defaults scale_rewards to group.
@@ -4188,6 +4216,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_grpo_hidden_states_fallback(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap hidden-state fallback for {RLTrainer_name}: {e}")
+    if trainer_file in ("dpo_trainer", "orpo_trainer", "cpo_trainer"):
+        # Chosen and rejected share the prompt: run it once (UNSLOTH_DPO_PREFIX_SHARE, dpo_prefix_share.py).
+        try:
+            from .dpo_prefix_share import wrap_preference_trainer
+            wrap_preference_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not add the shared-prefix forward to {RLTrainer_name}: {e}"
+            )
 
 
 # The AST fused-head forward ignores UNSLOTH_RETURN_HIDDEN_STATES; unwrapped, these trainers score full logits.
@@ -5294,12 +5331,45 @@ def _dataset_has_images(dataset):
     return False
 
 
+# URLs of the in-process servers Unsloth started for AsyncGRPOTrainer (each carries a per-run secret).
+_ASYNC_GRPO_SERVER_URLS = set()
+
+
 def _start_async_grpo_vllm_server(model):
     from ._async_grpo_vllm import UnslothAsyncVLLMServer
     return UnslothAsyncVLLMServer(model)
 
 
-def _check_async_grpo_fast_inference(async_module, model, train_dataset):
+def _pin_async_grpo_server_url(args, kwargs):
+    # TRL >= 1.18 pickles the config at train start, after the user's URL is restored: use a copy.
+    positional = len(args) > 0 and hasattr(args[0], "vllm_server_base_url")
+    config = args[0] if positional else kwargs.get("config")
+    if getattr(config, "vllm_server_base_url", None) not in _ASYNC_GRPO_SERVER_URLS:
+        return args, kwargs
+    config = copy.copy(config)
+    if positional:
+        return (config, *args[1:]), kwargs
+    return args, {**kwargs, "config": config}
+
+
+def _async_grpo_replays_sampling_masks(async_module):
+    # TRL >= 1.17 renormalizes top-k / top-p logprobs over the candidate set vLLM returns per token. The check lives
+    # on the rollout loop: public `AsyncRolloutLoop` in 1.18, the worker's private `_loop_cls` in 1.17.
+    worker = getattr(async_module, "AsyncRolloutWorker", None)
+    loops = (
+        getattr(async_module, "AsyncRolloutLoop", None),
+        worker,
+        getattr(worker, "_loop_cls", None),
+    )
+    return any(callable(getattr(loop, "_check_sampling_replay", None)) for loop in loops)
+
+
+def _check_async_grpo_fast_inference(
+    async_module,
+    model,
+    train_dataset,
+    config = None,
+):
     if not hasattr(async_module, "select_adapter_sync"):
         raise ValueError(
             "Unsloth: AsyncGRPOTrainer with fast_inference=True syncs a LoRA adapter, which needs TRL >= 1.14. "
@@ -5316,6 +5386,16 @@ def _check_async_grpo_fast_inference(async_module, model, train_dataset):
         raise ValueError(
             "Unsloth: TRL's AsyncGRPOTrainer sends token ids only to vLLM, so image prompts are not supported. "
             "Use GRPOTrainer for image prompts."
+        )
+    top_k = getattr(config, "top_k", None) or 0
+    top_p = getattr(config, "top_p", None)
+    truncated = top_k > 0 or (top_p is not None and top_p < 1.0)
+    if truncated and _async_grpo_replays_sampling_masks(async_module):
+        raise ValueError(
+            "Unsloth: with top_k / top_p, TRL's AsyncGRPOTrainer needs the candidate set of every sampled token "
+            "(a vLLM server started with --return-sampling-mask --enable-scale-out), which the in-process "
+            "fast_inference engine does not return. Set top_k = 0 and top_p = 1.0, or load with "
+            "fast_inference=False and run a separate vLLM server."
         )
 
 
@@ -5551,12 +5631,15 @@ def patch_trl_async_grpo():
         server = None
         if _async_grpo_uses_fast_inference(model, config, kwargs):
             train_dataset = args[2] if len(args) >= 3 else kwargs.get("train_dataset")
-            _check_async_grpo_fast_inference(async_module, model, train_dataset)
+            _check_async_grpo_fast_inference(async_module, model, train_dataset, config)
             _check_async_grpo_adapter_servable(model)
             server = _start_async_grpo_vllm_server(model)
-            saved_config = (config.vllm_server_base_url, config.max_inflight_tasks)
+            _ASYNC_GRPO_SERVER_URLS.add(server.url)
+            # TRL 1.14-1.17 `max_inflight_tasks`; 1.18 `max_concurrent_rollouts` (sized by TRL).
+            inflight = getattr(config, "max_inflight_tasks", None)
+            saved_config = (config.vllm_server_base_url, inflight)
             config.vllm_server_base_url = server.url
-            if getattr(config, "max_inflight_tasks", 0) < 0:
+            if inflight is not None and inflight < 0:
                 # TRL's default counts rows, not rollouts, so token-budget packing would leave the engine
                 # nearly idle; let the engine batch as many as it can schedule.
                 config.max_inflight_tasks = server.max_num_seqs
@@ -5597,7 +5680,8 @@ def patch_trl_async_grpo():
         except BaseException:
             if server is not None:
                 server.stop()
-                config.max_inflight_tasks = saved_config[1]
+                if saved_config[1] is not None:
+                    config.max_inflight_tasks = saved_config[1]
             raise
         if server is not None:
             self._unsloth_vllm_server = server
@@ -5643,6 +5727,7 @@ def patch_trl_async_grpo():
                             f"Unsloth: Could not map the chat template for the rollout process: {e}"
                         )
                     kwargs["processing_class"] = processing_class
+                args, kwargs = _pin_async_grpo_server_url(args, kwargs)
                 super().__init__(*args, **kwargs)
 
         async_module.AsyncRolloutWorker = AsyncRolloutWorker

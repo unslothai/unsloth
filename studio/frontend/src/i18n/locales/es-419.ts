@@ -982,6 +982,7 @@ export const es419 = {
   chatMenu: {
     more: "Opciones del chat",
     copy: "Copiar",
+    addScheduledTask: "Agregar tarea programada…",
     compact: "Compactar conversación",
     compactQueued: "Se solicitó la compactación para el siguiente mensaje",
     compactEmpty: "Aún no hay nada que compactar",
@@ -1879,6 +1880,12 @@ export const es419 = {
       learnMore: "Más información",
       managedNote:
         "El propietario de este servidor de Unsloth configura el sandbox del sistema.",
+      trustedFoldersTitle: "Carpetas de confianza",
+      trustedFoldersLabel: "Ejecutar sin preguntar",
+      trustedFoldersDescription: "Python y la Terminal pueden leer y ejecutar archivos de estas carpetas sin pedir aprobación, solo en tus propios chats. Escribir en ellas sigue pidiendo aprobación. Una carpeta por línea.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "No se pudieron cargar las carpetas de confianza.",
+      trustedFoldersSaveError: "No se pudieron guardar las carpetas de confianza.",
     },
     debugging: {
       description: "Lee los registros de Unsloth sin salir de la aplicación.",
@@ -2322,7 +2329,7 @@ export const es419 = {
       modelAliases: {
         sectionTitle: "Alias de modelos (API de OpenAI)",
         description:
-          "Nombres estables para clientes de la API, como fast-chat o code. Una solicitud que nombra un alias la atiende el modelo al que apunta, así las apps conectadas siguen funcionando cuando cambias de modelo. Activa “Cambiar de modelo según la solicitud” para que un alias pueda cargar su modelo.",
+          "Nombres cortos que los clientes de la API pueden usar en lugar del nombre completo del modelo.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Nombre del alias",
         modelAriaLabel: "Modelo al que apunta el alias",
@@ -2331,6 +2338,13 @@ export const es419 = {
         add: "Agregar alias",
         loadError: "No se pudieron cargar los alias de modelos.",
         saveError: "No se pudieron guardar los alias de modelos.",
+        contextLength: "Longitud de contexto",
+        kvCacheType: "Tipo de caché KV",
+        speculativeDecoding: "Decodificación especulativa",
+        savedSetting: "Configuración guardada",
+        loadSettings: "Configuración de carga",
+        loadSettingsHint:
+          "Solo para modelos GGUF. Los campos vacíos usan la configuración guardada del modelo.",
       },
       previewSharing: {
         sectionTitle: "Compartir vista previa",
@@ -5257,6 +5271,8 @@ export const es419 = {
   translate: {
     title: "Traducir",
     detectLanguage: "Detectar idioma",
+    detectedLanguage: "{language} (detectado)",
+    detectedTab: "{language} - Detectado",
     sourceLanguage: "Traducir de",
     targetLanguage: "Traducir a",
     recentTargets: "Recientes",
@@ -5267,16 +5283,20 @@ export const es419 = {
     translate: "Traducir",
     stop: "Detener",
     sourceLabel: "Texto para traducir",
-    sourcePlaceholder: "Escribe o pega texto, o suelta un archivo de texto",
+    sourcePlaceholder: "Escribe o pega texto, o suelta un documento o una imagen",
     outputLabel: "Traducción",
     outputEmpty: "La traducción aparece aquí.",
     firstRunHint:
       "La primera traducción descarga {model} ({size}). Después se ejecuta en este dispositivo, sin conexión.",
+    charLimit: "Máx. {max} caracteres",
+    readingFile: "Leyendo {name}…",
+    downloadConfirmTitle: "¿Descargar {model}?",
+    downloadConfirm: "Descargar",
     clear: "Borrar",
     paste: "Pegar",
-    openFile: "Abrir un archivo de texto",
-    dropFile: "Suelta un archivo de texto para traducirlo",
-    fileNotText: "Aquí solo se pueden abrir archivos de texto.",
+    openFile: "Abrir un documento o una imagen",
+    dropFile: "Suelta un archivo para traducir su texto",
+    fileNotText: "Este archivo no tiene texto para traducir.",
     truncated: "Solo se conservaron los primeros {max} caracteres.",
     copy: "Copiar traducción",
     copied: "Copiado",
@@ -5412,6 +5432,7 @@ export const es419 = {
       intervalHours: "Intervalo (horas)",
       hourlyNote: "La primera ejecución ocurre un intervalo después de guardar. Cambiar el intervalo o reanudar reinicia la espera.",
       createTitle: "Programar una tarea",
+      repliesInChat: "Cada ejecución responde en “{title}”.",
       editTitle: "Editar tarea programada",
       name: "Nombre",
       namePlaceholder: "Nombre (opcional)",
@@ -5927,6 +5948,12 @@ export const es419 = {
       readVideoFailed: "No se pudo leer el video ({status}).",
       openFileFailed: "No se pudo abrir el archivo",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Tipo de exportación",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Convertir a Q4NX",
   },
   exportDecision: {
     title: "Modelo de decisión",

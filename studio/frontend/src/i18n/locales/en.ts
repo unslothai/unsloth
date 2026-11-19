@@ -883,6 +883,7 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
+    addScheduledTask: "Add scheduled task…",
     compact: "Compact conversation",
     compactQueued: "Compaction requested for the next message",
     compactEmpty: "Nothing to compact yet",
@@ -1714,6 +1715,12 @@ export const en = {
       levelFullAccessNote: "Full access turns the sandbox off. This setting applies again when you pick another level.",
       learnMore: "Learn more",
       managedNote: "The owner of this Unsloth server sets up the OS sandbox.",
+      trustedFoldersTitle: "Trusted folders",
+      trustedFoldersLabel: "Run without asking",
+      trustedFoldersDescription: "Python and Terminal may read and run files in these folders without asking for approval, in your own chats only. Writing to them still asks. One folder per line.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Could not load the trusted folders.",
+      trustedFoldersSaveError: "Could not save the trusted folders.",
     },
     debugging: {
       description: "Read the Unsloth logs without leaving the app.",
@@ -1738,7 +1745,7 @@ export const en = {
       modeInterval: "Every 3 seconds",
       modeManual: "Manual",
       refreshNow: "Refresh now",
-      privacyNote: "Credentials are masked in this view. The file on disk is not masked.",
+      privacyNote: "Known credential patterns are masked in this view. Review for secrets, file paths, and private text before sharing. The file on disk contains the original log.",
       copyVisible: "Copy visible log",
       empty: "Nothing has been logged yet.",
       disabled: "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -2133,7 +2140,7 @@ export const en = {
       modelAliases: {
         sectionTitle: "Model aliases (OpenAI API)",
         description:
-          "Stable names for API clients, such as fast-chat or code. A request naming an alias is served by the model it points to, so connected apps keep working when you swap models. Turn on Switch model by request so an alias can load its model.",
+          "Short names that API clients can use instead of the full model name.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Alias name",
         modelAriaLabel: "Model the alias points to",
@@ -2142,6 +2149,13 @@ export const en = {
         add: "Add alias",
         loadError: "Failed to load model aliases.",
         saveError: "Failed to save model aliases.",
+        contextLength: "Context length",
+        kvCacheType: "KV cache type",
+        speculativeDecoding: "Speculative decoding",
+        savedSetting: "Saved setting",
+        loadSettings: "Load settings",
+        loadSettingsHint:
+          "GGUF models only. Blank fields use the model's saved settings.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -4847,6 +4861,9 @@ export const en = {
   translate: {
     title: "Translate",
     detectLanguage: "Detect language",
+    // Source picker while detecting: the language found in the text so far.
+    detectedLanguage: "{language} (detected)",
+    detectedTab: "{language} - Detected",
     sourceLanguage: "Translate from",
     targetLanguage: "Translate to",
     recentTargets: "Recent",
@@ -4858,16 +4875,20 @@ export const en = {
     translate: "Translate",
     stop: "Stop",
     sourceLabel: "Text to translate",
-    sourcePlaceholder: "Type or paste text, or drop a text file",
+    sourcePlaceholder: "Type or paste text, or drop a document or image",
     outputLabel: "Translation",
     outputEmpty: "The translation appears here.",
     // Under the empty translation pane until the model's file is on disk.
     firstRunHint: "The first translation downloads {model} ({size}). After that it runs on this device, offline.",
+    charLimit: "Max {max} characters",
+    readingFile: "Reading {name}…",
+    downloadConfirmTitle: "Download {model}?",
+    downloadConfirm: "Download",
     clear: "Clear",
     paste: "Paste",
-    openFile: "Open a text file",
-    dropFile: "Drop a text file to translate it",
-    fileNotText: "Only text files can be opened here.",
+    openFile: "Open a document or image",
+    dropFile: "Drop a file to translate its text",
+    fileNotText: "This file has no text to translate.",
     truncated: "Only the first {max} characters were kept.",
     copy: "Copy translation",
     copied: "Copied",
@@ -5009,6 +5030,7 @@ export const en = {
       intervalHours: "Interval (hours)",
       hourlyNote: "The first run is one interval after saving. Changing the interval or resuming restarts the wait.",
       createTitle: "Schedule a task",
+      repliesInChat: "Each run replies in “{title}”.",
       editTitle: "Edit scheduled task",
       name: "Name",
       // Left blank, the name is taken from the first line of the instructions.
@@ -5496,6 +5518,12 @@ export const en = {
       readVideoFailed: "Could not read the video ({status}).",
       openFileFailed: "Could not open the file",
     },
+  },
+  exportTabs: {
+    ariaLabel: "Export type",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Convert to Q4NX",
   },
   exportDecision: {
     title: "Decision model",

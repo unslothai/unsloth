@@ -24,6 +24,7 @@ const { streamChatCompletions, StreamInterruptedError: Interrupted } =
     ),
     "@/features/auth": { authFetch: async () => nextResponse() },
     "@/lib/format-fastapi-error": { formatApiErrorBody: () => null },
+    "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
     "../types": {},
     "../types/api": {},
     "../utils/chat-history-revision": {

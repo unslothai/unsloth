@@ -1168,8 +1168,33 @@ def _reattach_saved_mtp_head(
                 cache_dir = cache_dir,
                 local_files_only = local_files_only,
             )
-        except Exception:
-            return  # no head uploaded beside this adapter
+        except Exception as error:
+            from huggingface_hub import try_to_load_from_cache
+            from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+            absent = isinstance(error, EntryNotFoundError) and not isinstance(
+                error, LocalEntryNotFoundError
+            )
+            try:
+                # Offline, a 404 the Hub already saw is cached as a non-str `.no_exist` sentinel.
+                cached = try_to_load_from_cache(
+                    adapter_dir,
+                    "mtp_head.safetensors",
+                    cache_dir = cache_dir,
+                    revision = revision,
+                )
+                absent = absent or (cached is not None and not isinstance(cached, str))
+                if not absent:
+                    from unsloth_zoo.speculative import mtp_family_name
+                    absent = mtp_family_name(getattr(model, "config", None)) is None
+            except Exception:
+                absent = True
+            if not absent:
+                print(
+                    f"Unsloth: Could not check '{adapter_dir}' for a trained MTP head "
+                    f"({type(error).__name__}); if it has one, merges and re-saves keep the stock head."
+                )
+            return
         adapter_dir = os.path.dirname(path)
     try:
         from .speculative import attach_saved_mtp_head

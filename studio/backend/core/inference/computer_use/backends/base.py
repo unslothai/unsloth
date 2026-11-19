@@ -92,6 +92,10 @@ class Backend:
         front = self.front_window()
         return front if front.bounds is not None and front.contains(x, y) else None
 
+    def window_stack(self) -> Optional[list[tuple[Any, tuple[float, float, float, float]]]]:
+        """Shown windows, topmost first, as (identity, bounds), or None when they can't be listed."""
+        return None
+
     def resolve_app(self, name: str) -> str:
         return name
 

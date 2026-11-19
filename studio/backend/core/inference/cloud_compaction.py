@@ -27,7 +27,10 @@ TAIL_TOKENS = 15_000
 TAIL_BUDGET_SHARE = 0.3
 SUMMARY_MAX_TOKENS = 4_096
 SUMMARY_MIN_TOKENS = 1_024
-SUMMARY_TIMEOUT_S = 120.0
+# A slow but streaming provider (a local server, a large backlog) is waited for; one that goes
+# silent is not. The total cap only bounds a stream that never ends.
+SUMMARY_IDLE_TIMEOUT_S = 120.0
+SUMMARY_TIMEOUT_S = 600.0
 SUMMARY_MAX_CALLS = 8
 # One tool result or pasted file must not crowd the rest of the transcript out of the summary call.
 _TRANSCRIPT_MESSAGE_CHARS = 12_000
@@ -70,6 +73,10 @@ class SummaryFailed(Exception):
 
 
 class SummaryCutOff(SummaryFailed):
+    pass
+
+
+class SummaryTimedOut(SummaryFailed):
     pass
 
 
@@ -359,28 +366,44 @@ def summary_chunks(
     return chunks[-SUMMARY_MAX_CALLS:]
 
 
-async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_TIMEOUT_S) -> str:
+async def collect_summary(stream: AsyncIterator[str]) -> str:
     """The text of a streamed chat completion. Raises SummaryFailed on an error line, an empty
-    reply or a timeout."""
+    reply, SUMMARY_IDLE_TIMEOUT_S without a line, or SUMMARY_TIMEOUT_S in all."""
+    parts: list[str] = []
+    finish_reason = None
 
-    async def _read() -> str:
-        parts: list[str] = []
-        finish_reason = None
+    async def _read(on_line: Callable[[], None] = lambda: None) -> None:
+        nonlocal finish_reason
+        async for line in stream:
+            on_line()
+            payload = _sse_json(line)
+            if payload is None:
+                continue
+            if "error" in payload:
+                error = payload["error"]
+                message = error.get("message") if isinstance(error, dict) else error
+                raise SummaryFailed(str(message or "provider error"))
+            for choice in payload.get("choices") or ():
+                delta = (choice or {}).get("delta") or (choice or {}).get("message") or {}
+                text = delta.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+                finish_reason = (choice or {}).get("finish_reason") or finish_reason
+
+    try:
         try:
-            async for line in stream:
-                payload = _sse_json(line)
-                if payload is None:
-                    continue
-                if "error" in payload:
-                    error = payload["error"]
-                    message = error.get("message") if isinstance(error, dict) else error
-                    raise SummaryFailed(str(message or "provider error"))
-                for choice in payload.get("choices") or ():
-                    delta = (choice or {}).get("delta") or (choice or {}).get("message") or {}
-                    text = delta.get("content")
-                    if isinstance(text, str):
-                        parts.append(text)
-                    finish_reason = (choice or {}).get("finish_reason") or finish_reason
+            if hasattr(asyncio, "timeout_at"):
+                # One timer in this task: a wait_for per line runs each read in its own task on 3.11.
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + SUMMARY_TIMEOUT_S
+
+                def _next_limit() -> float:
+                    return min(loop.time() + SUMMARY_IDLE_TIMEOUT_S, deadline)
+
+                async with asyncio.timeout_at(_next_limit()) as scope:  # novermin
+                    await _read(lambda: scope.reschedule(_next_limit()))
+            else:  # Python < 3.11: the whole call within the idle limit, as before.
+                await asyncio.wait_for(_read(), timeout = SUMMARY_IDLE_TIMEOUT_S)
         finally:
             aclose = getattr(stream, "aclose", None)
             if aclose is not None:
@@ -388,18 +411,15 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
                     await aclose()
                 except RuntimeError:
                     pass
-        if finish_reason == "length":
-            raise SummaryCutOff("the summary was cut off at its token limit")
-        return "".join(parts)
-
-    try:
-        text = await asyncio.wait_for(_read(), timeout = timeout)
     except asyncio.TimeoutError as exc:
-        raise SummaryFailed("the summary call timed out") from exc
+        raise SummaryTimedOut("the summary call timed out") from exc
     except SummaryFailed:
         raise
     except Exception as exc:  # noqa: BLE001 -- any transport failure means "fall back"
         raise SummaryFailed(str(exc)) from exc
+    if finish_reason == "length":
+        raise SummaryCutOff("the summary was cut off at its token limit")
+    text = "".join(parts)
     # A reasoning model may wrap its thinking in tags the chat would otherwise carry forever.
     text = re.sub(r"<think>.*?</think>", "", text, flags = re.DOTALL).strip()
     if not text:
@@ -411,7 +431,7 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
 _MEMORY_SUMMARIES_MAX = 64
 _memory_summaries: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
 _memory_lock = threading.Lock()
-# A thinking model can spend the whole summary cap on reasoning; another model on the thread may not.
+# Summaries that hit the token cap or the timeout: retrying only grows the input. Per model; Compact chat still retries.
 _cut_off_summaries: "OrderedDict[tuple[str, Optional[str]], None]" = OrderedDict()
 
 

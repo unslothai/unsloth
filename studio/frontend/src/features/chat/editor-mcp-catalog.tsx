@@ -15,6 +15,8 @@ type EditorCopy = {
   portHint: string;
   // Unreal: optional EngineWire project folder, read for its capability token.
   projectField?: boolean;
+  // Unreal: Unsloth's level-save toolset, installed into the project (Epic's toolsets cannot save a level).
+  installTools?: boolean;
   noPort?: boolean;
   more?: boolean;
 };
@@ -42,6 +44,7 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
     ],
     portHint: "Match the Server Port Number in Editor Preferences → Model Context Protocol.",
     projectField: true,
+    installTools: true,
   },
   godot: {
     name: "Godot",

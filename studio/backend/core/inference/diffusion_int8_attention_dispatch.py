@@ -20,7 +20,8 @@ Switch (``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``, read by ``diffusion_int8_at
 * ``0``: never; ``UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH=0`` turns off only this route.
 * ``1`` or ``unsloth_int8`` by name: every dispatch DiT where the kernel passes its accuracy check (no race, except
   the Triton stand-in), from ``MIN_TOKENS``.
-* unset: ``AUTO_DITS`` on NVIDIA where the kernel passes the check and beats the incumbent by ``RACE_MARGIN``. Won at
+* unset: ``AUTO_DITS`` on NVIDIA (on ROCm the ``ROCM_AUTO_DITS`` of the card's gfx arch and the OS) where the kernel
+  passes the check and beats the incumbent by ``RACE_MARGIN``. Won at
   both race sizes: floor ``MIN_TOKENS``; at 4096 only: a ``MID_RACE_TOKENS`` race sets it. Lost at both: a second race
   at ``LONG_RACE_TOKENS`` can still route video lengths, since int8 gains grow with length (A100: 0.96x at 4096
   tokens, 1.37x at 27k).
@@ -77,8 +78,45 @@ AUTO_CUDA_ONLY = frozenset(
         "ZImageTransformer2DModel",
     }
 )
+# ROCm runs the Triton kernel (16-bit P.V, so no attention-sink path is needed). With the switch unset it races only the
+# DiTs of (gfx arch, sys.platform) measured there to be accurate (per-step error within the shipped INT8 weights') and
+# more than 2% faster end to end. gfx1151 Linux, against flash attention: Qwen-Image-2.1-Turbo 10.5% and Wan2.2-TI2V-5B
+# 6.7% faster; FLUX.3 Klein 2.3% slower and Z-Image-Turbo 1.8% faster stay off. gfx1151 Windows, against torch SDPA:
+# Qwen-Image-2.1-Turbo 3.8 to 4.9% faster; FLUX.3 Klein 1.8 to 3.1% (raced 1.9%), Z-Image-Turbo 1.6% (raced) and
+# Wan2.2-TI2V-5B 1.5% stay off.
+ROCM_AUTO_DITS: dict = {
+    ("gfx1151", "linux"): frozenset({"QwenImage21Transformer2DModel", "WanTransformer3DModel"}),
+    ("gfx1151", "win32"): frozenset({"QwenImage21Transformer2DModel"}),
+}
 # processors that already run the kernel themselves
 _STRIDED_FLAG = "_unsloth_int8"
+# Blocks kept native under Auto (forced or NATIVE_BLOCKS_ENV=0 routes them): Qwen-Image-2.1 block 0 INT8 rel L2 error
+# is 0.06-0.14 vs <=0.0175 for blocks 1-31 (A100, L4) and drove most of the image drift.
+NATIVE_BLOCKS: dict = {"QwenImage21Transformer2DModel": frozenset({0})}
+NATIVE_BLOCKS_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_BLOCKS"
+_BLOCK_LISTS = ("transformer_blocks",)
+
+
+def native_blocks_enabled() -> bool:
+    raw = (os.environ.get(NATIVE_BLOCKS_ENV) or "1").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def block_index(name: str) -> Optional[int]:
+    parts = str(name).split(".")
+    for i, part in enumerate(parts[:-1]):
+        if part in _BLOCK_LISTS and parts[i + 1].isdigit():
+            return int(parts[i + 1])
+    return None
+
+
+def native_block_modules(dit: Any) -> set:
+    blocks = NATIVE_BLOCKS.get(type(dit).__name__)
+    named = getattr(dit, "named_modules", None)
+    if not blocks or not native_blocks_enabled() or not callable(named):
+        return set()
+    return {id(m) for name, m in named() if block_index(name) in blocks}
+
 
 # (large, small) token counts of the second race, for a card where the kernel loses at RACE_TOKENS
 LONG_RACE_TOKENS = (16384, 8192)
@@ -516,13 +554,14 @@ def install(
     logger: Any = None,
     speed_active: bool = True,
     speed_unset_only: bool = False,
+    policy: Any = None,
 ) -> int:
     """Route the pipeline's DiT attention dispatch calls to the INT8 kernel where this card and the switch allow it
     (module docstring). ``speed_active=False`` (speed off) keeps the automatic route off so output stays
-    bit-identical; a request by name or the env switch still routes. Returns the number of modules routed; never
-    raises."""
+    bit-identical; a request by name or the env switch still routes. ``policy``: the load's ``Int8Policy`` (its
+    ``on`` / ``off`` beat the env switch). Returns the number of modules routed; never raises."""
     try:
-        return _install(pipe, target, requested, logger, speed_active, speed_unset_only)
+        return _install(pipe, target, requested, logger, speed_active, speed_unset_only, policy)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors keep their backend
         remove(pipe)
         if logger is not None:
@@ -589,12 +628,19 @@ def _race_wins(
 
 
 def long_verdict(
-    device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Any, name: str
+    device: Any,
+    dtype: Any,
+    heads: int,
+    head_dim: int,
+    incumbent: Any,
+    name: str,
+    tokens: Optional[tuple] = None,
 ) -> Optional[int]:
-    """The token count from which the kernel wins at ``LONG_RACE_TOKENS`` (where it lost the card race), or None."""
+    """The token count from which the kernel wins at ``LONG_RACE_TOKENS`` (where it lost the card race), or None.
+    ``tokens``: another (large, small) pair (a family's ``FAMILY_RACE_TOKENS``)."""
     from . import diffusion_int8_attention as I8
 
-    large, small = LONG_RACE_TOKENS
+    large, small = tokens or LONG_RACE_TOKENS
     if not _race_wins(device, dtype, heads, head_dim, incumbent, name, large):
         return None
     if _race_wins(device, dtype, heads, head_dim, incumbent, name, small):
@@ -692,6 +738,15 @@ def _card_floor(
     return found, max(minimum, MIN_TOKENS)
 
 
+def rocm_auto_dits(index: int) -> frozenset:
+    """The DiTs the unset switch races on this ROCm card: ``ROCM_AUTO_DITS`` of its gfx arch and this OS, or none."""
+    from . import diffusion_int8_attention as I8
+    try:
+        return ROCM_AUTO_DITS.get((I8._gfx_arch(index), sys.platform), frozenset())
+    except Exception:  # noqa: BLE001 -- an unreadable arch keeps the incumbent
+        return frozenset()
+
+
 def _target_device(target: Any) -> str:
     return str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
 
@@ -703,13 +758,14 @@ def _install(
     logger: Any,
     speed_active: bool = True,
     speed_unset_only: bool = False,
+    policy: Any = None,
 ) -> int:
     import torch
 
     from . import diffusion_int8_attention as I8
 
     remove(pipe)
-    setting = I8.mode()
+    setting = I8.mode(policy)
     if setting == "off" or not enabled():
         return 0
     forced = setting == "force" or I8.requested(requested)
@@ -718,11 +774,15 @@ def _install(
     device = _target_device(target)
     if not device.startswith("cuda") or not torch.cuda.is_available():
         return 0
-    if not forced and I8._is_rocm():
-        return 0
     dev = torch.device(device)
     index = I8._device_index(dev)
     dev = torch.device("cuda", index)
+    rocm = I8._is_rocm()
+    auto_dits = AUTO_DITS
+    if rocm and not forced:
+        auto_dits = rocm_auto_dits(index)
+        if not auto_dits:
+            return 0
     dtype = getattr(target, "dtype", None)
     if str(dtype) not in ("torch.float16", "torch.bfloat16"):
         dtype = (
@@ -733,26 +793,38 @@ def _install(
     family: dict = {}
     for dit in _dits(pipe):
         if not forced and (
-            type(dit).__name__ not in AUTO_DITS
+            type(dit).__name__ not in auto_dits
             or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
             or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
         ):
             continue
+        native = set() if forced else native_block_modules(dit)
         mods = [
             m
             for m in routable_modules(dit)
             # a processor the strided race already lost for (install_auto) stays as it was
             if forced or not getattr(m.processor, "_unsloth_int8_raced", False)
         ]
+        if native:
+            kept = [m for m in mods if id(m) in native]
+            mods = [m for m in mods if id(m) not in native]
+            if kept and logger is not None:
+                logger.info(
+                    "diffusion.int8_attention: %d attention module(s) of %s keep %s (NATIVE_BLOCKS: INT8 error on "
+                    "their real inputs is several times the other blocks')",
+                    len(kept),
+                    type(dit).__name__,
+                    _backend_name(getattr(kept[0].processor, "_attention_backend", None)),
+                )
         candidates.extend(mods)
         family.update((id(m), type(dit).__name__) for m in mods)
-        if not forced and type(dit).__name__ in AUTO_CUDA_ONLY:
+        if not forced and not rocm and type(dit).__name__ in AUTO_CUDA_ONLY:
             cuda_only.update(id(m) for m in mods)
     if not candidates or install_dispatch_route() == 0:
         return 0
     I8.int8_attention_op()
     original = original_dispatch()
-    env_force = setting == "force"
+    env_force = setting == "force" and I8.env_forced(policy)
     cards = [index] + [c for c in _secondary_cards(index, _dits(pipe)) if c != index]
     report: dict = {}
     routed = 0
