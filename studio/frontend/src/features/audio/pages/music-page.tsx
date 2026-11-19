@@ -428,7 +428,7 @@ export function MusicOutput({
     <TtsOutput
       {...props}
       emptyTitle={
-        loading && !modelReady ? undefined : "Your music will appear here"
+        loading && !modelReady ? undefined : "Generated music will appear here"
       }
       emptyText={
         modelReady

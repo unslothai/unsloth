@@ -144,6 +144,7 @@ import {
   type PageModelPrefs,
   type PageModelRow,
   pageModels,
+  emptyStateModels,
   recommendedPageModels,
   rowOnPage,
 } from "./page-models";
@@ -328,19 +329,6 @@ export function AudioPage({
   } = useScrollFades();
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_audio_advanced_open",
-  );
-  // Text to speech has one field, so its Advanced starts open to fill the rail. The stored flag is
-  // "closed" because the toggle only persists true.
-  const [speakAdvancedClosed, setSpeakAdvancedClosed] = usePersistedToggle(
-    "unsloth_audio_speak_advanced_closed",
-  );
-  // A run that needs an Advanced option opens the section on the rail that is showing.
-  const revealAdvanced = useCallback(
-    (next: boolean) => {
-      if (next && ttsWorkflow === "speak") setSpeakAdvancedClosed(false);
-      else setAdvancedOpen(next);
-    },
-    [ttsWorkflow, setAdvancedOpen, setSpeakAdvancedClosed],
   );
   // Read at load time; the handler below ejects so a change takes effect.
   const [audioDevice, setAudioDeviceState] = usePersistedChoice(
@@ -644,7 +632,7 @@ export function AudioPage({
     updateGenerationPhase,
     generateAbort,
     setMode,
-    setAdvancedOpen: revealAdvanced,
+    setAdvancedOpen,
     refreshStatus,
     activeRef,
     modeRef,
@@ -989,7 +977,6 @@ export function AudioPage({
       }
       handleAudioOptionChange("seed", seed);
       setAdvancedOpen(true);
-      setSpeakAdvancedClosed(false);
       toast.success(`Seed ${seed} set for the next take.`);
     },
     [
@@ -998,7 +985,6 @@ export function AudioPage({
       audioOptionSpecs,
       handleAudioOptionChange,
       setAdvancedOpen,
-      setSpeakAdvancedClosed,
     ],
   );
   const [voiceClip, setVoiceClip] = useState<{
@@ -1240,7 +1226,7 @@ export function AudioPage({
             ? {
                 reason: "The loaded model cannot edit speech.",
                 actions: [
-                  { label: "Choose a model that can edit", onClick: openSelector },
+                  { label: "Choose a model", onClick: openSelector },
                   ...recommendedEditActions,
                   openLoadedModelHome,
                 ],
@@ -1249,7 +1235,7 @@ export function AudioPage({
             ? {
                 reason: "The loaded model cannot separate audio.",
                 actions: [
-                  { label: "Choose a model that separates", onClick: openSelector },
+                  { label: "Choose a model", onClick: openSelector },
                   ...recommendedSeparateActions,
                 ],
               }
@@ -1268,7 +1254,7 @@ export function AudioPage({
             ? {
                 reason: "The loaded model cannot clone a voice.",
                 actions: [
-                  { label: "Choose a model that can clone", onClick: openSelector },
+                  { label: "Choose a model", onClick: openSelector },
                   ...recommendedCloneActions,
                   openLoadedModelHome,
                 ],
@@ -1277,10 +1263,7 @@ export function AudioPage({
               ? {
                   reason: "The loaded model cannot convert a voice.",
                   actions: [
-                    {
-                      label: "Choose a model that can convert",
-                      onClick: openSelector,
-                    },
+                    { label: "Choose a model", onClick: openSelector },
                     ...recommendedConvertActions,
                   ],
                 }
@@ -1711,6 +1694,10 @@ export function AudioPage({
     mode === "speak"
       ? pageModels(ttsWorkflow, MODELS_BY_MODE.speak, pagePrefs)
       : MODELS_BY_MODE[mode];
+  const emptyStatePicks =
+    mode === "speak"
+      ? emptyStateModels(ttsWorkflow, MODELS_BY_MODE.speak, pagePrefs)
+      : [];
   const selectorMoreModels = useMemo(
     () =>
       pageWorkflow === "edit"
@@ -2043,8 +2030,7 @@ export function AudioPage({
             onScroll={onSettingsScroll}
             className={cn(
               "hover-scrollbar flex min-h-0 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
-              // Text to speech is a short form: Generate follows it, and pins only once the rail scrolls.
-              mode === "speak" && ttsWorkflow === "speak" ? "flex-initial" : "flex-1",
+              "flex-1",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
@@ -2062,7 +2048,13 @@ export function AudioPage({
                   {workflowTab.hint}
                 </p>
                 {capabilityReady || capabilityLine === null ? null : (
-                  <p className="mt-2 rounded-lg bg-wash-5 px-3 py-2 text-ui-12 leading-normal text-muted-foreground">
+                  <p
+                    className={cn(
+                      "mt-2 rounded-lg bg-wash-5 px-3 py-2 text-ui-12 leading-normal text-muted-foreground",
+                      // Side by side, the note under Generate says the same thing in view; stacked, it is a scroll away.
+                      generateBlocker?.reason === capabilityLine && "@[50rem]:hidden",
+                    )}
+                  >
                     {capabilityLine}
                   </p>
                 )}
@@ -2169,11 +2161,7 @@ export function AudioPage({
                       disabled={busy === "generating"}
                     />
                   ) : (
-                    <SpeakRail
-                      {...railProps}
-                      advancedOpen={!speakAdvancedClosed}
-                      setAdvancedOpen={(open) => setSpeakAdvancedClosed(!open)}
-                    />
+                    <SpeakRail {...railProps} />
                   );
                 })()
               ) : (
@@ -2390,21 +2378,21 @@ export function AudioPage({
                     modelReady={pageModelLoaded}
                     loading={busy === "loading"}
                     onChooseModel={openSelector}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                   />
                 ) : ttsWorkflow === "edit" ? (
                   <EditOutput
                     {...outputProps}
                     modelReady={pageModelLoaded}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                   />
                 ) : ttsWorkflow === "separate" ? (
                   <SeparateOutput
                     {...outputProps}
                     modelReady={pageModelLoaded}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                     separate={separate}
                     onSendStem={handleSendStem}
@@ -2414,7 +2402,7 @@ export function AudioPage({
                   <CloneOutput
                     {...outputProps}
                     modelReady={pageModelLoaded}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                   />
                 ) : ttsWorkflow === "convert" ? (
@@ -2422,14 +2410,14 @@ export function AudioPage({
                     {...outputProps}
                     useAgainLabel="Use these inputs again"
                     modelReady={pageModelLoaded}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                   />
                 ) : (
                   <SpeakOutput
                     {...outputProps}
                     modelReady={pageModelLoaded || Boolean(connection)}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                   />
                 );

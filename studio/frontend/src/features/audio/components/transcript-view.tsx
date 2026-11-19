@@ -342,10 +342,9 @@ export function TranscriptView({
                   ref={current ? activeRow : undefined}
                   aria-current={current ? "true" : undefined}
                   className={cn(
-                    "flex items-start gap-2 rounded-md border-l-2 py-1 pr-2 pl-1.5 transition-colors duration-150 motion-reduce:transition-none",
-                    current
-                      ? "border-foreground bg-muted"
-                      : "border-transparent",
+                    // The line being spoken is tinted. No bar down one side: on a rounded row it reads as a stray edge.
+                    "flex items-start gap-2 rounded-md px-2 py-1 transition-colors duration-150 motion-reduce:transition-none",
+                    current && "bg-muted",
                   )}
                 >
                   {player ? (

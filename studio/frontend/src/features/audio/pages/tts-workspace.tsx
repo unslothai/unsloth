@@ -79,7 +79,7 @@ import type { AudioModelSlot } from "../hooks/use-audio-model-slot";
 import type { SpeechGeneration } from "../hooks/use-speech-generation";
 import { useRowPreview } from "../hooks/use-row-preview";
 import { historyRows, variationSiblings } from "../music/variation-groups";
-import { type AudioWorkflowId, audioWorkflowTab } from "../workflows";
+import { type AudioWorkflowId, audioWorkflowTab, clipWorkflow } from "../workflows";
 
 export interface GenerateAction {
   label: string;
@@ -130,16 +130,18 @@ export function BlockerNote({
   const [first, ...rest] = blocker.actions ?? [];
   if (!first) {
     return (
-      <p id={id} className="text-center text-ui-12 leading-normal text-muted-foreground">
+      <p id={id} className="text-center text-ui-11p5 leading-normal text-muted-foreground">
         {blocker.reason}
       </p>
     );
   }
-  const link = "h-auto p-0 text-ui-12 font-medium text-foreground";
+  // Quiet on purpose: the note explains a disabled button, so Generate stays the only loud thing here.
+  const link =
+    "h-auto p-0 text-ui-11p5 font-normal text-muted-foreground underline underline-offset-2 decoration-foreground/25 hover:text-foreground";
   return (
     <div
       id={id}
-      className="grid justify-items-center gap-0.5 text-center text-ui-12 leading-normal text-muted-foreground"
+      className="grid justify-items-center gap-0.5 text-center text-ui-11p5 leading-normal text-muted-foreground"
     >
       <span>{blocker.reason}</span>
       <span className="flex flex-wrap items-center justify-center gap-x-1.5">
@@ -164,7 +166,7 @@ export function BlockerNote({
               <Button
                 type="button"
                 variant="link"
-                className="h-auto p-0 text-ui-12 text-muted-foreground hover:text-foreground"
+                className={link}
               >
                 or another option
               </Button>
@@ -711,14 +713,17 @@ export function TtsOutput({
       leadingItems={
         <>
           <ClipSendToMenu handlers={sendHandlersFor(clip)} />
-          <DropdownMenuItem onClick={() => onSaveVoice(clip)}>
-            <HugeiconsIcon
-              icon={FloppyDiskIcon}
-              strokeWidth={1.75}
-              className="size-icon"
-            />
-            Save as voice…
-          </DropdownMenuItem>
+          {/* A song is not a voice to speak in. */}
+          {clipWorkflow(clip) === "music" ? null : (
+            <DropdownMenuItem onClick={() => onSaveVoice(clip)}>
+              <HugeiconsIcon
+                icon={FloppyDiskIcon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              Save as voice…
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onClick={() => onUseTextAgain(clip)}>
             <HugeiconsIcon
               icon={SparklesIcon}

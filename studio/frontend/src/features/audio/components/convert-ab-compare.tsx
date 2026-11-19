@@ -9,7 +9,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { PlayIcon } from "lucide-react";
 import { type Ref, useCallback, useEffect, useRef, useState } from "react";
 import { useClipPeaks } from "./ab-compare";
-import { CLIP_ICON_COLUMN, CLIP_PLAY_BUTTON } from "./clips-card";
+import { CLIP_ICON_COLUMN, CLIP_PLAY_BUTTON, CLIPS_TITLE_INSET } from "./clips-card";
 import { type ABPlayback, nextPlayback } from "./convert-ab-compare-state";
 import { PlaybackTime, WaveformBars } from "./waveform";
 
@@ -125,6 +125,8 @@ export function ABCompare({
   const reason = a.unavailable ?? b.unavailable;
   return (
     <div className="grid w-full gap-2">
+      {/* Margin, not padding: padding would stretch the switch's own track back to the card edge. */}
+      <div className={CLIPS_TITLE_INSET}>
       <PillTabs
         ariaLabel={ariaLabel}
         value={shownSide}
@@ -137,6 +139,7 @@ export function ABCompare({
           { value: "b", label: b.label, disabled: Boolean(b.unavailable) },
         ]}
       />
+      </div>
       {src ? (
         // The clip card's own row: play disc, bars, time. One hidden element plays whichever side is shown.
         <div className="flex items-center gap-3 pe-1">
@@ -204,7 +207,7 @@ export function ABCompare({
         </output>
       )}
       {reason && !current.unavailable ? (
-        <p className="text-ui-12 leading-normal text-muted-foreground">
+        <p className={cn(CLIPS_TITLE_INSET, "text-ui-12 leading-normal text-muted-foreground")}>
           {reason}
         </p>
       ) : null}

@@ -48,7 +48,7 @@ const ACCENT_HINT =
   "Describe how the speaker sounds. The transcript stays in the spoken language, and the hint may not always help.";
 
 const ACCENT_UNSUPPORTED =
-  "This model cannot use an accent hint, so none is sent. Qwen3-ASR (llama.cpp) and non-Whisper connections can use one.";
+  "This model cannot use an accent hint, so none is sent.";
 
 function accentFor(
   supported: boolean,
@@ -236,7 +236,8 @@ export function transcribeSwitches(
         : {
             checked: false,
             disabled: true,
-            hint: `This model returns plain text. Timestamps need Qwen3-ASR (audio.cpp), Parakeet-TDT, ${SPEAKERS_MODEL_NAME} or VibeVoice-ASR.`,
+            // No model list here: the catalog grows, and the link beside the hint offers one that works.
+            hint: "This model returns plain text. Timestamps need a model that supports them.",
             suggestSpeakersModel: true,
           };
   const speakers: TranscribeSwitch = caps.speakers
@@ -248,7 +249,7 @@ export function transcribeSwitches(
     : {
         checked: false,
         disabled: true,
-        hint: `Only ${SPEAKERS_MODEL_NAME} and VibeVoice-ASR can tell speakers apart.`,
+        hint: "This model cannot tell speakers apart. Speaker labels need a model that can.",
         suggestSpeakersModel: true,
       };
   const { accent, speakerAccent } = accentFor(

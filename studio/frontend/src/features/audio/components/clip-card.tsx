@@ -118,7 +118,13 @@ export function ClipCard({
             )}
           </Button>
         )}
-        <div className="grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between">
+        <div
+          className={cn(
+            "grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between",
+            // A custom player brings its own play disc, so the title keeps the column it has on every other card.
+            player && CLIPS_TITLE_INSET,
+          )}
+        >
           <p
             className="line-clamp-2 text-ui-15 font-medium leading-snug text-foreground"
             title={title}

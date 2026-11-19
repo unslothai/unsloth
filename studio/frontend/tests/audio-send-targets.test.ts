@@ -7,7 +7,8 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { STEM_SEND_TARGETS, clipSendTargets, transcriptSendTargets } =
+const { STEM_SAVE_VOICE_TARGET,
+  STEM_SEND_TARGETS, clipSendTargets, transcriptSendTargets } =
   await import("../src/features/audio/send-targets.ts");
 
 const clip = (workflow: string, duration_s: number | null = 4) => ({
@@ -59,15 +60,18 @@ test("a clip longer than Edit takes is not offered to Edit", () => {
   assert.ok(clipSendTargets(clip("speak", null), "speak").includes("edit"));
 });
 
-test("stems go to Clone, Convert, Music edit and Transcribe, or become a voice", () => {
+test("stems go to Clone, Convert, Music and Transcribe under the names the clip menus use", () => {
   assert.deepEqual(
-    STEM_SEND_TARGETS.map((target) => target.workflow),
-    ["clone", "convert", "music", "transcribe", "voice"],
+    STEM_SEND_TARGETS.map((target) => [target.workflow, target.label]),
+    [
+      ["clone", "Clone"],
+      ["convert", "Convert"],
+      ["music", "Music"],
+      ["transcribe", "Transcribe"],
+    ],
   );
-  assert.equal(
-    STEM_SEND_TARGETS.find((target) => target.workflow === "music")?.label,
-    "Music edit",
-  );
+  // Saving a voice is not a page, so it is not a Send to destination.
+  assert.equal(STEM_SAVE_VOICE_TARGET.workflow, "voice");
 });
 
 test("a transcript's text goes to Speak; Edit and Clone also need its audio", () => {

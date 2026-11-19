@@ -171,7 +171,7 @@ function CloneInputs({
           label="Language"
           value={clone.language}
           onChange={setLanguage}
-          hint="The language of the text to speak. Auto lets the model tell."
+          hint="The language of the text to speak. Auto lets the model detect it."
         />
       ) : null}
     </AudioHistoryProvider>

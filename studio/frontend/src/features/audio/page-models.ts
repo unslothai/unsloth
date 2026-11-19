@@ -182,7 +182,38 @@ export function pageModels<T extends PageModelRow>(
     .map(({ row }) => row);
 }
 
-/** The two models a page's empty state offers. */
+// Small and fast, expressive, and the one the Speak hint names for conversations.
+const RECOMMENDED_SPEAK_MODELS = [
+  "Kokoro-82M-GGUF",
+  "Chatterbox-Turbo-GGUF",
+  "VibeVoice-1.5B-GGUF",
+];
+
+/** The picks an empty output pane shows: up to three GGUF models the audio runtime loads, never a
+ *  Safetensors checkpoint. Speak and Music name theirs; the other pages take the top of their list. */
+export function emptyStateModels<T extends PageModelRow>(
+  page: AudioWorkflowId,
+  rows: readonly T[],
+  prefs: PageModelPrefs,
+): T[] {
+  const gguf = pageModels(page, rows, prefs).filter((row) =>
+    isAudioRuntimeGguf(row.id, row.audioType),
+  );
+  const named =
+    page === "speak"
+      ? RECOMMENDED_SPEAK_MODELS
+      : page === "music"
+        ? RECOMMENDED_MUSIC_MODELS
+        : null;
+  const picks = named
+    ? gguf
+        .filter((row) => rankIn(named, row.id) < named.length)
+        .sort((a, b) => rankIn(named, a.id) - rankIn(named, b.id))
+    : [];
+  return (picks.length > 0 ? picks : gguf).slice(0, 3);
+}
+
+/** The two models a page's footer note offers. */
 export function recommendedPageModels<T extends PageModelRow>(
   page: AudioWorkflowId,
   rows: readonly T[],

@@ -12,7 +12,13 @@ import { Spinner } from "@/components/ui/spinner";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import {
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Download01Icon, FloppyDiskIcon } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, type ReactNode, useEffect, useMemo, useState } from "react";
@@ -38,7 +44,7 @@ import {
   type SeparateGeneration,
 } from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
-import { STEM_SEND_TARGETS } from "../send-targets";
+import { STEM_SAVE_VOICE_TARGET, STEM_SEND_TARGETS } from "../send-targets";
 import { saveAudio } from "../save-audio";
 import {
   SEPARATE_MAX_SECONDS,
@@ -266,6 +272,11 @@ function downloadGroup(group: SeparationGroup) {
 }
 
 /** keyed by group so each mixer starts from its own clock. */
+/** What a stem is called on the page it goes to: the track's name without its extension, then the stem. */
+function stemSendName(title: string, role: string | null | undefined): string {
+  return `${title.replace(/\.[a-z0-9]{2,4}$/i, "")} - ${stemLabel(role ?? "")}`;
+}
+
 function SelectedSeparation({
   group,
   autoFocus,
@@ -328,11 +339,7 @@ function SelectedSeparation({
         onSend={(target, clipId) => {
           const clip = group.stems.find((item) => item.id === clipId);
           if (!clip) return;
-          onSendStem(
-            target,
-            clip,
-            `${group.title.replace(/\.[a-z0-9]{2,4}$/i, "")} - ${stemLabel(clip.role ?? "")}`,
-          );
+          onSendStem(target, clip, stemSendName(group.title, clip.role));
         }}
       />
       {sources.failedIds.length > 0 ? (
@@ -468,6 +475,27 @@ export function SeparateOutput({
           : undefined
       }
       noun="clip"
+      leadingItems={
+        // One stem becomes the voice, so the item opens the run's stems.
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <HugeiconsIcon icon={FloppyDiskIcon} strokeWidth={1.75} className="size-icon" />
+            Save as voice…
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {group.stems.map((clip) => (
+              <DropdownMenuItem
+                key={clip.id}
+                onSelect={() =>
+                  onSendStem(STEM_SAVE_VOICE_TARGET, clip, stemSendName(group.title, clip.role))
+                }
+              >
+                {stemLabel(clip.role ?? "")}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      }
       active={active}
       pinned={group.pinned}
       archived={false}

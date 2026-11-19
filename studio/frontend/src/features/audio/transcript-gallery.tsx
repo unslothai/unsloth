@@ -22,6 +22,12 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   CLIPS_HEADER_LINK,
   CLIPS_LIST,
+  CLIP_ROW,
+  CLIP_ROW_DURATION,
+  CLIP_ROW_ICON,
+  CLIP_ROW_MENU,
+  CLIP_ROW_SELECT,
+  CLIP_ROW_TILE,
   ClipsCard,
   ClipsCardEmpty,
 } from "./components/clips-card";
@@ -132,7 +138,7 @@ export type TranscriptSendHandlers = (transcript: {
 }) => ClipSendHandlers;
 
 const ROW_MENU_TRIGGER =
-  "size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100";
+  "size-6 rounded-full text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100";
 const TOP_MENU_TRIGGER =
   "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground";
 
@@ -368,7 +374,8 @@ export function TranscriptGallery({
                 "h-auto px-0 py-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
               )}
             >
-              Clear all
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-3.5" />
+              Delete all
             </Button>
           ) : null
         }
@@ -398,17 +405,15 @@ export function TranscriptGallery({
           .map((record) => (
           <div
             key={record.id}
-            className="group flex items-center gap-1 rounded-md ps-3 pe-1 transition-colors hover:bg-wash-3"
+            // The clip rows' own columns, so a transcript list reads like every other Audio list.
+            className={CLIP_ROW}
           >
-            <span
-              aria-hidden="true"
-              className="grid w-[calc(40px*var(--ui-space-scale,1))] shrink-0 place-items-center text-muted-foreground"
-            >
-              <HugeiconsIcon icon={ClosedCaptionIcon} className="size-3.5" />
+            <span aria-hidden="true" className={CLIP_ROW_TILE}>
+              <HugeiconsIcon icon={ClosedCaptionIcon} strokeWidth={1.75} className={CLIP_ROW_ICON} />
             </span>
             <button
               type="button"
-              className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 ps-2 text-left"
+              className={CLIP_ROW_SELECT}
               onClick={() => {
                 if (canSelect()) onSelect(record);
               }}
@@ -423,12 +428,12 @@ export function TranscriptGallery({
                 </span>
               </span>
               {record.duration ? (
-                <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+                <span className={CLIP_ROW_DURATION}>
                   {formatTimestamp(record.duration)}
                 </span>
               ) : null}
             </button>
-            {recordMenu(record, ROW_MENU_TRIGGER)}
+            <span className={CLIP_ROW_MENU}>{recordMenu(record, ROW_MENU_TRIGGER)}</span>
           </div>
         ))}
         {archived && !loading && !records.length ? (
@@ -450,12 +455,12 @@ export function TranscriptGallery({
         ) : null}
       </ClipsCard>
       <AlertDialog open={confirmingClear} onOpenChange={setConfirmingClear}>
-        <AlertDialogContent>
+        <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Clear transcript history</AlertDialogTitle>
+            <AlertDialogTitle>Delete all transcripts?</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete all transcripts in history? Archived transcripts will be
-              kept. This cannot be undone.
+              This permanently deletes all transcripts on this page. Archived transcripts are kept. This
+              cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -464,7 +469,7 @@ export function TranscriptGallery({
               variant="destructive"
               onClick={() => void mutate(() => deleteTranscript(), null)}
             >
-              Clear all
+              Delete all
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
