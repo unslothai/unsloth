@@ -70,7 +70,7 @@ export function isNoteReference(className: string | null, role: string | null): 
 
 export function raiseSuperscript(before: string, raised: string): string {
   const base = before.slice(-SUPERSCRIPT_BASE_CHARS);
-  const end = base.slice(-1);
+  const end = /.$/su.exec(base)?.[0] ?? "";
   if (!end || !(ALNUM_RE.test(end) || ")]}|）］｝".includes(end))) return raised;
   const visible = raised.trim();
   const lower = visible.toLowerCase();
