@@ -2634,13 +2634,63 @@ def _unsloth_patch_grpo_truncation_check(function):
     )
 
 
+def _unsloth_rollout_scope(trainer):
+    """One vLLM rollout scope around a tool-calling `_generate`: TRL's tool loop calls the engine once per turn with
+    unchanged weights, so fold the adapter (or build the vLLM LoRA request) once per rollout step instead of once per
+    turn, and keep vLLM's prefix cache across turns. UNSLOTH_VLLM_ROLLOUT_SCOPE=0 restores the per-call behaviour."""
+    import contextlib
+    import os
+
+    if os.environ.get("UNSLOTH_VLLM_ROLLOUT_SCOPE", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return contextlib.nullcontext()
+    # Single-turn rollouts gain nothing; a custom rollout_func may run the training model, which must not see the fold.
+    if not getattr(trainer, "use_vllm", False) or not getattr(trainer, "tools", None):
+        return contextlib.nullcontext()
+    if getattr(trainer, "rollout_func", None) is not None:
+        return contextlib.nullcontext()
+    llm = getattr(getattr(trainer, "vllm_generation", None), "llm", None)
+    if llm is None:
+        llm = getattr(trainer, "llm", None)
+    if llm is None or not getattr(llm, "shared_weights", False):
+        return contextlib.nullcontext()
+    try:
+        from unsloth_zoo.vllm_utils import vllm_rollout_scope
+    except ImportError:
+        return contextlib.nullcontext()
+    return vllm_rollout_scope(llm)
+
+
+def _unsloth_wrap_generate_in_rollout_scope(function):
+    """Rename `_generate` and add a `_generate` that runs it inside `_unsloth_rollout_scope`."""
+    if "_unsloth_generate_in_scope" in function:
+        return function
+    match = re.search(r"^(?P<indent>[ \t]*)def _generate\(", function, re.MULTILINE)
+    if match is None:
+        return function
+    indent = match.group("indent")
+    wrapper = (
+        f"{indent}def _generate(self, *args, **kwargs):\n"
+        f"{indent}    with _unsloth_rollout_scope(self):\n"
+        f"{indent}        return self._unsloth_generate_in_scope(*args, **kwargs)\n\n"
+    )
+    start = match.start()
+    renamed = function[start:].replace("def _generate(", "def _unsloth_generate_in_scope(", 1)
+    return function[:start] + wrapper + renamed
+
+
 def grpo_trainer__generate(function_name, function):
     if function_name != "_generate":
         return function
 
     # A stop string can terminate a completion before the limit without an EOS token.
     function = _unsloth_patch_grpo_truncation_check(function)
-    return _guard_vllm_sync_reload_for_shared_weights(function)
+    function = _guard_vllm_sync_reload_for_shared_weights(function)
+    return _unsloth_wrap_generate_in_rollout_scope(function)
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate)
@@ -5467,6 +5517,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_state
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_truncated))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_rollout_scope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
