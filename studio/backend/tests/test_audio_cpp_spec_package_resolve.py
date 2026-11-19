@@ -189,6 +189,33 @@ def test_picker_and_download_plan_offer_whole_spec_packages(hub, monkeypatch):
     assert acm.resolve(XTTS_REPO, network = False).spec_packaged
 
 
+def test_spec_package_plans_resume_with_and_without_hub_metadata(monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.utils.gguf_plan import (
+        build_gguf_variant_plans,
+        plan_for_variant,
+        plan_from_expected_files,
+    )
+
+    _use_specs(monkeypatch)
+
+    def plans(names):
+        return build_gguf_variant_plans(
+            [SimpleNamespace(rfilename = n, size = 10, lfs = {"sha256": n}) for n in names]
+        )
+
+    zonos = plans(["gguf/zac-encoder.gguf", "gguf/ssl-teacher.gguf", *ZONOS_PTQ])
+    # The base package lies inside the raw reference: its GGUFs still give a resume its hashes.
+    assert plan_for_variant(zonos, "zonos3_mini_ptq").main_hashes == frozenset(ZONOS_PTQ)
+    lfm = plan_for_variant(plans(LFM_SIZES), "Q8_0")
+    assert len(lfm.target_filenames) == 4
+    # Hub metadata gone: the recorded manifest is rebuilt with every package member.
+    rebuilt = plan_from_expected_files("Q8_0", lfm.expected_files)
+    assert set(rebuilt.target_filenames) == set(lfm.target_filenames)
+    assert rebuilt.main_hashes
+
+
 def test_a_partly_downloaded_package_is_not_a_downloaded_model(hub, monkeypatch):
     # One GGUF of the three (a lone file fetched from the Model Hub page) is no model yet.
     _use_specs(monkeypatch)

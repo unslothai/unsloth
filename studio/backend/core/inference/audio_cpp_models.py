@@ -3008,13 +3008,13 @@ def package_variant_files(names: Iterable[str]) -> Optional[dict[str, tuple[str,
         }
         if found:
             return found
-    return _spec_package_files(present)
+    return spec_package_files(present)
 
 
 _spec_primaries_cache: list[tuple[dict, frozenset[str]]] = []
 
 
-def _spec_package_files(present: set) -> Optional[dict[str, tuple[str, ...]]]:
+def spec_package_files(present: set) -> Optional[dict[str, tuple[str, ...]]]:
     """The runtime spec packages a repo's listing holds in full, keyed as resolve() keys them."""
     specs = runtime_specs()
     if not _spec_primaries_cache or _spec_primaries_cache[0][0] is not specs:
