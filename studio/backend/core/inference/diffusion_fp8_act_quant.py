@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from typing import Any, Optional
@@ -77,9 +78,12 @@ def _launch(x2: Any, scale: Any) -> Any:
     out = torch.empty(x2.shape, dtype = torch.uint8, device = x2.device)
     n = x2.numel()
     if n:
-        _fp8_static_quant_kernel[(triton.cdiv(n, _BLOCK),)](
-            x2, scale, out, n, BLOCK = _BLOCK, num_warps = _WARPS
-        )
+        # Triton launches on the current device, not the tensor's (a layer placed on another card)
+        other_card = x2.device.index != torch.cuda.current_device()
+        with torch.cuda.device(x2.device) if other_card else contextlib.nullcontext():
+            _fp8_static_quant_kernel[(triton.cdiv(n, _BLOCK),)](
+                x2, scale, out, n, BLOCK = _BLOCK, num_warps = _WARPS
+            )
     return out.view(torch.float8_e4m3fn)
 
 
