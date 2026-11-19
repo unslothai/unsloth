@@ -82,6 +82,7 @@ export function testBlenderMcp(
 ): Promise<
   McpServerProbeResult & {
     blender_ready?: boolean;
+    blender_path?: string | null;
     blender_error?: string | null;
   }
 > {

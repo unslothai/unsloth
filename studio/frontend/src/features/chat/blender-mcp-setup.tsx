@@ -92,6 +92,8 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
         const result = await testBlenderMcp({ ...settings, consent });
         if (!mounted.current) return;
         if (!result.ok) throw new Error(result.error ?? "MCP connection failed. Retry or check the Unsloth backend.");
+        // Keep it in the form, or the next Enable saves an empty path.
+        if (result.blender_path) setBlenderPath(result.blender_path);
         setConnection(result.blender_ready ? "ready" : "partial");
         setMessage(`MCP connected (${result.tool_count} tools). ${result.blender_ready
           ? "Blender ready."
