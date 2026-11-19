@@ -10,12 +10,13 @@ import { Streamdown } from "streamdown";
 import {
 	markdownSandboxVideoSrc,
 	sandboxFileForSrc,
+	sandboxFileForHref,
 	sandboxVideoFileForSrc,
-	sandboxVideoType,
 } from "../src/components/assistant-ui/sandbox-files.ts";
 import { rehypeSandboxImages } from "../src/components/assistant-ui/rehype-sandbox-images.ts";
 import { withDataImageSupport } from "../src/lib/markdown-data-images.ts";
 import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
+import { videoMimeForName } from "../src/lib/video-utils.ts";
 
 const scope = { threadId: "thread-1", projectId: null as string | null };
 
@@ -54,6 +55,8 @@ test("video files stay out of the image path and keep the sandbox guards", () =>
 	assert.equal(sandboxVideoFileForSrc("plot.png"), null);
 	assert.equal(sandboxVideoFileForSrc("../other/clip.mp4"), null);
 	assert.equal(sandboxVideoFileForSrc("https://example.com/clip.mp4"), null);
-	assert.equal(sandboxVideoType("clip.webm"), "video/webm");
-	assert.equal(sandboxVideoType("clip.MOV"), "video/quicktime");
+	assert.equal(sandboxVideoFileForSrc("clip.mp4/notes"), null);
+	assert.equal(sandboxFileForHref("clip.m4v"), "clip.m4v");
+	assert.equal(videoMimeForName("/api/inference/sandbox/t/clip.webm"), "video/webm");
+	assert.equal(videoMimeForName("clip.MOV"), "video/quicktime");
 });

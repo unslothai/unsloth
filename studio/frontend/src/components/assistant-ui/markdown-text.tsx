@@ -44,6 +44,7 @@ import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
 import { backendPathUrl, desktopSignedMediaPath, protectedBackendPath } from "@/lib/api-base";
 import { openLink } from "@/lib/open-link";
+import { videoMimeForName } from "@/lib/video-utils";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
@@ -128,7 +129,6 @@ import {
   sandboxFileForHref,
   sandboxSessionIdFor,
   sandboxVideoFileForSrc,
-  sandboxVideoType,
   sandboxSessionInSrc,
 } from "./sandbox-files";
 import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
@@ -224,7 +224,7 @@ const STREAMDOWN_IMMEDIATE_UPDATES = {
  * Registering `img` replaces Streamdown's renderer wholesale, so its behaviour is restated here. A sandbox
  * image src carries no auth header and would 401, so it goes through an authed fetch to an object URL.
  */
-const MarkdownStillImage = memo(function MarkdownStillImage(props: ComponentProps<"img">) {
+const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) {
   // `node` is Streamdown's ExtraProps; it must not reach the DOM.
   const {
     src,
@@ -355,27 +355,15 @@ const MarkdownStillImage = memo(function MarkdownStillImage(props: ComponentProp
   );
 });
 
-// Sandbox files are served as octet-stream, so the blob is retyped before the player sees it.
 function SandboxVideo({ url, label }: { url: string; label: string }) {
-  const { ref, state } = useSandboxImage<HTMLSpanElement>(url);
-  const blob = state.status === "loaded" ? state.blob : null;
-  const [src, setSrc] = useState<string | null>(null);
-  useEffect(() => {
-    if (!blob) return;
-    const typed = URL.createObjectURL(new Blob([blob], { type: sandboxVideoType(url.split(/[?#]/)[0]) }));
-    setSrc(typed);
-    return () => {
-      URL.revokeObjectURL(typed);
-      setSrc(null);
-    };
-  }, [blob, url]);
+  const { ref, state } = useSandboxImage<HTMLSpanElement>(url, videoMimeForName(url.split(/[?#]/)[0]));
   return (
     <span ref={ref} data-streamdown="video-wrapper" className="my-4 block max-w-full">
       {state.status === "failed" ? (
         <span className="text-xs text-muted-foreground">Video not available</span>
-      ) : src ? (
+      ) : state.status === "loaded" ? (
         <video
-          src={src}
+          src={state.url}
           controls={true}
           loop={true}
           playsInline={true}
@@ -402,21 +390,19 @@ function useSandboxScope() {
   return { threadId: remoteId ?? activeThreadId ?? undefined, projectId };
 }
 
-const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) {
+const MarkdownMedia = memo(function MarkdownMedia(props: ComponentProps<"img">) {
   const scope = useSandboxScope();
   const video = props.src ? markdownSandboxVideoSrc(props.src, scope) : null;
-  return video ? <SandboxVideo url={video} label={props.alt ?? ""} /> : <MarkdownStillImage {...props} />;
+  return video ? <SandboxVideo url={video} label={props.alt ?? ""} /> : <MarkdownImage {...props} />;
 });
 
-function SandboxVideoLink({ href, children }: { href: string; children: ReactNode }) {
+function SandboxVideoLink({ href, label, children }: { href: string; label: string; children: ReactNode }) {
   const video = markdownSandboxVideoSrc(href, useSandboxScope());
-  return video ? (
+  return (
     <>
-      <SandboxVideo url={video} label={typeof children === "string" ? children : ""} />
+      {video ? <SandboxVideo url={video} label={label} /> : null}
       {children}
     </>
-  ) : (
-    <>{children}</>
   );
 }
 
@@ -434,7 +420,9 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
       </SandboxFileLink>
     );
     return sandboxVideoFileForSrc(href) !== null ? (
-      <SandboxVideoLink href={href}>{link}</SandboxVideoLink>
+      <SandboxVideoLink href={href} label={typeof children === "string" ? children : ""}>
+        {link}
+      </SandboxVideoLink>
     ) : (
       link
     );
@@ -592,7 +580,7 @@ const STREAMDOWN_COMPONENTS = {
   a: MarkdownLink,
   // Module-scoped: Streamdown's memo comparator ignores `components`.
   [SEARCH_IMAGE_TAG]: SearchImageElement,
-  img: MarkdownImage,
+  img: MarkdownMedia,
   table: MarkdownTable,
 };
 const STREAMDOWN_ALLOWED_TAGS = {

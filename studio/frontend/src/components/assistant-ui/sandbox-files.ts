@@ -155,17 +155,6 @@ export const SANDBOX_INLINE_IMAGE_EXTS = new Set([
 
 export const SANDBOX_INLINE_VIDEO_EXTS = new Set([".mp4", ".webm", ".mov", ".m4v"]);
 
-const VIDEO_TYPES: Record<string, string> = {
-  ".mp4": "video/mp4",
-  ".m4v": "video/mp4",
-  ".webm": "video/webm",
-  ".mov": "video/quicktime",
-};
-
-export function sandboxVideoType(file: string): string {
-  return VIDEO_TYPES[file.slice(file.lastIndexOf(".")).toLowerCase()] ?? "video/mp4";
-}
-
 /** Somebody else's URL: `data:`/`blob:` render as they are, `http(s)` is blocked by the sanitizer. */
 const HAS_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+\-.]*:/;
 const PROTOCOL_RELATIVE_RE = /^[/\\]{2}/;
@@ -184,29 +173,29 @@ export function decodeSegment(segment: string): string {
  * carrying `..` stays raw so it cannot fetch another chat's file or route.
  */
 export function sandboxFileForSrc(src: string): string | null {
+  return sandboxFileWithExt(src, SANDBOX_INLINE_IMAGE_EXTS);
+}
+
+export function sandboxVideoFileForSrc(src: string): string | null {
+  return sandboxFileWithExt(src, SANDBOX_INLINE_VIDEO_EXTS);
+}
+
+function sandboxFileWithExt(src: string, exts: ReadonlySet<string>): string | null {
   const file = sandboxPathForSrc(src);
   if (file === null) return null;
   const name = file.slice(file.lastIndexOf("/") + 1);
-  const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
-  return SANDBOX_INLINE_IMAGE_EXTS.has(ext) ? file : null;
+  return exts.has(name.slice(name.lastIndexOf(".")).toLowerCase()) ? file : null;
 }
 
 // What a one-segment link must end in to be a file, since `example.tech` is a site.
 const LINK_FILE_EXTS = new Set(
   ("csv tsv json jsonl txt md markdown html htm pdf png jpg jpeg gif webp svg bmp py ipynb js ts sh " +
-    "yaml yml toml xml log xlsx xls docx doc pptx odt ods zip tar gz parquet wav mp3 mp4 webm mov").split(" "),
+    "yaml yml toml xml log xlsx xls docx doc pptx odt ods zip tar gz parquet wav mp3 mp4 m4v webm mov").split(" "),
 );
 // A first segment shaped like a domain (`docs.museum/report.pdf`, `пример.рф`) or an IPv4 address, not a folder.
 const HOST_SEGMENT_RE = /^(?:(?:[\p{L}\p{N}-]+\.)+(?:\p{L}{2,}|xn--[a-z\d-]+)|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$/iu;
 
 /** Sandbox file a markdown link targets (`outputs/report.csv`); needs an extension, so `#intro` stays a link. */
-export function sandboxVideoFileForSrc(src: string): string | null {
-  const file = sandboxPathForSrc(src);
-  if (file === null) return null;
-  const ext = file.slice(file.lastIndexOf(".")).toLowerCase();
-  return SANDBOX_INLINE_VIDEO_EXTS.has(ext) ? file : null;
-}
-
 export function sandboxFileForHref(href: string): string | null {
   const trimmed = href.trim();
   if (trimmed.startsWith("#") || /^www\./i.test(trimmed)) return null;
@@ -265,18 +254,16 @@ export function markdownSandboxImageSrc(
   src: string,
   ctx: { threadId: string | undefined; projectId: string | null | undefined },
 ): string | null {
-  const file = sandboxFileForSrc(src);
-  if (file === null) return null;
-  const sessionId =
-    sandboxSessionInSrc(src) ?? sandboxSessionIdFor(ctx.threadId, ctx.projectId);
-  return sessionId ? sandboxFilePath(sessionId, file) : null;
+  return sandboxRouteFor(src, sandboxFileForSrc(src), ctx);
 }
 
-export function markdownSandboxVideoSrc(
-  src: string,
-  ctx: { threadId: string | undefined; projectId: string | null | undefined },
-): string | null {
-  const file = sandboxVideoFileForSrc(src);
+export function markdownSandboxVideoSrc(src: string, ctx: SandboxScope): string | null {
+  return sandboxRouteFor(src, sandboxVideoFileForSrc(src), ctx);
+}
+
+type SandboxScope = { threadId: string | undefined; projectId: string | null | undefined };
+
+function sandboxRouteFor(src: string, file: string | null, ctx: SandboxScope): string | null {
   if (file === null) return null;
   const sessionId =
     sandboxSessionInSrc(src) ?? sandboxSessionIdFor(ctx.threadId, ctx.projectId);
