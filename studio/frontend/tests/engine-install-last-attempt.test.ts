@@ -8,7 +8,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { type ViteDevServer, createServer } from "vite";
 import { readSrc } from "./helpers/kit.ts";
 
-// #18492: a retry that fails with the same message has to read as a new attempt.
 let vite: ViteDevServer;
 let EngineInstall: (props: Record<string, unknown>) => unknown;
 

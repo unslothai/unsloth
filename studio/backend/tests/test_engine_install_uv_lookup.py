@@ -27,12 +27,10 @@ def isolated(monkeypatch, tmp_path):
 
 
 def job(root):
-    """What the UI reads: the job file every update rewrites."""
     return json.loads((root / "vllm.job.json").read_text(encoding = "utf-8"))
 
 
 def per_user_uv(monkeypatch, home):
-    """uv where its standalone installer puts it, with that folder missing from PATH."""
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     uv = home / ".local" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
@@ -77,7 +75,6 @@ def test_each_attempt_records_when_it_ended(isolated, monkeypatch):
     first = job(isolated)
     assert first["finished_at"] == 1000.0
 
-    # A retry that fails the same way: the message repeats, the time does not.
     install._update("vllm", state = "running", phase = "queued", message = "Preparing installation")
     assert job(isolated)["finished_at"] is None
     install._update("vllm", state = "error", phase = None, message = message)
