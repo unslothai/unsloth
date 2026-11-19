@@ -206,17 +206,26 @@ def test_group_openings_use_v3_group_only_greetings(client):
         return {
             "spec": "chara_card_v3",
             "spec_version": "3.0",
-            "data": {"name": name, "first_mes": f"Hi from {name}.", "group_only_greetings": group_only},
+            "data": {
+                "name": name,
+                "first_mes": f"Hi from {name}.",
+                "group_only_greetings": group_only,
+            },
         }
 
     ids = []
     for name, extra in (("Ada", ["Hello, {{user}} and friends."]), ("Bo", [])):
         response = client.post(
-            "/api/characters/import?filename=" + name + ".json", content = json.dumps(card(name, extra)).encode()
+            "/api/characters/import?filename=" + name + ".json",
+            content = json.dumps(card(name, extra)).encode(),
         )
         ids.append(response.json()["character"]["id"])
-    solo = client.post("/api/characters/chats", json = {"characterIds": ids[:1], "userName": "Wren"}).json()
-    group = client.post("/api/characters/chats", json = {"characterIds": ids, "userName": "Wren"}).json()
+    solo = client.post(
+        "/api/characters/chats", json = {"characterIds": ids[:1], "userName": "Wren"}
+    ).json()
+    group = client.post(
+        "/api/characters/chats", json = {"characterIds": ids, "userName": "Wren"}
+    ).json()
 
     def texts(thread_id):
         return [

@@ -511,7 +511,10 @@ def _opening_messages(
             # V3 group-only greetings: kept on the stored card, so only names are filled here.
             resolved = [
                 *resolved,
-                *(fill_names(g, character["name"], speaker_name) for g in _group_only_greetings(character)),
+                *(
+                    fill_names(g, character["name"], speaker_name)
+                    for g in _group_only_greetings(character)
+                ),
             ]
         texts = [(i, g) for i, g in enumerate(resolved) if g and g.strip()]
         if len(characters) > 1 and index > 0:
