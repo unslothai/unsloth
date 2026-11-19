@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """ROCm builds whose flash varlen disagrees with its fake kernel cannot run it inside a compiled block.
 Packed rows there must leave the block for the eager varlen wrapper, not attend over the dense mask."""
 
