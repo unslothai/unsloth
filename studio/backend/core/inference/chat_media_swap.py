@@ -238,7 +238,8 @@ class RoundTrip:
         except BaseException as exc:  # noqa: BLE001 - every failure still restores chat
             error = exc
         finally:
-            if beside and error is None:
+            # A stopped beside load may still be loading in the background: only a finished render keeps it.
+            if beside and error is None and result != ERR_STOPPED:
                 media_touched = False
                 self._note("image_kept_beside_chat")
             if media_touched:
@@ -316,6 +317,8 @@ class StudioChat:
             launch = launch,
             model = getattr(llama, "model_identifier", None),
             context_length = getattr(llama, "_effective_context_length", None),
+            # The reload path marks it an API load; a UI-picked chat keeps its idle-unload exemption.
+            extra = {"user_loaded": bool(getattr(llama, "_loaded_by_user_action", False))},
         )
 
     async def save_kv(self, snap: ChatSnapshot, should_abort) -> Optional[dict]:
@@ -371,6 +374,7 @@ class StudioChat:
             end_in_process_request(request.scope, answered = answered)
         if loaded_identity() != snap.identity:
             raise RuntimeError(f"reloaded {loaded_identity()!r}, expected {snap.identity!r}")
+        self._llama()._loaded_by_user_action = bool(snap.extra.get("user_loaded", False))
 
     async def discard_kv(self, kv: Optional[dict]) -> None:
         if kv:

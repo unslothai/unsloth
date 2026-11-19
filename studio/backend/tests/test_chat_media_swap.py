@@ -791,3 +791,25 @@ def test_network_path_is_never_probed(monkeypatch):
     with pytest.raises(swap.SwapUnavailable):
         asyncio.run(image.prepare("\\\\host\\share\\model"))
     assert probed == []
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_beside_load_kept_only_after_a_finished_render(stopped):
+    """Beside chat, a finished render keeps the image model; a stopped one gives its load back."""
+    log = Log()
+    chat = FakeChat(log)
+    media = FakeImage(log, block = "generate" if stopped else None)
+    trip = _trip(chat, media, beside_first = True)
+
+    async def go():
+        task = asyncio.ensure_future(trip.run())
+        if stopped:
+            while "image.generate" not in [e[0] for e in log]:
+                await asyncio.sleep(0.01)
+            trip.stop()
+        return await task
+
+    result = asyncio.run(go())
+    names = [e[0] for e in log]
+    assert ("image.unload" in names) is stopped
+    assert result == (swap.ERR_STOPPED if stopped else result) and chat.resident
