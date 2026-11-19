@@ -167,6 +167,28 @@ export function denseTransformerBuildLabel(status: {
   return denseDtypeLabel(status.dtype);
 }
 
+/**
+ * The precision the loaded transformer runs at, in the Loaded build row's vocabulary: the engaged quant ("INT8"), else
+ * the GGUF as stored, else the dense dtype. The picker header names the loaded build with it, so header, Loaded build
+ * and the loaded-models chip read one value. Null when nothing is loaded.
+ */
+export function loadedTransformerPrecisionLabel(status: {
+  loaded?: boolean;
+  transformer_quant?: string | null;
+  model_kind?: string | null;
+  dtype?: string | null;
+  gguf_variant?: string | null;
+} | null | undefined): string | null {
+  if (!status?.loaded) return null;
+  if (!isOff(status.transformer_quant)) {
+    return formatResolvedValue("transformer_quant", status.transformer_quant);
+  }
+  if (status.model_kind === "gguf" || status.dtype === "gguf") {
+    return status.gguf_variant ? `GGUF · ${status.gguf_variant}` : "GGUF";
+  }
+  return denseDtypeLabel(status.dtype);
+}
+
 /** CPU, older accelerators and fp16-incompatible families load in other dtypes; unknown is BF16. */
 function denseDtypeLabel(dtype: string | null | undefined): string {
   const text = String(dtype ?? "").trim().toLowerCase();
