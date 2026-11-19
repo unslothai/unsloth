@@ -127,9 +127,15 @@ def render_need_mib(
             if reserve and len(reserve) > MEASURED_RESERVE_DENOISE_PHASE_INDEX
             else None
         )
-        if phase and getattr(pipe, DECODE_LEND_ATTR, None):
-            # the decode lend streams these groups again for the decode when it is short: price the denoise here
-            return int(phase) + max(0, int(extra_mib or 0))
+        lend = getattr(pipe, DECODE_LEND_ATTR, None)
+        if reserved is not None and lend:
+            # The decode lend streams these groups again when the decode is short, so price the denoise here: the
+            # phase the placement was sized from, else the whole-render reserve less what it lent to the decode.
+            try:
+                denoise = int(phase) if phase else int(reserve[0]) - int(lend[0])
+                return max(0, denoise) + max(0, int(extra_mib or 0))
+            except Exception:  # noqa: BLE001
+                return reserved
         return reserved
     candidates: list[int] = [] if reserved is None else [reserved]
     identity = getattr(pipe, "_unsloth_peak_identity", None)
@@ -396,6 +402,15 @@ class EncoderResidency:
             return True
 
     # ---- decisions --------------------------------------------------------------------------------------------
+    def restore_slack_mib(self, total_mib: int) -> int:
+        """Kept free beside the encoders and the render's priced peak before streamed encoders come back: the release
+        slack plus the decode lend's slack again, so a render at the edge does not move them every prompt."""
+        from .diffusion_memory import _DECODE_SLACK_MIB
+
+        if self.kind == KIND_GROUPS:
+            return self.release_slack_mib(total_mib) + int(_DECODE_SLACK_MIB)
+        return slack_mib(total_mib)
+
     def release_slack_mib(self, total_mib: int) -> int:
         """Kept free beside the render's priced peak before resident encoders stream. Whole-resident encoders: the
         planner's residency slack. Resident groups were packed into the room the planner left after its own slack, so
@@ -416,7 +431,7 @@ class EncoderResidency:
                     action = "stay_streamed", why = "free memory or render peak unknown"
                 )
             free, total = live
-            want = int(self.released_mib) + int(need_mib) + slack_mib(total)
+            want = int(self.released_mib) + int(need_mib) + self.restore_slack_mib(total)
             if free < want:
                 return self._record(action = "stay_streamed", free_mib = free, need_mib = int(need_mib),
                                     want_mib = want, why = "the encoders, the render peak and the slack do not fit")  # fmt: skip

@@ -379,6 +379,26 @@ def test_resident_groups_with_a_decode_lend_are_priced_by_the_denoise_phase():
     assert tr.render_need_mib(pipe, width = 1024, height = 1024, extra_mib = 10) == 6_922
     setattr(pipe, DECODE_LEND_ATTR, (1_536, 7_000, 1 << 20, False))
     assert tr.render_need_mib(pipe, width = 1024, height = 1024, extra_mib = 10) == 5_386
+    # no phase in the reserve (the L4 placement): the whole-render reserve less what it lent to the decode
+    reserve[MEASURED_RESERVE_DENOISE_PHASE_INDEX] = None
+    pipe._unsloth_measured_reserve = tuple(reserve)
+    assert tr.render_need_mib(pipe, width = 1024, height = 1024, extra_mib = 10) == 6_912 - 1_536 + 10
+
+
+def test_streamed_groups_come_back_at_the_placements_own_fit():
+    # Qwen-Image-2.1 on an L4: 12384 MiB free, 5265 MiB released, 5376 MiB denoise; the planner slack never fit
+    from core.inference.diffusion_memory import _DECODE_SLACK_MIB
+
+    r = _Recorder(kind = tr.KIND_GROUPS)
+    r.streamed, r.released_mib = True, 5_265
+    want = 5_265 + 5_376 + 2 * _DECODE_SLACK_MIB
+    with _live(free_mib = want - 1):
+        assert r.before_encode(5_376)["action"] == "stay_streamed"
+    with _live(free_mib = 12_384):
+        r.before_encode(5_376)
+    assert r.moves == [("restore",)]
+    plain = _Recorder(kind = tr.KIND_PLAIN)
+    assert plain.restore_slack_mib(24_000) == tr.slack_mib(24_000)
 
 
 def test_release_resident_groups_can_leave_the_denoiser_alone():
