@@ -69,21 +69,20 @@ def _epic_launcher_has_unreal() -> bool:
 
 
 def _engine_root_exists(root: str) -> bool:
-    # Registry entries outlive deleted engines, so only count a root that still has its Engine folder.
+    # Entries outlive deleted engines.
     root = root.strip().strip('"')
     try:
         return bool(root) and (Path(root).expanduser() / "Engine").is_dir()
     except (
         OSError,
         ValueError,
-    ):  # unreadable parent or a NUL byte: this entry says nothing, keep looking
+    ):  # unreadable parent or NUL byte: keep looking
         return False
 
 
 def _unreal_registered_engine() -> bool:
-    """Unreal's own engine registry, which source builds use instead of the Launcher manifest: every editor
-    launch registers its root, on Windows under HKCU\\Software\\Epic Games\\Unreal Engine\\Builds and on
-    Linux / macOS under [Installations] in Epic's Install.ini."""
+    """Unreal's engine registry, used by source builds: HKCU\\Software\\Epic Games\\Unreal Engine\\Builds on
+    Windows, [Installations] in Epic's Install.ini elsewhere."""
     if sys.platform == "win32":
         try:
             import winreg

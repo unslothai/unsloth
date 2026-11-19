@@ -350,7 +350,7 @@ def test_an_unreadable_registry_entry_does_not_hide_an_engine_found_elsewhere(
     installed = fresh_install_cache
     monkeypatch.setattr(installed.sys, "platform", "linux")
     monkeypatch.setattr(installed, "_epic_launcher_has_unreal", lambda: False)
-    monkeypatch.setattr(installed, "_any", lambda patterns: True)  # e.g. ~/UnrealEngine5
+    monkeypatch.setattr(installed, "_any", lambda patterns: True)
     ini = tmp_path / ".config/Epic/UnrealEngine/Install.ini"
     ini.parent.mkdir(parents = True)
     ini.write_text("[Installations]\nX=/mnt/locked/UnrealEngine\n")
@@ -369,7 +369,6 @@ def test_an_unreadable_registry_entry_does_not_hide_an_engine_found_elsewhere(
 
 
 def test_unreal_hint_reads_the_windows_engine_registry(fresh_install_cache, tmp_path, monkeypatch):
-    """Windows source builds register under HKCU\\Software\\Epic Games\\Unreal Engine\\Builds."""
     installed = fresh_install_cache
     monkeypatch.setattr(installed.sys, "platform", "win32")
     monkeypatch.setattr(installed, "_any", lambda patterns: False)
@@ -387,7 +386,7 @@ def test_unreal_hint_reads_the_windows_engine_registry(fresh_install_cache, tmp_
     def open_key(hive, path):
         assert (hive, path) == ("HKCU", r"Software\Epic Games\Unreal Engine\Builds")
         if builds is None:
-            raise FileNotFoundError(path)  # never built from source
+            raise FileNotFoundError(path)
         return _Key()
 
     def enum_value(_key, index):
@@ -406,9 +405,9 @@ def test_unreal_hint_reads_the_windows_engine_registry(fresh_install_cache, tmp_
         installed._cache.clear()
         return installed.is_installed("unreal")
 
-    assert unreal_found() is False  # key exists, no builds
+    assert unreal_found() is False
     builds["{673FCAE7-FBB2-458F-9D7C-ED83D92881D3}"] = str(engine)
-    assert unreal_found() is False  # stale entry: the engine was deleted
+    assert unreal_found() is False
     (engine / "Engine").mkdir(parents = True)
     assert unreal_found() is True
     builds = None
