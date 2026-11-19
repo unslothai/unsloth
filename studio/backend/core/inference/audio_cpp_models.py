@@ -652,8 +652,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     # Plain tts fails with "VieNeu-TTS TTS requires a voice": the voices its package ships are
     # reference codes the runtime does not pick up by name.
     AudioCppFamily("vieneu_v3_turbo", "tts", speaks = False, clone = CloneSpec("unused")),
-    # No built-in voice: with no reference about half the seeds decode to silence (4 of 8 on
-    # v0.9.5), while a reference clip is steady. Zonos2 speaks without one.
+    # No built-in voice: without a reference clip many seeds decode to silence.
     AudioCppFamily("zonos3", "tts", speaks = False, clone = CloneSpec("unused")),
 )
 
@@ -1641,8 +1640,7 @@ class AudioCppVariant:
     primary: str
     session_options: dict = field(default_factory = dict, hash = False, compare = False)
     label: Optional[str] = None
-    # Repo directory the runtime sees as the model root (a spec package's strip_prefix); empty for
-    # the model's own folder.
+    # A spec package's strip_prefix: the repo directory the runtime sees as the model root.
     root: str = ""
 
     @property
@@ -1785,8 +1783,7 @@ def spec_package_variants(
     every = spec_packages.spec_packages(spec)
     packages = spec_packages.packages_for_repo(every, repo_id or "", AUDIO_CPP_REPO, folder)
     if not packages and len(recommended_gguf_files(spec)) > 1:
-        # A repo the spec does not name (a mirror, a re-quantization) of a family whose weights are
-        # split over several GGUFs: loadable only in the spec's own layout, never one GGUF alone.
+        # A mirror of a family split over several GGUFs loads only in the spec's layout.
         packages = every
     if not any(len(p.files) > 1 for p in packages):
         return None
@@ -2276,7 +2273,6 @@ class AudioCppModel:
     # False for a spec family whose one option list serves several tasks (LFM2.5 Audio: asr, tts,
     # s2s): the runtime refuses another task's option, so only what the user set is sent.
     fills_option_defaults: bool = True
-    # Variants are the runtime spec's multi-file packages, each keyed and downloaded as a whole.
     spec_packaged: bool = field(default = False, hash = False, compare = False)
 
     def __post_init__(self) -> None:
@@ -2797,8 +2793,7 @@ def _resolve_uncached(
     contract = None if release is not None and not runtime_first else spec
     policy = family_policy(family, contract or embedded, names, ref.display_name)
     unloadable: list[AudioCppVariant] = []
-    # A family's own table package first, then the packages its runtime spec lays out. Umbrella
-    # folders of table families keep loading one GGUF: their layout is the table's to describe.
+    # Umbrella folders of table families keep loading one GGUF: the table owns their layout.
     packaged = None
     if not policy.package and not ref.local_path and (not umbrella or family not in FAMILIES):
         packaged = spec_package_variants(spec or embedded, ref.repo_id, ref.folder, listed)
@@ -3591,8 +3586,7 @@ def _scan_downloaded(task: Optional[str]) -> list[AudioCppModel]:
             if model is None or (model.unsupported and not model.family):
                 continue
             if model.unsupported == PACKAGE_INCOMPLETE and repo_id.lower() in vouched:
-                # Listed on its spec's word alone, with no header read: short of a package file
-                # the cache holds no model of it. Umbrella and header-checked repos keep their row.
+                # Vouched for without a header read: a partial package is no cached model.
                 continue
             if task is not None and model.task != task:
                 continue

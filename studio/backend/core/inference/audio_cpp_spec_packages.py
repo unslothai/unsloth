@@ -30,8 +30,7 @@ class SpecPackage:
     strip_prefix: str
     default: bool
     recommended: bool
-    # Repo path of the GGUF the runtime is handed; it reads the other files beside that one. The
-    # runtime refuses a directory holding several GGUFs, so a package is never served as one.
+    # The runtime refuses a directory of several GGUFs, so it is handed this one file.
     primary: str
 
     @property

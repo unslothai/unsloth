@@ -121,7 +121,6 @@ def _spec_targets(index: dict[str, dict], folders: Sequence[str]) -> tuple[dict,
     # model: its bare id resolves to whichever GGUF ranks first, so only single-family repos list.
     community: dict[str, tuple[str, set[str]]] = {}
     for family, spec in index.items():
-        # gguf packages only: other formats are conversion sources.
         for package in spec_packages.spec_packages(spec):
             repo = package.repo
             if not repo or repo.lower() == AUDIO_CPP_REPO.lower():
@@ -264,7 +263,6 @@ def _row(
             workflows = [w for w in AUDIO_WORKFLOW_IDS if w in bindings]
             task = policy.task if policy.task in _TASKS else ""
             reason = policy.unsupported or (None if workflows else _NO_PAGE)
-            # As resolve() lists them: the packages the runtime spec lays this repo out in.
             packaged = None
             # An unread listing (offline, a late answer) says nothing about what the repo publishes.
             if files and not policy.package and (not folder or family not in acm.FAMILIES):
@@ -274,7 +272,6 @@ def _row(
             wanted = set(recommended_gguf_files(spec or None))
             picked = [f for f in files if Path(f.path).name in wanted]
             if packaged:
-                # Recommended first; a package downloads every file it lists.
                 picked = list(packaged[0].files)
             elif picked and policy.package:
                 # A package loads and downloads every file it lists (YuE2's VAE and sidecars too).
@@ -403,8 +400,7 @@ def _build(network: bool, specs_dir: Optional[Path]) -> tuple[AudioCatalogRespon
             for repo in community
         }
     )
-    # No header probe: the runtime spec that names a repo vouches for its files, whatever
-    # architecture their headers carry (acm.spec_vouched_family).
+    # No header probe: a repo the runtime spec names is vouched for (acm.spec_vouched_family).
     for repo in sorted(community, key = str.lower):
         family = community[repo]
         files = listings.get(repo) or []

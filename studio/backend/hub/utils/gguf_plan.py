@@ -358,8 +358,7 @@ def _audio_cpp_package_plans(siblings: Sequence) -> Optional[dict[str, GgufVaria
 
 def _audio_cpp_package_plan(expected: tuple[ExpectedFile, ...], shared: set) -> GgufVariantPlan:
     ggufs = tuple(file for file in expected if is_gguf_filename(file.path))
-    # A package wholly inside another (Zonos3's base in its raw reference) keeps its GGUFs as weights,
-    # or a resume has no main hashes and is refused.
+    # A package inside another (Zonos3's base) keeps its GGUFs as weights, or resumes are refused.
     main_files = tuple(file for file in ggufs if file.path not in shared) or ggufs
     companions = tuple(file for file in expected if file.path in shared and file not in main_files)
     return GgufVariantPlan(
