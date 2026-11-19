@@ -2398,7 +2398,7 @@ def _early_prewarm_run(index: int, rotated: bool, producer: bool, logger: Any) -
             else 0
         )
         _EARLY_DONE[index] = (rotq, prod, len(extra), ran)
-    except Exception:  # noqa: BLE001 - a warm-up only: the probes compile what is missing
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -2409,13 +2409,9 @@ def start_early_probe_prewarm(
     producer: bool,
     logger: Any = None,
 ) -> bool:
-    """Start ``_prewarm_probes``' compiles on a background thread at the start of an int8 load.
+    """Run ``_prewarm_probes``' compiles in a thread during the disk-bound load (saved 10-14 s on a new L4).
 
-    The warm-up used to start when the denoiser was swapped, after the weights were read, while the load waited on
-    it (FLUX.3 klein INT8 14 s, Qwen-Image-2.1 INT8 10 s on a new L4). The load's first stretch mostly waits on the
-    disk, so the compiles fit in it. The load joins this thread when its pipeline is built
-    (``join_early_probe_prewarm``), before any timed probe or race, so no timing runs beside it. It runs the same
-    discarded launches; the probes still decide every verdict. Never raises."""
+    Joined once the pipeline is built, before any timed probe, so no timing runs beside it. Never raises."""
     try:
         from .diffusion_convrot_quant import probe_prewarm_enabled
 
@@ -2424,8 +2420,7 @@ def start_early_probe_prewarm(
         from .diffusion_convrot_quant import verdict_file_present
 
         if verdict_file_present():
-            # This machine probed before: its verdicts load at the swap. The pending checks cannot tell this early
-            # (the load has not yet settled the environment the verdicts are keyed on), so compile nothing early.
+            # Pending checks are unreliable this early (verdict keys not settled yet); the swap loads them.
             return False
         import torch
 
@@ -2448,8 +2443,7 @@ def start_early_probe_prewarm(
 
 
 def join_early_probe_prewarm(index: Optional[int] = None) -> None:
-    """Wait for the early warm-up of card ``index`` (every card when None). Never raises. A no-op inside tracing or
-    CUDA-graph capture: callers run at load / install time, eagerly, so nothing traced ever blocks on a thread."""
+    """Wait for card ``index``'s early warm-up (all when None). No-op under tracing / graph capture. Never raises."""
     try:
         import torch
 
@@ -2457,7 +2451,7 @@ def join_early_probe_prewarm(index: Optional[int] = None) -> None:
             return
         try:
             capturing = torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
-        except Exception:  # noqa: BLE001 - no CUDA runtime: nothing can be capturing
+        except Exception:  # noqa: BLE001
             capturing = False
         if capturing:
             return
@@ -2499,7 +2493,7 @@ def _prewarm_probes(index: int, transformer: Any, rotated: bool, logger: Any) ->
             and early[1] >= producer
             and early[2] >= len(extra)
         ):
-            return early[3]  # the early warm-up compiled these at the start of the load
+            return early[3]
         return prewarm_probe_kernels(
             index, rotq = rotq, producer = producer, extra = extra, logger = logger
         )

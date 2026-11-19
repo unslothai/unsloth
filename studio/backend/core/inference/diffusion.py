@@ -4395,8 +4395,7 @@ def _image_cast_candidates(
 
 
 def _kick_early_probe_prewarm(fam: Any, target: Any) -> bool:
-    """A hosted int8 denoiser on a CUDA card: compile the cold-card GEMM / ConvRot probe kernels now, beside the weight
-    reads, instead of after them (diffusion_int8_gemm.start_early_probe_prewarm). Never raises."""
+    """Compile the int8 probe kernels beside the weight reads, not after them. Never raises."""
     try:
         if getattr(target, "device", None) != "cuda":
             return False
@@ -4408,7 +4407,6 @@ def _kick_early_probe_prewarm(fam: Any, target: Any) -> bool:
         ordinal = getattr(target, "ordinal", None)
         index = int(ordinal) if ordinal is not None else torch.cuda.current_device()
         rotated = getattr(getattr(fam, "profile", None), "int8_convrot", None) is not None
-        # producer_probe_expected, read off the family's class before the transformer exists
         producer = (
             rotated
             and not flux_convrot_fused_disabled()
@@ -4504,9 +4502,7 @@ class DiffusionBackend:
         return target.torch_device, target.dtype
 
     def _stop_load_prefetch(self) -> None:
-        """End a load's page-cache prefetch (diffusion_fast_load.start_load_prefetch), if one is running, and wait
-        for the early int8 probe warm-up (``_kick_early_probe_prewarm``): the pipeline is built, and what follows
-        times kernels, which nothing may run beside."""
+        """End a load's page-cache prefetch and join the early probe warm-up: kernel timing follows, alone."""
         stop_prefetch(getattr(self, "_load_prefetch", None))
         self._load_prefetch = None
         from .diffusion_int8_gemm import join_early_probe_prewarm

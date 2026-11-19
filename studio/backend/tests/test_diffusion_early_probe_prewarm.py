@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The cold-card int8 probe warm-up starts with a hosted int8 load and is joined when the pipeline is built, before
-any timed probe or race; the swap then reuses it instead of compiling again. CPU only (kernels faked)."""
+"""Early int8 probe warm-up: started with the load, joined before timing, reused at the swap. CPU only."""
 
 from __future__ import annotations
 
@@ -64,7 +63,6 @@ def test_the_early_warm_up_runs_on_its_own_thread_and_the_swap_reuses_it(monkeyp
     gate.set()
     gemm.join_early_probe_prewarm()
     assert calls == [(0, True, True, 2, "unsloth-probe-prewarm-early")]
-    # The swap's own warm-up waits for it and does not compile the same jobs again.
     monkeypatch.setattr(
         "core.inference.diffusion_flux_convrot_fused.producer_probe_expected", lambda t: True
     )
@@ -100,8 +98,7 @@ def test_switches_and_non_cuda_cards_start_nothing(monkeypatch):
 
 
 def test_a_card_with_saved_verdicts_compiles_nothing_early(monkeypatch):
-    # On a returning card the early pending checks read as missing (the load has not yet settled the environment
-    # the verdicts are keyed on), so a saved verdict file is what decides: the swap loads them as before.
+    # A saved verdict file, not the (too early) pending checks, decides on a returning card.
     calls = _record(monkeypatch)
     monkeypatch.setattr(cq, "verdict_file_present", lambda: True)
     assert not gemm.start_early_probe_prewarm(0, rotated = True, producer = True)
@@ -161,9 +158,7 @@ def test_the_verdict_file_check_reads_the_convrot_file_next_to_the_probe_cache(
     import core.inference.diffusion_probe_cache as pc
 
     monkeypatch.setattr(pc, "_cache_file", lambda: tmp_path / "diffusion_quant_probe.json")
-    (tmp_path / "diffusion_quant_probe.json").write_text(
-        "{}"
-    )  # the boot-time quant probe alone: still new
+    (tmp_path / "diffusion_quant_probe.json").write_text("{}")
     assert not _VERDICT_FILE_PRESENT()
     (tmp_path / cq._VERDICT_FILE).write_text("{}")
     assert _VERDICT_FILE_PRESENT()

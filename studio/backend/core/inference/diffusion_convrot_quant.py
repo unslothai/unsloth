@@ -1682,7 +1682,7 @@ def _verdict_slot(index: int) -> Optional[tuple]:
 
 
 def verdict_file_present() -> bool:
-    """A ConvRot verdict file exists (no key check): this machine ran the int8 probes before. Never raises."""
+    """A ConvRot verdict file exists (no key check). Never raises."""
     try:
         from . import diffusion_probe_cache as pc
         path = pc._cache_file() if pc.enabled() else None
