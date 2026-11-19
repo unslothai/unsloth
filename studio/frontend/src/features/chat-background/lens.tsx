@@ -48,9 +48,9 @@ export function GlassLenses({ wallpaper }: { wallpaper: HTMLElement | null }) {
         );
       });
     };
+    // Menus and sheets portal to <body>, and app-level toasts mount anywhere under the root, not only in the workspace.
     const observer = new MutationObserver(scan);
-    observer.observe(workspace, { childList: true, subtree: true });
-    observer.observe(document.body, { childList: true });
+    observer.observe(document.body, { childList: true, subtree: true });
     // A panel opening or a menu's open animation settling changes which hosts draw glass.
     document.addEventListener("transitionend", scan, true);
     document.addEventListener("animationend", scan, true);

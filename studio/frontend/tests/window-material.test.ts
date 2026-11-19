@@ -537,7 +537,7 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	// Menus and sheets are portaled to <body>; hosts without a backdrop filter (Glass menus off, opaque sheets) are skipped.
 	assert.match(lens, /document\.querySelectorAll<HTMLElement>\(LENS_HOSTS\)\]\.filter\(drawsGlass\)/);
-	assert.match(lens, /observer\.observe\(document\.body, \{ childList: true \}\);/);
+	assert.match(lens, /observer\.observe\(document\.body, \{ childList: true, subtree: true \}\);/);
 	// The Desktop sidebar frame and layered panels draw their glass (and fill) on ::before.
 	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
 	assert.match(lens, /const fill = glass \?\? getComputedStyle\(host\);/);
