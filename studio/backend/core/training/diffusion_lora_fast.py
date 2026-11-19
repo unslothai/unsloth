@@ -402,13 +402,14 @@ class Nf4DequantCache:
     ) -> int:
         """Bytes another planner (budgeted checkpointing) holds on top of step 1's activations from step 2 on.
 
-        ``from_plan``: that planner sized itself from the same step-1 free memory, so the bytes also come out of the
-        cache's plan (unless the budget is pinned); ``reserve(0, from_plan = True)`` hands them back, regrown by
-        ``rebalance`` as live memory allows. Returns the bytes evicted."""
+        ``from_plan``: that planner sized itself from the same step-1 free memory, so the cache re-plans on the room
+        those bytes leave: its usual share of it, i.e. the plan less that share of the bytes (unless the budget is
+        pinned); ``reserve(0, from_plan = True)`` hands them back, regrown by ``rebalance`` as live memory allows.
+        Returns the bytes evicted."""
         self.extra_reserved = max(0, int(nbytes))
         if not from_plan or self.pinned:
             return 0
-        self.cap = max(0, self.planned - self.extra_reserved)
+        self.cap = max(0, self.planned - int(self.extra_reserved * _BUDGET_FRAC))
         self.budget = min(self.budget, self.cap)
         evicted = self._evict(self.used - self.budget) if self.used > self.budget else 0
         self.full = self.used >= self.budget

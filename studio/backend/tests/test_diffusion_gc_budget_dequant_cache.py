@@ -2,8 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """CPU tests for the two step-1 VRAM planners together: the nf4 dequant cache (sized in the optimizer hook) and
-budgeted gradient checkpointing (sized right after). Both read the same free memory, so their sum must stay inside one
-planner's budget, the gc plan must be the one it makes alone, and a pinned cache must come out of the gc plan."""
+budgeted gradient checkpointing (sized right after). Both read the same free memory, so the cache must take its share
+of the room the kept activations leave, the gc plan must be the one it makes alone, and a pinned cache must come out of
+the gc plan."""
 
 from __future__ import annotations
 
@@ -118,14 +119,14 @@ CASES = {
 
 
 @pytest.mark.parametrize("case", sorted(CASES))
-def test_both_planners_sum_within_one_budget(monkeypatch, case):
+def test_both_planners_fit_the_room_with_the_margin(monkeypatch, case):
     c = CASES[case]
     budget, cache, planned = _step_one(monkeypatch, **c)
     one = _one_budget(c["total"], c["free"], c["reserved"], c["peak"], c["pre"], c["post"])
     assert budget.kept_bytes > 0
-    # Step 2 holds kept activations and cache entries on top of step 1's peak: together inside one planner's budget,
-    # which leaves the 15% share and the max(2 GiB, 10%) margin each planner was designed with.
-    assert budget.kept_bytes + cache.budget <= one
+    # Step 2 holds kept activations and cache entries on top of step 1's peak. The cache takes its 85% share of the
+    # room the kept activations leave, so 15% of that room and the max(2 GiB, 10%) margin stay free.
+    assert budget.kept_bytes + cache.budget <= one + int(budget.kept_bytes * 0.15) + 1
     margin = max(2 * GIB, int(c["total"] * 0.10))
     step2 = c["peak"] + (c["post"] - c["pre"]) + budget.kept_bytes + cache.budget
     assert step2 <= c["free"] + c["reserved"] - margin
@@ -144,7 +145,19 @@ def test_gc_plan_is_unchanged_and_cache_keeps_the_rest(monkeypatch, case):
     budget, cache, _ = _step_one(monkeypatch, **c)
     assert budget.keep == alone.keep and budget.kept_bytes == alone.kept_bytes
     one = _one_budget(c["total"], c["free"], c["reserved"], c["peak"], c["pre"], c["post"])
-    assert cache.budget == max(0, one - budget.kept_bytes) == cache.cap
+    assert cache.budget == max(0, one - int(budget.kept_bytes * 0.85)) == cache.cap
+
+
+def test_cache_keeps_its_share_of_the_room_kept_activations_leave():
+    # Colab L4, FLUX.2-klein-4B 512 px: the cache planned 13.539 GiB, 25 blocks kept 7.134 GiB, 7.219 GiB of nf4
+    # weights. The cache's share of what is left (0.85 x (13.539 / 0.85 - 7.134)) still holds every weight, so the
+    # run keeps main's speed; taking the kept bytes off the plan whole left 6.405 GiB and ran 1.4-2% slower.
+    cache = fl.Nf4DequantCache()
+    cache.plan(int(13.539 * GIB))
+    cache.reserve(int(7.134 * GIB), from_plan = True)
+    assert cache.cap == cache.budget >= int(7.219 * GIB)
+    # Room for both planners is still inside the cache's room alone.
+    assert int(7.134 * GIB) + cache.budget <= int(13.539 * GIB / 0.85)
 
 
 def test_pinned_cache_is_held_out_of_the_gc_plan(monkeypatch):
@@ -182,15 +195,17 @@ def test_reserve_cuts_the_plan_evicts_and_hands_back_on_fallback():
         cache.entries[i] = torch.empty(0)
         cache.sizes[i] = 100 * MIB
     cache.used = 600 * MIB
-    assert cache.reserve(700 * MIB, from_plan = True) == 300 * MIB
-    assert cache.budget == cache.cap == 300 * MIB and cache.used == 300 * MIB and cache.full
-    assert sorted(cache.entries) == [0, 1, 2]
+    # 1000 MiB plan less 0.85 x 700 MiB = 405 MiB: the two newest 100 MiB entries go.
+    assert cache.reserve(700 * MIB, from_plan = True) == 200 * MIB
+    assert cache.budget == cache.cap == 1000 * MIB - int(700 * MIB * 0.85)
+    assert cache.used == 400 * MIB and not cache.full
+    assert sorted(cache.entries) == [0, 1, 2, 3]
     other = fl.Nf4DequantCache()
     other.plan(1000 * MIB)
     assert other.reserve(700 * MIB) == 0 and other.budget == other.cap == 1000 * MIB
     # The OOM fallback checkpoints every block again: the cap returns to the plan; live memory decides the regrowth.
     assert cache.reserve(0, from_plan = True) == 0
-    assert cache.cap == 1000 * MIB and cache.budget == 300 * MIB
+    assert cache.cap == 1000 * MIB and cache.budget == 1000 * MIB - int(700 * MIB * 0.85)
     cache.margin = 0
     cache.rebalance(free = 4 * GIB, reserved = 0, allocated = 0)
     assert cache.budget == 1000 * MIB and not cache.full

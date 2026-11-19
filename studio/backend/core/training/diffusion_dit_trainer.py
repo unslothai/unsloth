@@ -3915,7 +3915,8 @@ def _plan_after_first_step(
 ) -> None:
     """Both step-1 planners share one figure: free memory after step 1, which the dequant cache already sized itself
     from in the optimizer hook (still empty, as step 1 caches nothing). Kept activations save more time per byte, so
-    they plan first and the cache keeps what is left of its plan; a pinned cache budget is held out of the gc plan."""
+    they plan first and the cache takes its share of the room they leave; a pinned cache budget is held out of the
+    gc plan."""
     _plan_gc_budget(
         gc_budget,
         fb_peak,
