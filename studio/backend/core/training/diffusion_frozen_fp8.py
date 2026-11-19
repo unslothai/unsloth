@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Frozen base linears in fp8 e4m3, quantized once; backward returns only grad_x, so x is not saved."""
+"""Frozen base linears in fp8 e4m3, quantized once; backward returns only grad_x, so x is not saved.
+
+grad_x needs the weight column-major (fp8 GEMMs take the reduction dim contiguous on both operands), which the
+row-major forward copy is not. ``Fp8BackwardWeights`` keeps those column-major copies while they fit its budget
+(planned from the room the checkpointing budget leaves after step 1); without room each backward makes it again, as
+before. Same tensor either way, so grad_x is bit-identical. ``UNSLOTH_DIFFUSION_FP8_BWD_CACHE=0`` turns it off."""
+
+import os
+import sys
 
 import torch
 import torch.nn as nn
@@ -35,6 +43,116 @@ def _unit_scaled_mm(a, b):
     return out[0] if isinstance(out, tuple) else out  # torch < 2.5 also returned amax
 
 
+def _column_major(q):
+    return q.t().contiguous().t()
+
+
+class Fp8BackwardWeights:
+    """Column-major copies of frozen fp8 weights for grad_x, kept while they fit in ``budget`` bytes."""
+
+    def __init__(self):
+        self.budget = 0
+        self.used = 0
+        # data_ptr -> (source weight, column-major copy); the entry holds the source, so its storage (and the key)
+        # cannot be freed and reused by another tensor while the entry lives.
+        self.entries: dict = {}
+        self.hits = 0
+        self.misses = 0
+
+    @staticmethod
+    def enabled() -> bool:
+        return (
+            os.environ.get("UNSLOTH_DIFFUSION_FP8_BWD_CACHE", "") or "1"
+        ).strip().lower() not in (
+            "0",
+            "false",
+            "off",
+        )
+
+    def plan(self, nbytes: int) -> None:
+        self.budget = max(0, int(nbytes)) if self.enabled() else 0
+        if self.used > self.budget:
+            self.clear(keep_budget = True)
+
+    def clear(self, keep_budget: bool = False) -> None:
+        self.entries.clear()
+        self.used = 0
+        if not keep_budget:
+            self.budget = 0
+
+    def get(self, q):
+        key = q.data_ptr()
+        hit = self.entries.get(key)
+        if hit is not None and hit[0].shape == q.shape and hit[0].dtype == q.dtype:
+            self.hits += 1
+            return hit[1]
+        self.misses += 1
+        qcm = _column_major(q)
+        nbytes = qcm.numel() * qcm.element_size()
+        if hit is None and self.used + nbytes <= self.budget:
+            self.entries[key] = (q, qcm)
+            self.used += nbytes
+        return qcm
+
+    def stats(self) -> dict:
+        return {
+            "fp8_bwd_cached_gib": round(self.used / (1 << 30), 3),
+            "fp8_bwd_budget_gib": round(self.budget / (1 << 30), 3),
+            "fp8_bwd_layers": len(self.entries),
+            "fp8_bwd_hits": self.hits,
+            "fp8_bwd_misses": self.misses,
+        }
+
+
+BACKWARD_WEIGHTS = Fp8BackwardWeights()
+
+
+def fp8_backward_vram_handler(cache: Fp8BackwardWeights = BACKWARD_WEIGHTS):
+    """lend_vram: give the copies back before another Studio load, keep making them per backward until returned."""
+    lent = {"budget": 0}
+
+    def handle(kind: str) -> dict:
+        freed = 0
+        if kind == "lend":
+            freed = cache.used
+            lent["budget"] = max(lent["budget"], cache.budget)
+            cache.clear()
+            if freed and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        elif kind == "return":
+            cache.plan(lent["budget"])
+            lent["budget"] = 0
+        return {"kind": kind, "freed_gib": round(freed / (1 << 30), 3), **cache.stats()}
+
+    return handle
+
+
+def _define_grad_input_op():
+    # Opaque to the compiler, so the cache lookup runs on every backward and a cache change never recompiles.
+    name = "unsloth_studio::frozen_fp8_grad_input"
+    try:
+        return getattr(torch.ops.unsloth_studio, "frozen_fp8_grad_input")
+    except (AttributeError, RuntimeError):
+        pass
+
+    module = __name__
+
+    @torch.library.custom_op(name, mutates_args = ())
+    def grad_input(gq: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+        # Looked up per call, so a reloaded module still serves its own cache.
+        m = sys.modules[module]
+        return m._unit_scaled_mm(gq, m.BACKWARD_WEIGHTS.get(q))
+
+    @grad_input.register_fake
+    def _(gq, q):
+        return gq.new_empty((gq.shape[0], q.shape[1]), dtype = torch.bfloat16)
+
+    return grad_input
+
+
+_grad_input_mm = _define_grad_input_op()
+
+
 @torch._dynamo.allow_in_graph  # as torchao's float8 matmul: inlining the Function trips a dynamo freevar assert
 class _FrozenFp8MM(torch.autograd.Function):
     @staticmethod
@@ -52,7 +170,7 @@ class _FrozenFp8MM(torch.autograd.Function):
         q, s_row = ctx.saved_tensors
         # The weight scale sits on the reduction dim of grad_y @ W, so it folds into grad_y; mat2 must be column-major.
         gq, sg = _rowwise_quant(gy.float() * s_row)
-        gx = _unit_scaled_mm(gq, q.t().contiguous().t()).float() * sg
+        gx = _grad_input_mm(gq, q).float() * sg
         return gx.to(ctx.x_dtype), None, None, None
 
 

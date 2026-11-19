@@ -73,6 +73,11 @@ from core.training.diffusion_train_common import (  # noqa: F401
     restore_resume_state,
     write_resume_checkpoint,
 )
+from core.training.diffusion_gc_budget import (
+    OUT_OF_MEMORY,
+    BudgetedSteps,
+    enable_budgeted_checkpointing,
+)
 from core.training.diffusion_samples import (
     discard_samples,
     initial_noise,
@@ -453,8 +458,12 @@ def run_diffusion_lora_training(
                 target_modules = list(cfg.lora_target_modules),
             )
         )
+        gc_budget = None
         if cfg.gradient_checkpointing:
-            enable_diffusion_gradient_checkpointing(unet)
+            # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+            gc_budget = enable_budgeted_checkpointing(unet, device)
+            if gc_budget is None:
+                enable_diffusion_gradient_checkpointing(unet)
         # LoRA params must be fp32 for a stable optimizer under mixed precision.
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
@@ -732,6 +741,38 @@ def run_diffusion_lora_training(
                 _sample(resumed)
 
         train_peak = TrainingPeakMemory(device)
+
+        def _restart_peak():
+            # The failed attempt's peak is not the training cost.
+            train_peak.pause()
+            train_peak.resume()
+
+        budget_steps = BudgetedSteps(
+            gc_budget,
+            device,
+            optimizer,
+            warn = lambda message: _emit(on_event, "warning", message = message),
+            on_step_down = _restart_peak,
+        )
+
+        def _forward_backward(noisy, timesteps, prompt_embeds, added, target):
+            model_pred = unet(
+                noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
+            )[0]
+            if cfg.snr_gamma is not None:
+                snr = compute_snr(noise_scheduler, timesteps)
+                w = torch.stack([snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim = 1).min(
+                    dim = 1
+                )[0]
+                w = w / snr if prediction_type != "v_prediction" else w / (snr + 1)
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                loss = loss.mean(dim = list(range(1, loss.ndim))) * w
+                loss = loss.mean()
+            else:
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+            scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
+            return loss
+
         compile_watch = _dynamo_compile_counters() if compiled else None
         for opt_step in range(resumed, cfg.train_steps):
             if stop_latched:
@@ -739,6 +780,7 @@ def run_diffusion_lora_training(
                 break
             optimizer.zero_grad(set_to_none = True)
             step_acc = None
+            budget_steps.start_step()
             for _ in range(cfg.gradient_accumulation_steps):
                 idx, img_paths, captions = _next_batch()
                 if latent_cache is not None:
@@ -789,29 +831,26 @@ def run_diffusion_lora_training(
                 pooled = pooled.to(dtype = weight_dtype)
                 added = {"text_embeds": pooled, "time_ids": batch_time_ids}
 
-                model_pred = unet(
-                    noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
-                )[0]
-
                 if prediction_type == "v_prediction":
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     target = noise
 
-                if cfg.snr_gamma is not None:
-                    snr = compute_snr(noise_scheduler, timesteps)
-                    w = torch.stack([snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim = 1).min(
-                        dim = 1
-                    )[0]
-                    w = w / snr if prediction_type != "v_prediction" else w / (snr + 1)
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
-                    loss = loss.mean(dim = list(range(1, loss.ndim))) * w
-                    loss = loss.mean()
+                if gc_budget is not None and not gc_budget.planned and canvases is not None:
+                    # Bucketed runs: the plan is measured on this canvas and scaled to the largest bucket.
+                    gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idx))
+                loss = budget_steps.forward_backward(
+                    _forward_backward, (noisy, timesteps, prompt_embeds, added, target)
+                )
+                if loss is OUT_OF_MEMORY:
+                    # Drop every device reference to the micro-batch first, so the rerun has a clean step's memory.
+                    loss = noisy = timesteps = prompt_embeds = pooled = added = target = None
+                    latents = noise = batch_time_ids = pixel_values = None
+                    step_acc = None
+                    for loss in budget_steps.rerun(_forward_backward):
+                        step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
                 else:
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
-
-                scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
-                step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
+                    step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
                 micro += 1
 
             # max_grad_norm <= 0 disables clipping; clip_grad_norm_(0.0) would zero all grads.
@@ -824,11 +863,16 @@ def run_diffusion_lora_training(
                     grad_norm = None
             step_loss = loss_value(step_acc)
             scale_before = scaler.get_scale() if scaler.is_enabled() else None
+            budget_steps.before_update()
             scaler.step(optimizer)
             scaler.update()
             # An overflow step lowers the scale and skips the update; the schedule must not run ahead of the weights.
             if scale_before is None or scaler.get_scale() >= scale_before:
                 lr_sched.step()
+                # After step 1: plan the checkpointing budget (bucketed runs scale to the largest canvas).
+                budget_steps.after_update(
+                    max(c[0] * c[1] for c in canvases) if canvases is not None else None
+                )
 
             running_loss += step_loss
             done = opt_step + 1

@@ -20,6 +20,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
+from core.training.diffusion_gc_budget import (
+    OUT_OF_MEMORY,
+    BudgetedSteps,
+    enable_budgeted_checkpointing,
+)
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
     DEFAULT_LORA_TARGETS,
@@ -615,8 +620,12 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
         inject_adapter_in_model(lora_config, transformer, adapter_name = "default")
         if not isinstance(getattr(transformer, "peft_config", None), dict):
             transformer.peft_config = {"default": lora_config}
+    gc_budget = None
     if cfg.gradient_checkpointing:
-        enable_diffusion_gradient_checkpointing(transformer)
+        # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+        gc_budget = enable_budgeted_checkpointing(transformer, device)
+        if gc_budget is None:
+            enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     if base_precision == "int8":
         _int8_quantize_base(transformer, H3_IMAGE_TRAIN_FAMILY, device = device)
@@ -772,9 +781,35 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
     done = 0
     per_head: dict = {}
     reset_training_peak_memory(device)
+    budget_steps = BudgetedSteps(
+        gc_budget,
+        device,
+        optimizer,
+        warn = lambda message: _emit(on_event, "warning", message = message),
+    )
+
+    def _forward_backward(rows, target, caption, layout_key, t, head_index, head):
+        # The layout is looked up, not recorded: its device tensors are shared by every step.
+        pred = denoise_velocity(
+            transformer,
+            layouts.get(*layout_key),
+            rows,
+            _embeds(caption),
+            _refined(caption),
+            t,
+            head_index,
+            head,
+        )
+        loss = F.mse_loss(pred.float(), target.float())
+        (loss / cfg.gradient_accumulation_steps).backward()
+        return loss, head_index
+
     for opt_step in range(cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_acc = None
+        budget_steps.start_step()
+        # Per-head sums of this step's micro-batches: a rerun replaces them.
+        step_heads: list = []
         for _ in range(cfg.gradient_accumulation_steps):
             index = index_sampler.next_batch(1)[0]
             mean, std = cache[index]
@@ -795,24 +830,31 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
             # DATA-ward velocity: x0 = x_t + sigma * v.
             target = h3i.patchify(clean - noise, patch)
             caption = captions[index]
-            layout = layouts.get(
-                int(embeds_by_text[caption].shape[1]), mean.shape[-2], mean.shape[-1]
+            layout_key = (int(embeds_by_text[caption].shape[1]), mean.shape[-2], mean.shape[-1])
+            out = budget_steps.forward_backward(
+                _forward_backward, (rows, target, caption, layout_key, t, head_index, head)
             )
-            pred = denoise_velocity(
-                transformer, layout, rows, _embeds(caption), _refined(caption), t, head_index, head
-            )
-            loss = F.mse_loss(pred.float(), target.float())
-            (loss / cfg.gradient_accumulation_steps).backward()
+            if out is OUT_OF_MEMORY:
+                # Drop every device reference to the micro-batch first, so the rerun has a clean step's memory.
+                out = rows = target = mean = std = clean = noise = noisy = None
+                step_heads = budget_steps.rerun(_forward_backward)
+            else:
+                step_heads.append(out)
+            out = None
+        for loss, head_index in step_heads:
             step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
             stats = per_head.setdefault(head_index, [0.0, 0])
             stats[0] += float(loss.detach())
             stats[1] += 1
+        step_heads = None
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         step_loss = loss_value(step_acc)
+        budget_steps.before_update()
         optimizer.step()
         lr_sched.step()
+        budget_steps.after_update()
         if ema is not None:
             ema.update(transformer)
         running_loss += step_loss

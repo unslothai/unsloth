@@ -117,7 +117,7 @@ def _run(
             # Earlier micro-batches' noisy latents still referenced by the loop when this forward starts.
             alive.append(sum(1 for r in seen if r() is not None))
             seen.append(weakref.ref(noisy))
-        if calls["n"] == oom_at:
+        if calls["n"] == oom_at or (isinstance(oom_at, (set, frozenset)) and calls["n"] in oom_at):
             # A real failure consumes RNG (dropout masks drawn) before the allocator gives up.
             torch.rand(1000)
             out = fwd(transformer, noisy, *a, **k)
@@ -179,14 +179,50 @@ def test_accumulation_holds_one_micro_batch_on_the_device(
 
 
 @pytest.mark.allow_network
-def test_after_fall_back_nothing_is_kept_for_a_rerun(tmp_path, monkeypatch, tiny_pipe_dir):
+def test_after_a_step_down_nothing_is_kept_for_a_rerun(tmp_path, monkeypatch, tiny_pipe_dir):
     _lora, _losses, _rec, alive, warnings, budgets = _run(
         tmp_path, monkeypatch, tiny_pipe_dir, budget = True, oom_at = 6
     )
     assert any("Ran out of GPU memory" in w for w in warnings)
-    assert budgets[0].disabled and not budgets[0].can_retry
+    b = budgets[0]
+    # Step 2 ran out with every block kept: half stay kept (not every block checkpointed), and a rerun stays possible.
+    assert b.step_downs == 1 and not b.disabled and b.can_retry
+    assert 0 < len(b.keep) <= b.total_blocks // 2
     # The replayed forwards run from host copies and are not counted; the originals are never held past their forward.
     assert len(alive) == 12 and max(alive) == 0
+
+
+@pytest.mark.allow_network
+def test_out_of_memory_during_measurement_checkpoints_every_block(
+    tmp_path, monkeypatch, tiny_pipe_dir
+):
+    _lora, _losses, _rec, alive, warnings, budgets = _run(
+        tmp_path, monkeypatch, tiny_pipe_dir, budget = True, oom_at = 2
+    )
+    assert any("every block is checkpointed" in w for w in warnings)
+    assert budgets[0].disabled and not budgets[0].can_retry
+    assert len(alive) == 12 and max(alive) == 0
+
+
+@pytest.mark.allow_network
+def test_repeated_out_of_memory_steps_down_until_it_fits(tmp_path, monkeypatch, tiny_pipe_dir):
+    torch.use_deterministic_algorithms(True)
+    try:
+        ref_lora, ref_losses, *_ = _run(tmp_path / "ref", monkeypatch, tiny_pipe_dir, budget = True)
+        monkeypatch.undo()
+        # Call 6 fails (step 2), and so does the rerun's first forward (call 7): two step-downs within one step.
+        lora, losses, _rec, _alive, warnings, budgets = _run(
+            tmp_path / "oom", monkeypatch, tiny_pipe_dir, budget = True, oom_at = {6, 7}
+        )
+    finally:
+        torch.use_deterministic_algorithms(False)
+    oom_warnings = [w for w in warnings if "Ran out of GPU memory" in w]
+    assert len(oom_warnings) == 2
+    b = budgets[0]
+    assert b.step_downs + int(b.disabled) == 2
+    assert losses == ref_losses
+    for k in ref_lora:
+        assert torch.equal(ref_lora[k], lora[k]), k
 
 
 @pytest.mark.allow_network

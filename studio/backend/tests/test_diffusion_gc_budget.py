@@ -109,9 +109,10 @@ def test_plan_scales_to_the_largest_bucket():
     assert (plain, scaled) == (10, 5)
 
 
-def test_plan_stops_at_an_unmeasured_class():
+def test_plan_skips_an_unmeasured_class():
     budget = _planned({"A": 1.0}, [("A", GIB), ("A", GIB), ("B", GIB), ("A", GIB)])
-    assert budget.plan(0, 80 * GIB, 0, 80 * GIB) == 2
+    assert budget.plan(0, 80 * GIB, 0, 80 * GIB) == 3
+    assert budget.keep == frozenset({0, 1, 3})
 
 
 def test_fall_back_clears_the_plan():
