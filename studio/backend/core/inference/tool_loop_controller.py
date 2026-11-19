@@ -630,19 +630,31 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
     return None
 
 
-def _mcp_tool_spec(tool_name: str) -> Any:
+def _mcp_tool_specs(tool_names: Collection[str]) -> dict[str, Any]:
+    """Neutralized specs of cached MCP tools by name; one catalog build serves every name."""
     try:
-        from core.inference.tools import mcp_tool_spec  # noqa: PLC0415 -- cycle at import time
+        from core.inference.tools import mcp_tool_specs  # noqa: PLC0415 -- cycle at import time
         from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
-
-        specs = neutralize_tool_descriptions([mcp_tool_spec(tool_name)])
-        return specs[0] if specs else None
+        found = mcp_tool_specs(tool_names)
     except Exception:  # noqa: BLE001 -- an unknown tool stays disabled
-        return None
+        return {}
+    specs: dict[str, Any] = {}
+    for name, spec in found.items():
+        try:
+            neutralized = neutralize_tool_descriptions([spec])
+        except Exception:  # noqa: BLE001 -- an unknown tool stays disabled
+            continue
+        if neutralized and neutralized[0] is not None:
+            specs[name] = neutralized[0]
+    return specs
+
+
+def _mcp_tool_spec(tool_name: str) -> Any:
+    return _mcp_tool_specs([tool_name]).get(tool_name)
 
 
 def _mcp_tool_search_specs(result: str) -> list:
-    specs = []
+    names = []
     # The worker's result budget is absent here; its returned schemas are authoritative.
     for line in result.splitlines():
         if not line.startswith("  schema: "):
@@ -652,10 +664,10 @@ def _mcp_tool_search_specs(result: str) -> list:
         except (ValueError, TypeError):
             continue
         name = _tool_name_from_schema(schema) if isinstance(schema, Mapping) else None
-        spec = _mcp_tool_spec(name) if name else None
-        if spec is not None:
-            specs.append(spec)
-    return specs
+        if name:
+            names.append(name)
+    specs = _mcp_tool_specs(names) if names else {}
+    return [specs[name] for name in names if name in specs]
 
 
 def _tool_name_key(name: str) -> str:
@@ -1312,11 +1324,9 @@ class ToolLoopController:
         tools = self._tools
         if include_deferred and self._mcp_search:
             declared = {_tool_name_from_schema(tool) for tool in tools}
-            tools = tools + [
-                spec
-                for name in sorted(self._allowed_tool_names - declared)
-                if (spec := _mcp_tool_spec(name)) is not None
-            ]
+            deferred = sorted(self._allowed_tool_names - declared)
+            specs = _mcp_tool_specs(deferred) if deferred else {}
+            tools = tools + [specs[name] for name in deferred if name in specs]
         for tool in tools:
             name = _tool_name_from_schema(tool)
             if name in self._completed_one_shot_tools:

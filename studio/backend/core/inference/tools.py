@@ -14232,14 +14232,22 @@ def mcp_loadable_specs(tools) -> list[dict]:
     return _cached_mcp_catalog() if MCP_TOOL_SEARCH_NAME in names else []
 
 
+def mcp_tool_specs(names) -> dict[str, dict]:
+    """The full specs of cached MCP tools by name, from one catalog build however many are asked for."""
+    wanted = {name for name in names if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)}
+    if not wanted:
+        return {}
+    found: dict[str, dict] = {}
+    for spec in _cached_mcp_catalog():
+        name = spec["function"]["name"]
+        if name in wanted:
+            found.setdefault(name, spec)
+    return found
+
+
 def mcp_tool_spec(name) -> dict | None:
     """The full spec of a cached MCP tool, for loading it into a running tool loop."""
-    if not isinstance(name, str) or not name.startswith(MCP_TOOL_PREFIX):
-        return None
-    for spec in _cached_mcp_catalog():
-        if spec["function"]["name"] == name:
-            return spec
-    return None
+    return mcp_tool_specs([name]).get(name) if isinstance(name, str) else None
 
 
 def _mcp_search_text(spec: dict) -> tuple[str, str, str]:
@@ -14743,14 +14751,18 @@ async def get_enabled_mcp_tools(
                 continue
             cache_tools(server["id"], payload)
 
-    listed: list[tuple[dict, list[dict], list[dict]]] = []
-    for server in servers:
-        payload = get_cached_tools(server["id"])
-        if payload is None:
-            continue
-        payload = [public_tool(server, tool) for tool in payload]
-        listed.append((server, payload, _mcp_specs_for_server(server, payload)))
-    return _mcp_listing(listed)
+    def _listing() -> list[dict]:
+        listed: list[tuple[dict, list[dict], list[dict]]] = []
+        for server in servers:
+            payload = get_cached_tools(server["id"])
+            if payload is None:
+                continue
+            payload = [public_tool(server, tool) for tool in payload]
+            listed.append((server, payload, _mcp_specs_for_server(server, payload)))
+        return _mcp_listing(listed)
+
+    # Off the loop: pricing the listing can make several synchronous token-count calls to llama-server.
+    return await asyncio.to_thread(_listing)
 
 
 def mcp_search_argument(name: str, tool: dict) -> str | None:
