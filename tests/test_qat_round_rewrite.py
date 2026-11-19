@@ -183,6 +183,22 @@ def test_rounding_again_after_a_device_move_is_a_no_op(scheme, monkeypatch):
     assert qr.round_frozen_qat_weights(model) == 1
 
 
+@pytest.mark.parametrize("scheme", ["int4", "int8"])
+def test_adopted_rounded_checkpoint_survives_a_device_move(scheme, monkeypatch):
+    # A destination that loaded another prepared model's rounded weights, then moved devices: rounding again is
+    # a no-op and its state_dict() still marks the weights as rounded.
+    x = torch.randn(4, DIM)
+    source = _model(scheme, monkeypatch, "1", seed = 1)
+    destination = _model(scheme, monkeypatch, "1", seed = 2)
+    destination.load_state_dict(source.state_dict())
+    expected = _out(source, x)
+    destination._apply(lambda t: t.clone())
+    assert qr.round_frozen_qat_weights(destination) == 0
+    assert torch.equal(_out(destination, x), expected)
+    marked = [k for k, v in destination.state_dict()._metadata.items() if qr._META in v]
+    assert any(k.endswith("up_proj.base_layer") for k in marked)
+
+
 def test_marked_rounded_state_dict_keeps_tensors_unchanged(monkeypatch):
     # The marker rides in the state dict's per module metadata: no new keys, so exports read the same tensors.
     model = _model("int8", monkeypatch, "1")

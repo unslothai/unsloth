@@ -307,7 +307,13 @@ def _after_load(module, incompatible_keys):
     if same:
         # Rounded values (another prepared model's state_dict, or this model's own): already on the grid. int8 /
         # cactus fake quant is not idempotent, so rounding them again would move them.
-        quantizer.__dict__[_RECORD] = _RoundRecord(state)
+        record = _RoundRecord(state)
+        try:
+            # Kept so a later device move of the adopted weight is still recognised as rounded.
+            record.checksum = (state, _checksum(weight))
+        except Exception:
+            pass
+        quantizer.__dict__[_RECORD] = record
         return
     _unround(quantizer)
     # The same storage written in place keeps every eligibility check that passed before (shape, device,
