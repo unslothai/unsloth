@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AdaLN precompute against real diffusers FLUX.1 / Qwen-Image transformers (tiny random configs): the denoiser
-outputs stay bit-identical while the modulation weights live on the host and are read once per request."""
+"""AdaLN precompute on tiny FLUX.1 / Qwen-Image transformers: outputs stay bit-identical."""
 
 from __future__ import annotations
 
@@ -62,9 +61,6 @@ _PIPES: list = []
 def _keep(p):
     _PIPES.append(p)
     return p
-
-
-# the transformer holds its pipe weakly, as Studio's pipe outlives every render
 
 
 def _pipe(steps: int):
@@ -284,7 +280,6 @@ def test_layer_split_declines_and_rows_follow_block_device():
 def test_uninstall_restores_beside_owning_block():
     model = _flux()
     assert ap.install(model, _pipe(4), requested = ap.MODE_ON)
-    # the load places the denoiser after install (CPU mock: "meta" stands for the card the blocks went to)
     model.to("meta")
     st = model.__dict__[ap.STATE_ATTR]
     # the placement is resolved from the owning block, not the parameter-less parent (norm / Sequential)
@@ -340,7 +335,6 @@ def test_learned_peak_label_records_the_lever():
 
 
 def _mark_streamed(model):
-    # what Studio's offload detection reads: a diffusers group-offloading registry on a submodule
     sub = model.transformer_blocks[0]
     sub._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": object()})
     return model
@@ -395,9 +389,7 @@ def _lora_file(tmp_path, keys):
 
 
 def _group_offloaded(model, fake_stream = True):
-    """Real diffusers block-level group offload on the CPU; ``fake_stream`` then gives every group the stream-mode
-    bookkeeping a CUDA load has (``cpu_param_dict``, unpinned: no CUDA here) and a Studio GroupPrefetcher with its
-    slot ring, so the restore is judged against the structures a streamed render indexes."""
+    """Real diffusers block-level group offload on CPU; ``fake_stream`` adds the stream-mode slot ring."""
     from core.inference.diffusion_memory import _offload_groups
     from core.inference.diffusion_offload_prefetch import PREFETCHER_ATTR, GroupPrefetcher
 
@@ -436,7 +428,6 @@ def test_streamed_restore_rebuilds_offload_bookkeeping():
     assert isinstance(model.transformer_blocks[0].norm1.linear, torch.nn.Linear)
     grew = 0
     for g in groups:
-        # what GroupPrefetcher._issue / offload index: every group tensor has its host copy
         for t in _group_tensors(g):
             assert t in g.cpu_param_dict
         assert pf.nbytes[id(g)] == _group_nbytes(g)
@@ -516,8 +507,7 @@ def test_baked_lora_load_declines():
 
 
 def test_sequential_cpu_offload_restore_keeps_weights_and_renders():
-    """enable_sequential_cpu_offload = accelerate cpu_offload per component; a LoRA request restores the modules and
-    diffusers then removes and re-applies the hooks around the adapter load."""
+    """Sequential CPU offload: a LoRA request restores the modules under accelerate hooks."""
     from accelerate import cpu_offload
     from accelerate.hooks import remove_hook_from_module
 
@@ -544,7 +534,6 @@ def test_sequential_cpu_offload_restore_keeps_weights_and_renders():
     assert align and align[0].offload
     assert all(align[0].weights_map[k].device.type != "meta" for k in ("weight", "bias"))
     assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
-    # diffusers' _func_optionally_disable_offloading around load_lora_weights
     remove_hook_from_module(model, recurse = True)
     assert lin.weight.device.type != "meta"
     cpu_offload(model, execution_device = torch.device("cpu"))
@@ -559,7 +548,6 @@ def test_precompute_holds_at_most_the_table_budget(monkeypatch):
     model = _flux()
     assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
     st = model.__dict__[ap.STATE_ATTR]
-    # one key's row, from the stand-ins alone (batch 1, fp32): every site's output features
     row = sum(int(stand.out_features) for stand in st.stand_ins) * 4
     budget = int(row * 3.5)
     monkeypatch.setattr(ap, "_table_budget_bytes", lambda: budget)
@@ -580,8 +568,7 @@ def test_precompute_holds_at_most_the_table_budget(monkeypatch):
 
 
 def test_cfg_batch_doubled_call_failure_falls_back_on_its_own_rows(monkeypatch):
-    """The doubled forward raises (OOM on the doubled activations) after its rows were armed; the plain fallback and
-    every later branch call must read their own rows: bit-identical to the router-off render."""
+    """The doubled forward raises after arming; the fallback and later calls read their own rows."""
     from core.inference import diffusion_cfg_batch as cb
 
     monkeypatch.setenv(cb.CFG_BATCH_ENV, "force")
@@ -615,8 +602,7 @@ def test_cfg_batch_doubled_call_failure_falls_back_on_its_own_rows(monkeypatch):
 
 
 def test_renders_under_inference_mode_like_diffusion_backend(monkeypatch):
-    """DiffusionBackend renders under torch.inference_mode(): inference tensors carry no version counter. A plain
-    render, a CFG-batched render (the router's arm_call path) and a later no_grad render must all match stock."""
+    """Inference-mode renders (no version counter) plain, CFG-batched and no_grad all match stock."""
     from core.inference import diffusion_cfg_batch as cb
 
     with torch.inference_mode():  # the pipeline builds its timesteps inside it: inference tensors
@@ -672,14 +658,12 @@ def test_cfg_replica_copy_takes_the_real_modules():
         assert type(blk.norm.linear) is torch.nn.Linear
     assert type(replica.norm_out.linear) is torch.nn.Linear
     assert all(torch.equal(a, b) for a, b in zip(ref, _run(replica, calls)))
-    # the source keeps the lever and its output
     assert ap.installed(model)
     assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
 
 
 def test_layerwise_cast_modulation_layers_stay_live():
-    """Studio's small-host dense route layerwise-casts every Linear (a diffusers hook binds ``forward`` to the
-    module): a device clone of such a layer would compute with the host original on a GPU call, so it stays live."""
+    """A layerwise-cast (hook-bound) Linear stays live: its device clone would use host weights."""
     from core.inference.diffusion_small_host import prepare_streamed_encoder_
 
     model = _flux().to(torch.bfloat16)
@@ -715,8 +699,7 @@ def test_small_host_route_declines():
 
 
 def test_streamed_restore_without_moduleGroup_to_cpu(tmp_path, monkeypatch):
-    """diffusers 0.36 (the Python < 3.10 pin) has no ``ModuleGroup._to_cpu``: the restore builds the same host copy
-    its own ``_init_cpu_param_dict`` does (``.data.cpu()``, pinned unless low_cpu_mem_usage)."""
+    """diffusers 0.36 has no ``ModuleGroup._to_cpu``: the restore builds the same host copy."""
     from diffusers.hooks import group_offloading as go
 
     from core.inference import diffusion as D
@@ -739,8 +722,7 @@ def test_streamed_restore_without_moduleGroup_to_cpu(tmp_path, monkeypatch):
 
 
 def test_modulation_weights_pin_through_the_packed_arena(monkeypatch):
-    """A per-tensor pin_memory() rounds each weight to a power of two (FLUX.1: 6.05 GiB of modulation weights held
-    7.19 GiB pinned on a T4); every weight moved to the host goes through one PinnedArena instead."""
+    """Every weight moved to host goes through one PinnedArena (per-tensor pins round up)."""
     from core.inference import diffusion_pinned_arena as arena_mod
 
     seen = []
@@ -809,8 +791,7 @@ def test_multigpu_batch_split_arms_each_half(monkeypatch):
 
 
 def test_host_move_keeps_gguf_parameters_and_their_quant_type():
-    """The packed pinned arena copies a GGUFParameter's bytes into a plain slab view; the moved weight must stay a
-    GGUFParameter with its quant_type, or GGUFLinear on the device clone skips dequantization."""
+    """An arena-pinned GGUF weight stays a GGUFParameter with its quant_type."""
     utils = pytest.importorskip("diffusers.quantizers.gguf.utils")
 
     def arena_like(t):

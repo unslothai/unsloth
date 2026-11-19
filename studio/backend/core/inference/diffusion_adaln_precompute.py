@@ -1,21 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AdaLN modulation precompute: the per-block modulation Linears of FLUX.1 (norm1 / norm1_context / single norm /
-norm_out) and Qwen-Image (img_mod / txt_mod / norm_out) read only the timestep (+ guidance, + pooled text)
-embedding, never the image tokens. They are swapped for ``AdaLNTable`` stand-ins with no parameters; the real
-modules move to host memory. Each transformer call keys its embedding inputs (timestep, guidance, pooled, ...);
-the first miss of a request computes the rows of every timestep the scheduler will visit in one pass over the
-modulation weights (each step at its own batch shape, so every row is the GEMM main would run: bit-identical),
-then every call copies its row into one static buffer the stand-ins return.
+"""AdaLN modulation precompute for FLUX.1 / Qwen-Image: the modulation Linears read only the timestep embedding,
+so they move to host and every request's rows are computed in one pass (each step at its own batch shape:
+bit-identical). Shared-modulation families (FLUX.2/3, Z-Image, Qwen-Image-2.1) save 1-4% and are skipped.
 
-Frees 27% (FLUX.1) / 33% (Qwen-Image, -2512, -Edit) of the transformer from the card, and those weights are never
-streamed by an offloaded denoiser. Families with one shared modulation (Qwen-Image-2.1, FLUX.2, FLUX.3, Z-Image:
-1-4%) are not worth the host copy and are not installed.
-
-UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE: ``0`` off, ``1`` on for every supported denoiser, ``auto`` (default) on when
-the denoiser is planned offloaded / streamed / split. UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks every served row
-against the module's real input (eager only; a sync per call, tests and benches)."""
+UNSLOTH_DIFFUSION_ADALN_PRECOMPUTE: 0 / 1 / auto (default, on when offloaded / streamed / split).
+UNSLOTH_DIFFUSION_ADALN_VERIFY=1 checks each served row against the real module (eager only)."""
 
 from __future__ import annotations
 
@@ -83,8 +74,7 @@ def _torch() -> Any:
 
 
 class AdaLNTable(_torch().nn.Module):
-    """Stands in for one modulation Linear; returns the armed row (a view of the transformer's static buffer). The
-    real module sits in ``__dict__`` (not a submodule): never placed, streamed, cast, compiled or quantised."""
+    """Returns the armed row; the real module sits in ``__dict__`` so it is never placed, cast or quantised."""
 
     def __init__(self, orig: Any, name: str, kind: str) -> None:
         super().__init__()
@@ -93,7 +83,6 @@ class AdaLNTable(_torch().nn.Module):
         self.kind = kind
         self.in_features = getattr(orig, "in_features", None)
         self.out_features = getattr(orig, "out_features", None)
-        # Set per layout by the transformer's pre-hook; the same tensor object for a layout, refilled in place.
         self.unsloth_adaln_cur = None
         self.unsloth_adaln_ref = None  # verify mode: the input row the armed output came from
 
@@ -160,7 +149,6 @@ class _FluxAdapter(_Adapter):
         return out
 
     def temb(self, model: Any, tte: Any, inputs: dict) -> Any:
-        # FluxTransformer2DModel.forward, op for op.
         dtype = inputs["_dtype"]
         timestep = inputs["timestep"].to(dtype) * 1000
         guidance = inputs.get("guidance")
@@ -237,14 +225,11 @@ def _pin(t: Any) -> Any:
 
 
 def _host_pinner(modules: list) -> Callable[[Any], Any]:
-    """Pins through one packed arena (diffusion_pinned_arena): a per-tensor ``pin_memory()`` rounds each weight up to
-    a power of two (FLUX.1's 6.05 GiB of modulation weights would hold 7.19 GiB pinned). ``_pin`` when it is off or
-    a pin fails (no CUDA: pageable)."""
+    """Pins via one packed arena: per-tensor ``pin_memory()`` rounds up to a power of two (6.05 -> 7.19 GiB)."""
     try:
         from .diffusion_pinned_arena import PinnedArena, pin_arena_enabled
         if not pin_arena_enabled():
             return _pin
-        # sizes the tail slabs to what is left (the arena's ``expected_bytes``)
         arena = PinnedArena(expected_bytes = sum(_nbytes(t) for m in modules for t in _tensors(m)))
     except Exception:  # noqa: BLE001
         return _pin
@@ -291,8 +276,7 @@ def _to_host(mod: Any, pin: Callable[[Any], Any] = _pin) -> int:
 
 
 def _same_kind(orig: Any, pinned: Any) -> Any:
-    """``pinned`` as ``orig``'s Parameter subclass with its attributes: the arena copies a GGUFParameter's packed bytes
-    into a plain slab view, and a GGUFLinear needs the subclass and its ``quant_type`` to dequantize."""
+    """Rewraps an arena view as ``orig``'s Parameter subclass (GGUFLinear needs it and ``quant_type``)."""
     torch = _torch()
     cls = type(orig)
     if not isinstance(orig, torch.nn.Parameter) or cls is torch.nn.Parameter or type(pinned) is cls:
@@ -313,7 +297,6 @@ def _nbytes(t: Any) -> int:
 
 
 def _device_clone(mod: Any, device: Any) -> Any:
-    """A shallow clone of ``mod`` whose tensors live on ``device``; the host original is untouched."""
     import copy
 
     clone = copy.copy(mod)
@@ -331,7 +314,6 @@ def _device_clone(mod: Any, device: Any) -> Any:
 
 
 def _key_of(tensors: list) -> tuple:
-    """Exact key: dtype / shape / bytes of every embedding input (one small device-to-host copy)."""
     torch = _torch()
     meta = []
     flat = []
@@ -420,7 +402,6 @@ class _State:
             hits = (stacked == ts.unsqueeze(0)).all(dim = 1).nonzero()
             if hits.numel() == 0:
                 return []
-            # the steps from this one on (a request never revisits an earlier one), nearest first
             cands = cands[int(hits[0, 0]) :]
         except Exception:  # noqa: BLE001 - prediction is only an optimisation
             return []
@@ -456,7 +437,6 @@ class _State:
         with torch.no_grad():
             for key, inp in pending.items():
                 tembs[key] = self.adapter.temb(model, tte, inp)
-            # one pass over the weights: each site onloads once, runs every pending row at its own shape
             outs: dict = {key: [] for key in pending}
             refs: dict = {key: [] for key in pending}
             keep_refs = verify_enabled()
@@ -501,7 +481,6 @@ class _State:
         self._evict(protect)
 
     def row_bytes_estimate(self, model: Any, inputs: dict) -> int:
-        """Bytes of one key's row (every site's output at this call's batch), before computing it."""
         torch = _torch()
         batch = int(inputs["timestep"].shape[0]) if inputs["timestep"].dim() else 1
         doubled = bool(getattr(model, "zero_cond_t", False))
@@ -513,8 +492,7 @@ class _State:
         return max(1, total)
 
     def make_room(self, model: Any, pending: "OrderedDict[tuple, dict]", protect: tuple) -> None:
-        """Bounds what a miss computes by the table budget BEFORE any output is allocated: predictions beyond it are
-        dropped (computed lazily when their step comes), and older rows are evicted to make room for the rest."""
+        """Applies the table budget before allocating: excess predictions are dropped, older rows evicted."""
         budget = _table_budget_bytes()
         est = self.row_bytes_estimate(model, next(iter(pending.values())))
         fit = max(len(protect), budget // est)
@@ -530,7 +508,6 @@ class _State:
         protect: tuple = (),
         budget: Optional[int] = None,
     ) -> None:
-        """Oldest first, never a ``protect`` row (the call being served): over budget, predictions go first."""
         budget = _table_budget_bytes() if budget is None else budget
         if self.row_bytes <= budget:
             return
@@ -547,8 +524,7 @@ class _State:
         if lay is None:
             torch = _torch()
             total = sum(int(torch.Size(s).numel()) for s, _d, _v in layout_id)
-            # A normal tensor even when the first miss runs under inference_mode: it is refilled in place by every
-            # later call, inference_mode or not (an inference tensor refuses that outside it).
+            # Not an inference tensor: later calls refill it in place outside inference_mode.
             with torch.inference_mode(False):
                 buf = torch.empty(total, dtype = like.dtype, device = like.device)
             views = []
@@ -585,7 +561,6 @@ def _pre_hook(model: Any, args: tuple, kwargs: dict) -> None:
     try:
         _serve(model, st, args, kwargs)
     except _Unsupported as exc:
-        # Cannot key this call: put the real modules back on the call's device and run stock from here on.
         device = None
         hs = kwargs.get("hidden_states", args[0] if args else None)
         if hs is not None and hasattr(hs, "device"):
@@ -595,9 +570,7 @@ def _pre_hook(model: Any, args: tuple, kwargs: dict) -> None:
 
 
 def replica_memo(module: Any, device: Any, memo: dict) -> None:
-    """CFG-replica policy (diffusion_multigpu._copy_module): the replica takes the REAL modulation modules on its own
-    card and no precompute state. The source's pre-hook arms only the source's stand-ins, so a copied stand-in would
-    keep stale rows; the state (lock, tables on the source card) is source-only and never traversed."""
+    """CFG replica gets the real modulation modules: a copied stand-in would never be armed (stale rows)."""
     import copy
 
     st = module.__dict__.get(STATE_ATTR)
@@ -608,9 +581,7 @@ def replica_memo(module: Any, device: Any, memo: dict) -> None:
 
 
 def _input_ids(st: "_State", inputs: dict) -> Optional[tuple]:
-    """Identity of a call's embedding inputs (objects, storage, in-place version): equal ids, equal rows. None when
-    an input cannot report mutation (an inference tensor, Studio's renders run under inference_mode, carries no
-    version counter): such calls always re-arm."""
+    """Identity (object, storage, version) of the embedding inputs; None for inference tensors (always re-arm)."""
     out = [str(inputs.get("_dtype"))]
     for name in st.adapter.key_names:
         t = inputs.get(name)
@@ -646,8 +617,7 @@ def _arm_call(model: Any, args: tuple, kwargs: dict) -> None:
 
 
 def arm_call(model: Any, args: tuple, kwargs: dict) -> None:
-    """Arms the rows for a call that reaches the forward without ``model.__call__`` (the CFG router's merged
-    cond / uncond batch, its plain fallbacks and timing calls): its own inputs, so every call reads its own rows."""
+    """Arms rows for a call that bypasses ``model.__call__`` (the CFG router's merged batch)."""
     _torch().compiler.disable(_arm_call)(model, args, kwargs)
 
 
@@ -692,7 +662,6 @@ def decline_reason(
     requested: Optional[str] = None,
     split: bool = False,
 ) -> Optional[str]:
-    """None when ``model`` should take the lever under the current mode."""
     m = requested or mode()
     if m == MODE_OFF:
         return f"{ENV}=0"
@@ -722,9 +691,7 @@ def _small_host(pipe: Any) -> bool:
 
 
 def _hook_bound(module: Any) -> bool:
-    """A module (or submodule) whose ``forward`` is an instance attribute: diffusers hooks (layerwise casting, group
-    offload) and Accelerate hooks bind it to that module, so a ``_device_clone`` would still run on the original's
-    host weights."""
+    """Hook-bound ``forward``: a ``_device_clone`` would still run on the host original's weights."""
     return any(
         "forward" in sub.__dict__ or "_diffusers_hook" in sub.__dict__ or "_hf_hook" in sub.__dict__
         for sub in module.modules()
@@ -745,14 +712,10 @@ def install(
     requested: Optional[str] = None,
     split: bool = False,
 ) -> bool:
-    """Swaps the modulation Linears of a supported denoiser for ``AdaLNTable`` stand-ins (weights to host)."""
     reason = decline_reason(model, offloaded = offloaded, requested = requested, split = split)
     if reason is None and pipe is not None and _pipe_loras(pipe):
-        # baked into the weights before quantisation and re-merged in place later: the modules must stay in the tree
         reason = "LoRA adapters are baked into this load"
     if reason is None and pipe is not None and _small_host(pipe):
-        # the route keeps the denoiser memory-mapped or int8 in pageable / file-backed memory on a host short of RAM:
-        # pinning the modulation weights would add page-locked RAM the route chose not to take
         reason = "the small-host route keeps the denoiser memory-mapped or int8 off pinned memory"
     if reason is not None:
         if logger is not None:
@@ -770,9 +733,7 @@ def install(
         return False
     import copy
 
-    # A layer whose output depends on the step beyond its input (NVFP4 per-step protection runs protected steps at
-    # another precision) stays live: a precomputed row would ignore the step's mode. So does a hook-bound layer
-    # (_hook_bound): its device clone would compute with the host original.
+    # NVFP4 per-step protected layers and hook-bound layers stay live (a row would ignore the step's mode).
     def _stays_live(mod: Any) -> bool:
         return _hook_bound(mod) or any(
             getattr(m, "protect", None) is not None for m in mod.modules()
@@ -834,8 +795,7 @@ def install(
 
 
 def _owner_device(model: Any, site_name: str) -> Any:
-    """Device of the nearest enclosing module that still holds weights (the stand-in's parent norm or modulation
-    Sequential holds none once the Linear is swapped out): the block, else the transformer itself."""
+    """Device of the nearest enclosing module that still holds weights."""
     parts = site_name.split(".")[:-1]
     while True:
         prefix = ".".join(parts)
@@ -852,8 +812,7 @@ def _owner_device(model: Any, site_name: str) -> Any:
 
 
 def _group_host_copy(go: Any, t: Any, low_cpu_mem_usage: bool) -> Any:
-    """``ModuleGroup._to_cpu`` where diffusers has it; older diffusers (0.36, the Python < 3.10 pin) build the same copy
-    inline in ``_init_cpu_param_dict``."""
+    """``ModuleGroup._to_cpu``; diffusers 0.36 (the Python < 3.10 pin) inlines it in ``_init_cpu_param_dict``."""
     to_cpu = getattr(go.ModuleGroup, "_to_cpu", None)
     if to_cpu is not None:
         return to_cpu(t, low_cpu_mem_usage)
@@ -862,11 +821,8 @@ def _group_host_copy(go: Any, t: Any, low_cpu_mem_usage: bool) -> Any:
 
 
 def _rebuild_streamed(model: Any, restored: list) -> set:
-    """Registers restored modules with the offload machinery that streams their block, as if they had been there
-    when it was built: each param / buffer gets its host copy in the owning diffusers group's ``cpu_param_dict``
-    (made by diffusers' own ``ModuleGroup._to_cpu``), lands on the onload device if its group is on it now
-    (resident groups), and every Studio ``GroupPrefetcher`` re-sizes that group (bytes, window, slot views; the
-    slot ring is rebuilt when the group outgrew it). Returns the ids of the modules a group now owns."""
+    """Registers restored modules with the offload group streaming their block (cpu_param_dict, prefetcher
+    re-size). Returns the ids of the modules a group now owns."""
     from .diffusion_memory import _offload_groups
 
     groups = _offload_groups(model)
@@ -933,7 +889,6 @@ def _rebuild_streamed(model: Any, restored: list) -> set:
 
 
 def _sequential_offload_hook(model: Any) -> Any:
-    """An Accelerate AlignDevicesHook that offloads its module's weights (enable_sequential_cpu_offload), or None."""
     for sub in model.modules():
         hook = getattr(sub, "_hf_hook", None)
         for h in getattr(hook, "hooks", None) or ((hook,) if hook is not None else ()):
@@ -949,8 +904,7 @@ def uninstall(
     logger: Any = None,
     reason: str = "",
 ) -> bool:
-    """Puts the real modulation modules back: under offload machinery they are registered with the group that
-    streams their block (``_rebuild_streamed``); elsewhere on ``device``, else beside their block's weights."""
+    """Puts the real modulation modules back (into their offload group, else on ``device`` / beside the block)."""
     st = getattr(model, "__dict__", {}).get(STATE_ATTR)
     if st is None:
         return False
@@ -977,8 +931,6 @@ def uninstall(
             if id(orig) in owned:
                 continue
             if hook is not None:
-                # sequential CPU offload: hook it the way enable_sequential_cpu_offload hooked its siblings (its
-                # weights move into the hook's weights map, the params to meta, onloaded per forward)
                 from accelerate import cpu_offload
                 cpu_offload(
                     orig,
@@ -999,7 +951,6 @@ def uninstall(
 
 
 def bind_pipe(pipe: Any) -> None:
-    """Points the prediction at the scheduler of the pipe about to render (derived pipes share the denoiser)."""
     model = getattr(pipe, "transformer", None)
     st = getattr(model, "__dict__", {}).get(STATE_ATTR) if model is not None else None
     if st is None:
