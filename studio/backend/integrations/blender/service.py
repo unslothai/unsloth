@@ -60,7 +60,7 @@ def catalog_item(row = None):
     settings = settings_for(row)
     is_enabled = bool(row and row["is_enabled"])
     if available and is_enabled and not runtime_ready():
-        reason = "The Blender MCP runtime is not downloaded, so Blender tools are off. The next chat message or Test connection downloads it; the backend needs internet access."
+        reason = "The Blender MCP runtime is not downloaded, so Blender tools are off. Chat retries the download within a minute, or use Test connection; the backend needs internet access."
     return McpBuiltinResponse(
         **settings.model_dump(),
         installed = is_installed("blender", settings.blender_path),

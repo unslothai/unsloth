@@ -142,12 +142,16 @@ def test_disabled_row_never_downloads_the_runtime(blender_row):
     assert service.catalog_item(mcp_servers_db.get_server("blender1")).unavailable_reason is None
 
 
-def test_failed_runtime_download_is_reported_and_retried(blender_row):
+def test_failed_runtime_download_is_reported_and_retried(blender_row, monkeypatch):
     data = blender_row.return_value
     blender_row.side_effect = [httpx.ConnectError("offline"), data]
     assert offered_tools() == []
+    assert mcp_client.in_failure_cooloff("blender1")
+    assert offered_tools() == []
+    blender_row.assert_called_once()
     item = service.catalog_item(mcp_servers_db.get_server("blender1"))
     assert item.is_enabled and item.available and "not downloaded" in item.unavailable_reason
-    mcp_client.invalidate_tool_cache()
+    monkeypatch.setattr(mcp_client, "FAILED_PROBE_COOLOFF_SECONDS", 0.0)
+    mcp_client.record_probe_failure("blender1")
     assert offered_tools() == ["mcp__blender__get_objects_summary"]
     assert service.catalog_item(mcp_servers_db.get_server("blender1")).unavailable_reason is None
