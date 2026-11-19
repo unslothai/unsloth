@@ -37,6 +37,7 @@ from core.inference.flm_files import (
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable, OutputWindow
 from core.inference.npu_context import DEFAULT_CONTEXT_LENGTH, plan_context
 from core.inference.npu_flm_args import clamp_prefill_chunk, merge_flm_args
+from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -380,6 +381,12 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
     if explained == message and log_name:
         explained = f"{message} (Lemonade's output is on the Logs page.)"
     return f"{explained} {advice}".rstrip()
+
+
+def _blocked_message(binary: Path, error: object) -> Optional[str]:
+    """The user message when Windows code integrity refused ``binary`` or its DLLs, else None."""
+    blocked = code_integrity_block_reason(error)
+    return code_integrity_user_message(str(binary.parent), blocked) if blocked else None
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -751,7 +758,8 @@ class LemonadeNpuBackend:
                 )
             )
         except OSError as exc:
-            return {"ready": False, "problems": [f"flm validate could not run: {exc}"]}
+            problem = _blocked_message(binary, exc) or f"flm validate could not run: {exc}"
+            return {"ready": False, "problems": [problem]}
         adopt_pid(process.pid)
         self._validate_process = process
         # After adopting: a shutdown sweep that already ran would miss it.
@@ -770,9 +778,13 @@ class LemonadeNpuBackend:
         try:
             report = json.loads(stdout)
         except ValueError:
+            # A refused DLL (flm links every model DLL) exits 0xC0E90002 before printing anything.
+            problem = _blocked_message(binary, process.returncode)
             return {
                 "ready": False,
-                "problems": [f"flm validate returned no report: {stdout[-300:].strip()}"],
+                "problems": [
+                    problem or f"flm validate returned no report: {stdout[-300:].strip()}"
+                ],
             }
         problems = [message for key, message in _VALIDATE_PROBLEMS if report.get(key) is False]
         ready = bool(report.get("ready"))

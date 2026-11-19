@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 import httpx
 
+from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
 from utils.log_retention import prune_log_dir
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -371,6 +372,15 @@ class LemonadeServer:
             if is_process_shutting_down():
                 self._kill_locked()
                 raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
+        except OSError as exc:
+            self._close_log_file(log_file)
+            # Smart App Control / WDAC refuses unsigned lemond.exe (WinError 4551); retrying cannot help.
+            blocked = code_integrity_block_reason(exc)
+            if blocked is None:
+                raise
+            raise LemonadeUnavailable(
+                code_integrity_user_message(str(self.binary.parent), blocked)
+            ) from exc
         except BaseException:
             self._close_log_file(log_file)
             raise

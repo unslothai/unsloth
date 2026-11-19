@@ -2783,7 +2783,7 @@ export function ComposerModelPicker({
     if (viewed === RECOMMENDED_TAB && npuCatalog) {
       const npuShown =
         foundRows.some((row) => row.section === "npu") ||
-        (!npuCatalog.ready && !query);
+        ((!npuCatalog.ready || npuCatalog.listError) && !query);
       return npuShown ? ["npu", "recommended"] : [];
     }
     return [];
@@ -5150,7 +5150,8 @@ export function ComposerModelPicker({
         section === "npu" &&
         viewed === RECOMMENDED_TAB &&
         npuCatalog &&
-        !npuCatalog.ready
+        // A failed listing (e.g. Smart App Control blocking lemond.exe) must say why, not hide NPU.
+        (!npuCatalog.ready || npuCatalog.listError)
       ) {
         out.push(<NpuSetupNotice key="npu-setup" catalog={npuCatalog} />);
       }

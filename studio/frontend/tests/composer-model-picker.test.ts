@@ -308,6 +308,25 @@ test("On Device groups rows like the header picker, NPU and custom folders inclu
   assert.match(folders, /<FolderBrowser/);
 });
 
+test("a failed NPU listing on a set-up NPU shows its notice instead of hiding the NPU", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // Both the section list and the notice render: a Smart App Control block must say why.
+  assert.match(
+    picker,
+    /\(\(!npuCatalog\.ready \|\| npuCatalog\.listError\) && !query\)/,
+  );
+  assert.match(
+    picker,
+    /\(!npuCatalog\.ready \|\| npuCatalog\.listError\)\s*\) \{\s*out\.push\(<NpuSetupNotice/,
+  );
+  assert.match(
+    readSrc("features/npu/npu-setup-notice.tsx"),
+    /listError && listError !== status\.error/,
+  );
+});
+
 test("the composer renders the model chip where the Thinking pill was", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /<ComposerModelPicker side=\{menuSide\} \/>/);
