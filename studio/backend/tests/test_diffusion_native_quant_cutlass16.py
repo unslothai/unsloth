@@ -174,3 +174,49 @@ def test_codes_are_the_rows_prologue(rot):
     assert torch.equal(
         torch.mul(acc, xs).mul_(ws).to(torch.float16), nq._w8a8_rows(x2, rot_h, wq, ws, None)
     )
+
+
+def _gemm_rows(seen):
+    def gemm(xq, wq, xs, ws, tile):
+        seen.append(xq.shape[0])
+        # Row i of the output carries its input row's first value, so stitching order is checked too.
+        return xq[:, :1].to(torch.float16).expand(-1, wq.shape[0]).contiguous()
+
+    return gemm
+
+
+def test_large_inputs_keep_the_row_budget(monkeypatch):
+    """Codes and output are made per chunk, as the fused path budgets them, never for every row at once."""
+    layer = _layer()
+    _plan(layer, 2, 4)
+    monkeypatch.setattr(
+        nq, "_INT_MM_FUSED_CHUNK_ELEMS", 512 * 1536
+    )  # 1536 rows per chunk at 512 features
+    calls = []
+    nq._FUSED_STATE["codes"] = lambda x2, rot_h: (
+        calls.append(x2.shape[0]) or x2[:, :].to(torch.int8),
+        torch.ones(x2.shape[0], 1),
+    )
+    seen = []
+    monkeypatch.setattr(cut, "native_tile", lambda *a: 4)
+    monkeypatch.setattr(cut, "native_gemm", _gemm_rows(seen))
+    rows = 4000
+    x2 = torch.arange(rows).remainder(100).to(torch.float16)[:, None].expand(rows, 512).contiguous()
+    out = layer._forward_cutlass16(x2, layer.rot_h, rows)
+    assert calls == seen == [1334, 1333, 1333]
+    assert max(calls) <= 1536
+    assert out.shape == (rows, 128) and torch.equal(out[:, 0], x2[:, 0])
+    assert nq._CUT16_CALLS[0] == 3
+
+
+def test_a_chunk_whose_race_kept_cublas_declines_before_any_code(monkeypatch):
+    """Chunks below the large-M race read the small slot: if it kept cuBLAS, the whole call declines up front."""
+    layer = _layer()
+    _plan(layer, None, 4)
+    monkeypatch.setattr(nq, "_INT_MM_FUSED_CHUNK_ELEMS", 512 * 800)  # chunks of under 1024 rows
+    calls = []
+    nq._FUSED_STATE["codes"] = _codes_spy(calls)
+    monkeypatch.setattr(cut, "native_gemm", lambda *a: pytest.fail("no CUTLASS launch"))
+    rows = 2048
+    assert layer._forward_cutlass16(_x2(rows), layer.rot_h, rows) is None
+    assert calls == []

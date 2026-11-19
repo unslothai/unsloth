@@ -866,14 +866,40 @@ def native_linear_class():
             entry = _cut._NATIVE_PLAN.get(
                 (x2.device.index, int(self.weight_q.shape[0]), int(self.weight_q.shape[1]))
             )
-            if (
-                not entry
-                or entry.get(
-                    max(_cut._RACE_M) if rows >= _cut._NATIVE_LARGE_M else min(_cut._RACE_M)
+            # The fused path's row budget holds here too: codes and output are made per chunk, never for every row.
+            chunk = _INT_MM_FUSED_CHUNK_ELEMS // max(self.in_features, self.out_features)
+            parts = (
+                (x2,)
+                if rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS
+                else torch.tensor_split(x2, -(-rows // chunk))
+            )
+            if not entry or any(
+                entry.get(
+                    max(_cut._RACE_M)
+                    if part.shape[0] >= _cut._NATIVE_LARGE_M
+                    else min(_cut._RACE_M)
                 )
                 is None
+                for part in parts
             ):
                 return None
+            if len(parts) == 1:
+                return self._cutlass16_rows(codes, x2, rot_h, _cut)
+            out = None
+            start = 0
+            for part in parts:
+                got = self._cutlass16_rows(codes, part, rot_h, _cut)
+                if got is None:
+                    return None
+                if out is None:
+                    out = got.new_empty(rows, self.out_features)
+                stop = start + part.shape[0]
+                out[start:stop].copy_(got)
+                del got
+                start = stop
+            return out
+
+        def _cutlass16_rows(self, codes: Any, x2: Any, rot_h: Any, _cut: Any) -> Any:
             try:
                 xq, xs = codes(x2, rot_h)
             except torch.cuda.OutOfMemoryError:
