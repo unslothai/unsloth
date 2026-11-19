@@ -7,6 +7,7 @@ dictation loads and the GPU residency free steps. CPU only: live free memory is 
 with a CPU onload device."""
 
 import ast
+import importlib.util
 import sys
 import threading
 from pathlib import Path
@@ -22,6 +23,11 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from core.inference import diffusion_te_residency as tr  # noqa: E402
+
+# Streaming goes through diffusers' group offloading; a lane without diffusers cannot release.
+_needs_diffusers = pytest.mark.skipif(
+    importlib.util.find_spec("diffusers") is None, reason = "streaming needs diffusers"
+)
 
 MIB = 1 << 20
 
@@ -228,6 +234,7 @@ def _hooked(module):
     return hooked(module)
 
 
+@_needs_diffusers
 def test_release_streams_and_restore_unhooks_with_identical_outputs():
     torch.manual_seed(0)
     pipe = _pipe()
@@ -268,6 +275,7 @@ def test_a_failed_stream_puts_the_encoders_back_whole():
     assert not r.streamed and not _hooked(pipe.text_encoder) and r.last["action"] == "keep"
 
 
+@_needs_diffusers
 def test_a_restore_that_runs_out_of_memory_keeps_streaming():
     pipe = _pipe()
     r = tr.EncoderResidency(pipe, "cpu", tr.KIND_PLAIN)

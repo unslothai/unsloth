@@ -5867,7 +5867,10 @@ def test_apply_loras_quant_unbaked_requires_reload(monkeypatch):
     # Topology is frozen after quantize_ + compile, so a new adapter needs a reload (clean 400).
     backend = DiffusionBackend()
     pipe = _BakePipe()
-    with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
+    # The typed refusal the routes key on (X-Unsloth-Refusal: lora-reload), and its remedy.
+    from core.inference.diffusion_lora import LoraReloadRequiredError
+
+    with pytest.raises(LoraReloadRequiredError, match = "Reload the model with the LoRA selection"):
         backend._apply_loras(_quant_lora_state(pipe), [("sloth", 1.0)], threading.Event())
     backend._apply_loras(_quant_lora_state(pipe), [], threading.Event())
     assert pipe.calls == []
@@ -5904,7 +5907,10 @@ def test_apply_loras_quant_baked_matrix(monkeypatch):
     backend._apply_loras(_quant_lora_state(pipe), [], ev)
     assert len(pipe.calls) == 1
     pipe = baked_pipe()
-    with pytest.raises(ValueError, match = "Reload the model with the new adapter selection"):
+    # The typed refusal the routes key on (X-Unsloth-Refusal: lora-reload), and its remedy.
+    from core.inference.diffusion_lora import LoraReloadRequiredError
+
+    with pytest.raises(LoraReloadRequiredError, match = "Reload the model with the LoRA selection"):
         backend._apply_loras(_quant_lora_state(pipe), [("other", 1.0)], ev)
 
 
