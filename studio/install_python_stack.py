@@ -65,6 +65,7 @@ from backend.utils.wheel_utils import (
     I8GEMM_VERSION,
     flash_attn_package_version,
     flash_attn_wheel_url,
+    int8_gemm_platform_supported,
     int8_gemm_wheel_url,
     install_wheel,
     probe_torch_wheel_env,
@@ -7905,9 +7906,16 @@ def _ensure_int8_gemm() -> None:
     """Optional prebuilt int8 GEMM wheel (diffusion INT8, sm75 / sm8x); every failure only warns."""
     if _int8_gemm_install_disabled() or NO_TORCH or IS_MACOS:
         return
+    # No wheel exists for linux_aarch64 / win_arm64: skip the torch-importing probe there.
+    if not int8_gemm_platform_supported():
+        return
     if _installed_distribution_version(I8GEMM_DISTRIBUTION) == I8GEMM_VERSION:
         return
-    env = probe_torch_wheel_env(include_windows = True)
+    # Bounded like the flash-attn probe: a wedged Windows driver must not hang setup.
+    env = probe_torch_wheel_env(
+        timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT if IS_WINDOWS else None,
+        include_windows = True,
+    )
     wheel_url = int8_gemm_wheel_url(env)
     if not wheel_url or not url_exists(wheel_url):
         return

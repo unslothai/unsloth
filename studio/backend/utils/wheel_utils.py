@@ -175,6 +175,11 @@ I8GEMM_VERSION = "1.0.0"
 _I8GEMM_PLATFORMS = {"linux_x86_64": "manylinux_2_28_x86_64", "win_amd64": "win_amd64"}
 
 
+def int8_gemm_platform_supported() -> bool:
+    """Whether this host's platform tag has an int8 GEMM wheel at all; decided without importing torch."""
+    return wheel_platform_tag() in _I8GEMM_PLATFORMS
+
+
 def int8_gemm_wheel_url(env: dict[str, str] | None) -> str | None:
     """The prebuilt int8 GEMM wheel for an NVIDIA CUDA torch on x86_64 Linux / Windows, else None."""
     if env is None or env.get("hip_version") or not env.get("cuda_major"):
