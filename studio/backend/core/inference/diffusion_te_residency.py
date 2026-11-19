@@ -61,10 +61,12 @@ def slack_mib(total_mib: int) -> int:
 
 def live_free_mib(device: Any) -> Optional[tuple[int, int]]:
     """``(free MiB, total MiB)`` on ``device``: driver free plus the allocator cache an ordinary allocation can reuse
-    (not a CUDA graph pool's), less the user's VRAM Budget reserve, as ``release_for_decode`` reads it. None when
-    unreadable."""
+    (not a CUDA graph pool's), less the user's VRAM Budget reserve, as ``release_for_decode`` reads it. Driver free is
+    the load planner's reading (``trusted_mem_get_info``: Windows ROCm over-reports it). None when unreadable."""
     try:
         import torch
+
+        from utils.hardware import trusted_mem_get_info
 
         from .diffusion_memory import _graph_held_cache_bytes, user_budget_reserve_bytes
 
@@ -73,7 +75,7 @@ def live_free_mib(device: Any) -> Optional[tuple[int, int]]:
             return None
         if dev.index is None:
             dev = torch.device("cuda", torch.cuda.current_device())
-        free, total = (int(x) for x in torch.cuda.mem_get_info(dev))
+        free, total = (int(x) for x in trusted_mem_get_info(dev))
         free -= user_budget_reserve_bytes(dev, total)
         cached = max(
             0,

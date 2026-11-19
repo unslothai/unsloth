@@ -674,3 +674,24 @@ def test_load_installs_the_check_when_no_unified_releaser_runs():
     i = source.index("te_releaser = te_release.maybe_install(pipe, plan, logger = logger)")
     assert "te_residency.maybe_install(pipe, plan, logger = logger)" in source[i : i + 400]
     ast.parse(source)
+
+
+def test_live_free_memory_uses_the_planners_trusted_reading():
+    """Windows ROCm over-reports driver free (a fresh process sees the card near empty): the residency check reads
+    the same capped figure the load planner does, so a streamed encoder is not brought back over a full card."""
+    from core.inference import diffusion_memory as dm
+    from utils.hardware import hardware
+
+    total = 24_000 * MIB
+    with (
+        patch.object(torch.cuda, "mem_get_info", return_value = (23_900 * MIB, total)),
+        patch.object(torch.cuda, "memory_reserved", return_value = 20_000 * MIB),
+        patch.object(torch.cuda, "memory_allocated", return_value = 19_000 * MIB),
+        patch.object(dm, "_graph_held_cache_bytes", return_value = 0),
+        patch.object(dm, "user_budget_reserve_bytes", return_value = 0),
+    ):
+        with patch.object(hardware, "rocm_windows_free_is_untrusted", return_value = False):
+            assert tr.live_free_mib("cuda:0") == (23_900 + 1_000, 24_000)
+        with patch.object(hardware, "rocm_windows_free_is_untrusted", return_value = True):
+            # capped at what this process has not reserved, plus its reusable cache
+            assert tr.live_free_mib("cuda:0") == (4_000 + 1_000, 24_000)
