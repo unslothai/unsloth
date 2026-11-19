@@ -3019,6 +3019,90 @@ def test_the_igpu_fit_headroom_survives_the_per_device_margin(tmp_path, monkeypa
     ), cmd
 
 
+def _vulkan_carve_out_igpu_backend(tmp_path, monkeypatch, *, carve_out_mib, row_free_mib):
+    """#18001: Radeon 780M on Windows with a 16 GiB carve-out; Vulkan reads 23161 MiB free."""
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, row_free_mib, 0)])
+    backend._get_gguf_size_bytes = lambda _path: int(6.24 * _GiB)
+    backend._launch_host_shortfall_message = lambda *a, **k: "About 7 GB of this model ..."
+    backend._lazy_auto_resolves_off = lambda **_kw: True
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(supports_load_mode = True, supports_load_mode_auto = True, supports_fit_target = True)
+    monkeypatch.setattr(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps)
+    carve_out = None if carve_out_mib is None else carve_out_mib * 1024 * 1024
+    monkeypatch.setattr(
+        LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(lambda *_a, **_k: carve_out)
+    )
+    return backend, gguf
+
+
+@pytest.mark.parametrize(
+    "carve_out_mib, row_free_mib, headroom",
+    [
+        (16 * 1024, 22137, 23161 - 16 * 1024),
+        (512, 22137, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (96 * 1024, 120 * 1024, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (None, 22137, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (24 * 1024, 22137, 0),
+    ],
+    ids = ["780m-16g-carve-out", "auto-carve-out", "strix-halo-96g", "unreadable", "all-carve-out"],
+)
+def test_the_paging_headroom_never_starves_the_carve_out(
+    tmp_path, monkeypatch, carve_out_mib, row_free_mib, headroom
+):
+    """A flat 15 GiB margin left a 780M's fit 7 GiB of its 16 GiB carve-out."""
+    backend, gguf = _vulkan_carve_out_igpu_backend(
+        tmp_path, monkeypatch, carve_out_mib = carve_out_mib, row_free_mib = row_free_mib
+    )
+    logged = _override_log(monkeypatch)
+
+    # The reporter's Manual mode with Auto layers hands placement to --fit.
+    cmd = _launch(backend, gguf, gpu_memory_mode = "manual")["cmd"]
+
+    assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+    assert any("Overriding the unmapped load mode" in line for line in logged), logged
+    margins = [float(v) for v in _modes(cmd, "--fit-target")]
+    if not headroom:
+        assert len(margins) == 1, cmd
+        return
+    assert len(margins) == 2 and margins[-1] == margins[0] + headroom, cmd
+    if carve_out_mib == 16 * 1024:
+        # llama.cpp fits into its raw free reading minus the last margin.
+        assert carve_out_mib - 1024 <= row_free_mib + 1024 - margins[-1] <= carve_out_mib
+
+
+def test_the_paging_headroom_cap_reads_only_a_lone_windows_vulkan_igpu(monkeypatch):
+    full = llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB
+    headroom = LlamaCppBackend._paged_fit_headroom_mib
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(lambda *_a, **_k: 16 * _GiB)
+    )
+    assert headroom([(0, 22137)], {0}) == 23161 - 16 * 1024
+    assert headroom([(0, 22137)], set()) == full
+    assert headroom([(0, 22137), (1, 8000)], {0}) == full
+    assert headroom([], {0}) == full
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: False)
+    assert headroom([(0, 22137)], {0}) == full
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+
+    def unreadable(*_a, **_k):
+        raise OSError("registry")
+
+    monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(unreadable))
+    assert headroom([(0, 22137)], {0}) == full
+
+    flags = LlamaCppBackend._paged_fit_headroom_flags
+    assert flags(["--fit", "on"], {}, [], headroom_mib = 0) == []
+    pair = flags(["--fit", "on", "--fit-target", "512"], {}, [], headroom_mib = 6777)
+    assert pair == ["--fit-target", "7289"]
+    added = LlamaCppBackend._margins_with_paged_headroom({0: 512.0}, pair, headroom_mib = 6777)
+    assert added == {0: 7289.0}
+    cmd = ["-m", "x.gguf", "--fit-target", "512", *pair]
+    withdrawn = LlamaCppBackend._withdraw_paged_headroom(cmd, added, pair, headroom_mib = 6777)
+    assert withdrawn == (["-m", "x.gguf", "--fit-target", "512"], {0: 512.0})
+
+
 def test_a_retry_off_the_igpu_withdraws_the_paging_headroom():
     """The arch-crash respawn on a discrete sibling must not keep the iGPU's 15 GiB margin."""
     import inspect
