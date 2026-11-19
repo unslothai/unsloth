@@ -7241,6 +7241,10 @@ html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wa
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
+/* No edge line either, as the pinned sidebar has none: it would cut straight through the strip's inner curve. */
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {
+  border-left-color: transparent;
+}
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface,
 html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {
   background-color: transparent;
