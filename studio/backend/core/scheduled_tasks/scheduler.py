@@ -121,12 +121,16 @@ def next_run_for(task: dict, after_ms: int) -> Optional[int]:
     )
 
 
-def system_prompt(task: dict, now_ms: int) -> str:
+def _local_time(task: dict, now_ms: int) -> datetime:
     try:
         zone = resolve_timezone(task["timezone"])
     except ValueError:
         zone = timezone.utc
-    local = datetime.fromtimestamp(now_ms / 1000, tz = zone)
+    return datetime.fromtimestamp(now_ms / 1000, tz = zone)
+
+
+def system_prompt(task: dict, now_ms: int) -> str:
+    local = _local_time(task, now_ms)
     when = f"{local:%A}, {local:%B} {local.day}, {local.year} at {local:%H:%M}"
     return (
         f"This is a scheduled task the user set up in Unsloth Studio, running on {when} "
@@ -138,13 +142,14 @@ def system_prompt(task: dict, now_ms: int) -> str:
 _PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
 
 
+def _reject_json_constant(name: str) -> Any:
+    # NaN and Infinity are not JSON to Chat's JSON.parse, which then drops the whole map.
+    raise ValueError(name)
+
+
 def _resolve_prompt_variables(prompt: str, variables_raw: Any, task: dict, now_ms: int) -> str:
     # Mirrors resolveSystemPromptVariables in chat-adapter.ts, using the task timezone.
-    try:
-        zone = resolve_timezone(task["timezone"])
-    except ValueError:
-        zone = timezone.utc
-    local = datetime.fromtimestamp(now_ms / 1000, tz = zone)
+    local = _local_time(task, now_ms)
     offset = local.strftime("%z")
     builtins = {
         "$date": f"{local:%Y-%m-%d}",
@@ -153,7 +158,7 @@ def _resolve_prompt_variables(prompt: str, variables_raw: Any, task: dict, now_m
     }
     try:
         custom = (
-            json.loads(variables_raw)
+            json.loads(variables_raw, parse_constant = _reject_json_constant)
             if isinstance(variables_raw, str) and variables_raw.strip()
             else {}
         )
@@ -190,12 +195,15 @@ def _run_instructions(task: dict, now_ms: int) -> str:
     project = studio_db.get_chat_project(task["projectId"]) if task.get("projectId") else None
     agents_md = agents_md_text(project).strip()
     instructions = project["instructions"].strip() if project and not project["archived"] else ""
-    chat_settings = (_target_chat(task) or {}).get("settings") or {}
+    chat_settings = (_target_chat(task) or {}).get("settings")
+    # Read as Chat does: a snapshot or prompt of the wrong type is absent.
+    chat_settings = chat_settings if isinstance(chat_settings, dict) else {}
+    chat_prompt = chat_settings.get("systemPrompt")
     parts = [
         f"<agents_md>\n{agents_md}\n</agents_md>" if agents_md else "",
         f"<project_instructions>\n{instructions}\n</project_instructions>" if instructions else "",
         _resolve_prompt_variables(
-            chat_settings.get("systemPrompt") or "",
+            chat_prompt if isinstance(chat_prompt, str) else "",
             chat_settings.get("systemVariables"),
             task,
             now_ms,
