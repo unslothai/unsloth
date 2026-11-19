@@ -360,7 +360,6 @@ test("a load opens as the user last left a loaded picker, and an eject expands",
     picker,
     /setExpanded\(useChatRuntimeStore\.getState\(\)\.pickerExpandLoaded\);/,
   );
-  // Only the row, chevron and collapse button record the choice; automatic expands do not.
   assert.match(
     picker,
     /if \(residentKeyRef\.current\) \{\s+useChatRuntimeStore\.getState\(\)\.setPickerExpandLoaded\(next\);/,
@@ -1850,7 +1849,6 @@ test("a failed repo size listing is not cached, so it can retry", () => {
   const sizes = readSrc(
     "components/assistant-ui/composer-model-picker/hub-repo-size.ts",
   );
-  // Only a completed listing is stored; the catch runs after the store.
   assert.match(
     sizes,
     /\.then\(\(bytes\) => \{\s+sizes\.set\(key, bytes\);[\s\S]*?\}\)\s+\/\/[^\n]*\n\s+\.catch\(\(\) => null\)\s+\.finally\(\(\) => inflight\.delete\(key\)\);/,
@@ -1865,7 +1863,6 @@ test("the fit-only filter and the row warning share the measured verdict", () =>
     picker,
     /if \(hubCheckpointFits\.has\(row\.id\.toLowerCase\(\)\)\) \{[^}]*return !hubCheckpointFit\.has\(row\.id\.toLowerCase\(\)\);/,
   );
-  // Sizes come from the search results, so hiding a row cannot drop its own size.
   assert.match(
     picker,
     /hubResults\.flatMap\(\(r\) => \(r\.isGguf \? \[\] : \[r\.id\]\)\)/,

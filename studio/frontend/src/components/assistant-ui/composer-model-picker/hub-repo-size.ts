@@ -7,8 +7,7 @@ import { hubFetch } from "@/lib/hub-fetch";
 import { listFiles } from "@huggingface/hub";
 import { useEffect, useMemo, useState } from "react";
 
-// Summed from the repo's files: the Hub's safetensors parameter counts read packed MLX weights
-// as full-width (a 26 GB 4-bit repo comes out at 97 GB).
+// Summed from files: the Hub's parameter counts read packed MLX weights at full width.
 const sizes = new Map<string, number | null>();
 const inflight = new Map<string, Promise<number | null>>();
 const MAX_CONCURRENT = 3;
@@ -56,14 +55,13 @@ function fetchSize(id: string): Promise<number | null> {
       sizes.set(key, bytes);
       return bytes;
     })
-    // Not cached: a dropped connection or missing token retries on the next list change.
+    // Failures are not cached, so they retry.
     .catch(() => null)
     .finally(() => inflight.delete(key));
   inflight.set(key, promise);
   return promise;
 }
 
-/** Download size of each repo in `ids`, filled in as listings arrive. */
 export function useHubRepoSizes(
   ids: readonly string[],
   enabled: boolean,

@@ -113,7 +113,6 @@ const featureIcon = (icon: typeof StarIcon) => (
   <HugeiconsIcon icon={icon} strokeWidth={1.9} className="size-4.5" />
 );
 
-// The bulb is the composer's own thinking glyph, not a hugeicon.
 const FEATURES = [
   {
     icon: featureIcon(DashboardCircleIcon),
@@ -623,7 +622,6 @@ const EffortMock: FC = () => (
       </span>
       <span className="text-foreground">Medium</span>
     </div>
-    {/* The real slider at half size: a 9px track, level dots, a 12px knob. */}
     <div className="relative h-3">
       <span className="composer-effort-track absolute inset-x-0 top-[calc(1.5px*var(--ui-space-scale,1))] h-[calc(9px*var(--ui-space-scale,1))] rounded-full" />
       <span className="composer-effort-fill absolute top-[calc(1.5px*var(--ui-space-scale,1))] left-0 h-[calc(9px*var(--ui-space-scale,1))] w-[calc(50%+4.5px*var(--ui-space-scale,1))] rounded-full" />

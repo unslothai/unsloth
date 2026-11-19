@@ -2755,7 +2755,6 @@ type ChatRuntimeStore = {
   expandQuantizations: boolean;
   showAllQuantizations: boolean;
   showMemoryBar: boolean;
-  /** The composer picker opens on the full list, not the folded row, while a model is loaded. */
   pickerExpandLoaded: boolean;
   pickerMonochromeIcons: boolean;
   fitOnDeviceOnly: boolean;

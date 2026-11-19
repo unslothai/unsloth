@@ -647,7 +647,6 @@ function MakerMark({
   const mono = useChatRuntimeStore((s) => s.pickerMonochromeIcons);
   const k = OPTICAL_SCALE[provider.id];
   const transform = k ? `scale(${k}) ${fit ?? ""}`.trim() : fit;
-  // Monochrome: brand-coloured logos take the text colour too, like the masked ones.
   if (provider.treatment !== "original" || mono) {
     const url = `url(${src})`;
     return (
@@ -1604,14 +1603,13 @@ export function ComposerModelPicker({
     setExpandedState(next);
     writeExpanded(next);
   }, []);
-  // The Settings switch applies to a picker whose model is already loaded.
   const expandLoaded = useChatRuntimeStore((s) => s.pickerExpandLoaded);
   useEffect(() => {
     if (residentKeyRef.current) {
       setExpanded(expandLoaded);
     }
   }, [expandLoaded, setExpanded]);
-  // The user's own toggle while a model is loaded: every later load opens the same way.
+  // Only user toggles set the global preference; automatic expands do not.
   const toggleExpanded = useCallback(
     (next: boolean) => {
       setExpanded(next);
@@ -2587,7 +2585,7 @@ export function ComposerModelPicker({
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
   const sizeFilter = formatFilter === "mlx" || formatFilter === "safetensors";
-  // From the search results, not the shown rows: the fit filter below reads these sizes.
+  // Not shownRows: the fit filter reads these, so a hidden row would lose its size.
   const hubSizes = useHubRepoSizes(
     useMemo(
       () => hubResults.flatMap((r) => (r.isGguf ? [] : [r.id])),
@@ -2595,8 +2593,7 @@ export function ComposerModelPicker({
     ),
     open && viewed === RECOMMENDED_TAB,
   );
-  // Non-GGUF loads have no offload, so a repo past the device is "exceeds"; the summed files
-  // replace the Hub's estimate, which reads packed MLX weights as full width.
+  // Non-GGUF loads cannot offload: past the device is "exceeds".
   const hubCheckpointFit = useMemo(() => {
     const map = new Map<string, PickerFitStatus>();
     for (const r of hubResults) {
@@ -2605,8 +2602,7 @@ export function ComposerModelPicker({
       }
       const id = r.id.toLowerCase();
       const bytes = hubSizes.get(id);
-      // An MLX repo loads its files as they are: the measured size outranks the 0.4 B/param
-      // estimate hfModelFitsDevice otherwise prefers. Safetensors keep the transformers rule.
+      // curatedSizeBytes outranks hfModelFitsDevice's 0.4 B/param MLX estimate.
       const mlx = isMlxId(r.id, hasMlxCardTag(r));
       const fits = bytes
         ? searchRowFitsDevice(
@@ -2667,7 +2663,6 @@ export function ComposerModelPicker({
           return true;
         }
         if (hubCheckpointFits.has(row.id.toLowerCase())) {
-          // Same verdict as the row's warning, measured size first.
           return !hubCheckpointFit.has(row.id.toLowerCase());
         }
         const fit = hubFit.get(row.id.toLowerCase());
@@ -4131,7 +4126,6 @@ export function ComposerModelPicker({
     const offerOpen = offer?.key === row.key;
     const paramLabel =
       row.kind === "hub" ? (hubParams.get(row.id.toLowerCase()) ?? null) : null;
-    // A GGUF repo's size depends on the quant; an MLX or Safetensors repo is one download.
     const sizeBytes =
       row.kind === "hub" && sizeFilter
         ? hubSizes.get(row.id.toLowerCase())

@@ -663,7 +663,6 @@ function GgufContextLengthSetting({
       />
     ) : null;
   const input = (
-    // The sidebar puts reset beside the number it resets; the label row there is narrow.
     <div className="ml-auto flex shrink-0 items-center gap-1.5">
       {stacked ? reset : null}
       <NumericValueInput

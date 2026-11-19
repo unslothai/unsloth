@@ -135,7 +135,6 @@ export function useCustomFolders({
     [onFoldersChange],
   );
 
-  // One add control: the empty state's row, or this once a folder exists.
   const actions =
     folders.length === 0 ? null : (
       <Hint label="Add a folder to scan for models">
