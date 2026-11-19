@@ -316,7 +316,6 @@ def test_install_hint_finds_editors_and_fails_open(fresh_install_cache, tmp_path
 
 
 def test_install_hint_finds_unpacked_linux_downloads(fresh_install_cache, tmp_path):
-    """The official Blender tarball and Godot zip are unpacked anywhere and never put on PATH."""
     installed = fresh_install_cache
     assert installed.is_installed("blender") is False and installed.is_installed("godot") is False
     (tmp_path / "blender-5.3.0-linux-x64").mkdir()
@@ -328,7 +327,7 @@ def test_install_hint_finds_unpacked_linux_downloads(fresh_install_cache, tmp_pa
 
 def test_a_connected_editor_counts_as_installed(fresh_install_cache):
     installed = fresh_install_cache
-    assert installed.is_installed("godot") is False  # cached False
+    assert installed.is_installed("godot") is False
     installed.note_connected("godot")
     assert installed.is_installed("godot") is True
     assert installed.is_installed("unity") is False
@@ -336,7 +335,6 @@ def test_a_connected_editor_counts_as_installed(fresh_install_cache):
 
 @pytest.mark.asyncio
 async def test_editor_that_refuses_the_connection_says_so(fresh_install_cache, monkeypatch):
-    """Godot MCP Native with its token turned on answers 401; that is not 'Godot is not answering'."""
     from types import SimpleNamespace
 
     class Refused(Exception):

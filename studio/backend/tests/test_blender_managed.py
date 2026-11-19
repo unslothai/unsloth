@@ -166,9 +166,7 @@ def test_long_blender_names_dispatch_with_approval(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_connected_blender_off_path_has_its_executable_kept(monkeypatch, tmp_path):
-    """The official Linux tarball is never on PATH, so BLENDER_PATH fell back to "blender" and the command-line tools
-    (11 of 23) failed with "Blender executable not found" while the test said ready. The running Blender knows where
-    it lives; keep that."""
+    """An unpacked Linux tarball is not on PATH: CLI tools failed with "Blender executable not found"."""
     monkeypatch.setattr(service, "ensure_runtime", lambda: None)
     monkeypatch.setattr(
         service, "list_tools_async", AsyncMock(return_value = [{"name": "execute_blender_code"}])
@@ -201,7 +199,6 @@ async def test_a_connected_blender_off_path_has_its_executable_kept(monkeypatch,
 @pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
 @pytest.mark.parametrize("case", ["world_writable", "not_blender", "missing", "relative"])
 def test_a_reported_executable_that_could_be_planted_is_not_kept(tmp_path, case):
-    """Anything listening on the bridge port can report a path, and Studio later runs it."""
     path = tmp_path / ("tool" if case == "not_blender" else "blender")
     if case != "missing":
         path.write_text("#!/bin/sh\n")

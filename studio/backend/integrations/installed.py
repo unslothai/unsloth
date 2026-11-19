@@ -89,7 +89,6 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
                 "/var/lib/flatpak/app/org.blender.Blender",
                 "~/.local/share/flatpak/app/org.blender.Blender",
                 "~/.steam/steam/steamapps/common/Blender",
-                # Official Linux tarballs, unpacked by hand.
                 "~/blender-*/blender",
                 "/opt/blender*/blender",
             ]
@@ -104,7 +103,6 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
                 "~/.local/share/flatpak/app/org.godotengine.Godot",
                 "/snap/bin/godot*",
                 "~/.steam/steam/steamapps/common/Godot Engine",
-                # Official Linux zips, unpacked by hand.
                 "~/Godot_v4*",
                 "/opt/godot*/Godot_v4*",
             ]

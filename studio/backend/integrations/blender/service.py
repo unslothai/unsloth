@@ -95,8 +95,7 @@ async def _bridge_version(port):
 
 
 def _own_blender(path) -> bool:
-    """A path the Blender bridge reported, which Studio will later run: anything on 127.0.0.1 can answer that port, so
-    keep only an executable named blender* that another account could not have planted."""
+    """Anything on 127.0.0.1 can answer the bridge port and Studio later runs this path: own blender* only."""
     if not isinstance(path, str) or not os.path.isabs(path):
         return False
     if not os.path.basename(path).lower().startswith("blender"):
@@ -145,8 +144,7 @@ async def probe(
             binary = await asyncio.wait_for(_bridge_version(settings.port), timeout = 5)
             result.blender_ready = True
             note_connected("blender")
-            # The CLI tools start Blender themselves; "blender" on PATH is missing for an unpacked Linux tarball, so
-            # report the running Blender's own executable for the settings to keep.
+            # An unpacked Linux tarball is not on PATH: report the running Blender for the CLI tools.
             if not settings.blender_path and not shutil.which("blender") and _own_blender(binary):
                 result.blender_path = binary
         except Exception:

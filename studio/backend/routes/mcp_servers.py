@@ -295,7 +295,6 @@ async def test_blender(
         on_tools = lambda tools: cache_tools(row["id"], tools)
     result = await blender.probe(settings, on_tools = on_tools)
     if saved and result.blender_path:
-        # Keep the running Blender's executable so its command-line tools work without a manual path.
         mcp_servers_db.update_server(
             row["id"],
             {"builtin_config_json": json.dumps({**config, "blender_path": result.blender_path})},

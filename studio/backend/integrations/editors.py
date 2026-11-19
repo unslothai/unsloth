@@ -161,7 +161,7 @@ async def _unity_connected(port: int) -> bool:
 
 
 def _http_status(exc: BaseException) -> Optional[int]:
-    """The HTTP status behind an MCP connect failure, if there was one (httpx is vendored: match by attribute)."""
+    """httpx is vendored, so match the status by attribute."""
     seen = 0
     while exc is not None and seen < 10:
         status = getattr(getattr(exc, "response", None), "status_code", None)
