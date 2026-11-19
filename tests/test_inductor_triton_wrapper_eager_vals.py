@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""torch < 2.13 Inductor asserts while decomposing a user Triton kernel that mutates its inputs under dynamic shapes
-(pytorch/pytorch#181735; the GEGLU backward of a block-compiled Gemma2 layer on torch 2.11). Unsloth retries that
-decomposition with Inductor's values and attaches the eager-mode values to the kernel node."""
+"""pytorch/pytorch#181735: torch < 2.13 Inductor asserts decomposing a mutating Triton kernel under dynamic shapes."""
 
 import inspect
 import os

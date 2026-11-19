@@ -7629,13 +7629,9 @@ def fix_inductor_reduction_readback_race():
 
 
 def fix_inductor_triton_wrapper_eager_vals():
-    """torch < 2.13 (checked 2.10 - 2.12): Inductor's decompose_triton_kernel_wrapper_functional traces the clone +
-    kernel decomposition twice (eager-mode and Inductor FakeTensors) and asserts both graphs have the same node
-    count. Under dynamic shapes the symbolic storage-length arithmetic of a mutated input can simplify differently
-    in the two traces, and compiling raises a bare AssertionError (pytorch/pytorch#181735). Unsloth hits it in the
-    GEGLU backward kernel of a block-compiled Gemma2 layer (torch 2.11, CUDA and ROCm). On that assertion, trace
-    once with Inductor's values and give the kernel node the matched node's eager-mode values, as torch >= 2.13
-    does (_propagate_triton_eager_input_vals)."""
+    """torch < 2.13: Inductor asserts equal node counts when tracing a mutating Triton kernel decomposition with
+    eager and Inductor values; dynamic shapes can differ (pytorch/pytorch#181735, Gemma2 GEGLU backward). On that
+    assertion retrace with Inductor values and attach eager values, as torch >= 2.13 does."""
     try:
         import torch
         from torch._inductor import pattern_matcher as pm
@@ -7670,8 +7666,7 @@ def fix_inductor_triton_wrapper_eager_vals():
             eager = hop.meta.get("eager_input_vals")
             if eager is None:
                 raise
-        # The failed attempt only traced: the graph is unchanged. Without eager_input_vals on the matched node
-        # replace_by_example traces with Inductor's values alone and inserts that graph.
+        # The failed attempt only traced, so the graph is unchanged.
         graph = hop.graph
         before = set(graph.find_nodes(op = "call_function", target = mutation))
         del hop.meta["eager_input_vals"]
