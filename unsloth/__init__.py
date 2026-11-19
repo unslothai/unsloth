@@ -1487,6 +1487,32 @@ if _IS_MLX:
                 f"cannot be ignored safely: {', '.join(unsupported)}."
             )
 
+    def _mlx_row_formatting_func(formatting_func, dataset):
+        # CUDA Unsloth calls formatting_func on a batch of column lists; MLX calls it on one row,
+        # where a batched function would index characters, so feed such a function one-row batches.
+        try:
+            if iter(dataset) is dataset:
+                return formatting_func
+            row = next(iter(dataset))
+            if not isinstance(row, dict):
+                return formatting_func
+            batched = formatting_func({key: [value] for key, value in row.items()})
+        except Exception:
+            return formatting_func
+        if not (isinstance(batched, list) and len(batched) == 1 and isinstance(batched[0], str)):
+            return formatting_func
+        try:
+            texts = formatting_func(row)
+        except Exception:
+            texts = []
+        if not isinstance(texts, list) or len(texts) == 1:
+            return formatting_func
+
+        def formatting_func_per_row(example):
+            return formatting_func({key: [value] for key, value in example.items()})
+
+        return formatting_func_per_row
+
     class UnslothTrainer(MLXTrainer):
         """Backend-aware public trainer that routes supported SFT notebooks to MLX."""
 
@@ -1596,6 +1622,10 @@ if _IS_MLX:
                         "trainer's native batching path."
                     )
 
+            if kwargs.get("formatting_func") is not None:
+                kwargs["formatting_func"] = _mlx_row_formatting_func(
+                    kwargs["formatting_func"], kwargs.get("train_dataset")
+                )
             trainer_kwargs, config_kwargs, ignored_kwargs = _split_mlx_trainer_kwargs(
                 kwargs,
                 self._unsloth_mlx_extra_kwargs,

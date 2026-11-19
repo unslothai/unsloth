@@ -737,6 +737,42 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
     assert config_with_override.args.max_length == 432
 
 
+def test_mlx_trainer_feeds_batched_formatting_func_one_row_batches():
+    """A CUDA-style batched formatting_func must not be indexed into characters on MLX."""
+    unsloth = _import_mlx_unsloth()
+    rows = [{"problem": "Add 2 and 3.", "answer": "5"}, {"problem": "Halve 8.", "answer": "4"}]
+
+    def batched(examples):
+        return [
+            f"Q: {examples['problem'][i]} A: {examples['answer'][i]}"
+            for i in range(len(examples["problem"]))
+        ]
+
+    def per_row(example):
+        return f"Q: {example['problem']} A: {example['answer']}"
+
+    def per_row_list(example):
+        return [f"Q: {example['problem']}", f"A: {example['answer']}"]
+
+    class Streamed:
+        def __iter__(self):
+            return iter(rows)
+
+    def formatting_func(func, dataset = rows):
+        return unsloth.UnslothTrainer(
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = dataset,
+            formatting_func = func,
+            args = unsloth.UnslothTrainingArguments(max_steps = 1),
+        ).formatting_func
+
+    assert formatting_func(batched)(rows[1]) == ["Q: Halve 8. A: 4"]
+    assert formatting_func(batched, Streamed())(rows[1]) == ["Q: Halve 8. A: 4"]
+    assert formatting_func(per_row) is per_row
+    assert formatting_func(per_row_list) is per_row_list
+
+
 def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():
     """TRL passes tokenizer=None while processing_class carries the tokenizer."""
     unsloth = _import_mlx_unsloth()
