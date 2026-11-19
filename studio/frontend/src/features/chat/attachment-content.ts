@@ -1805,12 +1805,13 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
     file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
   ]);
   const pdf = await getDocumentProxy(buffer);
+  let pages: string[];
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
     const { text } = await extractText(pdf);
     // getAnnotations re-reads the text under each link, so only forms call it
     const hasFields = await pdf.getFieldObjects().then(Boolean, () => false);
-    const pages = await Promise.all(
+    pages = await Promise.all(
       text.map(async (pageText, index) => {
         const annotations = hasFields
           ? await pdf
@@ -1822,10 +1823,16 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
         return [pageText, ...fields].filter(Boolean).join("\n");
       }),
     );
-    return normalizeExtractedText(pages.join("\n\n"));
   } finally {
     await pdf.destroy();
   }
+  if (pages.some((page) => !page.trim())) {
+    const scanned = await import("./server-document")
+      .then((m) => m.extractServerDocumentText(file))
+      .catch(() => null);
+    if (scanned !== null) return scanned;
+  }
+  return normalizeExtractedText(pages.join("\n\n"));
 }
 
 // A text attachment's limit, in UTF-8 bytes. Cells are not capped, so the total must be.
