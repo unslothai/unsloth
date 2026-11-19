@@ -59,8 +59,7 @@ class _Peak:
             h.remove()
 
 
-# A decode loop shaped like Unsloth's: block weights are read directly, never by calling the block,
-# with the block-swap enter / leave around each one.
+# Decode reads block weights directly, never calling the block, with block-swap enter/leave.
 class _Block(torch.nn.Module):
     def __init__(self, d):
         super().__init__()
@@ -149,9 +148,8 @@ def _loop_greedy(model):
     return model.generate(torch.tensor(PROMPT) % 32, NEW_TOKENS)[0].tolist()
 
 
-# VLM-shaped: a vision tower whose blocks are FSDP units next to the language decoder. Ranks may
-# generate from different modalities (image on rank 0, text only on rank 1), so the tower must be
-# gathered up front and never streamed: a streamed tower block would all-gather on rank 0 only.
+# VLM-shaped: ranks may generate from different modalities (image vs text), so the vision tower is
+# gathered up front, never streamed; a streamed block would all-gather on rank 0 only.
 class _Tower(torch.nn.Module):
     def __init__(self, d):
         super().__init__()

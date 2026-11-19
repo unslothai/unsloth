@@ -665,6 +665,28 @@ test("an MLX resident is judged on its speculative settings, a standing ngram re
   assert.equal(residentSpeculativeNeedsRepair(notFound, "auto"), false);
 });
 
+test("MLX-only load settings are judged on an MLX resident, not on a transformers one", () => {
+  const mlx = { ...DEFAULTS, is_gguf: false, is_mlx: true };
+  for (const [chosen, running] of [
+    [{ disableVision: true }, { disable_vision: true }],
+    [{ reasoningBudget: 64 }, { requested_reasoning_budget: 64 }],
+    [{ reasoningBudgetMessage: "Done." }, { requested_reasoning_budget_message: "Done." }],
+    [{ nUbatch: 512 }, { requested_n_ubatch: 512 }],
+    [{ nBatch: 512 }, { requested_n_batch: 512 }],
+    [{ cacheRam: 0 }, { requested_cache_ram: 0 }],
+  ] as [object, object][]) {
+    const config = { ...BLANK, ...chosen };
+    const resident = { ...mlx, ...running };
+    assert.deepEqual(
+      [matches(mlx, config), matches(resident, config), matches(resident, BLANK)],
+      [false, true, false],
+    );
+    assert.equal(matches({ ...mlx, is_mlx: false }, config), true);
+  }
+  // MLX has no unlimited prompt cache and loads -1 as the default.
+  assert.equal(matches(mlx, { ...BLANK, cacheRam: -1 }), true);
+});
+
 test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
   // requested_context_length is GGUF-only, so its absence on safetensors/MLX is not 0.
   assert.equal(

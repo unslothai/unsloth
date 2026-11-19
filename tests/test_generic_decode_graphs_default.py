@@ -192,9 +192,8 @@ def test_kept_graph_replays_the_next_call_and_training_releases_it(host, llama, 
 
 
 def test_kept_graph_hook_is_inert_in_a_compiled_training_forward(host, llama):
-    # A kept graph leaves a forward pre-hook that frees it when training resumes. Dynamo tracing a compiled
-    # training forward must not run it (removing a hook while tracing is a graph break, an error under fullgraph);
-    # the next eager training forward still frees the graph.
+    # A kept graph's pre-hook frees it on resumed training; Dynamo must not run it while tracing,
+    # since removing a hook there is an error under fullgraph; the next eager forward frees it.
     _gen(llama)
     state = llama.__dict__[GG._ATTR]
     assert GG.kept_cache(llama) is not None and state.hook is not None
@@ -326,9 +325,8 @@ class _Muse(torch.nn.Module):
 
 
 def test_placeholder_masking_models_embed_outside_the_graph(host):
-    """Muse-Glimmer / Muse-Spark / Kimi-K2.5 zero placeholder ids with ids[mask] = 0 (a boolean index_put_, a
-    host sync): their decode step gets the same embeddings computed before the graph, from the same ops, never
-    tracking grad (the embedding is trainable) so they pass the argument check."""
+    """Muse-Glimmer, Muse-Spark and Kimi-K2.5 zero placeholder ids with ids[mask] = 0 (a host sync),
+    so embeddings are computed before the graph without grad to pass the argument check."""
     ids = torch.tensor([[5], [3], [6]])
     model = _Muse()
     assert model.embed.weight.requires_grad
@@ -370,9 +368,8 @@ def _hooked(model, hook):
 
 
 def test_a_single_device_accelerate_hook_keeps_graphs_eligible(monkeypatch):
-    """A bitsandbytes model placed on cuda:1 gets accelerate's AlignDevicesHook (force_hooks, vision.py
-    _attach_bnb_multidevice_hooks): an instance forward plus _hf_hook, which wanted() used to refuse, so
-    no decode step of a model on a second card was ever graphed."""
+    """A bitsandbytes model on cuda:1 gets accelerate's AlignDevicesHook (vision.py); wanted()
+    refused its instance forward plus _hf_hook, so second-card decodes were never graphed."""
     from accelerate.hooks import AlignDevicesHook, ModelHook
 
     class OnCard1(torch.nn.Linear):
@@ -432,9 +429,8 @@ def test_refusal_reasons_name_the_argument(host, llama, monkeypatch):
 
 
 class _HostEmbedding(torch.nn.Module):
-    """Unsloth's offloaded input embedding as the decode step sees it: the weight lives off the compute device
-    (meta stands in for host RAM) behind hooks that return the rows on the decoder's device. Records whether
-    each lookup ran inside a graph capture or replay."""
+    """Unsloth's offloaded input embedding: weight on meta (for host RAM), hooks return rows on the
+    decoder's device; records whether each lookup ran in a capture or replay."""
 
     def __init__(self, real, inside):
         super().__init__()

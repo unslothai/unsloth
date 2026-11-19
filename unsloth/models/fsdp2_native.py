@@ -2019,9 +2019,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         qlora = infos.get("bnb_qlora")
         ignored, _ = _unify_dtypes(
             model,
-            # Root only: every trainable param is in the root group. Otherwise the split root
-            # embedding tables are units of their own, not part of the root's dtype group; so are the
-            # frozen ones kept whole (never upcast with the root).
+            # Root only: every trainable param is in the root group. Otherwise split root embedding
+            # tables are their own units; frozen ones stay whole, never upcast with the root.
             ([] if layout.root_only else units + list(extra_units)) + frozen_split + io_tables,
             param_dtype,
             can_ignore = config.replicate_minority_dtype and _supports_ignored_params(fully_shard),

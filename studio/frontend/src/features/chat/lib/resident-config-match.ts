@@ -115,6 +115,11 @@ export type StandingConfigDefaults = {
   normalizeSpeculative: (value: string | null | undefined) => string | null;
 };
 
+/** A transformers resident reads none of these load settings; GGUF and MLX do. */
+function readsNoLoadSwitches(s: ResidentRuntime): boolean {
+  return s.is_gguf === false && s.is_mlx !== true;
+}
+
 type SettingCheck = {
   placement?: true;
   mlxComparable?: true;
@@ -312,13 +317,19 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s) => (c.nBatch ?? null) === (s.requested_n_batch ?? null),
+    agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
+      (c.nBatch ?? null) === (s.requested_n_batch ?? null),
   },
   {
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s) => (c.nUbatch ?? null) === (s.requested_n_ubatch ?? null),
+    agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
+      (c.nUbatch ?? null) === (s.requested_n_ubatch ?? null),
   },
   {
     chatOnly: true,
@@ -341,25 +352,34 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s) => (c.cacheRam ?? null) === (s.requested_cache_ram ?? null),
+    agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
+      // MLX has no unlimited prompt cache: it loads -1 as the default.
+      ((s.is_mlx === true && (c.cacheRam ?? 0) < 0 ? null : c.cacheRam) ?? null) ===
+        (s.requested_cache_ram ?? null),
   },
   {
     // Status echoes the effective budget, so env-shaped servers read as a reload (safe side).
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
       (c.reasoningBudget ?? -1) ===
-      (s.requested_reasoning_budget ?? s.reasoning_budget ?? -1),
+        (s.requested_reasoning_budget ?? s.reasoning_budget ?? -1),
   },
   {
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
       (c.reasoningBudgetMessage ?? "") ===
-      (s.requested_reasoning_budget_message ??
-        s.reasoning_budget_message ??
-        ""),
+        (s.requested_reasoning_budget_message ??
+          s.reasoning_budget_message ??
+          ""),
   },
   {
     pinned: () => true,
@@ -375,8 +395,10 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     // Backend reloads on mismatch, so adopting would keep projector VRAM spent.
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s) => c.disableVision === (s.disable_vision ?? false),
+    agrees: (c, s) =>
+      readsNoLoadSwitches(s) || c.disableVision === (s.disable_vision ?? false),
   },
   {
     // The table is part of the weights, so a different one is a different load.

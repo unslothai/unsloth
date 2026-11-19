@@ -79,6 +79,14 @@ export function committedServerTuningState(
   };
 }
 
+/** MLX reads only the prompt cache size of these. */
+export function committedMlxServerTuningState(
+  values: ServerTuningValues,
+): ServerTuningState {
+  const cacheRam = values.cacheRam ?? null;
+  return { ...clearedServerTuningState(), cacheRam, loadedCacheRam: cacheRam };
+}
+
 /** Clears both halves, or a rollback re-sends the departed model's baseline. */
 export function clearedServerTuningState(): ServerTuningState {
   return {

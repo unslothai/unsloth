@@ -74,7 +74,7 @@ VLM_PREFILL_STEP = 2048
 VLM_PROMPT_CACHE_ENTRIES = 6
 
 
-def _prefill_layer_step(model, step):
+def _prefill_layer_step(model, step, own):
     if not step:
         return None
     try:
@@ -82,8 +82,14 @@ def _prefill_layer_step(model, step):
         wide = wide_prefill_step(model)
     except Exception:
         return None
-    own = vlm_prefill_step()
     return own if wide == own and step % own == 0 else None
+
+
+def _prefill_choice(planned, chosen):
+    """(step, grid) for a load. Memory was priced at the offload planner's chunk, so a larger chosen
+    step never replaces it, and the grid keeps its default rather than outgrow it."""
+    step = min(filter(None, (planned, chosen)), default = None)
+    return step, chosen if chosen and (planned is None or chosen <= planned) else None
 
 
 def vlm_prefill_step():
@@ -2154,6 +2160,58 @@ def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
         return False
 
 
+def _text_load_drops_the_tower(model_name, hf_token = None) -> bool:
+    """Whether a text-only load builds mlx-lm's text model without the vision weights. unsloth-zoo keeps a
+    family whose mlx-lm build strips the tower only in sanitize on mlx-vlm, tower attached, so that one
+    keeps its vision load and only stops reading images."""
+    try:
+        from utils.models.model_config import _read_raw_config_json
+        from unsloth_zoo.mlx.loader import _prefer_vlm_loader_for_text
+
+        config = _read_raw_config_json(model_name, hf_token) or {}
+        return not _prefer_vlm_loader_for_text(config, config.get("model_type") or "")
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("MLX text-only route check skipped for %s (%s)", model_name, exc)
+        return False
+
+
+def _release_vision_weights(model) -> int:
+    """Vision-weight bytes a no-image load left unread or freed; an older unsloth_zoo frees none."""
+    if getattr(model, "_unsloth_vision_freed", 0):
+        return model._unsloth_vision_freed
+    try:
+        from unsloth_zoo.mlx.loader import release_vision_weights
+    except ImportError:
+        return 0
+    return release_vision_weights(model)
+
+
+def _priced_as_chosen(load_model):
+    """A load's offload plan and context fit price it with its Vision switch and prompt cache size."""
+
+    @functools.wraps(load_model)
+    def priced(
+        self,
+        config,
+        *args,
+        disable_vision = False,
+        prompt_cache_mib = None,
+        **kwargs,
+    ):
+        from core.inference.mlx_memory import mlx_dropping_vision, mlx_prompt_cache_chosen
+        with mlx_dropping_vision(config, disable_vision), mlx_prompt_cache_chosen(prompt_cache_mib):
+            return load_model(
+                self,
+                config,
+                *args,
+                disable_vision = disable_vision,
+                prompt_cache_mib = prompt_cache_mib,
+                **kwargs,
+            )
+
+    return priced
+
+
 def _classify_mlx_audio_type(
     model,
     processor,
@@ -3300,7 +3358,8 @@ def mlx_memory_budget(*, retains_history: bool = True) -> Optional[int]:
     budget = int(recommended * MLX_MEMORY_LIMIT_FRACTION)
     if retains_history:
         budget -= _prompt_cache_max_bytes(recommended / 1e9)
-    return budget if budget > 0 else None
+    # A prompt cache that takes all of it leaves nothing that fits, not an unpriced load.
+    return max(budget, 0)
 
 
 def _snapshot_dir(model, model_name: str) -> Optional[str]:
@@ -3686,7 +3745,12 @@ def _mlx_prompt_cache_api():
     return LRUPromptCache, make_prompt_cache, can_trim_prompt_cache, trim_prompt_cache
 
 
-def _prompt_cache_max_bytes(recommended_gb = None):
+def _prompt_cache_max_bytes(recommended_gb = None, chosen_mib = None):
+    from core.inference.mlx_memory import _PROMPT_CACHE_MIB
+
+    chosen = _PROMPT_CACHE_MIB.get() if chosen_mib is None else chosen_mib
+    if chosen is not None:
+        return chosen * 1024**2
     override = os.environ.get("UNSLOTH_MLX_PROMPT_CACHE_BYTES")
     if override:
         try:
@@ -4279,6 +4343,7 @@ def _mlx_sampling_processors(
     grammar_constraint = None,
     penalty_window = None,
     penalty_prompt = None,
+    reasoning_budget = None,
 ):
     """Logits processors for the sampling knobs, or ``None`` when all are inert. Bias runs before
     the penalties, matching llama-server's sampler order. mlx_lm supplies only the repetition
@@ -4286,15 +4351,17 @@ def _mlx_sampling_processors(
     prompt*, while the penalties below score the whole completion and exclude it, so using them
     would make the same request sample differently depending on the backend. ``penalty_window``
     is llama-server's ``repeat_last_n``: one window for all three penalties, ``0`` disabling them.
-    ``penalty_prompt`` is the full prompt, so the window reaches the part the runtime withholds."""
+    ``penalty_prompt`` is the full prompt, so the window reaches the part the runtime withholds.
+    ``reasoning_budget`` runs last, so the token it forces is never penalized away."""
     processors = []
     if grammar_constraint is not None:
         from core.inference.grammar_constraint import make_grammar_logits_processor
         processors.append(make_grammar_logits_processor(grammar_constraint))
     if logit_bias:
         processors.append(_make_mlx_logit_bias_processor(logit_bias))
+    budget = [reasoning_budget] if reasoning_budget is not None else []
     if penalty_window == 0:
-        return processors or None
+        return [*processors, *budget] or None
     penalties = []
     if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
         from mlx_lm.sample_utils import make_logits_processors
@@ -4317,6 +4384,7 @@ def _mlx_sampling_processors(
             _with_prompt_history(penalty, penalty_prompt, penalty_window) for penalty in penalties
         ]
     processors.extend(penalties)
+    processors.extend(budget)
     return processors or None
 
 
@@ -4545,9 +4613,13 @@ def _asks_for_row_processors(request):
     )
 
 
-def _row_processor_gap(engine, requests):
+def _row_processor_gap(
+    engine,
+    requests,
+    needed = False,
+):
     """Why these replies' penalties cannot travel into a batch, or None."""
-    if not any(_asks_for_row_processors(request) for request in requests):
+    if not needed and not any(_asks_for_row_processors(request) for request in requests):
         return None
     unavailable = getattr(engine, "row_logits_processors_unavailable_reason", None)
     return unavailable() if callable(unavailable) else None
@@ -4779,7 +4851,7 @@ class _TextBatchSession:
                     [token] for token in _mlx_stop_token_ids(backend._tokenizer, backend._model)
                 ],
                 completion_batch_size = width,
-                prefill_batch_size = width,
+                prefill_batch_size = backend._prefill_rows(width),
                 **backend._prefill_step_kwargs(BatchGenerator),
             )
         except BaseException:
@@ -4830,7 +4902,12 @@ class _TextBatchSession:
             # mlx-lm batches token ids only: the image prefills here, and stays out of the token-keyed cache.
             cache = backend._make_row_cache()
             all_tokens = prefill_image_prompt(
-                backend._model, backend._tokenizer, plan.prompt, [image], cache
+                backend._model,
+                backend._tokenizer,
+                plan.prompt,
+                [image],
+                cache,
+                **backend._prefill_step_kwargs(prefill_image_prompt),
             )
             prefix, remainder, cache_key = all_tokens[:-1], all_tokens[-1:], None
             if row_kwargs["max_new_tokens"] is None:
@@ -5354,7 +5431,12 @@ class MLXInferenceBackend:
         self._turboquant_refusal = ""
         self._speculative_draft = None
         self._prefill_step = None
+        self._prefill_grid = None
+        self._prompt_cache_mib = None
+        self._prefill_batch = None
         self._prefill_layer_step = None
+        self._reasoning_budget = -1
+        self._reasoning_budget_message = ""
         self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
@@ -5410,7 +5492,10 @@ class MLXInferenceBackend:
         return self._prompt_cache_history
 
     def _prompt_cache_bytes(self):
-        max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+        max_bytes = _prompt_cache_max_bytes(
+            self._memory_limits_applied.get("recommended_gb"),
+            getattr(self, "_prompt_cache_mib", None),
+        )
         room = getattr(self, "_prompt_cache_room", None)
         return max_bytes if room is None else min(max_bytes, room)
 
@@ -5458,6 +5543,7 @@ class MLXInferenceBackend:
             bool(self._ane_prefill.get("active")),
             bool(self._fast_verify.get("active")),
             self._prefill_step,
+            getattr(self, "_prefill_grid", None),
             self._resume_load_args,
         )
 
@@ -5623,7 +5709,7 @@ class MLXInferenceBackend:
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
-                step = vlm_prefill_step(),
+                step = self._grid_step(),
                 window = self._session_window(),
             )
         except Exception as exc:
@@ -5682,7 +5768,7 @@ class MLXInferenceBackend:
             make_cache,
             media_ids,
             releases_unserved = bool(images),
-            step = vlm_prefill_step(),
+            step = self._grid_step(),
             alone = alone,
         )
 
@@ -5849,7 +5935,42 @@ class MLXInferenceBackend:
             and not self._kv_runtime_quant_kwargs()
         ):
             return step
-        return vlm_prefill_step()
+        return self._grid_step()
+
+    def _grid_step(self):
+        """The prefill grid every request of this load runs on: the chosen micro-batch, else mlx-vlm's own."""
+        return getattr(self, "_prefill_grid", None) or vlm_prefill_step()
+
+    def _prefill_rows(self, width):
+        """Replies one batched prefill forward takes. The chosen batch size caps that forward's tokens,
+        as llama.cpp's logical batch does, and never below one reply."""
+        cap = getattr(self, "_prefill_batch", None)
+        if not cap:
+            return width
+        # A batch prefills at the step or on the grid, depending on the path: count the wider one.
+        step = max(filter(None, (getattr(self, "_prefill_step", None), self._grid_step())))
+        return max(1, min(width, cap // step))
+
+    def _budgets_reasoning(self) -> bool:
+        return getattr(self, "_reasoning_budget", -1) >= 0
+
+    def _reasoning_budget_processor(
+        self,
+        prompt,
+        markers,
+        constraint = None,
+    ):
+        """The load's reasoning budget for one templated reply; a raw prompt has no reasoning block,
+        and a document-only grammar allows none."""
+        if not isinstance(prompt, str) or not self._budgets_reasoning():
+            return None
+        if constraint is not None and not constraint.allows_reasoning:
+            return None
+        from core.inference.mlx_reasoning_budget import make_reasoning_budget_processor
+
+        return make_reasoning_budget_processor(
+            self._tokenizer, self._reasoning_budget, self._reasoning_budget_message, markers, prompt
+        )
 
     def _prefill_step_kwargs(
         self,
@@ -5858,7 +5979,7 @@ class MLXInferenceBackend:
     ):
         step = getattr(self, "_prefill_step", None)
         if step is not None and grid:
-            step = vlm_prefill_step()
+            step = self._grid_step()
         if step is None or not (target is None or _takes_prefill_step(target)):
             return {}
         return {"prefill_step_size": step}
@@ -6080,6 +6201,7 @@ class MLXInferenceBackend:
             logger.info("MLX context limited to %d tokens per request, not by the cache", budget)
         return quant, None, (None if confirmed is None else False), budget
 
+    @_priced_as_chosen
     def load_model(
         self,
         config,
@@ -6101,6 +6223,12 @@ class MLXInferenceBackend:
         spec_draft_model = None,
         spec_drafters_allowed = None,
         offload = (None, None),
+        disable_vision = False,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+        prefill_step = None,
+        prefill_batch = None,
+        prompt_cache_mib = None,
     ) -> bool:
         import mlx.core as mx
 
@@ -6120,6 +6248,15 @@ class MLXInferenceBackend:
         vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
             route_config, hf_token
         )
+        # Vision off reads no images. An adapter or audio input keeps the processor it was built for.
+        vision_off = bool(
+            disable_vision
+            and (is_vision or zoo_multimodal)
+            and not is_lora
+            and not is_audio_input_type(getattr(config, "audio_type", None))
+        )
+        if vision_off and _text_load_drops_the_tower(route_config, hf_token):
+            is_vision = zoo_multimodal = False
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
         if self._turboquant:
@@ -6227,6 +6364,8 @@ class MLXInferenceBackend:
             "text_only": not use_vlm,
             "quantize_embeddings": not is_lora,
         }
+        if vision_off:
+            load_kwargs["drop_vision_weights"] = True
         if is_distributed:
             if parallel_mode == "pipeline":
                 load_kwargs["pipeline_group"] = distributed_group
@@ -6279,6 +6418,9 @@ class MLXInferenceBackend:
 
         # Freed before the replacement weights are allocated, for headroom.
         self._model_fusion.close()
+        self._prompt_cache_mib = (
+            prompt_cache_mib if prompt_cache_mib is not None and prompt_cache_mib >= 0 else None
+        )
         self._clear_prompt_cache()
         model = None
         try:
@@ -6341,6 +6483,11 @@ class MLXInferenceBackend:
         zoo_loaded_multimodal = zoo_multimodal and not served_by_mlx_lm
         if zoo_loaded_multimodal:
             is_vision = getattr(model, "_unsloth_supports_images", None) is True
+        if vision_off:
+            is_vision = False
+        vision_freed = _release_vision_weights(model) if vision_off else 0
+        if vision_freed:
+            logger.info("Vision off: %.2f GiB of vision weights not held", vision_freed / 2**30)
         self._reads_vision = bool(is_vision)
         if use_vlm:
             processor = tokenizer_or_processor
@@ -6376,8 +6523,13 @@ class MLXInferenceBackend:
         _offload = _mlx_offload_status(offload, self._model)
         _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
-        self._prefill_step = offload["prefill_step"] if _offload["experts"]["applied"] else None
-        self._prefill_layer_step = _prefill_layer_step(self._model, self._prefill_step)
+        planned = offload["prefill_step"] if _offload["experts"]["applied"] else None
+        chosen_step = _positive_int(prefill_step)
+        self._prefill_step, self._prefill_grid = _prefill_choice(planned, chosen_step)
+        self._prefill_batch = _positive_int(prefill_batch)
+        self._prefill_layer_step = _prefill_layer_step(
+            self._model, self._prefill_step, self._grid_step()
+        )
         if self._prefill_step:
             _offloaded["prefill_chunk"] = self._prefill_step
         _priceable = not (is_distributed or is_lora or dtype is not None)
@@ -6573,6 +6725,8 @@ class MLXInferenceBackend:
             )
 
         self.active_model_name = model_name
+        self._reasoning_budget = -1 if reasoning_budget is None else int(reasoning_budget)
+        self._reasoning_budget_message = reasoning_budget_message or ""
         try:
             self._resume_files = self._resume_weight_files()
         except OSError:
@@ -6588,6 +6742,9 @@ class MLXInferenceBackend:
             "tokenizer": self._tokenizer,
             "processor": self._processor,
             "is_vision": is_vision,
+            "disable_vision": bool(disable_vision),
+            "vision_disabled_by_user": vision_off,
+            "vision_weights_freed": vision_freed,
             "is_lora": getattr(config, "is_lora", False),
             # For a LoRA adapter the native chat template lives on the base model.
             "base_model": getattr(config, "base_model", None)
@@ -6636,6 +6793,11 @@ class MLXInferenceBackend:
             "spec_draft_model": spec_draft_model or None,
             "spec_drafter_kind": spec_kind,
             "spec_fallback_reason": spec_reason,
+            "reasoning_budget": self._reasoning_budget,
+            "reasoning_budget_message": self._reasoning_budget_message,
+            "n_ubatch": chosen_step,
+            "n_batch": self._prefill_batch,
+            "cache_ram": self._prompt_cache_mib,
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
@@ -6660,6 +6822,13 @@ class MLXInferenceBackend:
         logger.info("Model %s loaded successfully", model_name)
         return True
 
+    def _checkpoint_unchanged(self) -> bool:
+        """Whether the held weights are still the files on disk, so they can serve another load."""
+        try:
+            return bool(self._resume_files) and self._resume_files == self._resume_weight_files()
+        except OSError:
+            return False
+
     def narrow_context(self, max_seq_length):
         """Serve a smaller context from the held weights; None where a fresh load could decide differently."""
         entry = self.models.get(self.active_model_name)
@@ -6675,10 +6844,7 @@ class MLXInferenceBackend:
             or entry.get("spec_fallback_reason")
         ):
             return None
-        try:
-            if not self._resume_files or self._resume_files != self._resume_weight_files():
-                return None
-        except OSError:
+        if not self._checkpoint_unchanged():
             return None
         # The served length reads this attribute before the argument.
         previous = self._model.max_seq_length
@@ -6698,6 +6864,55 @@ class MLXInferenceBackend:
             "context_length_enforced": enforced,
             "context_length_fitted": None,
             "mlx_context_budget": self._kv_context_budget,
+        }
+        entry.update(fields)
+        return fields
+
+    def retune(
+        self,
+        max_seq_length = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+        prefill_batch = None,
+        prompt_cache_mib = None,
+    ):
+        """Apply settings the held weights serve as they are: these, a smaller context, a smaller
+        prompt cache. None, with nothing changed, where a fresh load could decide differently."""
+        entry = self.models.get(self.active_model_name)
+        if entry is None or not self._checkpoint_unchanged():
+            return None
+        chosen_cache = (
+            prompt_cache_mib if prompt_cache_mib is not None and prompt_cache_mib >= 0 else None
+        )
+        cache_changes = chosen_cache != self._prompt_cache_mib
+        if cache_changes:
+            recommended = self._memory_limits_applied.get("recommended_gb")
+            # A larger cache takes memory the load gave its context.
+            if _prompt_cache_max_bytes(recommended, chosen_cache) > _prompt_cache_max_bytes(
+                recommended, self._prompt_cache_mib
+            ):
+                return None
+        fields = {}
+        if max_seq_length is not None:
+            fields = self.narrow_context(max_seq_length)
+            if fields is None:
+                return None
+        self._reasoning_budget = -1 if reasoning_budget is None else int(reasoning_budget)
+        self._reasoning_budget_message = reasoning_budget_message or ""
+        self._prefill_batch = _positive_int(prefill_batch)
+        if cache_changes:
+            self._prompt_cache_mib = chosen_cache
+            room = self._prompt_cache_room
+            self._clear_prompt_cache()
+            self._prompt_cache_room = room
+        fields = {
+            **fields,
+            "reasoning_budget": self._reasoning_budget,
+            "reasoning_budget_message": self._reasoning_budget_message,
+            "n_batch": self._prefill_batch,
+            "cache_ram": self._prompt_cache_mib,
+            # A budget needs per-row logits processors, which decide whether vision rows batch.
+            "context_unbounded_when_batched": self._vision_batch_is_available(),
         }
         entry.update(fields)
         return fields
@@ -6847,7 +7062,11 @@ class MLXInferenceBackend:
             del self.models[model_name]
         self._speculative_draft = None
         self._prefill_step = None
+        self._prefill_grid = None
+        self._prefill_batch = None
         self._prefill_layer_step = None
+        self._prompt_cache_mib = None
+        self._reasoning_budget = -1
         self._model = None
         self._tokenizer = None
         self._processor = None
@@ -7382,6 +7601,9 @@ class MLXInferenceBackend:
             grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
+            reasoning_budget = self._reasoning_budget_processor(
+                prompt, reasoning_channel_markers, constraint
+            ),
         )
         recorded = token_logprobs = None
         if n_probs:
@@ -7707,6 +7929,9 @@ class MLXInferenceBackend:
             grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
+            reasoning_budget = self._reasoning_budget_processor(
+                prompt, reasoning_channel_markers, constraint
+            ),
         )
 
         normalizer = (
@@ -8113,6 +8338,7 @@ class MLXInferenceBackend:
             grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
+            reasoning_budget = self._reasoning_budget_processor(prompt, markers, constraint),
         )
         if processors:
             # Not the repetition_penalty shortcut: mlx-vlm would build it outside our narrowing
@@ -8284,6 +8510,8 @@ class MLXInferenceBackend:
             recorder, recorded = _make_mlx_raw_logprob_recorder()
             token_logprobs = []
         draft = self._speculative_draft
+        # Not settle-able, so a budgeted reply decodes without the drafter.
+        budget = self._reasoning_budget_processor(prompt, vlm_reasoning_markers, constraint)
         if (
             presence_penalty
             or frequency_penalty
@@ -8292,6 +8520,7 @@ class MLXInferenceBackend:
             or (_rep_active and draft is not None)
             or penalty_window is not None
             or recorded is not None
+            or budget is not None
         ):
             # These need custom processors: pass the full list (repetition + the rest) instead of the
             # repetition_penalty shortcut so all apply.
@@ -8303,6 +8532,7 @@ class MLXInferenceBackend:
                 grammar_constraint = constraint,
                 penalty_window = penalty_window,
                 penalty_prompt = prompt_ids,
+                reasoning_budget = budget,
             )
             if recorded is not None:
                 # Not history_only, so no draft runs: its verify pass would record rejected tokens.
@@ -8720,7 +8950,7 @@ class MLXInferenceBackend:
         gap = _batched_vision_engine_gap(engine)
         if gap is not None:
             return gap
-        gap = _row_processor_gap(engine, requests)
+        gap = _row_processor_gap(engine, requests, needed = self._budgets_reasoning())
         if gap is not None:
             return gap
         # Only the resident session decodes rows from their ids, as the one-at-a-time decode does.
@@ -8832,7 +9062,7 @@ class MLXInferenceBackend:
         plans = [self._plan_vlm_request(request) for request in requests]
         defaults = GenerationDefaults(
             max_tokens = max(plan.max_tokens for plan in plans),
-            prefill_batch_size = len(plans),
+            prefill_batch_size = self._prefill_rows(len(plans)),
             completion_batch_size = len(plans),
             **self._prefill_step_kwargs(GenerationDefaults, grid = True),
         )
@@ -9035,6 +9265,7 @@ class MLXInferenceBackend:
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)
         normalizer = make_reasoning_normalizer(markers) if markers is not None else None
+        budget = self._reasoning_budget_processor(prompt, markers)
         # Matched on the sampled deltas, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         sampled = ""
@@ -9066,6 +9297,7 @@ class MLXInferenceBackend:
                             **self._kv_quant_generate_kwargs(),
                             **self._kv_window_generate_kwargs(),
                             **self._prefill_step_kwargs(),
+                            **({"logits_processors": [budget]} if budget is not None else {}),
                         )
                     )
                 ) as responses:
