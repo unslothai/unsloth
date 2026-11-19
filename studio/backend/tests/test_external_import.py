@@ -882,12 +882,18 @@ def test_a_tool_result_that_arrives_later_reaches_the_stored_call(claude_home):
     assert call["result"] == "out"
 
 
-def test_a_chat_imported_before_tool_images_were_kept_gets_them_on_reimport(claude_home):
-    _read_image(claude_home, [IMAGE_RESULT])
+@pytest.mark.parametrize(
+    "content, legacy",
+    [([IMAGE_RESULT], ""), ([{"type": "text", "text": "Page 1"}, IMAGE_RESULT], "Page 1")],
+)
+def test_a_chat_imported_before_tool_images_were_kept_gets_them_on_reimport(
+    claude_home, content, legacy
+):
+    _read_image(claude_home, content)
     run_import(claude.SOURCE)
     tid = thread_id_for(claude.SOURCE, "s1")
     _, call, answer = _messages(claude.SOURCE, "s1")
-    emptied = {**call, "content": [{**call["content"][0], "result": ""}]}
+    emptied = {**call, "content": [{**call["content"][0], "result": legacy}]}
     edited = {**answer, "content": [{"type": "text", "text": "edited"}]}
     studio_db.sync_chat_messages(tid, [emptied, edited], prune_missing = False)
 
@@ -896,6 +902,18 @@ def test_a_chat_imported_before_tool_images_were_kept_gets_them_on_reimport(clau
     assert rows[1]["content"][0]["result"]["images"] == [{"data": PNG, "mimeType": "image/png"}]
     assert rows[2]["content"] == [{"type": "text", "text": "edited"}]
     assert run_import(claude.SOURCE).messages == 0
+
+
+def test_reimport_keeps_a_tool_result_that_differs_from_the_new_text(claude_home):
+    _read_image(claude_home, [{"type": "text", "text": "Page 1"}, IMAGE_RESULT])
+    run_import(claude.SOURCE)
+    tid = thread_id_for(claude.SOURCE, "s1")
+    call = _messages(claude.SOURCE, "s1")[1]
+    kept = {**call, "content": [{**call["content"][0], "result": "Page 1 (edited)"}]}
+    studio_db.sync_chat_messages(tid, [kept], prune_missing = False)
+
+    run_import(claude.SOURCE)
+    assert _messages(claude.SOURCE, "s1")[1]["content"][0]["result"] == "Page 1 (edited)"
 
 
 def test_an_interrupted_import_is_retried(claude_home):
