@@ -86,14 +86,22 @@ def _install(
             _shell_function("_torch_index_url_is_rocm"),
             f"_rocm_wsl_runtime_present() {{ return {0 if wsl_runtime else 1}; }}",
             wsl_name,
-            # Not on base: a no-op there so the block itself runs and the test is red on behaviour.
-            _shell_function_or_noop("_warn_force_rocm_not_honoured"),
+            # Not on base: no-ops there so the block itself runs and the test is red on behaviour.
+            *(
+                _shell_function_or_noop(name)
+                for name in ("_amd_gfx_is_strix_apu", "_amd_route_answer", "_notice_mixed_host_amd")
+            ),
+            # Closed device nodes are test_rocm_mixed_host_cuda_notice.py's to pin.
+            "_amd_nodes_closed_to_this_user() { :; }",
             f"get_torch_index_url() {{ echo {_CU}; }}",
             f"OS={os_name}",
             "_torch_index_pinned=false",
             "SKIP_TORCH=false",
             f"TORCH_INDEX_URL={index}",
+            '_force_rocm_kept_cuda=""',
             _fallback_block(),
+            # What install.sh runs after the AMD diagnostics; the reason is printed there.
+            '_notice_mixed_host_amd "$TORCH_INDEX_URL" "$_force_rocm_kept_cuda"',
             'echo "INDEX=$TORCH_INDEX_URL"',
         ]
     )

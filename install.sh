@@ -4607,7 +4607,7 @@ _amd_request_has_a_wheel_route() {
     _AMD_REQUEST_TARGET_GFX=""
     # Only a probe-resolved target may clear a safety gate; a declared one just routes.
     _AMD_REQUEST_TARGET_SOURCE=""
-    # Why the last call said no, for _warn_force_rocm_not_honoured.
+    # Why the last call said no, for _notice_mixed_host_amd.
     _AMD_REQUEST_DECLINE=""
     if _amd_visible_masks_select_no_gpu; then
         _AMD_REQUEST_DECLINE="ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES (or CUDA_VISIBLE_DEVICES) hides every AMD GPU"
@@ -4702,38 +4702,6 @@ _rocm_wsl_runtime_present() {
         { [ -e "$_rwp_d/librocdxg.so" ] || [ -e "$_rwp_d/librocdxg.so.1" ]; } && return 0
     done
     return 1
-}
-
-# UNSLOTH_FORCE_ROCM_TORCH was set and CUDA torch is kept: say why, in one line.
-# Re-asks the route in this shell (get_torch_index_url runs in a subshell) and puts its target back.
-_warn_force_rocm_not_honoured() {
-    _wfr_gfx="${_AMD_REQUEST_TARGET_GFX:-}"
-    _wfr_src="${_AMD_REQUEST_TARGET_SOURCE:-}"
-    case "$(uname -m)" in
-        x86_64|amd64) _wfr_x86=true ;;
-        *) _wfr_x86=false ;;
-    esac
-    if [ "$_wfr_x86" = false ]; then
-        _wfr_why="ROCm PyTorch wheels are x86_64 only"
-    elif _amd_request_has_a_wheel_route; then
-        # The route picked a card; a gate in get_torch_index_url turned it down and printed why.
-        _wfr_why="ROCm PyTorch was ruled out for ${_AMD_REQUEST_TARGET_GFX} (see the warning above)"
-    else
-        _wfr_why="${_AMD_REQUEST_DECLINE:-no AMD GPU with ROCm PyTorch wheels was found}"
-    fi
-    _AMD_REQUEST_TARGET_GFX="$_wfr_gfx"
-    _AMD_REQUEST_TARGET_SOURCE="$_wfr_src"
-    echo "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but ROCm PyTorch can't be used here: ${_wfr_why}." >&2
-    # WSL sees the AMD GPU only through librocdxg, and _maybe_bootstrap_rocm_wsl skips it beside NVIDIA.
-    [ "${OS:-}" = wsl ] || return 0
-    _rocm_wsl_runtime_present && return 0
-    _wfr_name=$(_wsl_amd_gpu_name 2>/dev/null) || _wfr_name=""
-    if [ -z "$_wfr_name" ]; then
-        grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
-        _wfr_name="an AMD GPU"
-    fi
-    echo "[WARN] WSL: Windows reports ${_wfr_name}, but ROCm-on-WSL (librocdxg) isn't installed; this installer skips that setup while an NVIDIA GPU is usable." >&2
-    echo "[WARN] To set it up (sudo, large download): run scripts/install_rocm_wsl_strixhalo.sh from the unsloth repo, then re-run this installer." >&2
 }
 
 # Single answer to "does NVIDIA win" so index selection and reroutes agree (#10450).
@@ -5945,39 +5913,92 @@ _warn_if_cuda_mask_hides_amd() {
     echo "" >&2
 }
 
-# Mixed NVIDIA + AMD host on the CUDA default: say the AMD card was skipped and how to use it (#12248).
-# Gated on the flag's own route test, so it never advertises a switch that would keep CUDA anyway.
-# Unsloth Desktop shows only stdout in its install log, so --tauri prints there instead.
-_notice_if_cuda_skipped_amd() {
-    case "$(_torch_index_url_leaf "${1:-}")" in cu[0-9]*) ;; *) return 0 ;; esac
-    _rocm_torch_explicitly_requested && return 0
+# The route's answer as "<0|1>|<target gfx>|<why not>", in a subshell so its globals stay put.
+_amd_route_answer() {
+    (
+        if _amd_request_has_a_wheel_route >/dev/null 2>&1; then _ara_rc=0; else _ara_rc=1; fi
+        printf '%s|%s|%s' "$_ara_rc" "${_AMD_REQUEST_TARGET_GFX:-}" "${_AMD_REQUEST_DECLINE:-}"
+    )
+}
+
+# Mixed NVIDIA + AMD host that kept CUDA torch (#12248), one block: with UNSLOTH_FORCE_ROCM_TORCH,
+# why it didn't take; without, that the AMD card was skipped and how to use it. $2 = kept-cuda when
+# the fallback swapped a CPU index back to CUDA. --tauri prints to stdout, all Desktop's log shows.
+_notice_mixed_host_amd() {
     _has_usable_nvidia_gpu >/dev/null 2>&1 || return 0
-    _nca_gfx=$(_amd_request_has_a_wheel_route >/dev/null 2>&1 && \
-        printf '%s' "$_AMD_REQUEST_TARGET_GFX") || return 0
-    [ -n "$_nca_gfx" ] || return 0
-    # The flag would train on an iGPU here (a Ryzen iGPU, or Strix next to an RTX eGPU): not worth advertising.
-    if _amd_gfx_is_shadowing_integrated "$_nca_gfx" || _amd_gfx_is_strix_apu "$_nca_gfx"; then
-        return 0
+    case "$(uname -m)" in x86_64|amd64) _nma_x86=true ;; *) _nma_x86=false ;; esac
+    _nma_route=$(_amd_route_answer)
+    _nma_ok=${_nma_route%%|*}
+    _nma_rest=${_nma_route#*|}
+    _nma_gfx=${_nma_rest%%|*}
+    _nma_why=${_nma_rest#*|}
+    if _rocm_torch_explicitly_requested; then
+        _torch_index_url_is_rocm "${1:-}" && return 0
+        _nma_force=true
+        if [ "$_nma_x86" = false ]; then
+            _nma_why="ROCm PyTorch wheels are x86_64 only"
+        elif [ "$_nma_ok" = 0 ]; then
+            # The route picked a card; a gate in get_torch_index_url turned it down and printed why.
+            _nma_why="ROCm PyTorch was ruled out for $_nma_gfx (see the warning above)"
+        fi
+        [ -n "$_nma_why" ] || _nma_why="no AMD GPU with ROCm PyTorch wheels was found"
+        _nma_card=false
+        { [ -n "$_nma_gfx" ] || _amd_gpu_present_via_pci; } && _nma_card=true
+    else
+        case "$(_torch_index_url_leaf "${1:-}")" in cu[0-9]*) ;; *) return 0 ;; esac
+        # Never advertise a switch that would keep CUDA anyway.
+        [ "$_nma_x86" = true ] && [ "$_nma_ok" = 0 ] && [ -n "$_nma_gfx" ] || return 0
+        # The flag would train on an iGPU here (a Ryzen iGPU, or Strix next to an RTX eGPU).
+        if _amd_gfx_is_shadowing_integrated "$_nma_gfx" || _amd_gfx_is_strix_apu "$_nma_gfx"; then
+            return 0
+        fi
+        _nma_force=false
+        _nma_card=true
     fi
     _ensure_rocm_probe_env
     {
+        _nma_wsl=""
         echo ""
-        echo "[INFO] An AMD GPU ($_nca_gfx) was also found. CUDA PyTorch was installed for the NVIDIA GPU,"
-        echo "[INFO] so training will not use the AMD GPU (one torch install serves one vendor)."
-        echo "[INFO] To train on the AMD GPU instead, re-run this installer with UNSLOTH_FORCE_ROCM_TORCH=1;"
-        echo "[INFO] the NVIDIA GPU then drops out of training until it is unset and the installer re-run."
-        if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ]; then
-            echo "[INFO] HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES only choose among AMD GPUs; they do not"
-            echo "[INFO] select ROCm PyTorch, so UNSLOTH_FORCE_ROCM_TORCH=1 is needed as well."
-        fi
-        if ! command -v rocminfo >/dev/null 2>&1 && ! command -v amd-smi >/dev/null 2>&1; then
-            echo "[INFO] ROCm is not installed for the AMD GPU (no rocminfo or amd-smi); install it first:"
-            echo "[INFO]   https://unsloth.ai/docs/get-started/install/amd"
+        if [ "$_nma_force" = true ]; then
+            echo "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but ROCm PyTorch can't be used here: ${_nma_why}."
+            if [ "${2:-}" = kept-cuda ]; then
+                echo "[WARN] Keeping the CUDA build rather than installing CPU PyTorch on a machine with a working NVIDIA GPU."
+            fi
+            # WSL sees the AMD GPU only through librocdxg, and _maybe_bootstrap_rocm_wsl skips it beside NVIDIA.
+            if [ "${OS:-}" = wsl ] && ! _rocm_wsl_runtime_present; then
+                _nma_wsl=$(_wsl_amd_gpu_name 2>/dev/null) || _nma_wsl=""
+                if [ -z "$_nma_wsl" ] && \
+                   grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null; then
+                    _nma_wsl="an AMD GPU"
+                fi
+                if [ -n "$_nma_wsl" ]; then
+                    echo "[WARN] WSL: Windows reports ${_nma_wsl}, but ROCm-on-WSL (librocdxg) isn't installed; this installer skips that setup while an NVIDIA GPU is usable."
+                    echo "[WARN] To set it up (sudo, large download): run scripts/install_rocm_wsl_strixhalo.sh from the unsloth repo, then re-run this installer."
+                fi
+            fi
         else
-            _closed_amd_nodes="$(_amd_nodes_closed_to_this_user || true)"
-            [ -z "$_closed_amd_nodes" ] || _print_closed_amd_node_repairs rocm
+            echo "[INFO] An AMD GPU ($_nma_gfx) was also found. CUDA PyTorch was installed for the NVIDIA GPU,"
+            echo "[INFO] so training will not use the AMD GPU (one torch install serves one vendor)."
+            echo "[INFO] To train on the AMD GPU instead, re-run this installer with UNSLOTH_FORCE_ROCM_TORCH=1;"
+            echo "[INFO] the NVIDIA GPU then drops out of training until it is unset and the installer re-run."
+            if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ]; then
+                echo "[INFO] HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES only choose among AMD GPUs; they do not"
+                echo "[INFO] select ROCm PyTorch, so UNSLOTH_FORCE_ROCM_TORCH=1 is needed as well."
+            fi
         fi
-        echo "[INFO] GGUF chat can already run on the AMD GPU: Settings > System > GGUF inference engine > Compute backend."
+        # The WSL lines above already name the setup; native ROCm advice would contradict them.
+        if [ "$_nma_card" = true ] && [ -z "$_nma_wsl" ]; then
+            if ! command -v rocminfo >/dev/null 2>&1 && ! command -v amd-smi >/dev/null 2>&1; then
+                echo "[INFO] ROCm is not installed for the AMD GPU (no rocminfo or amd-smi); install it first:"
+                echo "[INFO]   https://unsloth.ai/docs/get-started/install/amd"
+            else
+                _closed_amd_nodes="$(_amd_nodes_closed_to_this_user || true)"
+                [ -z "$_closed_amd_nodes" ] || _print_closed_amd_node_repairs rocm
+            fi
+        fi
+        if [ "$_nma_card" = true ]; then
+            echo "[INFO] GGUF chat can already run on the AMD GPU: Settings > System > GGUF inference engine > Compute backend."
+        fi
         echo ""
     } | if [ "${TAURI_MODE:-false}" = true ]; then cat; else cat >&2; fi
 }
@@ -6721,14 +6742,15 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
     esac
 fi
 
+_force_rocm_kept_cuda=""
 if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
    _rocm_torch_explicitly_requested && _has_usable_nvidia_gpu; then
     if ! _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
-        _warn_force_rocm_not_honoured
         _cuda_fallback_index=$(UNSLOTH_FORCE_ROCM_TORCH=0 get_torch_index_url)
         if [ -n "$_cuda_fallback_index" ] && \
            [ "$_cuda_fallback_index" != "$TORCH_INDEX_URL" ]; then
-            echo "[WARN] Keeping the CUDA build rather than installing CPU PyTorch on a machine with a working NVIDIA GPU." >&2
+            # _notice_mixed_host_amd says why, after the AMD diagnostics.
+            _force_rocm_kept_cuda=kept-cuda
             TORCH_INDEX_URL="$_cuda_fallback_index"
         fi
     fi
@@ -7666,7 +7688,7 @@ elif [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
 fi
 # After the AMD diagnostics: the notice reuses their node-repair text, and the index is final here.
 if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_pinned" = false ]; then
-    _notice_if_cuda_skipped_amd "$TORCH_INDEX_URL"
+    _notice_mixed_host_amd "$TORCH_INDEX_URL" "$_force_rocm_kept_cuda"
 fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──

@@ -85,6 +85,7 @@ def _host(
 _LIFTED = [
     "_rocm_torch_explicitly_requested",
     "_torch_index_url_leaf",
+    "_torch_index_url_is_rocm",
     "_amd_hardware_corroborated",
     "_amd_arch_index_family_for_gfx",
     "_amd_gfx_has_wheel_route",
@@ -101,7 +102,8 @@ _LIFTED = [
     "substep",
     "_shell_quote",
     "_print_closed_amd_node_repairs",
-    "_notice_if_cuda_skipped_amd",
+    "_amd_route_answer",
+    "_notice_mixed_host_amd",
 ]
 
 
@@ -117,9 +119,12 @@ def _notice(
             "set -e",
             f"TAURI_MODE={'true' if tauri else 'false'}",
             "C_DIM='' C_RST='' C_WARN=''",
+            # Pinned: ROCm wheels are x86_64 only, and the notice asks uname.
+            'uname() { case "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac; }',
+            "OS=linux",
             *(_shell_function(name) for name in _LIFTED),
             host,
-            f"{env} _notice_if_cuda_skipped_amd '{url}'",
+            f"{env} _notice_mixed_host_amd '{url}' ''",
         ]
     )
     clean = {
@@ -163,11 +168,14 @@ def test_unsloth_desktop_gets_it_on_stdout():
     assert out.stderr == ""
 
 
-def test_the_flag_already_set_prints_nothing_new():
-    """Under the flag get_torch_index_url prints its own FORCE lines, or the CUDA-fallback warning."""
-    for url in (_CUDA, _ROCM):
-        out = _notice(_host(nvidia = True, amd = _R9700), url, env = _FLAG)
-        assert out.stdout == "" and out.stderr == ""
+def test_the_flag_set_gets_the_reason_instead_of_the_advert():
+    """Under the flag the same block says why it didn't take (test_rocm_force_decline_reason.py),
+    and never tells the user to set the flag they already set."""
+    out = _notice(_host(nvidia = True, amd = _R9700), _CUDA, env = _FLAG)
+    assert "can't be used here" in out.stderr
+    assert "re-run this installer with" not in out.stderr
+    out = _notice(_host(nvidia = True, amd = _R9700), _ROCM, env = _FLAG)
+    assert out.stdout == "" and out.stderr == ""
 
 
 @pytest.mark.parametrize(
@@ -252,9 +260,9 @@ def test_the_installer_calls_it_once_after_the_index_is_final():
     calls = [
         line.strip()
         for line in body.splitlines()
-        if "_notice_if_cuda_skipped_amd " in line and not line.lstrip().startswith("#")
+        if "_notice_mixed_host_amd " in line and not line.lstrip().startswith("#")
     ]
-    assert calls == ['_notice_if_cuda_skipped_amd "$TORCH_INDEX_URL"']
+    assert calls == ['_notice_mixed_host_amd "$TORCH_INDEX_URL" "$_force_rocm_kept_cuda"']
     call = body.index(calls[0])
     guard = body.rindex("\nif ", 0, call)
     assert (
@@ -265,3 +273,12 @@ def test_the_installer_calls_it_once_after_the_index_is_final():
     # The repair function is defined (top-level, so in order) before the call runs.
     assert body.index("\n_print_closed_amd_node_repairs() {") < call
     assert body.index("_print_closed_amd_node_repairs\nelif") < call
+
+
+def test_a_non_x86_host_is_not_offered_the_flag():
+    """ROCm wheels are x86_64 only; the flag's own reason says so (test_rocm_force_decline_reason.py)."""
+    host = _host(nvidia = True, amd = _R9700) + (
+        '\nuname() { case "${1:-}" in -m) echo aarch64 ;; *) echo Linux ;; esac; }'
+    )
+    out = _notice(host, _CUDA)
+    assert out.stdout == "" and out.stderr == ""
