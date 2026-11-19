@@ -3065,7 +3065,7 @@ def _hip_apu(
     monkeypatch.setattr(
         LlamaCppBackend,
         "_igpu_dedicated_memory_bytes",
-        staticmethod(lambda *_a, **_kw: carve_mib * 1024**2),
+        staticmethod(lambda *_a, **_kw: None if carve_mib is None else carve_mib * 1024**2),
     )
 
 
@@ -3089,6 +3089,18 @@ def test_the_unbacked_part_of_a_strix_halo_hip_reading(monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: None))
     assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 0
     monkeypatch.setattr(llama_cpp_module.sys, "platform", "linux")
+    assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 0
+
+
+def test_an_unreadable_carve_out_keeps_the_plain_headroom(monkeypatch):
+    """128 GB Strix Halo, 96 GiB carve-out: counting an unreadable carve-out as 0 would
+    lift the margin past the whole HIP reading."""
+    _hip_apu(monkeypatch, free_mib = 110_301, carve_mib = 98_128)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4_603)
+    )
+    assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 110_301 - 4_603 - 98_128
+    _hip_apu(monkeypatch, free_mib = 110_301, carve_mib = None)
     assert LlamaCppBackend._rocm_apu_unbacked_free_mib([0]) == 0
 
 

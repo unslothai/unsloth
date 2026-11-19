@@ -16295,7 +16295,10 @@ class LlamaCppBackend:
         avail = LlamaCppBackend._available_system_memory_mib()
         if avail is None:
             return 0
-        carve_out = LlamaCppBackend._igpu_dedicated_memory_bytes([idx], rocm_fallback = False) or 0
+        # Unknown carve-out is not zero: a 96 GiB one would push every layer off the GPU.
+        carve_out = LlamaCppBackend._igpu_dedicated_memory_bytes([idx], rocm_fallback = False)
+        if carve_out is None:
+            return 0
         backed_mib = avail + int(carve_out) // (1024 * 1024)
         unbacked = max(0, int(free_bytes) // (1024 * 1024) - backed_mib)
         if unbacked:
