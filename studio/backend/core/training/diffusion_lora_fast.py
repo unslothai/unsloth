@@ -389,7 +389,6 @@ class Nf4DequantCache:
         self.margin = _MARGIN_MIN_BYTES
         self.extra_reserved = 0  # bytes another planner keeps for itself (see ``reserve``)
         self.planned = int(budget)  # the step-1 plan before any reservation
-        # UNSLOTH_DIFFUSION_DEQUANT_CACHE_GB: a reservation never shrinks a pinned plan.
         self.pinned = False
         self.shrinks = 0
 
@@ -409,12 +408,8 @@ class Nf4DequantCache:
         nbytes: int,
         from_plan: bool = False,
     ) -> int:
-        """Bytes another planner (budgeted checkpointing) holds on top of step 1's activations from step 2 on.
-
-        ``from_plan``: that planner sized itself from the same step-1 free memory, so the cache re-plans on the room
-        those bytes leave: its usual share of it, i.e. the plan less that share of the bytes (unless the budget is
-        pinned); ``reserve(0, from_plan = True)`` hands them back, regrown by ``rebalance`` as live memory allows.
-        Returns the bytes evicted."""
+        """Bytes budgeted checkpointing holds from step 2 on. ``from_plan``: re-plan to the plan less our share of
+        them (never for a pinned budget). Returns the bytes evicted."""
         self.extra_reserved = max(0, int(nbytes))
         if not from_plan or self.pinned:
             return 0

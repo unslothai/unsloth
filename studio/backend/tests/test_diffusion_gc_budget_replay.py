@@ -234,7 +234,6 @@ def test_the_failed_micro_batch_is_released_before_the_replay(
 def test_the_rerun_restarts_the_peak_the_cache_plan_reads(
     oom_at, tmp_path, monkeypatch, tiny_pipe_dir
 ):
-    # Step 1's dequant cache plan reads the allocator peak: after a failed attempt it must be the rerun's own peak.
     calls = []
     real = dit.TrainingPeakMemory
 

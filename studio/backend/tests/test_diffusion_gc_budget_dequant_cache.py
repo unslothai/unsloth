@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU tests for the two step-1 VRAM planners together: the nf4 dequant cache (sized in the optimizer hook) and
-budgeted gradient checkpointing (sized right after). Both read the same free memory, so the cache must take its share
-of the room the kept activations leave, the gc plan must be the one it makes alone, and a pinned cache must come out of
-the gc plan."""
+"""CPU tests for the nf4 dequant cache and budgeted gradient checkpointing planning together at step 1."""
 
 from __future__ import annotations
 
@@ -41,8 +38,7 @@ def _step_one(
     blocks,
     pin_gb = None,
 ):
-    """Run step 1's optimizer step through the real hooks with simulated CUDA memory, then the trainer's step-1 plan
-    (main: the gc plan alone). Returns (gc budget, cache, cache plan events)."""
+    """Step 1 through the real hooks on simulated CUDA memory. Returns (gc budget, cache, cache plan events)."""
     if pin_gb is None:
         monkeypatch.delenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE_GB", raising = False)
     else:
@@ -55,7 +51,6 @@ def _step_one(
 
     p = torch.nn.Parameter(torch.zeros(4))
     opt = torch.optim.AdamW([p], lr = 1e-3)
-    # Registered first, so the cache's hooks see the pre-step and post-step allocations (the optimizer state).
     opt.register_step_pre_hook(lambda *_: mem.update(alloc = pre))
     opt.register_step_post_hook(lambda *_: mem.update(alloc = post))
     cache = fl.Nf4DequantCache()
@@ -64,7 +59,7 @@ def _step_one(
     hook_cb = planned.append
     joint = getattr(dit, "_plan_after_first_step", None)
     if joint is not None:
-        hook_cb = None  # the trainer reports the plan after the gc reservation
+        hook_cb = None
     handles = fl.attach_training_hooks(opt, cache, 1.0, hook_cb)
     p.grad = torch.ones(4)
     fb_peak, alloc_before = peak, pre
@@ -124,8 +119,7 @@ def test_both_planners_fit_the_room_with_the_margin(monkeypatch, case):
     budget, cache, planned = _step_one(monkeypatch, **c)
     one = _one_budget(c["total"], c["free"], c["reserved"], c["peak"], c["pre"], c["post"])
     assert budget.kept_bytes > 0
-    # Step 2 holds kept activations and cache entries on top of step 1's peak. The cache takes its 85% share of the
-    # room the kept activations leave, so 15% of that room and the max(2 GiB, 10%) margin stay free.
+    # The cache takes 85% of the room kept activations leave, so 15% plus the margin stay free.
     assert budget.kept_bytes + cache.budget <= one + int(budget.kept_bytes * 0.15) + 1
     margin = max(2 * GIB, int(c["total"] * 0.10))
     step2 = c["peak"] + (c["post"] - c["pre"]) + budget.kept_bytes + cache.budget
@@ -149,21 +143,18 @@ def test_gc_plan_is_unchanged_and_cache_keeps_the_rest(monkeypatch, case):
 
 
 def test_cache_keeps_its_share_of_the_room_kept_activations_leave():
-    # Colab L4, FLUX.2-klein-4B 512 px: the cache planned 13.539 GiB, 25 blocks kept 7.134 GiB, 7.219 GiB of nf4
-    # weights. The cache's share of what is left (0.85 x (13.539 / 0.85 - 7.134)) still holds every weight, so the
-    # run keeps main's speed; taking the kept bytes off the plan whole left 6.405 GiB and ran 1.4-2% slower.
+    # Colab L4 klein 512 px: subtracting kept bytes whole (6.405 GiB) instead of 85% of them ran 1.4-2% slower.
     cache = fl.Nf4DequantCache()
     cache.plan(int(13.539 * GIB))
     cache.reserve(int(7.134 * GIB), from_plan = True)
     assert cache.cap == cache.budget >= int(7.219 * GIB)
-    # Room for both planners is still inside the cache's room alone.
     assert int(7.134 * GIB) + cache.budget <= int(13.539 * GIB / 0.85)
 
 
 def test_pinned_cache_is_held_out_of_the_gc_plan(monkeypatch):
     c = dict(CASES["l4_klein_1024"])
     budget, cache, _ = _step_one(monkeypatch, pin_gb = 4, **c)
-    assert cache.budget == 4 * GIB  # a pinned budget is the user's: never shrunk
+    assert cache.budget == 4 * GIB
     held = dict(c, peak = c["peak"] + 4 * GIB)
     assert budget.kept_bytes <= _one_budget(
         held["total"], held["free"], held["reserved"], held["peak"], held["pre"], held["post"]
@@ -174,7 +165,6 @@ def test_pinned_cache_is_held_out_of_the_gc_plan(monkeypatch):
 
 
 def test_without_a_gc_budget_the_cache_plan_is_unchanged(monkeypatch):
-    # UNSLOTH_DIFFUSION_GC_MODE=plain (or ROCm): no gc budget, so no reservation and the hook reports the plan.
     c = CASES["t4_klein_512"]
     monkeypatch.delenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE_GB", raising = False)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (c["free"], c["total"]))
@@ -203,7 +193,6 @@ def test_reserve_cuts_the_plan_evicts_and_hands_back_on_fallback():
     other = fl.Nf4DequantCache()
     other.plan(1000 * MIB)
     assert other.reserve(700 * MIB) == 0 and other.budget == other.cap == 1000 * MIB
-    # The OOM fallback checkpoints every block again: the cap returns to the plan; live memory decides the regrowth.
     assert cache.reserve(0, from_plan = True) == 0
     assert cache.cap == 1000 * MIB and cache.budget == 1000 * MIB - int(700 * MIB * 0.85)
     cache.margin = 0
@@ -220,8 +209,7 @@ def test_reserve_never_shrinks_a_pinned_budget():
 
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_without_a_cache_the_gc_plan_is_mains(monkeypatch, case):
-    # Compiled runs (200+ steps), ROCm, bf16 bases and UNSLOTH_DIFFUSION_DEQUANT_CACHE=0 have no cache: the joint plan
-    # must be exactly main's gc plan there.
+    # No cache (compiled, ROCm, bf16, cache off): exactly main's gc plan.
     c = CASES[case]
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (c["free"], c["total"]))
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: c["reserved"])
@@ -234,7 +222,6 @@ def test_without_a_cache_the_gc_plan_is_mains(monkeypatch, case):
 
 
 def test_no_device_queries_beyond_mains(monkeypatch):
-    # One memory read at step 1, like main; the reservation never touches the device.
     c = CASES["l4_klein_1024"]
     calls = {
         "mem_get_info": 0,
@@ -271,15 +258,13 @@ def test_no_device_queries_beyond_mains(monkeypatch):
     p.grad = torch.ones(4)
     opt.step()
     dit._plan_after_first_step(budget, cache, c["peak"], c["pre"], None, None)
-    assert calls["mem_get_info"] == 2  # cache plan + gc plan, both at step 1 (as on main)
+    assert calls["mem_get_info"] == 2
     before = dict(calls)
     cache.reserve(0, from_plan = True)
     cache.reserve(budget.kept_bytes, from_plan = True)
     assert calls == before
     for _ in range(3):
         opt.step()
-    assert (
-        calls["mem_get_info"] - before["mem_get_info"] == 3
-    )  # main's per-step rebalance probe, unchanged
+    assert calls["mem_get_info"] - before["mem_get_info"] == 3
     for h in handles:
         h.remove()

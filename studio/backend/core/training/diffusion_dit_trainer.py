@@ -3487,7 +3487,7 @@ def _train_dit(
                 optimizer,
                 dequant_cache,
                 bucket_activation_scale(canvases),
-                # With a gc budget, _plan_after_first_step reports the plan once that budget is reserved.
+                # With a gc budget, _plan_after_first_step reports the plan.
                 None
                 if gc_budget is not None
                 else (lambda stats: _emit(on_event, "dequant_cache_planned", **stats)),
@@ -3717,13 +3717,11 @@ def _train_dit(
         # Partial gradients of the failed micro-step are already accumulated, so the whole step reruns from its inputs.
         gc_budget.fall_back()
         if dequant_cache is not None:
-            # No block keeps activations now: the cache may regrow into that room as live memory allows.
             dequant_cache.reserve(0, from_plan = True)
         optimizer.zero_grad(set_to_none = True)
         gc.collect()
         _empty_device_cache(device)
-        # Bank the failed attempt's peak for the report, then restart the allocator peak: step 1's dequant cache plan
-        # reads it, and the failed attempt's near-full peak would plan the cache to nothing for the whole run.
+        # Restart the peak: step 1's cache plan reads it, and the failed peak would plan the cache to nothing.
         train_peak.pause()
         train_peak.resume()
         _emit(
@@ -3994,10 +3992,7 @@ def _plan_after_first_step(
     max_canvas_area = None,
     on_cache_planned = None,
 ) -> None:
-    """Both step-1 planners share one figure: free memory after step 1, which the dequant cache already sized itself
-    from in the optimizer hook (still empty, as step 1 caches nothing). Kept activations save more time per byte, so
-    they plan first and the cache takes its share of the room they leave; a pinned cache budget is held out of the
-    gc plan."""
+    """Kept activations save more per byte, so they plan first; the cache takes its share of the room left."""
     _plan_gc_budget(
         gc_budget,
         fb_peak,
@@ -4092,8 +4087,7 @@ def _plan_gc_budget(
     max_canvas_area = None,
     held_bytes = 0,
 ) -> None:
-    """After the first step: keep as many blocks' activations as the measured free memory allows, less
-    ``held_bytes`` another planner fills from step 2 on (a pinned dequant cache). Never raises."""
+    """After the first step: keep as many blocks' activations as free memory less ``held_bytes`` allows. Never raises."""
     import logging
 
     import torch
