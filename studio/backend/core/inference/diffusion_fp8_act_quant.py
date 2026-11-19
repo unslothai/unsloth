@@ -41,9 +41,18 @@ if triton is not None:
         # torch.clamp keeps NaN; a comparison select does too (NaN compares false)
         y = tl.where(y > 448.0, 448.0, y)
         y = tl.where(y < -448.0, -448.0, y)
-        code = y.to(tl.float8e4nv).to(tl.uint8, bitcast = True)
+        # Round to e4m3 in integer arithmetic, nearest even, as torch's cast does: Triton's own f32 -> e4m3 cast
+        # is not single-rounded on every arch (sm_89 codes differed from torch's while sm_100 matched).
+        bits = y.to(tl.uint32, bitcast = True)
+        sign = ((bits >> 24) & 0x80).to(tl.uint8)
+        mag_bits = bits & 0x7FFFFFFF
+        mag = mag_bits.to(tl.float32, bitcast = True)
+        # normal (|y| >= 2^-6): drop 20 mantissa bits with round-half-even, rebias the exponent from 127 to 7
+        n_code = ((mag_bits + 0x7FFFF + ((mag_bits >> 20) & 1)) >> 20) - (120 << 3)
+        # subnormal: |y| / 2^-9 rounded half-even by the 2^23 add (exact scaling, one rounding), 8 = 2^-6
+        d_code = (mag * 512.0 + 8388608.0).to(tl.uint32, bitcast = True) - 0x4B000000
+        code = tl.where(mag >= 0.015625, n_code, d_code).to(tl.uint8) | sign
         # torch writes NaN as 0x7f with the input's sign bit
-        sign = ((y.to(tl.uint32, bitcast = True) >> 24) & 0x80).to(tl.uint8)
         code = tl.where(y != y, sign | 0x7F, code)
         tl.store(q_ptr + offs, code, mask = mask)
 
