@@ -115,7 +115,9 @@ class AdaLNTable(_torch().nn.Module):
                     )
         if cur.device != x.device:
             # A block placed on another card (layer split, a replica): its row follows its own input.
-            COUNTS["cross_device"] += 1
+            if not _torch().compiler.is_compiling():
+                # Under compile a counter read is a value guard: every call would recompile.
+                COUNTS["cross_device"] += 1
             return cur.to(x.device, non_blocking = True)
         return cur
 

@@ -832,3 +832,14 @@ def test_host_move_keeps_gguf_parameters_and_their_quant_type():
     clone = ap._device_clone(lin, torch.device("cpu"))
     assert getattr(clone.weight, "quant_type", None) == 8
     assert type(lin.bias) is torch.nn.Parameter  # plain parameters keep the plain wrapper
+
+
+def test_cross_device_rows_do_not_recompile_a_fullgraph_block():
+    # The counter read is a Dynamo value guard: counted under compile, every call recompiles until the limit.
+    stand = ap.AdaLNTable(torch.nn.Linear(4, 6), "transformer_blocks.0.norm1.linear", "silu")
+    stand.unsloth_adaln_cur = torch.randn(1, 6)
+    compiled = torch.compile(stand, backend = "eager", fullgraph = True)
+    x = torch.empty(1, 4, device = "meta")
+    for _ in range(12):
+        out = compiled(x)
+    assert out.device.type == "meta" and tuple(out.shape) == (1, 6)
