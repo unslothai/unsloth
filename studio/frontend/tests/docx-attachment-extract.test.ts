@@ -241,3 +241,23 @@ test("extractDocxAttachmentText keeps superscript exponents", async () => {
     );
   });
 });
+
+test("extractDocxAttachmentText ends a superscript at a note reference", async () => {
+  const sup = (inner: string) => `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr>${inner}</w:r>`;
+  const document =
+    `<w:document ${W}><w:body><w:p><w:r><w:t xml:space="preserve">Area 10</w:t></w:r>${sup("<w:t>6</w:t>")}` +
+    `${sup('<w:footnoteReference w:id="1"/>')}${sup("<w:t>3</w:t>")}<w:r><w:t xml:space="preserve"> m</w:t></w:r></w:p></w:body></w:document>`;
+  await withDocxGlobals(async () => {
+    const text = await assertSameAsChained(
+      "ref.docx",
+      zipSync({
+        "[Content_Types].xml": strToU8("<Types/>"),
+        "_rels/.rels": rels([["officeDocument", "word/document.xml"]]),
+        "word/document.xml": strToU8(document),
+        "word/_rels/document.xml.rels": rels([["footnotes", "footnotes.xml"]]),
+        "word/footnotes.xml": notes("footnote", ["1"]),
+      }),
+    );
+    assert.match(text, /^Area 10\^6\[1\]3 m/);
+  });
+});

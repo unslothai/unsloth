@@ -965,9 +965,7 @@ function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8
     const isSuperscript = (run: Element) =>
       childElements(run, w, "rPr").some((pr) =>
         childElements(pr, w, "vertAlign").some((align) => align.getAttributeNS(w, "val") === "superscript"),
-      ) &&
-      !childElements(run, w, "footnoteReference").length &&
-      !childElements(run, w, "endnoteReference").length;
+      );
     let found = false;
     for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
       let before = "";
@@ -994,6 +992,12 @@ function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8
       for (const run of Array.from(p.getElementsByTagNameNS(w, "r"))) {
         if (!visibleIn(run, p)) continue;
         const pieces = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1 && (child as Element).namespaceURI === w);
+        // a note reference gets its marker later: it ends the exponent and is no base, as in the backend reader
+        if (childElements(run, w, "footnoteReference").length || childElements(run, w, "endnoteReference").length) {
+          if (raised.length) raise();
+          before = "";
+          continue;
+        }
         const text = pieces.map(pieceText).join("");
         if (!text) continue;
         if (isSuperscript(run)) {
