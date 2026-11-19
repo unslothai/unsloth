@@ -3032,22 +3032,13 @@ class FastModel(FastBaseModel):
                     token = token,
                     revision = base_revision,
                 )
-                # A converted load (about 6.42 GiB of weights) still trips the bitsandbytes
-                # fit guard: transformers derates the placement budget to 90% of free VRAM
-                # (Bnb4BitHfQuantizer.adjust_max_memory), about 6.08 GiB on the 8 GB card.
-                # Pre-raise the passed budget so the derate lands at 98% of free, keeping a
-                # transient reserve; an oversized model still spills and refuses cleanly.
-                if _sensenova_int8 and DEVICE_TYPE == "cuda":
-                    try:
-                        if torch.cuda.device_count() == 1 and "max_memory" not in kwargs:
-                            free = torch.cuda.mem_get_info(0)[0]
-                            kwargs["max_memory"] = {0: int(free * 0.98 / 0.90)}
-                            print(
-                                f"Unsloth: int8 SenseNova-Loop checkpoint; budgeting "
-                                f"{free * 0.98 / 1024**3:.2f} GiB of free VRAM for the 4-bit placement."
-                            )
-                    except Exception:
-                        pass
+            # The bnb skip list keeps lm_head in bf16 for the fused lm_head loss, which this
+            # remote-code model never runs, and the 1.89 GiB bf16 lm_head is what busts
+            # 8 GB cards: the measured placement estimate is 6.93 GiB with it skipped and
+            # 5.51 GiB with the lm_head quantized, which fits the honest 90%-derated
+            # budget. See sensenova-loop-estimate-check.py and the NOTES.
+            if load_in_4bit and quantization_config is None:
+                model_config._unsloth_sensenova_loop_quantize_lm_head = True
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:

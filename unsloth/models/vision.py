@@ -4701,6 +4701,11 @@ class FastBaseModel:
             )
 
         _skip_modules = SKIP_QUANTIZATION_MODULES.copy() + _architecture_skip_modules(model_types)
+        if getattr(auto_config, "_unsloth_sensenova_loop_quantize_lm_head", False):
+            # SenseNova-Loop: the fused lm_head loss never runs for remote code, and the
+            # 1.89 GiB bf16 lm_head busts 8 GB cards; quantize it like a vanilla bnb load
+            # (measured estimate 6.93 GiB with it skipped, 5.51 GiB quantized).
+            _skip_modules = [module for module in _skip_modules if module != "lm_head"]
 
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(

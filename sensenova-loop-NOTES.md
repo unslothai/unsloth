@@ -77,8 +77,8 @@ detection cannot run, so the fix silently declines (same as transformers itself 
 
 bitsandbytes does not quantize `nn.Embedding`, so the stock checkpoint's 4-bit load
 carries the whole bf16 token table: 248,320 x 4096 x 2 B = 2,034,237,440 bytes (1.89 GiB)
-beside about 5.47 GiB of 4-bit weights, about 7.36 GiB total. The fit check runs during
-`from_pretrained`, so on the 8 GB card (about 6.76 GiB usable) the plain all-on-GPU load
+beside about 5.47 GiB of other weights, about 7.36 GiB total. The fit check runs during
+`from_pretrained`, so on the 8 GB card the plain all-on-GPU load
 is refused before any post-load step can run; offload_layers or host-RAM staging then
 becomes mandatory and keeps its margin flakiness.
 
@@ -96,25 +96,44 @@ Fix, checkpoint side (the path that makes the 8 GB fit deterministic):
   the module-level `_configure_text_model` the remote classes call swaps `embed_tokens`
   for `SenseNovaLoopInt8Embedding`, whose parameters are named `weight` (int8) and
   `weight_scale` to match the checkpoint keys, so the int8 table loads directly and no
-  key renames are needed. After conversion a plain 4-bit load carries about 6.42 GiB of
-  weights against about 6.76 GiB usable: no offload_layers, no host-RAM dependence, no
+  key renames are needed. After conversion a plain 4-bit load carries about 5.51 GiB of
+  weights (int8 table, lm_head quantized; measured estimate below), fitting the
+  90%-derated guard: no offload_layers, no host-RAM dependence, no
   block-swap margin. If the build patch ever fails to reach the model, the loader raises
   instead of letting the int8 table land in a bf16 `nn.Embedding` as garbage.
   `sensenova-loop-verify-build.py` (repo root) checks this wiring on the meta device
   with no weights and no GPU; it prints `SenseNovaLoopInt8Embedding`.
-- Fit-guard arithmetic (found when the first end-to-end load refused with the same
-  message as stock): transformers derates the 4-bit placement budget to 90% of free
-  VRAM before `infer_auto_device_map` runs (`Bnb4BitHfQuantizer.adjust_max_memory`), so
-  the guard on the 8 GB card compares against about 6.08 GiB, not the 6.76 GiB free.
-  The stock 7.36 GiB and the converted 6.42 GiB both exceed 6.08 GiB, and the error
-  text is static, so the refusal was identical either way; the build patch itself was
-  engaging the whole time. For a detected converted checkpoint on a single GPU, the
-  loader now passes `max_memory` pre-raised by 1/0.90 so the derated budget lands at
-  98% of free (about 6.63 GiB on this card), which holds the converted 6.42 GiB with
-  the 2% kept as the bitsandbytes quantization-transient reserve. A model that does
-  not fit 98% of free still spills and refuses with the same clean message; only the
-  90-98% band is newly accepted, and bnb's per-module load transients (the largest
-  module is about 150 MB) are far smaller than that band.
+- Fit-guard arithmetic, two rounds (all numbers measured with
+  `sensenova-loop-estimate-check.py`, the CPU-only reproduction of transformers' own
+  placement estimate; it hijacks `_get_device_map`, after the bnb module swap, before any
+  weight or CUDA touch):
+  1. The converted load first refused with the same message as stock. Transformers derates
+     the 4-bit placement budget to 90% of free VRAM before `infer_auto_device_map`
+     (`Bnb4BitHfQuantizer.adjust_max_memory`), so the guard compares against about 6.08 GiB
+     at 6.76 GiB free, not the raw free figure. A budget compensation attempt (passing
+     `max_memory` pre-raised by 1/0.90) engaged, and the load STILL refused: the estimate
+     itself was bigger than assumed.
+  2. The measured estimate for the converted checkpoint was 6.93 GiB, against a 6.57 GiB
+     budget at 7.30 GiB free. Largest module: `lm_head` at 1.895 GiB, counted honestly at
+     bf16, because unsloth's bnb skip list (`SKIP_QUANTIZATION_MODULES` contains
+     `"lm_head"`) leaves the untied 248,320 x 4096 lm_head unquantized on every 4-bit
+     load, to serve the fused lm_head loss. That loss never runs for this remote-code
+     model (the compiler self-gates off), so the skip buys nothing here and costs 1.89
+     GiB. The int8 embedding was counted correctly all along (0.948 GiB at 1 byte per
+     element), and the build patch engages (the meta-device check prints
+     `SenseNovaLoopInt8Embedding`); the 6.42 GiB figure in the earlier draft assumed a
+     quantized lm_head and missed the 2 B/param bucket, which measured 2.746 GiB (bf16
+     lm_head 1.895 + the house-skipped bf16 vision tower 0.851).
+  3. Fix: the loader marks the config `_unsloth_sensenova_loop_quantize_lm_head` for this
+     model's 4-bit loads (a caller's own `quantization_config` is never overridden), and
+     vision.py drops `"lm_head"` from the bnb skip list for it, matching what a vanilla
+     bnb 4-bit load does with an untied lm_head. Measured estimate after the fix: 5.506
+     GiB (buckets 0.5 B/param 3.695 GiB, int8 table 0.947 GiB, skipped bf16 vision 0.852
+     GiB, fp32 MHC routers 0.012 GiB), which fits the honest 90%-derated budget at either
+     observed free figure (6.08 GiB at 6.76 free, 6.57 GiB at 7.30 free) with over a GiB
+     of margin. The budget compensation was removed again rather than widened: with the
+     real footprint under the derated guard there is nothing left to compensate, and the
+     guard keeps refusing cleanly for anything that genuinely does not fit.
 - The post-load conversion (bf16 table staged through host RAM, int8 copy lands after
   the VRAM copy is freed) stays as the fallback for stock checkpoints and adapter loads.
 
@@ -158,10 +177,12 @@ versions below 5.17.0 remain untested.
   twice-executed loop layers; PEFT's own LoRA forwards carry it in the meantime.
 - Offline tokenizer loads keep the broken regex (transformers' own detection needs the
   hub tag or the config fetch), and offline conversion requires a local snapshot.
-- The single-GPU budget compensation only restores the 90-98%-of-free band; a card whose
-  free-minus-weights gap falls inside that band could still hit a dispatch-time OOM,
-  bounded by bnb's per-module quantization transients. Multi-GPU hosts keep the stock
-  derated budget (the unsloth planner handles placement there).
-- Only `py_compile` and the CPU-only meta-device build check
-  (`sensenova-loop-verify-build.py`) were run on this draft; the full GPU load was not
+- The untied lm_head is quantized (nf4) on this model's 4-bit loads, like a vanilla bnb
+  load; the house skip that keeps lm_head in bf16 serves the fused lm_head loss, which
+  remote code never runs. A user passing their own `quantization_config` keeps full
+  control. The multi-GPU planner still sizes the lm_head at compute dtype (conservative
+  over-reserve, loads fine); single-GPU loads use transformers' own inference.
+- Only `py_compile`, the CPU-only meta-device build check
+  (`sensenova-loop-verify-build.py`) and the CPU-only placement-estimate reproduction
+  (`sensenova-loop-estimate-check.py`) were run on this draft; the full GPU load was not
   re-run by the drafter.

@@ -27,12 +27,13 @@ Three load-time gaps are fixed here:
 (b) the tokenizer ships Mistral's broken pre-tokenizer regex, needing transformers'
     documented ``fix_mistral_regex = True``;
 (c) bitsandbytes cannot quantize ``nn.Embedding``, so the 1.89 GiB bf16 table
-    (248,320 x 4096) makes the stock checkpoint's 4-bit load (about 7.36 GiB of weights)
-    fail the load-time fit check on an 8 GB card before any post-load step can run.
-    :func:`convert_sensenova_loop_checkpoint` rewrites the table's shard to int8 plus a bf16
-    per-row scale (about 6.42 GiB of weights after conversion), and the patched build loads
-    it as int8 end to end; a post-load conversion remains as the fallback for stock
-    checkpoints.
+    (248,320 x 4096) makes the stock checkpoint's 4-bit load fail the load-time fit check
+    on an 8 GB card before any post-load step can run, and unsloth's bnb skip list keeps
+    the untied lm_head in bf16 (1.89 GiB more). :func:`convert_sensenova_loop_checkpoint`
+    rewrites the table's shard to int8 plus a bf16 per-row scale, the loader quantizes the
+    lm_head for this model (measured placement estimate 5.51 GiB after both), and the
+    patched build loads the int8 table end to end; a post-load conversion remains as the
+    fallback for stock checkpoints.
 """
 
 import functools
@@ -161,10 +162,11 @@ def convert_sensenova_loop_checkpoint(checkpoint, output_dir = None, token = Non
     ``output_dir`` writes a full copy with only that shard and the index changed. Idempotent:
     a shard already carrying ``weight_scale`` is left alone.
 
-    After conversion a plain 4-bit load carries about 6.42 GiB of weights (the int8 table in
-    place of the bf16 one) against about 6.76 GiB usable on an 8 GB card, so it passes the
-    load-time fit check with no offload_layers and no host-RAM dependence: the check never
-    sees the bf16 table, which no post-load step could have removed anyway.
+    After conversion a plain 4-bit load carries about 5.51 GiB of weights (the int8 table
+    in place of the bf16 one, and the lm_head quantized; see the loader's
+    ``_unsloth_sensenova_loop_quantize_lm_head``), which fits the 90%-derated bitsandbytes
+    fit check on an 8 GB card with no offload_layers and no host-RAM dependence: the check
+    never sees the bf16 table, which no post-load step could have removed anyway.
     """
     if not os.path.isdir(checkpoint):
         from huggingface_hub import snapshot_download
