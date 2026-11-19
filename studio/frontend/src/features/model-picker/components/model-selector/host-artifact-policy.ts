@@ -5,7 +5,9 @@ import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.
 
 /** Media-picker runtime capability. The backend reports dense quant, since its name alone cannot
  *  distinguish unsupported accelerators. */
-export type HostClass = "unknown" | "gguf-only" | "accelerated" | "dense-quant";
+/** "cpu-only" is a "gguf-only" host with no accelerator at all (backend cpu): it runs GGUF image models on the native
+ *  sd.cpp engine only, so a family that has a GGUF row offers nothing else there (``curatedArtifactIsOfferable``). */
+export type HostClass = "unknown" | "gguf-only" | "cpu-only" | "accelerated" | "dense-quant";
 
 const ACCELERATED_BACKENDS = new Set(["cuda", "rocm", "xpu"]);
 
@@ -30,9 +32,15 @@ export function classifyHost({
   // Modular Diffusers needs mem_get_info, which torch.mps lacks.
   if (deviceType === "mac") return "gguf-only";
   if (!(backend && budgetKnown)) return "unknown";
+  if (backend === "cpu") return "cpu-only";
   if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
   // An unrecognised backend is a new accelerator, not a CPU.
   return "unknown";
+}
+
+/** No GPU dense path: a Mac (MLX / MPS) or a CPU-only host. */
+export function hostIsGgufOnly(host: HostClass): boolean {
+  return host === "gguf-only" || host === "cpu-only";
 }
 
 export function hostIsAccelerated(host: HostClass): boolean {
@@ -51,13 +59,29 @@ const H3_PIPELINE_ID = "minimaxai/minimax-h3";
   *  CUDA / ROCm; its GGUF row runs there instead. */
 const UNPLACEABLE_WITHOUT_ACCELERATOR = new Set([H3_PIPELINE_ID, "minimaxai/minimax-h3-image"]);
 
-/** Only browse rows are filtered; a model already on disk keeps its row. */
+/** The part of a catalog group the CPU-only rule reads (structural, so this module imports no catalog types). */
+export interface OfferableGroup {
+  scope: string;
+  artifacts: ReadonlyArray<{ repoId: string; format: string }>;
+  nativeGgufRoute?: boolean;
+}
+
+/** Only browse rows are filtered; a model already on disk keeps its row. On a CPU-only host an image / video family
+ *  with a GGUF row offers only its GGUF rows: its bf16 pipeline ("Fast FP8" on a GPU), FP8 / INT8 / NVFP4 / bnb rows
+ *  would load dense weights on torch CPU (FLUX.3 Klein: 20.3 GB), and the backend refuses them there. A family with a
+ *  native route but no curated GGUF row (``nativeGgufRoute``) offers nothing; families with no GGUF route keep theirs. */
 export function curatedArtifactIsOfferable(
   repoId: string,
   host: HostClass,
+  group?: OfferableGroup | null,
 ): boolean {
-  if (host !== "gguf-only") return true;
-  return !UNPLACEABLE_WITHOUT_ACCELERATOR.has(repoId.trim().toLowerCase());
+  if (!hostIsGgufOnly(host)) return true;
+  if (UNPLACEABLE_WITHOUT_ACCELERATOR.has(repoId.trim().toLowerCase())) return false;
+  if (host !== "cpu-only" || !group || (group.scope !== "image" && group.scope !== "video")) return true;
+  const id = repoId.trim().toLowerCase();
+  const artifact = group.artifacts.find((a) => a.repoId.trim().toLowerCase() === id);
+  if (!artifact || artifact.format === "gguf") return true;
+  return !(group.nativeGgufRoute || group.artifacts.some((a) => a.format === "gguf"));
 }
 
 const H3_GGUF_ID = "unsloth/minimax-h3-gguf";
@@ -81,7 +105,7 @@ export function ggufPerfSuffix(host: HostClass): string | null {
 
 /** An "unknown" host keeps the full list so an older backend does not lose controls. */
 export function hostOffersDensePrecision(host: HostClass): boolean {
-  return host !== "gguf-only";
+  return !hostIsGgufOnly(host);
 }
 
 export function h3PerfSuffix(

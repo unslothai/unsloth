@@ -81,6 +81,10 @@ export interface CatalogGroup {
   task?: "tts" | "stt";
   /** Descending quality order: bf16, fp8, bnb-4bit, gguf. The router walks it. */
   artifacts: ModelArtifact[];
+  /** The family has a GGUF / native sd.cpp route but no curated GGUF row here: a CPU-only host offers none of its rows
+   *  (``curatedArtifactIsOfferable``), as it offers only the GGUF rows of a group that has them. The backend's
+   *  ``family_sd_cpp_supported`` is the source; test_cpu_gguf_stays_native checks the two agree. */
+  nativeGgufRoute?: boolean;
   /** Cross-owner ids for this group; suffix stripping never merges owners. */
   aliases?: readonly string[];
   /** Capability glyph fallback; the Hub listing's tags win. */
@@ -498,6 +502,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Krea 2 Turbo",
     description: "Text-to-image",
     scope: "image",
+    // sd.cpp runs Krea 2 GGUFs (community quants), so a CPU-only host hides this bf16 row.
+    nativeGgufRoute: true,
     artifacts: [
       bf16Mirror("krea/Krea-2-Turbo", 18, {
         totalParams: 12820073036,
@@ -1239,7 +1245,7 @@ export function catalogToModelOptions(
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
       // The `models` prop is built only here, so this covers trigger name and seed ids.
-      if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
+      if (!curatedArtifactIsOfferable(artifact.repoId, host, group)) continue;
       const name =
         curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
         group.displayName;

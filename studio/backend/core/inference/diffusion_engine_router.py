@@ -35,9 +35,11 @@ from core.inference.sd_cpp_backend import (
     _server_binary_runnable,
     NATIVE_FAILURE_DLL,
     NATIVE_FAILURE_INSTALL,
+    NATIVE_FAILURE_EXEC,
     clear_native_start_failure,
     ensure_sd_cpp_binary,
     last_native_start_failure,
+    note_native_start_failure,
     ensure_sd_server_binary,
     note_unlaunchable_accelerator_build,
     off_torch_build_mismatch,
@@ -872,6 +874,7 @@ def select_and_activate_engine(
     if use_mlx:
         return _activate(ENGINE_MLX, None)
     if model_kind and model_kind != "gguf":
+        refuse_cpu_dense_image_pick(fam, model_kind)
         return _activate(ENGINE_DIFFUSERS, f"non-GGUF load ({model_kind}) requires diffusers")
 
     forced, sd_cpp_pref, mps_enabled = _engine_config(engine)
@@ -940,7 +943,13 @@ def select_and_activate_engine(
                     off_torch.accelerator,
                 )
                 return None
-            return usable_or_recorded_failure(candidate, install_accelerator, selected_card)
+            usable = usable_or_recorded_failure(candidate, install_accelerator, selected_card)
+            if candidate and not usable:
+                note_native_start_failure(
+                    NATIVE_FAILURE_EXEC,
+                    f"{os.path.basename(str(candidate))} is a build this device already recorded as unable to run",
+                )
+            return usable
 
         # A CPU torch has nothing else on the card: a GPU build that cannot start steps down now.
         for _rung in range(2):
@@ -1098,6 +1107,24 @@ def _refuse_cpu_gguf_diffusers(
         raise ValueError(cpu_gguf_refusal(why))
 
 
+def refuse_cpu_dense_image_pick(fam: Optional[DiffusionFamily], model_kind: Optional[str]) -> None:
+    """On a CPU-only torch a family with a GGUF / sd.cpp route loads only as a GGUF: its pipeline, single-file and
+    pre-quantized (FP8 / INT8 / NVFP4 / bnb) picks would run dense weights on torch CPU (FLUX.3 Klein's bf16 pipeline
+    is 20.3 GB), so they are refused here as the picker hides them (host-artifact-policy ``cpu-only``). Families with
+    no native route keep their rows; CPU_GGUF_DIFFUSERS_FALLBACK_ENV lifts the rule."""
+    if fam is None or model_kind in (None, "", "gguf") or not cpu_gguf_rule_enabled():
+        return
+    if not family_sd_cpp_supported(fam):
+        return
+    if resolve_diffusion_device_target().backend != "cpu":
+        return
+    raise ValueError(
+        "This device has no GPU PyTorch can use, so "
+        f"{getattr(fam, 'label', None) or fam.name} runs only as a GGUF on the native engine (sd.cpp). "
+        "Pick one of its GGUF files instead of the full-precision or FP8 / INT8 checkpoint."
+    )
+
+
 def _refuse_cpu_gguf_off_native(
     fam: Optional[DiffusionFamily], model_kind: Optional[str], forced: str, sd_cpp_pref: str
 ) -> None:
@@ -1126,12 +1153,13 @@ def cpu_gguf_refusal(reason: str) -> str:
     failure = last_native_start_failure()
     if failure is not None and failure[0] == NATIVE_FAILURE_DLL:
         fix = (
-            "Install the Microsoft Visual C++ Redistributable (x64) from "
-            f"{_VC_REDIST_URL} (the engine needs MSVCP140.dll, VCRUNTIME140.dll and VCOMP140.dll), then load again."
+            "Its DLLs are the ones beside it in Studio's stable-diffusion.cpp folder plus the Microsoft Visual C++ "
+            "runtime (MSVCP140.dll, VCRUNTIME140.dll, VCOMP140.dll): delete that folder so it reinstalls, and if the "
+            f"error repeats, repair the Visual C++ Redistributable (x64) from {_VC_REDIST_URL}, then load again."
             if sys.platform == "win32"
             else "A library the engine needs is missing or the wrong build; reinstall it and load again."
         )
-        return f"{lead} The native engine could not start: {failure[1]}, a DLL it needs is missing. {fix}"
+        return f"{lead} The native engine could not start: {failure[1]}, a DLL it imports could not be loaded. {fix}"
     if failure is not None and failure[0] == NATIVE_FAILURE_INSTALL:
         return (
             f"{lead} The native engine could not be installed: {failure[1]}. Check that this device can reach "
@@ -1148,8 +1176,8 @@ def cpu_gguf_refusal(reason: str) -> str:
             "unset it or point SD_CLI_PATH at a stable-diffusion.cpp build, then load again."
         )
     return (
-        f"{lead} The native engine could not start: {reason}. The Studio log names the sd-cli / sd-server failure; "
-        "load again once it is fixed."
+        f"{lead} The native engine could not start: {reason}, and no start or install failure was recorded for it. "
+        "The Studio log lines for sd-cli / sd-server name the cause; load again once it is fixed."
     )
 
 
@@ -1268,6 +1296,7 @@ def predict_engine(
     )[0]:
         return ENGINE_MLX
     if model_kind and model_kind != "gguf":
+        refuse_cpu_dense_image_pick(fam, model_kind)
         return ENGINE_DIFFUSERS
 
     forced, sd_cpp_pref, mps_enabled = _engine_config(engine)

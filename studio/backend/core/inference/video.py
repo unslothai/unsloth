@@ -488,6 +488,34 @@ def _te_base_is_official(fam: Any, base: str) -> bool:
     )
 
 
+# The video families whose GGUF is a curated picker row (model-catalog.ts VIDEO_CATALOG gguf artifacts). On a CPU-only
+# torch those load only as that GGUF; the picker hides their other rows (host-artifact-policy ``cpu-only``), and
+# test_cpu_gguf_stays_native checks this set against the catalog so the two cannot drift.
+CPU_GGUF_ONLY_VIDEO_REPOS = frozenset(
+    {"unsloth/minimax-h3-gguf", "unsloth/ltx-2.5-gguf", "unsloth/ltx-2.3-gguf"}
+)
+
+
+def refuse_cpu_dense_video_pick(fam: Any, kind: Optional[str]) -> None:
+    """A non-GGUF pick of such a family on a CPU-only torch: refused, as the picker hides it. The developer kill switch
+    UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK=1 lifts it."""
+    repo = str(getattr(fam, "gguf_repo", None) or "").lower()
+    if kind == "gguf" or repo not in CPU_GGUF_ONLY_VIDEO_REPOS:
+        return
+    from .diffusion_engine_router import cpu_gguf_rule_enabled
+
+    if not cpu_gguf_rule_enabled():
+        return
+    from .diffusion_device import resolve_diffusion_device_target
+
+    if resolve_diffusion_device_target().backend != "cpu":
+        return
+    raise ValueError(
+        f"This device has no GPU PyTorch can use, so {fam.name} loads only as a GGUF here. Pick one of the "
+        f"GGUF files from '{fam.gguf_repo}' instead of the full-precision or FP8 / INT8 checkpoint."
+    )
+
+
 def assert_video_precision_available(
     fam: Any,
     *,
@@ -6006,6 +6034,7 @@ class VideoBackend:
                 f"{', '.join(supported_video_family_names())}. If this is a variant of one "
                 f"of them, pass family_override with that family name."
             )
+        refuse_cpu_dense_video_pick(fam, kind)
         # Network-free, so refused before any eviction.
         refusal = video_checkpoint_refusal(fam, repo_id, display_repo_id, gguf_filename)
         if refusal:

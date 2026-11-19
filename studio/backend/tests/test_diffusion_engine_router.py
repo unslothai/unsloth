@@ -379,12 +379,18 @@ def test_predict_engine_falls_back_when_install_is_disabled_and_nothing_is_insta
 @pytest.mark.parametrize(
     "kwargs, device",
     [
-        ({"model_kind": "pipeline"}, "cpu"),  # native is GGUF-only
+        ({"model_kind": "pipeline"}, "cpu"),  # native is GGUF-only (CPU-only rule lifted below)
         ({"model_kind": "single_file"}, "cpu"),
         ({"model_kind": "gguf"}, "cuda"),  # a usable GPU always means diffusers
     ],
 )
 def test_predict_engine_returns_diffusers_where_the_load_would(monkeypatch, kwargs, device):
+    if device == "cpu":
+        # A CPU-only torch refuses a dense pick of a family with a GGUF route (test_cpu_gguf_stays_native).
+        _set_device(monkeypatch, device)
+        with pytest.raises(ValueError, match = "runs only as a GGUF"):
+            r.predict_engine(detect_family("z-image"), **kwargs)
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK", "1")
     _set_device(monkeypatch, device)
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)

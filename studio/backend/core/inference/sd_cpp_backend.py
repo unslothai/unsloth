@@ -2912,10 +2912,17 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-cli installer import failed: %s", exc)
+            note_native_start_failure(
+                NATIVE_FAILURE_INSTALL, f"the sd-cli installer could not be imported: {exc}"
+            )
             return fallback
         # Claim for the whole install incl. download, or a generation is overwritten mid-run.
         with _tree_claimed_for_install() as claimed:
             if not claimed:
+                note_native_start_failure(
+                    NATIVE_FAILURE_INSTALL,
+                    "the native engine folder is in use by a running generation, so it was not installed yet",
+                )
                 return fallback  # something is running in there; retry on a later load
             try:
                 path, _used = _install_down_the_ladder(_install, accelerator)
@@ -2961,9 +2968,16 @@ def ensure_sd_server_binary(
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-server installer import failed: %s", exc)
+            note_native_start_failure(
+                NATIVE_FAILURE_INSTALL, f"the sd-server installer could not be imported: {exc}"
+            )
             return fallback
         with _tree_claimed_for_install() as claimed:
             if not claimed:
+                note_native_start_failure(
+                    NATIVE_FAILURE_INSTALL,
+                    "the native engine folder is in use by a running generation, so it was not installed yet",
+                )
                 return fallback  # something is running in there; retry on a later load
             try:
                 _path, accelerator = _install_down_the_ladder(_install, accelerator)

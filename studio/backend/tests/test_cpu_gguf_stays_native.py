@@ -162,7 +162,7 @@ def test_only_the_kill_switch_restores_the_diffusers_route(monkeypatch, env, val
     [
         ("cuda", "gguf", FLUX3, None),  # a GPU torch keeps diffusers for a GGUF
         ("cuda", "gguf", FLUX3, "diffusers"),
-        ("cpu", "pipeline", FLUX3, None),  # native is GGUF-only
+        ("cpu", "pipeline", "sdxl", None),  # no native route: the pipeline stays on diffusers
         ("cpu", "gguf", "sdxl", None),  # no native asset mapping: diffusers is the only route
         ("cpu", "gguf", "sdxl", "diffusers"),
     ],
@@ -284,3 +284,117 @@ def test_status_tells_the_page_to_hide_the_diffusers_choice(monkeypatch):
     monkeypatch.delenv(r.CPU_GGUF_DIFFUSERS_FALLBACK_ENV)
     _device(monkeypatch, "cuda")
     assert r.engine_choice_status({"loaded": False})["gguf_diffusers_allowed"] is True
+
+
+# ── CPU-only hosts: no FP8 / INT8 / bf16 rows for a family with a GGUF route ──────────────────────────────────────
+
+_CATALOG = (
+    __import__("pathlib").Path(__file__).resolve().parents[2]
+    / "frontend/src/features/model-picker/components/model-selector/model-catalog.ts"
+)
+
+
+def _catalog_groups(scope):
+    """(canonical id, artifact (kind, repo) pairs, nativeGgufRoute) per catalog group of ``scope``."""
+    import re
+
+    src = _CATALOG.read_text(encoding = "utf-8")
+    out = []
+    for chunk in src.split("canonicalId:")[1:]:
+        m = re.match(r'\s*"([^"]+)"', chunk)
+        if not m:
+            continue
+        body = chunk.split("canonicalId:")[0]
+        found = re.search(r'scope:\s*"(\w+)"', body)
+        if not found or found.group(1) != scope:
+            continue
+        arts = re.findall(r'(\w+)\(\s*"([\w.-]+/[\w.-]+)"', body[body.find("artifacts:") :])
+        out.append((m.group(1), arts, "nativeGgufRoute: true" in body))
+    return out
+
+
+@pytest.mark.parametrize("kind", ["pipeline", "single_file"])
+def test_a_cpu_dense_pick_of_a_family_with_a_gguf_route_is_refused(monkeypatch, kind):
+    _device(monkeypatch, "cpu")
+    _binaries(monkeypatch, "/opt/sd-cli")
+    fam = detect_family(FLUX3)
+    for call in (r.predict_engine, r.select_and_activate_engine):
+        with pytest.raises(ValueError, match = "runs only as a GGUF on the native engine"):
+            call(fam, model_kind = kind)
+
+
+@pytest.mark.parametrize(
+    "backend, fam_name, env",
+    [
+        ("cpu", "sdxl", None),  # no GGUF route: keeps its rows
+        ("cpu", "lumina-2", None),
+        ("cuda", FLUX3, None),  # a GPU keeps the FP8 / bf16 rows
+        ("cpu", FLUX3, "1"),  # the developer kill switch
+    ],
+)
+def test_dense_picks_elsewhere_are_unchanged(monkeypatch, backend, fam_name, env):
+    if env:
+        monkeypatch.setenv(r.CPU_GGUF_DIFFUSERS_FALLBACK_ENV, env)
+    _device(monkeypatch, backend)
+    fam = detect_family(fam_name)
+    assert r.predict_engine(fam, model_kind = "pipeline") == ENGINE_DIFFUSERS
+    r.select_and_activate_engine(fam, model_kind = "pipeline")
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
+
+
+def test_the_backend_refuses_exactly_the_image_rows_the_cpu_picker_hides():
+    from core.inference.diffusion_families import detect_family_for_pick, family_sd_cpp_supported
+
+    groups = _catalog_groups("image")
+    assert len(groups) > 15
+    for canonical, arts, native_route in groups:
+        fam = detect_family_for_pick(canonical, None, None)
+        hidden = native_route or any(k == "gguf" for k, _ in arts)
+        assert hidden == bool(fam and family_sd_cpp_supported(fam)), canonical
+
+
+def test_the_video_gguf_only_set_matches_the_catalog():
+    from core.inference.video import CPU_GGUF_ONLY_VIDEO_REPOS
+    curated = {
+        repo.lower() for _c, arts, _n in _catalog_groups("video") for k, repo in arts if k == "gguf"
+    }
+    assert curated == set(CPU_GGUF_ONLY_VIDEO_REPOS)
+
+
+def _video_device(monkeypatch, backend):
+    import core.inference.diffusion_device as devmod
+    monkeypatch.setattr(
+        devmod,
+        "resolve_diffusion_device_target",
+        lambda **_: SimpleNamespace(backend = backend, device = backend),
+    )
+
+
+def test_a_cpu_dense_video_pick_of_a_family_with_a_gguf_row_is_refused(monkeypatch):
+    from core.inference.video import refuse_cpu_dense_video_pick
+    from core.inference.video_families import _FAMILIES as VIDEO_FAMILIES
+
+    _video_device(monkeypatch, "cpu")
+    by_repo = {str(f.gguf_repo or "").lower(): f for f in VIDEO_FAMILIES}
+    for repo in ("unsloth/ltx-2.5-gguf", "unsloth/ltx-2.3-gguf", "unsloth/minimax-h3-gguf"):
+        fam = by_repo[repo]
+        for kind in ("pipeline", "single_file"):
+            with pytest.raises(ValueError, match = "loads only as a GGUF here"):
+                refuse_cpu_dense_video_pick(fam, kind)
+        refuse_cpu_dense_video_pick(fam, "gguf")
+    # Wan2.2 TI2V-5B has a GGUF repo but no curated GGUF row: its pipeline row stays, so it is not refused.
+    refuse_cpu_dense_video_pick(by_repo["unsloth/wan2.2-ti2v-5b-gguf"], "pipeline")
+    _video_device(monkeypatch, "cuda")
+    refuse_cpu_dense_video_pick(by_repo["unsloth/ltx-2.5-gguf"], "pipeline")
+    _video_device(monkeypatch, "cpu")
+    monkeypatch.setenv(r.CPU_GGUF_DIFFUSERS_FALLBACK_ENV, "1")
+    refuse_cpu_dense_video_pick(by_repo["unsloth/ltx-2.5-gguf"], "pipeline")
+
+
+def test_the_video_load_validation_runs_the_refusal(monkeypatch):
+    from core.inference.video import get_video_backend
+    _video_device(monkeypatch, "cpu")
+    with pytest.raises(ValueError, match = "loads only as a GGUF here"):
+        get_video_backend().validate_load_request(
+            "Lightricks/LTX-2.5-Diffusers", model_kind = "pipeline"
+        )
