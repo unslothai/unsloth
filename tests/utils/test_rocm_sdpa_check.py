@@ -282,6 +282,8 @@ def _report(**fields):
     return "UNSLOTH_ROCM_SDPA_CHECK " + json.dumps(report) + "\n"
 
 
+# Windows has no signal.SIGKILL.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
 _OOM_TRACE = "torch.OutOfMemoryError: HIP out of memory. Tried to allocate 140.00 MiB. GPU 0 has a total capacity of 15.92 GiB"
 
 
@@ -291,7 +293,13 @@ _OOM_TRACE = "torch.OutOfMemoryError: HIP out of memory. Tried to allocate 140.0
     [
         # Resource exhaustion says nothing about the kernel: kept (inconclusive).
         ((1, "", "Traceback ...\n" + _OOM_TRACE), True),
-        ((-signal.SIGKILL, "", ""), True),  # the kernel's out-of-memory killer
+        pytest.param(
+            (-_SIGKILL, "", ""),
+            True,
+            marks = pytest.mark.skipif(
+                sys.platform == "win32", reason = "no out-of-memory killer signal on Windows"
+            ),
+        ),  # the kernel's out-of-memory killer
         ((0, _report(ran = 3, out_of_memory = ["masked float16 hd128"]), ""), True),
         # Kernel faults and wrong numbers stay refusals.
         ((-signal.SIGABRT, "", "HIP error: an illegal memory access was encountered"), False),
@@ -326,7 +334,7 @@ def test_timeout_stays_a_refusal(fresh_verdicts, monkeypatch):
 
     monkeypatch.setattr(torch.version, "hip", "7.0.0")
     monkeypatch.setattr(check, "_arch", lambda index: "gfx1200")
-    monkeypatch.setattr(check.subprocess, "Popen", lambda *a, **k: Hung(-signal.SIGKILL, "", ""))
+    monkeypatch.setattr(check.subprocess, "Popen", lambda *a, **k: Hung(-_SIGKILL, "", ""))
     v = check.rocm_sdpa_verdict(0)
     assert (v["flash"], v["efficient"]) == (False, False), v
 
