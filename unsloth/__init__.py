@@ -1506,6 +1506,8 @@ if _IS_MLX:
             texts = []
         if not isinstance(texts, list) or len(texts) == 1:
             return formatting_func
+        if any(isinstance(value, list) and len(value) == len(texts) for value in row.values()):
+            return formatting_func
 
         def formatting_func_per_row(example):
             return formatting_func({key: [value] for key, value in example.items()})
