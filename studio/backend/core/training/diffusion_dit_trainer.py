@@ -442,8 +442,7 @@ def _int8_quantize_base(
         ),
         **({} if device is None else {"device": device}),
     )
-    # No small-M padding: that guards torch._int_mm (W8A8), which a weight-only Linear never calls, and the pad
-    # refuses a Linear with no per-row activation quant (every weight-only one), which failed minimax-h3 at load.
+    # No small-M padding: it guards torch._int_mm (W8A8 only) and refuses weight-only Linears (broke minimax-h3 load).
     if device is not None:
         # quantize_ moves every module it visits; this catches anything outside its walk (root params / buffers).
         transformer.to(device)

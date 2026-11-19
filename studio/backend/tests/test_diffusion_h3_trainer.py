@@ -799,7 +799,7 @@ def test_int8_training_applies_h3s_small_m_guards():
 
 
 def test_int8_quantize_base_runs_a_weight_only_h3_base_at_one_row():
-    """Weight-only int8 never calls torch._int_mm, so H3's pad tokens must not wrap (the pad refuses weight-only)."""
+    """Weight-only int8 must not get small-M padding, which refuses weight-only Linears."""
     import torch
 
     pytest.importorskip("torchao")
