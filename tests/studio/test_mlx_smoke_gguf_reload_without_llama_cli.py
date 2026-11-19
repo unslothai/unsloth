@@ -11,6 +11,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tests" / "studio" / "run_real_mlx_smoke.py"
 
+# The fake llama.cpp binaries are shebang scripts.
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "needs shebang executables")
+
 FAKE_LLAMA_CLI = """#!{python}
 print({prompt!r} + "Unsloth!")
 """
