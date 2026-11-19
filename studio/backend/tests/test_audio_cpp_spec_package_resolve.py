@@ -179,6 +179,8 @@ def test_a_local_gguf_of_a_split_package_needs_its_other_files_beside_it(
     alone = acm.resolve(str(main), network = False)
     assert alone is not None and alone.unsupported == acm.LOCAL_PACKAGE_INCOMPLETE
 
-    _put(tmp_path / "local", "codec.gguf", _gguf_bytes())
+    codec = _put(tmp_path / "local", "codec.gguf", _gguf_bytes(family = "split_tts", spec = spec))
     acm.forget()
     assert acm.resolve(str(main), network = False).unsupported is None
+    # Another member of the package is no model on its own: the runtime is handed the primary.
+    assert acm.resolve(str(codec), network = False).unsupported == acm.LOCAL_PACKAGE_INCOMPLETE

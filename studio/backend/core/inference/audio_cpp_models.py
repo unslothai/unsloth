@@ -1753,17 +1753,20 @@ def _package_variants(
 
 
 def _local_package_complete(spec: Optional[dict], local_path: str) -> bool:
-    """False when a local GGUF belongs to a package of several GGUFs and one is not beside it."""
+    """False when a local GGUF belongs to a package of several GGUFs and is not its primary, or one
+    of the package's files is not beside it."""
     path = Path(local_path)
     split = [
-        (p, f)
+        p
         for p in spec_packages.spec_packages(spec)
         if len(p.gguf_files) > 1
-        for f in p.gguf_files
-        if Path(f).name.lower() == path.name.lower()
+        and path.name.lower() in {Path(f).name.lower() for f in p.gguf_files}
     ]
-    for package, own in split:
-        depth = len(Path(spec_packages._local(package.strip_prefix, own)).parts)
+    for package in split:
+        own = spec_packages._local(package.strip_prefix, package.primary)
+        if Path(own).name.lower() != path.name.lower():
+            continue  # the runtime is handed the primary; another member is no model on its own
+        depth = len(Path(own).parts)
         root = path.parents[depth - 1] if depth <= len(path.parents) else path.parent
         if all(
             (root / spec_packages._local(package.strip_prefix, f)).is_file() for f in package.files
