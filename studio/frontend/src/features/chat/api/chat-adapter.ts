@@ -2119,7 +2119,11 @@ export function findLatestUserVideoBase64(
  */
 function boundMcpImageResults(
   messages: RunMessages,
-  { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
+  {
+    readsImages,
+    localMarkers,
+    uncapped = false,
+  }: { readsImages: boolean; localMarkers: boolean; uncapped?: boolean },
 ): RunMessages {
   type Carrier = { message: number; part: number; images: McpImage[] };
   // One entry per replay exchange, partitioned by the serializer's own rule so they cannot drift.
@@ -2158,7 +2162,11 @@ function boundMcpImageResults(
   const plan = readsImages
     ? planMcpImageBound(
         batches.map((batch) => batch.map((carrier) => carrier.images)),
-        { localMarkers },
+        {
+          localMarkers,
+          exchanges: perExchange.map((batch) => batch.map((carrier) => carrier.images)),
+          uncapped,
+        },
       )
     : batches.map((batch) => batch.map((): McpImage[] => []));
   const edits = new Map<number, Map<number, McpImage[]>>();
@@ -2186,6 +2194,28 @@ function boundMcpImageResults(
     });
     return { ...message, content } as typeof message;
   }) as RunMessages;
+}
+
+/** llama.cpp with auto-compaction keeps every tool picture, as the backend's loop does (#18231). */
+function compactingLlamaCppChat(
+  state: Pick<
+    ChatRuntimeState,
+    | "loadedIsGguf"
+    | "activeGgufVariant"
+    | "activeNativePathToken"
+    | "params"
+    | "autoCompactEnabled"
+  >,
+): boolean {
+  return (
+    state.autoCompactEnabled &&
+    isServedByLlamaCpp({
+      loadedIsGguf: state.loadedIsGguf,
+      activeGgufVariant: state.activeGgufVariant,
+      activeNativePathToken: state.activeNativePathToken,
+      checkpoint: state.params.checkpoint,
+    })
+  );
 }
 
 /** The SELECTED model's vision flag wins (a queued send may target another model); loaded state
@@ -2217,6 +2247,7 @@ export async function buildLocalTokenCountHistory(
   const messages = boundMcpImageResults(rawMessages, {
     readsImages: localTargetReadsImages(runtimeState),
     localMarkers: activeModel?.isGguf === false,
+    uncapped: compactingLlamaCppChat(runtimeState),
   });
   const survivingMessages = pruneOutboundHistory(messages, true);
   const outboundMessages = survivingMessages
@@ -3699,9 +3730,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
       customContextLength: config.customContextLength,
-      loadedContextLength: null,
-      currentCheckpoint: currentStore.params.checkpoint,
-      activeGgufVariant: currentStore.activeGgufVariant,
       isMlx: isServedByMlx(
         candidate.kind === "gguf",
         platform.deviceType,
@@ -3709,7 +3737,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ),
       pinnedMaxSeqLength: config.maxSeqLength,
       defaultMaxSeqLength: candidate.maxSeqLength,
-      presetSource: currentStore.activePresetSource,
     });
     // GPU knobs are per-model; the live store holds session defaults during background loads.
     const effectiveGpuMemoryMode =
@@ -5368,6 +5395,7 @@ export function createOpenAIStreamAdapter(
       const messages = boundMcpImageResults(rawMessages, {
         readsImages: targetReadsImages,
         localMarkers: mcpImagesLocalMarkers,
+        uncapped: !isExternalRequest && compactingLlamaCppChat(runtime),
       });
       const replayReasoning = !isExternalRequest || (
         providerSupportsPreserveThinking(externalProvider?.providerType) &&
@@ -7033,6 +7061,7 @@ export function createOpenAIStreamAdapter(
                   externalProvider.providerType,
                   externalModelId,
                 )?.contextLength,
+                compactionMode: externalProvider.compactionMode,
                 autoCompactTokens: externalProvider.autoCompactTokens,
                 compactNow,
               }),
@@ -9021,9 +9050,13 @@ export function createOpenAIStreamAdapter(
           )
         ) {
           toast.info("This chat was not compacted", {
-            description: isCloudForCompaction
-              ? "There was nothing before your latest message to summarize."
-              : "Compaction needs the conversation archive and the default checkpoint policy.",
+            description: !isCloudForCompaction
+              ? "Compaction needs the conversation archive and the default checkpoint policy."
+              : externalProvider?.compactionMode === "rolling"
+                ? "Drop oldest turns only drops turns once the chat is full. Pick Reset to latest turn or Summarize older turns for this connection to compact on demand."
+                : externalProvider?.compactionMode === "checkpoint"
+                  ? "Compaction needs the conversation archive and a model that can use Studio's tools."
+                  : "There was nothing before your latest message to summarize.",
           });
         }
         const finalTiming = withPriorTiming(

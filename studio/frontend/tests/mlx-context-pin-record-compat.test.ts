@@ -210,13 +210,9 @@ function loadRequest(
     ggufVariant: null,
     isGguf: false,
     customContextLength: config.customContextLength,
-    loadedContextLength: null,
-    currentCheckpoint: "",
-    activeGgufVariant: null,
     isMlx,
     pinnedMaxSeqLength: normalizeMaxSeqLength(config.maxSeqLength),
     defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
-    presetSource: "builtin-default",
   });
 }
 

@@ -52,6 +52,7 @@ def test_specs_cover_the_dit_families():
         "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
         "flux.3-klein-base",

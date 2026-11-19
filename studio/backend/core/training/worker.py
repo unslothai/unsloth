@@ -4358,6 +4358,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
+    # The NF4 dequant cache (unsloth/kernels/dequant_cache.py) fills the GPU's free memory, which Studio reads
+    # to keep or load a chat model during training: off in the worker unless the user's environment sets it.
+    os.environ.setdefault("UNSLOTH_NF4_DEQUANT_CACHE", "0")
     # Until unsloth is imported below; transformers is first imported well before that.
     metadata_scan_cache = _install_metadata_scan_cache()
 
