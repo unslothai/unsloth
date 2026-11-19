@@ -205,3 +205,71 @@ def test_reserve_never_shrinks_a_pinned_budget():
     cache.plan(2 * GIB, pinned = True)
     assert cache.reserve(5 * GIB, from_plan = True) == 0
     assert cache.budget == cache.cap == 2 * GIB and cache.extra_reserved == 5 * GIB
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_without_a_cache_the_gc_plan_is_mains(monkeypatch, case):
+    # Compiled runs (200+ steps), ROCm, bf16 bases and UNSLOTH_DIFFUSION_DEQUANT_CACHE=0 have no cache: the joint plan
+    # must be exactly main's gc plan there.
+    c = CASES[case]
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (c["free"], c["total"]))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: c["reserved"])
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a: c["post"])
+    alone, joint = _budget(c["per_block"], c["blocks"]), _budget(c["per_block"], c["blocks"])
+    dit._plan_gc_budget(alone, c["peak"], c["pre"])
+    planned = []
+    dit._plan_after_first_step(joint, None, c["peak"], c["pre"], None, planned.append)
+    assert joint.keep == alone.keep and joint.kept_bytes == alone.kept_bytes and planned == []
+
+
+def test_no_device_queries_beyond_mains(monkeypatch):
+    # The joint plan reads memory once at step 1, like main; later steps keep main's one rebalance probe and the
+    # reservation itself never touches the device.
+    c = CASES["l4_klein_1024"]
+    calls = {
+        "mem_get_info": 0,
+        "memory_reserved": 0,
+        "memory_allocated": 0,
+        "max_memory_allocated": 0,
+    }
+
+    def counted(name, value):
+        def f(*_a):
+            calls[name] += 1
+            return value() if callable(value) else value
+
+        return f
+
+    mem = {"alloc": c["pre"]}
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE_GB", raising = False)
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", counted("mem_get_info", (c["free"], c["total"]))
+    )
+    monkeypatch.setattr(torch.cuda, "memory_reserved", counted("memory_reserved", c["reserved"]))
+    monkeypatch.setattr(
+        torch.cuda, "memory_allocated", counted("memory_allocated", lambda: mem["alloc"])
+    )
+    monkeypatch.setattr(
+        torch.cuda, "max_memory_allocated", counted("max_memory_allocated", c["peak"])
+    )
+    p = torch.nn.Parameter(torch.zeros(4))
+    opt = torch.optim.AdamW([p], lr = 1e-3)
+    opt.register_step_post_hook(lambda *_: mem.update(alloc = c["post"]))
+    cache = fl.Nf4DequantCache()
+    budget = _budget(c["per_block"], c["blocks"])
+    handles = fl.attach_training_hooks(opt, cache, 1.0, None)
+    p.grad = torch.ones(4)
+    opt.step()
+    dit._plan_after_first_step(budget, cache, c["peak"], c["pre"], None, None)
+    assert calls["mem_get_info"] == 2  # cache plan + gc plan, both at step 1 (as on main)
+    before = dict(calls)
+    cache.reserve(0, from_plan = True)
+    cache.reserve(budget.kept_bytes, from_plan = True)
+    assert calls == before
+    for _ in range(3):
+        opt.step()
+    assert (
+        calls["mem_get_info"] - before["mem_get_info"] == 3
+    )  # main's per-step rebalance probe, unchanged
+    for h in handles:
+        h.remove()
