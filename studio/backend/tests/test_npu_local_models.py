@@ -148,6 +148,20 @@ def test_a_registered_folder_inside_the_walk_is_listed_once(monkeypatch):
     assert [m.folder for m in nlm.account_local_models()] == [folder]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason = "POSIX permissions, not as root"
+)
+def test_an_uninspectable_conversion_in_the_exports_is_skipped_not_raised():
+    # Read without execute: the walk lists model.q4nx, but stat-ing it raises PermissionError.
+    kept = _converted()
+    locked = _converted("Locked-q4nx")
+    locked.chmod(0o444)
+    try:
+        assert [m.folder for m in nlm.account_local_models()] == [kept]
+    finally:
+        locked.chmod(0o755)
+
+
 def test_an_unreadable_registered_folder_is_skipped_not_raised(monkeypatch, tmp_path):
     # A scan folder Studio cannot read (no permission, a drive that went offline) raises from
     # is_symlink() / is_file(); that used to fail /api/npu/models for every NPU model.

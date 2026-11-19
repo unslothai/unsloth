@@ -457,6 +457,13 @@ def test_a_lemond_that_stops_answering_is_an_npu_error(npu, monkeypatch):
         npu.catalog()
 
 
+def _raising(error: Exception):
+    def start(self, timeout = 60.0):
+        raise error
+
+    return start
+
+
 def _exited(returncode: int) -> LemonadeUnavailable:
     error = LemonadeUnavailable("Lemonade did not start. Last output:\n")
     error.returncode = returncode
@@ -475,16 +482,32 @@ def _exited(returncode: int) -> LemonadeUnavailable:
 def test_a_windows_code_integrity_block_names_its_fix(npu, monkeypatch, error):
     restarted = _restarted(npu)
 
-    def blocked(self, timeout = 60.0):
-        raise error
-
-    monkeypatch.setattr(LemonadeServer, "start", blocked)
+    monkeypatch.setattr(LemonadeServer, "start", _raising(error))
     with pytest.raises(
         nb.NpuError, match = "Windows blocked part of the local model runtime"
     ) as caught:
         restarted.catalog()
     assert "Smart App Control" in str(caught.value)
     assert str(npu.installer.binary.parent) in str(caught.value)
+    restarted.shutdown()
+
+
+def test_a_fail_fast_exit_alone_is_a_crash_not_a_policy_block(npu, monkeypatch):
+    # 0xC0000602 is also any __fastfail crash; only named policy output makes it a block.
+    restarted = _restarted(npu)
+    crashed = _exited(0xC0000602)
+    monkeypatch.setattr(LemonadeServer, "start", _raising(crashed))
+    with pytest.raises(nb.NpuError, match = "lemond exited with status") as caught:
+        restarted.catalog()
+    assert "Smart App Control" not in str(caught.value)
+
+    refused = LemonadeUnavailable(
+        "Lemonade did not start. Last output:\nThis program was blocked by Smart App Control"
+    )
+    refused.returncode = 0xC0000602
+    monkeypatch.setattr(LemonadeServer, "start", _raising(refused))
+    with pytest.raises(nb.NpuError, match = "Windows blocked part of the local model runtime"):
+        restarted.catalog()
     restarted.shutdown()
 
 

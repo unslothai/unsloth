@@ -234,8 +234,12 @@ def find_local_models(root: Path) -> list[LocalQ4nx]:
         )
         if "model.q4nx" in files:
             dirs[:] = []
-            if within_account(path):
-                found.append(_describe(path, root))
+            try:
+                if within_account(path):
+                    found.append(_describe(path, root))
+            except OSError as exc:
+                # Listable but not inspectable (no execute bit, a denied file): skip, list the rest.
+                logger.warning("Skipping converted NPU model folder %s: %s", path, exc)
         elif len(path.parts) - base_depth >= _MAX_DEPTH:
             dirs[:] = []
     return sorted(found, key = lambda model: model.display.lower())
