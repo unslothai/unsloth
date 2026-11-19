@@ -69,10 +69,8 @@ test("routed image picks apply and transactionally roll back model defaults", ()
     "const pick = diffusionRoutePick(",
     source.indexOf("const handledRouteModel"),
   );
-  const routeEnd = source.indexOf(
-    "// Reload the current model with the current advanced options.",
-    routeStart,
-  );
+  // The route effect ends at its dependency list, which closes with "]);".
+  const routeEnd = source.indexOf("]);", routeStart);
   assert.ok(routeStart >= 0 && routeEnd > routeStart);
   const routeBlock = source.slice(routeStart, routeEnd);
   assert.match(routeBlock, /imagePresets\.hydrated/);
@@ -376,12 +374,15 @@ test("distilled checkpoints get their publishers' recipes, not their family's", 
 });
 
 test("a base file in a Turbo / Flash folder or repo keeps the backend's recipe, not the distilled one", () => {
-  for (const [repo, file] of [
-    ["/home/me/.cache/anima-turbo", "anima-base-v1.0.safetensors"],
-    ["/home/me/.cache/anima-turbo", "anima-aesthetic-v1.1.safetensors"],
-    ["/models/chroma1-flash", "Chroma1-HD.safetensors"],
-  ]) {
-    assert.deepEqual(defaultsFor(defaultsKeyFor(repo, "auto", file)), { steps: 9, guidance: 0 }, `${repo} ${file}`);
+  // The base file's own recipe, whatever the table gives it, and never the distilled one.
+  for (const [repo, file, distilled] of [
+    ["/home/me/.cache/anima-turbo", "anima-base-v1.0.safetensors", { steps: 10, guidance: 1 }],
+    ["/home/me/.cache/anima-turbo", "anima-aesthetic-v1.1.safetensors", { steps: 10, guidance: 1 }],
+    ["/models/chroma1-flash", "Chroma1-HD.safetensors", { steps: 16, guidance: 1 }],
+  ] as const) {
+    const got = defaultsFor(defaultsKeyFor(repo, "auto", file));
+    assert.deepEqual(got, defaultsFor(file), `${repo} ${file}`);
+    assert.notDeepEqual(got, distilled, `${repo} ${file}`);
   }
   // The file naming the distilled checkpoint, or a component file naming none, still gets it.
   assert.deepEqual(defaultsFor(defaultsKeyFor("/models/anima", "auto", "anima-turbo-v1.1.safetensors")), {
