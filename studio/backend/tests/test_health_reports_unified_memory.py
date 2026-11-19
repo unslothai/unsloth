@@ -105,13 +105,13 @@ def test_an_unauthenticated_reply_carries_neither(monkeypatch):
 
 
 def test_the_gate_is_the_one_the_metal_budget_uses(monkeypatch, real_apple_metal_budget):
-    """Reuse the Metal budget's gate, or the UI describes memory the loader is not enforcing."""
+    """Rosetta stays out of the health field: its CPU device reports no unified pool, so the UI sizes against RAM."""
     import inspect
 
     import main as main_mod
     from core.inference.llama_cpp import LlamaCppBackend
 
     assert "from utils.hardware import is_apple_silicon" in inspect.getsource(main_mod.health_check)
-    assert "from utils.hardware import is_apple_silicon" in inspect.getsource(
+    assert "from utils.hardware import apple_silicon_host" in inspect.getsource(
         LlamaCppBackend._apple_metal_memory_budget_bytes
     )

@@ -616,9 +616,9 @@ class GpuMemoryShortError(RuntimeError):
 
 def _apple_wired_headroom_bytes() -> Optional[int]:
     """Wired GPU memory a Metal load may still take, system-wide; None if unknown."""
-    from utils.hardware import is_apple_silicon
+    from utils.hardware import apple_silicon_host
 
-    if not is_apple_silicon():
+    if not apple_silicon_host():
         return None
     try:
         probe = subprocess.run(
@@ -8492,8 +8492,8 @@ def _metal_capable_host() -> bool:
     """Apple Silicon, where an empty CUDA/HIP probe still means GPU offload. Not
     ``darwin``: auto_detect_backend resolves an Intel Mac to CPU, which wants the line."""
     try:
-        from utils.hardware import is_apple_silicon
-        return bool(is_apple_silicon())
+        from utils.hardware import apple_silicon_host
+        return bool(apple_silicon_host())
     except Exception:  # noqa: BLE001 -- a diagnostic must not break a load
         return sys.platform == "darwin"
 
@@ -12560,7 +12560,7 @@ class LlamaCppBackend:
         fit_active: bool = False,
     ) -> bool:
         """Errs towards True: it only gates skipping page-lock, so an unknown placement must keep mlock."""
-        from utils.hardware import is_apple_silicon
+        from utils.hardware import apple_silicon_host
 
         # CPU placement in extras or inherited env keeps weights in RAM whatever the layer count: check on the auto path too, never short-circuit past it.
         if _args_place_tensors_on_cpu(extra_args):
@@ -12582,7 +12582,7 @@ class LlamaCppBackend:
         if not all_on_gpu:
             return True
         # Unified memory: the VRAM is host RAM, so weights stay pageable however fully they are offloaded.
-        if is_apple_silicon():
+        if apple_silicon_host():
             return True
         if is_vulkan_backend:
             # gpu_indices are Vulkan ordinals here; the ROCm helper would misread them.
@@ -14187,9 +14187,9 @@ class LlamaCppBackend:
         seconds loading weights, so another app can take memory inside that
         window. Budgeting all of it would re-create the failure this avoids.
         """
-        from utils.hardware import is_apple_silicon
+        from utils.hardware import apple_silicon_host, is_apple_silicon
 
-        if not is_apple_silicon():
+        if not apple_silicon_host():
             return 0
         from utils.hardware.hardware import _metal_recommended_working_set_bytes
 
@@ -14205,6 +14205,9 @@ class LlamaCppBackend:
                 return 0
             try:
                 rec_bytes = int(vm.total)
+                if not is_apple_silicon():
+                    # Rosetta has no MLX or torch.mps to ask; Metal's working set is about two thirds of RAM.
+                    rec_bytes = rec_bytes * 2 // 3
             except Exception:
                 return 0
         # psutil available, not free: macOS free omits the reclaimable inactive queue. Only lowers the budget.
@@ -16612,9 +16615,9 @@ class LlamaCppBackend:
         ``lazy_read_bytes`` (``_lazy_read_host_bytes``) leaves the footprint: it stays
         mmap'd and pages through the headroom. ``announce`` False silences a what-if call.
         """
-        from utils.hardware import is_apple_silicon
+        from utils.hardware import apple_silicon_host
 
-        if not model_size or not kv_sized or mtp_unsized or is_apple_silicon():
+        if not model_size or not kv_sized or mtp_unsized or apple_silicon_host():
             return None
         # Pass-through adapters are resident weights model_size never carried; unreadable abstains.
         sidecar_bytes = _sidecar_adapter_bytes(extra_args)
@@ -36025,9 +36028,9 @@ class LlamaCppBackend:
             return None
 
         # Integrated CUDA SoCs (Jetson, DGX Spark) are unified memory (cudaDeviceProp::integrated); no other check sees them, so a spill would count one pool twice
-        from utils.hardware import is_apple_silicon
+        from utils.hardware import apple_silicon_host
 
-        if is_apple_silicon():
+        if apple_silicon_host():
             return None
 
         # Integrated CUDA SoCs (Jetson, DGX Spark) are unified memory too; a spill gains nothing.

@@ -57,6 +57,11 @@ from .vram_estimation import (
 )
 
 
+def apple_silicon_host() -> bool:
+    """Apple Silicon hardware, including an x86_64 Python under Rosetta, whose llama.cpp is the native arm64 Metal build."""
+    return is_apple_silicon() or _hardware._running_under_rosetta()
+
+
 def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     """Pass the epoch through: dropping it raises in the warm's _run_stage and leaves detection undone."""
     return _hardware.ensure_hardware_detected(epoch)
@@ -101,6 +106,7 @@ __all__ = [
     "video_capability",
     "amd_driver_warning_report",
     "is_apple_silicon",
+    "apple_silicon_host",
     "clear_gpu_cache",
     "get_gpu_memory_info",
     "log_gpu_memory",

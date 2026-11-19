@@ -13893,7 +13893,7 @@ def _estimate_context_floor(
         parse_ctx_override,
         parse_gpu_layers_override,
     )
-    from utils.hardware import is_apple_silicon
+    from utils.hardware import apple_silicon_host
 
     if (n_ctx or 0) > 0 or not breakdown.kv_on_gpu or not breakdown.kv_estimable:
         return None
@@ -13918,7 +13918,7 @@ def _estimate_context_floor(
         layers_fixed = _env_fixes_gpu_layers(
             os.environ if layer_arg is None else {"LLAMA_ARG_N_GPU_LAYERS": layer_arg}
         )
-        floor_ctx = _FIT_FLOOR_MIN_CTX if is_apple_silicon() else _FIT_MIN_CTX
+        floor_ctx = _FIT_FLOOR_MIN_CTX if apple_silicon_host() else _FIT_MIN_CTX
         return _EstimateContextFloor(floor_ctx, fitter_runs and not layers_fixed)
     # Manual /load folds -ngl into gpu_layers and strips --fit.
     try:
@@ -15748,9 +15748,9 @@ def _gguf_memory_breakdown(
                 + _lt_table_host
                 + prompt
             )
-            from utils.hardware import is_apple_silicon
+            from utils.hardware import apple_silicon_host
 
-            if is_apple_silicon():
+            if apple_silicon_host():
                 if _sidecar_adapter_paths(_lt_extras):
                     return False
                 budget = _lt_backend._apple_metal_memory_budget_bytes()

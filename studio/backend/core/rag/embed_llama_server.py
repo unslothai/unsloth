@@ -675,9 +675,9 @@ class LlamaServerBackend:
     def _gpu_available() -> bool:
         """Smi-first GPU probe leaves no CUDA/HIP context behind; llama-server opts into the ROCm
         arch gate."""
-        from utils.hardware import is_apple_silicon
+        from utils.hardware import apple_silicon_host
 
-        if is_apple_silicon():
+        if apple_silicon_host():
             return True
         from core.inference.llama_cpp import LlamaCppBackend
 
