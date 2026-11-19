@@ -5000,6 +5000,7 @@
    "flux.3-klein-base": "FLUX.3 Klein Base",
    "krea-2": "Krea 2",
    "ltx-2": "LTX-2",
+   "ltx-2.5": "LTX-2.5",
    "minimax-h3": "MiniMax-H3",
    "minimax-h3-image": "MiniMax-H3-Image",
    "moss-image": "MOSS-Image",
@@ -5011,6 +5012,7 @@
   },
   "trainable_video_families": [
    "ltx-2",
+   "ltx-2.5",
    "minimax-h3",
    "wan2.2-ti2v-5b"
   ],
