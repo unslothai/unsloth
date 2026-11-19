@@ -7004,7 +7004,6 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
   background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-pane-floor)) + 9%) * var(--glass-opacity, 1))), transparent);
 }
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before,
-html[data-glass="frosted"][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"],
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
 html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass="frosted"] .wallpaper-preview-composer {
@@ -7103,6 +7102,7 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
     linear-gradient(black 0 0) left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height) no-repeat,
     radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
       var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat,
+    linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat,
     /* The same inner curve where the strip meets docked Run settings; zero-sized while it is closed. */
     radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))
       calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height) / var(--studio-run-settings-fillet) var(--studio-run-settings-fillet) no-repeat;
@@ -7229,14 +7229,17 @@ html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wa
 html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
   top: var(--studio-custom-titlebar-height, 0px);
 }
-/* Beside the strip the panel takes the strip's own fill and no edge line, so the two read as one sheet. */
-html[data-glass][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
-  background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
-  background-attachment: fixed;
+/* Beside the pinned strip, the strip's own glass runs down the panel column too, so sidebar, caption and
+   panel are one blurred sheet; two backdrop blurs side by side always show an edge where they meet. */
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   box-shadow: none;
 }
-html[data-glass-clear][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
-  background-color: var(--sidebar);
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface,
 html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {

@@ -152,11 +152,11 @@ test("the pinned caption strip stops at docked Run settings, whose glass runs to
 	assert.ok(panel.includes("--chat-settings-top: 0px;"), panel);
 	assert.ok(panel.includes("padding-top: var(--studio-custom-titlebar-height, 0px);"), panel);
 	assert.ok(css.includes(glassFrame + ' [data-slot="chat-settings-resize-handle"] {\n  top: var(--studio-custom-titlebar-height, 0px);'));
-	// Beside the strip the panel takes the strip's fill and drops its edge line, and the strip curves into it.
-	assert.ok(css.includes('html[data-glass][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {\n  background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);\n  background-attachment: fixed;\n  box-shadow: none;'));
-	// Both anchor their sheen and noise to the window, so neither steps at the join.
+	// Beside the strip the strip's own glass runs down the panel column, and the panel draws none, so nothing meets in a seam.
+	assert.ok(frame.includes("linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat"), frame);
 	assert.ok(frame.includes("background-attachment: fixed;"), frame);
-	assert.ok(css.includes('html[data-glass="frosted"][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"],\n'));
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {\n  background: transparent;\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;\n  box-shadow: none;'));
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;'));
 	assert.ok(frame.includes("radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))"), frame);
 	assert.ok(frame.includes("calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height)"), frame);
 	assert.ok(frame.includes("--studio-run-settings-fillet: min(var(--radius-md), var(--studio-chat-settings-docked-width, 0px));"), frame);
