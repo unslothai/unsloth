@@ -14602,7 +14602,6 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         tool_facts.note_mcp_tool(name, tool, studio = is_studio_tools(server.get("url") or ""))
         description = tool.get("description") or ""
         if server.get("builtin_id") == "unreal" and raw_name == "call_tool":
-            # Epic's meta-tool hides 50 toolsets behind one call; the guide carries what models keep missing.
             description = description.rstrip() + "\n" + UNREAL_CALL_GUIDE.strip()
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name

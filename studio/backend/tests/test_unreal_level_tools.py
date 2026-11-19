@@ -58,7 +58,6 @@ def test_install_keeps_an_existing_init_unreal(tmp_path):
 
 
 def test_install_over_a_level_tools_only_install_adds_the_game_tools_once(tmp_path):
-    """Projects set up before the game tools existed have the level hook only; a reinstall appends the game hook."""
     root = _project(tmp_path)
     python_dir = root / "Content" / "Python"
     python_dir.mkdir(parents = True)

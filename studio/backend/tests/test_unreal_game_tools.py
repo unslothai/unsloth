@@ -180,8 +180,7 @@ def test_a_plugin_that_was_not_loaded_asks_for_a_restart_until_restarted(
     assert (
         result["plugins_enabled"] == ["ChaosVehiclesPlugin"] and result["restart_required"] is True
     )
-    # A second call (or another template sharing the plugin) changes nothing in the .uproject; the plugin is still
-    # not running, so the restart is still owed.
+    # Nothing changes in the .uproject, but the plugin is still not running.
     again = json.loads(tools_.add_game_template("vehicleadv"))
     assert again["plugins_enabled"] == [] and again["restart_required"] is True
     assert again["plugins_not_running"] == ["ChaosVehiclesPlugin"]
@@ -193,7 +192,7 @@ def test_a_running_plugin_needs_no_restart_even_if_the_uproject_lacked_it(
     running = [
         "ModelContextProtocol",
         "ChaosVehiclesPlugin",
-    ]  # enabled by the engine or another plugin
+    ]
     tools_, _ = _load(
         monkeypatch, _engine(tmp_path / "UE"), project, loadable = True, running = running
     )

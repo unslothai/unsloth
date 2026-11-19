@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Installs Unsloth's Unreal Editor toolsets into a project: level saving (which Epic's Unreal MCP lacks) and
-game templates (start a playable game from Epic's own Blueprint templates instead of hand-writing pawns, input
-and physics), plus the calling guide Studio adds to the Unreal built-in's call_tool description."""
+"""Installs Unsloth's Unreal Editor toolsets (level saving, game templates) and the Unreal call_tool guide."""
 
 from pathlib import Path
 

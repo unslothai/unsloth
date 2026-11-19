@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Runs inside the Unreal Editor, not in Studio: Studio copies this file into a project's Content/Python.
-
-Epic's Unreal MCP toolsets can place actors and edit Blueprints, but a model asked for a playable game ends up
-hand-writing a player pawn, input mappings and vehicle physics in Blueprint, which rarely works. Epic ships all of
-that, tested, as the Blueprint game templates of the New Project dialog. This toolset (unsloth_game_tools.
-GameTemplateTools) adds a template's content to the open project mid-session, sets the level's game mode, places the
-player start on the ground, and reports what the player actually got in Play In Editor."""
+"""Runs inside the Unreal Editor (copied into a project's Content/Python). Models hand-writing a pawn, input and
+vehicle physics in Blueprint rarely get a playable game; this adds Epic's tested Blueprint templates mid-session."""
 
 import json
 import os
@@ -115,8 +110,7 @@ def _enable_plugins(uproject: str, names: list) -> list:
 
 
 def _plugins_not_running(names: list, game_mode_loads: bool) -> list:
-    """The required plugins this editor session did not start with (enabling one in the .uproject only takes effect at
-    the next start). Asks the plugin manager; without it, an unloadable game mode stands in for all of them."""
+    """Required plugins this session did not start with; without the plugin manager, an unloadable game mode."""
     try:
         running = set(unreal.PluginBlueprintLibrary.get_enabled_plugin_names())
     except Exception:
@@ -271,15 +265,14 @@ class GameTemplateTools(unreal.ToolsetDefinition):
             fields[9] if len(fields) > 9 and isinstance(fields[9], unreal.Actor) else None
         )
         z = ground.z + 120.0  # capsule half height (~92 cm) plus clearance
-        # A new start rather than the level's existing one: the start of the default Open World level never reaches
-        # the Play In Editor world (the player then spawns at the world origin), a fresh one does.
+        # A fresh start: the Open World template's own start never reaches the Play In Editor world.
         start = actors.spawn_actor_from_class(
             unreal.PlayerStart, unreal.Vector(x, y, z), unreal.Rotator(0.0, 0.0, yaw)
         )
         if start is None:
             raise RuntimeError("Could not add a PlayerStart to the level")
         _keep_always_loaded(start)
-        for old in old_starts:  # one start, so the game mode cannot pick another
+        for old in old_starts:
             actors.destroy_actor(old)
         return json.dumps(
             {
