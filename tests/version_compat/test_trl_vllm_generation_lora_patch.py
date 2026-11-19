@@ -586,8 +586,7 @@ def test_sampling_params_restored_when_generate_raises(monkeypatch):
     assert module.SamplingParams is FakeSamplingParams
 
 
-# TRL >= 1.18 asks the engine for each token's candidate set (vLLM >= 0.28) and then reads
-# `output.sampling_mask.token_ids` after every colocated generate.
+# TRL >= 1.18 reads `output.sampling_mask.token_ids` after every colocated generate.
 _INIT_VLLM_TRL_1_18 = """
 def _init_vllm(self, model):
     if self.mode == "colocate":
@@ -623,8 +622,7 @@ def _init_with_fast_inference_engine(cls, engine_returns_mask):
 
 
 def test_sampling_mask_request_dropped_for_an_engine_without_masks(monkeypatch):
-    """The fast_inference engine is built before the trainer, without return_sampling_mask: TRL must not
-    read output.sampling_mask (None) after generate, or the first rollout raises AttributeError."""
+    """Otherwise TRL reads sampling_mask (None) and the first rollout raises AttributeError."""
     _rl_replacements()  # import Unsloth against the real TRL before the fake one is installed
     cls = _build_fake_trl(
         monkeypatch, _GENERATE_TRL_1_10, version = "1.18.0", init_src = _INIT_VLLM_TRL_1_18

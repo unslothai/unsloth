@@ -6222,8 +6222,7 @@ def _vllm_weight_sync_bucket_bytes():
 
 
 def _unsloth_engine_returns_sampling_mask(llm):
-    """Was this vLLM engine built with return_sampling_mask (vLLM >= 0.28)? It is an engine-wide setting, so a
-    fast_inference engine built by from_pretrained without it returns sampling_mask = None for every output."""
+    """Engine-wide vLLM >= 0.28 flag; a fast_inference engine built without it returns sampling_mask = None."""
     for owner in (llm, getattr(llm, "llm_engine", None)):
         model_config = getattr(owner, "model_config", None)
         if model_config is not None:
