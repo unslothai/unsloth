@@ -44,6 +44,11 @@ else:
         "test module got there first, so `from loggers.media_progress import ...` will fail"
     )
 
+# Computer use is an add-on outside the backend tree; tests load it from the checkout.
+from core.inference import computer_use as _computer_use  # noqa: E402
+
+_computer_use.attach(_backend_root.parent / "addons" / "computer_use" / "unsloth_computer_use")
+
 # Module scope: test modules import from tests/_shared at collection.
 for _up in Path(__file__).resolve().parents:
     _repo_shared = _up / "tests" / "_shared"

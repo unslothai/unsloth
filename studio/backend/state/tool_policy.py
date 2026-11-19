@@ -153,6 +153,11 @@ def needs_tool_confirmation(
     if not confirm_tool_calls or bypass_permissions or never_needs(name):
         return False
     if permission_mode in ("off", "auto") and _is_computer_tool(name):
+        from core.inference.computer_use import installed
+
+        if not installed():
+            # Nothing to approve: the call only answers that computer use is not installed.
+            return False
         from core.inference.computer_use import policy as computer_policy
 
         # Per conversation: a project's chats share session_id, and each asks for itself.

@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from core.inference.browser_agent import BROWSER_TOOL_NAMES, workspace_path_of
 from core.inference.computer_use import COMPUTER_TOOL_NAME
+from core.inference.computer_use import installed as computer_use_installed
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, mark_as_taken, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
@@ -232,7 +233,7 @@ class ToolCallDecision:
             "arguments_text": canonical_arguments_text(arguments),
             "provenance": self.provenance,
         }
-        if self.tool_name == COMPUTER_TOOL_NAME and fragment is None:
+        if self.tool_name == COMPUTER_TOOL_NAME and fragment is None and computer_use_installed():
             from core.inference.computer_use import policy as computer_policy
             payload["computer_use"] = computer_policy.call_asks(self.arguments, self.session_id)
         return payload

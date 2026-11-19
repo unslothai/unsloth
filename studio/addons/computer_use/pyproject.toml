@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools==84.1.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unsloth-computer-use"
+# Equal to ADDON_VERSION in studio/backend/core/inference/computer_use/__init__.py: Unsloth
+# installs exactly that version. Raise both whenever this package changes.
+version = "1.0.0"
+description = "Optional computer use add-on for Unsloth, installed from Settings > Computer use"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "AGPL-3.0-only"
+authors = [{name = "Unsloth AI team", email = "info@unsloth.ai"}]
+
+[project.urls]
+homepage = "https://unsloth.ai"
+repository = "https://github.com/unslothai/unsloth"
+
+[tool.setuptools.packages.find]
+include = ["unsloth_computer_use*"]

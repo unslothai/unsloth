@@ -15,6 +15,7 @@ import pytest
 from core.inference import computer_use
 from core.inference.computer_use import actions as actions_mod
 from core.inference.computer_use import backends, keys, policy, screen
+from core.inference.computer_use import tool as tool_mod
 from core.inference.computer_use.backends import Display, FrontWindow
 from core.inference.computer_use.backends import virtual
 from core.inference.computer_use.budget import ImageBudget
@@ -45,7 +46,7 @@ def desktop(monkeypatch):
     monkeypatch.setattr(policy, "_save_apps", save_apps)
     monkeypatch.setattr(screen, "_SETTLE_FIRST_S", 0.0)
     monkeypatch.setattr(screen, "_SETTLE_STEP_S", 0.0)
-    monkeypatch.setattr(computer_use.tool, "_OPEN_APP_WAIT_S", 0.0)
+    monkeypatch.setattr(tool_mod, "_OPEN_APP_WAIT_S", 0.0)
     backend = backends.get_backend()
     backend.chosen = chosen
     yield backend
@@ -1824,6 +1825,7 @@ def client(desktop, monkeypatch):
 def test_the_status_route_reports_the_switch_and_the_machine(client):
     status = client.get("/api/computer-use/status").json()
     assert status == {
+        "installed": True,
         "available": True,
         "reason": None,
         "enabled": False,

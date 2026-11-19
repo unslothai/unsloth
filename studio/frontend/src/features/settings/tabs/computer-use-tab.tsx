@@ -23,10 +23,12 @@ import {
   type ComputerUsePermission,
   type ComputerUseStatus,
   blockComputerUseApp,
+  installComputerUse,
   removeComputerUseApp,
   requestComputerUsePermission,
   resumeComputerUse,
   unblockComputerUseApp,
+  uninstallComputerUse,
   updateComputerUseSettings,
 } from "@/features/computer-use/api";
 import { refreshComputerUseStatus, useComputerUseStore } from "@/features/computer-use/store";
@@ -99,6 +101,7 @@ export function ComputerUseTab() {
   const status = useComputerUseStore((state) => state.status);
   const browserUse = useBrowserAgentStore((state) => state.enabled);
   const [busy, setBusy] = useState(false);
+  const [installing, setInstalling] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
 
@@ -145,7 +148,26 @@ export function ComputerUseTab() {
         </p>
       </header>
       <SettingsSection title={t("computerUse.settings.control")}>
-        {status ? (
+        {status && !status.installed ? (
+          <SettingsRow
+            icon={<HugeiconsIcon icon={Cursor02Icon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
+            label={t("computerUse.settings.anyApp")}
+            description={status.reason ?? bold(t("computerUse.settings.notInstalled"))}
+          >
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={locked || !!status.reason}
+              onClick={() => {
+                setInstalling(true);
+                void run(installComputerUse).finally(() => setInstalling(false));
+              }}
+            >
+              {installing ? t("computerUse.settings.installing") : t("computerUse.settings.install")}
+            </Button>
+          </SettingsRow>
+        ) : null}
+        {status?.installed ? (
           <SettingsRow
             icon={<HugeiconsIcon icon={Cursor02Icon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
             label={t("computerUse.settings.anyApp")}
@@ -214,6 +236,16 @@ export function ComputerUseTab() {
           >
             <Button size="sm" variant="secondary" disabled={locked} onClick={() => void run(resumeComputerUse)}>
               {t("computerUse.settings.allowAgain")}
+            </Button>
+          </SettingsRow>
+        ) : null}
+        {status?.installed ? (
+          <SettingsRow
+            label={t("computerUse.settings.addon")}
+            description={t("computerUse.settings.addonDescription")}
+          >
+            <Button size="sm" variant="ghost" disabled={locked} onClick={() => void run(uninstallComputerUse)}>
+              {t("computerUse.settings.uninstall")}
             </Button>
           </SettingsRow>
         ) : null}

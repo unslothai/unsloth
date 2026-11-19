@@ -11,6 +11,8 @@ export type ComputerUsePermission = "screen" | "input";
 
 /** `available` is false when this server can't control the computer it runs on. */
 export type ComputerUseStatus = {
+  /** false until the owner installs the add-on; `reason` then says why it can't be installed, if it can't. */
+  installed: boolean;
   available: boolean;
   reason: string | null;
   enabled: boolean;
@@ -33,6 +35,8 @@ function fromApi(body: unknown): ComputerUseStatus {
   const names = (value: unknown) =>
     Array.isArray(value) ? value.filter((app): app is string => typeof app === "string") : [];
   return {
+    // A backend older than the add-on has it built in.
+    installed: raw.installed !== false,
     available: raw.available === true,
     reason: typeof raw.reason === "string" ? raw.reason : null,
     enabled: raw.enabled === true,
@@ -106,6 +110,16 @@ export async function unblockComputerUseApp(name: string): Promise<ComputerUseSt
 export async function resumeComputerUse(): Promise<ComputerUseStatus> {
   const res = await authFetch(`${ROUTE}/resume`, { method: "POST" });
   return checked(res, "Could not allow computer use again.");
+}
+
+export async function installComputerUse(): Promise<ComputerUseStatus> {
+  const res = await authFetch(`${ROUTE}/install`, { method: "POST" });
+  return checked(res, "Could not install computer use.");
+}
+
+export async function uninstallComputerUse(): Promise<ComputerUseStatus> {
+  const res = await authFetch(`${ROUTE}/install`, { method: "DELETE" });
+  return checked(res, "Could not uninstall computer use.");
 }
 
 export async function revokeComputerUse(): Promise<void> {

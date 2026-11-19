@@ -69,6 +69,10 @@ export async function alwaysAllowComputerUseApp(name: string): Promise<void> {
   useComputerUseStore.getState().setStatus(await allowComputerUseApp(name));
 }
 
+export function computerUseInstallable(status: ComputerUseStatus | null): boolean {
+  return !!status && !status.installed && !status.reason;
+}
+
 export function computerUseReady(status: ComputerUseStatus | null): boolean {
   return !!status && status.available && status.enabled;
 }

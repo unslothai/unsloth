@@ -3,6 +3,7 @@
 
 import { Cursor02Icon } from "@hugeicons/core-free-icons";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { useIsAccountOwner } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -10,7 +11,7 @@ import { useT } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect } from "react";
-import { computerUseReady, refreshComputerUseStatus, useComputerUseStore } from "./store";
+import { computerUseInstallable, computerUseReady, refreshComputerUseStatus, useComputerUseStore } from "./store";
 
 /** Why the loaded model can't use the tool, or null. The server decides for connected models. */
 function useModelProblem(): "tools" | "vision" | null {
@@ -35,8 +36,9 @@ export function ComputerUseMenuItem() {
   const status = useComputerUseStatus();
   const enabled = useComputerUseStore((state) => state.enabled);
   const problem = useModelProblem();
-  // Unavailable offers nothing; switched off sends the owner to the switch.
-  if (!status?.available) return null;
+  const isOwner = useIsAccountOwner();
+  // Unavailable offers nothing; switched off or not installed sends the owner to Settings.
+  if (!status?.available && !(isOwner && computerUseInstallable(status))) return null;
   const ready = computerUseReady(status);
   const on = enabled && ready && !problem;
   return (

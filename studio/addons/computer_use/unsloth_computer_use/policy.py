@@ -9,6 +9,7 @@ import re
 import sys
 from typing import Any, Optional
 
+from . import host_problem
 from .actions import INPUT_OPS
 from .backends import Backend, FrontWindow, get_backend
 from .keys import Chord, chord_text
@@ -228,27 +229,6 @@ def coordinate_mode(model: Any, encoder: Optional[str] = None) -> str:
     if encoder is None or encoder.strip().lower() in _PIXEL_ENCODERS:
         return "pixels"
     return "grid"
-
-
-def host_problem() -> Optional[str]:
-    from auth.policy import full_access_permitted
-    from state.tool_policy import get_tool_policy
-    from utils.account_context import via_api_key_context
-    from utils.host_policy import serves_this_machine_only
-
-    if not full_access_permitted():
-        return "Only the installation owner can use computer use."
-    if via_api_key_context():
-        return "Computer use works only from the Unsloth app, not through an API key."
-    if get_tool_policy() is False:
-        return "Tools are disabled on this server, so computer use is off."
-    if not serves_this_machine_only():
-        return (
-            "Computer use is off because this Unsloth server can be reached from other machines "
-            "(a network bind, Remote Access, or a hosted notebook). It works only when Unsloth "
-            "serves the computer it runs on."
-        )
-    return None
 
 
 def unavailable_reason(backend: Optional[Backend] = None) -> Optional[str]:

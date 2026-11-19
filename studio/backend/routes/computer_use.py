@@ -24,6 +24,7 @@ class ComputerUsePermissions(BaseModel):
 
 
 class ComputerUseStatus(BaseModel):
+    installed: bool = True
     available: bool
     reason: Optional[str] = None
     enabled: bool
@@ -48,7 +49,29 @@ class ComputerUseSettingsRequest(BaseModel):
     coordinates: Optional[Literal["auto", "pixels", "grid"]] = None
 
 
+def _require_installed() -> None:
+    from core.inference.computer_use import NOT_INSTALLED, installed
+    if not installed():
+        raise HTTPException(status_code = 409, detail = NOT_INSTALLED)
+
+
+Installed = Depends(_require_installed)
+
+
 def _status() -> ComputerUseStatus:
+    from core.inference.computer_use import host_problem, installed
+
+    if not installed():
+        # `reason` set: this server could not use it, so there is nothing to install.
+        return ComputerUseStatus(
+            installed = False,
+            available = False,
+            reason = host_problem(),
+            enabled = False,
+            coordinates = "auto",
+            platform = "none",
+            permissions = ComputerUsePermissions(),
+        )
     from core.inference.computer_use import policy
     from core.inference.computer_use.backends import get_backend
 
@@ -82,7 +105,7 @@ async def computer_use_status(current_subject: str = Depends(get_current_subject
     return await asyncio.to_thread(_status)
 
 
-@router.put("/settings", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+@router.put("/settings", response_model = ComputerUseStatus, dependencies = [OwnerOnly, Installed])
 async def update_computer_use_settings(
     payload: ComputerUseSettingsRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -113,7 +136,9 @@ async def update_computer_use_settings(
     return await asyncio.to_thread(_status)
 
 
-@router.post("/permissions/{kind}", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+@router.post(
+    "/permissions/{kind}", response_model = ComputerUseStatus, dependencies = [OwnerOnly, Installed]
+)
 async def request_computer_use_permission(
     kind: Literal["screen", "input"], current_subject: str = Depends(get_current_subject)
 ):
@@ -128,7 +153,7 @@ async def request_computer_use_permission(
     return await asyncio.to_thread(_status)
 
 
-@router.post("/allowed-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+@router.post("/allowed-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly, Installed])
 async def allow_computer_use_app(
     payload: ComputerUseAppRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -148,7 +173,9 @@ async def allow_computer_use_app(
     return await asyncio.to_thread(_status)
 
 
-@router.delete("/allowed-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+@router.delete(
+    "/allowed-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly, Installed]
+)
 async def remove_computer_use_app(name: str, current_subject: str = Depends(get_current_subject)):
     from core.inference.computer_use import policy
 
@@ -157,7 +184,7 @@ async def remove_computer_use_app(name: str, current_subject: str = Depends(get_
     return await asyncio.to_thread(_status)
 
 
-@router.post("/blocked-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+@router.post("/blocked-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly, Installed])
 async def block_computer_use_app(
     payload: ComputerUseAppRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -174,7 +201,9 @@ async def block_computer_use_app(
     return await asyncio.to_thread(_status)
 
 
-@router.delete("/blocked-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+@router.delete(
+    "/blocked-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly, Installed]
+)
 async def unblock_computer_use_app(name: str, current_subject: str = Depends(get_current_subject)):
     from core.inference.computer_use import policy
 
@@ -187,7 +216,7 @@ async def unblock_computer_use_app(name: str, current_subject: str = Depends(get
     return await asyncio.to_thread(_status)
 
 
-@router.post("/resume", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+@router.post("/resume", response_model = ComputerUseStatus, dependencies = [OwnerOnly, Installed])
 async def resume_computer_use(current_subject: str = Depends(get_current_subject)):
     """Allow again: chats the user stopped with the pointer may use the computer once more."""
     from core.inference.computer_use import policy
@@ -199,6 +228,50 @@ async def resume_computer_use(current_subject: str = Depends(get_current_subject
         raise HTTPException(status_code = 403, detail = problem)
     resumed = state.resume_account(current_account_id())
     logger.info("settings.computer_use_resumed subject=%s chats=%s", current_subject, resumed)
+    return await asyncio.to_thread(_status)
+
+
+def _turn_off() -> None:
+    from core.inference.computer_use import installed
+    from state import computer_use as state
+    from utils.account_context import current_account_id
+
+    if installed():
+        from core.inference.computer_use import policy
+        policy.update_settings(enabled = False)
+    state.revoke_account(current_account_id())
+
+
+@router.post("/install", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+async def install_computer_use(current_subject: str = Depends(get_current_subject)):
+    """Fetch the add-on. A person presses this in Settings; it stays off until they turn it on."""
+    from core.inference.computer_use import addon, host_problem
+
+    problem = host_problem()
+    if problem:
+        raise HTTPException(status_code = 403, detail = problem)
+    try:
+        await asyncio.to_thread(addon.install)
+    except addon.AddonInstallError as exc:
+        raise HTTPException(status_code = 502, detail = str(exc)) from None
+    # A switch left on by a build that had computer use built in is not consent to this install.
+    await asyncio.to_thread(_turn_off)
+    logger.info("settings.computer_use_installed subject=%s", current_subject)
+    return await asyncio.to_thread(_status)
+
+
+@router.delete("/install", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+async def uninstall_computer_use(current_subject: str = Depends(get_current_subject)):
+    """Switch it off, end what is running, and delete the add-on's files."""
+    from core.inference.computer_use import addon
+
+    # Off first, so installing it again later does not also switch it back on.
+    await asyncio.to_thread(_turn_off)
+    try:
+        await asyncio.to_thread(addon.uninstall)
+    except addon.AddonInstallError as exc:
+        raise HTTPException(status_code = 502, detail = str(exc)) from None
+    logger.info("settings.computer_use_uninstalled subject=%s", current_subject)
     return await asyncio.to_thread(_status)
 
 

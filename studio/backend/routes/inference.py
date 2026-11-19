@@ -6288,7 +6288,11 @@ def _computer_use_tool(
 ) -> "dict | None":
     """`engine`: the local backend whose image-token counts size screenshots. `encoder`: the local
     model's image tower ("" if unknown) or a callable reading it, None for a cloud model."""
-    from core.inference.computer_use import computer_tool, policy
+    from core.inference.computer_use import computer_tool, installed
+
+    if not installed():
+        return None
+    from core.inference.computer_use import policy
     from core.inference.computer_use.budget import ImageBudget
     from state import computer_use as computer_state
 
