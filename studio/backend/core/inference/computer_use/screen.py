@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 # Models that answer in pixels count 28 px cells on the resized image, so it is sent on that grid.
 CELL = 28
-# The size without a budget for the loaded model (cloud models, fixed-size encoders, small contexts).
 MAX_EDGE = 1008
 GRID = 1000
 JPEG_QUALITY = 80

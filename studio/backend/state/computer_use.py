@@ -28,7 +28,6 @@ class Session:
     apps: set = field(default_factory = set)
     used: float = 0.0
     coordinates: str = "pixels"
-    # Sizes each screenshot for the loaded model (computer_use.budget.ImageBudget); None keeps the default.
     budget: Any = None
     frame: Any = None
     display: Optional[int] = None

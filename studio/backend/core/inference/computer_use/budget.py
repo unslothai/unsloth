@@ -17,8 +17,7 @@ logger = get_logger(__name__)
 COST_CEILING = 4096
 # Below this many tokens per screen the measured models stop landing small targets.
 PRECISE = 1100
-# One screenshot may take a quarter of the context, but past PRECISE it aims at an eighth: the
-# rolling window then keeps ~5 screenshots of an 8k context before evicting the oldest turns.
+# A screenshot may take a quarter of the context but aims at an eighth: ~5 fit an 8k rolling window.
 _MOST_OF_CONTEXT = 4
 _AIM_OF_CONTEXT = 8
 _ASPECT_SLACK = 0.05
@@ -27,9 +26,8 @@ _CELL_PROBES = (896, 448)
 # A square of this many cells a side checks the estimate: under every cap, over every floor measured.
 _CHECK_CELLS = 12
 
-# Prompt tokens an image of (width, height) costs on the loaded model, or None when unknown.
 Count = Callable[[int, int], Optional[int]]
-# The loaded context, read at each capture: a server restarted mid-loop may hold less.
+# Read at each capture: a server restarted mid-loop may hold less.
 Context = Callable[[], Optional[int]]
 
 _logged: set = set()
