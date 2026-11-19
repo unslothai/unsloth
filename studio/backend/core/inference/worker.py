@@ -838,6 +838,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
                 load_kwargs["spec_drafters_allowed"] = config.get("spec_drafters_allowed")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
+                load_kwargs["disable_vision"] = bool(config.get("disable_vision"))
+                load_kwargs["reasoning_budget"] = config.get("reasoning_budget", -1)
+                load_kwargs["reasoning_budget_message"] = config.get("reasoning_budget_message", "")
+                load_kwargs["prefill_step"] = config.get("mlx_prefill_step")
+                load_kwargs["prefill_batch"] = config.get("mlx_prefill_batch")
+                load_kwargs["prompt_cache_mib"] = config.get("mlx_prompt_cache_mib")
             from utils.security.file_security import escaping_weight_references
 
             # Right before the load: the folder may have been edited since the route checked it.
@@ -951,6 +957,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_fast_verify_requested",
                         "mlx_fast_verify_reason",
                         "mlx_offload",
+                        "disable_vision",
+                        "vision_disabled_by_user",
+                        "reasoning_budget",
+                        "reasoning_budget_message",
+                        "n_ubatch",
+                        "n_batch",
+                        "cache_ram",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
                         "speculative_type",
@@ -1020,13 +1033,21 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
-def _handle_narrow_context(backend, cmd: dict, resp_queue: Any) -> None:
+def _handle_retune(backend, cmd: dict, resp_queue: Any) -> None:
     try:
-        fields = backend.narrow_context(cmd.get("max_seq_length"))
+        fields = backend.retune(
+            cmd.get("max_seq_length"),
+            reasoning_budget = cmd.get("reasoning_budget", -1),
+            reasoning_budget_message = cmd.get("reasoning_budget_message", ""),
+            prefill_batch = cmd.get("prefill_batch"),
+            prompt_cache_mib = cmd.get("prompt_cache_mib"),
+        )
+        if fields is not None:
+            fields["can_batch"] = _load_can_batch(backend)
     except Exception as exc:
-        logger.warning("Could not narrow the context in place: %s", exc)
+        logger.warning("Could not apply the settings in place: %s", exc)
         fields = None
-    _send_response(resp_queue, {"type": "context_narrowed", "fields": fields})
+    _send_response(resp_queue, {"type": "retuned", "fields": fields})
 
 
 def _drain_skip_generate(
@@ -2497,11 +2518,11 @@ def run_inference_process(
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
                     _handle_load(backend, cmd, resp_queue)
-                elif cmd_type == "narrow_context":
+                elif cmd_type == "retune":
                     batch.cancel_all()
                     batch.close()
                     _abandon_held_commands(deferred, resp_queue)
-                    _handle_narrow_context(backend, cmd, resp_queue)
+                    _handle_retune(backend, cmd, resp_queue)
                 elif cmd_type == "unload":
                     batch.cancel_all()
                     batch.close()

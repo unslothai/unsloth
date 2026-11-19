@@ -379,7 +379,9 @@ class LoadRequest(BaseModel):
         description = (
             "Logical prompt batch size for llama-server (--batch-size) for "
             f"this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
-            "default (2048). Ignored for non-GGUF models."
+            "default (2048). On MLX it caps the tokens one batched prefill forward "
+            "takes across replies (never below one reply); omit to prefill every "
+            "waiting reply together. Ignored for other non-GGUF models."
         ),
     )
     n_ubatch: Optional[int] = Field(
@@ -394,7 +396,9 @@ class LoadRequest(BaseModel):
             "2048 for a projector whose family cannot be read. Every other "
             "vision model keeps the 512 default. "
             "llama.cpp caps it at the batch size. Larger values speed up prompt "
-            "processing at the cost of compute-buffer VRAM. Ignored for "
+            "processing at the cost of compute-buffer VRAM. On MLX it is the "
+            "prefill step, tokens per prefill forward (default 2048); an "
+            "expert-offload plan's own chunk caps it. Ignored for other "
             "non-GGUF models."
         ),
     )
@@ -443,7 +447,9 @@ class LoadRequest(BaseModel):
             "Host memory in MiB llama-server may spend caching prompt state it "
             "has evicted from a slot (--cache-ram). Omit for the llama.cpp "
             "default (8192); 0 disables the cache and -1 lifts the limit. "
-            "Ignored for non-GGUF models."
+            "On MLX it sizes the prompt cache, which shares memory with the model: "
+            "omit (or -1) for 15% of the GPU working set, 0 disables it. "
+            "Ignored for other non-GGUF models."
         ),
     )
     tensor_parallel: bool = Field(
@@ -461,8 +467,9 @@ class LoadRequest(BaseModel):
             "Load a vision-capable GGUF without its multimodal projector, as a "
             "text-only model. Frees the VRAM the projector would hold, at the cost "
             "of image input, which is off for the session; text generation is "
-            "unaffected. Ignored for models with no vision projector, and for "
-            "non-GGUF models."
+            "unaffected. On MLX, stops image input and frees the vision weights "
+            "(an adapter or audio-input model keeps them). Ignored for models with no "
+            "vision input, and for other non-GGUF models."
         ),
     )
     engram_precision: Optional[str] = Field(
@@ -1172,6 +1179,12 @@ class EstimateMemoryRequest(BaseModel):
     n_batch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
     n_ubatch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
     ctx_checkpoints: Optional[int] = Field(None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cache_ram: Optional[int] = Field(
+        None,
+        ge = -1,
+        le = CACHE_RAM_MAX_MIB,
+        description = "MLX prompt cache in MiB, as on /load; it comes out of what the context fits in.",
+    )
     speculative_type: Optional[str] = Field(
         None, description = "Speculative mode; decides which drafter's weights are charged."
     )
@@ -1247,7 +1260,13 @@ class EstimateMemoryRequest(BaseModel):
     )
 
     _no_booleans = field_validator(
-        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", "max_seq_length", mode = "before"
+        "n_batch",
+        "n_ubatch",
+        "ctx_checkpoints",
+        "cache_ram",
+        "n_ctx",
+        "max_seq_length",
+        mode = "before",
     )(LoadRequest._no_booleans.__func__)
     # Unresolved, the handle reads as a Hub id and the panel is told the estimate is unavailable.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
