@@ -344,6 +344,30 @@ def test_unreal_hint_reads_the_engine_registry(
     assert unreal_found(f"[Other]\nX={engine}\n[Installations]\n".encode()) is False
 
 
+def test_an_unreadable_registry_entry_does_not_hide_an_engine_found_elsewhere(
+    fresh_install_cache, tmp_path, monkeypatch
+):
+    installed = fresh_install_cache
+    monkeypatch.setattr(installed.sys, "platform", "linux")
+    monkeypatch.setattr(installed, "_epic_launcher_has_unreal", lambda: False)
+    monkeypatch.setattr(installed, "_any", lambda patterns: True)  # e.g. ~/UnrealEngine5
+    ini = tmp_path / ".config/Epic/UnrealEngine/Install.ini"
+    ini.parent.mkdir(parents = True)
+    ini.write_text("[Installations]\nX=/mnt/locked/UnrealEngine\n")
+    monkeypatch.setattr(
+        installed.Path, "expanduser", lambda self: tmp_path / str(self).replace("~/", "")
+    )
+    real_is_dir = installed.Path.is_dir
+
+    def is_dir(self):
+        if "locked" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    monkeypatch.setattr(installed.Path, "is_dir", is_dir)
+    assert installed.is_installed("unreal") is True
+
+
 def test_unreal_hint_reads_the_windows_engine_registry(fresh_install_cache, tmp_path, monkeypatch):
     """Windows source builds register under HKCU\\Software\\Epic Games\\Unreal Engine\\Builds."""
     installed = fresh_install_cache

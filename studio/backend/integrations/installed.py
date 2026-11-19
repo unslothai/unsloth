@@ -71,7 +71,13 @@ def _epic_launcher_has_unreal() -> bool:
 def _engine_root_exists(root: str) -> bool:
     # Registry entries outlive deleted engines, so only count a root that still has its Engine folder.
     root = root.strip().strip('"')
-    return bool(root) and (Path(root).expanduser() / "Engine").is_dir()
+    try:
+        return bool(root) and (Path(root).expanduser() / "Engine").is_dir()
+    except (
+        OSError,
+        ValueError,
+    ):  # unreadable parent or a NUL byte: this entry says nothing, keep looking
+        return False
 
 
 def _unreal_registered_engine() -> bool:
