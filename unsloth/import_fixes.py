@@ -10190,6 +10190,8 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_omni_moe_thinker": "qwen2_moe",
     "qwen3_omni_moe_text": "qwen2_moe",
     "solar_open": "qwen2_moe",
+    # transformers (main, November 2026) aliases Sarvam's MLA MoE to the qwen2_moe conversion.
+    "sarvam_mla": "qwen2_moe",
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
     "UnlimitedOcrTextModel": "qwen2_moe",
