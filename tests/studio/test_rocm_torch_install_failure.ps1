@@ -1,10 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# A failed ROCm torch install on a supported AMD GPU must stop setup (it used to install CPU torch and exit 0);
-# UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1 opts into a bounded CPU install. Runs setup.ps1's torch block against stubs.
+# Failed ROCm torch on a supported AMD GPU must stop setup unless UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1.
 # ASCII only: Windows PowerShell 5.1 reads a BOM-less script in the ANSI code page.
-# Run: pwsh -NoProfile -File tests/studio/test_rocm_torch_install_failure.ps1
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", ".."))).Path
@@ -17,7 +15,7 @@ function Cut([string]$From, [string]$To) {
     if ($start -lt 0 -or $end -le $start) { throw "setup.ps1 no longer has the block from '$From' to '$To'" }
     return $setup.Substring($start, $end - $start)
 }
-# The ROCm arm, the XPU arm and the CPU arm; the CUDA arm that follows is left out (closed by hand).
+# ROCm, XPU and CPU arms only; the CUDA arm is closed by hand.
 $block = (Cut "`$ROCmCpuFallback = `$false" "} elseif (-not `$ROCmIndexUrl -and -not `$XpuIndexUrl) {") + "`n}`n"
 $helpers = (Cut "function Redact-InstallOutput {" "# _grouped_mm bug: these leaves need the torch 2.11 floor.")
 

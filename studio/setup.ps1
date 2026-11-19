@@ -8259,7 +8259,6 @@ if ($ROCmIndexUrl) {
         $_rocmKeptActive = $false
     }
     if ($torchInstallExit -ne 0) {
-        # A supported AMD GPU without ROCm wheels is a failed GPU install: stop and say why, never fall to CPU.
         $_rocmReason = (@((Redact-InstallOutput $output) -split '\r?\n' |
             Where-Object { $_.Trim() }) | Select-Object -Last 6) -join " | "
         if (-not $_rocmReason) { $_rocmReason = "installer output was streamed above, not captured" }
