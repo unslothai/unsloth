@@ -56,6 +56,9 @@ MAX_GRAPHS_PER_MODULE = 4
 WARMUP_ITERS = 3
 # Opt-in (1): a resident key's first real steps are its warm-ups, so no forward is run and thrown away before the
 # recording (three per key on the first render of a load). Unset keeps the side-stream warm-ups.
+# L4: FLUX.3 klein INT8 keeps every image byte for byte. Qwen-Image-2.1 does not: its first render then differs from the
+# same seed's next render (LPIPS 0.0027), exactly as with graphs off, because the thrown-away warm-ups are what its
+# first-call decisions run on today. Not a default until those decisions are settled before the first real step.
 REAL_WARMUP_ENV = "UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP"
 
 
