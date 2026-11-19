@@ -7,7 +7,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SWITCHING_MODEL_NOTICE, generateGate } from "../src/features/images/lib/generate-gate.ts";
+import {
+  SWITCHING_MODEL_NOTICE,
+  generateGate,
+  pickReleasedWhileNewest,
+} from "../src/features/images/lib/generate-gate.ts";
+import { createPickGuard } from "../src/lib/diffusion-gguf-pick.ts";
 import { readSrc, readText } from "./helpers/kit.ts";
 
 const idle = {
@@ -74,4 +79,32 @@ test("the Images page tracks every pick and gates the button on it", () => {
 test("the backend refuses an image generate while a load is in flight", () => {
   const routes = readText("../../backend/routes/inference.py");
   assert.match(routes, /if await asyncio\.to_thread\(_image_load_in_flight\):\s*raise HTTPException\(\s*status_code = 409/);
+});
+
+test("a pick whose page went hidden mid-plan is taken back, so Generate cannot stay held", () => {
+  const guard = createPickGuard();
+  const first = guard.claim();
+  assert.equal(pickReleasedWhileNewest(guard, first), false);
+  // The page switch: the plan that answers now stages and loads nothing.
+  guard.release();
+  assert.equal(pickReleasedWhileNewest(guard, first), true);
+  // A newer pick or a cancel owns the settle instead.
+  const second = guard.claim();
+  assert.equal(pickReleasedWhileNewest(guard, first), false);
+  guard.cancel();
+  assert.equal(pickReleasedWhileNewest(guard, second), false);
+  assert.equal(pickReleasedWhileNewest(guard, undefined), false);
+  assert.equal(pickReleasedWhileNewest(guard, 0), false);
+
+  // Both superseded returns of loadOrStage drop a released pick before answering "handled".
+  const page = readSrc("features/images/images-page.tsx");
+  const start = page.indexOf("const loadOrStage = useCallback(");
+  const end = page.indexOf("const loadOrStageRef = useRef(loadOrStage);");
+  const body = page.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(body, /if \(!pickReleasedWhileNewest\(pickGuard, token\)\) return;/);
+  assert.match(body, /if \(!owns\(\)\) \{\s*dropReleasedPick\(quantRevert\.current\);\s*return true;/);
+  const superseded = body.match(/pickToast\.dismiss\(pickToastId\);\s*dropReleasedPick\(ownRevert\);\s*return true;/g) ?? [];
+  assert.equal(superseded.length, 2);
+  assert.equal((body.match(/pickToast\.dismiss\(pickToastId\);\s*return true;/g) ?? []).length, 0);
 });

@@ -51,3 +51,13 @@ export function generateGate(input: GenerateGateInput): GenerateGate {
     notice: input.busy !== null ? null : switching ? SWITCHING_MODEL_NOTICE : reload,
   };
 }
+
+/** Whether a pick lost its owner to a page switch (the guard's release) while still the newest pick. Its plan then
+ *  stages and loads nothing and no load toast settles it, so the page takes the pick back as a cancel would; else
+ *  Generate stays held for a switch that never runs. A newer claim or a cancel answers false: that owner settles it. */
+export function pickReleasedWhileNewest(
+  guard: { holds(token: number): boolean; isLatest(token: number): boolean },
+  token: number | undefined,
+): boolean {
+  return token !== undefined && token !== 0 && !guard.holds(token) && guard.isLatest(token);
+}

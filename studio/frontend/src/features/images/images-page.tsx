@@ -411,7 +411,7 @@ import {
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
 import { LORA_RELOAD_ACTION, LORA_RELOAD_TITLE, LoraReloadRefusalError, loraReloadReason } from "./lib/lora-reload";
-import { generateGate } from "./lib/generate-gate";
+import { generateGate, pickReleasedWhileNewest } from "./lib/generate-gate";
 import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
   AUTOMATIC_SCHEDULE,
@@ -4472,6 +4472,16 @@ export function ImagesPage({
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       // Only load intents have an owner; a download-only pick holds no token and answers true.
       const owns = () => token === undefined || downloadOnly || pickGuard.holds(token);
+      // Hidden mid-plan (pickGuard.release) and still the newest pick: nothing else settles it, so take it back.
+      const dropReleasedPick = (owned: PickRevert | null) => {
+        if (downloadOnly || downloadSnapshot || pick !== pickSeq.current) return;
+        if (!pickReleasedWhileNewest(pickGuard, token)) return;
+        if (owned && quantRevert.current === owned) {
+          revertPick(owned);
+          quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
+        }
+      };
       // A download-only pick must not retire a staged load, or that model never loads.
       if (!downloadSnapshot && !downloadOnly) {
         pendingStagedLoad.current = null;
@@ -4479,7 +4489,10 @@ export function ImagesPage({
         stagedLoadDeferred.current = false;
         stagedQuantRevert.current = null;
         pickToast.dismissAll();
-        if (!owns()) return true;
+        if (!owns()) {
+          dropReleasedPick(quantRevert.current);
+          return true;
+        }
       }
       const picked = downloadSnapshot || downloadOnly ? null : pickComponentFiles({ repoId, ...opts });
       const withPicked = (a: LoadAdvanced): LoadAdvanced =>
@@ -4517,6 +4530,7 @@ export function ImagesPage({
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);
+          dropReleasedPick(ownRevert);
           return true;
         }
         if (downloadOnly && plan.plan_failed) {
@@ -4587,6 +4601,7 @@ export function ImagesPage({
       // Re-checked: a plan rejected after a newer pick would otherwise reach the fallback load.
       if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
         pickToast.dismiss(pickToastId);
+        dropReleasedPick(ownRevert);
         return true;
       }
       if (incompatible) {
