@@ -40,6 +40,15 @@ PACK = "Lightricks/LTX-2.5-Diffusers"
 MIRROR = "unsloth/LTX-2.5-FP8"
 
 
+def _require_diffusers():
+    """The diffusion CI shard runs without diffusers; tests that build its classes skip there."""
+    try:
+        import diffusers
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"diffusers is not importable here: {type(exc).__name__}")
+    return diffusers
+
+
 @pytest.fixture(autouse = True)
 def _fresh_dit_sources(monkeypatch):
     monkeypatch.setattr(dit, "_LTX25_DIT_SOURCES", {})
@@ -391,8 +400,7 @@ class _RecordingDiT:
 @pytest.mark.parametrize("precision", ["nf4", "bf16", "int8"])
 def test_every_base_precision_reads_the_chosen_subfolder(monkeypatch, precision):
     monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV, raising = False)
-    import diffusers
-
+    diffusers = _require_diffusers()
     _RecordingDiT.calls = []
     monkeypatch.setattr(diffusers, "LTX2VideoTransformer3DModel", _RecordingDiT)
     monkeypatch.setattr(dit, "_bnb_4bit_config", lambda: "nf4-config")
@@ -414,6 +422,7 @@ def _scheduler_dir(tmp_path: Path, config: dict) -> Path:
 
 
 def test_the_dev_scheduler_trains_on_ltx2s_sigma_table(monkeypatch, tmp_path):
+    _require_diffusers()
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     monkeypatch.delenv(dit.LTX25_TRAIN_DIT_ENV, raising = False)
@@ -539,7 +548,7 @@ _TINY_CONNECTORS = {
 @pytest.fixture
 def tiny_pack(tmp_path):
     """Tiny LTX-2.5 pack; audio VAE, vocoder and encoder are listed but absent."""
-    diffusers = pytest.importorskip("diffusers")
+    _require_diffusers()
     from diffusers import AutoencoderKLLTX2Video, LTX2VideoTransformer3DModel
     from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 
