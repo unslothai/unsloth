@@ -105,7 +105,7 @@ function subscribe(listener: () => void): () => void {
 const FEATURES = [
   { icon: GridViewIcon, label: "All your models in one list" },
   { icon: Settings01Icon, label: "Run settings for each model" },
-  { icon: Brain03Icon, label: "Turn thinking on or off" },
+  { icon: Brain03Icon, label: "Adjust thinking effort easily" },
   { icon: StarIcon, label: "Star the ones you use most" },
 ] as const;
 
