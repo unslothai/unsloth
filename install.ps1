@@ -9407,7 +9407,7 @@ main()
     $MixedHostAmdArch = $null
     if ($ProbeAmdBesideNvidia) {
         $_mixedPicked = Resolve-MixedHostShadowingArch -Picked $ROCmGfxArch -Arches $_hipAllArches
-        if ($_mixedPicked -ne $ROCmGfxArch) {
+        if ($_mixedPicked -and $_mixedPicked -ne $ROCmGfxArch) {
             $ROCmGfxArch = $_mixedPicked; $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"; $ROCmGpuName = $null
             $AmdHasGpuWheels = $true
         }
