@@ -85,6 +85,54 @@ export type ChatHistoryUpdatedDetail = {
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
 const THREAD_WRITE_TIMEOUT_MS = 30_000;
 
+/** Thread and history revisions read inside a chat write's transaction. */
+export type OwnChatHistoryWrite = {
+  threadId: string;
+  thread: readonly [before: number, after: number];
+  history: readonly [before: number, after: number];
+};
+
+const CHAT_REVISION_HEADER = "X-Unsloth-Chat-Revision";
+const ownChatHistoryWriteListeners = new Set<
+  (write: OwnChatHistoryWrite) => void
+>();
+
+/** Lets the remote-history poll tell this tab's writes from another device's. */
+export function subscribeOwnChatHistoryWrites(
+  listener: (write: OwnChatHistoryWrite) => void,
+): () => void {
+  ownChatHistoryWriteListeners.add(listener);
+  return () => {
+    ownChatHistoryWriteListeners.delete(listener);
+  };
+}
+
+function publishOwnChatHistoryWrite(
+  response: Response,
+  affected: readonly string[] | null,
+): void {
+  // An older server sends no header: the poll then re-reads as before.
+  const header = response.ok
+    ? response.headers?.get(CHAT_REVISION_HEADER)
+    : null;
+  if (!header || affected?.length !== 1) return;
+  const values = header.split(",").map(Number);
+  if (values.length !== 4 || !values.every(Number.isSafeInteger)) return;
+  const [threadBefore, threadAfter, historyBefore, historyAfter] = values;
+  const write: OwnChatHistoryWrite = {
+    threadId: affected[0],
+    thread: [threadBefore, threadAfter],
+    history: [historyBefore, historyAfter],
+  };
+  for (const listener of ownChatHistoryWriteListeners) {
+    try {
+      listener(write);
+    } catch {
+      // A listener failing must not fail the write that already landed.
+    }
+  }
+}
+
 async function threadWriteFetch(
   input: string,
   init: RequestInit,
@@ -94,7 +142,12 @@ async function threadWriteFetch(
   const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
   if (caller === undefined) {
     try {
-      return await authFetch(input, { ...init, signal: timeout.signal });
+      const response = await authFetch(input, {
+        ...init,
+        signal: timeout.signal,
+      });
+      publishOwnChatHistoryWrite(response, affected);
+      return response;
     } finally {
       timeout.dispose();
       forgetThreadReads(affected);
@@ -107,7 +160,12 @@ async function threadWriteFetch(
   caller.addEventListener("abort", abort);
   timeout.signal.addEventListener("abort", abort);
   try {
-    return await authFetch(input, { ...init, signal: controller.signal });
+    const response = await authFetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+    publishOwnChatHistoryWrite(response, affected);
+    return response;
   } finally {
     caller.removeEventListener("abort", abort);
     timeout.dispose();
