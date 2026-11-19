@@ -41,8 +41,8 @@ import {
   readAttachmentText,
   truncateAttachmentPreviewText,
 } from "@/features/chat";
+import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import {
-  ConfirmDeleteDialog,
   addLibraryItemToProject,
   uploadLibraryFiles,
   useLibraryFavorite,

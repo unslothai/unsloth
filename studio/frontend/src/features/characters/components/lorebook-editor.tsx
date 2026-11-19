@@ -17,13 +17,14 @@ import { TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Lorebook, LorebookEntry, LorebookPosition } from "../types";
 import { parseKeyList } from "../prompt/lorebook";
+import { ClampedNumberInput } from "./number-input";
 
 const PAGE = 25;
 
-export function emptyLorebook(): Lorebook {
+function emptyLorebook(): Lorebook {
   return { name: "", scan_depth: 4, token_budget: 1024, recursive_scanning: false, extensions: {}, entries: [] };
 }
 
@@ -50,7 +51,14 @@ function newEntry(entries: LorebookEntry[]): LorebookEntry {
 export function LorebookEditor({ book, onChange }: { book: Lorebook | null; onChange: (book: Lorebook | null) => void }) {
   const t = useT();
   const value = book ?? emptyLorebook();
-  const [open, setOpen] = useState<Set<string | number>>(new Set());
+  // Rows are keyed by a local id: imported cards often repeat or omit entry ids.
+  const lastUid = useRef(0);
+  const makeUid = () => `entry-${(lastUid.current += 1)}`;
+  const [uids, setUids] = useState<string[]>(() => value.entries.map(makeUid));
+  useEffect(() => {
+    if (uids.length !== value.entries.length) setUids(value.entries.map(makeUid));
+  }, [value.entries.length, uids.length]);
+  const [open, setOpen] = useState<Set<string>>(new Set());
   const [limit, setLimit] = useState(PAGE);
 
   function update(index: number, patch: Partial<LorebookEntry>) {
@@ -60,12 +68,15 @@ export function LorebookEditor({ book, onChange }: { book: Lorebook | null; onCh
 
   function add() {
     const entry = newEntry(value.entries);
+    const uid = makeUid();
     onChange({ ...value, entries: [entry, ...value.entries] });
-    setOpen((current) => new Set(current).add(entry.id));
+    setUids((current) => [uid, ...current]);
+    setOpen((current) => new Set(current).add(uid));
   }
 
   function remove(index: number) {
     const entries = value.entries.filter((_, i) => i !== index);
+    setUids((current) => current.filter((_, i) => i !== index));
     onChange(entries.length || book?.name ? { ...value, entries } : null);
   }
 
@@ -76,24 +87,22 @@ export function LorebookEditor({ book, onChange }: { book: Lorebook | null; onCh
         <p className="min-w-0 flex-1 text-ui-13 text-muted-foreground">{t("characters.lorebook.hint")}</p>
         <label className="flex flex-col gap-1 text-ui-12 text-muted-foreground">
           {t("characters.lorebook.scanDepth")}
-          <Input
-            type="number"
+          <ClampedNumberInput
             min={1}
             max={100}
             value={value.scan_depth}
             className="h-8 w-24"
-            onChange={(event) => onChange({ ...value, scan_depth: Math.max(1, Number(event.target.value) || 1) })}
+            onChange={(scan_depth) => onChange({ ...value, scan_depth })}
           />
         </label>
         <label className="flex flex-col gap-1 text-ui-12 text-muted-foreground">
           {t("characters.lorebook.budget")}
-          <Input
-            type="number"
+          <ClampedNumberInput
             min={64}
             step={64}
             value={value.token_budget}
             className="h-8 w-28"
-            onChange={(event) => onChange({ ...value, token_budget: Math.max(64, Number(event.target.value) || 64) })}
+            onChange={(token_budget) => onChange({ ...value, token_budget })}
           />
         </label>
         <Button type="button" variant="outline" size="sm" onClick={add}>
@@ -108,10 +117,11 @@ export function LorebookEditor({ book, onChange }: { book: Lorebook | null; onCh
       ) : (
         <ul className="flex flex-col gap-2" data-testid="lorebook-entries">
           {shown.map((entry, index) => {
-            const expanded = open.has(entry.id);
+            const uid = uids[index] ?? `entry-pending-${index}`;
+            const expanded = open.has(uid);
             const label = entry.comment || entry.keys.join(", ") || t("characters.lorebook.untitled");
             return (
-              <li key={`${entry.id}-${index}`} className="rounded-2xl bg-muted/55 dark:bg-card">
+              <li key={uid} className="rounded-2xl bg-muted/55 dark:bg-card">
                 <div className="flex items-center gap-3 px-3.5 py-2.5">
                   <button
                     type="button"
@@ -120,8 +130,8 @@ export function LorebookEditor({ book, onChange }: { book: Lorebook | null; onCh
                     onClick={() =>
                       setOpen((current) => {
                         const next = new Set(current);
-                        if (next.has(entry.id)) next.delete(entry.id);
-                        else next.add(entry.id);
+                        if (next.has(uid)) next.delete(uid);
+                        else next.add(uid);
                         return next;
                       })
                     }
@@ -197,23 +207,21 @@ export function LorebookEditor({ book, onChange }: { book: Lorebook | null; onCh
                       {entry.position === "at_depth" ? (
                         <label className="flex flex-col gap-1 text-ui-12 text-muted-foreground">
                           {t("characters.lorebook.depth")}
-                          <Input
-                            type="number"
+                          <ClampedNumberInput
                             min={0}
                             max={100}
                             value={entry.depth}
                             className="h-8 w-20"
-                            onChange={(event) => update(index, { depth: Math.max(0, Number(event.target.value) || 0) })}
+                            onChange={(depth) => update(index, { depth })}
                           />
                         </label>
                       ) : null}
                       <label className="flex flex-col gap-1 text-ui-12 text-muted-foreground">
                         {t("characters.lorebook.order")}
-                        <Input
-                          type="number"
+                        <ClampedNumberInput
                           value={entry.insertion_order}
                           className="h-8 w-20"
-                          onChange={(event) => update(index, { insertion_order: Number(event.target.value) || 0 })}
+                          onChange={(insertion_order) => update(index, { insertion_order })}
                         />
                       </label>
                       <Button

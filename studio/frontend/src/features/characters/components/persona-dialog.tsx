@@ -15,11 +15,13 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/i18n";
+import { openFilePicker } from "@/lib/open-file-picker";
 import { toast } from "@/lib/toast";
 import { ImageUpload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createPersona, removePersonaAvatar, updatePersona, uploadPersonaAvatar } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import { createPersona, errorText, removePersonaAvatar, updatePersona, uploadPersonaAvatar } from "../api";
+import { PICTURE_ACCEPT, pictureFits } from "../images";
 import { useCharactersStore } from "../store";
 import type { Persona } from "../types";
 import { Portrait } from "./portrait";
@@ -39,7 +41,6 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
   const [saving, setSaving] = useState(false);
   // A persona this dialog created, kept so a retry after a failed portrait upload updates it.
   const [created, setCreated] = useState<Persona | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const previewUrl = useMemo(
     () => (picture instanceof File ? URL.createObjectURL(picture) : null),
     [picture],
@@ -75,7 +76,7 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
       onClose();
     } catch (error) {
       toast.error(t("characters.personas.saveFailed"), {
-        description: error instanceof Error ? error.message : String(error),
+        description: errorText(error),
       });
     } finally {
       setSaving(false);
@@ -108,7 +109,16 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
               className="size-16 rounded-2xl text-[1.6rem]"
             />
             <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  openFilePicker(PICTURE_ACCEPT, ([file]) => {
+                    if (file && pictureFits(file, t)) setPicture(file);
+                  })
+                }
+              >
                 <HugeiconsIcon icon={ImageUpload01Icon} strokeWidth={1.75} className="size-icon" />
                 {showImage ? t("characters.editor.changePicture") : t("characters.editor.uploadPicture")}
               </Button>
@@ -117,17 +127,6 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
                   {t("characters.editor.removePicture")}
                 </Button>
               ) : null}
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) setPicture(file);
-                  event.target.value = "";
-                }}
-              />
             </div>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -157,10 +156,10 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
           </label>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>
-              {t("characters.cancel")}
+              {t("common.cancel")}
             </Button>
             <Button type="submit" variant="dark" disabled={!name.trim() || saving}>
-              {t("characters.personas.save")}
+              {t("common.save")}
             </Button>
           </DialogFooter>
         </form>

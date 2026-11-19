@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
-import { subscribeChatHistoryUpdated } from "@/features/chat/api/chat-api";
+import { CHAT_HISTORY_REVISION_KEY } from "@/features/chat/api/chat-api";
 import { useEffect } from "react";
 import { Portrait } from "./components/portrait";
 import { useCharactersStore } from "./store";
@@ -21,7 +21,8 @@ function refreshSoon(): void {
       .refreshIndex()
       .then(() => {
         const store = useCharactersStore.getState();
-        if (store.status === "idle" && Object.keys(store.chatIndex).length > 0) {
+        const unloaded = store.status === "idle" || store.status === "error";
+        if (unloaded && Object.keys(store.chatIndex).length > 0) {
           void store.refresh().catch(() => undefined);
         }
       })
@@ -29,13 +30,13 @@ function refreshSoon(): void {
   }, 400);
 }
 
-/** Loads the chat index once per sign-in and keeps it fresh as chats change, here or in another tab. */
+/** Loads the chat index once per sign-in, then again when another tab changes chats (this tab updates the store itself). */
 function watchChatIndex(): void {
   if (typeof window === "undefined") return;
   if (!subscribed) {
     subscribed = true;
-    subscribeChatHistoryUpdated((detail) => {
-      if (!detail.coalesce) refreshSoon();
+    window.addEventListener("storage", (event) => {
+      if (event.key === CHAT_HISTORY_REVISION_KEY) refreshSoon();
     });
     window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
       loaded = false;

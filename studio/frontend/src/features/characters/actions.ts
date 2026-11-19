@@ -4,15 +4,16 @@
 import { notifyChatHistoryUpdated } from "@/features/chat/api/chat-api";
 import { writeBranchHead } from "@/features/chat/utils/branch-head";
 import { downloadBlobStreaming, isDownloadCancelled } from "@/lib/native-files";
+import { openFilePicker } from "@/lib/open-file-picker";
 import { toast } from "@/lib/toast";
 import type { TranslationKey } from "@/i18n";
 import {
   createCharacterChat,
   deleteCharacter,
   duplicateCharacter,
+  errorText,
   exportCharacter,
   importCharacterFile,
-  listCharacterChats,
   updateCharacter,
 } from "./api";
 import { resolvePersona } from "./chat-runtime";
@@ -21,10 +22,6 @@ import { useCharactersStore } from "./store";
 import type { Character } from "./types";
 
 type T = (key: TranslationKey, values?: Record<string, string | number>) => string;
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /** Opens a new chat with these characters and returns its thread id. */
 export async function startCharacterChat(
@@ -65,9 +62,12 @@ export async function startCharacterChat(
   return created.threadId;
 }
 
-export async function lastChatWith(characterId: string): Promise<string | null> {
-  const chats = await listCharacterChats(characterId);
-  return chats.find((chat) => !chat.archived)?.threadId ?? null;
+export const CARD_EXTENSIONS = ".png,.json,.charx";
+const CARD_ACCEPT = `${CARD_EXTENSIONS},image/png,application/json`;
+
+/** Opens the file chooser for character cards; call it from a click (needs user activation). */
+export function pickCardFiles(t: T): void {
+  openFilePicker(CARD_ACCEPT, (files) => void importCards(files, t));
 }
 
 export async function importCards(files: File[], t: T): Promise<Character[]> {
@@ -78,7 +78,14 @@ export async function importCards(files: File[], t: T): Promise<Character[]> {
       const result = await importCharacterFile(file, file.name);
       useCharactersStore.getState().upsert(result.character);
       imported.push(result.character);
-      toast.success(t("characters.imported", { name: result.character.name }), { id: toastId });
+      if (result.warnings.length) {
+        toast.warning(t("characters.importedWithWarnings", { name: result.character.name }), {
+          id: toastId,
+          description: result.warnings.join(" "),
+        });
+      } else {
+        toast.success(t("characters.imported", { name: result.character.name }), { id: toastId });
+      }
     } catch (error) {
       toast.error(t("characters.importFailed", { name: file.name }), {
         id: toastId,
@@ -86,6 +93,7 @@ export async function importCards(files: File[], t: T): Promise<Character[]> {
       });
     }
   }
+  if (imported.length > 1) toast.success(t("characters.importedMany", { count: imported.length }));
   return imported;
 }
 
@@ -107,7 +115,7 @@ export async function duplicateCharacterAction(character: Character, t: T): Prom
     toast.success(t("characters.duplicated", { name: copy.name }));
     return copy;
   } catch (error) {
-    toast.error(errorText(error));
+    toast.error(t("characters.duplicateFailed"), { description: errorText(error) });
     return null;
   }
 }

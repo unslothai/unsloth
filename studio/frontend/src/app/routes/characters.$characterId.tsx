@@ -23,5 +23,5 @@ export const Route = createRoute({
 
 function CharacterProfileRoute(): ReactElement {
   const { characterId } = Route.useParams();
-  return <CharacterProfilePage characterId={characterId} />;
+  return <CharacterProfilePage key={characterId} characterId={characterId} />;
 }

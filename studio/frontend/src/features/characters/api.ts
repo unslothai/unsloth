@@ -12,15 +12,31 @@ import type {
   SceneSettings,
 } from "./types";
 
-export const CHARACTERS_API = "/api/characters";
+const CHARACTERS_API = "/api/characters";
 
-async function json<T>(response: Response, fallback: string): Promise<T> {
-  if (!response.ok) throw new Error(await readFastApiError(response, fallback));
-  return (await response.json()) as T;
+export function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+class CharactersApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export function isNotFound(error: unknown): boolean {
+  return error instanceof CharactersApiError && error.status === 404;
 }
 
 async function ok(response: Response, fallback: string): Promise<void> {
-  if (!response.ok) throw new Error(await readFastApiError(response, fallback));
+  if (!response.ok) throw new CharactersApiError(await readFastApiError(response, fallback), response.status);
+}
+
+async function json<T>(response: Response, fallback: string): Promise<T> {
+  await ok(response, fallback);
+  return (await response.json()) as T;
 }
 
 function body(value: unknown): RequestInit {
@@ -125,7 +141,7 @@ export async function exportCharacter(id: string, format: "png" | "json"): Promi
   const response = await authFetch(
     `${CHARACTERS_API}/${encodeURIComponent(id)}/export?format=${format}`,
   );
-  if (!response.ok) throw new Error(await readFastApiError(response, "Could not export the character"));
+  await ok(response, "Could not export the character");
   const disposition = response.headers.get("content-disposition") ?? "";
   const match = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
   const filename = match ? decodeURIComponent(match[1]) : `character.${format}`;
@@ -190,7 +206,7 @@ export async function removePersonaAvatar(id: string): Promise<Persona> {
   );
 }
 
-export interface CreatedCharacterChat {
+interface CreatedCharacterChat {
   threadId: string;
   greetingIds: string[];
   headId: string;

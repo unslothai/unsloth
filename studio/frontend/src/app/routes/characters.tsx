@@ -10,17 +10,14 @@ const CharactersPage = lazyRouteComponent(
   "CharactersPage",
 );
 
-export type CharactersSearch = { view?: "personas"; import?: boolean };
+export type CharactersSearch = { view?: "personas" };
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/characters",
   staticData: { titleKey: "shell.navigation.characters" },
-  // ?view=personas opens the personas list; ?import=true opens the file picker.
-  validateSearch: (search: Record<string, unknown>): CharactersSearch => ({
-    ...(search.view === "personas" ? { view: "personas" as const } : {}),
-    ...(search.import === true || search.import === "true" ? { import: true } : {}),
-  }),
+  validateSearch: (search: Record<string, unknown>): CharactersSearch =>
+    search.view === "personas" ? { view: "personas" } : {},
   beforeLoad: () => requireAuth(),
   component: CharactersPage,
 });

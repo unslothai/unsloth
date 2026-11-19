@@ -14,6 +14,8 @@ import {
 import { mergeCharacters } from "./meta";
 import type { Character, ChatScene, Persona } from "./types";
 
+export { isCharacterChat } from "./chat-gate";
+
 type LoadState = "idle" | "loading" | "ready" | "error";
 
 interface CharactersState {
@@ -24,6 +26,7 @@ interface CharactersState {
   personasStatus: LoadState;
   /** threadId -> cast ids for every character chat; drives sidebar portraits. */
   chatIndex: Record<string, string[]>;
+  indexLoaded: boolean;
   /** threadId -> the chat's scene; null = the thread is an ordinary chat. */
   scenes: Record<string, ChatScene | null>;
   refresh: () => Promise<void>;
@@ -64,6 +67,7 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
   personas: [],
   personasStatus: "idle",
   chatIndex: {},
+  indexLoaded: false,
   scenes: {},
   refresh: () => {
     if (refreshPromise) return refreshPromise;
@@ -109,7 +113,7 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
   refreshIndex: async () => {
     const started = epoch;
     const chatIndex = await getChatIndex();
-    if (started === epoch) set({ chatIndex });
+    if (started === epoch) set({ chatIndex, indexLoaded: true });
   },
   upsert: (character) =>
     set((state) => {
@@ -177,7 +181,9 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
     const write = previous
       .catch(() => undefined)
       .then(async () => {
+        const started = epoch;
         const scene = await updateChatScene(threadId, patch);
+        if (started !== epoch) return scene;
         sceneWriteGen.set(threadId, (sceneWriteGen.get(threadId) ?? 0) + 1);
         get().setScene(scene);
         return scene;
@@ -212,6 +218,7 @@ if (typeof window !== "undefined") {
       personas: [],
       personasStatus: "idle",
       chatIndex: {},
+      indexLoaded: false,
       scenes: {},
     });
   });

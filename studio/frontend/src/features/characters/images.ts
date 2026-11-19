@@ -4,33 +4,51 @@
 import { useEffect, useState } from "react";
 import { openImageViewer } from "@/components/image-viewer";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
+import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { toast } from "@/lib/toast";
 import { fetchImage } from "./api";
 import { isTitle } from "./prompt/speakers";
 
 type Kind = "character" | "persona";
 
-// Object URLs keyed by revision: a new picture gets a new key, so stale ones are never shown.
-const urls = new Map<string, Promise<string | null>>();
-const resolved = new Map<string, string | null>();
+// One URL per picture: a new revision replaces (and revokes) the old one, so edits never pile up blobs.
+const cache = new BlobUrlCache(Number.POSITIVE_INFINITY);
+const cachedRevs = new Map<string, number>();
+const pending = new Map<string, Promise<string | null>>();
+let generation = 0;
 
-function cacheKey(kind: Kind, id: string, rev: number): string {
-  return `${kind}:${id}:${rev}`;
+function slot(kind: Kind, id: string): string {
+  return `${kind}:${id}`;
 }
 
-export function loadImageUrl(kind: Kind, id: string, rev: number): Promise<string | null> {
-  const key = cacheKey(kind, id, rev);
-  const hit = urls.get(key);
+function cachedUrl(key: string, rev: number): string | undefined {
+  return cachedRevs.get(key) === rev ? cache.get(key) : undefined;
+}
+
+function loadImageUrl(kind: Kind, id: string, rev: number): Promise<string | null> {
+  const key = slot(kind, id);
+  const known = cachedUrl(key, rev);
+  if (known) return Promise.resolve(known);
+  const pendingKey = `${key}:${rev}`;
+  const hit = pending.get(pendingKey);
   if (hit) return hit;
+  const started = generation;
   const request = fetchImage(kind, id, rev)
-    .then((blob) => URL.createObjectURL(blob))
-    .catch(() => null)
-    .then((url) => {
-      if (url) resolved.set(key, url);
-      // A failed load is not remembered, so the next look tries again.
-      else urls.delete(key);
+    .then((blob) => {
+      if (started !== generation) return null;
+      // An older revision landing late must not replace a newer picture.
+      if ((cachedRevs.get(key) ?? -1) > rev) return cache.get(key) ?? null;
+      const old = cache.get(key);
+      const url = URL.createObjectURL(blob);
+      cache.set(key, url, blob.size);
+      cachedRevs.set(key, rev);
+      if (old) forgetCutout(old);
       return url;
-    });
-  urls.set(key, request);
+    })
+    // A failed load is not remembered, so the next look tries again.
+    .catch(() => null)
+    .finally(() => pending.delete(pendingKey));
+  pending.set(pendingKey, request);
   return request;
 }
 
@@ -41,14 +59,14 @@ export function useImageUrl(
   rev: number,
   hasImage: boolean,
 ): string | null {
-  const key = id && hasImage ? cacheKey(kind, id, rev) : null;
-  const [url, setUrl] = useState<string | null>(() => (key ? (resolved.get(key) ?? null) : null));
+  const key = id && hasImage ? slot(kind, id) : null;
+  const [url, setUrl] = useState<string | null>(() => (key ? (cachedUrl(key, rev) ?? null) : null));
   useEffect(() => {
     if (!key || !id) {
       setUrl(null);
       return;
     }
-    const known = resolved.get(key);
+    const known = cachedUrl(key, rev);
     if (known !== undefined) {
       setUrl(known);
       return;
@@ -71,7 +89,7 @@ const cutoutAnswers = new Map<string, boolean>();
  * Whether a picture is a cut-out: a figure on a transparent background, judged from a small copy's top
  * rows and side columns (the bottom edge often holds the figure). Opaque pictures answer false.
  */
-export function isCutout(url: string): Promise<boolean> {
+function isCutout(url: string): Promise<boolean> {
   let known = cutouts.get(url);
   if (!known) {
     known = new Promise<boolean>((resolve) => {
@@ -112,6 +130,11 @@ export function isCutout(url: string): Promise<boolean> {
   return known;
 }
 
+function forgetCutout(url: string): void {
+  cutouts.delete(url);
+  cutoutAnswers.delete(url);
+}
+
 /** isCutout for a picture on screen; false until it is known, and always false when not enabled. */
 export function useIsCutout(url: string | null, enabled: boolean): boolean {
   const known = url && enabled ? cutoutAnswers.get(url) : false;
@@ -133,12 +156,23 @@ export function useIsCutout(url: string | null, enabled: boolean): boolean {
 
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
-    for (const url of resolved.values()) if (url) URL.revokeObjectURL(url);
-    urls.clear();
-    resolved.clear();
+    generation += 1;
+    cache.clear();
+    cachedRevs.clear();
+    pending.clear();
     cutouts.clear();
     cutoutAnswers.clear();
   });
+}
+
+const MAX_PICTURE_BYTES = 20 * 1024 * 1024;
+export const PICTURE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif";
+
+/** False, with a toast, for a picture over the server's upload limit. */
+export function pictureFits(file: File, t: (key: "characters.editor.pictureTooLarge") => string): boolean {
+  if (file.size <= MAX_PICTURE_BYTES) return true;
+  toast.error(t("characters.editor.pictureTooLarge"));
+  return false;
 }
 
 const EXTENSIONS: Record<string, string> = { "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
@@ -147,7 +181,7 @@ export function viewPicture(kind: Kind, id: string, name: string, rev: number): 
   const base = name.trim().replace(/[\\/:*?"<>|]+/g, "_") || kind;
   openImageViewer([
     {
-      key: cacheKey(kind, id, rev),
+      key: `${slot(kind, id)}:${rev}`,
       title: name,
       fileName: (contentType) => `${base}.${EXTENSIONS[contentType] ?? "png"}`,
       load: () => fetchImage(kind, id, rev),

@@ -5,6 +5,7 @@ import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { useAuiState } from "@assistant-ui/react";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import { errorText } from "./api";
 import { roleplayMetaOf } from "./meta";
 import { useCharactersStore } from "./store";
 import type { Character, ChatView } from "./types";
@@ -25,7 +26,6 @@ export function chatViewOf(settings: { view?: ChatView } | undefined): ChatView 
   return settings?.view ?? "chat";
 }
 
-/** Clicked character, else the last (or next) speaker, else the first character. */
 type MessageLike = Parameters<typeof roleplayMetaOf>[0];
 
 function lastSpeakerOf(messages: readonly MessageLike[]): string | null {
@@ -36,11 +36,20 @@ function lastSpeakerOf(messages: readonly MessageLike[]): string | null {
   return null;
 }
 
-export function focusedCharacterId(threadId: string, messages: readonly MessageLike[], castIds: string[]): string | null {
+/** Clicked character (until the next message), else the last speaker, else the first. */
+function resolveFocus(
+  pin: StagePin | undefined,
+  messageCount: number,
+  lastId: string | null,
+  castIds: readonly string[],
+): string | null {
+  const pinned = pin && pin.messageCount === messageCount ? pin.characterId : null;
+  return [pinned, lastId, castIds[0]].find((id) => id && castIds.includes(id)) ?? null;
+}
+
+function focusedCharacterId(threadId: string, messages: readonly MessageLike[], castIds: string[]): string | null {
   const pin = useStageFocusStore.getState().pins[threadId];
-  const pinned = pin && pin.messageCount === messages.length ? pin.characterId : null;
-  const last = lastSpeakerOf(messages);
-  return [pinned, last, castIds[0]].find((id) => id && castIds.includes(id)) ?? null;
+  return resolveFocus(pin, messages.length, lastSpeakerOf(messages), castIds);
 }
 
 export function useStageFocus(threadId: string | null, cast: Character[]): { focus: Character | null; speaking: boolean } {
@@ -49,9 +58,8 @@ export function useStageFocus(threadId: string | null, cast: Character[]): { foc
   );
   const pin = useStageFocusStore((s) => (threadId ? s.pins[threadId] : undefined));
   const [running, count, lastId] = state.split("|");
-  const pinned = pin && pin.messageCount === Number(count) ? pin.characterId : null;
-  const focus =
-    cast.find((c) => c.id === pinned) ?? cast.find((c) => c.id === lastId) ?? cast[0] ?? null;
+  const focusId = resolveFocus(pin, Number(count), lastId || null, cast.map((c) => c.id));
+  const focus = cast.find((c) => c.id === focusId) ?? null;
   return { focus, speaking: running === "1" && focus?.id === lastId };
 }
 
@@ -60,7 +68,7 @@ export function setChatView(threadId: string, view: ChatView): void {
   void useCharactersStore
     .getState()
     .patchScene(threadId, { settings: { view } })
-    .catch((error) => toast.error(error instanceof Error ? error.message : String(error)));
+    .catch((error) => toast.error(errorText(error)));
 }
 
 /** Portrait click: show the character, or close stage view if it already shows them. */

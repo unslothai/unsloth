@@ -2,26 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { useT } from "@/i18n";
-import { TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
-import {
-  Copy01Icon,
-  Download01Icon,
-  Edit03Icon,
-  MoreHorizontalIcon,
-  StarIcon,
-  Tick02Icon,
-} from "@hugeicons/core-free-icons";
+import { MoreHorizontalIcon, StarIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Character } from "../types";
+import { CharacterActionsMenu } from "./character-actions-menu";
 import { Portrait } from "./portrait";
 
 type CharacterCardProps = {
@@ -33,9 +19,6 @@ type CharacterCardProps = {
   onToggleSelect: () => void;
   onFavorite: () => void;
   onEdit: () => void;
-  onExport: (format: "png" | "json") => void;
-  onDuplicate: () => void;
-  onDelete: () => void;
 };
 
 /** One character in the library grid: portrait first, name and a line of context on top of it. */
@@ -48,9 +31,6 @@ export function CharacterCard({
   onToggleSelect,
   onFavorite,
   onEdit,
-  onExport,
-  onDuplicate,
-  onDelete,
 }: CharacterCardProps) {
   const t = useT();
   const subtitle =
@@ -64,12 +44,15 @@ export function CharacterCard({
       className={cn(
         "group/char relative isolate overflow-hidden rounded-[22px] bg-muted shadow-[0_1px_0_rgb(0_0_0/0.04)] ring-1 ring-black/[0.04] transition-[transform,box-shadow] duration-200 dark:ring-white/[0.06]",
         "hover:-translate-y-0.5 hover:shadow-[0_14px_32px_-18px_rgb(0_0_0/0.45)]",
+        // The portrait covers the button, so its keyboard focus shows on the card.
+        "has-[[data-card-open]:focus-visible]:ring-2 has-[[data-card-open]:focus-visible]:ring-ring",
         selected && "ring-2 ring-primary dark:ring-primary",
       )}
       data-character-card={character.id}
     >
       <button
         type="button"
+        data-card-open={true}
         className="block w-full cursor-pointer text-left focus-visible:outline-none"
         onClick={selecting ? onToggleSelect : onOpen}
         aria-pressed={selecting ? selected : undefined}
@@ -123,8 +106,10 @@ export function CharacterCard({
             />
           </button>
           <div className="absolute right-2 top-2 flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/char:opacity-100 has-[[aria-expanded=true]]:opacity-100">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild={true}>
+            <CharacterActionsMenu
+              character={character}
+              onEdit={onEdit}
+              trigger={
                 <button
                   type="button"
                   aria-label={t("characters.moreActions", { name: character.name })}
@@ -132,31 +117,8 @@ export function CharacterCard({
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.8} className="size-4" />
                 </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-48">
-                <DropdownMenuItem onSelect={onEdit}>
-                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} />
-                  {t("characters.actions.edit")}
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={onDuplicate}>
-                  <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} />
-                  {t("characters.actions.duplicate")}
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onExport("png")}>
-                  <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-                  {t("characters.actions.exportPng")}
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onExport("json")}>
-                  <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-                  {t("characters.actions.exportJson")}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onSelect={onDelete}>
-                  <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} />
-                  {t("characters.actions.delete")}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+              }
+            />
           </div>
           <Button
             type="button"

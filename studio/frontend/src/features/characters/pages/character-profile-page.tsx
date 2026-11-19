@@ -3,23 +3,14 @@
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatActivityTime } from "@/features/library/format";
 import { useLocale, useT } from "@/i18n";
-import { TrashIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft01Icon,
   BubbleChatIcon,
-  Copy01Icon,
-  Download01Icon,
   Edit03Icon,
   MoreHorizontalIcon,
   StarIcon,
@@ -28,26 +19,16 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import {
-  deleteCharacterAction,
-  duplicateCharacterAction,
-  exportCharacterFile,
-  startCharacterChat,
-  toggleFavorite,
-} from "../actions";
-import { getCharacter, listCharacterChats } from "../api";
-import { ConfirmDialog } from "../components/confirm-dialog";
+import { startCharacterChat, toggleFavorite } from "../actions";
+import { errorText, getCharacter, isNotFound, listCharacterChats } from "../api";
+import { resolvePersona } from "../chat-runtime";
+import { CharacterActionsMenu } from "../components/character-actions-menu";
 import { Portrait } from "../components/portrait";
-import { viewPicture } from "../images";
 import { RoleplayText } from "../components/roleplay-text";
+import { viewPicture } from "../images";
 import { applyMacros } from "../prompt/macros";
 import { useCharactersStore } from "../store";
-import { relativeTime } from "../time";
 import type { CharacterChatSummary } from "../types";
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 export function CharacterProfilePage({ characterId }: { characterId: string }) {
   const t = useT();
@@ -56,9 +37,9 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
   const character = useCharactersStore((s) => s.characters[characterId]);
   const characters = useCharactersStore((s) => s.characters);
   const chatIndex = useCharactersStore((s) => s.chatIndex);
+  const personas = useCharactersStore((s) => s.personas);
   const [missing, setMissing] = useState(false);
   const [chats, setChats] = useState<CharacterChatSummary[] | null>(null);
-  const [deleting, setDeleting] = useState(false);
   const [starting, setStarting] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   useAppShellReadySignal();
@@ -67,21 +48,25 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
     let live = true;
     getCharacter(characterId)
       .then((loaded) => live && useCharactersStore.getState().upsert(loaded))
-      .catch(() => live && setMissing(true));
+      .catch((error) => live && isNotFound(error) && setMissing(true));
     listCharacterChats(characterId)
       .then((list) => live && setChats(list))
       .catch(() => live && setChats([]));
-    void useCharactersStore.getState().refreshIndex().catch(() => undefined);
-    if (useCharactersStore.getState().status === "idle") void useCharactersStore.getState().refresh().catch(() => undefined);
+    const store = useCharactersStore.getState();
+    void store.refreshIndex().catch(() => undefined);
+    if (store.status === "idle") void store.refresh().catch(() => undefined);
+    if (store.personasStatus === "idle") void store.refreshPersonas().catch(() => undefined);
     return () => {
       live = false;
     };
   }, [characterId]);
 
-  const greeting = useMemo(
-    () => (character ? applyMacros(character.firstMes, { char: character.name, user: "{{user}}" }).trim() : ""),
-    [character],
-  );
+  // Addressed to the persona a new chat would use, as the chat itself will be.
+  const greeting = useMemo(() => {
+    if (!character) return "";
+    const user = resolvePersona(null, personas).name || "User";
+    return applyMacros(character.firstMes, { char: character.name, user }).trim();
+  }, [character, personas]);
 
   async function chat() {
     if (!character || starting) return;
@@ -197,38 +182,17 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                 {t("characters.actions.edit")}
               </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild={true}>
+              <CharacterActionsMenu
+                character={character}
+                align="start"
+                onDuplicated={(copy) => void navigate({ to: "/characters/$characterId", params: { characterId: copy.id } })}
+                onDeleted={() => void navigate({ to: "/characters" })}
+                trigger={
                   <Button variant="ghost" size="icon" className="rounded-full" aria-label={t("characters.moreActions", { name: character.name })}>
                     <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="min-w-52">
-                  <DropdownMenuItem onSelect={() => void exportCharacterFile(character, "png", t)}>
-                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-                    {t("characters.actions.exportPng")}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => void exportCharacterFile(character, "json", t)}>
-                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-                    {t("characters.actions.exportJson")}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() =>
-                      void duplicateCharacterAction(character, t).then(
-                        (copy) => copy && navigate({ to: "/characters/$characterId", params: { characterId: copy.id } }),
-                      )
-                    }
-                  >
-                    <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} />
-                    {t("characters.actions.duplicate")}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" onSelect={() => setDeleting(true)}>
-                    <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} />
-                    {t("characters.actions.delete")}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                }
+              />
             </div>
           </header>
 
@@ -315,7 +279,7 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
                           ) : null}
                         </span>
                         <span className="shrink-0 text-ui-12 text-muted-foreground">
-                          {relativeTime(locale, entry.updatedAt)}
+                          {formatActivityTime(entry.updatedAt, locale, t)}
                         </span>
                       </Link>
                     </li>
@@ -327,20 +291,6 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
         </div>
       </div>
 
-      <ConfirmDialog
-        open={deleting}
-        title={t("characters.deleteTitle", { name: character.name })}
-        body={t("characters.deleteBody", { name: character.name })}
-        confirm={t("characters.delete")}
-        cancel={t("characters.cancel")}
-        onClose={() => setDeleting(false)}
-        onConfirm={() => {
-          setDeleting(false);
-          void deleteCharacterAction(character, t).then((ok) => {
-            if (ok) void navigate({ to: "/characters" });
-          });
-        }}
-      />
     </main>
   );
 }
