@@ -1663,16 +1663,13 @@ _EFFICIENT_SDPA_BACKWARD = (
 
 
 def _efficient_backward_keeps_guard():
-    """CUDA torch < 2.14: the memory-efficient backward needs an 8-aligned attention bias. Inductor's padded
-    mask layout is aligned at every length, but only torch's guard proves it (always true, so it never
-    recompiles). Without it the bias is copied densely as (B, H, S, S), and a padded batch whose length is not a
-    multiple of 8 faults: `attn_bias is not correctly aligned (strideH / strideM)` or a misaligned address."""
+    """CUDA torch < 2.14: without torch's (always true) guard the efficient backward copies the bias densely
+    and faults on padded lengths not a multiple of 8 (`attn_bias is not correctly aligned`)."""
     from packaging.version import Version
     return torch.version.hip is None and Version(torch.__version__.split("+")[0]) < Version("2.14")
 
 
-# Graphs compiled while that backward ran without the guard carry the dense bias; the FX graph and AOT
-# autograd cache keys do not see the lowering, so a warm cache would keep serving them.
+# Cache keys do not see the lowering, so graphs cached without the guard must be invalidated.
 _EFFICIENT_BACKWARD_CACHE_TAG = "unsloth/efficient-backward-guard"
 
 

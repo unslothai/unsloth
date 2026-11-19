@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Masked SDPA backward inside a compiled block (unsloth/models/_block_compile.py).
-
-_sdpa_alignment_without_guard answers Inductor's SDPA alignment guards with `statically_known_true`. On
-CUDA torch < 2.14 that made the memory-efficient backward copy the attention bias densely as (B, H, S, S),
-so a padded batch whose length is not a multiple of 8 faulted on the first training step (gemma-4 in
-Studio): `attn_bias is not correctly aligned (strideH / strideM)` or `CUDA error: misaligned address`.
-CPU: that backward keeps torch's guard there (and the compile cache key is tagged so graphs cached without it
-are not reused), every other SDPA op still skips it. GPU: a compiled layer
-trains on right-padded batches of every length 9 to 17, matches the stock layer and does not recompile
-per `seq_len % 8`.
-"""
+"""Masked SDPA backward in a compiled block: on CUDA torch < 2.14 the efficient backward keeps torch's
+alignment guard (else padded batches with seq_len % 8 != 0 fault), other SDPA ops still skip it."""
 
 import importlib.util
 import os
