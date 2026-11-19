@@ -344,6 +344,148 @@ def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse(
     assert not any("secret-token" in line for line in lines)
 
 
+def _long_reply_client(captured):
+    class FakeResponse:
+        status_code = 200
+
+        async def aiter_lines(self):
+            for index in range(2000):
+                delta = json.dumps({"type": "response.output_text.delta", "delta": f"word{index} "})
+                yield f"data: {delta}"
+            yield 'data: {"type":"response.completed","response":{}}'
+            yield "data: [DONE]"
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeClient:
+        def stream(self, method, url, **kwargs):
+            captured.append(kwargs["json"])
+            return FakeStream()
+
+        async def aclose(self):
+            return None
+
+    return FakeClient()
+
+
+def _streamed_text_and_finishes(lines):
+    text, finishes = "", []
+    for line in lines:
+        choice = json.loads(line.removeprefix("data: "))["choices"][0]
+        text += choice["delta"].get("content", "")
+        if choice["finish_reason"]:
+            finishes.append(choice["finish_reason"])
+    return text, finishes
+
+
+def test_codex_reply_stops_at_max_tokens():
+    captured = []
+
+    async def run():
+        client = OpenAICodexClient("secret-token", "acct-1")
+        await client._client.aclose()
+        client._client = _long_reply_client(captured)
+        lines = [
+            line
+            async for line in client.stream(
+                provider_id = "provider-1",
+                thread_id = "thread-1",
+                messages = [{"role": "user", "content": "write a long essay"}],
+                model = "gpt-5.4",
+                max_tokens = 64,
+                reasoning_effort = None,
+                tools = None,
+                tool_choice = None,
+            )
+        ]
+        await client.close()
+        return lines
+
+    text, finishes = _streamed_text_and_finishes(asyncio.run(run()))
+    assert finishes == ["length"]
+    assert 0 < len(text) // 4 <= 70
+    assert "max_output_tokens" not in captured[0]
+
+
+def test_codex_tool_loop_turn_stops_at_max_tokens():
+    from core.inference import openai_codex_tool_loop as tool_loop
+
+    captured = []
+    messages = [{"role": "user", "content": "write a long essay"}]
+
+    async def run():
+        client = OpenAICodexClient("secret-token", "acct-1")
+        await client._client.aclose()
+        client._client = _long_reply_client(captured)
+        transport = tool_loop.CodexTransport(
+            client,
+            tool_loop.CodexRunContext(
+                provider_id = "provider-1",
+                thread_id = "thread-1",
+                session_id = None,
+                messages = messages,
+                model = "gpt-5.4",
+                reasoning_effort = None,
+                max_tokens = 64,
+            ),
+        )
+        lines = [
+            line
+            async for line in transport.stream(
+                messages = messages,
+                tools = None,
+                tool_choice = None,
+                cancel_event = threading.Event(),
+            )
+        ]
+        await client.close()
+        return lines
+
+    text, finishes = _streamed_text_and_finishes(asyncio.run(run()))
+    assert finishes == ["length"]
+    assert 0 < len(text) // 4 <= 70
+
+
+@pytest.mark.parametrize(("partial", "joined"), [("A famous", " word0"), ("A famous ", "word0")])
+def test_codex_resumed_reply_continues_the_partial(partial, joined):
+    captured = []
+
+    async def run():
+        client = OpenAICodexClient("secret-token", "acct-1")
+        await client._client.aclose()
+        client._client = _long_reply_client(captured)
+        lines = [
+            line
+            async for line in client.stream(
+                provider_id = "provider-1",
+                thread_id = "thread-1",
+                messages = [
+                    {"role": "user", "content": "write a long essay"},
+                    {"role": "assistant", "content": partial},
+                ],
+                model = "gpt-5.4",
+                max_tokens = 64,
+                reasoning_effort = None,
+                tools = None,
+                tool_choice = None,
+                continue_final_message = True,
+            )
+        ]
+        await client.close()
+        return lines
+
+    text, _ = _streamed_text_and_finishes(asyncio.run(run()))
+    assert text.startswith(joined + " word1")
+    last = captured[0]["input"][-1]
+    assert last["role"] == "user"
+    assert "cut off" in json.dumps(last)
+
+
 def test_browser_state_mismatch_does_not_consume_flow(monkeypatch):
     persisted = []
     flow = OAuthFlow(
