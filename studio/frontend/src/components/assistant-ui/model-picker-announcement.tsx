@@ -30,7 +30,7 @@ import { type FC, useRef, useState, useSyncExternalStore } from "react";
 
 // Literal copies live in Reset preferences (general-tab.tsx) and ACCOUNT_CHROME_KEYS.
 export const MODEL_PICKER_ANNOUNCEMENT_DISMISSED_KEY =
-  "unsloth_model_picker_announcement_dismissed";
+  "unsloth_model_picker_intro_dismissed";
 
 const listeners = new Set<() => void>();
 

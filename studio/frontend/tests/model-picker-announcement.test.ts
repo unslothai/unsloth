@@ -7,7 +7,7 @@ import test from "node:test";
 import { ACCOUNT_CHROME_KEYS } from "../src/lib/account-transition.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
-const KEY = "unsloth_model_picker_announcement_dismissed";
+const KEY = "unsloth_model_picker_intro_dismissed";
 
 test("the announcement owns the dismissal key", async () => {
   const source = await readSrcAsync(
