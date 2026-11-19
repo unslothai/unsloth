@@ -1889,3 +1889,45 @@ test("each model remembers its own quant list; others follow the setting, on by 
     /expandQuantizations: loadBool\(CHAT_EXPAND_QUANTIZATIONS_KEY, true\)/,
   );
 });
+
+test("Run settings for an MLX repo open as one checkpoint, never the Hub, and skip the Hub listing without precision folders on disk", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const settings = picker.slice(
+    picker.indexOf("const settingsMeta = async ("),
+    picker.indexOf("const openModelCard = (row: Row) =>"),
+  );
+  assert.match(
+    settings,
+    /const mlxRepo =\s*\(row\.kind === "hub" && !row\.hub\?\.isGguf\) \|\|\s*\(row\.kind === "cached" && row\.format === "mlx"\);/,
+  );
+  assert.match(
+    settings,
+    /row\.kind === "cached" && !row\.partial\s*\?\s*await listed\(\{ \.\.\.target, remote: false, everyQuant: false \}\)\s*:\s*undefined;\s*if \(listing === undefined \|\| listing\?\.mlx\) \{/,
+  );
+  assert.match(
+    settings,
+    /if \(listing === undefined \|\| listing\?\.mlx\) \{\s*listing = await listed\(\s*\/\/[^\n]*\n\s*\(row\.favoriteQuant && row\.kind === "gguf"\) \|\|\s*\(row\.kind === "hub" && mlxRepo\)\s*\?\s*\{ \.\.\.target, remote: true, everyQuant: true \}\s*:\s*target,\s*\);\s*\}/,
+  );
+  assert.match(
+    settings,
+    /rowQuants\(t\)\.catch\(\(err: unknown\) => \{\s*if \(mlxRepo\) \{\s*return null;\s*\}\s*throw err;/,
+  );
+  assert.match(
+    settings,
+    /if \(!mlxRepo\) \{\s*return null;\s*\}\s*if \(row\.kind === "hub"\) \{\s*return wholeHubMeta\(row\);\s*\}/,
+  );
+  assert.match(
+    settings,
+    /if \(listing\) \{[\s\S]*?if \(quant && \(mlx \|\| row\.kind !== "cached"\)\) \{\s*return ggufMeta\(\s*row,\s*quant,\s*target\.local \|\| quant\.downloaded === true,\s*!mlx,/,
+  );
+  assert.match(
+    settings,
+    /chooseQuant\(list, \[\s*row\.loadedQuant,\s*row\.id === chosen\?\.id \? activeVariant : null,\s*defaultVariant,\s*\]\)/,
+  );
+  assert.match(
+    settings,
+    /if \(row\.kind === "cached"\) \{\s*return cachedMeta\(row\);/,
+  );
+});

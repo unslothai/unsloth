@@ -3791,37 +3791,57 @@ export function ComposerModelPicker({
     row: Row,
   ): Promise<ModelSelectorChangeMeta | null> => {
     const target = quantTarget(row);
+    // As a pick: an MLX repo with no precision folder listed configures as one checkpoint.
+    const mlxRepo =
+      (row.kind === "hub" && !row.hub?.isGguf) ||
+      (row.kind === "cached" && row.format === "mlx");
     if (target) {
-      const {
-        quants: list,
-        defaultVariant,
-        mlx,
-        hasVision,
-      } = await rowQuants(
-        // As a pick: a pinned quant is resolved even once it is gone from disk.
-        row.favoriteQuant && row.kind === "gguf"
-          ? { ...target, remote: true, everyQuant: true }
-          : target,
-      );
-      const favorite = row.favoriteQuant?.toLowerCase();
-      const quant =
-        (favorite && list.find((v) => v.quant.toLowerCase() === favorite)) ||
-        chooseQuant(list, [
-          row.loadedQuant,
-          row.id === chosen?.id ? activeVariant : null,
-          defaultVariant,
-        ]);
-      if (quant && (mlx || row.kind !== "cached")) {
-        return ggufMeta(
-          row,
-          quant,
-          target.local || quant.downloaded === true,
-          !mlx,
-          hasVision ?? row.gguf?.has_vision,
+      const listed = (t: QuantTarget) =>
+        rowQuants(t).catch((err: unknown) => {
+          if (mlxRepo) {
+            return null;
+          }
+          throw err;
+        });
+      // A complete cached snapshot with no precision folder on disk is one checkpoint: skip the Hub listing.
+      let listing =
+        row.kind === "cached" && !row.partial
+          ? await listed({ ...target, remote: false, everyQuant: false })
+          : undefined;
+      if (listing === undefined || listing?.mlx) {
+        listing = await listed(
+          // As a pick: a pinned quant is resolved even once it is gone from disk; Discover lists every precision.
+          (row.favoriteQuant && row.kind === "gguf") ||
+            (row.kind === "hub" && mlxRepo)
+            ? { ...target, remote: true, everyQuant: true }
+            : target,
         );
       }
-      if (row.kind !== "cached") {
+      if (listing) {
+        const { quants: list, defaultVariant, mlx, hasVision } = listing;
+        const favorite = row.favoriteQuant?.toLowerCase();
+        const quant =
+          (favorite && list.find((v) => v.quant.toLowerCase() === favorite)) ||
+          chooseQuant(list, [
+            row.loadedQuant,
+            row.id === chosen?.id ? activeVariant : null,
+            defaultVariant,
+          ]);
+        if (quant && (mlx || row.kind !== "cached")) {
+          return ggufMeta(
+            row,
+            quant,
+            target.local || quant.downloaded === true,
+            !mlx,
+            hasVision ?? row.gguf?.has_vision,
+          );
+        }
+      }
+      if (!mlxRepo) {
         return null;
+      }
+      if (row.kind === "hub") {
+        return wholeHubMeta(row);
       }
     }
     if (row.kind === "local" && row.lora) {
