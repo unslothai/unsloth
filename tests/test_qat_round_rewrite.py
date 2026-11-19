@@ -150,6 +150,24 @@ def test_load_state_dict_of_another_rounded_model(scheme, through_disk, monkeypa
     assert torch.equal(_out(destination, x), expected)
 
 
+@pytest.mark.parametrize("scheme", ["int4", "int8"])
+def test_rounded_provenance_survives_a_device_move(scheme, monkeypatch):
+    # model.cpu() / .to() give the weights new storage with the same rounded values: still marked, so a
+    # differently initialised prepared model loads them unchanged. An edit after the move is not marked.
+    x = torch.randn(4, DIM)
+    source = _model(scheme, monkeypatch, "1", seed = 1)
+    destination = _model(scheme, monkeypatch, "1", seed = 2)
+    expected = _out(source, x)
+    source._apply(lambda t: t.clone())  # what a device move does to every parameter
+    destination.load_state_dict(source.state_dict())
+    assert torch.equal(_out(destination, x), expected)
+    with torch.no_grad():
+        _base(source, "up_proj").weight.add_(1e-3)
+    marked = [k for k, v in source.state_dict()._metadata.items() if qr._META in v]
+    assert not any(k.endswith("up_proj.base_layer") for k in marked)
+    assert any(k.endswith("down_proj.base_layer") for k in marked)
+
+
 def test_marked_rounded_state_dict_keeps_tensors_unchanged(monkeypatch):
     # The marker rides in the state dict's per module metadata: no new keys, so exports read the same tensors.
     model = _model("int8", monkeypatch, "1")

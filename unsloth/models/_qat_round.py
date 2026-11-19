@@ -147,7 +147,8 @@ def _checksum(weight):
 class _RoundRecord:
     """The rounded weight's state. A copy or unpickled model holds a new tensor that is already rounded,
     so the record is reset there and adopts that tensor at its next check instead of flagging a change.
-    checksum: (state, _checksum) of the rounded weight, computed at its first state_dict()."""
+    checksum: (state, _checksum) of the rounded weight, computed when it is rounded; a weight whose state
+    changed (a device move: new storage, same values) is still rounded when its values match it."""
 
     __slots__ = ("state", "checksum")
 
@@ -194,7 +195,12 @@ def _round_into(module, quantizer, weight):
         del rounded
     quantizer.enabled = False
     quantizer.__dict__[_FLAG] = True
-    quantizer.__dict__[_RECORD] = _RoundRecord(_weight_state(weight))
+    record = _RoundRecord(_weight_state(weight))
+    try:
+        record.checksum = (record.state, _checksum(weight))
+    except Exception:
+        pass
+    quantizer.__dict__[_RECORD] = record
     if not module.__dict__.get(_HOOK, False):
         try:
             register_pre = getattr(module, "register_load_state_dict_pre_hook", None)
@@ -226,7 +232,17 @@ def _mark_rounded(module, state_dict, prefix, local_metadata):
         return
     # A reset record (a copy or unpickled model) adopts the tensor it holds, which is already rounded.
     if record.state is not None and record.state != state:
-        return  # rewritten since it was rounded
+        # New storage or version: a device move (model.cpu(), .to()) keeps the rounded values, an edit does not.
+        if record.checksum is None:
+            return
+        try:
+            now = _checksum(weight)
+        except Exception:
+            return
+        if list(now) != list(record.checksum[1]):
+            return  # rewritten since it was rounded
+        record.state = state
+        record.checksum = (state, now)
     try:
         if record.checksum is None or record.checksum[0] != state:
             record.checksum = (state, _checksum(weight))
