@@ -1658,11 +1658,6 @@ export function ComposerModelPicker({
     target?: QuantTarget;
   } | null>(null);
   const offerAbort = useRef<AbortController | null>(null);
-  const [quants, setQuants] = useState<{
-    key: string;
-    list: GgufVariantDetail[];
-  } | null>(null);
-  const [quantsOpen, setQuantsOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   // State as well as the ref: the panel mounts after this render, and the glide must attach then.
@@ -2858,43 +2853,12 @@ export function ComposerModelPicker({
   }, [noThinking, expanded, setExpanded]);
   useAnimatedListHeight(listEl);
 
-  const chosenTarget =
-    // The Quantization row switches GGUF quants; an MLX precision is picked from its row.
-    chosen && chosen.kind !== "hub" && chosen.kind !== "cached"
-      ? quantTarget(chosen)
-      : null;
-  const chosenTargetRef = useRef(chosenTarget);
-  chosenTargetRef.current = chosenTarget;
-  const chosenQuantKey = chosenTarget ? chosen?.key : undefined;
-  useEffect(() => {
-    const target = chosenTargetRef.current;
-    if (!(open && target && chosenQuantKey)) {
-      return;
-    }
-    let live = true;
-    rowQuants(target)
-      .then(({ quants: list }) => {
-        if (live) {
-          setQuants({ key: chosenQuantKey, list });
-        }
-      })
-      .catch(() => {
-        if (live) {
-          setQuants(null);
-        }
-      });
-    return () => {
-      live = false;
-    };
-  }, [open, chosenQuantKey]);
-
   const resetView = useCallback(() => {
     offerAbort.current?.abort();
     offerAbort.current = null;
     setTabState(null);
     setOffer(null);
     setQuery("");
-    setQuantsOpen(false);
   }, []);
 
   // Before the inventory lands there is no row: trust residency, since an image load can release the model.
@@ -3438,14 +3402,6 @@ export function ComposerModelPicker({
     togglePinned(row.id, quant ?? undefined);
   };
 
-  const pickQuant = (variant: GgufVariantDetail) => {
-    setQuantsOpen(false);
-    if (source && chosen) {
-      supersede();
-      source.onPick(chosen.id, ggufMeta(chosen, variant, true));
-    }
-  };
-
   const configResident =
     configTarget !== null &&
     modelConfigTargetIsResident({
@@ -3677,11 +3633,6 @@ export function ComposerModelPicker({
     requestAnimationFrame(() => searchRef.current?.focus());
   };
 
-  const quantChoices =
-    quants && chosen && quants.key === chosen.key
-      ? pickerOrderedGgufVariants(quants.list, null, quantBudget).ordered
-      : [];
-  const showQuantRow = quantChoices.length > 1;
   const showEffort = !pane && reasoning.isEffort && reasoning.levels.length > 1;
   const showThinkingSwitch =
     !pane && reasoning.supportsReasoning && !showEffort;
@@ -3689,11 +3640,7 @@ export function ComposerModelPicker({
   const showPreserve = !pane && reasoning.supportsPreserve;
   const reasoningChip = pane ? null : reasoning.chipLabel;
   const hasFoot =
-    showQuantRow ||
-    showThinkingSwitch ||
-    showPreserve ||
-    showEffort ||
-    showFastSwitch;
+    showThinkingSwitch || showPreserve || showEffort || showFastSwitch;
 
   const connectFrom = (providerType?: string) => {
     setOpen(false);
@@ -4381,7 +4328,7 @@ export function ComposerModelPicker({
                 {sizeLabel ? (
                   <span
                     className={cn(
-                      "min-w-[calc(46px*var(--ui-space-scale,1))] text-right text-ui-12 tabular-nums text-muted-foreground",
+                      "min-w-[calc(40px*var(--ui-space-scale,1))] text-right font-mono text-ui-10 tabular-nums text-muted-foreground",
                       dimmed && DIM_CLASS,
                     )}
                   >
@@ -4820,7 +4767,7 @@ export function ComposerModelPicker({
           </span>
           <span className="flex shrink-0 items-center gap-1.5">
             <FitBadge status={fit} />
-            <span className="text-ui-12 tabular-nums text-muted-foreground">
+            <span className="font-mono text-ui-10 tabular-nums text-muted-foreground">
               {formatBytes(quantBytes(variant))}
             </span>
           </span>
@@ -5448,12 +5395,6 @@ export function ComposerModelPicker({
             event.preventDefault();
           }
         }}
-        onEscapeKeyDown={(event) => {
-          if (quantsOpen) {
-            event.preventDefault();
-            setQuantsOpen(false);
-          }
-        }}
       >
         {configTarget ? (
           <>
@@ -5920,66 +5861,6 @@ export function ComposerModelPicker({
                 : "mt-[calc(6px*var(--ui-space-scale,1))] border-t border-border pt-[calc(4px*var(--ui-space-scale,1))]",
             )}
           >
-            {showQuantRow ? (
-              <Popover open={quantsOpen} onOpenChange={setQuantsOpen}>
-                <PopoverTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2 rounded-full px-3 max-md:h-10 text-left text-ui-14 transition-colors hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent"
-                  >
-                    <span className="flex-1">Quantization</span>
-                    <span className="max-w-[calc(120px*var(--ui-space-scale,1))] truncate text-muted-foreground">
-                      {activeVariant ?? quantChoices[0]?.quant}
-                    </span>
-                    <HugeiconsIcon
-                      icon={ChevronDownStandardIcon}
-                      strokeWidth={1.5}
-                      className="size-4 -rotate-90 text-muted-foreground"
-                    />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent
-                  side={smallScreen ? "top" : "right"}
-                  align={smallScreen ? "end" : "start"}
-                  sideOffset={smallScreen ? 4 : 12}
-                  className="unsloth-plus-menu w-[calc(240px*var(--ui-space-scale,1))] gap-0.5 p-2"
-                >
-                  {quantChoices.map((variant) => (
-                    <button
-                      key={variant.quant}
-                      type="button"
-                      onClick={() => pickQuant(variant)}
-                      className="flex h-[calc(28px*var(--ui-space-scale,1))] items-center max-md:h-10 gap-2 rounded-full px-3 text-left transition-colors hover:bg-sidebar-accent"
-                    >
-                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                        <span className="truncate font-mono text-xs">
-                          {ggufVariantPickerLabel(variant)}
-                        </span>
-                        {variant.update_available ? (
-                          <StatusTag
-                            tone="amber"
-                            label="Update"
-                            hint={UPDATE_HINT}
-                          />
-                        ) : null}
-                      </span>
-                      <span className="text-ui-12 tabular-nums text-muted-foreground">
-                        {formatBytes(quantBytes(variant))}
-                      </span>
-                      <HugeiconsIcon
-                        icon={Tick02Icon}
-                        strokeWidth={2}
-                        className={cn(
-                          "size-4",
-                          variant.quant.toLowerCase() !==
-                            (activeVariant ?? "").toLowerCase() && "opacity-0",
-                        )}
-                      />
-                    </button>
-                  ))}
-                </PopoverContent>
-              </Popover>
-            ) : null}
             {showThinkingSwitch ? (
               <SwitchRow
                 label="Thinking"
