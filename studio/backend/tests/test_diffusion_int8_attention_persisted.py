@@ -420,3 +420,28 @@ def test_a_long_race_is_keyed_by_the_implementation_that_served_it(machine, monk
     serving["impl"] = "triton"
     assert not D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 16384)
     assert timed == ["triton", "cuda"]
+
+
+def test_every_install_keys_sink_verdicts_on_its_own_checkpoint(monkeypatch):
+    """A floor-based auto install keys on its checkpoint too, and a DiT outside the sink families never keeps the
+    previous load's checkpoint."""
+    import types
+
+    monkeypatch.setattr(I, "_SINK_DIT", [("QwenImage21Transformer2DModel", "Qwen/Qwen-Image-2.1")])
+    other = types.SimpleNamespace(config = types.SimpleNamespace(_name_or_path = "org/other"))
+    I.note_sink_checkpoint(other)
+    assert I._SINK_DIT[0] is None
+    seen = []
+    monkeypatch.setattr(I, "note_sink_checkpoint", lambda dit: seen.append(dit))
+    monkeypatch.setattr(I, "int8_processors", lambda transformer: [object()])
+    monkeypatch.setattr(I, "mode", lambda policy: "auto")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    dit = object()
+    try:
+        I._install(
+            dit, "cuda:0", torch.bfloat16, None, None, False, None, floor = lambda *a: ({}, None)
+        )
+    except Exception:  # noqa: BLE001 - only the registration before the processor loop is under test
+        pass
+    assert seen and seen[0] is dit
