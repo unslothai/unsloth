@@ -234,7 +234,39 @@ def _pin(t: Any) -> Any:
         return t
 
 
-def _to_host(mod: Any) -> int:
+def _host_pinner(modules: list) -> Callable[[Any], Any]:
+    """Pins through one packed arena (diffusion_pinned_arena): a per-tensor ``pin_memory()`` rounds each weight up to
+    a power of two (FLUX.1's 6.05 GiB of modulation weights would hold 7.19 GiB pinned). ``_pin`` when it is off or
+    a pin fails (no CUDA: pageable)."""
+    try:
+        from .diffusion_pinned_arena import PinnedArena, pin_arena_enabled
+        if not pin_arena_enabled():
+            return _pin
+        # sizes the tail slabs to what is left (the arena's ``expected_bytes``)
+        arena = PinnedArena(expected_bytes = sum(_nbytes(t) for m in modules for t in _tensors(m)))
+    except Exception:  # noqa: BLE001
+        return _pin
+
+    def pin(t: Any) -> Any:
+        try:
+            return arena.pin(t)
+        except Exception:  # noqa: BLE001
+            return _pin(t)
+
+    return pin
+
+
+def _tensors(mod: Any) -> list:
+    return [
+        t
+        for m in mod.modules()
+        for store in (m._parameters, m._buffers)
+        for t in store.values()
+        if t is not None
+    ]
+
+
+def _to_host(mod: Any, pin: Callable[[Any], Any] = _pin) -> int:
     """Moves ``mod``'s tensors to (pinned) host memory in place; returns bytes moved."""
     torch = _torch()
     moved = 0
@@ -247,7 +279,7 @@ def _to_host(mod: Any) -> int:
                 host = t.detach()
                 if host.device.type != "cpu":
                     host = host.to("cpu")
-                host = _pin(host)
+                host = pin(host)
                 store[n] = (
                     torch.nn.Parameter(host, requires_grad = False)
                     if store is m._parameters
@@ -745,9 +777,15 @@ def install(
             return False
     stands = []
     moved = 0
+    pin = _host_pinner(
+        [
+            parent._modules[attr] if attr in parent._modules else getattr(parent, attr)
+            for _n, parent, attr, _k in sites
+        ]
+    )
     for name, parent, attr, kind in sites:
         orig = parent._modules[attr] if attr in parent._modules else getattr(parent, attr)
-        moved += _to_host(orig)
+        moved += _to_host(orig, pin)
         stand = AdaLNTable(orig, name, kind)
         parent._modules[attr] = stand
         stands.append(stand)

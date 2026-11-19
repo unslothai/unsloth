@@ -736,3 +736,37 @@ def test_streamed_restore_without_moduleGroup_to_cpu(tmp_path, monkeypatch):
     assert all(t in g.cpu_param_dict for g in groups for t in _group_tensors(g))
     host = next(g for g in groups if lin.weight in g.cpu_param_dict).cpu_param_dict[lin.weight]
     assert torch.equal(host, lin.weight.data)
+
+
+def test_modulation_weights_pin_through_the_packed_arena(monkeypatch):
+    """A per-tensor pin_memory() rounds each weight to a power of two (FLUX.1: 6.05 GiB of modulation weights held
+    7.19 GiB pinned on a T4); every weight moved to the host goes through one PinnedArena instead."""
+    from core.inference import diffusion_pinned_arena as arena_mod
+
+    seen = []
+
+    class _Arena:
+        def __init__(
+            self,
+            slab_bytes = 1 << 30,
+            expected_bytes = None,
+        ):
+            self.expected_bytes = expected_bytes
+
+        def pin(self, t):
+            seen.append(t.numel() * t.element_size())
+            return t.clone()
+
+    monkeypatch.setattr(arena_mod, "PinnedArena", _Arena)
+    monkeypatch.setenv(arena_mod.PIN_ARENA_ENV, "1")
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    ref = _run(model, calls)
+    mod_bytes = sum(
+        p.numel() * p.element_size()
+        for n, p in model.named_parameters()
+        if "norm" in n and "linear" in n
+    )
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    assert sum(seen) == mod_bytes and ap.summary(model)["host_gib"] == round(mod_bytes / 2**30, 3)
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
