@@ -29,6 +29,13 @@ test("Generate is on when a model is resident and nothing is switching", () => {
   assert.equal(gate.notice, null);
 });
 
+test("jobs waiting in the queue turn the button into Queue", () => {
+  const gate = generateGate({ ...idle, queueWaiting: true });
+  assert.equal(gate.action, "queue");
+  assert.equal(gate.label, "Queue");
+  assert.equal(generateGate({ ...idle, queueWaiting: true, canQueue: false }).action, "generate");
+});
+
 test("a pick that is planning or downloading turns Generate off and says why", () => {
   const gate = generateGate({ ...idle, switching: true });
   assert.equal(gate.disabled, true);
