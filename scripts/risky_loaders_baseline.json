@@ -747,6 +747,14 @@
       "reason": "Prefix-bounded to trl.trainer.<config module>; name comes from the installed TRL trainer classes."
     },
     {
+      "file": "unsloth/models/sensenova_loop.py",
+      "rule": "trust-remote-code",
+      "sink": "keyword",
+      "digest": "730cc976b058ed35",
+      "count": 1,
+      "reason": "Standalone CPU verification entry point only (verify_sensenova_loop_int8_build, run via sensenova-loop-verify-build.py): reloads the config of the same converted checkpoint the caller already passed through the loader's trust_remote_code gate; the model load path (prepare_sensenova_loop_int8_load) receives the loader-resolved config and never calls from_pretrained itself."
+    },
+    {
       "file": "unsloth/models/sentence_transformer.py",
       "rule": "dynamic-import",
       "sink": "import_from_string",
