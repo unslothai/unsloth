@@ -4445,8 +4445,9 @@ TE_PARTIAL_PIN_SLACK_BYTES = 1 << 30
 
 
 # Host memory a parked stream-tier render takes past the load (arena slabs, host embedding lookups, decode
-# buffers): Colab L4 at 8 GB, 54 GB host, measured about 2 GB below the free memory left after the load.
-TE_PARTIAL_PIN_RENDER_BYTES = 2 << 30
+# buffers). Colab L4 at 8 GB, 54 GB host: with 2 GiB here the lowest free host memory during renders was 7.3-7.7 GiB
+# against the 7.6 GiB reserve; 3 GiB keeps it above.
+TE_PARTIAL_PIN_RENDER_BYTES = 3 << 30
 
 
 def te_later_host_bytes(plan: "H3ImagePlan") -> int:
