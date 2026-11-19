@@ -356,6 +356,51 @@ def test_claude_keeps_command_requests_and_pasted_images(claude_home):
     assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
 
 
+def _read_image(claude_home, content):
+    return _session(
+        claude_home,
+        records = [
+            c_user("u1", "What's wrong in ./shot.png?"),
+            c_asst(
+                "a1",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Read",
+                        "input": {"file_path": "shot.png"},
+                    }
+                ],
+                parent = "u1",
+            ),
+            c_user(
+                "r1",
+                [{"type": "tool_result", "tool_use_id": "t1", "content": content}],
+                parent = "a1",
+            ),
+            c_asst("a2", [{"type": "text", "text": "The disk is full."}], parent = "r1"),
+        ],
+    )
+
+
+IMAGE_RESULT = {
+    "type": "image",
+    "source": {"type": "base64", "media_type": "image/png", "data": PNG},
+}
+
+
+@pytest.mark.parametrize(
+    "content, text",
+    [([IMAGE_RESULT], ""), ([{"type": "text", "text": "Page 1"}, IMAGE_RESULT], "Page 1")],
+)
+def test_claude_keeps_images_a_tool_returned(claude_home, content, text):
+    _read_image(claude_home, content)
+    run_import(claude.SOURCE)
+
+    call = _messages(claude.SOURCE, "s1")[1]["content"][0]
+    assert call["result"] == {"text": text, "images": [{"data": PNG, "mimeType": "image/png"}]}
+
+
 def test_claude_rewinds_keep_their_branch(claude_home):
     path = _session(
         claude_home,
@@ -835,6 +880,22 @@ def test_a_tool_result_that_arrives_later_reaches_the_stored_call(claude_home):
 
     call = _messages(claude.SOURCE, "s1")[1]["content"][0]
     assert call["result"] == "out"
+
+
+def test_a_chat_imported_before_tool_images_were_kept_gets_them_on_reimport(claude_home):
+    _read_image(claude_home, [IMAGE_RESULT])
+    run_import(claude.SOURCE)
+    tid = thread_id_for(claude.SOURCE, "s1")
+    _, call, answer = _messages(claude.SOURCE, "s1")
+    emptied = {**call, "content": [{**call["content"][0], "result": ""}]}
+    edited = {**answer, "content": [{"type": "text", "text": "edited"}]}
+    studio_db.sync_chat_messages(tid, [emptied, edited], prune_missing = False)
+
+    assert run_import(claude.SOURCE).messages == 1
+    rows = _messages(claude.SOURCE, "s1")
+    assert rows[1]["content"][0]["result"]["images"] == [{"data": PNG, "mimeType": "image/png"}]
+    assert rows[2]["content"] == [{"type": "text", "text": "edited"}]
+    assert run_import(claude.SOURCE).messages == 0
 
 
 def test_an_interrupted_import_is_retried(claude_home):

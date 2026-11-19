@@ -294,7 +294,7 @@ def _pending_messages(
 
 
 def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[dict]:
-    """Stored messages whose tool calls were imported while open and have a result now."""
+    """Stored messages whose tool calls were imported open or empty and have a result now."""
     stored = {m["id"]: m for m in stored_rows}
     patched = []
     for message in transcript.messages:
@@ -309,7 +309,7 @@ def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[
         content = [
             {**part, "result": results[part["toolCallId"]]}
             if part.get("type") == "tool-call"
-            and "result" not in part
+            and part.get("result", "") == ""
             and part.get("toolCallId") in results
             else part
             for part in current["content"]

@@ -55,19 +55,27 @@ def _user_text(text: str, expanded: bool) -> str:
     return clean_text(_LOCAL_STDOUT.split(text)[0])
 
 
-def _result_text(content: Any) -> str:
-    if isinstance(content, list):
-        content = "\n\n".join(
-            block.get("text") or ""
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-    return clean_text(content) if isinstance(content, str) else ""
+def _result(content: Any) -> str | dict:
+    if not isinstance(content, list):
+        return clean_text(content) if isinstance(content, str) else ""
+    blocks = [block for block in content if isinstance(block, dict)]
+    text = clean_text(
+        "\n\n".join(block.get("text") or "" for block in blocks if block.get("type") == "text")
+    )
+    images = [
+        {"data": source["data"], "mimeType": source["media_type"]}
+        for block in blocks
+        if block.get("type") == "image"
+        and (source := block.get("source") or {}).get("type") == "base64"
+        and str(source.get("media_type") or "").startswith("image/")
+        and source.get("data")
+    ]
+    return {"text": text, "images": images} if images else text
 
 
 def _parts(
     record: dict, message_id: str, expanded: bool
-) -> tuple[list[dict], dict[str, str], bool]:
+) -> tuple[list[dict], dict[str, str | dict], bool]:
     """Parts, ``{tool_use_id: result}`` this record answers, and whether revision "" kept it. Thinking is dropped."""
     content = record.get("message", {}).get("content")
     if isinstance(content, str):
@@ -96,7 +104,7 @@ def _parts(
             parts.append(tool_call(str(block.get("id") or f"{message_id}-{position}"), block))
         elif kind == "tool_result" and user and block.get("tool_use_id"):
             # empty output still marks a finished call; Studio replays "" differently from none
-            results[str(block["tool_use_id"])] = _result_text(block.get("content"))
+            results[str(block["tool_use_id"])] = _result(block.get("content"))
     return parts, results, legacy
 
 
