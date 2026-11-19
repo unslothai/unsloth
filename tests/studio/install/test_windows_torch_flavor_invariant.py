@@ -608,7 +608,7 @@ def test_the_rocm_trio_is_reinstalled_when_the_architecture_index_moves():
     ]
     assert "]+@', '$1'" in identity and "-split '[?#]'" in identity
     # The record follows the install, never precedes it: a failed trio must not be recorded.
-    failed = text.index("AMD ROCm PyTorch install failed -- falling back to CPU")
+    failed = text.index("AMD ROCm PyTorch could not be installed for")
     assert failed < record
 
 
