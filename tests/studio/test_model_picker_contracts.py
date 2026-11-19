@@ -1002,20 +1002,26 @@ def test_fixed_layer_gguf_pins_displayed_context():
     """A loaded auto-fit GGUF saved with Manual fixed GPU layers must pin its shown context, else a
     fresh load sends native/0 and recreates the OOM."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "const pinFixedLayerContext =" in src
-    assert 'loadableConfig.gpuMemoryMode === "manual"' in src
-    assert "customContextLength: activeLoadedContext" in src
+    assert re.search(
+        r"const fixedLayerPin = fixedLayerContextPin\(\{[^}]*"
+        r"gpuMemoryMode: loadableConfig\.gpuMemoryMode \?\? gpuMemoryModeFallback,[^}]*"
+        r"gpuLayers: loadableConfig\.gpuLayers,",
+        src,
+    )
+    assert "{ ...loadableConfig, customContextLength: fixedLayerPin }" in src
 
 
 def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
-    """pinFixedLayerContext is computed from the render-time config, before a same-click
-    GPU Layers draft is committed."""
+    """The render-time pin is computed before a same-click GPU Layers draft is committed, so
+    Apply recomputes it from the committed config."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "const effectivePinFixedLayerContext =" in src
-    assert 'effectiveConfig.gpuMemoryMode === "manual"' in src
-    assert "effectiveConfig.gpuLayers != null" in src
-    assert "effectiveConfig.customContextLength == null" in src
-    assert "{ ...effectiveConfig, customContextLength: activeLoadedContext }" in src
+    assert re.search(
+        r"const effectiveFixedLayerPin = fixedLayerContextPin\(\{[^}]*"
+        r"gpuMemoryMode: effectiveConfig\.gpuMemoryMode \?\? gpuMemoryModeFallback,[^}]*"
+        r"gpuLayers: effectiveConfig\.gpuLayers,",
+        src,
+    )
+    assert "{ ...effectiveConfig, customContextLength: effectiveFixedLayerPin }" in src
 
 
 def test_blur_cache_cleared_on_every_settled_render():

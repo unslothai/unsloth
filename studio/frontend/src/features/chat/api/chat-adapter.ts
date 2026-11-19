@@ -3730,9 +3730,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
       customContextLength: config.customContextLength,
-      loadedContextLength: null,
-      currentCheckpoint: currentStore.params.checkpoint,
-      activeGgufVariant: currentStore.activeGgufVariant,
       isMlx: isServedByMlx(
         candidate.kind === "gguf",
         platform.deviceType,
@@ -3740,7 +3737,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ),
       pinnedMaxSeqLength: config.maxSeqLength,
       defaultMaxSeqLength: candidate.maxSeqLength,
-      presetSource: currentStore.activePresetSource,
     });
     // GPU knobs are per-model; the live store holds session defaults during background loads.
     const effectiveGpuMemoryMode =

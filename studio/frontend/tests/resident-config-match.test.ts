@@ -459,7 +459,7 @@ test("the GPU pick is compared after reconciliation, not as saved", () => {
 });
 
 test("an unset context length is resolved the way the load resolves it", () => {
-  // resolveLoadMaxSeqLength gives 0 cross-model and the resident context on re-pick.
+  // An Auto GGUF resolves to 0; any positive resolution must equal the recorded request.
   assert.equal(
     matches({ ...DEFAULTS, requested_context_length: 0 }, BLANK),
     true,
