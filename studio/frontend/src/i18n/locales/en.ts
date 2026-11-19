@@ -3169,7 +3169,7 @@ export const en = {
         title: "Model selection",
         expandQuantizations: "Expand quantizations",
         expandQuantizationsDescription:
-          "Show GGUF quantizations in On Device without opening each model.",
+          "Open each GGUF's quantization list in On Device by default. Opening or closing one model's list is remembered for that model.",
         showAllQuantizations: "All quantizations",
         showAllQuantizationsDescription:
           "Include quantizations that are not downloaded in On Device.",
@@ -3179,6 +3179,12 @@ export const en = {
         fitOnDeviceOnly: "Only show models that fit",
         fitOnDeviceOnlyDescription:
           "Hide models too large for this device's GPU memory and RAM in the model picker and Hub. Downloaded models stay visible.",
+        pickerExpandLoaded: "Show full model list",
+        pickerExpandLoadedDescription:
+          "Open the model picker on the full list while a model is loaded, instead of just the loaded model. Expanding or collapsing the picker changes this too.",
+        pickerMonochromeIcons: "Monochrome model icons",
+        pickerMonochromeIconsDescription:
+          "Show model and provider logos in black, white and grey in the model picker.",
       },
       menu: {
         title: "Chat menu",

@@ -3792,6 +3792,10 @@ html[data-chat-font] .aui-root {
 	.composer-tab-line {
 		background: var(--control-accent);
 	}
+	/* Letter tiles are canvases. */
+	.picker-mono :is(img, canvas) {
+		filter: grayscale(1);
+	}
 	.composer-list-thumb {
 		background: oklch(0.5 0 0 / 0.54);
 	}
@@ -7653,7 +7657,7 @@ html[data-glass="macos"] :is(.chat-header-fade, [data-slot="window-titlebar-deco
 html[data-glass] {
   --glass-menu-fill: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%), var(--glass-menu-floor)) * var(--glass-opacity, 1))), transparent);
 }
-html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, .find-bar-surface, .glass-float-surface) {
   --sidebar: var(--glass-menu-fill);
   --dropdown-lift-surface: var(--glass-menu-fill);
   --dropdown-lift-accent: var(--glass-hover);
@@ -7673,8 +7677,12 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
   backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
 }
-html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, .find-bar-surface, .glass-float-surface) {
   background-image: var(--glass-glow, none), var(--glass-sheen);
+}
+/* Unlayered, to beat these surfaces' shadow utilities. */
+html[data-glass^="liquid"][data-glass-menus] :is(.find-bar-surface, .glass-float-surface) {
+  box-shadow: var(--glass-rim), var(--glass-lift);
 }
 /* Its fill is pinned (layered !important) to a surface resolved on <html>. */
 html[data-glass][data-glass-menus] .browser-menu[data-slot] {
@@ -7683,7 +7691,7 @@ html[data-glass][data-glass-menus] .browser-menu[data-slot] {
 }
 /* The base dropdown shadows are !important inside @layer utilities, which beats any unlayered !important; only a more specific rule in that layer wins. */
 @layer utilities {
-html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, .find-bar-surface, .glass-float-surface) {
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
 /* Outranks the flat dark .sidebar-menu shadow. */
@@ -7691,7 +7699,7 @@ html[data-glass^="liquid"][data-glass-menus].dark .unsloth-plus-menu.sidebar-men
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
 }
-html[data-glass^="liquid"][data-glass-menus]:not(.dark) :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+html[data-glass^="liquid"][data-glass-menus]:not(.dark) :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, .find-bar-surface, .glass-float-surface) {
   --glass-hover: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 html[data-glass][data-glass-menus] :is([role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):is([data-highlighted], :focus-visible) {

@@ -158,6 +158,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.groups.display.title",
     "settings.chat.modelSelection.title",
     "settings.chat.modelSelection.fitOnDeviceOnly",
+    "settings.chat.modelSelection.pickerExpandLoaded",
+    "settings.chat.modelSelection.pickerMonochromeIcons",
     "settings.chat.currentDate.label",
     "settings.chat.memory.title",
     "settings.chat.memory.enable",

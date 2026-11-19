@@ -190,6 +190,9 @@ export const CHAT_EXPAND_QUANTIZATIONS_KEY =
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
 export const CHAT_SHOW_MEMORY_BAR_KEY = "unsloth_chat_show_memory_bar";
+export const PICKER_EXPAND_LOADED_KEY = "unsloth_composer_picker_expand_loaded";
+export const PICKER_MONOCHROME_ICONS_KEY =
+  "unsloth_composer_picker_monochrome_icons";
 export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
@@ -2773,6 +2776,8 @@ type ChatRuntimeStore = {
   expandQuantizations: boolean;
   showAllQuantizations: boolean;
   showMemoryBar: boolean;
+  pickerExpandLoaded: boolean;
+  pickerMonochromeIcons: boolean;
   fitOnDeviceOnly: boolean;
   loadedIsMultimodal: boolean;
   loadedIsDiffusion: boolean;
@@ -2973,6 +2978,8 @@ type ChatRuntimeStore = {
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setShowMemoryBar: (value: boolean) => void;
+  setPickerExpandLoaded: (value: boolean) => void;
+  setPickerMonochromeIcons: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
@@ -4650,9 +4657,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedGpuIndexKind: null,
   loadedGpuIds: null,
   loadedGpuIndexKind: null,
-  expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
+  expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, true),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
   showMemoryBar: loadBool(CHAT_SHOW_MEMORY_BAR_KEY, false),
+  pickerExpandLoaded: loadBool(PICKER_EXPAND_LOADED_KEY, false),
+  pickerMonochromeIcons: loadBool(PICKER_MONOCHROME_ICONS_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -6502,6 +6511,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setShowMemoryBar: (showMemoryBar) => {
     saveBool(CHAT_SHOW_MEMORY_BAR_KEY, showMemoryBar);
     set({ showMemoryBar });
+  },
+  setPickerExpandLoaded: (pickerExpandLoaded) => {
+    saveBool(PICKER_EXPAND_LOADED_KEY, pickerExpandLoaded);
+    set({ pickerExpandLoaded });
+  },
+  setPickerMonochromeIcons: (pickerMonochromeIcons) => {
+    saveBool(PICKER_MONOCHROME_ICONS_KEY, pickerMonochromeIcons);
+    set({ pickerMonochromeIcons });
   },
   setFitOnDeviceOnly: (fitOnDeviceOnly) => {
     saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
