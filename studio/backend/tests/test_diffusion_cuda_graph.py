@@ -2136,6 +2136,24 @@ def test_real_warmup_capture_exception_poisons_and_returns_the_eager_result(stub
     assert out[0].value == ("out", module.calls)
 
 
+def test_real_warmup_copy_failure_runs_the_step_eager(stub_torch, monkeypatch):
+    """Copies for a real warm-up that do not fit (OOM) poison the wrapper and the step returns its eager output,
+    as a failed capture does on the side-stream path, instead of failing the render."""
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    module = _FakeDiT()
+    handle = _armed(module)
+
+    def boom(_live):
+        raise RuntimeError("CUDA out of memory copying the warm-up inputs")
+
+    monkeypatch.setattr(handle, "_statics", boom)
+    out = handle(_t(value = 3.0), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert handle.poisoned is True and handle.stats["fallbacks"] == 1
+    assert module.calls == 1 and out[0].value == ("out", 1)
+    handle(_t(value = 4.0), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert module.calls == 2 and handle.stats["captures"] == 0
+
+
 def test_real_warmup_host_tensor_poisons_at_the_recording(stub_torch):
     """A host tensor in the step is refused when the step would record, after its warm-ups; every step still runs."""
     module = _FakeDiT()

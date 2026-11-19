@@ -1736,10 +1736,27 @@ class GraphedForward:
                 if self.plan is not None:
                     self._warmed[key] = None
                     self._open_warmups.add(key)
-                live = []
-                spec = _flatten((args, kwargs), live)
-                warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
-                return call(*warm_args, **warm_kwargs)
+                try:
+                    live = []
+                    spec = _flatten((args, kwargs), live)
+                    warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
+                    return call(*warm_args, **warm_kwargs)
+                except Exception as exc:  # noqa: BLE001 - like a failed capture: never fails the render
+                    # The copies cost memory the plain step does not need (an OOM here), or the step failed on them:
+                    # this load runs eager, as after a failed capture.
+                    self.poison(exc)
+                    self.stats["fallbacks"] += 1
+                    if self.logger is not None:
+                        self.logger.warning(
+                            "diffusion.cuda_graph: real warm-up failed on %s (%s: %s); this load runs eager",
+                            type(self.module).__name__,
+                            type(exc).__name__,
+                            exc,
+                        )
+                    exc.__traceback__ = None
+                    warm_args = warm_kwargs = live = None
+                    self._release()
+                    return self._eager(eager_args, eager_kwargs)
             if self.plan is not None and self.stats["captures"] and key not in self._warmed:
                 # A new prompt length: this real step is the new shape's warm-up; the next one records.
                 self._warmed[key] = None
