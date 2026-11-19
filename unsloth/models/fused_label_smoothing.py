@@ -1,21 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""label_smoothing_factor through the fused cross entropy instead of the full logits.
+"""label_smoothing_factor through the fused CE instead of LabelSmoother over full [B, L, V] logits.
 
-With label_smoothing_factor > 0, Trainer.compute_loss (and TRL >= 1.15 SFTTrainer.compute_loss) calls the model without
-labels, so it returns [B, L, V] logits with autograd, and LabelSmoother takes an fp32 log_softmax over all of them
-(4 GiB of bf16 logits plus 8 GiB of fp32 log-probs at 8192 rows x 262144 vocab, plus their gradients).
-
-Here, for one training step: the trainer's LabelSmoother is swapped for a proxy, a one-shot forward pre-hook hands the
-labels back to that label-free forward, and unsloth_zoo's fused CE computes F.cross_entropy(label_smoothing = eps)
-chunk by chunk, divided by the count LabelSmoother would use (this micro-batch's active tokens; num_items_in_batch
-on transformers whose LabelSmoother takes it). The proxy returns that loss, so everything the trainer does around the
-smoother (gradient accumulation, average_tokens_across_devices, TRL metrics) is unchanged.
-
-A forward that never reaches the fused CE (UNSLOTH_RETURN_LOGITS=1, a head that needs its own forward, other loss
-paths) is detected by the engagement count: that step falls back to the stock LabelSmoother and the model keeps the
-stock path from then on. UNSLOTH_FUSED_LABEL_SMOOTHING=0 turns all of this off.
+For one step the trainer's LabelSmoother is swapped for a proxy and a one-shot forward pre-hook hands labels back to
+the label-free forward; the fused CE (label_smoothing = eps) is divided by LabelSmoother's own count. A forward that
+never reaches the fused CE falls back to the stock path for that model. UNSLOTH_FUSED_LABEL_SMOOTHING=0 disables.
 """
 
 import inspect
@@ -29,7 +19,6 @@ __all__ = ["fused_label_smoothing_compute_loss"]
 _OFF = os.environ.get("UNSLOTH_FUSED_LABEL_SMOOTHING", "1") == "0"
 # Models whose forward did not reach the fused CE once; they keep the stock LabelSmoother.
 _FALLBACK_MODELS = weakref.WeakSet()
-# Engagement counters, read by tests.
 STATS = {"fused": 0, "fallback": 0}
 
 
@@ -111,8 +100,6 @@ class _Injection:
 
 
 class _FusedLabelSmoother:
-    """Stands in for the trainer's LabelSmoother for one compute_loss call."""
-
     def __init__(self, original, state, injection, model):
         self.original = original
         self.epsilon = original.epsilon

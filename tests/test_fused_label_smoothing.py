@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""label_smoothing_factor through the fused CE (unsloth/models/fused_label_smoothing.py), CPU, fp64.
-
-The stock Trainer.compute_loss with its LabelSmoother over full logits is the oracle: same loss, same gradients, for
-eps 0.1 / 1.0, uneven and fully ignored rows, with and without num_items_in_batch; the fused path must engage (and
-build no logits); a forward that never reaches the fused CE falls back to the stock path."""
+"""Fused-CE label smoothing vs stock Trainer LabelSmoother (oracle): same loss and grads, CPU fp64."""
 
 import importlib.util
 import os
@@ -141,7 +137,6 @@ def test_matches_stock_label_smoother(eps, num_items, tmp_path):
     torch.testing.assert_close(loss, ref_loss, rtol = 1e-6, atol = 1e-6)
     for g, r in zip(grads, ref_grads):
         torch.testing.assert_close(g, r, rtol = 1e-6, atol = 1e-8)
-    # The real smoother is back after the step.
     assert type(trainer.label_smoother).__name__ == "LabelSmoother"
 
 
@@ -159,7 +154,6 @@ def test_fallback_when_forward_skips_fused_ce(tmp_path):
     torch.testing.assert_close(loss, ref_loss)
     for g, r in zip(grads, ref_grads):
         torch.testing.assert_close(g, r)
-    # Later steps take the stock path directly.
     _loss_and_grads(trainer, model, None)
     assert fls.STATS["fallback"] == before["fallback"] + 1 and fls.STATS["fused"] == before["fused"]
 
