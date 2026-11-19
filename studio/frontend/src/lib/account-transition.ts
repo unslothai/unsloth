@@ -65,6 +65,7 @@ export const ACCOUNT_CHROME_KEYS = new Set([
   "unsloth_settings_active_tab",
   "unsloth_loaded_models_collapsed",
   "unsloth_loaded_models_dismissed",
+  "unsloth_model_picker_announcement_dismissed",
   "unsloth-rag-preview-width",
   "unsloth_window_material",
 ]);
