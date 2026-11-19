@@ -96,7 +96,7 @@ def _segments(raw: Any, rate: int) -> list[dict]:
     ]
 
 
-def _turns(raw: Any, rate: int) -> list[tuple[float, float, str]]:
+def _turns(raw: Any, rate: int) -> list[tuple[float, float, str, Optional[str]]]:
     turns = []
     for item, (start, end) in _spanned(raw, rate):
         speaker = item.get("speaker_id", item.get("speaker"))
@@ -105,14 +105,29 @@ def _turns(raw: Any, rate: int) -> list[tuple[float, float, str]]:
             and not isinstance(speaker, bool)
             and str(speaker).strip()
         ):
-            turns.append((start, end, str(speaker).strip()))
+            text = item.get("text")
+            text = _clean_lines(text) if isinstance(text, str) else None
+            turns.append((start, end, str(speaker).strip(), text))
     return turns
 
 
-def _assign_speakers(segments: list[dict], turns: list[tuple[float, float, str]]) -> None:
+def _assign_speakers(
+    segments: list[dict], turns: list[tuple[float, float, str, Optional[str]]]
+) -> None:
+    """MOSS and VibeVoice pair each segment with a turn of the same span: that turn names its speaker.
+    Overlap is only the fallback: an interruption the other speaker's turns cover ties with its own."""
     for segment in segments:
+        paired = {
+            speaker
+            for start, end, speaker, text in turns
+            if (start, end) == (segment["start"], segment["end"])
+            and text in (None, segment["text"])
+        }
+        if len(paired) == 1:
+            segment["speaker"] = paired.pop()
+            continue
         overlap: dict[str, float] = {}
-        for start, end, speaker in turns:
+        for start, end, speaker, _ in turns:
             shared = min(segment["end"], end) - max(segment["start"], start)
             if shared > 0 or (shared == 0 and start <= segment["start"] <= end):
                 overlap[speaker] = overlap.get(speaker, 0.0) + shared
