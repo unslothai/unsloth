@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""High-precision layer selection by structure: output heads (and weights tied to them), embeddings, MoE
-routers and the first / last decoder layers. Names are a fallback only: a router called `wg` or `gate_proj`,
-or one in remote code, is found by its shape and its place beside the experts."""
+"""High-precision layers chosen by structure: output heads (and tied weights), embeddings, MoE
+routers (by shape and place beside experts; names only a fallback), first / last decoder layers."""
 
 from __future__ import annotations
 
@@ -52,9 +51,8 @@ def num_experts_of(config) -> Optional[int]:
 
 
 def _experts_count(module) -> Optional[int]:
-    """Expert count of an experts container: ModuleList / ModuleDict length (SwitchTransformers keeps its
-    experts in a ModuleDict), `num_experts` attribute, or the leading dim of its 3-D parameters (stacked
-    expert weights)."""
+    """Expert count of an experts container: ModuleList / ModuleDict length (SwitchTransformers uses
+    a ModuleDict), num_experts attribute, or leading dim of its 3-D params."""
     if isinstance(module, (torch.nn.ModuleList, torch.nn.ModuleDict)) and len(module) > 1:
         return len(module)
     for key in _EXPERT_COUNT_KEYS:
@@ -75,8 +73,7 @@ def _out_features(module) -> Optional[int]:
 
 
 def _router_width(module) -> Optional[int]:
-    """Output width of a router: its own 2-D weight, else the one 2-D weight inside it (a gating module that
-    wraps a Linear, GraniteMoE's `router.layer`)."""
+    """Router output width: own 2-D weight, else the one inside (GraniteMoE's router.layer)."""
     out = _out_features(module)
     if out is not None:
         return out
@@ -99,10 +96,9 @@ def _is_experts_child(name, module, n_cfg) -> bool:
 
 
 def _expert_subtrees(model, n_cfg) -> set:
-    """ids of modules inside an individual expert or a shared expert: the subtree of every experts child
-    (`experts.3`, `experts.expert_0`) and of every shared-expert MLP. An MoE container that owns stacked
-    expert weights in its children, and so routes over them itself (JetMoE's attention `experts`, whose
-    router is `experts.router`), is not a collection of experts and stays inspectable."""
+    """ids of modules inside an expert or shared expert: subtrees of each experts child and
+    shared-expert MLP. A container routing over stacked expert weights itself (JetMoE's attention
+    experts) is not a collection of experts and stays inspectable."""
     inside = set()
     for _, parent in model.named_modules():
         for name, child in parent.named_children():
@@ -117,12 +113,10 @@ def _expert_subtrees(model, n_cfg) -> set:
 
 
 def find_routers(model) -> Dict[str, str]:
-    """{fqn: reason} for every module that scores tokens over experts.
-
-    A module is a router when its output width equals the expert count and it sits in the same block as an
-    experts container (a child whose name contains 'expert', excluding shared experts, or one holding stacked
-    3-D expert weights). With no experts container in its block, the config's expert count plus a 2-D weight
-    whose width matches is enough only for a module whose leaf name is a known router name."""
+    """{fqn: reason} for every module that scores tokens over experts: output width equals the
+    expert count, and it sits beside an experts container (a child whose name contains expert,
+    not shared, or one with stacked 3-D expert weights). Without a container, the config's count
+    plus a matching 2-D weight suffices only for a known router leaf name."""
     config = getattr(model, "config", None)
     n_cfg = num_experts_of(config) if config is not None else None
     found = {}
@@ -174,8 +168,7 @@ def find_output_heads(model) -> Dict[str, str]:
             ptrs.add(out.weight.data_ptr())
         except Exception:
             pass
-    # No output embedding (sequence classification, reward / value heads): the head is every Linear outside
-    # the base model (`score`, `classifier`).
+    # No output embedding: the head is every Linear outside the base model (score, classifier).
     base = getattr(model, "base_model", None) if out is None else None
     outside = set()
     if isinstance(base, torch.nn.Module) and base is not model:
@@ -270,12 +263,10 @@ def _language_roots(model):
 
 
 def decoder_layers(model):
-    """(fqn prefix of the decoder layer list, number of layers): the longest ModuleList of blocks that each
-    hold Linear layers inside the language decoder (the stack beside the input embedding, or HF
-    `get_decoder()`), ignoring experts lists and any list nested inside another such list (an MoE model can
-    have more experts per block than blocks). Searching the whole model, vision / audio / encoder stacks
-    lose to any other stack; an encoder-only model (BERT) gets its single stack. One block is a stack.
-    (None, 0) when there is none."""
+    """Returns (fqn prefix, number of layers) of the longest ModuleList of blocks holding Linear
+    layers in the language decoder (beside the input embedding, or HF get_decoder()); experts
+    lists and lists nested in another are ignored. Vision / audio / encoder stacks lose to other
+    stacks; an encoder-only model keeps its single stack; (None, 0) when there is none."""
     root, decoder = _language_roots(model)
     candidates = []
     for name, module in decoder.named_modules():
@@ -309,8 +300,7 @@ def decoder_layers(model):
 
 
 def high_precision_layers(model, policy: HPLayerPolicy) -> Dict[str, str]:
-    """{fqn: reason} of modules the policy keeps in high precision. A prefix entry (decoder layer) covers
-    every module under it."""
+    """{fqn: reason} of modules kept in high precision; a prefix covers every module under it."""
     keep = {}
     if policy.output_head:
         keep.update(find_output_heads(model))

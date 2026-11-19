@@ -78,8 +78,7 @@ def _class_source(cls):
         decorator = re.compile(r"@[A-Za-z_][\w.]*(\([^()\[\]{}#'\"\\]*\))?[ \t]*\r?\n?$")
         while start > 0 and decorator.match(lines[start - 1]):
             start -= 1
-        # The code above must compile as complete statements, else a multi-line or separated
-        # decorator may still belong to the class.
+        # Code above must compile alone, else a split decorator may still belong to the class.
         prev = start
         for attempt in range(8):
             prev -= 1
@@ -7283,9 +7282,8 @@ def _unsloth_pref_chunked_head(self, model):
     head = _unsloth_gkd_dense_head(unwrapped)
     if head is None:
         return None
-    # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward
-    # hooks, torch's global module hooks) is not
-    # F.linear(h, W, b), and its backward hooks would never see the gradient.
+    # The kernel reads weight/bias directly; a hooked head (accelerate, forward/backward, torch's
+    # global hooks) is not F.linear(h, W, b), so its backward hooks miss the gradient.
     if (
         hasattr(head, "_hf_hook")
         or "forward" in vars(head)
@@ -7606,9 +7604,8 @@ def _unsloth_dpo_chunked_head(
         head = _unsloth_gkd_dense_head(unwrapped)
         if head is None:
             reason = "output head is not a dense nn.Linear"
-        # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward
-        # hooks, torch's global module hooks) is not
-        # F.linear(h, W, b), and its backward hooks would never see the gradient.
+        # The kernel reads weight/bias directly; a hooked head (accelerate, forward/backward,
+        # torch's global hooks) is not F.linear(h, W, b), so its backward hooks miss the gradient.
         elif (
             hasattr(head, "_hf_hook")
             or "forward" in vars(head)

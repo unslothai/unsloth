@@ -306,12 +306,9 @@ def _vlm_tower_needs_unused_search(args, model):
 
 
 def _reentrant_vlm_text_lora(model):
-    """A LoRA adapter on a VLM that vision.py checkpoints reentrantly (Gemma 4).
-
-    Under reentrant checkpointing transformers' True crashes on the first backward ("mark a variable ready only
-    once"), and a language-layer adapter gets a gradient on every step, so False is the setting that trains;
-    vision / audio tower adapters are kept out of DDP and averaged by ``_all_reduce_tower_grads``. A dense model
-    only: routed experts, embedding / head adapters and extra trainable tensors keep the default."""
+    """Dense VLM only: text LoRA gets False (True crashes under reentrant checkpointing); tower
+    adapters are kept out of DDP and averaged by _all_reduce_tower_grads; experts and heads keep
+    the default"""
     from transformers import PreTrainedModel
 
     if isinstance(model, PreTrainedModel):
@@ -464,9 +461,8 @@ def _exclude_towers_from_ddp(model):
 
 
 def _exclude_frozen_from_ddp(model):
-    """DDP's start broadcasts every parameter from rank 0, flattening each into a bucket: a second copy of the
-    largest tensor. A LoRA model's frozen weights come from the same checkpoint on every rank and get no
-    gradient, so skip them (Gemma4 / Gemma3n per-layer embeddings, 4.4 GiB, ran a T4 out of memory)."""
+    """DDP start broadcast buckets every param (a second copy of the largest tensor, OOM on T4);
+    skip frozen LoRA weights, which get no gradient"""
     if os.environ.get("UNSLOTH_DDP_SYNC_FROZEN", "0") == "1":
         return 0
     if getattr(model, "peft_config", None) is None:
@@ -485,11 +481,8 @@ def _exclude_frozen_from_ddp(model):
 
 
 def _no_dynamo_ddp_graph_split():
-    """Dynamo's DDPOptimizer splits every graph it compiles while a DDP forward is active at gradient bucket
-    boundaries. Unsloth compiles functions inside the layers, not the DDP model, and a non-reentrant checkpoint
-    recompute runs them again in backward, outside that forward, unsplit: it saves different tensors than the
-    forward did and raises CheckpointError (Gemma4 E2B LoRA under DDP). Gradients still reach DDP's buckets
-    per parameter. UNSLOTH_DDP_GRAPH_SPLIT=1 keeps the split."""
+    """DDP graph split breaks non-reentrant recompute: CheckpointError. UNSLOTH_DDP_GRAPH_SPLIT=1
+    keeps it."""
     if os.environ.get("UNSLOTH_DDP_GRAPH_SPLIT", "0") == "1":
         return False
     try:

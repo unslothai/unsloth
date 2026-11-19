@@ -3524,9 +3524,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += learning_rate_check
 
-    # optim = 'adamw_8bit' is kept under FSDP2: native FSDP2 (fsdp2_native._swap_bnb_optimizer) and
-    # accelerate's FSDP2 (fsdp2._localize_or_refuse_bnb after Accelerator._prepare_fsdp2) step bitsandbytes
-    # Adam / AdamW on each rank's local shard, and refuse the bitsandbytes optimizers that cannot (unsloth#3551).
+    # optim 'adamw_8bit' is kept under FSDP2: bitsandbytes Adam/AdamW step on each local shard;
+    # other bitsandbytes optimizers are refused (unsloth#3551).
     if "optim" in call_args:
         extra_args += (
             "_unsloth_flash_adamw = str(getattr(optim, 'value', optim)).strip().lower() == 'adamw_flash'\n"

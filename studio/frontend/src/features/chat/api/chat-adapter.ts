@@ -21,6 +21,7 @@ import {
 import { llamaServerLoadFields } from "../lib/load-request";
 import {
   clearedServerTuningState,
+  committedMlxServerTuningState,
   committedServerTuningState,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
@@ -3884,7 +3885,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       // Remembered pass-through args: nothing is resident at startup to inherit them from.
       ...llamaServerLoadFields(
         { ...config, llamaExtraArgs: resolvedExtraArgs },
-        { isGguf: candidate.kind === "gguf", isDiffusion },
+        { isGguf: candidate.kind === "gguf", isDiffusion, isMlx: candidateIsMlx },
       ),
       // GGUF-only. A remembered manual DiffusionGemma split (0 especially) must not be refused as a
       // full-GGUF occupant.
@@ -4067,6 +4068,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...resolveLoadedSpeculativeSettings(loadResp),
         });
       } else {
+        // An MLX load applied the remembered settings, so mirror them; other loads reset.
+        const mlx = candidateIsMlx && !(loadResp.is_diffusion ?? false);
+        const budget = mlx ? (loadResp.reasoning_budget ?? config.reasoningBudget ?? -1) : -1;
+        const budgetMessage = mlx
+          ? (loadResp.reasoning_budget_message ?? config.reasoningBudgetMessage ?? "")
+          : "";
+        const nBatch = mlx ? (config.nBatch ?? null) : null;
+        const nUbatch = mlx ? (config.nUbatch ?? null) : null;
         useChatRuntimeStore.setState({
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
@@ -4082,24 +4091,24 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...mlxRuntimeStateFrom(loadResp),
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
-          reasoningBudget: -1,
-          loadedReasoningBudget: -1,
-          loadedReasoningBudgetRequested: -1,
-          reasoningBudgetMessage: "",
-          loadedReasoningBudgetMessage: "",
-          loadedReasoningBudgetMessageRequested: "",
-          nBatch: null,
-          loadedNBatch: null,
-          nUbatch: null,
-          loadedNUbatch: null,
-          ...clearedServerTuningState(),
+          reasoningBudget: budget,
+          loadedReasoningBudget: budget,
+          loadedReasoningBudgetRequested: budget,
+          reasoningBudgetMessage: budgetMessage,
+          loadedReasoningBudgetMessage: budgetMessage,
+          loadedReasoningBudgetMessageRequested: budgetMessage,
+          nBatch,
+          loadedNBatch: nBatch,
+          nUbatch,
+          loadedNUbatch: nUbatch,
+          ...(mlx ? committedMlxServerTuningState(config) : clearedServerTuningState()),
           // Clear the baseline so a rollback to this model does not resend a GGUF's arguments.
           loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           loadedDisableVision: loadResp.disable_vision ?? false,
           // Safetensors loads have no projector; a stale true would carry to the next model.
-          disableVision: false,
+          disableVision: mlx ? (loadResp.disable_vision ?? false) : false,
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU GGUF load left.
