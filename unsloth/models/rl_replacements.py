@@ -3995,6 +3995,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         from unsloth_zoo.rl_replacements import (
                             chunked_hidden_states_selective_log_softmax_recompute as chunked_hidden_states_selective_log_softmax,
                         )
+                    else:
+                        # Kept set: the zoo loss's own dispatcher, so the ratio starts at exactly 1.
+                        from unsloth_zoo.rl_replacements import (
+                            grpo_chunked_hidden_states_logprobs as chunked_hidden_states_selective_log_softmax,
+                        )
                 else:
                     from unsloth_zoo.rl_replacements import (
                         grpo_chunked_hidden_states_logprobs as chunked_hidden_states_selective_log_softmax,
@@ -4613,8 +4618,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             )
                             if not isinstance(_pg_v, dict):
                                 _pg_v = {}
-                            _pg_vT = int(_pg_layout.flat_ids.shape[1])
-                            _pg_vS = int(_pg_layout.position_ids.max()) + 1
+                            # Power-of-two envelope (as unsloth_zoo's grad path): an exact max of
+                            # sampled lengths re-verified nearly every step.
+                            _pg_vT = 1 << (int(_pg_layout.flat_ids.shape[1]) - 1).bit_length()
+                            _pg_vS = 1 << int(_pg_layout.position_ids.max()).bit_length()
                             _pg_old = _pg_v.get(_pg_layout.signature, (0, 0))
                             _pg_v[_pg_layout.signature] = (
                                 max(_pg_vT, _pg_old[0]),

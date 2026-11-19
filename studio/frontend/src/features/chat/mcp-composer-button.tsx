@@ -41,7 +41,6 @@ import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutati
 import {
   type McpServerConfig,
   createMcpServer,
-  listMcpBuiltins,
   listMcpServers,
   updateMcpServer,
 } from "./api/mcp-servers-api";
@@ -116,7 +115,6 @@ export function McpComposerButton({
   const [editorOpen, setEditorOpen] = useState<EditorMcpId | null>(null);
   // Labels keep the last editor while the dialog fades out after editorOpen is cleared.
   const [editorShown, setEditorShown] = useState<EditorMcpId>("unity");
-  const [notInstalled, setNotInstalled] = useState<ReadonlySet<string>>(() => new Set());
   const [editorBusy, setEditorBusy] = useState(false);
   const [serversLoaded, setServersLoaded] = useState(false);
   const [pendingUrls, setPendingUrls] = useState<ReadonlySet<string>>(
@@ -149,13 +147,6 @@ export function McpComposerButton({
             return;
           setDecisionsUrl(null);
         },
-      );
-      listMcpBuiltins(false).then(
-        (items) => {
-          if (listRefreshGenerationRef.current !== generation) return;
-          setNotInstalled(new Set(items.filter((item) => item.installed === false).map((item) => item.builtin_id)));
-        },
-        () => undefined,
       );
       try {
         const rows = await listMcpServers({
@@ -268,8 +259,6 @@ export function McpComposerButton({
         <span className="truncate">{EDITOR_MCP[id].name}</span>
         {enabled ? (
           <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
-        ) : notInstalled.has(id) ? (
-          <span className="ml-auto text-xs text-muted-foreground">Not installed</span>
         ) : null}
       </DropdownMenuItem>
     );
@@ -456,8 +445,6 @@ export function McpComposerButton({
             <span className="truncate">Blender</span>
             {blenderEnabled ? (
               <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
-            ) : notInstalled.has("blender") ? (
-              <span className="ml-auto text-xs text-muted-foreground">Not installed</span>
             ) : null}
           </DropdownMenuItem>
           {(Object.keys(EDITOR_MCP) as EditorMcpId[])
@@ -515,6 +502,7 @@ export function McpComposerButton({
               servers={servers}
               disabled={false}
               onBusyChange={setBlenderBusy}
+              onClose={() => setBlenderOpen(false)}
             />
           )}
         </DialogContent>
@@ -542,6 +530,7 @@ export function McpComposerButton({
               editorId={editorOpen}
               servers={servers}
               onBusyChange={setEditorBusy}
+              onClose={() => setEditorOpen(null)}
             />
           )}
         </DialogContent>

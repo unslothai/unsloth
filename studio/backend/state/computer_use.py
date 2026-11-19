@@ -28,6 +28,7 @@ class Session:
     apps: set = field(default_factory = set)
     used: float = 0.0
     coordinates: str = "pixels"
+    budget: Any = None
     frame: Any = None
     display: Optional[int] = None
     # Where the last action left the pointer, to tell the user's own move to a corner from ours.
@@ -161,9 +162,15 @@ def revoke_account(account_id: str) -> int:
         return count
 
 
-def set_coordinates(key: Key, mode: str) -> None:
+def set_coordinates(
+    key: Key,
+    mode: str,
+    budget: Any = None,
+) -> None:
     with _lock:
-        session(key).coordinates = mode if mode in COORDINATES else "pixels"
+        found = session(key)
+        found.coordinates = mode if mode in COORDINATES else "pixels"
+        found.budget = budget
 
 
 class ControlBusy(RuntimeError):

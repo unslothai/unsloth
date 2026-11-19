@@ -1326,12 +1326,14 @@ export function TranslatePage() {
     // Read-only meanwhile; a swap or history pick still wins.
     const before = useTranslateStore.getState().source;
     try {
-      const { text } = await extractDocumentText(file);
+      const { text, warning } = await extractDocumentText(file);
       if (useTranslateStore.getState().source !== before) {
         return;
       }
-      if (text.trim()) loadText(text);
-      else toast.error(t("translate.fileNotText"));
+      if (text.trim()) {
+        loadText(text);
+        if (warning) toast.warning(warning);
+      } else toast.error(t("translate.fileNotText"));
     } catch (error) {
       toast.error(
         error instanceof Error && error.message

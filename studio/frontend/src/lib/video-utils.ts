@@ -40,8 +40,11 @@ const VIDEO_MIME_RE = /^video\//i;
 
 /** The request builder drops non-^video/ parts, so trust the extension if the type is not video. */
 export function videoMimeForFile(file: File): string {
-  if (VIDEO_MIME_RE.test(file.type)) return file.type;
-  const name = file.name.toLowerCase();
+  return VIDEO_MIME_RE.test(file.type) ? file.type : videoMimeForName(file.name);
+}
+
+export function videoMimeForName(fileName: string): string {
+  const name = fileName.toLowerCase();
   for (const [ext, mime] of Object.entries(VIDEO_MIME_BY_EXTENSION)) {
     if (name.endsWith(ext)) return mime;
   }
