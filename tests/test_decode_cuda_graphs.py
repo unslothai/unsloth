@@ -212,10 +212,9 @@ def test_shift_labels_decode_loss(monkeypatch):
 @pytest.mark.parametrize("name", MODELS)
 @pytest.mark.parametrize("stale_control", [False, True])
 def test_lora_change_between_generations_recaptures(name, stale_control, monkeypatch):
-    """GRPO: an optimizer step, then an in-place adapter edit, then a disabled adapter between
-    decode runs. stale_control re-makes the decode casts (new addresses, as before they were refreshed
-    in place) and pins the fingerprint, so the old graphs replay their old casts: proves the in-place
-    refresh / fingerprint is what keeps the graph path on the live adapter."""
+    """GRPO: optimizer step, in-place adapter edit, adapter disabled between decodes; stale_control
+    re-makes the decode casts at new addresses behind a pinned fingerprint, so old graphs replay
+    old casts; proving the in-place refresh keeps graphs on the live adapter."""
     model, tok = _load(name, False, lora = True)
     enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
     ids = enc.input_ids
@@ -259,12 +258,9 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
 @pytest.mark.gpu
 @pytest.mark.parametrize("stale, keep", [(False, "1"), (True, "1"), (False, "auto")])
 def test_kept_graphs_replay_updated_adapters_after_optimizer_steps(stale, keep, monkeypatch):
-    """RL loop (decode, LoRA train step, decode, ...) with the graphs kept through training: no capture after
-    the first round, and every round's graph decode is bit for bit the eager decode of the updated adapters.
-    Freed cuBLAS workspaces (Inductor CUDA graph trees in training) re-capture the next round.
-    stale: the decode casts are re-made (new addresses) behind a pinned fingerprint, so the kept graphs read
-    the old cast copies; the comparison must catch it. auto: the KV caches on CUDA virtual memory sleep through
-    training (their pages go back), so the graphs are kept from the first round as well."""
+    """RL loop with graphs kept: no capture after round one, bit-exact to eager; freed cuBLAS
+    workspaces re-capture; stale=True re-makes casts behind a pinned fingerprint, which the
+    comparison must catch; auto keeps graphs since CUDA VMM KV caches sleep through training."""
     from unsloth.models import _decode_vmm as V
 
     monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", keep)
@@ -419,8 +415,7 @@ def test_ineligible_generation_frees_graphs_and_recovers(monkeypatch):
 
 @cuda
 def test_failed_capture_joins_the_side_stream(monkeypatch):
-    """A capture that fails in its warmup still makes the caller's stream wait for the side stream
-    before the eager fallback runs."""
+    """A capture failing in warmup still joins the side stream before the eager fallback."""
     model, tok = _load(MODELS[0], False)
     enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
     joins = []

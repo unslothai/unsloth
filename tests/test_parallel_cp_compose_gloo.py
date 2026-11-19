@@ -162,9 +162,8 @@ def _full(t):
 
 
 def _block_compile_on_cpu(model):
-    """Unsloth's block compile (one torch.compile region per decoder layer) on CPU ranks: its CUDA gate opened
-    and the aot_eager backend instead of inductor. Graph breaks and recompiles are Dynamo's, so they count the
-    same; the generated kernels are not under test here."""
+    """Block compile on CPU ranks: CUDA gate opens, so aot_eager stands in for inductor; kernels
+    untested."""
     from unsloth.models import _block_compile as bc
 
     real_compile = torch.compile
@@ -881,8 +880,7 @@ def _rows_per_step(res):
     ]
 
 
-# torch < 2.13 refuses fewer micro-batches than stages in every single-stage schedule (PipelineScheduleSingle);
-# 2.13 keeps the check in Schedule1F1B only.
+# torch < 2.13 single-stage schedules refuse fewer micro-batches than stages; 2.13 keeps it in 1F1B.
 _ONE_MICROBATCH_REFUSED = "pipeline schedule cannot run 1 micro-batches over 2 stages"
 
 
