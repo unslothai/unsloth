@@ -756,6 +756,9 @@ def test_mlx_trainer_feeds_batched_formatting_func_one_row_batches():
     def per_row_expand(example):
         return [f"A: {answer}" for answer in example["answers"]]
 
+    def per_row_filter(example):
+        return [f"Q: {example['problem']}"] if example["keep"] else []
+
     class Streamed:
         def __iter__(self):
             return iter(rows)
@@ -775,6 +778,8 @@ def test_mlx_trainer_feeds_batched_formatting_func_one_row_batches():
     assert formatting_func(per_row_list) is per_row_list
     expand_rows = [{"answers": ["4", "four"]}]
     assert formatting_func(per_row_expand, expand_rows) is per_row_expand
+    filter_rows = [{"problem": "Skip.", "keep": False}, {"problem": "Halve 8.", "keep": True}]
+    assert formatting_func(per_row_filter, filter_rows) is per_row_filter
 
 
 def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():

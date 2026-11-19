@@ -1503,10 +1503,12 @@ if _IS_MLX:
         try:
             texts = formatting_func(row)
         except Exception:
-            texts = []
-        if not isinstance(texts, list) or len(texts) == 1:
-            return formatting_func
-        if any(isinstance(value, list) and len(value) == len(texts) for value in row.values()):
+            texts = None
+        if texts is not None and (
+            not isinstance(texts, list)
+            or len(texts) <= 1
+            or any(isinstance(value, list) and len(value) == len(texts) for value in row.values())
+        ):
             return formatting_func
 
         def formatting_func_per_row(example):
