@@ -28,7 +28,8 @@ def test_install_writes_the_toolset_and_hooks_it_once(tmp_path):
     python_dir = root / "Content" / "Python"
     files = unreal_tools.install(str(root / "MyGame.uproject"))
     assert files == [str(python_dir / "unsloth_level_tools.py"), str(python_dir / "init_unreal.py")]
-    assert (python_dir / "unsloth_level_tools.py").read_text() == unreal_tools._SOURCE.read_text()
+    installed = (python_dir / "unsloth_level_tools.py").read_text(encoding = "utf-8")
+    assert installed == unreal_tools._SOURCE.read_text(encoding = "utf-8")
     hook = (python_dir / "init_unreal.py").read_text()
     assert "unsloth_level_tools.register_when_ready()" in hook
     unreal_tools.install(str(root))  # the folder works too, and a repeat adds nothing
