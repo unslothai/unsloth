@@ -58,7 +58,6 @@ def test_a_backtracked_package_names_the_version_it_found(monkeypatch):
 
 
 def test_the_installed_zoo_s_declared_floor_raises_the_gate(monkeypatch):
-    # A --no-deps zoo overlay leaves the old stack in place; the zoo's own floor must still hold.
     monkeypatch.setattr(
         mr, "_zoo_declared_specifier", lambda name: ">=0.6.4,<=0.8.0" if name == "mlx-vlm" else ""
     )
@@ -69,7 +68,7 @@ def test_the_installed_zoo_s_declared_floor_raises_the_gate(monkeypatch):
         mr, "_zoo_declared_specifier", lambda name: ">=0.4.4,<=0.7.12" if name == "mlx-vlm" else ""
     )
     assert mr.mlx_stack_blockers() == []
-    # The exact mlx pin counts as its floor: 0.32.2 decodes GQA batch rows from row 0's KV.
+    # An exact pin counts as a floor.
     monkeypatch.setattr(
         mr, "_zoo_declared_specifier", lambda name: "==0.32.4" if name == "mlx" else ""
     )

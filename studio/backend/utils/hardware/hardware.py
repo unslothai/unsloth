@@ -2663,7 +2663,7 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
 
 
 def _mlx_device_info(mx: Any) -> Dict[str, Any]:
-    """Metal device properties across the MLX rename: mx.device_info() is current, mlx below 0.30.4 has only mx.metal.device_info(), and the stack gate accepts mlx >= 0.22.0, so reading just the new name leaves the working set cap silently unapplied."""
+    """mlx below 0.30.4 has only mx.metal.device_info(), and the gate accepts mlx >= 0.22.0."""
     for probe in (
         getattr(mx, "device_info", None),
         getattr(getattr(mx, "metal", None), "device_info", None),
