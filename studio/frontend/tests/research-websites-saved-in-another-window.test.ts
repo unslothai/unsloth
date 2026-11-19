@@ -80,3 +80,10 @@ test("a request time limit set in another window shows up in this one", () => {
   writeFromAnotherWindow(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, 600);
   assert.equal(useChatRuntimeStore.getState().researchModelTimeoutSeconds, 600);
 });
+
+test("saving an unchanged list is not announced to other windows as an edit", () => {
+  const before = localStorageFake.get(CROSS_WINDOW_EDIT_KEY);
+  const { researchWebsitePolicy, setResearchWebsitePolicy } = useChatRuntimeStore.getState();
+  setResearchWebsitePolicy({ ...researchWebsitePolicy });
+  assert.equal(localStorageFake.get(CROSS_WINDOW_EDIT_KEY), before);
+});

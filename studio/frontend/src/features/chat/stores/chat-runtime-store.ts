@@ -901,11 +901,12 @@ function flushPreHydrationSettings(): void {
 function persistSetting(key: string, raw: string): void {
   const mirrored = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
   const writeGlobal = () => {
-    if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
+    const changed = readStorageValue(key) !== raw;
+    if (!mirroredSettingsHydrated || changed) {
       mirrorSettingToBackend(key, raw);
     }
     writeStorageValue(key, raw);
-    if (CROSS_WINDOW_SETTINGS.some(([crossKey]) => crossKey === key)) {
+    if (changed && CROSS_WINDOW_SETTINGS.some(([crossKey]) => crossKey === key)) {
       writeStorageValue(CROSS_WINDOW_EDIT_KEY, JSON.stringify({ key, raw, nonce: Math.random() }));
     }
   };
