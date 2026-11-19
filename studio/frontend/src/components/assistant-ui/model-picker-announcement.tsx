@@ -52,7 +52,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
-// Per account; in ACCOUNT_KEYED_PREFIXES and not in Reset preferences, so only the X ever hides it.
+// Per account, kept across sign-ins and out of Reset preferences: only the X hides it.
 export const MODEL_PICKER_INTRO_DISMISSED_PREFIX =
   "unsloth_model_picker_intro_dismissed:";
 
@@ -196,7 +196,6 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               return;
             }
             openPickerOnClose.current = false;
-            // Focus belongs to the picker's search, not back on the card.
             event.preventDefault();
             source.onOpenChange(true);
           }}
@@ -318,7 +317,6 @@ interface HeroRow {
   detail: string;
 }
 
-// Offline, or before the Hub answers: Trending Now's leaders at the time of writing.
 const FALLBACK_ROWS: readonly HeroRow[] = [
   {
     name: "Qwen3.8-27B-GGUF",
@@ -333,7 +331,7 @@ const FALLBACK_ROWS: readonly HeroRow[] = [
   },
 ];
 
-// After the trending leader, the top Google and DeepSeek rows (provider-logo ids, offline stand-in index).
+// [provider-logo id, FALLBACK_ROWS index]
 const FEATURED_MAKERS = [
   ["google", 1],
   ["deepseek-ai", 2],
@@ -348,7 +346,6 @@ const NON_CHAT_TASKS = new Set([
   "automatic-speech-recognition",
 ]);
 
-/** From Model Hub's Trending Now (same feed and cache). */
 function useTrendingRows(): readonly HeroRow[] {
   const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -387,7 +384,6 @@ function useTrendingRows(): readonly HeroRow[] {
   }, [trending.results]);
 }
 
-/** Mirrors the real picker and composer: keep its icons and surfaces in step with theirs. */
 const DialogHero: FC = () => {
   const rows = useTrendingRows();
   const chosen = rows[0];
