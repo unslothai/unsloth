@@ -11,7 +11,6 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 @pytest.fixture
 def probe(monkeypatch):
-    """Counting GPU probe; ``state["gpus"]`` is what the next probe answers."""
     state = {"gpus": [(0, 40000)], "calls": 0, "binary": None}
 
     def _gpus(*_a, **_kw):
@@ -30,7 +29,6 @@ def probe(monkeypatch):
 
 
 def test_found_gpu_is_not_probed_again(probe):
-    """Settings resolves the plan on every General tab open; each probe is an nvidia-smi spawn."""
     assert embeddings._resolve_auto() == "sentence-transformers"
     assert embeddings._resolve_auto() == "sentence-transformers"
     assert embeddings._resolve_auto() == "sentence-transformers"
@@ -38,7 +36,7 @@ def test_found_gpu_is_not_probed_again(probe):
 
 
 def test_no_gpu_answer_is_probed_every_time(probe, tmp_path):
-    """A failed or empty probe is never kept: the GPU may only have been slow to answer."""
+    """A miss is never cached: the GPU may only have been slow to answer."""
     binary = tmp_path / "llama-server"
     binary.write_text("")
     probe["binary"] = str(binary)
@@ -60,7 +58,7 @@ def test_environment_change_probes_again(probe, monkeypatch):
 
 
 def test_binary_change_probes_again(probe, tmp_path):
-    """A Vulkan or SYCL build answers the probe differently, so a swapped binary re-asks."""
+    """A Vulkan or SYCL build answers the probe differently."""
     assert embeddings._resolve_auto() == "sentence-transformers"
     binary = tmp_path / "llama-server"
     binary.write_text("cuda")
@@ -86,7 +84,6 @@ def test_unload_probes_again(probe):
 
 
 def test_plan_for_unsaved_model_probes_once(probe, monkeypatch):
-    """The Settings resolve path: no stored backend, nothing loaded."""
     import utils.embedding_model_settings as ems
 
     monkeypatch.setattr(ems, "get_stored_backend", lambda _model: None)

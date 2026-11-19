@@ -906,12 +906,11 @@ def _resolve_auto() -> str:
     return "sentence-transformers"
 
 
-# Last GPU-found probe, keyed by what the probe reads; a miss or failure is never kept, so it re-probes.
+# Key of the last probe that found a GPU; misses are never cached.
 _gpu_found_key: tuple | None = None
 
 
 def _gpu_probe_key(llama_cpp_backend) -> tuple:
-    """Probe function (swapped fakes never share), binary identity and the full environment."""
     binary = llama_cpp_backend._find_llama_server_binary()
     try:
         st = os.stat(binary) if binary else None
@@ -927,8 +926,7 @@ def _gpu_probe_key(llama_cpp_backend) -> tuple:
 
 
 def _gpu_present(llama_cpp_backend) -> bool:
-    """The probe is an nvidia-smi / amd-smi spawn per call and only presence is used here, so Settings
-    re-asked it on every tab open; a found GPU is remembered for the same binary and environment."""
+    """Caches a found GPU per binary + environment: each probe spawns nvidia-smi / amd-smi."""
     global _gpu_found_key
     key = _gpu_probe_key(llama_cpp_backend)
     if key == _gpu_found_key:
