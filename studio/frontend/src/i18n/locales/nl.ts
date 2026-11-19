@@ -959,7 +959,6 @@ export const nl = {
     holdToStopTip: "{label} · ingedrukt houden om te stoppen",
     approvalGone: "Dit verzoek wacht niet meer op een antwoord.",
     approvalRetry: "Je beslissing kon niet worden verzonden. Probeer het opnieuw.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} verzonden",
       arcWaiting: "{p} wacht",

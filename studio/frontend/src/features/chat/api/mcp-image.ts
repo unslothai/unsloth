@@ -40,7 +40,6 @@ export function mcpImageMappingsEnabled(
   );
 }
 
-/** A spoken reply cut where the user barged in: the saved cut, or one not saved yet. */
 export function withHeardCut<T extends Message>(message: T): T {
   const cut = laterCut(
     savedHeardCut(message.metadata),
@@ -49,7 +48,6 @@ export function withHeardCut<T extends Message>(message: T): T {
   return cut ? applyHeardCut(message, cut) : message;
 }
 
-/** The message as the model receives it: cut where the user stopped hearing it, without tool-only images. */
 export function modelVisibleMessage<T extends Message>(message: T): T {
   message = withHeardCut(message);
   // The part is flagged too: a reloaded thread can carry the image as message content.

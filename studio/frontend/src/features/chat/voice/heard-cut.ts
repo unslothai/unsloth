@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure: how much of a spoken reply the user heard before cutting in, and that reply as the model
-// then sees it. The message text is never rewritten; the cut is an offset applied on the way out.
+// Pure. The message text is never rewritten; the cut is an offset applied on the way out.
 
 import { splitSpoken, stripForSpeech, type SpokenSentence } from "./speech-text.ts";
 
-/** One piece of a scheduled clip. `from`/`to` are offsets into the stream's text; `chars` weighs its share. */
 export interface PlayedEntry {
   source: number;
   from: number;
@@ -27,7 +25,6 @@ export interface HeardCut {
 
 type Part = { type: string; text?: string };
 
-/** The reply's text parts as voice reads them, "\n" between parts, and where each part starts. */
 export function joinTextParts(content: readonly Part[]): { text: string; partStarts: number[] } {
   let text = "";
   const partStarts: number[] = [];
@@ -43,11 +40,7 @@ export function joinTextParts(content: readonly Part[]): { text: string; partSta
   return { text, partStarts };
 }
 
-/**
- * Kokoro gives no word timings, so the unit is the splitter sentence: one is heard once the
- * audible position passes the midpoint of the piece that ends it, a chunk's time shared among its
- * pieces by characters. No log (the chat model spoke the reply itself) is no cut.
- */
+/** Kokoro has no word timings: a sentence counts as heard past its last piece's midpoint. */
 export function heardCut(
   sentences: readonly SpokenSentence[],
   log: readonly PlayedChunk[] | null,
@@ -70,21 +63,18 @@ export function heardCut(
   return { offset };
 }
 
-/** A second barge-in on the same reply keeps whichever cut heard more. */
 export function laterCut(a: HeardCut | null, b: HeardCut | null): HeardCut | null {
   if (!a) return b;
   if (!b) return a;
   return a.offset >= b.offset ? a : b;
 }
 
-/** The cut saved on the message (`metadata.custom.voiceHeard`), if any. */
 export function savedHeardCut(metadata: unknown): HeardCut | null {
   const heard = (metadata as { custom?: { voiceHeard?: { offset?: unknown } } } | null | undefined)
     ?.custom?.voiceHeard;
   return typeof heard?.offset === "number" && heard.offset >= 0 ? { offset: heard.offset } : null;
 }
 
-/** Text up to the cut stays, with the parts before it; everything after is hidden from the model. */
 export function applyHeardCut<T extends { content: readonly Part[] }>(message: T, cut: HeardCut): T {
   const { partStarts } = joinTextParts(message.content);
   let at = -1;
@@ -98,11 +88,7 @@ export function applyHeardCut<T extends { content: readonly Part[] }>(message: T
   return { ...message, content: [...message.content.slice(0, at), { ...part, text }] };
 }
 
-/**
- * Metadata a writer built from an older copy of the reply, with the heard cut the open reply carries now.
- * Only the open reply sets or clears a cut ("Use full reply"); a copy taken before either would undo it.
- * No open copy (`live` undefined): the writer's own is all there is.
- */
+/** The open copy's heard cut wins, even when cleared; with no open copy, the writer's stands. */
 export function keepVoiceHeard(
   next: Record<string, unknown>,
   live: Record<string, unknown> | undefined,
@@ -116,20 +102,17 @@ export function keepVoiceHeard(
   return { ...next, voiceHeard: live.voiceHeard };
 }
 
-/** The last words the user heard, for the note under an interrupted reply; "" when none were. */
-// Built on first use, then reused.
 let graphemeSegmenter: Intl.Segmenter | undefined;
 
 export function heardTail(content: readonly Part[], cut: HeardCut, words = 6): string {
-  // An inline player tag carries its audio as base64: blanked, or the note would show it.
+  // Inline player tags carry base64 audio: blank them, or the note shows it.
   const heard = splitSpoken(joinTextParts(content).text.slice(0, cut.offset).replace(/<audio-player\b[^>]*\/>/g, " "))
     .map((s) => stripForSpeech(s.text))
     .filter(Boolean)
     .join(" ")
     .split(/\s+/)
     .filter(Boolean);
-  // An unspaced script (ja, zh, th) has no words to count: the note keeps to a short tail by characters too.
-  // By graphemes, so neither an emoji nor a letter with its marks is split.
+  // Unspaced scripts (ja, zh, th) have no words: the tail is cut by graphemes.
   graphemeSegmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
   const graphemes = graphemeSegmenter.segment(heard.slice(-words).join(" "));
   return Array.from(graphemes, (g) => g.segment).slice(-80).join("");

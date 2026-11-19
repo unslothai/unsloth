@@ -58,14 +58,12 @@ ACTION_OF = {"amend": "restart", "replace": "restart", "queue": "queue", "ignore
 
 
 def is_stock(name: str) -> bool:
-    """A catalogue checkpoint as published, or an alias of the Decision API's default. None was
-    trained on the questions above, so none can answer them: voice mode runs on fine-tunes only."""
+    """A stock checkpoint or default alias; not trained for voice questions."""
     from core.systemone import catalog
     return name in catalog.CHECKPOINTS or name in catalog.DEFAULT_ALIASES
 
 
 def _pick(value: object) -> Optional[str]:
-    """A saved or launch pick; a stock one counts as no pick, so voice mode reads as not set up."""
     name = value.strip() if isinstance(value, str) else ""
     return name if name and not is_stock(name) else None
 
@@ -111,7 +109,6 @@ def set_checkpoint(name: Optional[str]) -> None:
 
 
 def row_meta(checkpoint) -> dict:
-    """The picker row's badges: family and parameter size, a current GGUF export, size on disk, age."""
     family, params, gguf, size, mtime = "Laya", None, None, checkpoint.download_bytes or None, None
     folder = Path(checkpoint.source).expanduser()
     if checkpoint.layout == "clef":
@@ -144,7 +141,6 @@ def row_meta(checkpoint) -> dict:
 
 
 def picker_state() -> dict:
-    """The checkpoint voice mode decides with, where it came from, its load state and the choices."""
     from core.inference.voice_models import get_voice_models, models_dir, models_hub
     from core.systemone import catalog
 
@@ -165,7 +161,6 @@ def picker_state() -> dict:
             **catalog.clef_availability(c, clef_reason),
             **row_meta(c),
         }
-        # Fine-tunes and custom folders only: no stock checkpoint was trained on voice mode's questions.
         for c in [*catalog.fine_tunes(), *catalog.folder_decisions()]
     ]
     return {
@@ -173,7 +168,6 @@ def picker_state() -> dict:
         "source": checkpoint_source(),
         "launch_default": launch_checkpoint(),
         "models": models,
-        # With neither set the built-in classifiers can never load: a setup gap, not a failed load.
         "builtin_configured": models_dir() is not None or models_hub() is not None,
         **get_voice_models().decision_state(),
     }
@@ -203,8 +197,7 @@ def interject_state(prompt: str, utterance: str, elapsed_s: float) -> str:
 
 
 class DecisionUnavailable(RuntimeError):
-    """The checkpoint cannot answer right now (loading, or the GPU is taken); routes answer 503.
-    ``loading`` tells a load or download still under way from a refusal that will not pass by itself."""
+    """Cannot answer now; routes answer 503. ``loading`` marks a load still under way."""
 
     def __init__(
         self,
@@ -234,8 +227,7 @@ class DecisionVoice:
             raise RuntimeError(f"{name} is not a Decision checkpoint")
         self.checkpoint = checkpoint
         self.backend = f"decision:{checkpoint.layout}"
-        # No wait for a load: the browser gives up on a verdict after 400 ms, so a call that finds the
-        # checkpoint loading starts the load and answers unavailable at once.
+        # The browser gives up after 400 ms, so never wait on a load here.
         self._decide = decide or functools.partial(laya_runtime.decide, load_wait = 0)
 
     def ask(self, state: str, question: dict) -> dict:

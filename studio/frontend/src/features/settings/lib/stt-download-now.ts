@@ -12,11 +12,9 @@ import type { SttDownloadRequest } from "../stores/stt-download-prompt-store";
 import { useVoiceSettingsStore } from "../stores/voice-settings-store";
 import { trackSttDownload } from "./stt-download-mirror";
 
-/** Starts the download with no dialog: for a click that already said what it fetches (voice mode's Start). */
 export async function downloadSttNow(
   request: SttDownloadRequest,
 ): Promise<void> {
-  // change the engine only on accept because cancel must leave it unchanged
   if (request.selectLocalEngine) {
     useVoiceSettingsStore.getState().setDictationEngine("model");
   }
@@ -28,7 +26,6 @@ export async function downloadSttNow(
       undefined,
       request.ggufVariant,
     );
-    // progress uses the shared download panel; the model loads when the download finishes
     trackSttDownload(request.model, {
       ggufVariant: request.ggufVariant ?? null,
       downloadId: download.download_id,

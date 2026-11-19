@@ -900,7 +900,6 @@ export const sv = {
     holdToStopTip: "{label} · håll in för att stoppa",
     approvalGone: "Den här begäran väntar inte längre på svar.",
     approvalRetry: "Det gick inte att skicka ditt beslut. Försök igen.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} skickad",
       arcWaiting: "{p} väntar",

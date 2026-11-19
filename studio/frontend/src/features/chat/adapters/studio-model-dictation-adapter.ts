@@ -126,13 +126,9 @@ async function sttErrorDetail(response: Response): Promise<string> {
   return body?.detail ?? body?.error?.message ?? `HTTP ${response.status}`;
 }
 
-// Models that answered "not live" on this page: they are not asked again.
 const liveRefused = new Set<string>();
 
-/**
- * A live transcript of speech recorded at `sampleRate` by the picked transcriber, or null when the
- * pick cannot give one (another engine, or a model that already refused).
- */
+/** Null when the pick is another engine or a model that refused live. */
 export function openSttLive(
   sampleRate: number,
   model: string | undefined,
@@ -416,7 +412,6 @@ export function loadSttModel(
   device?: SttDevice,
   ggufVariant?: string | null,
   contextLength?: number,
-  /** Voice mode: a model that can transcribe live is made ready for that as well. */
   live = false,
 ): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);

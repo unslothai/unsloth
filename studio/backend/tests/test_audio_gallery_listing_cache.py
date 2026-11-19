@@ -112,8 +112,6 @@ def test_a_changed_sidecar_is_read_again(monkeypatch, change):
     if change == "rewrite":
         sidecar.write_text(json.dumps(_meta(prompt = "a longer prompt")), encoding = "utf-8")
     elif change == "same_size_same_mtime":
-        # Only the change time tells this write apart, and a coarse filesystem clock can give it the
-        # listing's tick: write again until it moves, as any later edit would.
         deadline = time.monotonic() + 5
         while True:
             sidecar.write_text(json.dumps(_meta(prompt = "qqqq")), encoding = "utf-8")

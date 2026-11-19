@@ -36,13 +36,7 @@ export function stepBargeGate(
   return false;
 }
 
-/**
- * Where a barge-in's audio starts, as an index into the frames held before it: back to the first
- * loud frame of the words that led up to it, across pauses of up to maxGap quiet frames, one frame
- * early for the onset, and never later than the last `min` frames. The gate counts only an unbroken
- * loud run, so "Wait, stop. Make it about a cat" fires on "Make it" and would otherwise lose
- * "Wait, stop.".
- */
+/** Backs over short pauses to the lead-in words; the gate needs an unbroken loud run. */
 export function bargeOnset(
   loud: readonly boolean[],
   maxGap: number,

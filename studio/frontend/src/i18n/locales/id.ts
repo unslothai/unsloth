@@ -948,7 +948,6 @@ export const id = {
     holdToStopTip: "{label} · tahan untuk berhenti",
     approvalGone: "Permintaan ini tidak lagi menunggu jawaban.",
     approvalRetry: "Keputusan Anda gagal dikirim. Coba lagi.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} terkirim",
       arcWaiting: "{p} menunggu",

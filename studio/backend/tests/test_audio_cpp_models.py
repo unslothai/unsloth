@@ -322,7 +322,6 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
 
 def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
     for family, tasks, message in (
-        # Only the end-of-turn family voice mode loads is listed; another one is still refused.
         ("new_turn", ["turn"], "Turn detection models are not supported in Unsloth Studio yet."),
         ("new_svc", ["svc"], "Unsloth Studio doesn't support voice conversion models yet."),
         ("new_s2s", ["s2s"], "Speech-to-speech models are not supported in Unsloth Studio yet."),
@@ -537,7 +536,6 @@ def test_every_task_family_binds_its_workflows():
             assert bindings == {}, family.family
             continue
         if family.task == "turn":
-            # Voice mode's end-of-turn model: it runs, with no page to bind.
             assert bindings == {} and family.unsupported is None, family.family
             continue
         if family.convert is not None:

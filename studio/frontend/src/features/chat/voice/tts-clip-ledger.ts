@@ -65,7 +65,7 @@ export function createClipLedger(deps: ClipLedgerDeps): ClipLedger {
     try {
       source.stop();
     } catch {
-      // never started
+      // stop() throws if the source never started.
     }
   };
 

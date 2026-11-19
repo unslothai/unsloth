@@ -17,17 +17,16 @@ import {
   voiceLoadNeedsCpu,
 } from "./voice-models";
 
-// What the server says is up: the serving list, or the older loaded list.
+// Older servers report "loaded" instead of "serving".
 const servingList = (status: Awaited<ReturnType<typeof getInferenceStatus>>) =>
   status.serving ?? status.loaded ?? [];
 
 export async function voiceServing(id: string): Promise<boolean> {
   if (isChatModelVoice(id)) {
-    // The model that answers, which may sit in a kept slot rather than the primary.
     const checkpoint = useChatRuntimeStore.getState().params.checkpoint || undefined;
     if (!checkpoint) return false;
     const status = await getInferenceStatus(undefined, checkpoint);
-    // An unserved model (a hosted one) gets the primary slot's status back: its speaks is not this model's.
+    // An unserved (hosted) model gets the primary's status back: check routing before trusting speaks.
     const want = checkpoint.toLowerCase();
     const routed = [status.model_identifier, status.active_model].some((id) => id?.toLowerCase() === want);
     return routed && Boolean(status.speaks);

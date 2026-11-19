@@ -48,7 +48,7 @@ _PROBE_TIMEOUT_SECONDS = 2.0
 _SINK_CHUNK_BYTES = 1 << 20
 _ERROR_BODY_BYTES = 64 * 1024
 # CUDA graph replay wedges these transducers mid-request (server spins, never answers); graphs off fixes it.
-# Kokoro hangs the same way when a sentence it has just spoken is asked for again (seen on a B200).
+# Kokoro hangs the same way on a repeated sentence.
 _NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt", "kokoro_tts"})
 _GPU_HOST_THREADS = 8
 
@@ -581,7 +581,7 @@ class AudioCppServer:
             )
         env = child_env(binary)
         if max_threads:
-            # --threads does not reach the runtime's OpenMP pool, which otherwise spins on every core.
+            # --threads does not reach the OpenMP pool, which spins on every core.
             env.setdefault("OMP_NUM_THREADS", str(threads))
         if model.family in _NO_CUDA_GRAPH_FAMILIES:
             env.setdefault("GGML_CUDA_DISABLE_GRAPHS", "1")

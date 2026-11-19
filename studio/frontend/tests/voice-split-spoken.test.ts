@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// splitSpoken's sentence offsets, checked on every string the speech tests use.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -60,7 +58,6 @@ test("offsets point into the reply and never into a blanked region", () => {
     for (const s of next.splitSpoken(text)) {
       if (!/\S/.test(s.text)) continue;
       assert.ok(0 <= s.start && s.start < s.end && s.end <= text.length, JSON.stringify([text, s]));
-      // The first and last characters are spoken text, kept exactly as written.
       assert.notEqual(blanked[s.start], " ");
       assert.equal(blanked[s.start], text[s.start]);
       assert.equal(blanked[s.end - 1], text[s.end - 1]);

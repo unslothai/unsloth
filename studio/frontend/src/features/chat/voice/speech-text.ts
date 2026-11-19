@@ -15,13 +15,11 @@ export function stripForSpeech(text: string): string {
     .replace(/\\[()[\]]/g, " ")
     .replace(/\\([A-Za-z]+)/g, " $1 ")
     .replace(/\$(?!\d)/g, " ") //                                    math $, not "$5"
-    // Inline code reads as a person says it: "list.reverse()" is "list dot reverse", "my_list[::-1]" is "my list".
     .replace(/`([^`\n]+)`/g, (_m, code: string) =>
       code.replace(/\(\s*\)/g, "").replace(/\[[^\]\n]*\]/g, " ").replace(/(\w)\.(?=[A-Za-z_])/g, "$1 dot ").replace(/_/g, " "))
     .replace(/(?<!\d)\/|\/(?!\d)/g, " ") //                          "and/or", "/s"; not 1/2
     .replace(SPEECH_STRIP_RE, "")
     .replace(/−(?=\d)/g, "-") //                                 a numeric minus is not a dash
-    // A range ("10–20") reads "10 to 20". The em dash and "…" go to the voice as written: it pauses on them.
     .replace(/(\d)[^\S\n]*[–—‒][^\S\n]*(?=\d)/g, "$1 to ")
     .replace(/[^\S\n]*[–―‒−][^\S\n]*/g, " ")
     .replace(/\.{2,}/g, " ")
@@ -79,7 +77,7 @@ function dropJsonLines(): (line: string, i: number, lines: string[]) => string {
 }
 
 // Every rule only looks backwards or drops to the end, so a streamed prefix splits as the finished reply does.
-// Dropped regions are blanked to the same length, never cut out, so every offset still points into the reply.
+// Blanked, never cut: offsets must still point into the reply.
 const blankAs = (first: string) => (region: string) =>
   region ? first + " ".repeat(region.length - 1) : "";
 const blankLine = (line: string) => " ".repeat(line.length);
@@ -106,12 +104,12 @@ const SPEECH_ABBREVIATIONS = new Set([
   "nov", "dec",
 ]);
 
-// "I said no. Then": "no" is the word far more often than "No. 5".
+// "no" usually ends a sentence: "I said no. Then".
 const SENTENCE_FINAL_ABBREVIATIONS = new Set(["etc", "inc", "ltd", "co", "jr", "sr", "no"]);
 
 const speakable = (s: string) => /[\p{L}\p{N}]/u.test(s);
 
-/** A sentence and where it sits in the text it was split from: start/end are offsets into that text. */
+/** Offsets into the reply, not into text. */
 export interface SpokenSentence {
   text: string;
   start: number;
@@ -176,10 +174,8 @@ export function splitIntoSentences(text: string): string[] {
   return sentenceSpans(text).map((s) => s.text);
 }
 
-/** The reply's spoken sentences, each with its offsets into the reply itself. */
 export function splitSpoken(text: string): SpokenSentence[] {
   const spans = sentenceSpans(speakableReply(text));
-  // Nothing speakable: one empty sentence, where the old splitter returned the leftover whitespace.
   return spans.length === 1 && !/\S/.test(spans[0].text) ? [{ text: "", start: 0, end: 0 }] : spans;
 }
 

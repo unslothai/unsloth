@@ -2547,8 +2547,7 @@ def test_an_env_pinned_local_clef_folder_keeps_the_clef_layout(monkeypatch, tmp_
 
 
 def test_a_caller_that_cannot_wait_starts_the_load_and_is_answered_at_once(monkeypatch):
-    """Voice mode asks with ``load_wait = 0``: its browser gives up on a verdict after 400 ms, so
-    waiting out a load would only park a worker. The Decision API keeps the default wait."""
+    """Voice mode asks with ``load_wait = 0``: the browser gives up at 400 ms."""
     release = threading.Event()
 
     def slow(checkpoint):
@@ -2563,7 +2562,6 @@ def test_a_caller_that_cannot_wait_starts_the_load_and_is_answered_at_once(monke
         laya_runtime.decide(checkpoint, "hello", question, load_wait = 0)
     assert time.monotonic() - started < 5
     assert (refused.value.status, refused.value.error_type) == (503, "model_loading")
-    # The refused call started the load, so the next one after it lands is answered.
     release.set()
     laya_runtime._loader.join(10)
     answered = laya_runtime.decide(checkpoint, "hello", question, load_wait = 0)

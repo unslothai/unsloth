@@ -12,7 +12,6 @@ test("a word of agreement over a reply is not a turn", () => {
   for (const said of ["Okay.", "Right!", "I see.", "Got it", "Makes sense.", "yeah", "Yes."]) {
     assert.equal(isAcknowledgement(said, telling), true, said);
   }
-  // A request, however short, is the user's turn.
   for (const said of ["Okay, stop.", "Right, but why?", "Stop.", "No.", "What?", "Paris"]) {
     assert.equal(isAcknowledgement(said, telling), false, said);
   }
@@ -21,7 +20,6 @@ test("a word of agreement over a reply is not a turn", () => {
   assert.equal(isAcknowledgement("Yes.", asking), false);
   assert.equal(isAcknowledgement("Yeah", asking), false);
   assert.equal(isAcknowledgement("Okay.", asking), true);
-  // Sounds stay with the older rule, which applies with or without a reply.
   assert.equal(isAcknowledgement("mm-hmm", telling), false);
   assert.equal(isBackchannel("mm-hmm"), true);
 });

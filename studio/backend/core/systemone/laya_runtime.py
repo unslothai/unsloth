@@ -2582,8 +2582,7 @@ def decide(
     audio: list[str] | None = None,
     load_wait: float | None = None,
 ) -> dict[str, Any]:
-    """``load_wait`` is how long a call waits for a checkpoint that is still loading before it
-    answers 503 (LOAD_WAIT_S when not given); 0 starts the load and answers at once."""
+    """Seconds to wait on a loading checkpoint before a 503; 0 starts the load and answers now."""
     if not _admission.acquire(blocking = False):
         raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
     try:

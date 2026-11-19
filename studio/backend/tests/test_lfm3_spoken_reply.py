@@ -349,7 +349,6 @@ def test_unset_spoken_budget_fits_the_served_window(monkeypatch, window, expecte
 
 
 class LiquidCodecStreamingCache:
-    """Stands in for the codec's own cache: holds nothing back, counts chunks."""
 
     def __init__(self, config):
         self.chunks = 0
@@ -371,7 +370,7 @@ class _StreamingCodec(_Codec):
         return types.SimpleNamespace(audio_values = torch.full((1, codes.shape[-1] * 1920), 0.25))
 
 
-# _SpeechChunker finds the cache class in the codec's module, as with the remote LiquidCodec.
+# _SpeechChunker finds the cache class through its module.
 _StreamingCodec.__module__ = __name__
 
 
@@ -388,8 +387,6 @@ class _TokenTokenizer:
 
 
 class _StreamingModel(torch.nn.Module):
-    """Interleaves text tokens and speech frames through the streamers, as LFM3's generate does,
-    and waits after the first chunk's frames until the caller lets it finish."""
 
     config = types.SimpleNamespace(interleaved_n_audio = 12)
     device = "cpu"
@@ -402,7 +399,7 @@ class _StreamingModel(torch.nn.Module):
         self.finished = threading.Event()
 
     def generate(self, streamer, audio_streamer, **kwargs):
-        streamer.put(torch.zeros((1, 7), dtype = torch.long))  # the prompt
+        streamer.put(torch.zeros((1, 7), dtype = torch.long))
         for token in (1, 2):
             streamer.put(torch.tensor([[token]]))
         for i in range(self.frames):
@@ -453,7 +450,6 @@ def test_spoken_reply_streams_speech_before_generation_ends():
         early.append(item)
         if isinstance(item, dict):
             break
-    # The first chunk is out while generate still waits to make the rest.
     assert not model.finished.is_set()
     assert early == ["Paris", " is", early[-1]]
     assert _wav(early[-1]["speech"]) == (24000, inf._SPEECH_FIRST_CHUNK_FRAMES * 1920)
@@ -508,7 +504,6 @@ def test_non_streamed_route_joins_speech_chunks_into_one_wav():
 
 
 def test_a_worker_still_alive_after_finishing_keeps_the_reply(monkeypatch):
-    # The worker queues `done` from its finally block and can still be alive when it is read.
     real_put = inf.queue.Queue.put if hasattr(inf, "queue") else None
     import queue
 
@@ -524,7 +519,6 @@ def test_a_worker_still_alive_after_finishing_keeps_the_reply(monkeypatch):
 
 
 class _ByteTokenizer:
-    """Byte-level ids, as LFM3's BPE splits an emoji: a prefix ending mid-character decodes to U+FFFD."""
 
     def decode(
         self,

@@ -43,7 +43,6 @@ test("an open-ended speed becomes a 0.5 to 2 slider resting at 1, without the sp
   assert.equal(speed.max, 2);
   assert.equal(speed.default, 1);
   assert.equal(speed.description, null);
-  // A declared range is the model's own and stays.
   const [own] = voiceModeOptionGroups(parseAudioOptions([{ name: "speed", type: "float", min: 0.7, max: 1.3, default: 1 }])).primary;
   assert.equal(own.min, 0.7);
   assert.equal(own.max, 1.3);

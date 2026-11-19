@@ -10,16 +10,12 @@ import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
 import { CHAT_MODEL_VOICE_SPEAKERS, isChatModelVoice } from "./voice-models";
 
-// The family the chat model's own voice reports for its two speakers.
 export const CHAT_MODEL_FAMILY = "chat_model";
 
 export interface VoiceModelSpec {
-  /** "unavailable": neither the loaded model nor its spec could be read (offline and not downloaded). */
   state: "loading" | "ready" | "unavailable";
   family: string | null;
-  /** The model's built-in speakers, from its voice option. */
   speakers: string[];
-  /** Every Speak option it declares, the voice included. */
   specs: AudioOptionSpec[];
 }
 
@@ -30,7 +26,6 @@ interface SpecBody {
 
 const LOADING: VoiceModelSpec = { state: "loading", family: null, speakers: [], specs: [] };
 const UNAVAILABLE: VoiceModelSpec = { state: "unavailable", family: null, speakers: [], specs: [] };
-// A spec only changes with a new download, so one read serves every panel open for a while.
 const SPEC_TTL_MS = 5 * 60_000;
 const specCache = new Map<string, { at: number; body: Promise<SpecBody | null> }>();
 
@@ -41,7 +36,7 @@ async function readJson(url: string): Promise<SpecBody | null> {
 
 async function readSpec(modelId: string, loaded: boolean): Promise<SpecBody | null> {
   if (loaded) {
-    // The loaded quant's own list: a quant can embed a different spec than the default one.
+    // A loaded quant can embed a different spec than the default.
     const status = await readJson(`/api/inference/status?model=${encodeURIComponent(modelId)}`).catch(() => null);
     if (Array.isArray(status?.audio_options)) return status;
   }
@@ -52,7 +47,6 @@ async function readSpec(modelId: string, loaded: boolean): Promise<SpecBody | nu
     `/api/inference/audio/model-options?model=${encodeURIComponent(modelId)}`,
   ).catch(() => null);
   specCache.set(key, { at: Date.now(), body });
-  // A failure is not kept: the next open asks again (the model may have finished downloading).
   void body.then((value) => {
     if (value === null && specCache.get(key)?.body === body) specCache.delete(key);
   });
@@ -77,10 +71,9 @@ const CHAT_MODEL_SPEC: VoiceModelSpec = {
   specs: [],
 };
 
-/** A speech model's speakers and options, loaded or not, so voice mode can be set up before Start. */
 export function useVoiceModelSpec(modelId: string, loaded: boolean): VoiceModelSpec {
   const key = `${loaded ? 1 : 0}:${modelId}`;
-  // Keyed, so a switch of model shows "loading" at once instead of the last model's options.
+  // Keyed: a model switch shows loading, not the last model's options.
   const [read, setRead] = useState<{ key: string; spec: VoiceModelSpec } | null>(null);
   const local = !modelId || isChatModelVoice(modelId);
   useEffect(() => {
@@ -98,7 +91,6 @@ export function useVoiceModelSpec(modelId: string, loaded: boolean): VoiceModelS
   return read?.key === key ? read.spec : LOADING;
 }
 
-/** A speaker as people read it: the chat model's two by gender, an audio model's by its catalog name. */
 export function voiceSpeakerLabel(
   speaker: string,
   family: string | null,

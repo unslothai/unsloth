@@ -6,7 +6,6 @@ import test from "node:test";
 
 import { normalizeForSpeech } from "../src/features/chat/voice/speech-normalize.ts";
 
-// One case per form the Kokoro listening sample got wrong, confirmed by ear.
 const FAILING_FORMS: { input: string; locale: string; spoken: string }[] = [
   { input: "The total is $1,250.", locale: "en", spoken: "The total is one thousand two hundred fifty dollars." },
   { input: "A coffee is $3.50.", locale: "en-US", spoken: "A coffee is three dollars fifty." },
@@ -29,7 +28,6 @@ const FAILING_FORMS: { input: string; locale: string; spoken: string }[] = [
   { input: "Call (555) 123-4567.", locale: "en", spoken: "Call five five five, one two three, four five six seven." },
   { input: "Dial +1-800-555-0199.", locale: "en", spoken: "Dial plus one, eight zero zero, five five five, zero one nine nine." },
   { input: "Save the GGUF file.", locale: "en", spoken: "Save the G G U F file." },
-  // The 13-voice sweep: every voice read these wrong ("K M", "four H thirty M", "Tue" as "two").
   { input: "A marathon is 42.195 km.", locale: "en", spoken: "A marathon is forty two point one nine five kilometers." },
   { input: "I ran 5km.", locale: "en", spoken: "I ran 5 kilometers." },
   { input: "It weighs 1 kg.", locale: "en", spoken: "It weighs 1 kilogram." },
@@ -77,6 +75,6 @@ test("a few cents read as cents, and the pronoun I after Mark stays a word", () 
   assert.equal(normalizeForSpeech("A $5 T-shirt.", "en"), "A five dollars T-shirt.");
   assert.equal(normalizeForSpeech("$5K now", "en"), "five thousand dollars now");
   assert.equal(normalizeForSpeech("1,000, 2,000 and 3,000.", "en"), "one thousand, two thousand and three thousand.");
-  // Before a lowercase word it is the pronoun far more often; on its own it is still the numeral.
+  // Before a lowercase word "I" is usually the pronoun; alone it is the numeral.
   assert.equal(normalizeForSpeech("It was the Mark I.", "en"), "It was the Mark one.");
 });

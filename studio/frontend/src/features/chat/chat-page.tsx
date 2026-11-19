@@ -3175,7 +3175,6 @@ export function ChatPage({
   }, [voiceSession]);
 
   const hasChatCheckpoint = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
-  // The chat model's own voice follows the chat model: a switch or finished load re-checks that it speaks.
   const voiceFollowsChat = useChatRuntimeStore((s) =>
     isChatModelVoice(s.selectedVoiceModelId) ? `${s.params.checkpoint}|${s.modelLoading}` : "",
   );
@@ -3184,7 +3183,6 @@ export function ChatPage({
     voiceSession.follow(selectedVoiceModelId);
   }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, voiceFollowsChat, voiceSession]);
 
-  // Voice mode going off releases this page's voice and the listening models; so does leaving Chat with it on.
   useEffect(() => {
     voiceSession.setMode(voiceMode);
   }, [voiceMode, voiceSession]);
@@ -3193,9 +3191,7 @@ export function ChatPage({
     return () => voiceSession.dispose();
   }, [voiceSession]);
 
-  // Off the chat route this page stays mounted but hidden, with no orb or pill to show a live mic. A running
-  // voice pauses there (mic off, reply held, its models kept loaded) and picks up again on the way back; a
-  // pause the user chose stays. Setup has no mic, so its panel just closes.
+  // Off the chat route a running voice pauses and resumes on return, unless the user paused it.
   const pausedOffRouteRef = useRef(false);
   useEffect(() => {
     const mode = getVoiceMode();

@@ -12,7 +12,7 @@ import {
 
 export type VoiceMode = "off" | "configuring" | "active";
 
-// A release's unload that the server never answers holds a new load back at most this long.
+// Longest a new load waits on a release's unload, which may never answer.
 const UNLOAD_WAIT_MS = 10_000;
 
 export interface VoiceSlot {
@@ -22,7 +22,6 @@ export interface VoiceSlot {
   voiceServing(id: string): Promise<boolean>;
 }
 
-// What the session reads and changes outside itself; chat-page wires these to the store, toasts and model clients.
 export interface VoiceSessionPorts {
   state(): {
     voiceMode: VoiceMode;
@@ -34,9 +33,8 @@ export interface VoiceSessionPorts {
   setVoiceSlotLoaded(loaded: boolean): void;
   setVoiceSlotLoading(loading: boolean): void;
   slot(): Promise<VoiceSlot>;
-  // The listening models: transcriber, speech detector and turn judge.
   releaseListening(): void;
-  /** Chat unmounts only on sign-out: the open recording stops and voice is off for the next login. */
+  /** Call only on sign-out: it stops the open recording and turns voice off. */
   endVoice(): void;
   chatModelCannotSpeak(): void;
   loadFailed(error: unknown): void;
@@ -44,7 +42,7 @@ export interface VoiceSessionPorts {
 
 export interface VoiceSession {
   ensureVoiceSlotLoaded(): Promise<boolean>;
-  // The pick changed, or the chat model it follows did: re-checks once a load in flight settles.
+  // Re-checks only once a load in flight settles.
   follow(selectedVoiceModelId: string): void;
   setMode(mode: VoiceMode): void;
   activate(): void;
@@ -52,15 +50,14 @@ export interface VoiceSession {
 }
 
 export function createVoiceSession(ports: VoiceSessionPorts, initialMode: VoiceMode): VoiceSession {
-  // Only a voice this session loaded is ever unloaded; whichever is picked when a load settles ends up loaded.
+  // Only a voice this session loaded is unloaded.
   let held: VoiceHold | null = null;
-  // The load in flight, the pick it is for, and the epoch it started in.
   let loading: Promise<boolean> | null = null;
   let loadingFor = "";
   let loadingEpoch = 0;
-  // The unload of a voice this session let go; a load waits for it, so it never sees that voice as still serving.
+  // A load waits for the unload of a voice let go, so it never sees it still serving.
   let unloading: Promise<void> | null = null;
-  // Bumped whenever voice mode lets go, so a load still in flight knows it is no longer wanted.
+  // Bumped when voice mode lets go, so an in-flight load knows it is unwanted.
   let epoch = 0;
   let mode = initialMode;
   let leaving = false;
@@ -85,7 +82,6 @@ export function createVoiceSession(ports: VoiceSessionPorts, initialMode: VoiceM
         }
         const { loadVoice, servedVoice, unloadVoice, voiceServing } = await ports.slot();
         if (isChatModelVoice(id) && !(await voiceServing(id))) {
-          // A chat model that cannot speak would park every turn behind a voice that never loads.
           if (!start.checkpoint || ports.state().modelLoading) return false;
           if (startEpoch !== epoch) return false;
           id = VOICE_DEFAULT_TTS_MODEL;
@@ -105,8 +101,6 @@ export function createVoiceSession(ports: VoiceSessionPorts, initialMode: VoiceM
           ports.setVoiceSlotLoaded(ports.state().selectedVoiceModelId === id);
           return true;
         }
-        // A voice already serving becomes the pick instead of a second voice loading beside it;
-        // never for the chat model's own voice, which is the user's opt-in.
         const served = held === null && !isChatModelVoice(id) ? await servedVoice() : null;
         if (served) {
           if (startEpoch !== epoch) return false;
@@ -116,7 +110,7 @@ export function createVoiceSession(ports: VoiceSessionPorts, initialMode: VoiceM
           ports.setVoiceSlotLoaded(true);
           return true;
         }
-        // With no chat model the voice would take the empty seat and the next chat load would replace it.
+        // Without a chat model the voice would take the seat the next chat load replaces.
         if (!start.checkpoint) return false;
         ports.setVoiceSlotLoaded(false);
         ports.setVoiceSlotLoading(true);
@@ -183,8 +177,7 @@ export function createVoiceSession(ports: VoiceSessionPorts, initialMode: VoiceM
     activate() {
       leaving = false;
     },
-    // Leaving Chat: the voice this session loaded always goes; the listening models only if voice mode was on.
-    // Settled a microtask later, so StrictMode's dev remount (cleanup, then mount again at once) keeps them.
+    // Settled a microtask later, so StrictMode's dev remount keeps them.
     dispose() {
       leaving = true;
       queueMicrotask(() => {

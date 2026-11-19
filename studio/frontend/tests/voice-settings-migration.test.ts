@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Voice settings v2: the latency rollout switches, filled in for a v1 save. v3: turn ending and the
-// spoken-reply instruction became choices, and a v2 save takes their defaults.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -61,7 +58,6 @@ test("Settings > Voice > Voice mode has a labelled switch for every setting", as
     const entry = (en.settings.voice.voiceMode.switches as Record<string, { label: string; description: string }>)[key];
     assert.ok(entry?.label && entry.description, key);
   }
-  // Every choice has a label and a description.
   const mode = en.settings.voice.voiceMode;
   for (const option of ["smartTurn", "smartTurnJudge", "wait"] as const) {
     assert.ok(mode.turnEnding.options[option].label && mode.turnEnding.options[option].description, option);

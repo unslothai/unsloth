@@ -21,7 +21,6 @@ export function utteranceSpan(
 export function createClipSpeculation<T extends { cancel(): void }>() {
   let spec: { key: string; result: T } | null = null;
   return {
-    /** The analysis of `key`: the one already running, else a new one (which cancels any other). */
     start(key: string, analyse: () => T): T {
       if (spec?.key === key) return spec.result;
       spec?.result.cancel();

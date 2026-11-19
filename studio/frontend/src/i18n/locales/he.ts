@@ -885,7 +885,6 @@ export const he = {
     holdToStopTip: "{label} · החזיקו לעצירה",
     approvalGone: "הבקשה הזו כבר לא ממתינה לתשובה.",
     approvalRetry: "לא ניתן לשלוח את ההחלטה שלך. נסה שוב.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} נשלח",
       arcWaiting: "{p} ממתין",

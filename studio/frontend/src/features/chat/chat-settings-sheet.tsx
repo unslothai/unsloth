@@ -267,7 +267,6 @@ export function ParamSlider({
         step={step}
         {...sliderProps}
         disabled={disabled}
-        // The thumb carries role="slider": without this a screen reader hears only a number.
         aria-label={label}
       />
     </div>

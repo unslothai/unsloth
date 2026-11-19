@@ -262,7 +262,6 @@ function centreOn(p: Point, m: Area, size: { width: number; height: number }): b
 }
 
 const WIDGET_SIZE = { width: ORB_WIDGET_WIDTH, height: ORB_WIDGET_HEIGHT };
-// With no saved spot, the widget sits this far in from the screen's bottom-right corner.
 const FALLBACK_INSET_X = 24;
 const FALLBACK_INSET_Y = 72;
 

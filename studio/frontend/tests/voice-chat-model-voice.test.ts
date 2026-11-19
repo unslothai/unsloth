@@ -56,7 +56,6 @@ test("spoken reply chunks join into one WAV of all their samples, in order", () 
   const bytes = Buffer.from(joined, "base64");
   assert.ok(bytes.readInt16LE(44) > 0);
   assert.ok(bytes.readInt16LE(44 + 1920 * 2) < 0);
-  // One chunk is returned as it came; a chunk in another format is left out.
   assert.equal(joinWavBase64([a]), a);
   const other = pcmWavBase64(new Float32Array(10), 16000);
   assert.equal(wavInfo(joinWavBase64([a, other])).dataBytes, 1920 * 2);
@@ -123,7 +122,6 @@ test("the chat model's voice is an opt-in pick, never the default and never adop
   assert.equal(isChatModelVoice(VOICE_DEFAULT_TTS_MODEL), false);
   assert.ok(!VOICE_TTS_MODELS.includes(VOICE_CHAT_MODEL_VOICE));
   assert.equal(VOICE_TTS_MODELS[0], VOICE_DEFAULT_TTS_MODEL);
-  // A saved pick survives a reload; anything else migrates exactly as before.
   assert.equal(migrateVoiceTtsModel(VOICE_CHAT_MODEL_VOICE), VOICE_CHAT_MODEL_VOICE);
   assert.equal(migrateVoiceTtsModel(""), VOICE_DEFAULT_TTS_MODEL);
   assert.equal(migrateVoiceTtsModel("unsloth/orpheus-3b-0.1-ft-GGUF"), VOICE_DEFAULT_TTS_MODEL);
@@ -147,9 +145,7 @@ test("bubbles coalesced into one run send all their speech on the newest", () =>
     content: [{ type: "text" }],
     attachments: [voiceTurnAttachment(wav, "x")],
   });
-  // Answered speech stays out; the unanswered bubble before this one comes first.
   assert.equal(wavInfo(coalescedTurnAudio([bubble(a), reply, bubble(b)], c)).dataBytes, (50 + 25) * 2);
-  // Three in one window: the middle bubble already holds the first's speech, so it is not doubled.
   const ab = coalescedTurnAudio([reply, bubble(a)], b);
   assert.equal(wavInfo(coalescedTurnAudio([reply, bubble(a), bubble(ab)], c)).dataBytes, (100 + 50 + 25) * 2);
   assert.equal(coalescedTurnAudio([bubble(a), reply], c), c);
@@ -158,7 +154,7 @@ test("bubbles coalesced into one run send all their speech on the newest", () =>
 
 test("switching an owned audio.cpp voice to the chat model's voice unloads it", () => {
   const owned = { id: "audiocpp-kokoro", owned: true };
-  // The chat model's voice is borrowed like any other serving voice, so the owned one is released.
+  // The chat model's voice is borrowed, so the owned voice is released.
   assert.equal(releaseBeforeBorrow(owned, VOICE_CHAT_MODEL_VOICE), "audiocpp-kokoro");
   assert.equal(releaseBeforeBorrow({ id: "audiocpp-kokoro", owned: false }, VOICE_CHAT_MODEL_VOICE), null);
   assert.equal(releaseBeforeBorrow(null, VOICE_CHAT_MODEL_VOICE), null);

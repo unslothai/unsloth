@@ -561,14 +561,11 @@ def clef_unsupported_reason(wait: bool = True) -> str | None:
 
 
 def clef_availability(checkpoint, reason: str | None) -> dict:
-    """The picker fields that say whether this machine can run the checkpoint, and why not."""
     from . import laya_runtime
 
     only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
     if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
-        # A non-Clef MLX-only entry (Decider) is flagged too, so its runtime row stays reachable.
         only = {} if only_mlx and checkpoint.layout == "clef" else {"llama_cpp_only": True}
-        # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
         except laya_runtime.Unavailable as exc:
@@ -576,7 +573,6 @@ def clef_availability(checkpoint, reason: str | None) -> dict:
         return only
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
-    # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
     if laya_runtime.native_ready(checkpoint) or laya_runtime.mlx_ready(checkpoint):
         return {}
     return {"available": False, "unavailable_reason": reason}

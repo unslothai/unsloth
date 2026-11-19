@@ -43,8 +43,6 @@ FILLER_MAX_TOKENS = 48
 ECHO_MAX_TOKENS = 40
 ORT_THREADS = 4
 INTERJECT_ACTIONS = ["restart", "ignore", "queue"]
-# A model that failed to load is tried again after this long, so one bad moment (the Hub
-# unreachable, a folder not there yet) does not switch it off until the next restart.
 LOAD_RETRY_S = 60.0
 
 
@@ -416,7 +414,6 @@ def _softmax(x):
 
 
 def _onnx_feed(e, names = None) -> dict:
-    """One encoded text as ONNX inputs, limited to `names` (the graph's own inputs) when given."""
     import numpy as np
 
     feed = {
@@ -872,7 +869,7 @@ def _Judge(root: Path):
 
 
 class VoiceModelUnavailable(RuntimeError):
-    """A question for a model that is not loaded; the message carries why it is not."""
+    """A question to a model that is not loaded; the message says why."""
 
 
 class VoiceModels:
@@ -917,12 +914,11 @@ class VoiceModels:
         self._decision_error = (voice_decisions.checkpoint_name() or "", message)
 
     def warm_decision(self) -> None:
-        """Ask the current Decision pick one question so it loads now; a refusal becomes its error."""
         from core.inference.voice_decisions import DecisionUnavailable
         try:
             self.judge("hello")
         except DecisionUnavailable as exc:
-            # A load or download still running is not a failure: it keeps going in the runtime.
+            # A load still running is not a failure; it keeps going.
             if not exc.loading:
                 self.note_decision_error(str(exc))
         except Exception as exc:  # noqa: BLE001 - the state reports it

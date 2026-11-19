@@ -846,7 +846,6 @@ export const zhCN = {
     holdToStopTip: "{label} · 按住以停止",
     approvalGone: "此请求已不再等待答复。",
     approvalRetry: "无法发送你的决定。请重试。",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} 已发送",
       arcWaiting: "{p} 等待",

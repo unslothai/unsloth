@@ -69,19 +69,16 @@ interface VoicePanelProps {
   sttModelId: string;
   onSttModelChange: (id: string) => void;
   sttLoaded: boolean;
-  /** The picked transcriber is not downloaded: voice mode cannot hear until it is. */
   sttDownload: "needed" | "downloading" | null;
   onSttDownload: () => void;
   ttsModelId: string;
   onTtsModelChange: (id: string) => void;
   ttsLoading: boolean;
   ttsLoaded: boolean;
-  /** No chat model is loaded: the models can still be chosen, but voice mode cannot start. */
   disabled?: boolean;
   anchor?: "header" | "composer";
 }
 
-/** The panel's models and their load state, from the chat store. */
 function useVoicePanelProps(): Omit<VoicePanelProps, "anchor"> {
   const s = useChatRuntimeStore(
     useShallow((s) => ({
@@ -102,8 +99,6 @@ function useVoicePanelProps(): Omit<VoicePanelProps, "anchor"> {
   return { ...s, onSttDownload: () => requestSttDownload(s.sttModelId) };
 }
 
-/** Voice mode's models, one row per role. "composer": opens from the voice button beside the mic, to
- *  set up and start. "header": the status pill while voice mode runs. */
 export const VoicePanel: FC<{ anchor?: "header" | "composer" }> = ({ anchor = "header" }) => (
   <VoicePanelView {...useVoicePanelProps()} anchor={anchor} />
 );
@@ -123,7 +118,6 @@ function shortName(id: string): string {
 const ROW =
   "group/row flex w-full items-center gap-2 rounded-full py-1.5 pl-2.5 pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
 
-// idle: voice mode has not started, so an unloaded slot is waiting, not failing.
 const StateTag: FC<{ state: VoiceLoadState; label: string; idle?: boolean }> = ({
   state,
   label,
@@ -166,30 +160,25 @@ const VoicePanelView: FC<VoicePanelProps> = ({
   const t = useT();
   const uid = useId();
   const composer = anchor === "composer";
-  // Turning voice on from the composer opens its setup there, with Start in reach.
   const [open, setOpen] = useState(composer);
   const [role, setRole] = useState<Role | null>(null);
   const rowRefs = useRef<Partial<Record<Role, HTMLButtonElement | null>>>({});
   const anchorRef = useRef<HTMLDivElement | null>(null);
-  // Set when closing the composer's setup cancels voice mode: the trigger is gone, so focus goes to Start voice mode.
+  // Focus goes to Start voice mode when cancelling setup removes the trigger.
   const focusAfterCancelRef = useRef<Element | null>(null);
   const decision = useVoiceDecision(open);
   const preset = useVoicePreset(ttsModelId, ttsLoaded);
-  // Only the model's own speed is named on the row: every other option sits one tap away.
   const voiceSpeed = useVoiceSettingsStore(
     (s) => s.voiceTtsOptions[voiceTtsOptionsKey(ttsModelId)]?.speed,
   );
   const vadDetectors = useVadDetectors();
-  // "configuring": the pill is up for choosing models, and nothing loads until Start.
   const started = useChatRuntimeStore((s) => s.voiceMode === "active");
   const chatModel = useChatModelStatus();
   const canThink = useChatRuntimeStore((s) => s.supportsReasoning && !s.reasoningAlwaysOn);
-  // Voice can only think when the chat model does: with Thinking off in the model menu the switch would do nothing.
+  // Voice thinking needs the chat model's Thinking on, or the switch does nothing.
   const chatThinks = useChatRuntimeStore((s) => s.reasoningEnabled);
   const voiceThinking = useVoiceSettingsStore((s) => s.voiceThinking);
   const setVoiceThinking = useVoiceSettingsStore((s) => s.setVoiceThinking);
-  // Before Start, ask whether the transcriber is on disk, so the row says it will download (and how much)
-  // instead of "Loads on start" followed by a download dialog.
   useEffect(() => {
     if (!open || started || sttLoaded) return;
     let cancelled = false;
@@ -215,12 +204,12 @@ const VoicePanelView: FC<VoicePanelProps> = ({
   const sttSize = sttModelSize(sttModelId);
   const start = () => {
     const store = useChatRuntimeStore.getState();
-    // Start is the consent: the panel said the transcriber downloads first, and how big it is.
+    // Start is the consent for the transcriber download the panel showed.
     if (downloadOnStart) {
       store.setSttSlotDownload("downloading");
       void downloadSttNow({ model: sttModelId, voice: true });
     }
-    // In the click: Safari and Firefox start the mic's audio only in a user gesture.
+    // Safari and Firefox start mic audio only in a user gesture.
     primeVoiceCapture();
     store.setVoiceOrbCollapsed(false);
     store.setVoiceMode("active");
@@ -241,7 +230,6 @@ const VoicePanelView: FC<VoicePanelProps> = ({
       ? (decideModel?.label ?? shortName(decision.status.current))
       : t("voicePanel.builtinClassifiers")
     : "";
-  // Built-in classifiers with no source on the server never load: a setup gap, not a failure.
   const decideUnset =
     decision.status?.current === null &&
     decision.status.builtin_configured === false;
@@ -253,7 +241,6 @@ const VoicePanelView: FC<VoicePanelProps> = ({
       enabled: boolean;
       title?: string;
       unset?: boolean;
-      /** Said in place of the state's own name. */
       label?: TranslationKey;
     }
   > = {
@@ -306,7 +293,6 @@ const VoicePanelView: FC<VoicePanelProps> = ({
     },
   };
   const states = ROLES.map((r) => (rows[r].unset ? null : rows[r].state));
-  // Shown only by the header pill, which is up only while voice mode runs.
   const summary = chatModel !== "ready"
     ? t(chatModel === "switching" ? "voicePanel.chatModelLoading" : "voicePanel.chatModelWaiting")
     : sttDownload === "downloading"
@@ -411,8 +397,7 @@ const VoicePanelView: FC<VoicePanelProps> = ({
       onOpenChange={(next) => {
         setOpen(next);
         if (!next) setRole(null);
-        // Closing the composer's setup without Start cancels it: left in "configuring", the idle orb
-        // replaced the voice and dictate buttons with no way back but the plus menu.
+        // Leaving "configuring" set would hide the voice and dictate buttons.
         if (!next && composer && useChatRuntimeStore.getState().voiceMode === "configuring") {
           focusAfterCancelRef.current =
             anchorRef.current?.closest(".aui-composer-action-wrapper") ?? null;
@@ -421,7 +406,7 @@ const VoicePanelView: FC<VoicePanelProps> = ({
       }}
     >
       <div ref={anchorRef} className="flex min-w-0 items-center">
-        {/* The pill's status changes while voice runs (a model swap, a load): said, not only shown. */}
+        {/* Status is announced here, not only shown in the pill. */}
         {!composer && (
           <output className="sr-only" aria-live="polite" aria-atomic="true">
             {summary}
@@ -516,7 +501,7 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                 className="size-3.5"
                 aria-hidden="true"
               />
-              {/* The visible role name leads the accessible name, so a spoken "Speak" still finds it. */}
+              {/* Visible name leads the accessible name for voice control. */}
               {t(`voicePanel.roles.${role}`)}
               <span className="sr-only">, {t("voicePanel.back")}</span>
             </button>
@@ -524,7 +509,6 @@ const VoicePanelView: FC<VoicePanelProps> = ({
           </>
         ) : (
           <div className="flex flex-col gap-0.5">
-            {/* Only the role rows are the list: the switch and the download notice below are not items. */}
             <div role="list" className="flex flex-col gap-0.5">
             {ROLES.map((r) => {
               const row = rows[r];
@@ -543,13 +527,13 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                       {t(`voicePanel.roles.${r}`)}
                     </span>
                     <span
-                      // Two lines, not an ellipsis: at 320 px one line held about 10 characters ("Earshot V…").
+                      // Two lines, not an ellipsis: one line held ~10 characters at 320 px.
                       className="line-clamp-2 min-w-0 flex-1 leading-tight [overflow-wrap:anywhere]"
                       title={row.title ?? row.name}
                     >
                       {row.name}
                     </span>
-                    {/* The title is hover-only: keyboard and screen-reader users get the error or hint here. */}
+                    {/* Title is hover-only; this sr-only copy is what screen readers read. */}
                     {row.title ? <span className="sr-only">{row.title}</span> : null}
                     {row.state && (
                       <StateTag

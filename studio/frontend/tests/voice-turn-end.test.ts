@@ -34,7 +34,6 @@ test("an answer counts only for the speech it was asked about", async () => {
   assert.equal(asked.length, 1, "one question per pause");
   assert.equal(check.finished("0:10"), false, "no answer yet is not a yes");
   const first = reply;
-  // The speaker went on: the first question is dropped, and its late yes ends nothing.
   check.ask("0:25", wav);
   assert.equal(asked[0].aborted, true);
   first(true);
@@ -66,11 +65,9 @@ test("a failed or unfinished answer leaves the silence wait in charge", async ()
 
 test("the clip keeps the quiet end of the last word and none of the silence after it", async () => {
   const { turnClipSpan } = await load(() => Promise.resolve(json({})));
-  //               0      1      2     3     4      5      6      7
   const voiced = [false, false, true, true, false, false, false, false];
   const notSilent = [false, true, true, true, true, false, false, false];
   assert.deepEqual(turnClipSpan(voiced, notSilent), { start: 1, end: 4 });
-  // A noise after the pause is not part of the utterance.
   assert.deepEqual(
     turnClipSpan(voiced, [false, true, true, true, true, false, true, false]),
     { start: 1, end: 4 },
@@ -84,11 +81,10 @@ test("a transcript reads cut off on an open last word, or on a missing mark from
   for (const text of ["I went to the store and", "I went to the store and.", "Because", "so I asked the"]) {
     assert.equal(readsUnfinished(text, false), true, text);
   }
-  // Everyday endings are not open ones, and a question mark settles it.
   for (const text of ["How are you?", "Yes, I do.", "I think so.", "What is it about?", "Chips or?", "Come on!"]) {
     assert.equal(readsUnfinished(text, true), false, text);
   }
-  // No closing mark means something only once this transcriber has written one.
+  // A missing closing mark means nothing unless this transcriber writes them.
   assert.equal(readsUnfinished("I was wondering whether you could", true), true);
   assert.equal(readsUnfinished("I was wondering whether you could", false), false);
   assert.equal(readsUnfinished("i want to go home", false), false);

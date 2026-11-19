@@ -8,7 +8,6 @@ type MessageLike = {
   content: readonly { type: string; text?: string }[];
 };
 
-/** The turn the orb is answering: its words, as the transcriber heard them (or as typed). */
 export function lastUserUtterance(messages: readonly MessageLike[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
@@ -23,8 +22,6 @@ export function lastUserUtterance(messages: readonly MessageLike[]): string {
   return "";
 }
 
-// From the transcript to the end of the reply: the words being answered stay on screen, so a
-// mishearing shows before the answer to it does. Listening clears it for the next turn.
 const ANSWERING: ReadonlySet<VoiceOrbState> = new Set([
   "thinking",
   "generating",

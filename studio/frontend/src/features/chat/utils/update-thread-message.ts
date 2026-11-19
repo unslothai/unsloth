@@ -32,7 +32,7 @@ function withoutServerOwnership(record: MessageRecord): MessageRecord {
   return Object.keys(kept).length > 0 ? { ...rest, metadata: kept } : rest;
 }
 
-// An edit rewrites the text a heard cut's offset points into: the cut no longer means anything.
+// An edit rewrites the text the heard cut's offset points into.
 function withoutVoiceHeard<T>(metadata: T): T {
   const custom = (metadata as { custom?: Record<string, unknown> } | null | undefined)?.custom;
   if (!custom || !("voiceHeard" in custom)) return metadata;
@@ -269,7 +269,6 @@ export async function updateThreadMessage(args: {
 
   const originalExport = currentExport;
   thread.import({ ...currentExport, messages: updatedMessages });
-  // A changed reply voids a cut (withoutVoiceHeard above); an unchanged save keeps one not yet saved.
   const pendingCut = pendingHeardCut(messageId);
   if (contentChanged) clearPendingHeardCut(messageId);
 
@@ -285,7 +284,6 @@ export async function updateThreadMessage(args: {
       );
     } catch (e) {
       thread.import(originalExport);
-      // The old text is back, and with it the cut that pointed into it.
       if (contentChanged && pendingCut && !pendingHeardCut(messageId)) setPendingHeardCut(messageId, pendingCut);
       console.error("Backend sync failed for message update. Rolling back UI.", e);
       throw e;
@@ -295,10 +293,7 @@ export async function updateThreadMessage(args: {
   return (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [];
 }
 
-/**
- * Sets or clears the reply's heard cut (`metadata.custom.voiceHeard`) through the edit save path,
- * which detaches a finished generation row as a user edit does. A refused save rolls the thread back.
- */
+/** Sets or clears the cut via the edit save path, which detaches a finished row. */
 export async function setThreadMessageVoiceHeard(args: {
   thread: ThreadImportExport;
   messageId: string;
@@ -329,8 +324,7 @@ export async function setThreadMessageVoiceHeard(args: {
       { allowGenerationEdit: true },
     );
   } catch (error) {
-    // Put back only the cut, and only while the reply and its cut are still what this save set: an edit or
-    // a newer cut made during the save stays.
+    // Restores only the cut, and only if no edit or newer cut landed meanwhile.
     const now = thread.export();
     const before = (metadata.custom as Record<string, unknown> | undefined)?.voiceHeard;
     let rolledBack = false;

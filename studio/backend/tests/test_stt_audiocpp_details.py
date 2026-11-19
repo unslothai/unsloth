@@ -307,7 +307,6 @@ def test_moss_looping_on_a_short_clip_is_no_words_not_a_failure(
     monkeypatch.setattr(srv.AudioCppServer, "post_json", post_json)
     monkeypatch.setattr(stt, "_wav_rate_and_duration", lambda _path: (16000, duration))
     if heard is None:
-        # A long file ran out of a budget sized for its speech: a real failure, still reported.
         with pytest.raises(stt.SttEngineUnavailableError):
             side.transcribe_path(source, MOSS, None)
     else:
@@ -318,7 +317,6 @@ def test_moss_looping_on_a_short_clip_is_no_words_not_a_failure(
 def test_moss_reads_the_source_in_place_with_speakers(fake, side, source):
     result = side.transcribe_path(source, MOSS, None, timestamps = True)
     (body,) = fake.bodies
-    # A 2 s clip: only a budget for its length.
     assert body["audio"] == str(source) and body["options"] == {"max_tokens": 176}
     assert source.exists()
     assert result["text"] == "Hello there. General Kenobi." and result["duration"] == 2.0
@@ -334,7 +332,7 @@ def test_moss_reads_the_source_in_place_with_speakers(fake, side, source):
 @pytest.mark.parametrize(
     ("duration", "expected"),
     [
-        (2.0, 176),  # a voice clip: twice its speech rate plus slack
+        (2.0, 176),
         (60.0, 1568),
         (420.0, None),
         (900.0, 10800),
@@ -676,9 +674,6 @@ def test_a_device_less_load_follows_the_saved_voice_setting(fake, side, monkeypa
 
 
 def test_a_clip_cancelled_while_it_waits_its_turn_leaves_the_runtime_running(fake, side, source):
-    """Voice mode drops a speculative clip when the speaker goes on. One cancelled while it waits
-    behind another clip sends nothing and leaves the server up, so the next clip, the real end of
-    the turn, pays no model load."""
     side.transcribe_path(source, QWEN3, None)
     server, lock = side._server, side._lock
     waiting, cancel, raised = threading.Event(), threading.Event(), []
@@ -697,11 +692,11 @@ def test_a_clip_cancelled_while_it_waits_its_turn_leaves_the_runtime_running(fak
     def queued():
         try:
             side.transcribe_path(source, QWEN3, None, cancel_event = cancel)
-        except Exception as exc:  # noqa: BLE001 - the test reads what was raised
+        except Exception as exc:  # noqa: BLE001 - asserted below
             raised.append(exc)
 
     side._lock = Lock()
-    with lock:  # another clip holds the runtime
+    with lock:
         thread = threading.Thread(target = queued)
         thread.start()
         assert waiting.wait(10)

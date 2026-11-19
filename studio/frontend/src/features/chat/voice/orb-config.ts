@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Theme tokens, not fixed greys: a flat mid-grey reads as disabled chrome on light and a hole on dark.
 export const ORB_IDLE_GRADIENT =
   "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
 export const ORB_IDLE_SHADOW = "0 0 26px 6px var(--voice-orb-idle-glow)";
 
-// Resting: nothing to hear yet, or the user has to act.
 const IDLE_BREATHE = {
   gradient: ORB_IDLE_GRADIENT,
   animation: "voice-orb-breathe",
@@ -14,7 +12,6 @@ const IDLE_BREATHE = {
   shadow: ORB_IDLE_SHADOW,
 } as const;
 
-// Busy without the user: a model loading, switching or downloading.
 const GREY_PULSE = {
   gradient: "radial-gradient(circle at 40% 35%, #94a3b8, #475569)",
   animation: "voice-orb-pulse",
@@ -68,7 +65,6 @@ export const orbConfig = {
     shadow: "0 0 32px 8px rgba(56,189,248,0.35)",
   },
   paused: { ...IDLE_BREATHE, duration: "6s" },
-  // Not listening until a model is ready: drawn as loading, or as waiting when the user has to act.
   switching: GREY_PULSE,
   downloading: GREY_PULSE,
   needsDownload: IDLE_BREATHE,

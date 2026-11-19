@@ -1,41 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** A clip the server holds (POST /audio/inputs) and what it says, to clone the voice from. */
 export type VoiceReference = { inputId: string; text: string };
 
-/**
- * Spoken once per session, never played, and cloned by every sentence after it. A filler such as
- * "Let me see." is too short to clone from: mimo heard it garbled, and the long sentences cloned
- * from it drifted to other speakers.
- */
+/** Spoken once per session, never played. Long on purpose: short fillers clone badly. */
 export const VOICE_REFERENCE_TEXT =
   "Hi there. I'll keep this same voice for our whole conversation, so it's easy to follow along.";
 
-/** A drawn reference outside this range is a broken clip, not a voice to keep. */
+/** Seconds: a drawn clip outside this range is broken. */
 export const VOICE_REFERENCE_SECONDS = { min: 2, max: 20 } as const;
 
 type Pin = { model: string; ready: Promise<VoiceReference | null> };
 let pin: Pin | null = null;
 let generation = 0;
 
-/** Forget the session's voice: the next sentence draws a new one. */
 export function clearVoicePin(): void {
   pin = null;
   generation += 1;
 }
 
-/** Changes whenever the session voice is dropped, so audio cached in the old voice is not reused. */
+/** Bumps when the session voice drops, so audio cached in the old voice is not reused. */
 export function voicePinGeneration(): number {
   return generation;
 }
 
-/**
- * A voice with no preset speaker (OmniVoice, Breeze, MOSS-Nano, ...) draws a new speaker on every
- * request, and voice mode speaks sentence by sentence. The first sentence for a model draws one
- * reference clip and every sentence, that one included, clones it. Sentences that arrive while it
- * is drawn wait for it. A draw that fails speaks the sentence as drawn and leaves the next one to try.
- */
+/** Voices with no preset speaker change on every request, so each sentence clones one clip; a failed draw speaks unpinned. */
 export async function withVoicePin<T>(
   model: string,
   speak: (reference: VoiceReference | null) => Promise<T>,
@@ -54,13 +43,12 @@ export async function withVoicePin<T>(
   try {
     return await speak(reference);
   } catch (error) {
-    // The clip may be gone or refused: the caller's retry draws a new voice.
+    // A refused clip is dropped, so the retry draws a new one.
     if (pin === held) pin = null;
     throw error;
   }
 }
 
-/** Seconds of audio in a PCM WAV, or null when the header is not one. */
 export function wavSeconds(bytes: ArrayBuffer): number | null {
   const view = new DataView(bytes);
   const tag = (at: number) =>

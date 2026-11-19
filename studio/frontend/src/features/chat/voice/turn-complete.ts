@@ -38,21 +38,15 @@ export function isBackchannel(text: string): boolean {
   return words.length > 0 && words.every((w) => BACKCHANNEL.has(w) || /^(m+|h+m+|u+h+|a+h+|o+h+)$/.test(w));
 }
 
-// Letters and single spaces only, lowercased: how a whole transcript is matched against a phrase list.
 const plainSpeech = (t: string) => t.toLowerCase().replace(/[^\p{L}\s]/gu, " ").trim().replace(/\s+/g, " ");
 
-// Said over a reply to show the listener is following, not to take the turn.
 const ACKNOWLEDGEMENTS = new Set([
   "okay", "ok", "right", "sure", "alright", "all right", "i see", "got it", "wow", "really", "cool",
   "nice", "true", "interesting", "makes sense", "go on",
 ]);
-// These are answers when the reply has just asked something.
 const ANSWER_WORDS = new Set(["yes", "yeah", "yep"]);
 
-/**
- * Whether what was said over `reply` only acknowledges it, so the reply carries on. The whole
- * transcript must be the phrase: "okay, stop" is a request.
- */
+/** Whole transcript only: "okay, stop" is a request. */
 export function isAcknowledgement(transcript: string, reply: string): boolean {
   const said = plainSpeech(transcript);
   if (ACKNOWLEDGEMENTS.has(said)) return true;

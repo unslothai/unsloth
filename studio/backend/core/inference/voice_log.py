@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 MODELS = ("judge", "filler", "interject")
-# The one bar a turn counts as finished at; /voice/judge answers ``finished`` with it.
+# /voice/judge reports ``finished`` against this bar.
 JUDGE_SEND_THRESHOLD = 0.65
 
 # A verdict is wrong when the outcome contradicts it. "restart" has no derivable error signal yet
@@ -37,8 +37,6 @@ ERROR_KINDS: dict[str, dict[tuple[str, str], str]] = {
 _LOCK = threading.Lock()
 # (account, thread) deleted in this process: a decision still in flight then must not log its words again.
 _DELETED: set[tuple[str, str]] = set()
-# Row id -> the account that logged it, for the log file named: an outcome report looks its row up
-# here and not by reading the whole log again. Dropped whenever rows are removed.
 _accounts: Optional[tuple[Path, dict[str, Optional[str]]]] = None
 
 
@@ -99,12 +97,10 @@ TRACE_DIR_ENV = "UNSLOTH_VAD_DEBUG_DIR"
 
 
 def trace_enabled() -> bool:
-    """Whether the loop's events are recorded: only when the VAD debug folder is set."""
     return bool(os.environ.get(TRACE_DIR_ENV))
 
 
 def append_trace(event: str, detail: Optional[dict], t: Optional[float]) -> bool:
-    """Append one loop event to ``voice-trace.jsonl`` beside the VAD debug clips; False without that folder."""
     folder = os.environ.get(TRACE_DIR_ENV)
     if not folder:
         return False

@@ -417,10 +417,7 @@ def place_locked(
 
 
 def stamp_newest(path: Path) -> None:
-    """Moves a just-saved file's mtime 1 us past every file this process stamped before it, when it
-    is not already later. Galleries sort by mtime and ids are random: saves inside one filesystem
-    clock tick (Windows ~15.6 ms, Linux's coarse clock a few ms) tied, so a newer item could list
-    below an older one and a count cap could delete it first."""
+    """Bump 1 us past earlier stamps: ties let a cap drop the newer save."""
     global _last_stamp_ns
     try:
         stat = path.stat()

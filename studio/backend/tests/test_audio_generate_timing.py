@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""/audio/generate reports what a request spent before and during synthesis."""
 
 import asyncio
 import base64
@@ -60,7 +59,6 @@ def test_generate_reports_resolution_and_synthesis_time(monkeypatch):
     body = _generate(_payload())
 
     assert set(body["timing"]) == {"resolve_ms", "synth_ms"}
-    # Each stage is timed on its own: the slow switch counts as resolution, the model as synthesis.
     assert body["timing"]["resolve_ms"] >= 25
     assert body["timing"]["synth_ms"] >= 25
 

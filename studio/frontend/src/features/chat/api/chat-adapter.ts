@@ -1882,11 +1882,10 @@ function pruneOutboundHistory(
   includeReasoningContent: boolean,
 ): RunMessage[] {
   const history = [...messages];
-  // Cut first: a reply interrupted before any of it was heard is an abandoned turn.
+  // Judged on the heard cut, not the full reply.
   const abandoned = history.map((message) =>
     isAbandonedAssistantTurn(withHeardCut(message), includeReasoningContent),
   );
-  // Abandoned only by the cut: the user barged in before hearing any of it, so the question still stands.
   const heardNothing = history.map(
     (message, index) => abandoned[index] && !isAbandonedAssistantTurn(message, includeReasoningContent),
   );
@@ -1908,8 +1907,6 @@ function pruneOutboundHistory(
         const last = surviving.at(-1);
         if (last && last.role === "user") {
           surviving.pop();
-          // A reply the user heard none of leaves its question standing: it joins the next prompt, which keeps
-          // user and assistant turns alternating. A refusal's prompt, or a Stop's, is dropped as before.
           const next = refused || !heardNothing[index] ? -1 : nextSurvivor(history, abandoned, index);
           if (next >= 0 && history[next].role === "user") history[next] = joinedPrompts(last, history[next]);
         }
@@ -1928,7 +1925,6 @@ function nextSurvivor(history: readonly RunMessage[], abandoned: readonly boolea
   return -1;
 }
 
-/** Two prompts as one user turn: the earlier one's parts and attachments first. */
 function joinedPrompts(first: RunMessage, next: RunMessage): RunMessage {
   const attachments = [
     ...(("attachments" in first && first.attachments) || []),
@@ -2074,7 +2070,6 @@ function latestUserAudioClips(messages: RunMessages, skipVoiceRecording = false)
 
     if ("attachments" in message) {
       for (const attachment of message.attachments ?? []) {
-        // The voice loop's own recording (voiceTurnAttachment); an uploaded file is never skipped.
         if (skipVoiceRecording && (attachment as { name?: string }).name === "voice.wav") continue;
         for (const part of attachment.content ?? []) {
           const base64 = extractAudioPartBase64(part);
@@ -2276,7 +2271,6 @@ export async function buildLocalTokenCountHistory(
     resolveProjectInstructions(projectId),
     resolveAgentsMd(projectId),
   ]);
-  // While voice runs, the spoken-reply instruction picked in Settings > Voice > Voice mode goes last.
   const combinedSystemPrompt = withVoiceReplyShaping(
     composeChatInstructions({
       agentsMd,
@@ -2296,7 +2290,6 @@ export async function buildLocalTokenCountHistory(
   };
 }
 
-/** The Thinking setting as this turn sends it: voice mode has its own, off unless asked for. */
 function turnReasoning(enabled: boolean): boolean {
   return reasoningForTurn({
     enabled,
@@ -2574,24 +2567,22 @@ export async function resolveChatInstructions(
     projectInstructions,
     systemPrompt: safeSystemPrompt,
   });
-  // Model-bound only, like AGENTS.md: a copy or export keeps the chat's own instructions.
+  // Model-bound only, like AGENTS.md; copies and exports keep the chat's own.
   return opts?.agentsMd ? withVoiceReplyShaping(instructions) : instructions;
 }
 
-/** The voice instruction goes last, on what the model is sent and on its token count alike. */
+/** Goes last, in what is sent and in the token count alike. */
 function withVoiceReplyShaping(instructions: string): string {
-  // Active only: a typed message while the pill is up for choosing models is an ordinary chat turn.
   if (getVoiceMode() !== "active") return instructions;
   const { replyInstruction, replyInstructionCustom } = useVoiceSettingsStore.getState();
   return withReplyInstruction(instructions, replyInstruction, replyInstructionCustom);
 }
 
-/** Voice mode with a short-reply instruction (any but "none"): no seed, and the lowest reasoning effort. */
 function voiceReplyShaping(): boolean {
   return getVoiceMode() === "active" && useVoiceSettingsStore.getState().replyInstruction !== "none";
 }
 
-// Speech waits for the first non-thinking token, so voice asks for the model's lowest level.
+// Speech waits for the first non-thinking token, so use the lowest level.
 function requestReasoningEffort<T extends string>(effort: T, levels: readonly T[]): T {
   return voiceReplyShaping() && levels.length > 0 ? levels[0] : effort;
 }
@@ -7077,8 +7068,6 @@ export function createOpenAIStreamAdapter(
             };
           }
 
-          // The audio-input route returns before Studio's tool loop: with any tool on (project sources and
-          // skills included) a voice turn goes as its transcript, so retrieval and search still run.
           const studioToolsOn =
             supportsTools &&
             (toolsEnabled ||
@@ -8165,7 +8154,7 @@ export function createOpenAIStreamAdapter(
                 spokenAudioChunks.push(spokenAudio);
                 publishVoiceSpokenAudio(resolvedThreadId ?? null, spokenAudio);
               }
-              // The player gets one WAV when the stream ends: a new src mid-stream restarts what is playing.
+              // One WAV, at stream end: a new src mid-stream restarts playback.
               if (Boolean(chunk.choices?.[0]?.finish_reason) && joinSpokenPart()) {
                 replayStateChanged = true;
               }

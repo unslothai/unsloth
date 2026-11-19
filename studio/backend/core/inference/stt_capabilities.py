@@ -114,8 +114,6 @@ def connection_takes_accent_hint(model: Optional[str]) -> bool:
 
 
 def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
-    """``timestamps``: "on_request" | "always" | "unsupported"; ``aligner`` only for "on_request".
-    ``live``: the model can transcribe speech while it is spoken (stt_live)."""
     model = str(model or "").strip()
     result = {
         "engine": None,

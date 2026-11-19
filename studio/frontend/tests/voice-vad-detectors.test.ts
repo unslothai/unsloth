@@ -27,9 +27,7 @@ const load = (status: unknown = {}, ok = true) =>
 
 test("a built-in this install cannot run falls back; a Hub pick that fails does not", () => {
   const vad = load();
-  // An audio runtime older than Earshot still has the Hub detector.
   assert.equal(vad.vadFallback("builtin/earshot-vad"), PULSEVAD);
-  // A saved pick whose weights went away with a runtime update.
   assert.equal(vad.vadFallback("builtin/silero-vad"), "builtin/earshot-vad");
   assert.equal(vad.vadFallback("Builtin/Silero-VAD"), "builtin/earshot-vad");
   assert.equal(vad.vadFallback(PULSEVAD), null);
@@ -40,7 +38,7 @@ test("a clip is held to its detector's own bar, the shorter one for a barge-in p
   const earshot = { utterance_ms: 200, barge_ms: 150 };
   assert.equal(vad.minSpeechMs(earshot, false), 200);
   assert.equal(vad.minSpeechMs(earshot, true), 150);
-  // A server that sends no bars: the Hub detectors', and the probe's is the one its clip can meet.
+  // The probe's shorter bar must fit its ~250 ms clip.
   assert.equal(vad.minSpeechMs(undefined, false), 300);
   assert.equal(vad.minSpeechMs(undefined, true), 200);
 });

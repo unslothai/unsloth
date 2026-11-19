@@ -4,13 +4,11 @@
 import { AUDIO_CPP_REPO } from "@/features/audio/audio-cpp-catalog";
 import { authFetch } from "@/features/auth";
 
-// Earshot ships with Studio and runs on the CPU. Mirrors DEFAULT_VAD_MODEL in vad_audiocpp_sidecar.py.
+// Mirrors DEFAULT_VAD_MODEL in vad_audiocpp_sidecar.py; runs on the CPU.
 export const VOICE_DEFAULT_VAD_MODEL = "builtin/earshot-vad";
-// The Hub detector every supported audio runtime runs.
 const HUB_VAD_MODEL = `${AUDIO_CPP_REPO}/PulseVAD-GGUF`;
 const BUILTIN_PREFIX = "builtin/";
 
-/** A detector that needs no download: it ships with Studio or with the audio runtime. */
 export interface VadDetector {
   id: string;
   label: string;
@@ -19,16 +17,12 @@ export interface VadDetector {
 
 const isBuiltinVad = (id: string) => id.toLowerCase().startsWith(BUILTIN_PREFIX);
 
-/**
- * The detector to use when this install cannot run `pick`: the default for another built-in, the
- * Hub detector for the default (an audio runtime older than Earshot), none for a Hub pick.
- */
+/** Fallback if `pick` cannot run: the Hub detector for the default (older runtimes), else the default; Hub picks get none. */
 export function vadFallback(pick: string): string | null {
   if (!isBuiltinVad(pick)) return null;
   return pick.toLowerCase() === VOICE_DEFAULT_VAD_MODEL ? HUB_VAD_MODEL : VOICE_DEFAULT_VAD_MODEL;
 }
 
-/** The detector's name for display: the server's label, else the id's last part ("Earshot VAD"). */
 export function vadDisplayName(id: string, detectors: readonly VadDetector[] = []): string {
   const known = detectors.find((d) => d.id === id.toLowerCase());
   if (known) return known.label;
@@ -58,16 +52,13 @@ export interface SpeechDetection {
   speech_ms: number;
   sample_rate: number;
   model: string;
-  /** Voiced time this detector needs before a clip counts as speech; absent on older servers. */
   bars?: { utterance_ms: number; barge_ms: number };
 }
 
-// The bars a server that sends none is held to (the Hub detectors'). The barge-in probe holds only
-// ~250 ms of voice, so the full bar failed its first check every time.
+// Hub fallback bars: a barge-in probe holds ~250 ms, so the full bar always failed.
 const VAD_MIN_SPEECH_MS = 300;
 const BARGE_VAD_MIN_SPEECH_MS = 200;
 
-/** Voiced time a clip needs to count as speech: the detector's own bar, the shorter one for a barge-in probe. */
 export function minSpeechMs(bars: SpeechDetection["bars"], barge: boolean): number {
   return barge
     ? (bars?.barge_ms ?? BARGE_VAD_MIN_SPEECH_MS)
@@ -88,7 +79,7 @@ async function detail(response: Response): Promise<string> {
 // A load (or a detect, which loads too) still in flight would restart the detector after an unload.
 const pendingLoads = new Set<Promise<unknown>>();
 
-// 501 and 422 mean this build or model has no VAD: the caller falls back instead of retrying.
+// 501 and 422 mean no VAD here: callers fall back instead of retrying.
 async function assertOk(response: Response): Promise<void> {
   if (response.ok) return;
   const message = await detail(response);

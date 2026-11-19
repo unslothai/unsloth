@@ -3,48 +3,31 @@
 
 import { authFetch } from "@/features/auth";
 
-/**
- * An utterance sent to the transcriber while it is being spoken, so its words come back as they
- * are said and the whole transcript is ready a moment after the speaker stops. The server keeps
- * one session per utterance (POST /audio/stt/live): it answers with a stream of events, and the
- * audio follows in short posts.
- */
 export type LiveTranscript = {
-  /** The next audio, in the order it was heard. */
   feed(samples: Float32Array): void;
-  /**
-   * The speaker stopped: everything that was said. Rejects when the session failed, and the caller
-   * transcribes its recording the usual way instead.
-   */
+  /** Rejects on failure: callers fall back to the recording. */
   finish(): Promise<string>;
-  /** Ends the session without a transcript. */
   drop(): void;
 };
 
 type Fetcher = typeof authFetch;
 
-// Audio is posted in stretches of this length: shorter only adds requests, longer delays the words.
+// Shorter adds requests; longer delays the words.
 const POST_MS = 200;
-// Past this the recording is transcribed the usual way rather than waited for.
 const FINISH_TIMEOUT_MS = 8000;
-// The server's answers to "this model does not do this" and to a build without the route.
+// Statuses meaning no live route on this model or build.
 const REFUSED = new Set([404, 405, 409, 501]);
 
-/** What every transcriber takes: the microphone's own rate (44.1 or 48 kHz) is refused by some. */
+/** Some transcribers refuse the mic's own 44.1 or 48 kHz. */
 const LIVE_SAMPLE_RATE = 16000;
 
-/**
- * Brings a stream of audio down to `to` Hz as it arrives. Each output sample is a windowed-sinc
- * average of the input around it, which removes what the lower rate cannot carry before picking.
- */
 export function createResampler(from: number, to: number): (input: Float32Array) => Float32Array {
   if (from === to) return (input) => input;
   const step = from / to;
-  // Cycles per input sample, a little under the new rate's limit.
+  // Cycles per input sample, under the new rate's limit.
   const cutoff = 0.46 * Math.min(1, to / from);
-  // Eight zero crossings of the sinc on each side.
+  // Kernel half-width: eight sinc zero crossings.
   const half = Math.ceil(8 / (2 * cutoff));
-  // Silence stands in for what came before the first sample.
   let held = new Float32Array(half);
   let at = half;
   return (input) => {
@@ -76,13 +59,11 @@ const tidy = (text: string) => text.replace(/\s+/g, " ").trim();
 const asError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
 export function openLiveTranscript(options: {
-  /** model, engine and language, as the server's route takes them */
+  /** Query keys the server route reads: model, engine, language. */
   params: URLSearchParams;
-  /** The rate of the audio that will be fed. */
   sampleRate: number;
-  /** Everything heard so far, each time more of it arrives. */
+  /** Full text so far, not just the new part. */
   onText?: (text: string) => void;
-  /** The model cannot transcribe live: asking again for it is pointless. */
   onRefused?: () => void;
   fetcher?: Fetcher;
 }): LiveTranscript {
@@ -128,7 +109,7 @@ export function openLiveTranscript(options: {
     pendingSamples = 0;
     const last = ending;
     posting = true;
-    // Never retried: a post that did arrive would be heard twice.
+    // Never retried: a post that arrived would be heard twice.
     void fetcher(
       `/api/inference/audio/stt/live/${id}/audio${last ? "?last=true" : ""}`,
       {
@@ -201,7 +182,7 @@ export function openLiveTranscript(options: {
     if (settled) return;
     const session = id;
     fail(new Error("The live transcript was dropped."));
-    // The closed stream ends the session too; this reaches the server even when a proxy holds the stream open.
+    // Explicit DELETE: a proxy can hold the stream open.
     if (session) {
       void fetcher(`/api/inference/audio/stt/live/${session}`, { method: "DELETE" }, { retryNetworkErrors: false }).catch(() => {});
     }

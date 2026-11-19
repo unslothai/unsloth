@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Phase 3: a cacheable voice prompt. The instruction is fixed text appended last, voice sends no
-// seed and the lowest reasoning effort, and none of it applies outside voice mode.
+// Appended last to keep the prompt prefix cacheable.
 
 import assert from "node:assert/strict";
 import test from "node:test";

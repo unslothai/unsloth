@@ -4,7 +4,6 @@
 import { useEffect, useState } from "react";
 import { fetchVadDetectors, type VadDetector } from "./vad-client";
 
-/** The detectors that need no download, as the server lists them; empty until it answers. */
 export function useVadDetectors(): VadDetector[] {
   const [detectors, setDetectors] = useState<VadDetector[]>([]);
   useEffect(() => {

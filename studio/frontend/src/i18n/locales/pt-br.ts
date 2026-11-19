@@ -846,7 +846,6 @@ export const ptBR = {
     holdToStopTip: "{label} · segure para parar",
     approvalGone: "Esta solicitação não está mais aguardando resposta.",
     approvalRetry: "Não foi possível enviar sua decisão. Tente novamente.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} enviado",
       arcWaiting: "{p} aguardando",

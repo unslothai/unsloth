@@ -846,7 +846,6 @@ export const ru = {
     holdToStopTip: "{label} · удерживайте, чтобы остановить",
     approvalGone: "Этот запрос больше не ждёт ответа.",
     approvalRetry: "Не удалось отправить ваше решение. Попробуйте ещё раз.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} отправлено",
       arcWaiting: "{p} ждёт",

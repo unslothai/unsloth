@@ -1,14 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Transcription of speech while it is being spoken.
-
-audio.cpp takes raw PCM on a chunked request body and answers on the same connection with the words
-it has heard so far (POST /v1/audio/transcriptions/live, for a model its server runs in streaming
-mode). One LiveTranscript is one such request: feed() it audio as it is captured, finish() when the
-speaker stops, and read events() for the text.
-"""
-
 from __future__ import annotations
 
 import http.client
@@ -20,7 +12,7 @@ from urllib.parse import urlencode
 
 _LIVE_PATH = "/v1/audio/transcriptions/live"
 _CONNECT_TIMEOUT_SECONDS = 5.0
-# The runtime gives up on a body that goes quiet for 30 s; nothing useful arrives after that.
+# The runtime drops a body that goes quiet for 30 s.
 _IO_TIMEOUT_SECONDS = 45.0
 _ERROR_BODY_BYTES = 4096
 
@@ -30,7 +22,6 @@ class LiveTranscriptError(RuntimeError):
 
 
 def family_streams(family: Optional[str]) -> bool:
-    """Whether the installed runtime transcribes this family live: its own spec says so."""
     from core.inference.audio_cpp_models import runtime_spec
 
     spec = runtime_spec(family or "")
@@ -40,7 +31,7 @@ def family_streams(family: Optional[str]) -> bool:
 
 
 class LiveTranscript:
-    """One utterance on one connection. feed() and finish() belong to one thread, events() to another."""
+    """One utterance per connection. feed() and finish() on one thread; events() on another."""
 
     def __init__(
         self,
@@ -61,8 +52,7 @@ class LiveTranscript:
         self._finished = False
         self._send_lock = threading.Lock()
         try:
-            # A raw socket, not http.client: its connection object drops the socket once the
-            # reply's headers are read, and the audio still has to follow them.
+            # Raw socket: http.client drops the stream after the headers.
             self._sock = socket.create_connection(
                 ("127.0.0.1", port), timeout = _CONNECT_TIMEOUT_SECONDS
             )
@@ -80,13 +70,11 @@ class LiveTranscript:
             raise LiveTranscriptError("The audio runtime did not take a live session.") from exc
 
     def feed(self, pcm: bytes) -> None:
-        """Mono 16-bit little-endian samples at the session's rate, in the order they were heard."""
         if not pcm:
             return
         self._send(b"%x\r\n" % len(pcm) + pcm + b"\r\n")
 
     def finish(self) -> None:
-        """The speaker stopped: the runtime transcribes what is left and ends the reply."""
         with self._send_lock:
             if self._finished:
                 return
@@ -103,7 +91,6 @@ class LiveTranscript:
                 raise LiveTranscriptError("The audio runtime closed the live session.") from exc
 
     def events(self) -> Iterator[dict]:
-        """{"type": "delta", "text": new words}, then one {"type": "done", "text": all of it}."""
         response = http.client.HTTPResponse(self._sock)
         try:
             response.begin()
@@ -144,7 +131,7 @@ class LiveTranscript:
             response.close()
 
     def close(self) -> None:
-        """Ends the session now. Without finish() first the runtime discards what it heard."""
+        """Ends now. Call finish() first, or the runtime discards the audio."""
         if self._closed.is_set():
             return
         self._closed.set()

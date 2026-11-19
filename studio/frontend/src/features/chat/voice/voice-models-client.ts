@@ -18,12 +18,10 @@ const TIMEOUT_MS = 400;
 // Asked while the chat model generates on the same GPU, where a cold call took 500 ms.
 const INTERJECT_TIMEOUT_MS = 1500;
 
-// A 503 means the server has no such model (built-in classifiers not installed): asking again every
-// turn only fills the console with errors, so that path rests a minute.
+// A 503 means the model is not installed; rest that path.
 const UNAVAILABLE_REST_MS = 60_000;
 const unavailableUntil = new Map<string, number>();
 
-/** A decision model switch can make a resting path available again. */
 export function clearVoiceModelRest(): void {
   unavailableUntil.clear();
 }
@@ -88,7 +86,7 @@ export function reportLayaOutcome(
 
 export interface JudgeAnswer {
   p: number;
-  /** The server's verdict: the bar lives there, beside the log that records it. */
+  /** Verdict from the server, which owns the bar (threshold). */
   finished: boolean;
   id: string | null;
 }

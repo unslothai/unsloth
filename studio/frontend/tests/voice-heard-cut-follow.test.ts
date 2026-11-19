@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A reply still finishing on the server is written back by its run follow from a metadata copy taken
-// before the user cut in. That write replaced the saved heard cut, in the thread and in the database,
-// so the model heard the whole reply again from the turn after next.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -33,7 +29,6 @@ test("the open reply's cut wins over the one an older copy carries", () => {
 test("a cut the user cleared with Use full reply is not written back from an older copy", () => {
   const stale = { stopReason: "stop", voiceHeard: cut };
   assert.deepEqual(keepVoiceHeard(stale, {}), { stopReason: "stop" });
-  // No open copy to ask: the writer's own stands.
   assert.equal(keepVoiceHeard(stale, undefined), stale);
 });
 

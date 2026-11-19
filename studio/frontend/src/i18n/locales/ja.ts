@@ -847,7 +847,6 @@ export const ja = {
     holdToStopTip: "{label} · 長押しで停止",
     approvalGone: "このリクエストはもう回答を待っていません。",
     approvalRetry: "判断を送信できませんでした。もう一度お試しください。",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} 送信",
       arcWaiting: "{p} 待機",

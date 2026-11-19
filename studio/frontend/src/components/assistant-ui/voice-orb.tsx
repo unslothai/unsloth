@@ -67,7 +67,6 @@ const DEBOSS_BOX = "0 1px 0.5px rgba(255,255,255,0.22), 0 -1px 1.5px rgba(0,0,0,
 
 // A CSS keyframe, not a scripted tween: scripted dots over the pulsing body dropped frames in the desktop webview.
 const Dots: FC = () => (
-  // voice-orb-dots: a loading signal, so reduced motion slows it (index.css) rather than freezing it.
   <div className="voice-orb-dots" style={{ display: "flex", alignItems: "center", gap: 9 }}>
     {[0, 1, 2].map((i) => (
       <span
@@ -125,7 +124,7 @@ function easeBands(raw: Float32Array, eased: Float32Array, dtMs: number): void {
 
 let blobLevel = 0;
 
-// Mirrors index.css: the app's Reduce motion setting wins over the OS one either way.
+// Mirrors index.css: the app's Reduce motion setting beats the OS one.
 function reducedMotion(query: MediaQueryList | undefined): boolean {
   const html = document.documentElement.classList;
   if (html.contains("force-reduced-motion")) return true;
@@ -155,8 +154,6 @@ function useBlobClip(
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
       if (now - last < BLOB_FRAME_MS) return;
-      // Reduced motion keeps the still circle; the state label and colour still say who is talking.
-      // Not rendered (chat hidden off-route): no frame to draw.
       if (reducedMotion(reduce) || el.getClientRects().length === 0) {
         last = Number.NEGATIVE_INFINITY;
         el.style.clipPath = plain;
@@ -275,7 +272,6 @@ const VadRipple: FC = () => {
   );
 };
 
-// For glyphs drawn to fill their box rather than sized by a size prop.
 const SizedGlyph: FC<{ children: React.ReactNode }> = ({ children }) => (
   <span style={{ color: HOLE, filter: DEBOSS, display: "grid", width: 46, height: 46 }}>{children}</span>
 );
@@ -286,7 +282,7 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   if (icon === "brain") return <SizedGlyph><BulbIcon className="h-full w-full" viewBox="-80 -80 1184 1184" /></SizedGlyph>;
   if (icon === "spinner")
     return (
-      // A CSS spin, not a motion tween: reduced motion slows .animate-spin (index.css) where it stops a tween dead.
+      // CSS spin: reduced motion slows it, where a tween would stop dead.
       <div className="grid animate-spin place-items-center [animation-duration:1.1s]">
         <Loader2Icon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
       </div>
@@ -558,7 +554,6 @@ function latestDecision(d: VoiceDecisions, t: Translate): LatestDecision | undef
         }),
         quote: false,
       },
-    // VAD and STT are names, not words: they stay as they are in every language.
     d.vad && {
       at: d.vad.at,
       tag: "vad",
@@ -578,8 +573,6 @@ function latestDecision(d: VoiceDecisions, t: Translate): LatestDecision | undef
     .sort((a, b) => b.at - a.at)[0];
 }
 
-// What the transcriber heard, under the status while it is answered: a voice turn otherwise gives
-// no sign of a mishearing until the reply to it.
 const HeardCaption: FC<{ text: string }> = ({ text }) => (
   <div className="flex h-9 items-center justify-center">
     <AnimatePresence mode="wait">
@@ -855,7 +848,7 @@ export const VoiceOrb: FC = () => {
           "transition-opacity duration-200 ease-out will-change-[opacity]",
           showOverlay ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
         )}
-        // Faded out is not gone: inert keeps its buttons out of the tab order and its status unannounced.
+        // Faded out, not gone: inert keeps buttons out of tab order and status silent.
         inert={!showOverlay}
         ref={rootRef}
       >
@@ -880,7 +873,7 @@ export const VoiceOrb: FC = () => {
                 {/* Live caption: names the current state so the color never needs a
                 legend. Studio heading font (Hellix / Space Grotesk) to match chrome. */}
                 <div className="flex h-5 items-center gap-2">
-                  {/* The region itself is never re-keyed, so each new state is announced. */}
+                  {/* Region is never re-keyed, so each state change is announced. */}
                   <span role="status" className="flex items-center">
                   <AnimatePresence mode="wait">
                     {meta && (
@@ -890,7 +883,7 @@ export const VoiceOrb: FC = () => {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -3 }}
                         transition={{ duration: 0.09 }}
-                        // Spaced capitals suit Latin; spacing pulls apart joined (Arabic, Persian) and stacked (Devanagari, Thai) letters.
+                        // Letter spacing breaks joined and stacked scripts; reset it for them.
                         className="text-ui-13 font-medium uppercase tracking-[0.28em] text-foreground/55 [&:is(:lang(ar),:lang(fa),:lang(hi),:lang(th))]:tracking-normal"
                         style={{ fontFamily: "var(--font-heading)" }}
                       >

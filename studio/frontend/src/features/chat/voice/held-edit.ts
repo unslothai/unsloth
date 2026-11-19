@@ -6,7 +6,6 @@ export type HeldEditDeps = {
   /** The composer's text, read only when a decision is due, never per keystroke. */
   readBox: () => string;
   onChange?: (owned: boolean) => void;
-  /** The user emptied the box instead of sending: whatever the edit held is dropped. */
   onCleared?: () => void;
   trace?: (event: string, data: Record<string, unknown>) => void;
 };

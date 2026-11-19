@@ -110,14 +110,11 @@ const MAX_UTTERANCE_MS = 30000;
 const NO_SPEECH_TIMEOUT_MS = 8000;
 const MIN_SPEECH_MS = 350;
 const ZERO_RUN_TRACE_MS = 200;
-// How long the capture context may take to start before voice mode says audio is blocked.
 const AUDIO_START_TIMEOUT_MS = 3000;
 const AUDIO_NOT_STARTED = "AudioNotStarted";
 // Audio kept from before a barge-in fires, so the first word of what cut in still reaches STT.
 const BARGE_PREROLL_MS = 600;
-// Held while the reply plays so a barge-in keeps the words before the gate fired (bargeOnset).
 const BARGE_LOOKBACK_MS = 2500;
-// A pause inside an interruption ("Wait, stop. Make it ...") is still the same interruption.
 const BARGE_GAP_MS = 350;
 const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
@@ -165,11 +162,10 @@ function isHallucinatedTranscript(text: string): boolean {
 }
 
 let heldTurn: { text: string; at: number; turnId: string | null } | null = null;
-// Not randomUUID alone: Studio on a LAN address is not a secure context.
+// randomUUID alone fails on LAN addresses (not a secure context).
 const newTurnId = (): string =>
   globalThis.crypto?.randomUUID?.() ?? `t${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-// The fragment cut into the reply: the next session keeps listening as that barge-in,
-// not as the paused reply's barge gate, which never records and never times out.
+// Resumes as a barge-in; the paused reply's gate never records or times out.
 let heldFromBarge = false;
 // The last transcript this loop put in the composer: the re-arm clears only that, never a typed draft.
 let voiceBoxText = "";
@@ -211,7 +207,7 @@ let heldEpoch = 0;
 
 let micMuted = false;
 
-// A second listen() cancels the older one; an orphan would hold the mic and leave the loop deaf.
+// A new listen() cancels the old one, or an orphan holds the mic.
 let liveSession: { cancel: () => void; reacquire: (reason: string) => void } | null = null;
 export function setMicMuted(muted: boolean): void {
   micMuted = muted;
@@ -260,13 +256,12 @@ function settleFinished(realSpeech: boolean): void {
   reportLayaOutcome(f.id, realSpeech ? "continued_quickly" : "sent", { gap_ms: gapMs });
 }
 
-// The transcriber that has written a closing mark: only then does a missing one mean anything.
+// Missing punctuation means something only for a punctuating transcriber.
 let punctuatingStt: string | null = null;
 const sttKey = (modelId: string | undefined) => modelId ?? "";
 const readsCutOff = (text: string, modelId: string | undefined) =>
   readsUnfinished(text, punctuatingStt === sttKey(modelId));
 
-// soundedP: Smart Turn's finished probability, which the judge must also agree with (fuseTurn); null asks the judge alone.
 async function turnUnfinished(
   text: string,
   modelId: string | undefined,
@@ -274,7 +269,6 @@ async function turnUnfinished(
   judgeBar: number = TURN_THRESHOLDS.text,
 ): Promise<boolean> {
   const r = await judgeTurnComplete(text);
-  // No decision model to ask: a transcript that reads cut off is still held for the rest.
   if (r === null) return readsCutOff(text, modelId);
   const unfinished =
     soundedP === null ? !r.finished : fuseTurn({ pText: r.p, pAudio: soundedP }, { text: judgeBar, audio: TURN_THRESHOLDS.audio }) !== "confirmed";
@@ -296,24 +290,20 @@ export function voiceUtterancePending(): boolean {
 
 registerVoiceSessionEnd(() => liveSession?.cancel());
 
-// The recorded speech of the turn, kept only while the chat model hears audio (voiceHearsAudio).
 const turnAudio = createTurnAudio();
 
 export function takeVoiceTurnAudio(): string | null {
   return turnAudio.take();
 }
 
-/** A queued utterance keeps its speech for the turn it is sent with. */
 export function parkVoiceTurnAudio(): void {
   turnAudio.park();
 }
 
-/** An ignored utterance drops only its own speech. */
 export function dropVoiceUtteranceAudio(): void {
   turnAudio.dropCurrent();
 }
 
-/** Drop a fragment waiting for its continuation: a thread switch or voice going off. */
 export function clearHeldTurn(): void {
   turnAudio.clear();
   heldEpoch += 1;
@@ -322,7 +312,7 @@ export function clearHeldTurn(): void {
   heldEdit.reset();
 }
 
-// Set once by the voice engine before any listen(); the loop's state is module-wide, so its ports are too.
+// Set once before any listen(); the loop's state is module-wide.
 let configuredPorts: VoiceLoopPorts | null = null;
 export function setVoiceLoopPorts(next: VoiceLoopPorts): void {
   configuredPorts = next;
@@ -340,7 +330,6 @@ export function registerComposerTextReader(read: (() => string) | null): void {
 const heldEdit = createHeldEdit({
   readBox: () => readComposerText(),
   onChange: (owned) => configuredPorts?.setHeldForEdit(owned),
-  // The speech kept for that draft goes with it, not into the next turn.
   onCleared: () => turnAudio.clear(),
   trace: voiceTrace,
 });
@@ -400,12 +389,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
 
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
-    // getUserMedia answered: a NotAllowedError after this is not a microphone permission.
+    // After getUserMedia succeeds, NotAllowedError is not a mic permission.
     let micGranted = false;
     let processor: ScriptProcessorNode | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
     let sink: GainNode | null = null;
-    // The context primed in the Start click is shared by every session and closed when voice mode ends.
+    // Shared context from the Start click; closed when voice mode ends.
     let ownsCtx = false;
     const chunks: Float32Array[] = [];
     const chunkVoiced: boolean[] = [];
@@ -437,15 +426,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
     );
     let vadReady = false;
-    // The end-of-turn model is up, and it called this turn finished.
     let turnReady = false;
     let soundedFinished = false;
-    // The early transcript of this clip ends on a question mark (readsAsQuestion).
     let questionKey: string | null = null;
     let questionReadKey: string | null = null;
-    // Smart Turn's last answer for this turn, for the "Smart Turn + judge" lane.
     let turnP: number | null = null;
-    // One id per turn for the voice trace; a continuation keeps the id of the fragment it joins.
     let turnId: string | null = null;
     const startTurn = () => {
       turnId ??= heldTurn?.turnId ?? newTurnId();
@@ -454,15 +439,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // The gate resets on the first quiet frame, so a word ending before the answer would otherwise count as none.
     let bargePeakMs = 0;
     const preroll: Float32Array[] = [];
-    // Per preroll frame: it was over the barge-in bar.
     const prerollLoud: boolean[] = [];
-    // The live transcriber following this utterance (live-transcript.ts); `fed` is the next chunk it lacks.
     let live: { session: LiveTranscript; modelId: string | undefined; fed: number } | null = null;
-    // A pause already took the live transcript: only more speech starts another.
+    // A pause took the live transcript; only more speech starts another.
     let liveTaken = false;
-    // This pick gives no live transcript: it is not asked again this session.
     let liveOff = false;
-    // The longest live text put in the box, so the finished transcript is not typed out again.
     let liveShown = "";
     let bargedIn = heldTurn !== null && heldFromBarge;
     let peakRms = 0;
@@ -479,7 +460,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     let trackMutedAt = 0;
     let sampleRate = 16000;
     let heardSpeech = false;
-    // Both ways speech starts (plain speech, a committed barge-in) open the turn the same way.
     const markSpeechStarted = () => {
       heardSpeech = true;
       startTurn();
@@ -627,7 +607,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       utteranceInFlight = false;
       live?.session.drop();
       live = null;
-      // Words shown as they were heard, then not kept: the box goes back to what it held.
       if (!transcript && liveShown) emitSpeech(heldTurn?.text ?? "", false);
       if (liveSession === handle) liveSession = null;
       endZeroRun();
@@ -701,15 +680,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (!live) return;
       while (live.fed < chunks.length) live.session.feed(chunks[live.fed++]);
     };
-    // Opens a live transcript and keeps it fed; with none, the clip is transcribed when it ends.
     const startLive = () => {
       const span = utteranceSpan(chunkVoiced, chunkNotSilent, padFrames());
       if (!span) return;
       const modelId = ports.runtime().selectedSttModelId ?? undefined;
       const session = openSttLive(sampleRate, modelId, (text) => {
-        // Words over a reply may be its echo or an "mm-hm", and a box being edited is the user's.
+        // Words over a reply may be its echo or an "mm-hm".
         if (ended || bargedIn || !heldEdit.autoSend()) return;
-        // A transcript restarted after a pause catches up before it adds anything.
+        // A restarted transcript catches up before adding anything.
         if (text.length < liveShown.length) return;
         liveShown = text;
         emitSpeech(heldTurn ? joinTurn(heldTurn.text, text) : text, false);
@@ -730,7 +708,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         voiceTrace("turn.end", { ...answer, ms, turnId });
       },
     );
-    // Words spoken over a reply that ask nothing of it: the reply carries on.
     const nothingToActOn = (text: string): boolean => {
       const reply = getVoiceReplyText();
       return (
@@ -741,7 +718,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         isAcknowledgement(text, reply)
       );
     };
-    // The barge-in clip whose words turned out to be nothing to act on, and the one being read.
     let bargeNothingKey: string | null = null;
     let bargeReadingKey: string | null = null;
     const analyseClip = (span: { start: number; end: number }): ClipAnalysis => {
@@ -750,7 +726,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       const modelId = ports.runtime().selectedSttModelId ?? undefined;
       let dropped = false;
       const vad = detectClip(wav, bargedIn);
-      // The live transcript has heard all of this already: ending it gives the text at once.
       let heard: Promise<string> | null = null;
       if (live && live.modelId === modelId) {
         feedLive();
@@ -759,8 +734,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         live = null;
         liveTaken = true;
       }
-      // A clip dropped before transcription starts is never sent. One in flight finishes: aborting makes
-      // the server restart the transcriber, which costs the next clip far more than a few hundred ms.
+      // A clip dropped before transcription is never sent; one in flight finishes.
       const text = vad.then(async (v) => {
         if (v?.kept === false || dropped) return "";
         if (heard) {
@@ -789,7 +763,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       voiceTrace("session.noSpeech", { bargedIn });
       settleFinished(false);
       if (heldTurn) {
-        // The rest never came, so the fragment was the whole turn (its submit cuts the barged reply: no abort).
         const text = heldTurn.text;
         const heldId = heldTurn.turnId ?? undefined;
         heldTurn = null;
@@ -819,7 +792,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       }
     };
     const finalizeHeard = async () => {
-      // Speech ended this long before this mark; a continuation records another, and the last counts.
       voiceTrace("turn.speechEnd", { turnId, silenceMs: Math.round(performance.now() - lastVoiceAt) });
       turnEnd.clear();
 
@@ -875,8 +847,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             const missing = modelId ?? ports.settings().sttModel;
             const downloading = isTrackingSttDownload(missing);
             if (!downloading) requestSttDownload(missing, { voice: true });
-            // Not a failed transcription: the voice waits for the transcriber (the orb and pill say so)
-            // and listens again once it is loaded. This clip cannot be heard.
+            // Not a failed transcription: the voice waits for the transcriber, then listens again.
             if (ports.runtime().selectedSttModelId === missing) {
               ports.setSttSlotDownload(downloading ? "downloading" : "needed");
             }
@@ -930,12 +901,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           return;
         }
         settleFinished(Boolean(transcript));
-        // Clicked into: what was said joins the box and waits for the user's send.
-        // Decided before keeping this speech, so an emptied draft's audio is dropped first.
         let editing = !heldEdit.autoSend();
         const spokenNow = transcript;
         const rt = ports.runtime();
-        // A clear during STT already emptied the buffer; this turn's speech must not refill it.
+        // A clear during STT already emptied the buffer; do not refill it.
         if (
           transcript &&
           epoch === heldEpoch &&
@@ -948,7 +917,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           reportLayaOutcome(heldJudgeId, "continued", { text: transcript });
           heldJudgeId = null;
         }
-        // A finished-sounding turn is sent unless it reads cut off; only that case goes to the text judge.
         voiceTrace("turn.transcript", { turnId, chars: transcript.length });
         const judged = Boolean(transcript) && !editing;
         const { turnEnding, turnJudgeBar } = ports.settings();
@@ -968,10 +936,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         if (epoch !== heldEpoch) {
           voiceTrace("stt.drop", { transcript, why: "cleared" });
-          // A dropped barge-in cut nothing: the reply it paused plays on, as after any other drop.
           if (bargedIn) requestVoiceBargeAbort();
           finish("stopped");
-          // The clear's own re-arm found this session still live and skipped.
+          // The clear's re-arm skipped a still-live session.
           setTimeout(() => requestVoiceResume(), 0);
           return;
         }
@@ -1004,8 +971,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const mine = { shown: shown(transcript), rush: false };
           reveal = mine;
           try {
-            // A turn that sounded finished is sent at once: typing it out first is a wait before the reply.
-            // Text that was shown live as it was heard is already in the box.
             if (liveShown) mine.rush = true;
             for (let i = stepChars; i < total && !mine.rush && !soundedFinished; i += stepChars) {
               if (ended || epoch !== heldEpoch) break;
@@ -1018,7 +983,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
           if (ended) return;
           if (epoch !== heldEpoch) {
-            // A Stop or reset during the reveal let this turn go.
             voiceTrace("stt.drop", { transcript, why: "cleared" });
             if (bargedIn) requestVoiceBargeAbort();
             finish("stopped");
@@ -1073,16 +1037,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
                 : baseAudio,
             });
           } catch (error) {
-            // As in the Dictate adapters: an unplugged pinned headset loses its pin for this turn, not the loop.
+            // Like Dictate: an unplugged pinned headset loses its pin, not the loop.
             if (pinnedMic && isMissingDeviceError(error)) {
               return navigator.mediaDevices.getUserMedia({ audio: baseAudio });
             }
             throw error;
           }
         };
-        // One open at a time; a session cancelled while it waited stops its own tracks before the next opens.
-        // A request the browser never answers (a stuck device) frees the queue once its session ends, so the
-        // next session is not stuck behind it; a stream that still arrives after that is stopped at once.
+        // One open at a time: a stuck device's request frees the queue when its session ends.
         stream = await openMicOnce(async () => {
           if (ended) return null;
           const opening = openStream();
@@ -1104,8 +1066,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         const primed = getVoiceCaptureContext();
         ownsCtx = !primed;
         audioCtx = primed ?? new AudioCtx();
-        // Created outside the user gesture, a suspended context never fires audioprocess: Safari won't start
-        // one and Firefox leaves resume() pending, so the wait is bounded instead of a deaf orb on Listening.
+        // A suspended context never fires audioprocess; the resume wait is bounded.
         const started = await Promise.race([
           audioCtx.resume().then(
             () => true,
@@ -1169,7 +1130,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
 
         const sttPick = ports.runtime().selectedSttModelId ?? ports.settings().sttModel;
         const sttPicked = () => ports.runtime().selectedSttModelId === sttPick;
-        // A missing transcriber isn't reloaded until its download ends: each listen session (one per 8 s of quiet) got a 409.
+        // Missing transcriber is not reloaded until its download ends (409 otherwise).
         if (ports.runtime().sttSlotDownload === null) {
           void loadSttModel(sttPick, undefined, undefined, undefined, undefined, undefined, true)
             .then(() => {
@@ -1181,11 +1142,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               if (!(error instanceof SttModelNotDownloadedError)) return;
               const downloading = isTrackingSttDownload(sttPick);
               ports.setSttSlotDownload(downloading ? "downloading" : "needed");
-              // Asked as listening begins, not after the first utterance is lost to the missing model.
+              // Asked at listen start, so the first utterance is not lost.
               if (!downloading) requestSttDownload(sttPick, { voice: true });
             });
         }
-        // Off in Settings > Voice > Voice mode: the fixed silence wait alone ends a turn.
         if (ports.settings().turnEnding !== "wait") {
           void loadTurnModel().then((ready) => {
             turnReady = ready;
@@ -1303,7 +1263,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             if (bargeConfirming) return;
             bargeConfirming = true;
             bargePeakMs = bargeGate.loudMs;
-            // The detector hears only the burst: the older lookback is mostly the reply's own echo.
+            // The detector hears only the burst; older lookback is mostly echo.
             const recent = preroll.slice(
               -Math.ceil(BARGE_PREROLL_MS / frameMs),
             );
@@ -1353,7 +1313,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           ) {
             ports.setHearing(false);
           }
-          // notSilent keeps the utterance alive; only speech counts toward STT.
           const speechBar = Math.max(SPEECH_RMS_MIN, noiseFloor * SPEECH_OVER_FLOOR);
           speechBarSeen = speechBar;
           const notSilent = rms >= Math.max(SILENCE_RMS_MIN, noiseFloor * SILENCE_OVER_FLOOR);
@@ -1383,17 +1342,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const elapsed = now - startedAt;
           const enoughSpeech =
             heardSpeech && !finalizing && voicedMs >= (bargedIn ? BARGE_CONFIRMED_MS : MIN_SPEECH_MS);
-          // The end-of-turn model is not asked about speech over a reply: on a second or two of
-          // audio it calls a quarter to a half of unfinished clips finished.
+          // The end-of-turn model is unreliable on a second or two of speech over a reply.
           const askTurn = turnReady && !bargedIn;
-          // With the turn asked, the transcript is asked for at the same moment: an early end needs it.
           if (enoughSpeech && sinceVoice >= (askTurn ? TURN_ASK_AFTER_MS : SPECULATE_AFTER_MS)) {
             const span = utteranceSpan(chunkVoiced, chunkNotSilent, padFrames());
             if (span) {
               const key = clipKey(span);
               const analysis = early.start(key, () => analyseClip(span));
               if (bargedIn && bargeNothingKey === key) {
-                // An "mm-hm" or an echo: end the clip now, so the reply it paused resumes without the full wait.
                 void finalize();
                 return;
               }
@@ -1449,7 +1405,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
         };
 
-        // onaudioprocess only fires while the processor reaches a destination, so it feeds a muted sink.
+        // onaudioprocess needs a destination, so it feeds a muted sink.
         sink = audioCtx.createGain();
         sink.gain.value = 0;
         source.connect(processor);
@@ -1472,22 +1428,18 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           requestVoiceOff();
           return;
         }
-        // A session cancelled while the mic was still opening is not a mic fault, and a refusal
-        // after the mic opened is the browser's audio policy, not the microphone permission.
+        // Cancelled while the mic opened is not a mic fault; a late refusal is audio policy.
         if (
           !ended &&
           !micGranted &&
           (name === "NotAllowedError" || name === "SecurityError")
         ) {
-          // Blocked for good: every later session fails the same way while the orb shows Listening,
-          // so voice mode ends and says why, in words that lead to the fix.
           toast.error(
             translate(
               isTauri
                 ? "settings.voice.dictation.micAccessBlockedDesktop"
                 : "settings.voice.dictation.micAccessBlocked",
             ),
-            // One toast however many sessions fail before voice mode is down.
             { id: "voice-mic-blocked", duration: Infinity },
           );
           finish("error");

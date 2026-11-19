@@ -26,7 +26,6 @@ let voiceListen: (() => DictationAdapter.Session | null) | null = null;
 
 export const loadVoiceMode = () => import("./voice-engine");
 
-// Heard cuts not yet saved on their message, by message id: the next request reads them at once.
 const pendingHeardCuts = new Map<string, { offset: number }>();
 
 export function setPendingHeardCut(messageId: string, cut: { offset: number }): void {
@@ -41,14 +40,13 @@ export function clearPendingHeardCut(messageId: string): void {
   pendingHeardCuts.delete(messageId);
 }
 
-// The cut last written to each reply this session (null: cleared), for a writer with no open copy to ask.
+// null marks a cleared cut; a missing key means none was written.
 const writtenHeardCuts = new Map<string, { offset: number; at: number } | null>();
 
 export function noteWrittenHeardCut(messageId: string, heard: { offset: number; at: number } | null): void {
   writtenHeardCuts.set(messageId, heard);
 }
 
-/** The reply's custom metadata as far as its heard cut goes, or undefined when this session never wrote one. */
 export function writtenHeardCustom(messageId: string): Record<string, unknown> | undefined {
   if (!writtenHeardCuts.has(messageId)) return undefined;
   const heard = writtenHeardCuts.get(messageId);
@@ -83,10 +81,7 @@ export function getVoicePlayContext(): AudioContext | null {
   return voicePlayCtx;
 }
 
-/**
- * Makes and starts the mic's context inside the click that turns voice mode on. Safari and Firefox
- * only start audio in a user gesture, and the loop opens the mic after an await, outside it.
- */
+/** Call inside the click that turns voice mode on: Safari and Firefox start audio only in a user gesture. */
 export function primeVoiceCapture(): void {
   if (typeof window === "undefined") return;
   const Ctor =
@@ -105,7 +100,6 @@ export function primeVoiceCapture(): void {
   void voiceCaptureCtx.resume().catch(() => {});
 }
 
-/** The primed mic context, shared by every listening session until voice mode ends; null when none was primed. */
 export function getVoiceCaptureContext(): AudioContext | null {
   return voiceCaptureCtx && voiceCaptureCtx.state !== "closed" ? voiceCaptureCtx : null;
 }
@@ -178,7 +172,7 @@ export function requestVoiceToggle(): void {
   void loadVoiceMode().catch(() => {});
 }
 
-/** Ends voice mode, and drops a toggle queued for an engine still loading: nothing replays to turn it on. */
+/** Also drops toggles queued while the engine loads, so none replays to turn voice on. */
 export function requestVoiceOff(): void {
   voiceTogglesPending = 0;
   if (voiceMode === "off") return;
@@ -262,7 +256,7 @@ export function requestVoiceEarlyInterject(fragment: string): void {
   voiceEarlyInterject?.(fragment);
 }
 
-// confirmedEarly: Smart Turn said the turn ended (and the judge agreed, when one answered), so no coalesce window is needed.
+// confirmedEarly: Smart Turn ended the turn, so no coalesce window is needed.
 export type VoiceSubmitMeta = { turnId?: string; confirmedEarly?: boolean };
 
 export function registerVoiceSubmit(fn: ((text?: string, meta?: VoiceSubmitMeta) => void) | null): void {
@@ -274,17 +268,15 @@ export function requestVoiceSubmit(text?: string, meta?: VoiceSubmitMeta): void 
   voiceSubmit?.(text, meta);
 }
 
-// The traced turn: an utterance waiting for its run, then the run waiting for its first audio.
+// Unsent until its run starts; live until its first audio plays.
 export type VoiceTurnEnd = "barged" | "cancelled" | "noTts" | "typed" | "superseded";
 let unsentTurnId: string | null = null;
 let liveTurnId: string | null = null;
 
-/** A spoken utterance headed for the model; coalesced and queued ones keep the first one's id. */
 export function noteVoiceTurn(turnId: string | undefined): void {
   if (turnId) unsentTurnId ??= turnId;
 }
 
-/** The run starting now answers the waiting utterance: its id, or null for a typed send. */
 export function sendVoiceTurn(): string | null {
   if (!unsentTurnId) return null;
   liveTurnId = unsentTurnId;
@@ -296,26 +288,23 @@ export function liveVoiceTurn(): string | null {
   return liveTurnId;
 }
 
-/** The turn is over once its first audio plays. */
 export function settleVoiceTurn(turnId: string | null | undefined): void {
   if (turnId && liveTurnId === turnId) liveTurnId = null;
 }
 
-/** An utterance that will never be sent (an ignored interjection): true when it was the waiting one. */
 export function dropVoiceTurn(turnId: string | undefined): boolean {
   if (!turnId || unsentTurnId !== turnId) return false;
   unsentTurnId = null;
   return true;
 }
 
-/** The waiting utterance's run will never start: its id, so the next utterance gets its own. */
+/** The dropped utterance's run never starts. */
 export function dropUnsentVoiceTurn(): string | null {
   const turnId = unsentTurnId;
   unsentTurnId = null;
   return turnId;
 }
 
-/** Ends the live turn, and the waiting one unless `liveOnly`; returns the ids it ended. */
 export function endVoiceTurns(liveOnly = false): string[] {
   const ended = [liveTurnId, liveOnly ? null : unsentTurnId].filter((id): id is string => Boolean(id));
   liveTurnId = null;

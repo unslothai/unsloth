@@ -265,7 +265,6 @@ function readAloudError(
   return new Error(detail);
 }
 
-/** Server time for one clip, from /audio/generate. */
 export type TtsTiming = { resolve_ms?: number; synth_ms?: number };
 
 export async function generateStudioTtsAudio(
@@ -280,13 +279,11 @@ type StudioTtsOptions = {
   model: string;
   voiceId: string;
   speaker?: string;
-  /** An uploaded clip to speak in, when no saved voice is picked: voice mode's session voice. */
   reference?: VoiceReference;
-  /** The model's own options (speed, language...); speaker still wins for the voice. */
   audioOptions?: Record<string, boolean | number | string>;
 };
 
-/** The request's audio_options: the caller's model options, with the picked speaker as the voice. */
+/** The picked speaker overrides any voice in the model options. */
 export function ttsAudioOptions(
   options: Pick<StudioTtsOptions, "speaker" | "audioOptions"> | undefined,
 ): { audio_options?: Record<string, boolean | number | string> } {
@@ -297,7 +294,6 @@ export function ttsAudioOptions(
   return Object.keys(merged).length ? { audio_options: merged } : {};
 }
 
-/** generateStudioTtsAudio with the server's timing beside the clip. */
 export async function generateStudioTtsClip(
   text: string,
   signal?: AbortSignal,
@@ -345,7 +341,6 @@ export async function generateStudioTtsClip(
     throw new Error("The TTS model returned no audio.");
   }
   if (data.choices?.[0]?.finish_reason === "length") {
-    // Only a caller with no options is read aloud; voice mode and the settings test name their model.
     toast.warning(
       options
         ? "Speech stopped at the speech model's length limit before the end of the text."
@@ -355,7 +350,6 @@ export async function generateStudioTtsClip(
   return { url: `data:audio/wav;base64,${data.audio.data}`, timing: data.timing ?? undefined };
 }
 
-/** Keeps a spoken clip on the server so later sentences can clone it; resolves its input id. */
 export async function uploadVoiceReference(wav: ArrayBuffer, signal?: AbortSignal): Promise<string> {
   const response = await authFetch("/api/inference/audio/inputs?name=voice-mode.wav", {
     method: "POST",

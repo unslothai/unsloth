@@ -903,7 +903,6 @@ export const th = {
     holdToStopTip: "{label} · กดค้างเพื่อหยุด",
     approvalGone: "คำขอนี้ไม่ได้รอคำตอบแล้ว",
     approvalRetry: "ส่งการตัดสินใจของคุณไม่สำเร็จ โปรดลองอีกครั้ง",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} ส่งแล้ว",
       arcWaiting: "{p} รออยู่",

@@ -846,7 +846,6 @@ export const es = {
     holdToStopTip: "{label} · mantén pulsado para detener",
     approvalGone: "Esta solicitud ya no espera respuesta.",
     approvalRetry: "No se pudo enviar tu decisión. Inténtalo de nuevo.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} enviado",
       arcWaiting: "{p} en espera",

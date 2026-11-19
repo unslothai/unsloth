@@ -950,7 +950,6 @@ export const cs = {
     holdToStopTip: "{label} · podržením zastavíte",
     approvalGone: "Tento požadavek už nečeká na odpověď.",
     approvalRetry: "Vaše rozhodnutí se nepodařilo odeslat. Zkuste to znovu.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} odesláno",
       arcWaiting: "{p} čeká",

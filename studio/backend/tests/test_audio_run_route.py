@@ -1565,7 +1565,6 @@ def test_voice_mode_speaks_in_an_uploaded_clip_with_its_transcript(stub, tmp_pat
     assert Path(call["audio_inputs"]["reference"]).parent == _inputs_root(tmp_path)
     assert missing.status_code == 400
     assert missing.json()["detail"] == "Type what's said in the reference clip."
-    # A saved voice wins and keeps its own transcript.
     assert both.status_code == 200, both.text
     assert backend.calls[-1]["reference_text"] == "Saved."
     assert stranger.status_code == 404, stranger.text

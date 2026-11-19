@@ -59,8 +59,6 @@ test("a shorter hold applies when a detector confirms the burst afterwards", () 
 });
 
 test("a barge-in keeps the words before the gate fired, across a short pause", () => {
-  // "Wait, stop. Make it about a cat instead." at 85 ms frames, measured from the test clip:
-  // the gate only fires three frames into "Make it", after "Wait, stop." has passed.
   const rms = [
     0, 0, 0, 0.034, 0.113, 0.072, 0.013, 0.027, 0.063, 0.057, 0.03, 0.003,
     0.001, 0, 0.07, 0.095, 0.079,
@@ -74,7 +72,6 @@ test("a barge-in keeps the words before the gate fired, across a short pause", (
     if (fired && firedAt < 0) firedAt = i;
   });
   assert.equal(firedAt, 16);
-  // 350 ms of pause is 5 frames; the last 600 ms (8 frames) would start at "stop".
   assert.equal(bargeOnset(loud, 5, 8), 3);
 });
 

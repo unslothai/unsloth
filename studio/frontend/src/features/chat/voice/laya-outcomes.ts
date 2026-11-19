@@ -42,11 +42,6 @@ const negations = (text: string) => (text.match(NEGATOR) ?? []).length;
 const PARTICLE = /\b(?:on|off|in|into|onto|out|up|down|to|from|over|under|before|after|with|without)\b/gi;
 const particles = (text: string) => (text.toLowerCase().match(PARTICLE) ?? []).join(" ");
 
-/**
- * The same request again: adds no word of its own ("five minutes" for "ten minutes"), keeps the
- * order of the words it shares ("beta into alpha" reverses "alpha into beta") and opens with no
- * correction cue ("No, ...", "Actually ...").
- */
 export function isSameAsk(earlier: string, later: string): boolean {
   if (CORRECTION_CUE.test(later)) return false;
   if (particles(earlier) !== particles(later)) return false;

@@ -972,9 +972,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         for name in names
     ),
     AudioCppFamily("pulsevad", "vad"),
-    # Newer than some supported runtimes: one without its spec refuses it (_RUNTIME_GATED_FAMILIES).
     AudioCppFamily("firered_vad", "vad"),
-    # No page and no picker: voice mode loads it itself to hear the end of a turn.
     AudioCppFamily("smart_turn", "turn"),
     *(
         AudioCppFamily(

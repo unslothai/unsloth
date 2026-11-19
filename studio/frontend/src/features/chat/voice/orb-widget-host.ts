@@ -182,7 +182,7 @@ function loadTauri(): Promise<Tauri> {
 const mode: WidgetReturn = { floating: false };
 let warm: Promise<boolean> | null = null;
 
-// Read at call time, not at load: the store is not touched until the widget hands back.
+// Call-time read: the store is touched only once the widget hands back.
 const collapseOrb = (collapsed: boolean) => useChatRuntimeStore.getState().setVoiceOrbCollapsed(collapsed);
 
 function showMain(t: Tauri): void {

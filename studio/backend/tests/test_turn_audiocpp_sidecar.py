@@ -45,7 +45,6 @@ def test_the_answer_is_the_probability_the_runtime_gave():
     assert (
         turn.completion_from_result({"custom_schema_output": {"data": {"probability": 7}}}) == 1.0
     )
-    # No number is no answer: the caller keeps its silence wait rather than reading it as "unfinished".
     for empty in (
         {},
         {"custom_schema_output": None},
@@ -113,9 +112,7 @@ def test_a_check_reads_the_end_of_the_clip_on_the_cpu_with_four_threads(monkeypa
         "bar": 0.6,
         "model": entry.id,
     }
-    # A language nobody measured gets the careful bar, and 0.7 is under it: the loop keeps waiting.
     assert sidecar.detect(_wav(1.0))["finished"] is False
-    # Where the model cuts speakers off too often it is not asked at all.
     assert sidecar.detect(_wav(1.0), language = "zh-CN") == {
         "p_complete": None,
         "finished": False,
@@ -123,7 +120,6 @@ def test_a_check_reads_the_end_of_the_clip_on_the_cpu_with_four_threads(monkeypa
         "model": None,
     }
     assert heard == [8.0, 1.0]
-    # One start, on the CPU whatever training is doing, and nothing re-resolved for the second clip.
     assert launched == [("smart_turn", True, 4)] and resolved == [1]
     assert sidecar.status() == {
         "available": sidecar.status()["available"],
@@ -151,7 +147,6 @@ def test_model_access_and_the_runtime_update_cover_the_turn_model(monkeypatch):
     asyncio.run(inference._require_turn_model_access(None))
     asyncio.run(inference._require_turn_model_access("someone/Turn-GGUF"))
     assert asked == [acm.AUDIO_CPP_REPO, "someone/Turn-GGUF"]
-    # Shapes the browser acts on: not downloaded, cannot run here, bad request.
     for exc, status in (
         (clip.ClipModelNotDownloadedError("x"), 409),
         (clip.ClipUnavailableError("x"), 501),

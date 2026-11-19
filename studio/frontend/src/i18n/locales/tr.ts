@@ -944,7 +944,6 @@ export const tr = {
     holdToStopTip: "{label} · durdurmak için basılı tutun",
     approvalGone: "Bu istek artık yanıt beklemiyor.",
     approvalRetry: "Kararınız gönderilemedi. Tekrar deneyin.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} gönderildi",
       arcWaiting: "{p} bekliyor",

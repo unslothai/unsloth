@@ -2790,7 +2790,6 @@ type ChatRuntimeStore = {
   selectedVadModelId: string;
   vadSlotLoaded: boolean;
   sttSlotLoaded: boolean;
-  /** The picked transcriber is not on this machine: voice mode waits for its download. */
   sttSlotDownload: "needed" | "downloading" | null;
   voiceSlotLoading: boolean;
   voiceSlotLoaded: boolean;
@@ -4816,7 +4815,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   // Clears the orb's last state too: a stale "listening" came back over the welcome composer on reopen.
   setVoiceMode: (voiceMode) => {
-    // The next session draws a new voice for a model with no preset speaker.
     if (voiceMode === "off") clearVoicePin();
     set(
       voiceMode === "off"

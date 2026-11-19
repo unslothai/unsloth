@@ -6577,12 +6577,11 @@ def _audio_input_system_prompt(system_prompt: str, request: Any) -> str:
     return _apply_current_date_prompt(system_prompt or _AUDIO_INPUT_SYSTEM_PROMPT, request)
 
 
-# Not empty: the audio backends fall back to the transcription instruction on an empty prompt.
+# Not empty: an empty prompt falls back to the transcription instruction.
 _AUDIO_ANSWER_SYSTEM_PROMPT = "You are a helpful assistant."
 
 
 def _audio_turn_asks(chat_messages: list) -> bool:
-    """The last user turn has words beside its audio (a voice turn, a typed question): answer it."""
     last = next((m for m in reversed(chat_messages) if m.get("role") == "user"), None)
     return bool(last and str(last.get("content") or "").strip())
 
@@ -23452,7 +23451,6 @@ async def _generate_tts_wav(
         await _route_to_kept_audio_model(workflow or "speak")
     # Recheck once a context exists: before the restore, nothing loaded passes everything.
     _raise_if_prompt_leaves_no_speech_budget(text)
-    # What a request pays before synthesis: the voice trace weighs it against synth_ms.
     timing = {"resolve_ms": round((time.perf_counter() - resolve_started) * 1000, 1)}
     if stats_holder is not None:
         stats_holder["timing"] = timing
@@ -23789,7 +23787,6 @@ async def generate_audio(
                 text = text,
                 language = payload.audio_language,
                 instructions = payload.audio_instructions,
-                # A saved voice carries its own transcript; an uploaded clip brings one along.
                 inputs = AudioRunInputs(
                     reference = AudioSourceRef(voice_id = voice_id)
                     if voice_id
@@ -27034,9 +27031,8 @@ async def stt_model_capabilities(
     return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
 
 
-# Live transcription sessions by id: the session and the account that opened it.
 _live_stt_sessions: dict[str, tuple[Any, str]] = {}
-# One post of microphone audio: a second of 48 kHz speech is under 100 kB.
+# One post of mic audio; 1 s of 48 kHz speech is under 100 kB.
 _LIVE_STT_POST_BYTES = 4 * 1024 * 1024
 
 
@@ -27053,10 +27049,7 @@ async def stt_live_open(
     language: Optional[str] = Query(None, max_length = 32),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Transcribe speech while it is spoken. The reply is an event stream: ``ready`` names the
-    session, each ``delta`` carries new words as the audio posted to
-    ``/audio/stt/live/{id}/audio`` is heard, and ``done`` carries the whole transcript after
-    the last post. Closing the stream drops the session. 409 for a model that cannot do this."""
+    """Live transcription: ``ready``, ``delta`` as words come in, ``done``; 409 if unsupported."""
     if account_access.managed_account():
         await asyncio.to_thread(
             account_access.require_model_access, _stt_repo_reference(model, engine)
@@ -27095,17 +27088,17 @@ async def stt_live_open(
     def hand(event: Optional[dict]) -> None:
         try:
             loop.call_soon_threadsafe(queue.put_nowait, event)
-        except RuntimeError:  # the server is shutting down
+        except RuntimeError:
             pass
 
     def pump() -> None:
-        # Owns the session's end: it runs whether or not the client ever reads the reply.
+        # Ends the session even if the client never reads the reply.
         try:
             for event in session.events():
                 hand(event)
         except LiveTranscriptError as exc:
             hand({"type": "error", "message": str(exc)})
-        except Exception as exc:  # noqa: BLE001 - reported to the client, never raised in a thread
+        except Exception as exc:  # noqa: BLE001 - reported to the client
             logger.error(f"STT live session error: {exc}", exc_info = True)
             hand({"type": "error", "message": safe_error_detail(exc)})
         finally:
@@ -27134,7 +27127,7 @@ async def stt_live_open(
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout = 0.5)
                 except asyncio.TimeoutError:
-                    # A client that went away leaves no one to stop the session.
+                    # Nobody else stops the session once the client is gone.
                     if await request.is_disconnected():
                         break
                     continue
@@ -27162,7 +27155,6 @@ async def stt_live_open(
 
 @studio_router.delete("/audio/stt/live/{session_id}", status_code = 204)
 async def stt_live_drop(session_id: str, current_subject: str = Depends(get_current_subject)):
-    """Drop a live session whose audio is not wanted: nothing more is transcribed."""
     held = _live_stt_sessions.get(session_id)
     if held is not None and held[1] == current_subject:
         held[0].close()
@@ -27176,8 +27168,7 @@ async def stt_live_audio(
     last: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    """The next stretch of a live session's audio: mono 16-bit little-endian PCM at the rate the
-    session was opened with, posted in order. ``last`` says the speaker has stopped."""
+    """Next live audio: mono 16-bit little-endian PCM at the opened rate; ``last`` ends speech."""
     from core.inference.stt_live import LiveTranscriptError
 
     held = _live_stt_sessions.get(session_id)
@@ -27220,7 +27211,7 @@ def _clip_http_error(exc: Exception, what: str) -> HTTPException:
     if isinstance(exc, ClipUnavailableError):
         from core.inference.audio_cpp_server import UPDATE_IN_PROGRESS
 
-        # 501 turns the helper off for the page; an audio.cpp update is over in a moment.
+        # 501 turns the helper off for the page; 503 is a retry during an update.
         return HTTPException(
             status_code = 503 if UPDATE_IN_PROGRESS.is_set() else 501, detail = str(exc)
         )
@@ -27231,7 +27222,6 @@ def _clip_http_error(exc: Exception, what: str) -> HTTPException:
 
 
 async def _require_hub_audio_model_access(identifier: str) -> None:
-    """A managed account may load or download only the models its model access allows, as for STT."""
     if not account_access.managed_account():
         return
     from core.inference.audio_cpp_models import repo_of
@@ -27242,7 +27232,6 @@ async def _require_hub_audio_model_access(identifier: str) -> None:
 async def _load_clip_sidecar(
     sidecar, model: Optional[str], hf_token, what: str, modality: str
 ) -> JSONResponse:
-    """Start the helper's model, downloading it first when it is not here yet."""
     from core.inference.audio_cpp_clip_sidecar import ClipModelNotDownloadedError
 
     try:
@@ -27252,14 +27241,14 @@ async def _load_clip_sidecar(
             token = account_access.account_hf_token(hf_token)
             await asyncio.to_thread(sidecar.download, model, token)
             loaded = await asyncio.to_thread(sidecar.load, model)
-    except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
+    except Exception as exc:  # noqa: BLE001 - mapped to the status
         raise _clip_http_error(exc, what)
     account_access.note_resident_account(modality, loaded)
     return JSONResponse(content = {"loaded_model": loaded})
 
 
 async def _claim_clip_load(sidecar, before: Optional[str], loaded: Optional[str], modality: str) -> None:
-    """A run that loaded the helper's model owns it as a load would; one that only used it claims nothing."""
+    """A run that loaded the model owns it; one that only used it does not."""
     if (
         loaded
         and loaded != before
@@ -27294,7 +27283,6 @@ async def vad_status(current_subject: str = Depends(get_current_subject)):
 async def _require_vad_model_access(model: Optional[str]) -> None:
     from core.inference.vad_audiocpp_sidecar import is_builtin_id
     if is_builtin_id(model):
-        # It ships with the install, or names nothing the load will accept: no Hub repo to gate.
         return
     await _require_hub_audio_model_access((model or "").strip())
 
@@ -27347,8 +27335,6 @@ async def vad_detect(
     return JSONResponse(content = result)
 
 
-# The end-of-turn model: from how a clip sounds, has the speaker finished? Voice mode asks at a short
-# pause, and a "finished" ends the turn without the fixed silence wait.
 async def _require_turn_model_access(model: Optional[str]) -> None:
     from core.inference.turn_audiocpp_sidecar import DEFAULT_TURN_MODEL
     await _require_hub_audio_model_access((model or "").strip() or DEFAULT_TURN_MODEL)
@@ -27370,7 +27356,6 @@ async def turn_load(
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
-    """Download (if needed) and start the end-of-turn model."""
     from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
 
     await _require_turn_model_access(payload.model)
@@ -27383,7 +27368,7 @@ async def turn_load(
 async def turn_unload(current_subject: str = Depends(get_current_subject)):
     from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
 
-    # Another account's model is not this caller's to stop.
+    # Another account's model is not ours to stop.
     released = await asyncio.to_thread(
         get_audio_cpp_turn_sidecar().unload,
         lambda resident: account_access.resident_hidden("turn", resident),
@@ -27398,9 +27383,7 @@ async def turn_detect(
     language: Optional[str] = Query(None, max_length = 35),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Whether the speaker in a raw WAV body has finished: ``{p_complete, finished, bar, model}``.
-
-    ``language`` is the language being spoken, when known: the bar depends on it."""
+    """Whether the speaker in a raw WAV body has finished; ``language`` sets the bar."""
     from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
 
     await _require_turn_model_access(model)
@@ -27409,7 +27392,7 @@ async def turn_detect(
     before = await asyncio.to_thread(lambda: sidecar.loaded_model)
     try:
         result = await asyncio.to_thread(sidecar.detect, audio, model, language)
-    except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
+    except Exception as exc:  # noqa: BLE001 - mapped to the status
         raise _clip_http_error(exc, "Turn detection")
     await _claim_clip_load(sidecar, before, result.get("model"), "turn")
     return JSONResponse(content = result)
@@ -27471,7 +27454,7 @@ async def _voice_decide(fn, *args):
         headers = {"Retry-After": str(int(exc.retry_after))} if exc.retry_after else None
         raise HTTPException(status_code = 503, detail = str(exc), headers = headers) from exc
     except VoiceModelUnavailable as exc:
-        # The model went away between the check and the call (the pick was switched).
+        # The model went away between check and call (pick switched).
         raise HTTPException(status_code = 503, detail = str(exc)) from exc
 
 
@@ -27562,8 +27545,7 @@ async def voice_judge(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """``{p_complete, finished, ms, id}``: P(the user has finished the turn) for the transcript so
-    far, and the verdict: ``finished`` is that probability against the server's one threshold."""
+    """``{p_complete, finished, ms, id}``; ``finished`` is p_complete against the server's bar."""
     from core.inference.voice_log import judge_verdict
 
     models = await asyncio.to_thread(_voice_model_or_503, "judge")
@@ -33570,8 +33552,6 @@ async def produce_openai_chat_completions(
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
-                # A spoken reply or a turn with words answers the question: the transcription default
-                # is for a bare clip.
                 if _speak:
                     system_prompt = _apply_current_date_prompt(system_prompt, request)
                 elif _audio_turn_asks(chat_messages):
@@ -53048,7 +53028,7 @@ async def media_catalog(current_subject: str = Depends(get_current_subject)):
     return MediaCatalogResponse(models = rows)
 
 
-# Long enough for any repo id plus a variant; anything longer is not a model id.
+# Any repo id plus a variant fits; longer is not a model id.
 _AUDIO_MODEL_ID_MAX = 512
 
 
@@ -53058,10 +53038,7 @@ async def get_audio_model_options(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Speakers and options a speech model takes, before it is loaded, so voice mode can be set up first.
-
-    A downloaded model is read from disk; one that is not reads only its spec from the Hub (cached).
-    """
+    """Speakers and options; from disk, or the Hub spec if not downloaded."""
     from core.inference import audio_cpp_models
     from core.inference.audio_cpp_backend import model_info_fields
 

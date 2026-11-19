@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure. Holds only the forms voices got wrong when listened to: money, thousands separators, decimals,
-// clock times, fractions, ISO dates, "No.", Roman numerals, phone numbers and GGUF (the Kokoro sample);
-// units, durations, weekday and month abbreviations (a 13-voice sweep, judged by an audio model).
-
 type Spoken = string | ((match: string, ...groups: (string | undefined)[]) => string);
 
 const ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
@@ -22,7 +18,6 @@ const CURRENCY: Record<string, readonly [one: string, many: string, minorOne: st
 };
 const MONEY_SCALE: Record<string, string> = { K: "thousand", M: "million", B: "billion", T: "trillion" };
 const ROMAN: Record<string, number> = { I: 1, V: 5, X: 10, L: 50 };
-// Units after a number: every voice in the listening sweep spelled "km" as letters, or read "30m" as meters.
 const UNITS: Record<string, readonly [one: string, many: string]> = {
   km: ["kilometer", "kilometers"], kg: ["kilogram", "kilograms"], cm: ["centimeter", "centimeters"],
   mm: ["millimeter", "millimeters"], mg: ["milligram", "milligrams"], mi: ["mile", "miles"],
@@ -82,10 +77,10 @@ function year(digits: string): string {
 
 const spellDigits = (digits: string) => [...digits].map((d) => ONES[Number(d)]).join(" ");
 const decimal = (whole: string, fraction: string) => `${cardinal(whole)} point ${spellDigits(fraction)}`;
-// Longer than this the digits are a code or an id, which the voice reads well enough as written.
+// Over 15 digits: codes or ids, read as written.
 const plain = (digits: string) => digits.replace(/,/g, "").length <= 15;
 
-// Largest first, for rebuilding a numeral's one canonical spelling.
+// Largest first: the greedy rebuild needs it.
 const ROMAN_CANONICAL = [["L", 50], ["XL", 40], ["X", 10], ["IX", 9], ["V", 5], ["IV", 4], ["I", 1]] as const;
 
 function romanValue(text: string): number | null {
@@ -95,7 +90,6 @@ function romanValue(text: string): number | null {
     const next = ROMAN[text[i + 1]] ?? 0;
     total += value < next ? -value : value;
   }
-  // Only the canonical spelling counts, so "IIII" or "VX" stay words.
   let rebuilt = "";
   for (let rest = total, k = 0; rest > 0; ) {
     const [sym, val] = ROMAN_CANONICAL[k];
@@ -116,7 +110,7 @@ function money(match: string, symbol = "$", written = "0", fraction?: string, le
   const minor = cents ? `${cardinal(fraction)} ${cents === 1 ? minorOne : minorMany}` : "";
   if (Number(whole) === 0) return minor || `zero ${many}`;
   const main = `${cardinal(whole)} ${whole === "1" ? one : many}`;
-  // "five dollars twenty-five", but "one dollar and one cent": a lone small number reads as part of the dollars.
+  // Under 10 cents needs "and", or the cents read as dollars.
   if (!cents) return main;
   return cents < 10 ? `${main} and ${minor}` : `${main} ${cardinal(fraction)}`;
 }
@@ -130,11 +124,10 @@ function clock(match: string, hour = "", minute = "", meridiem?: string): string
   return `${said} ${minute[0] === "0" ? `oh ${ONES[Number(minute[1])]}` : cardinal(minute)}${suffix}`;
 }
 
-// Keyed by the language part of the voice settings' BCP 47 tag ("en" for "en-US"). Order matters:
-// a phone number or a date is read before its digits could match a plainer rule.
+// Rule order matters.
 const RULES: Readonly<Record<string, readonly (readonly [RegExp, Spoken])[]>> = {
   en: [
-    // "4h 30m", "2 hrs", "90 min", "45 sec": durations, read before "30m" could be taken for meters.
+    // Durations first, or "30m" reads as meters.
     [/\b(\d{1,3})\s?(?:h|hrs?)\s?(\d{1,2})\s?m(?:in|ins)?\b/g,
       (_m, h = "", m = "") => `${per(h, "hour", "hours")} and ${per(m, "minute", "minutes")}`],
     [/\b(\d{1,3})\s?(?:h|hrs?)\b(?!\.\d|\w)/g, (_m, h = "") => per(h, "hour", "hours")],
@@ -144,10 +137,9 @@ const RULES: Readonly<Record<string, readonly (readonly [RegExp, Spoken])[]>> = 
       (_m, n = "", u = "") => unit(n, UNITS[u])],
     [/(?<![\d.])(\d+(?:\.\d+)?)\s?°\s?([CF])\b/g,
       (_m, n = "", scale) => `${n} ${n === "1" ? "degree" : "degrees"} ${scale === "C" ? "Celsius" : "Fahrenheit"}`],
-    // "Tue" read as "two" in most voices: a weekday abbreviation is a day only beside a date.
+    // "Tue" reads as "two": expand it only beside a date.
     [new RegExp(`\\b(Mon|Tues?|Wed|Thu(?:rs?)?|Fri|Sat|Sun)\\.?(?=,?\\s+(?:(?:${MONTH_WORD})\\b|\\d))`, "g"),
       (_m, d = "") => DAYS[d]],
-    // "Mar 4" and "March 4": the month in full, the day as an ordinal.
     [/\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\.?\s+([1-9]|[12]\d|3[01])\b(?![:.,]?\d)(?=$|[,.;:!?)]|\s+(?:\d{4}|at|to|and|through|until|from|or)\b)/g,
       (_m, mo = "", d = "") => `${MONTH_ABBR[mo]} ${ordinal(d)}`],
     [/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+([1-9]|[12]\d|3[01])\b(?![:.,]?\d)(?=$|[,.;:!?)]|\s+(?:\d{4}|at|to|and|through|until|from|or)\b)/g,
@@ -162,7 +154,6 @@ const RULES: Readonly<Record<string, readonly (readonly [RegExp, Spoken])[]>> = 
       (m, symbol, whole, fraction, letter, word) => money(m, symbol, whole, fraction, letter, word)],
     [/\b([01]?\d|2[0-3]):([0-5]\d)(?:\s?([AaPp])\.?[Mm](?![A-Za-z])(?:\.(?=\s+[a-z]))?)?/g,
       (m, hour, minute, meridiem) => clock(m, hour, minute, meridiem)],
-    // A comma before a space ends the number ("1,000, 2,000"); one before a digit is a malformed group.
     [/(?<![\d,.])(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?(?!\d|,\d)/g,
       (m, whole = "", fraction) => (plain(whole) ? (fraction ? decimal(whole.replace(/,/g, ""), fraction) : cardinal(whole.replace(/,/g, ""))) : m)],
     [/(?<![\d.\w])(\d+)\.(\d+)(?!\.?\d)(?:(\s?%)|([KMBT])(?![\w-]))?/g,
@@ -179,8 +170,7 @@ const RULES: Readonly<Record<string, readonly (readonly [RegExp, Spoken])[]>> = 
     [/\b([Nn])o\.\s?(?=\d)/g, (_m, n) => `${n === "N" ? "N" : "n"}umber `],
     [/\b(War|Chapter|Part|Volume|Book|Act|Phase|Season|Episode|Bowl|Mark|Gen)\s([IVXL]{1,7})\b/g,
       (m, word, numeral = "", at, all) => {
-        // A numeral is never followed by an apostrophe ("Book I'd"); after the name Mark, a lone I before a
-        // lowercase word is the pronoun ("Mark I think"). "Chapter I of" stays a numeral.
+        // "Book I'd" and "Mark I think" keep the "I".
         const after = String(all).slice(Number(at) + m.length);
         if (numeral === "I" && (/^['’]/.test(after) || (word === "Mark" && /^\s+[a-z]/.test(after)))) return m;
         const v = romanValue(numeral);

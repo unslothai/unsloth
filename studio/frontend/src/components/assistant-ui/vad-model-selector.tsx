@@ -7,7 +7,6 @@ import { audioRowMatchesWorkflow } from "@/features/audio/picker-filter";
 import { useVadDetectors } from "@/features/chat/voice/use-vad-detectors";
 import { ModelSelector } from "@/features/model-picker";
 import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
-// Deep import: through the eager model-picker index it would land in the startup bundle.
 // eslint-disable-next-line no-restricted-imports
 import { ListLabel, ModelRow } from "@/features/model-picker/components/model-selector/pickers";
 import { useT } from "@/i18n";
@@ -40,7 +39,6 @@ export const VadModelSelector: FC<VadModelSelectorProps> = ({
 }) => {
   const t = useT();
   const models = useMemo(() => audioModelsForTask("vad"), []);
-  // Only the ones this install can run: Silero and MarbleNet need the runtime's asset bundle.
   const builtin = useVadDetectors().filter((d) => d.available);
   return (
     <div className="flex flex-col">

@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Dependency-free so the node test runner loads it directly.
+// No heavy imports: the node test runner loads this file directly.
 
 import { joinWavBase64, pcmWavBase64 } from "../utils/wav-chunks.ts";
 
-// Audio-input models read 16 kHz; the mic runs at 48 kHz, so sending it raw is 3x the bytes.
+// Audio models read 16 kHz; 48 kHz would send 3x the bytes.
 const TURN_AUDIO_RATE = 16000;
 
-/** Box-filtered decimation: each output sample averages the input window it covers. */
 export function downsample(samples: Float32Array, rate: number, target = TURN_AUDIO_RATE): Float32Array {
   if (rate <= target) return samples;
   const step = rate / target;
@@ -26,7 +25,7 @@ export function downsample(samples: Float32Array, rate: number, target = TURN_AU
 export function createTurnAudio() {
   let chunks: Float32Array[] = [];
   let rate = 0;
-  // Speech of utterances queued behind the reply: kept when a later one is dropped.
+  // Parked speech survives dropCurrent.
   let parked: string[] = [];
   const current = (): string | null => {
     if (!chunks.length || !rate) return null;
@@ -83,7 +82,6 @@ export function voiceTurnAttachment(wavBase64: string, id: string) {
 type Part = { type: string };
 type Message = { role: string; content?: readonly Part[]; attachments?: readonly { content?: readonly Part[] }[] };
 
-// A turn's audio can sit on the message itself or on one of its attachments.
 function partsOf(m: { content?: readonly Part[]; attachments?: readonly { content?: readonly Part[] }[] }): Part[] {
   return [...(m.content ?? []), ...(m.attachments ?? []).flatMap((a) => a.content ?? [])];
 }
@@ -107,7 +105,7 @@ function audioOf(m: { content?: readonly Part[]; attachments?: readonly { conten
     .filter(Boolean);
 }
 
-/** Coalesced bubbles are one prompt but only the newest bubble's audio is sent; each already holds the run's speech so far. */
+/** Newest bubble only: each already holds the run's speech so far. */
 export function coalescedTurnAudio(messages: readonly Message[], turn: string): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -120,7 +118,7 @@ export function coalescedTurnAudio(messages: readonly Message[], turn: string): 
 
 const AUDIO_PLAYER = /<audio-player\b[^>]*\/>/g;
 
-// Blanked to the same length, not removed, so offsets into the reply stay valid; callers trim.
+// Blanked, not removed, so offsets stay valid; callers trim.
 export function withoutAudioPlayer(text: string): string {
   return text.includes("<audio-player") ? text.replace(AUDIO_PLAYER, (tag) => " ".repeat(tag.length)) : text;
 }

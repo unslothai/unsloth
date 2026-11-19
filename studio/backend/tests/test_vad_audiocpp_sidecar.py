@@ -10,7 +10,6 @@ from core.inference import audio_cpp_clip_sidecar as clip
 from core.inference import audio_cpp_models as acm
 from core.inference import vad_audiocpp_sidecar as vad
 
-# A Hub detector, which downloads and may take the GPU; the default is built in and does neither.
 PULSEVAD = f"{acm.AUDIO_CPP_REPO}/PulseVAD-GGUF"
 
 
@@ -40,7 +39,6 @@ def test_the_default_detector_is_the_earshot_copy_that_ships_with_studio():
     assert vad.DEFAULT_VAD_MODEL == "builtin/earshot-vad"
     model = vad.resolve_vad_model(None)
     assert (model.family, model.task, model.server_task) == ("earshot_vad", "vad", "vad")
-    # The runtime loads the folder; the weights are in the repo, so there is no download.
     assert model.is_package and model.repo_id is None
     assert (vad._ASSETS / "earshot_vad" / "earshot_vad.safetensors").stat().st_size > 40_000
     assert model.local_path == str(vad._ASSETS / "earshot_vad")
@@ -48,7 +46,7 @@ def test_the_default_detector_is_the_earshot_copy_that_ships_with_studio():
 
 
 def test_the_weights_studio_ships_are_not_git_ignored():
-    """``*.safetensors`` is ignored repo-wide: without the exception the default detector is never committed."""
+    """``*.safetensors`` is git-ignored repo-wide; the detector needs the exception."""
     import subprocess
 
     weights = vad._ASSETS / "earshot_vad" / "earshot_vad.safetensors"
@@ -89,7 +87,6 @@ def test_a_builtin_detector_loads_on_the_cpu_with_nothing_to_download(monkeypatc
         return SimpleNamespace(process = SimpleNamespace(poll = lambda: None), stop = lambda: None)
 
     monkeypatch.setattr(clip.AudioCppServer, "start", staticmethod(start))
-    # Not training: a Hub detector would go to the GPU here.
     monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
     sidecar = vad.AudioCppVadSidecar()
 
@@ -103,14 +100,12 @@ def test_a_builtin_detector_loads_on_the_cpu_with_nothing_to_download(monkeypatc
         "label": "Earshot VAD",
         "available": True,
     }
-    # Every clip asks for a load: a live built-in answers without looking at the disk again.
     monkeypatch.setattr(vad, "resolve_vad_model", lambda *a, **k: pytest.fail("resolved again"))
     assert sidecar.load("Builtin/Earshot-VAD") == "builtin/earshot-vad"
     assert len(launched) == 1
 
 
 def test_status_answers_while_a_clip_check_holds_the_lock():
-    """The picker reads the built-in list from status; a slow detector must not hold it up."""
     import threading
 
     sidecar = vad.AudioCppVadSidecar()
@@ -129,7 +124,6 @@ def test_status_answers_while_a_clip_check_holds_the_lock():
         (None, None),
         ("builtin/earshot-vad", None),
         ("Builtin/Silero-VAD", None),
-        # Unknown built-in: the load refuses it (422); it is not a Hub repo to check access for.
         ("builtin/no-such-detector", None),
         (PULSEVAD, acm.AUDIO_CPP_REPO),
     ],
@@ -168,12 +162,10 @@ def test_only_vad_models_resolve(monkeypatch):
 
 
 def test_a_load_right_after_a_download_finds_the_model_it_fetched(monkeypatch, tmp_path):
-    """A load straight after a download must find the model the download fetched."""
     from core.inference import audio_cpp_backend, stt_sidecar
     from utils import hf_cache_settings
 
     hub = [acm.RepoFile("PulseVAD-GGUF/pulsevad.gguf", 1024)]
-    # What the local cache lists: nothing until a download has fetched the repo.
     cache = []
 
     def list_files(repo_id, folder = "", hf_token = None, *, network = True):
@@ -192,7 +184,6 @@ def test_a_load_right_after_a_download_finds_the_model_it_fetched(monkeypatch, t
     acm.forget()
     monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(tmp_path))
     monkeypatch.setattr(acm, "list_files", list_files)
-    # No header read over the network: the family comes from the file names.
     monkeypatch.setattr(acm, "read_remote_header", lambda *a, **k: None)
     monkeypatch.setattr(
         audio_cpp_backend.AudioCppBackend, "_download_missing", staticmethod(download_missing)
@@ -267,7 +258,6 @@ def test_training_admission_frees_a_gpu_placed_detector(monkeypatch, on_cpu):
 
 
 def test_a_detect_keeps_the_server_it_loaded_until_the_run_ends(monkeypatch):
-    """An unload asked for during a clip waits for the clip to finish before it stops the server."""
     import io
     import threading
     import wave
@@ -317,7 +307,6 @@ def test_a_detect_keeps_the_server_it_loaded_until_the_run_ends(monkeypatch):
         unload_thread = threading.Thread(target = lambda: unloaded.append(sidecar.unload()))
         unload_thread.start()
         unload_thread.join(timeout = 0.5)
-        # The unload is still waiting behind the clip, so the server has not been stopped.
         assert unload_thread.is_alive()
         assert stopped == []
     finally:

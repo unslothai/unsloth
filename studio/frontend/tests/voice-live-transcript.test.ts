@@ -56,7 +56,6 @@ test("words come back as the audio is posted, and finish gives the whole transcr
     onText: (text) => heard.push(text),
     fetcher,
   });
-  // Audio heard before the session is ready waits for it, then goes in one post.
   live.feed(new Float32Array(1600).fill(0.5));
   live.feed(new Float32Array(1600).fill(-0.5));
   await settle();
@@ -69,7 +68,6 @@ test("words come back as the audio is posted, and finish gives the whole transcr
   say({ type: "delta", text: "  there" });
   await settle();
   assert.deepEqual(heard, ["Hello", "Hello there"]);
-  // Less than a post's worth is held until the speaker stops.
   live.feed(new Float32Array(800));
   await settle();
   assert.equal(posts.length, 1);

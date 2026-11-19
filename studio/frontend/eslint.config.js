@@ -47,7 +47,6 @@ export default defineConfig([
       ],
     },
   },
-  // The voice domain stays pure: time, settings and messages come in as arguments.
   {
     files: [
       "src/features/chat/voice/{speech-text,tts-chunk-plan,clip-speculation,turn-fuser,heard-cut,voice-instruction,speech-normalize}.ts",

@@ -846,7 +846,6 @@ export const ko = {
     holdToStopTip: "{label} · 길게 눌러 중지",
     approvalGone: "이 요청은 더 이상 답변을 기다리지 않습니다.",
     approvalRetry: "결정을 보내지 못했습니다. 다시 시도해 주세요.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} 전송",
       arcWaiting: "{p} 대기",

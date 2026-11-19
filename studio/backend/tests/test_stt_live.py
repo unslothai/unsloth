@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Live transcription against a stand-in for audio.cpp's chunked /v1/audio/transcriptions/live."""
 
 import socket
 import threading
@@ -13,7 +12,6 @@ from core.inference.stt_live import LiveTranscript, LiveTranscriptError
 
 
 def _runtime(reply_after_audio):
-    """A one-request server: reads the chunked body, answering as ``reply_after_audio`` says."""
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -55,7 +53,6 @@ def test_words_arrive_while_audio_is_still_being_sent():
     session = LiveTranscript(port, "studio-1", 16000, "en")
     events = session.events()
     session.feed(b"\x01\x00\x02\x00")
-    # The first words are read before the speaker has stopped.
     assert next(events) == {"type": "delta", "text": "Hello"}
     session.feed(b"\x03\x00")
     session.finish()

@@ -15,7 +15,6 @@ test("the chat model's voice is checked on the selected model, kept slot or prim
       "@/features/chat/api/chat-api": {
         getInferenceStatus: async (_signal: unknown, model?: string) => {
           asked.push(model);
-          // The backend falls back to the primary slot (here the local LFM3) for a model it does not serve.
           return model === "LiquidAI/LFM3-Audio-2B" || model === "hosted/text-model"
             ? { speaks: true, model_identifier: "LiquidAI/LFM3-Audio-2B", active_model: "LFM3-Audio-2B" }
             : { speaks: false };

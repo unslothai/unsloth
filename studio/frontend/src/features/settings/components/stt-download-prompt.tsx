@@ -47,7 +47,7 @@ export function SttDownloadPrompt() {
   const pending = useSttDownloadPromptStore((s) => s.pending);
   const dismiss = useSttDownloadPromptStore((s) => s.dismiss);
   const hfToken = useHfTokenStore((state) => state.token);
-  // The dialog fades out after dismiss clears the request: keep drawing the last one, not "Download ?".
+  // Keep drawing the last request while the dialog fades out, not "Download ?".
   const [lastShown, setLastShown] = useState(pending);
   if (pending && pending !== lastShown) setLastShown(pending);
   const shown = pending ?? lastShown;

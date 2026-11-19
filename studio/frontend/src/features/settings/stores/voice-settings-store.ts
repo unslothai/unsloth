@@ -178,13 +178,9 @@ export interface VoiceSettingsState extends VoiceOrbOverlayPrefs {
   autoReadAloud: boolean;
   setAutoReadAloud: (value: boolean) => void;
 
-  /** Let the chat model reason before a voice turn's reply. Off by default: every reasoning
-   * token is silence before the first spoken word. Typed chat keeps its own Thinking setting. */
   voiceThinking: boolean;
   setVoiceThinking: (value: boolean) => void;
 
-  /** The speech model's own options voice mode sends (speed, language...), per model id in lower case.
-   * Kept apart from the Audio page's, and set in the voice panel or Settings before the model loads. */
   voiceTtsOptions: Record<string, VoiceTtsOptionValues>;
   setVoiceTtsOption: (modelId: string, name: string, value: VoiceTtsOptionValue | undefined) => void;
   resetVoiceTtsOptions: (modelId: string) => void;
@@ -224,17 +220,14 @@ export interface VoiceSettingsState extends VoiceOrbOverlayPrefs {
   voiceLogExportedAt: number | null;
   setVoiceLogExportedAt: (value: number | null) => void;
 
-  /** Voice mode switches (Settings > Voice > Voice mode): first clause early, numbers as words, heard-text cut. */
   clauseFirstChunk: boolean;
   speechNormalize: boolean;
   heardCut: boolean;
   setVoiceRollout: (setting: VoiceRolloutSetting, on: boolean) => void;
   turnEnding: VoiceTurnEnding;
   setTurnEnding: (value: VoiceTurnEnding) => void;
-  /** The text judge's bar in the Smart Turn + judge lane. */
   turnJudgeBar: number;
   setTurnJudgeBar: (value: number) => void;
-  /** What voice mode tells the chat model about answering aloud; "custom" sends replyInstructionCustom. */
   replyInstruction: VoiceReplyInstruction;
   setReplyInstruction: (value: VoiceReplyInstruction) => void;
   replyInstructionCustom: string;
@@ -596,7 +589,7 @@ if (typeof window !== "undefined") {
   });
 }
 
-// Never ends on half of a surrogate pair: a lone one is not valid UTF-8 on the way to the server.
+// Never end on half a surrogate pair: a lone one is not valid UTF-8.
 function clipInstruction(value: string): string {
   const clipped = value.slice(0, VOICE_CUSTOM_INSTRUCTION_MAX);
   return /[\uD800-\uDBFF]$/.test(clipped) ? clipped.slice(0, -1) : clipped;
@@ -620,12 +613,11 @@ const MAX_VOICE_TTS_MODELS = 40;
 const MAX_VOICE_TTS_OPTIONS = 40;
 const MAX_VOICE_TTS_TEXT = 2000;
 
-/** The store key for a speech model's options: ids differ only in case across the catalog and status. */
+/** Ids differ only in case between the catalog and status. */
 export function voiceTtsOptionsKey(modelId: string | null | undefined): string {
   return (modelId ?? "").trim().toLowerCase();
 }
 
-/** Saved options as the store keeps them: primitives only, capped, so a bad entry cannot reach a request. */
 export function normalizeVoiceTtsOptions(raw: unknown): Record<string, VoiceTtsOptionValues> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const out: Record<string, VoiceTtsOptionValues> = {};

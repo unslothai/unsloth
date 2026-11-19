@@ -53,7 +53,6 @@ export const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) 
           {t("browser.agent.deny")}
         </Button>
       </span>
-      {/* A refused answer leaves the card up: say why, or it reads as a click that did nothing. */}
       {failure ? (
         <p role="alert" className="w-full text-right text-ui-12 text-destructive">
           {t(failure === "gone" ? "voiceOrb.approvalGone" : "voiceOrb.approvalRetry")}

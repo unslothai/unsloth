@@ -955,7 +955,6 @@ export const uk = {
     holdToStopTip: "{label} · утримуйте, щоб зупинити",
     approvalGone: "Цей запит більше не чекає на відповідь.",
     approvalRetry: "Не вдалося надіслати ваше рішення. Спробуйте ще раз.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} надіслано",
       arcWaiting: "{p} чекає",

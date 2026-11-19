@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure: fixed text, appended last, so the prompt prefix stays byte-stable from turn to turn.
+// Appended last so the prompt prefix stays byte-stable across turns.
 
-/** The voice rework's spoken-reply instruction (also re-exported by voice-models). */
 export const SPOKEN_REPLY_INSTRUCTIONS =
   "This is a spoken conversation: your reply is read aloud to the user. Answer the way a person " +
   "would say it, in one to three short sentences of plain speech, in the user's language. Do not " +
@@ -13,7 +12,6 @@ export const SPOKEN_REPLY_INSTRUCTIONS =
 export const VOICE_INSTRUCTION =
   "You are speaking aloud. Answer in plain sentences without markdown, lists, tables, code or links. Keep answers to one to three short sentences unless asked for more, and ask at most one question at a time. Say numbers, dates and units the way a person would say them.";
 
-/** The default: one voice prompt covering misheard transcripts, tool calls and thinking models. */
 export const CONVERSATION_INSTRUCTION =
   "You are in a live voice conversation. The user is talking to you, and what you write is read aloud by a text-to-speech voice and also shown in the chat.\n" +
   "\n" +
@@ -28,7 +26,6 @@ export const CONVERSATION_INSTRUCTION =
 
 export type ReplyInstructionChoice = "conversation" | "spoken" | "voice" | "custom" | "none";
 
-/** The chat instructions with the chosen spoken-reply text last; "custom" sends `custom`, blank sends nothing. */
 export function withReplyInstruction(
   systemPrompt: string,
   choice: ReplyInstructionChoice,

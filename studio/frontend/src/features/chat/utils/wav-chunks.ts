@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Dependency-free so the node test runner loads it directly.
-
 import { encodeWav } from "../adapters/pcm-recorder.ts";
 
 function bytesOf(base64: string): Uint8Array {
@@ -55,7 +53,7 @@ function wavBytes(fmt: Uint8Array, data: Uint8Array): Uint8Array {
   return out;
 }
 
-/** One WAV of every chunk, in order. A chunk that is not a WAV, or differs in format, is left out. */
+/** Drops non-WAV and mismatched chunks; with none left, returns the first chunk. */
 export function joinWavBase64(chunks: readonly string[]): string {
   if (chunks.length === 1) return chunks[0] ?? "";
   let fmt: Uint8Array | null = null;

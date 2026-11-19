@@ -893,7 +893,6 @@ class _SpeechStopped(Exception):
 
 
 def _speech_event_streamers(events, cancel_event, stopped):
-    """LFM3 streamers queueing ("text", id) / ("frame", codes); the text streamer's first put is the prompt."""
     from transformers.generation.streamers import BaseStreamer
 
     def check():
@@ -925,16 +924,11 @@ def _speech_event_streamers(events, cancel_event, stopped):
     return _Text(), _Audio()
 
 
-# LiquidCodec frames are 80 ms. Measured on an A100 (LFM3-Audio-2B, 9 replies): 2 then 6 frames
-# start audio at 0.39 s vs 0.53 s for 4 then 12, with less total silence (1.24 s vs 1.49 s).
 _SPEECH_FIRST_CHUNK_FRAMES = 2
 _SPEECH_CHUNK_FRAMES = 6
 
 
 class _SpeechChunker:
-    """Chunked decode through LiquidCodecStreamingCache: the chunks join into the whole decode.
-    Placed before generate starts, so the first reply's codec move is off the first chunk."""
-
     def __init__(self, codec, model):
         self.codec = codec
         self.pending: list = []
@@ -2995,7 +2989,6 @@ class InferenceBackend:
         )
 
     def _stream_speech(self, conversation, prefill, max_new_tokens, use_adapter, cancel_event):
-        """Yields text deltas and ``{"speech", "sample_rate"}`` WAV chunks as frames arrive."""
         import base64
         import queue
 
@@ -3049,7 +3042,6 @@ class InferenceBackend:
             worker = threading.Thread(target = run, name = "lfm3-spoken-reply", daemon = True)
             worker.start()
             text_ids: list = []
-            # Detokenised from the last emitted boundary, not from the start, so each token costs O(1).
             prefix = read = 0
             said = ""
             finished = False
@@ -3066,7 +3058,7 @@ class InferenceBackend:
                         text_ids.append(value)
                         seen = raw_tokenizer.decode(text_ids[prefix:read], skip_special_tokens = True)
                         now = raw_tokenizer.decode(text_ids[prefix:], skip_special_tokens = True)
-                        # A trailing U+FFFD is a character split over byte tokens (an emoji): wait for the rest.
+                        # Trailing U+FFFD: a split character; wait for the rest.
                         if len(now) > len(seen) and not now.endswith("\ufffd"):
                             delta = now[len(seen) :]
                             prefix, read = read, len(text_ids)
@@ -3080,7 +3072,7 @@ class InferenceBackend:
                         if wav is not None:
                             yield speech_item(wav, sample_rate)
             finally:
-                # The worker can still be alive just after queueing `done`; only an early exit stops it.
+                # The worker may outlive the queued done; only an early exit stops it.
                 if not finished:
                     stopped.set()
                 worker.join()
@@ -3092,7 +3084,6 @@ class InferenceBackend:
             if decoder.streamed:
                 wav = decoder.finish()
             else:
-                # No frame reached the streamer: decode what generate returned, as before.
                 lengths = getattr(out, "audio_lengths", None)
                 frames = int(lengths[0]) if lengths is not None else 0
                 wav = decoder.whole(out.audio_codes[:1, :, :frames]) if frames > 0 else None
@@ -3128,7 +3119,6 @@ class InferenceBackend:
         ).to(model.device)
         prompt_len = int(inputs["input_ids"].shape[1])
         budget = generation_budget_within_context(model, prompt_len, max_new_tokens)
-        # Unset: the free window, capped as the MLX path caps it.
         return (
             inputs,
             prompt_len,
@@ -3136,7 +3126,6 @@ class InferenceBackend:
         )
 
     def _speak_text(self, text, max_new_tokens, use_adapter, cancel_event, language, audio_options):
-        """The loaded LFM3 model reads ``text`` aloud in its TTS mode: ``(wav_bytes, sample_rate)``."""
         from core.inference.audio_errors import AudioGenerationCancelledError
 
         conversation = [

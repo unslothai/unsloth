@@ -98,7 +98,6 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
       }}
     />
   );
-  // Opt-in only, and only offered while the chat model can speak.
   if (!speaks && !isChatModelVoice(value)) return picker;
   return (
     <div className="flex min-w-0 flex-col">
@@ -128,11 +127,9 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
 interface BuiltinSpeakers {
   family: string | null;
   values: string[];
-  /** The speaker the model uses when none is picked. */
   fallback: string | null;
 }
 
-/** The speaker that will be heard: the pick when the model has it, else the model's own default. */
 function effectiveSpeaker(speakers: BuiltinSpeakers, picked: string): string | null {
   if (picked && speakers.values.includes(picked)) return picked;
   return speakers.fallback && speakers.values.includes(speakers.fallback) ? speakers.fallback : null;
@@ -143,7 +140,6 @@ export interface VoicePreset {
   modelId: string;
   spec: VoiceModelSpec;
   label: string | null;
-  /** No preset speaker: voice mode draws one when it starts and keeps it (voice-pin.ts). */
   newVoiceEachSession: boolean;
   speakers: BuiltinSpeakers | null;
   canClone: boolean;
@@ -155,7 +151,7 @@ export function useVoicePreset(modelId: string, loaded: boolean): VoicePreset {
   const savedVoiceId = useChatRuntimeStore((s) => s.selectedVoiceId);
   const savedVoices = useAudioVoicesStore((s) => s.voices);
   const speaker = useChatRuntimeStore((s) => s.selectedVoiceSpeaker);
-  // Read before the model loads too, so the voice and its options can be set up before Start.
+  // Read before the model loads, so voice options can be set before Start.
   const spec = useVoiceModelSpec(modelId, loaded);
   const voiceDefault = spec.specs.find((s) => s.name === "voice")?.default;
   const speakers: BuiltinSpeakers | null = spec.speakers.length
@@ -177,7 +173,6 @@ export function useVoicePreset(modelId: string, loaded: boolean): VoicePreset {
     newVoiceEachSession: !savedVoiceId && (spec.family === "omnivoice" || voiceVariesPerSentence(modelId)),
     speakers,
     canClone,
-    // Until the spec answers, a speech model stays openable: the drill-in says it is loading.
     choosable:
       canClone ||
       (speakers?.values.length ?? 0) > 1 ||
@@ -204,7 +199,6 @@ export const VoicePresetPanel: FC<{
     if (preset.canClone) void useAudioVoicesStore.getState().refresh();
   }, [preset.canClone]);
 
-  // A pick far down a long list (Kokoro has 50+ speakers) would open out of sight: bring it into view.
   const listed = speakers?.values.length ?? 0;
   useEffect(() => {
     listRef.current
@@ -218,9 +212,7 @@ export const VoicePresetPanel: FC<{
     "px-2 pb-1 pt-0.5 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground";
   const choices = (speakers && speakers.values.length > 1) || preset.canClone;
   return (
-    // Opened More options can outgrow the space above the composer: the drill-in scrolls, never clips.
     <div className="flex min-w-0 max-h-[calc(var(--radix-popover-content-available-height,70vh)-4rem)] flex-col overflow-y-auto overscroll-contain p-1.5">
-      {/* The list scrolls on its own so the sound settings below stay in view (Kokoro has 50+ speakers). */}
       <div
         ref={listRef}
         className={cn("flex min-w-0 flex-col", choices && "max-h-[min(15rem,40vh)] overflow-y-auto overscroll-contain")}

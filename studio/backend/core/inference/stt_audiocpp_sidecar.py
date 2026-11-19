@@ -105,8 +105,6 @@ _MOSS_TOKENS_PER_SECOND = 12
 _MOSS_CONTEXT_TOKENS = 131_072
 _MOSS_PROMPT_TOKENS_PER_SECOND = 13.5
 _MOSS_PROMPT_OVERHEAD_TOKENS = 512
-# A short clip gets twice its speech rate plus slack, not the 14-minute default: a decode that loops
-# on noise (a cough, a breath) then stops in about a second instead of running 5120 tokens (~20 s).
 _MOSS_SHORT_CLIP_SLACK_TOKENS = 128
 
 
@@ -128,7 +126,6 @@ def _moss_max_tokens(duration: Optional[float]) -> Optional[int]:
 
 
 def _looped_short_clip(detail: str, options: dict) -> bool:
-    """MOSS ran out of a short clip's token budget: it looped on sound with no words in it."""
     cap = options.get("max_tokens")
     return (
         isinstance(cap, int)
@@ -681,9 +678,7 @@ class AudioCppSttSidecar:
         self._launched_cpu = False
         # Tracked separately: ``model_options`` is not part of AudioCppModel equality.
         self._aligned = False
-        # The server runs the model in streaming mode, so open_live() needs no restart.
         self._live = False
-        # Live sessions in progress: the idle timer waits for them.
         self._live_open = 0
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
@@ -948,9 +943,6 @@ class AudioCppSttSidecar:
         on_phase: Optional[Callable[[str], None]] = None,
         live: bool = False,
     ) -> None:
-        """A server already holding the aligner keeps it for untimestamped requests (no restart).
-        ``live`` starts a model the runtime can transcribe live in streaming mode, which whole-file
-        requests use as well; any other model loads as usual."""
         from core.inference.audio_device import stt_device_forces_cpu
 
         if request_cancel_event is not None and request_cancel_event.is_set():
@@ -958,7 +950,6 @@ class AudioCppSttSidecar:
         self._raise_if_update_in_progress()
         entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         aligned = bool(timestamps) and entry.family in _ALIGNED_FAMILIES
-        # The aligner runs on whole files: a timestamped load is not a streaming one.
         streaming = bool(live) and not aligned and family_streams(entry.family)
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
@@ -1148,8 +1139,6 @@ class AudioCppSttSidecar:
     def open_live(
         self, model: Optional[str], sample_rate: int, language: Optional[str] = None
     ) -> LiveTranscript:
-        """A session that transcribes speech as it arrives (see stt_live). The model is started in
-        streaming mode first when it is not running that way; close_live() ends the session."""
         self._raise_if_update_in_progress()
         ensure_engine_available()
         target = self.keep_loaded_variant(model)

@@ -157,7 +157,6 @@ def pinned_runtime(monkeypatch):
 NEWER_RUNTIME_VARIANTS = {"Phonon-2-GGUF"}
 
 
-# Voice mode loads these itself, so they run with no page and no picker.
 VOICE_HELPERS = {"Smart-Turn-v3-GGUF"}
 
 

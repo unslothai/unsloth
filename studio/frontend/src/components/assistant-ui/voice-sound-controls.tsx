@@ -18,10 +18,6 @@ import { type FC, useId } from "react";
 
 const EMPTY = {};
 
-/**
- * The speech model's own options for voice mode (speed, language, then the rest under More options),
- * editable before the model loads. Shared by the voice panel and Settings so both show the same values.
- */
 export const VoiceSoundControls: FC<{
   modelId: string;
   spec: VoiceModelSpec;
@@ -41,7 +37,6 @@ export const VoiceSoundControls: FC<{
         role="status"
         className={cn("flex items-center gap-2 px-2 py-1.5 text-ui-12 text-muted-foreground", className)}
       >
-        {/* The paragraph is the status; the spinner's own "Loading" would be said twice. */}
         <span aria-hidden="true" className="flex">
           <Spinner className="size-3.5" />
         </span>

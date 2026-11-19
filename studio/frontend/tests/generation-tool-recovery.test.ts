@@ -497,7 +497,6 @@ async function recoverRun(
   options: {
     cursor?: number;
     viewContent?: unknown[];
-    /** The open thread's copy of the reply's custom metadata, as it stands when the follow starts. */
     viewCustom?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
     stallBefore?: number;
@@ -1633,7 +1632,6 @@ test("recovery keeps a model note on the finished card it targets", () => {
 });
 
 test("a heard cut set on the open reply survives the follow that finishes it", async () => {
-  // Voice mode cut the reply where the user barged in; the follow began from a copy without the cut.
   const cut = { offset: 148, at: 1 };
   const { snapshots, shownCustom } = await recoverRun(
     [],

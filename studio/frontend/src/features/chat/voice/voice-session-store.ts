@@ -10,7 +10,7 @@ import { unloadVadModel } from "./vad-client.ts";
 import { endVoiceOnSignOut, loadVoiceMode } from "./voice-loop-bridge.ts";
 import type { VoiceSessionPorts } from "./voice-session.ts";
 
-// Voice mode's listening models: the transcriber, the speech detector (it has no idle unload) and the turn judge.
+// The speech detector has no idle unload, so it is released here.
 export function releaseVoiceModels(): void {
   void unloadSttModel().catch(() => {});
   void unloadVadModel();

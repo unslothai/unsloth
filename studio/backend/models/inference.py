@@ -7301,7 +7301,6 @@ class AudioVoiceListResponse(BaseModel):
 
 
 class AudioModelOptionsResponse(BaseModel):
-    """A speech model's Speak options, read from its spec without loading it."""
 
     model: str
     audio_family: Optional[str] = None

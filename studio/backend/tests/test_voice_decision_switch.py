@@ -99,7 +99,6 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
         "loading",
     )
     assert switched == [True]
-    # The new pick starts loading now, off the request.
     assert warmed.wait(5)
 
     assert client.put("/api/inference/voice/decision", json = {"name": "nope"}).status_code == 400
@@ -108,15 +107,6 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
 
 
 def test_a_stock_checkpoint_is_not_offered_and_reads_as_not_set_up(monkeypatch, tmp_path):
-    """Stock Decision checkpoints were never trained on voice mode's questions, so they are no pick.
-
-    Measured on 480 labelled finished / unfinished utterances, through Studio's own Laya path: with
-    the production question laya-english scores AUC 0.52 (a coin is 0.50) and holds 95% of finished
-    turns at the 0.65 bar, 4 s each; laya-multilingual and laya-typed-decisions hold 99%; no
-    wording, state format, polarity or question type of 19 tried got past AUC 0.80. The filler
-    question fails on every call (its 12 class descriptions exceed Laya's 176-token option budget),
-    and interject gets 12 of 24 right.
-    """
     from auth.authentication import get_current_subject
     from core.inference import voice_models as vm
     from core.systemone import catalog
@@ -127,7 +117,6 @@ def test_a_stock_checkpoint_is_not_offered_and_reads_as_not_set_up(monkeypatch, 
     with pytest.raises(ValueError, match = "not trained for voice mode"):
         vd.set_checkpoint("default")
 
-    # A pick saved before this rule, or set at launch, counts as no pick at all.
     from storage.studio_db import upsert_app_settings
 
     upsert_app_settings({vd.SETTING_KEY: "laya-english"}, read_back = False)
@@ -141,7 +130,7 @@ def test_a_stock_checkpoint_is_not_offered_and_reads_as_not_set_up(monkeypatch, 
     monkeypatch.setattr(catalog, "fine_tunes", lambda: [])
     monkeypatch.setattr(catalog, "folder_decisions", lambda: [])
     client = _voice_client([inference.router, inference.studio_router])
-    # No answer from an untrained model: the browser sends the turn after its normal pause.
+    # 503 makes the browser fall back to its normal pause.
     assert (
         client.post("/api/inference/voice/judge", json = {"text": "Tell me a joke."}).status_code
         == 503
@@ -150,7 +139,6 @@ def test_a_stock_checkpoint_is_not_offered_and_reads_as_not_set_up(monkeypatch, 
 
     got = client.get("/api/inference/voice/decision").json()
     assert (got["current"], got["source"], got["launch_default"]) == (None, None, None)
-    # What the panel shows as "Not set up", not as an error.
     assert got["builtin_configured"] is False
     assert got["models"] == []
     put = client.put("/api/inference/voice/decision", json = {"name": "laya-english"})
@@ -332,7 +320,6 @@ def test_a_question_for_a_model_that_did_not_load_says_why(monkeypatch, tmp_path
     with pytest.raises(vm.VoiceModelUnavailable, match = "judge model is unavailable: FileNotFound"):
         models.judge("hi")
 
-    # A pick switched between the route's check and its call answers 503 like any unavailable model.
     def gone(text):
         raise vm.VoiceModelUnavailable("Voice judge model is unavailable: switched")
 

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Phase 4: when a heard cut is taken, where it is read, how it is saved and undone.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -28,7 +26,6 @@ test("the next request is cut from memory while the old run is still cancelling"
   setPendingHeardCut("a1", { offset: "Paris is the capital.".length });
   try {
     assert.equal(modelVisibleMessage(message()).content[0].text, "Paris is the capital.");
-    // The saved cut and the pending one: the later (larger) one wins.
     const saved = message({ custom: { voiceHeard: { offset: REPLY.length, at: 1 } } });
     assert.equal(modelVisibleMessage(saved).content[0].text, REPLY);
   } finally {
@@ -92,7 +89,6 @@ test("the cut is saved through the edit path, and undo clears it the same way", 
   await mod.setThreadMessageVoiceHeard({ thread: t, messageId: "a1", remoteId: "th", isIncognito: false, heard: null });
   assert.deepEqual(t.custom(), { kept: 1 });
   assert.equal(saves.length, 2);
-  // Undone: the model gets the full reply again.
   assert.equal(modelVisibleMessage(message({ custom: t.custom() })).content[0].text, REPLY);
 });
 
@@ -166,7 +162,6 @@ test("editing a cut reply drops its cut, saved and pending", async () => {
   const custom = (data.messages[0].message.metadata as { custom?: Record<string, unknown> }).custom ?? {};
   assert.equal("voiceHeard" in custom, false);
   assert.equal(pendingHeardCut("a1"), null);
-  // Saved with the same text: a pending cut still means something and is kept.
   setPendingHeardCut("a1", { offset: 5 });
   await mod.updateThreadMessage({ thread: t, messageId: "a1", remoteId: "th", newText: "Rome is the capital.", isIncognito: false });
   assert.deepEqual(pendingHeardCut("a1"), { offset: 5 });

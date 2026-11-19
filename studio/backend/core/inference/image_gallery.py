@@ -240,7 +240,6 @@ def _publish(image_id: str, meta: dict[str, Any], data: bytes) -> dict[str, Any]
         except OSError:
             pass
         raise
-    # The gallery sorts by mtime: keep each image strictly newer than the last, batch or not.
     gallery_flags.stamp_newest(final_path)
     return _record(image_id, meta, directory = directory)
 

@@ -846,7 +846,6 @@ export const hi = {
     holdToStopTip: "{label} · रोकने के लिए दबाए रखें",
     approvalGone: "यह अनुरोध अब जवाब का इंतज़ार नहीं कर रहा है।",
     approvalRetry: "आपका फ़ैसला भेजा नहीं जा सका। फिर से कोशिश करें।",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} भेजा",
       arcWaiting: "{p} रुका",

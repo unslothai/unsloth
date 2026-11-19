@@ -23,21 +23,15 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Voiced time, in ms, a clip needs to count as speech: a whole utterance, and the short probe of a
-# barge-in. These are the Hub detectors' bars (PulseVAD counts 100 ms windows).
 _HUB_BARS = (300.0, 200.0)
 
 
 @dataclass(frozen = True)
 class BuiltinDetector:
-    """A detector whose weights are not on the Hub: they ship with Unsloth Studio, or with the audio
-    runtime's own asset bundle. These are small CPU networks, so they never take the GPU."""
-
     id: str
     family: str
     display_name: str
     bars: tuple[float, float] = _HUB_BARS
-    # The first audio runtime release that runs the family, where an older supported one does not.
     min_runtime: Optional[tuple[int, int, int]] = None
 
 
@@ -45,34 +39,28 @@ BUILTIN_PREFIX = "builtin/"
 BUILTIN_DETECTORS: dict[str, BuiltinDetector] = {
     d.id: d
     for d in (
-        # Earshot times speech in 16 ms frames, so the same short word reads 220-285 ms where
-        # PulseVAD says 300: its bars sit lower to keep the same clips.
+        # Earshot's 16 ms frames read short words 220-285 ms, not 300: lower bars.
         BuiltinDetector(
             "builtin/earshot-vad", "earshot_vad", "Earshot VAD", (200.0, 150.0), (0, 9, 3)
         ),
-        # Their weights come only with the runtime's asset bundle, so a runtime that has them runs them.
         BuiltinDetector("builtin/silero-vad", "silero_vad", "Silero VAD"),
         BuiltinDetector("builtin/marblenet-vad", "marblenet_vad", "MarbleNet VAD"),
     )
 }
-# Scores 16 ms frames in about 2 ms per clip on the CPU, with nothing to download.
 DEFAULT_VAD_MODEL = "builtin/earshot-vad"
 _ASSETS = Path(__file__).resolve().parents[2] / "assets" / "audio"
 _WEIGHT_SUFFIXES = (".safetensors", ".gguf")
 
 
-# The names the routes and callers know these by.
 VadError = ClipError
 VadUnavailableError = ClipUnavailableError
 
 
 def _canonical(model: Optional[str]) -> str:
-    """The id as the table keys it; no id means the default detector."""
     return ((model or "").strip() or DEFAULT_VAD_MODEL).lower()
 
 
 def is_builtin_id(model: Optional[str]) -> bool:
-    """Whether ``model`` is in the built-in namespace, known or not: such an id is never a Hub repo."""
     return _canonical(model).startswith(BUILTIN_PREFIX)
 
 
@@ -81,7 +69,6 @@ def builtin_detector(model: Optional[str]) -> Optional[BuiltinDetector]:
 
 
 def _weights(detector: BuiltinDetector, binary: Optional[str]) -> list[Path]:
-    """The detector's weight files: Studio's own copy, else the runtime's asset bundle."""
     roots = [_ASSETS / detector.family]
     if binary:
         runtime = Path(binary).resolve().parent
@@ -99,14 +86,12 @@ def _weights(detector: BuiltinDetector, binary: Optional[str]) -> list[Path]:
 
 
 def speech_bars(model_id: str) -> dict:
-    """How much voiced time the detector ``resolve_vad_model`` named needs before a clip counts as speech."""
     detector = BUILTIN_DETECTORS.get(model_id)
     utterance_ms, barge_ms = detector.bars if detector else _HUB_BARS
     return {"utterance_ms": utterance_ms, "barge_ms": barge_ms}
 
 
 def detectors() -> list[dict]:
-    """The built-in detectors and whether this install can run each. Hub detectors are in the audio catalogue."""
     listed = []
     for d in BUILTIN_DETECTORS.values():
         try:
@@ -131,7 +116,7 @@ def _builtin_model(detector: BuiltinDetector) -> AudioCppModel:
     if not weights:
         raise VadUnavailableError(f"{detector.display_name} is not included in this install.")
     files = tuple(RepoFile(p.name, p.stat().st_size) for p in weights)
-    # A package variant: the runtime loads the folder, not one file in it.
+    # A package variant: the runtime loads the whole folder.
     variant = AudioCppVariant("builtin", files, "")
     folder = weights[0].parent
     return AudioCppModel(
@@ -160,7 +145,7 @@ def resolve_vad_model(
     if builtin is not None:
         return _builtin_model(builtin)
     if is_builtin_id(identifier):
-        # Shaped like a Hub repo id, but it names nothing there: never look it up.
+        # Hub-shaped, but not a Hub id: never look it up.
         raise VadError(f"'{model}' is not a detector Unsloth Studio includes.")
     return resolve_hub_model(
         identifier, "vad", "detect speech with", network = network, hf_token = hf_token
@@ -222,7 +207,6 @@ class AudioCppVadSidecar(AudioCppClipSidecar):
         return builtin.id if builtin else None
 
     def _weights_path(self, entry: AudioCppModel):
-        # A built-in's weights are a folder of this install, not a Hub download.
         return entry.local_path if entry.id in BUILTIN_DETECTORS else super()._weights_path(entry)
 
     def download(
@@ -232,7 +216,7 @@ class AudioCppVadSidecar(AudioCppClipSidecar):
     ) -> str:
         builtin = builtin_detector(model)
         if builtin is not None:
-            # Nothing to fetch, but an install that cannot run it still says so.
+            # Nothing to fetch; still raises if this install cannot run it.
             return _builtin_model(builtin).id
         return super().download(model, hf_token)
 

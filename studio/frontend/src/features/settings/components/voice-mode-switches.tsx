@@ -105,14 +105,13 @@ function TurnEndingRow() {
 const NO_DECISION_MODEL = "__none__";
 const PERCENT = new Intl.NumberFormat(undefined, { style: "percent" });
 
-// The decision model voice mode asks; installation-wide, so only the owner can change it.
+// Installation-wide, so only the owner can change it.
 function DecisionModelRow() {
   const t = useT();
   const { status, state, switched, failed } = useVoiceDecision(null);
   const [saving, setSaving] = useState(false);
   const label = t("settings.voice.voiceMode.decisionModel.label");
-  // No pick of your own ("None") still decides with the launch default or the built-in classifiers when the server
-  // has them: the option says which, instead of promising voice mode runs without one.
+  // "None" still decides with the launch default, or the built-in classifiers.
   const fallback = status?.launch_default ?? null;
   const current = !status || status.source !== "setting" ? NO_DECISION_MODEL : (status.current ?? NO_DECISION_MODEL);
   const noneLabel = fallback
@@ -152,11 +151,9 @@ function DecisionModelRow() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="end">
-            {/* Picked and also the launch default: clearing the pick changes nothing, so no second row says the same. */}
             {status?.source === "setting" && fallback !== null && status.current === fallback ? null : (
               <SelectItem value={NO_DECISION_MODEL}>{noneLabel}</SelectItem>
             )}
-            {/* The launch default is the None row only while nothing is picked; picked, it is its own row. */}
             {(status?.models ?? []).filter((model) => status?.source === "setting" || model.name !== fallback).map((model) => (
               <SelectItem key={model.name} value={model.name} disabled={!model.available}>
                 {model.label}
@@ -230,7 +227,6 @@ const MODEL_DEFAULT_VOICE = "__default__";
 const SAVED_PREFIX = "saved:";
 const SPEAKER_PREFIX = "speaker:";
 
-// The voice mode speech model's voice and options, set here or in the voice panel before it loads.
 function SpeakingVoiceRow() {
   const t = useT();
   const modelId = useChatRuntimeStore((s) => s.selectedVoiceModelId);
@@ -245,7 +241,6 @@ function SpeakingVoiceRow() {
   }, [preset.canClone]);
   if (!modelId) return null;
   const chatVoice = isChatModelVoice(modelId);
-  // Named as the voice panel names it (no "-GGUF"), so both places read the same.
   const modelName = chatVoice
     ? t("voicePanel.chatModelVoice")
     : audioModelLabel(modelId).replace(/-GGUF$/i, "");
@@ -278,7 +273,6 @@ function SpeakingVoiceRow() {
       description={t("settings.voice.voiceMode.voice.description", { model: modelName })}
       below={
         chatVoice ? null : (
-          // Nested under the voice it tunes, so it does not read as Read aloud's speed above.
           <div className="w-full">
             <VoiceSoundControls
               modelId={modelId}
@@ -323,7 +317,6 @@ function SpeakingVoiceRow() {
   );
 }
 
-/** Each voice mode behaviour, set or switched off here. */
 export function VoiceModeSwitches() {
   return (
     <>

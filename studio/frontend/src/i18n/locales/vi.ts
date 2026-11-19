@@ -950,7 +950,6 @@ export const vi = {
     holdToStopTip: "{label} · giữ để dừng",
     approvalGone: "Yêu cầu này không còn chờ câu trả lời.",
     approvalRetry: "Không gửi được quyết định của bạn. Hãy thử lại.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} đã gửi",
       arcWaiting: "{p} đang chờ",

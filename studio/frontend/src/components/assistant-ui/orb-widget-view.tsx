@@ -207,7 +207,7 @@ const ApprovalPopup: FC<{
   approval: OrbWidgetApproval;
   place: PopupPlacement;
 }> = ({ approval, place }) => (
-  // A group, not a dialog: it takes no focus and has no close of its own.
+  // Not a dialog: it takes no focus.
   <div
     role="group"
     aria-label={approval.line}
@@ -264,7 +264,7 @@ export const OrbWidgetView: FC = () => {
   useEffect(() => {
     let off: (() => void) | null = null;
     let disposed = false;
-    // A listener that resolves after unmount is dropped at once; otherwise it joins the cleanup.
+    // A listener resolving after unmount is dropped at once.
     const adopt = (unlisten: () => void) => {
       if (disposed) unlisten();
       else {
@@ -355,7 +355,6 @@ export const OrbWidgetView: FC = () => {
     <div className="relative h-full w-full select-none">
       {approval && place ? <ApprovalPopup approval={approval} place={place} /> : null}
       <div className="group absolute inset-x-0" style={{ top: offset, height: ORB_WIDGET_HEIGHT }}>
-        {/* The labels come with the first snapshot: until then the buttons would have no name. */}
         {labels ? (
         <div
           className={cn(

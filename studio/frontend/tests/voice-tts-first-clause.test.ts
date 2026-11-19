@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Phase 1: the player speaks the first clause before the first sentence settles, then only the
-// rest of that sentence, and never loses or repeats a splitter sentence while doing it.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -51,7 +48,6 @@ const { queueSentences } = loadWithStubs<Player>(
 
 const newQueue = (): Queue => ({ sentences: [], sources: 0, head: null });
 
-/** Streams `reply` a few characters at a time as the engine's poll does, then ends it. */
 function stream(reply: string, clause: boolean, step = 3) {
   const q = newQueue();
   let headAt: number | null = null;
@@ -69,7 +65,6 @@ function stream(reply: string, clause: boolean, step = 3) {
   return { q, all, headAt, firstSettledAt, mismatches };
 }
 
-/** Each splitter sentence, rebuilt from the entries that carry it. */
 const bySource = (q: Queue, count: number) =>
   Array.from({ length: count }, (_, s) => {
     const parts = q.sentences.filter((e) => e.source === s);
@@ -83,7 +78,6 @@ test("the head goes out from the partial, before the first sentence settles", ()
   const { q, headAt, firstSettledAt } = stream(sentences(2), true);
   assert.equal(q.sentences[0]?.text, "Sentence number 1 talks about the weather,");
   assert.ok(headAt !== null && firstSettledAt !== null && headAt < firstSettledAt);
-  // Then only the rest of that sentence, with its place in the sentence.
   assert.deepEqual(q.sentences[1], {
     text: "and then it ends.",
     source: 0,
@@ -100,7 +94,6 @@ for (const n of [1, 2, 10]) {
       assert.equal(q.sources, n);
       assert.equal(mismatches, 0);
       assert.deepEqual(bySource(q, n), all);
-      // Entries stay in sentence order.
       const order = q.sentences.map((e) => e.source);
       assert.deepEqual(order, [...order].sort((a, b) => a - b));
     }

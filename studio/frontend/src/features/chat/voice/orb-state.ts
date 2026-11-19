@@ -28,9 +28,7 @@ export type VoiceOrbInputs = {
   isReasoning: boolean;
   isSpeaking: boolean;
   voicePaused?: boolean;
-  /** No chat model because one is being loaded or swapped in. */
   chatSwitching?: boolean;
-  /** The picked transcriber is not downloaded: voice cannot hear until it is. */
   sttDownload?: "needed" | "downloading" | null;
 };
 

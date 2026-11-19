@@ -630,11 +630,9 @@ test("every Settings dictation path carries the saved quant", () => {
 
   // the prompt fetches the requester's pin, not the current Voice setting.
   const prompt = readSrc("features/settings/components/stt-download-prompt.tsx");
-  // the download itself starts in one place, which voice mode's Start also calls.
   const downloadNow = readSrc("features/settings/lib/stt-download-now.ts");
   assert.match(downloadNow, /hfApiToken\(hfToken\),\s*undefined,\s*request\.ggufVariant,/);
   assert.match(prompt, /downloadSttNow\(request\)/);
-  // the request stays shown while the dialog closes, so its variant is read from what is shown.
   assert.match(prompt, /const variant = shown\?\.ggufVariant \?\? null;/);
   assert.doesNotMatch(prompt, /sttGgufVariant/);
   assert.match(prompt, /candidate\.quant === \(variant \?\? listing\.default_variant\)/);

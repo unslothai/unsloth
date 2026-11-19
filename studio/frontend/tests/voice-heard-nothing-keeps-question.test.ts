@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A spoken reply cut before any of it was heard is dropped from the history, but the question it
-// answered is not: it joins the next prompt, so the model still sees it and roles keep alternating.
-
 import assert from "node:assert/strict";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
@@ -15,7 +12,6 @@ const adapter = readSrc("features/chat/api/chat-adapter.ts");
 const body = adapter.slice(adapter.indexOf("function pruneOutboundHistory("), adapter.indexOf("function extractImageBase64("));
 
 type Msg = { id: string; role: string; content: { type: string; text?: string }[]; metadata?: unknown; attachments?: unknown[] };
-// Abandoned: an assistant turn with no text left, which is what the real check reads off the wire.
 const isAbandonedAssistantTurn = (m: Msg) => m.role === "assistant" && !m.content.some((p) => p.text?.trim());
 const prune = new Function(
   "withHeardCut",

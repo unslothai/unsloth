@@ -80,7 +80,6 @@ test("a bare conjunction is never a cut, only punctuation is", () => {
   assert.equal(head("That model is a good choice but it needs more"), null);
   assert.equal(head("The download finished a minute ago so you can"), null);
   assert.equal(head("The ocean is salty because rocks and minerals, over time"), "The ocean is salty because rocks and minerals,");
-  // A hyphen inside a word is not a dash.
   assert.equal(head("This is a well-known and widely used approach"), null);
 });
 
@@ -118,7 +117,6 @@ test("a clause head is followed by the comma pause; a sentence is not", () => {
 });
 
 test("the comma inside a date is not a clause cut", () => {
-  // Heard in the walkthrough: "...on July twentieth," then "1969. ..." as its own clip.
   const text = "The first moon landing happened on July 20, 1969, at night";
   const cut = firstClauseCut(text);
   assert.ok(cut === null || text.slice(0, cut).includes("1969"), String(cut));

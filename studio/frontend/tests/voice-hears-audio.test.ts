@@ -22,7 +22,6 @@ const state = (
   modelLoading,
 });
 
-// One row per audio-input family voice mode should hear; only the capability flag differs.
 const AUDIO_MODELS = [
   "unsloth/gemma-4-E2B-it-GGUF",
   "unsloth/gemma-3n-E2B-it",
@@ -67,12 +66,10 @@ test("speech comes back from the model only where it speaks and is the picked vo
   assert.equal(wantsSpokenReply({ ...base, selectedVoiceModelId: VOICE_CHAT_MODEL_VOICE }), true);
   // Voice mode with an audio.cpp voice: that voice reads the text, the model writes only text.
   assert.equal(wantsSpokenReply({ ...base, selectedVoiceModelId: VOICE_DEFAULT_TTS_MODEL }), false);
-  // A model that hears but cannot speak (Gemma 4) never asks for speech.
   assert.equal(
     wantsSpokenReply({ ...base, speaks: false, selectedVoiceModelId: VOICE_CHAT_MODEL_VOICE }),
     false,
   );
-  // Outside voice mode an audio turn to a speaking model is answered aloud, as before.
   assert.equal(
     wantsSpokenReply({ ...base, voiceModeOn: false, selectedVoiceModelId: VOICE_DEFAULT_TTS_MODEL }),
     true,

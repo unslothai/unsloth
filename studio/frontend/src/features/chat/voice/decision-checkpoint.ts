@@ -24,7 +24,7 @@ export interface VoiceDecisionStatus {
   models: VoiceDecisionModel[];
   state: VoiceLoadState;
   error: string | null;
-  // False when the server has no source for the built-in classifiers; absent on older servers.
+  // False when the server has no built-in classifier source; absent on old servers.
   builtin_configured?: boolean;
 }
 

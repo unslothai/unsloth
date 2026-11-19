@@ -89,7 +89,6 @@ async function loadAndAnnounce(
   }
 }
 
-/** Voice mode's Transcribe slot follows the download of the transcriber it is waiting for. */
 function voiceWaitsFor(model: SttModel): boolean {
   const voice = useChatRuntimeStore.getState();
   return voice.selectedSttModelId === model && voice.sttSlotDownload !== null;
@@ -130,7 +129,6 @@ function settle(
     (tracked === undefined ? variant === null : tracked === variant);
   const voice = useChatRuntimeStore.getState();
   const waited = voiceWaitsFor(model);
-  // A voice session that was waiting loads it now, and its slot stays busy until that load ends.
   const forVoice = waited && outcome === "complete" && voice.voiceMode === "active";
   if (waited && !forVoice) voice.setSttSlotDownload(outcome === "complete" ? null : "needed");
   if (warm || forVoice) {

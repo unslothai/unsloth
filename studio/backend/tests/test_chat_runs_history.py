@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A durable chat run replays the request's own messages, so a reply the client cut where the
-user stopped hearing it (voice heard-cut) reaches the model cut, not as stored in the thread."""
 
 from routes.chat_generation_runs import CreateChatGenerationRun, _sanitize_request
 
@@ -36,7 +34,7 @@ def test_the_run_keeps_the_cut_reply_the_request_sent():
 
 
 def test_the_run_does_not_add_messages_the_request_left_out():
-    # An all-unheard reply is pruned with its prompt on the client; the run must not restore it.
+    # The client prunes an unheard reply with its prompt; the run must not restore it.
     messages = [{"role": "user", "content": "And the weather?"}]
     sanitized = _sanitize_request(_run(messages))
     assert sanitized["messages"] == messages

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Phase 4: every row of the heard-cut rules table, the midpoint rule, a clause-split sentence,
-// and base on the run-flicker path.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -21,7 +18,6 @@ import { splitSpoken } from "../src/features/chat/voice/speech-text.ts";
 const REPLY = "Paris is the capital. It sits on the Seine. Its museums are famous.";
 const S = splitSpoken(REPLY);
 const end = (i: number) => S[i].end;
-// One clip per sentence, one second each, starting at t=10.
 const LOG: PlayedChunk[] = S.map((s, i) => ({
   entries: [{ source: i, from: s.start, to: s.end, chars: s.text.length }],
   start: 10 + i,
@@ -44,7 +40,6 @@ test("a chunk's time is shared among its pieces by characters", () => {
     start: 0,
     duration: 4,
   };
-  // Piece 0 spans 0-1 s (midpoint 0.5), piece 1 spans 1-4 s (midpoint 2.5).
   assert.deepEqual(heardCut(S, [both], 0.6, 0), { offset: end(0) });
   assert.deepEqual(heardCut(S, [both], 2.4, 0), { offset: end(0) });
   assert.deepEqual(heardCut(S, [both], 2.5, 0), { offset: end(1) });
@@ -113,10 +108,8 @@ test("parts before the cut's part are kept, parts after it are hidden", () => {
   const sunny = splitSpoken(text).find((s) => s.text === "It is sunny.")!;
   const out = applyHeardCut({ content }, { offset: sunny.end });
   assert.deepEqual(out.content, [reasoning, content[1], tool, { type: "text", text: "It is sunny." }]);
-  // Cut in the first part: the tool call and everything after it never reached the user.
   const first = applyHeardCut({ content }, { offset: "Let me check.".length });
   assert.deepEqual(first.content, [reasoning, content[1]]);
-  // Joined with "\n": "check" + tool + "It" is not "checkIt".
   assert.deepEqual(splitSpoken(text).map((s) => s.text), ["Let me check.", "It is sunny.", "Take a hat."]);
 });
 

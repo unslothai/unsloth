@@ -946,7 +946,6 @@ export const fa = {
     holdToStopTip: "{label} · برای توقف نگه دارید",
     approvalGone: "این درخواست دیگر منتظر پاسخ نیست.",
     approvalRetry: "تصمیم شما ارسال نشد. دوباره تلاش کنید.",
-    // The decision ring and chip: {p} is a formatted percent.
     decision: {
       arcSent: "{p} ارسال شد",
       arcWaiting: "{p} در انتظار",

@@ -113,6 +113,5 @@ test("inline code reads as a person says it", () => {
     "Use list dot reverse to reverse in place, or my list for a copy.",
   );
   assert.equal(stripForSpeech("Set `os.environ` first."), "Set os dot environ first.");
-  // A version or a decimal inside code keeps its digits.
   assert.equal(stripForSpeech("Install `torch==2.4.1`."), "Install torch==2.4.1.");
 });

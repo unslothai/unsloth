@@ -29,7 +29,6 @@ export const VOICE_TTS_MODELS: readonly string[] = [
   ).map((model) => model.id),
 ];
 
-/** Opt-in pick: a `speaks` chat model hears each turn and answers in its own voice. */
 export const VOICE_CHAT_MODEL_VOICE = "chat-model-voice";
 export const CHAT_MODEL_VOICE_SPEAKERS = ["female", "male"] as const;
 
@@ -48,7 +47,6 @@ export function chatModelSpeaks(state: {
   return Boolean(state.models.find((m) => m.id === state.params.checkpoint)?.speaks);
 }
 
-/** Voice turns carry their speech only to an audio-input model, opted in by mic target or the own-voice pick. */
 export function voiceHearsAudio(
   state: {
     models: readonly { id: string; hasAudioInput?: boolean }[];
@@ -76,10 +74,7 @@ export function wantsSpokenReply(input: {
   return !input.voiceModeOn || isChatModelVoice(input.selectedVoiceModelId);
 }
 
-/**
- * Whether the model reasons before this turn. A turn sent while voice mode is running waits in
- * silence for every reasoning token, so it thinks only when the user asked voice mode to.
- */
+/** Voice mode reasons only when asked: reasoning tokens would stall the silent wait. */
 export function reasoningForTurn(input: {
   enabled: boolean;
   voiceModeOn: boolean;
@@ -88,18 +83,12 @@ export function reasoningForTurn(input: {
   return input.enabled && (!input.voiceModeOn || input.voiceThinking);
 }
 
-/**
- * Whether cutting a reply also aborts the sentence being synthesized. The server can only cancel an
- * audio.cpp voice by stopping its process, and the next reply then waits for the voice to load again
- * (35 to 88 seconds on a busy host). A sentence takes a fraction of a second, so it is left to
- * finish and its clip is dropped.
- */
+/** Only chat-model voices abort mid-sentence: an audio.cpp cancel kills its process, and reloading takes 35 to 88 s. */
 export function cutAbortsSpeechRequest(voiceModelId: string | null | undefined): boolean {
   return isChatModelVoice(voiceModelId);
 }
 
-// From the 31-voice listening sweep (an audio model counting speakers over seven sentences): with no saved
-// voice these switch speaker every sentence, even with a fixed seed. A clone keeps a single speaker.
+// These models change speaker every sentence, even with a fixed seed; a clone keeps one.
 const VOICE_VARIES_PER_SENTENCE = new Set(
   [
     "OmniVoice-GGUF",
@@ -117,7 +106,6 @@ export function voiceVariesPerSentence(id: string | null | undefined): boolean {
   return Boolean(id) && VOICE_VARIES_PER_SENTENCE.has(id!.toLowerCase());
 }
 
-/** Whether the voice can speak in a saved Audio voice (the request turns into a clone). */
 export function voiceTtsCanClone(id: string | null | undefined): boolean {
   const model = audioCppModelFor(id);
   return model !== null && audioCppWorkflowsFor(model).includes("clone");

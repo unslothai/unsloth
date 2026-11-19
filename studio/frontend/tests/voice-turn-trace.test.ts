@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Phase 0 tracing: each spoken turn carries one id from speech to first audio, through the
-// turn.* marks, so a latency baseline can be read off the trace.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -26,7 +23,6 @@ test("utterances coalesced into one run keep the first one's id", () => {
   noteVoiceTurn("second");
   assert.equal(sendVoiceTurn(), "first");
   assert.equal(liveVoiceTurn(), "first");
-  // Nothing waits now: a typed send that starts the next run carries no id.
   assert.equal(sendVoiceTurn(), null);
   assert.equal(liveVoiceTurn(), "first");
 });
@@ -113,7 +109,6 @@ test("the first audible sample is placed on the performance clock by the output 
     outputLatency: 0.2,
     getOutputTimestamp: () => ({ contextTime: 1.5, performanceTime: 1000 }),
   };
-  // The speaker plays context time 1.5 at 1000 ms, so 2.0 sounds half a second later.
   assert.equal(audibleAt(2, ctx, 900), 1500);
 });
 

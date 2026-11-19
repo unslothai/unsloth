@@ -638,7 +638,6 @@ def test_voice_pickles_refuse_classes_that_open_files(tmp_path, module, name):
 
 
 class _TailSession:
-    """Stands in for the judge's onnxruntime session: class 1 only when the window fed in holds token 104, the transcript's last word."""
 
     def get_inputs(self):
         return [type("I", (), {"name": "input_ids"})(), type("I", (), {"name": "attention_mask"})()]
@@ -651,7 +650,6 @@ class _TailSession:
 
 
 class _HFTokenizer:
-    """transformers-style: called on a batch, cut on the side truncation_side names (right by default)."""
 
     truncation_side = "right"
 
@@ -687,7 +685,6 @@ def test_the_turn_judges_keep_the_end_of_a_long_transcript(tmp_path, monkeypatch
 
     import numpy as np
 
-    # 100 words are tokens 5..104: a 64-token window that keeps the end of the transcript holds token 104.
     text = " ".join(f"w{i}" for i in range(100))
     monkeypatch.delenv("UNSLOTH_VOICE_DECISION_CHECKPOINT", raising = False)
     if backend == "onnx":

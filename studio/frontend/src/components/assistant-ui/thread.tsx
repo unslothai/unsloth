@@ -7469,7 +7469,6 @@ const ComposerToolsMenu: FC<{
         )}
         {voiceAvailable && (
           <DropdownMenuItem
-            // A toggle: its on/off is said, not only shown by the tick (mixed while setting up).
             role="menuitemcheckbox"
             aria-checked={voiceMode === "active" ? true : voiceMode === "configuring" ? "mixed" : false}
             className={voiceMode !== "off" ? "text-primary font-medium" : undefined}
@@ -7757,7 +7756,6 @@ const ComposerRightControls: FC<{
               </TooltipIconButton>
             )}
           </ComposerPrimitive.If>
-          {/* Voice mode gets its own button beside Dictate: in the plus menu alone, nobody found it. */}
           {voiceAvailable && (
             <TooltipIconButton
               tooltip={t("voiceControls.start")}
@@ -8452,7 +8450,6 @@ const DiffusionCanvas: FC = () => {
 
 const ResearchMessageRunIdContext = createContext<string | null>(null);
 
-/** Under a voice reply the user cut in on: what the model was told they heard, and a way to undo it. */
 const VoiceHeardNote: FC = () => {
   const t = useT();
   const aui = useAui();
@@ -8464,7 +8461,7 @@ const VoiceHeardNote: FC = () => {
   if (offset === null) return null;
   const words = heardTail(content as readonly { type: string; text?: string }[], { offset });
   const restoreFullReply = async () => {
-    // The note unmounts once the cut is gone: focus left on its button would drop to the page.
+    // Unmounts on restore: focus moves off its button first or drops to the page.
     const hadFocus = document.activeElement === buttonRef.current;
     setSaving(true);
     clearPendingHeardCut(messageId);
@@ -8481,7 +8478,6 @@ const VoiceHeardNote: FC = () => {
       });
       if (hadFocus) document.querySelector<HTMLElement>(".aui-composer-input")?.focus();
     } catch (error) {
-      // Rolled back, so the note stays: the cut still applies.
       console.error("Could not restore the full voice reply.", error);
       toast.error(t("voice.interrupted.restoreFailed"));
     } finally {
