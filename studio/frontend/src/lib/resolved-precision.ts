@@ -12,10 +12,13 @@ export interface ResolvedControl {
   // "applied" | "fell_back" | "unsupported". Absent on older backends, which only ever applied.
   status?: string;
   reason: string;
-  // int8_attention only: whether Studio's INT8 attention kernel engaged, which build, how many modules.
-  engaged?: boolean;
+  // int8_attention: whether Studio's INT8 attention kernel engaged (boolean), which build, how many modules.
+  // attention_backend: the backend the attention modules actually run (string), how many run it
+  // (null when the pipeline has no countable processors) and every backend's count in `routed`.
+  engaged?: boolean | string;
   impl?: string | null;
-  modules?: number;
+  modules?: number | null;
+  routed?: Record<string, number>;
 }
 
 export type ResolvedBadgeTone = "auto" | "warn";
@@ -62,6 +65,7 @@ export function formatResolvedValue(key: string, value: string | boolean | null 
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
   if (value === "sage_hub") return "SAGE";
+  if (value === "unsloth_int8") return "INT8";
   // Deferred speed auto: the dense pipe compiles on the 3rd image.
   if (value === "deferred") return "On from 3rd image";
   return value.toUpperCase();
@@ -119,6 +123,35 @@ export function resolvedSelectValue<T extends string>(
   if (source === null) return toOption("none");
   if (typeof source === "boolean") return toOption(source ? "on" : "none");
   return toOption(String(source));
+}
+
+/**
+ * The attention backend the loaded build's attention modules run, read off its resolved entry (the
+ * top-level field names the load's pick, which may run on no module); null for native SDPA.
+ */
+export function engagedAttentionBackend(status: {
+  attention_backend?: string | null;
+  resolved?: Record<string, ResolvedControl> | null;
+}): string | null {
+  const live = status.resolved?.attention_backend?.value;
+  const value = typeof live === "string" && live ? live : status.attention_backend;
+  return value && value !== "native" ? value : null;
+}
+
+/**
+ * The Attention select keeps the user's own pick when it fell back: the badge says what ran, and the
+ * next load asks for the same backend again (it may run once its package is installed).
+ */
+export function resolvedRequestSelectValue<T extends string>(
+  resolved: ResolvedControl | undefined | null,
+  toOption: (value: string) => T | null,
+): T | null {
+  if (!resolved || resolved.source === "auto" || isResolvedHonored(resolved)) {
+    return resolvedSelectValue(resolved, toOption);
+  }
+  const requested = resolved.requested;
+  if (requested === undefined || requested === null || typeof requested === "boolean") return null;
+  return toOption(String(requested));
 }
 
 /**
