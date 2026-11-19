@@ -6,6 +6,7 @@ import { after, before, test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { type ViteDevServer, createServer } from "vite";
+import { readSrc } from "./helpers/kit.ts";
 
 let vite: ViteDevServer;
 let ConnectionModelList: (props: Record<string, unknown>) => unknown;
@@ -144,4 +145,17 @@ test("the edge fade follows the scroll position", () => {
   assert.deepEqual(fade(0), [false, true]);
   assert.deepEqual(fade(150), [true, true]);
   assert.deepEqual(fade(300), [true, false]);
+});
+
+test("the fold toggle keeps keyboard focus when it moves in or out of the scroller", () => {
+  const src = readSrc("features/chat/connection-model-list.tsx");
+  assert.match(src, /<button\s+ref=\{foldToggleRef\}/);
+  assert.match(
+    src,
+    /refocusFoldToggle\.current =\s+document\.activeElement === event\.currentTarget/,
+  );
+  assert.match(
+    src,
+    /useLayoutEffect\(\(\) => \{\s+if \(refocusFoldToggle\.current\) foldToggleRef\.current\?\.focus\(\);[\s\S]*?\}, \[showOlder\]\);/,
+  );
 });

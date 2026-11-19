@@ -8,7 +8,13 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   isOlderModel,
@@ -197,11 +203,21 @@ export function ConnectionModelList({
       </label>
     </li>
   );
+  // The toggle remounts in a new parent when the fold flips, so focus follows it there.
+  const foldToggleRef = useRef<HTMLButtonElement>(null);
+  const refocusFoldToggle = useRef(false);
+  useLayoutEffect(() => {
+    if (refocusFoldToggle.current) foldToggleRef.current?.focus();
+    refocusFoldToggle.current = false;
+  }, [showOlder]);
   const foldToggle = (
     <button
+      ref={foldToggleRef}
       type="button"
       aria-expanded={showOlder}
-      onClick={() => {
+      onClick={(event) => {
+        refocusFoldToggle.current =
+          document.activeElement === event.currentTarget;
         setKeptAtOpen(selected);
         onShowOlderChange(!showOlder);
       }}
