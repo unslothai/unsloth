@@ -2506,6 +2506,8 @@ def _copy_module(module: Any, device: Any) -> Any:
             continue
         memo[id(buffer)] = buffer.detach().to(device)
         keep.append(buffer)
+    from .diffusion_flux_convrot_fused import is_replica_record as f3_qkv_record
+    from .diffusion_flux_convrot_fused import rebuild_replica as f3_qkv_rebuild
     from .diffusion_qwenimage21_dense_fused import is_replica_record, rebuild_replica
 
     for sub in module.modules():
@@ -2516,6 +2518,7 @@ def _copy_module(module: Any, device: Any) -> Any:
                 or key in offload_keys
                 or key in _SOURCE_ONLY_ATTRS
                 or is_replica_record(key, value)
+                or f3_qkv_record(key, value)
             ):
                 # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
                 # source-only cache holds source-card tensors
@@ -2524,8 +2527,9 @@ def _copy_module(module: Any, device: Any) -> Any:
             for hook in (getattr(sub, attr, None) or {}).values():
                 if _is_offload_object(hook):
                     memo[id(hook)] = _DROP
-        # Per-step precision state (the NVFP4 W4A16 protect schedule) is advanced by the source's scheduler: the copy
-        # must read the same controller, or the two CFG branches of one step run different GEMMs.
+        # Per-step precision state (the NVFP4 W4A16 protect schedule, the ModelOpt FP8 step policy) is advanced by the
+        # source's scheduler: the copy must read the same object, or the two CFG branches of one step run different
+        # GEMMs.
         for value in _shared_state_values(sub):
             memo[id(value)] = value
     guard = module.__dict__.get("_unsloth_compile_guard")
@@ -2563,6 +2567,11 @@ def _copy_module(module: Any, device: Any) -> Any:
         rebuild_replica(module, replica)
     except Exception:  # noqa: BLE001 - the replica keeps the stock projections
         pass
+    try:
+        # FLUX.3's merged Q / K / V buffer, rebuilt from the replica's own weights on its card
+        f3_qkv_rebuild(module, replica)
+    except Exception:  # noqa: BLE001 - the replica runs three GEMMs
+        pass
     if isinstance(router, CfgParallelRouter) and router.had_override:
         _rebind_root_forward(router.orig_forward, module, replica)
     # The source's own __call__ runs its root hooks around every branch; the copy must not run them a second time.
@@ -2596,7 +2605,9 @@ def _copy_module(module: Any, device: Any) -> Any:
     return replica
 
 
-_SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
+# Per-step precision state the source's own step loop advances: the NVFP4 W4A16 protect schedule, and ModelOpt FP8's
+# W8A16 / W8A8 step policy (advanced through the source's ``cache_context``, which the replica never enters).
+_SHARED_STATE_TYPES = frozenset({"NVFP4StepController", "StepPolicy"})
 # Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
 # forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
 _SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas"})
