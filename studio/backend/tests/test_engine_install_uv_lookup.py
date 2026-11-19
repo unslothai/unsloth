@@ -60,7 +60,9 @@ def test_install_uses_a_per_user_uv_that_is_not_on_path(isolated, monkeypatch, t
 
 def test_uv_on_path_still_wins(isolated, monkeypatch, tmp_path):
     per_user_uv(monkeypatch, tmp_path / "home")
-    monkeypatch.setattr(install.shutil, "which", lambda name: "/on/path/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        install.shutil, "which", lambda name: "/on/path/uv" if name == "uv" else None
+    )
     assert install._uv_executable() == "/on/path/uv"
 
 
@@ -87,7 +89,9 @@ def test_each_attempt_records_when_it_ended(isolated, monkeypatch):
 def test_progress_updates_keep_a_running_attempt_unfinished(isolated, monkeypatch):
     monkeypatch.setattr(install.time, "time", lambda: 1000.0)
     install._update("vllm", state = "running", phase = "queued", message = "Preparing installation")
-    install._update("vllm", phase = "installing", message = "Downloading and installing engine packages")
+    install._update(
+        "vllm", phase = "installing", message = "Downloading and installing engine packages"
+    )
     install._update("vllm", activity = "torch 2.11")
     assert job(isolated)["finished_at"] is None
     install._update("vllm", state = "success", phase = "ready", message = "Engine installed")
