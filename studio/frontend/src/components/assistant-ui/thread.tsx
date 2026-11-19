@@ -3328,15 +3328,15 @@ const Composer: FC<{
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
+  const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
   const minEditorHeight = Math.round(
-    (16 + 24 * COMPOSER_MIN_ROWS) * uiSpaceScale,
+    (16 + 24 * (threadEmpty ? COMPOSER_MIN_ROWS : 1)) * uiSpaceScale,
   );
   const maxRows = useComposerMaxRows(24 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
   const detachFromBottom = useDetachThreadFromBottom();
   const scrollThreadToBottom = useScrollThreadToBottom();
-  const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
   const toggleWritingExpanded = () => {
     setIsWritingExpanded((expanded) => !expanded);
     inputRef.current?.focus({ preventScroll: true });
