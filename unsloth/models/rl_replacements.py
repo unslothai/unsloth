@@ -6221,6 +6221,16 @@ def _vllm_weight_sync_bucket_bytes():
     return int(mb * 2**20) if mb > 0 else 0
 
 
+def _unsloth_engine_returns_sampling_mask(llm):
+    """Was this vLLM engine built with return_sampling_mask (vLLM >= 0.28)? It is an engine-wide setting, so a
+    fast_inference engine built by from_pretrained without it returns sampling_mask = None for every output."""
+    for owner in (llm, getattr(llm, "llm_engine", None)):
+        model_config = getattr(owner, "model_config", None)
+        if model_config is not None:
+            return bool(getattr(model_config, "return_sampling_mask", False))
+    return False
+
+
 def _unsloth_vllm_sync_colocate(generation, vllm_model):
     """TRL's colocate sync calls load_weights once per tensor, and every call rebuilds vLLM's
     parameter lookup (~0.4 ms each). Hand over the same (name, tensor) references in a few calls:
@@ -6316,6 +6326,10 @@ def vllm_generation_init_patch():
                 f"{indent}    self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', False)\n"
                 f"{indent}    if getattr(self.llm, 'shared_weights', False) and hasattr(model, 'load_lora'):\n"
                 f"{indent}        self._unsloth_load_lora = model.load_lora\n"
+                f"{indent}    # TRL >= 1.18 reads output.sampling_mask when it asked for it; this engine was built\n"
+                f"{indent}    # before the trainer existed, so only keep the request if the engine returns masks.\n"
+                f"{indent}    if getattr(self, 'return_sampling_mask', False) and not _unsloth_engine_returns_sampling_mask(self.llm):\n"
+                f"{indent}        self.return_sampling_mask = False\n"
                 f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
             )
 
@@ -6324,6 +6338,9 @@ def vllm_generation_init_patch():
             raise RuntimeError(
                 "Unsloth: Warning - regex did not match, VLLMGeneration._init_vllm patch may have failed"
             )
+        vllm_generation._unsloth_engine_returns_sampling_mask = (
+            _unsloth_engine_returns_sampling_mask
+        )
         return patched_src
 
     # Newer versions have sync_weights or reload rpc calls; earlier ones are stripped in the patched grpo_trainer above.

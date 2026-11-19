@@ -113,13 +113,14 @@ def _build_fake_trl(
     generate_src,
     sync_src = _SYNC_WEIGHTS,
     version = "1.10.0",
+    init_src = _INIT_VLLM,
 ):
     """Installs the fake module through monkeypatch, so sys.modules reverts regardless of test order."""
     class_src = (
         "class VLLMGeneration:\n"
         + "\n".join(
             textwrap.indent(textwrap.dedent(src), "    ")
-            for src in (_INIT_VLLM, sync_src, generate_src)
+            for src in (init_src, sync_src, generate_src)
         )
         + "\n"
     )
@@ -583,3 +584,61 @@ def test_sampling_params_restored_when_generate_raises(monkeypatch):
     with pytest.raises(RuntimeError, match = "generate failed"):
         cls.generate(self, ["hello"])
     assert module.SamplingParams is FakeSamplingParams
+
+
+# TRL >= 1.18 asks the engine for each token's candidate set (vLLM >= 0.28) and then reads
+# `output.sampling_mask.token_ids` after every colocated generate.
+_INIT_VLLM_TRL_1_18 = """
+def _init_vllm(self, model):
+    if self.mode == "colocate":
+        self.llm = LLM(
+            model = model.name_or_path,
+            enable_sleep_mode = self.enable_sleep_mode,
+            **({"return_sampling_mask": True} if self.return_sampling_mask else {}),
+        )
+    else:
+        self.llm = None
+"""
+
+
+class _ModelConfig:
+    def __init__(self, return_sampling_mask):
+        self.return_sampling_mask = return_sampling_mask
+
+
+def _init_with_fast_inference_engine(cls, engine_returns_mask):
+    log = []
+    engine = FakeEngine(log)
+    engine.llm_engine = types.SimpleNamespace(model_config = _ModelConfig(engine_returns_mask))
+    model = types.SimpleNamespace(
+        name_or_path = "m", vllm_engine = engine, load_lora = lambda *a, **k: None
+    )
+    self = cls.__new__(cls)
+    self.mode = "colocate"
+    self.enable_sleep_mode = False
+    self.return_sampling_mask = True
+    cls._init_vllm(self, model)
+    assert self.llm is engine
+    return self
+
+
+def test_sampling_mask_request_dropped_for_an_engine_without_masks(monkeypatch):
+    """The fast_inference engine is built before the trainer, without return_sampling_mask: TRL must not
+    read output.sampling_mask (None) after generate, or the first rollout raises AttributeError."""
+    _rl_replacements()  # import Unsloth against the real TRL before the fake one is installed
+    cls = _build_fake_trl(
+        monkeypatch, _GENERATE_TRL_1_10, version = "1.18.0", init_src = _INIT_VLLM_TRL_1_18
+    )
+    _rl_replacements().vllm_generation_init_patch()
+    self = _init_with_fast_inference_engine(cls, engine_returns_mask = False)
+    assert self.return_sampling_mask is False
+
+
+def test_sampling_mask_request_kept_for_an_engine_that_returns_masks(monkeypatch):
+    _rl_replacements()  # import Unsloth against the real TRL before the fake one is installed
+    cls = _build_fake_trl(
+        monkeypatch, _GENERATE_TRL_1_10, version = "1.18.0", init_src = _INIT_VLLM_TRL_1_18
+    )
+    _rl_replacements().vllm_generation_init_patch()
+    self = _init_with_fast_inference_engine(cls, engine_returns_mask = True)
+    assert self.return_sampling_mask is True
