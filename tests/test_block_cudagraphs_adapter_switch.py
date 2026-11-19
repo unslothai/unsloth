@@ -93,6 +93,9 @@ def _forward(layers, x):
     y = x
     for layer in layers:
         y = layer(y)
+    if any(layer.__dict__.get("_unsloth_block_mode") == bc._OFF for layer in layers):
+        # e.g. Windows without MSVC ("Compiler: cl is not found"): the stock forward has no hooks to test.
+        pytest.skip("block compile fell back to the stock forward on this host")
     return y
 
 
