@@ -60,10 +60,13 @@ export interface BlenderMcpSettings {
   blender_path: string;
 }
 
+// detect: the one app to look up (a disk read); the rest report installed: null.
 export function listMcpBuiltins(
   waitForPendingMutations = true,
+  detect?: string,
 ): Promise<McpBuiltinConfig[]> {
-  const read = () => mcpRequest<McpBuiltinConfig[]>("/builtins");
+  const path = detect === undefined ? "/builtins" : `/builtins?detect=${encodeURIComponent(detect)}`;
+  const read = () => mcpRequest<McpBuiltinConfig[]>(path);
   return waitForPendingMutations
     ? readAfterPendingMcpServerMutations(read)
     : readMcpServerMutationSnapshot(read);

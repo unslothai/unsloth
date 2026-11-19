@@ -477,6 +477,20 @@ def test_catalog_reports_install_state(fresh_install_cache, monkeypatch):
     }
 
 
+def test_catalog_looks_up_only_the_app_being_set_up(fresh_install_cache, monkeypatch):
+    installed = fresh_install_cache
+    looked_up = []
+    monkeypatch.setattr(
+        installed, "_detect", lambda builtin_id, path: looked_up.append(builtin_id) or False
+    )
+    items = {item.builtin_id: item.installed for item in routes.list_builtins(detect = "unreal")}
+    assert looked_up == ["unreal"]
+    assert items["unreal"] is False and items["blender"] is None and items["godot"] is None
+    looked_up.clear()
+    assert all(item.installed is None for item in routes.list_builtins(detect = ""))
+    assert looked_up == []
+
+
 @pytest.mark.asyncio
 async def test_roblox_studio_runs_its_stdio_launcher_on_windows_and_macos(monkeypatch):
     from pathlib import Path

@@ -20,12 +20,14 @@ import {
   updateBlenderMcp,
   updateMcpServer,
 } from "./api/mcp-servers-api";
+import { openInstallGuide } from "./mcp-install-guide";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
-export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
+export function BlenderMcpSetup({ servers, disabled, onBusyChange, onClose }: {
   servers: McpServerConfig[];
   disabled: boolean;
   onBusyChange: (busy: boolean) => void;
+  onClose?: () => void;
 }) {
   const [config, setConfig] = useState<McpBuiltinConfig | null>(null);
   const [port, setPort] = useState("9876");
@@ -44,7 +46,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
   const refresh = useCallback(async (wait = true) => {
     const current = ++generation.current;
     try {
-      const rows = await listMcpBuiltins(wait);
+      const rows = await listMcpBuiltins(wait, "blender");
       if (generation.current !== current) return;
       const blender = rows.find((row) => row.builtin_id === "blender");
       if (!blender) throw new Error("Blender MCP is not available from this Unsloth backend.");
@@ -149,7 +151,12 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
       {!config?.is_enabled && <p className="text-sm leading-relaxed text-muted-foreground">
         Unsloth downloads and sets up MCP on first use. Internet is needed once; the Blender add-on is installed separately.
       </p>}
-      {config?.installed === false && !config.is_enabled && <p className="text-xs leading-relaxed text-muted-foreground">Blender was not found on this computer. Install it, or set its path in Advanced settings.</p>}
+      {config?.installed === false && !config.is_enabled && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs leading-relaxed text-muted-foreground">Blender was not found on this computer. Install it, or set its path in Advanced settings.</p>
+          <Button size="sm" variant="outline" disabled={locked} onClick={() => openInstallGuide("blender", onClose)}>Guide to Install</Button>
+        </div>
+      )}
       {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom Blender server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
       {config && !config.is_enabled && (
         <div className="flex items-start gap-3">

@@ -137,7 +137,11 @@ def unavailable_reason(builtin_id: str = "") -> Optional[str]:
     return None if stdio_mcp_enabled() else stdio_mcp_disabled_reason()
 
 
-def catalog_item(builtin_id: str, row = None) -> McpBuiltinResponse:
+def catalog_item(
+    builtin_id: str,
+    row = None,
+    detect: bool = True,
+) -> McpBuiltinResponse:
     reason = unavailable_reason(builtin_id)
     settings = settings_for(builtin_id, row)
     return McpBuiltinResponse(
@@ -145,7 +149,7 @@ def catalog_item(builtin_id: str, row = None) -> McpBuiltinResponse:
         display_name = EDITORS[builtin_id].display_name,
         port = settings.port or 0,
         project_path = settings.project_path,
-        installed = is_installed(builtin_id),
+        installed = is_installed(builtin_id) if detect else None,
         server_id = row["id"] if row else None,
         is_enabled = bool(row and row["is_enabled"]),
         available = reason is None,

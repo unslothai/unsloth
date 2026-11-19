@@ -260,16 +260,27 @@ def list_builtins(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
     no_credential: WithoutCredential = False,
+    detect: Optional[str] = None,
 ):
+    # Install detection reads the disk (and the registry on Windows): only for the app being set up when asked.
+    def wanted(builtin_id: str) -> bool:
+        return detect is None or detect == builtin_id
+
     if via_api_key or no_credential:
-        items = [blender.catalog_item(), *(editors.catalog_item(key) for key in editors.EDITORS)]
+        items = [
+            blender.catalog_item(detect = wanted("blender")),
+            *(editors.catalog_item(key, detect = wanted(key)) for key in editors.EDITORS),
+        ]
         for item in items:
             item.available = False
             item.unavailable_reason = f"An authenticated Unsloth Studio UI session is required for {item.display_name} MCP."
         return items
     return [
-        blender.catalog_item(_builtin_row()),
-        *(editors.catalog_item(key, _builtin_row(key)) for key in editors.EDITORS),
+        blender.catalog_item(_builtin_row(), detect = wanted("blender")),
+        *(
+            editors.catalog_item(key, _builtin_row(key), detect = wanted(key))
+            for key in editors.EDITORS
+        ),
     ]
 
 

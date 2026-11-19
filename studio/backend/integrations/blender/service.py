@@ -59,7 +59,7 @@ def resolve_server(row: dict) -> dict:
     }
 
 
-def catalog_item(row = None):
+def catalog_item(row = None, detect: bool = True):
     reason = unavailable_reason()
     available = reason is None
     settings = settings_for(row)
@@ -68,7 +68,7 @@ def catalog_item(row = None):
         reason = "The Blender MCP runtime is not downloaded, so Blender tools are off. Chat retries the download within a minute, or use Test connection; the backend needs internet access."
     return McpBuiltinResponse(
         **settings.model_dump(),
-        installed = is_installed("blender", settings.blender_path),
+        installed = is_installed("blender", settings.blender_path) if detect else None,
         server_id = row["id"] if row else None,
         is_enabled = is_enabled,
         available = available,
