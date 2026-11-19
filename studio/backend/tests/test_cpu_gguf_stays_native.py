@@ -376,12 +376,31 @@ def test_a_cpu_dense_video_pick_of_a_family_with_a_gguf_row_is_refused(monkeypat
 
     _video_device(monkeypatch, "cpu")
     by_repo = {str(f.gguf_repo or "").lower(): f for f in VIDEO_FAMILIES}
-    for repo in ("unsloth/ltx-2.5-gguf", "unsloth/ltx-2.3-gguf", "unsloth/minimax-h3-gguf"):
+    picks = {
+        "unsloth/ltx-2.5-gguf": ("Lightricks/LTX-2.5-Diffusers",),
+        "unsloth/ltx-2.3-gguf": ("Lightricks/LTX-2.3", None, "ltx-2.3-22b-distilled.safetensors"),
+        "unsloth/minimax-h3-gguf": ("MiniMaxAI/MiniMax-H3",),
+    }
+    for repo, names in picks.items():
         fam = by_repo[repo]
         for kind in ("pipeline", "single_file"):
             with pytest.raises(ValueError, match = "loads only as a GGUF here"):
-                refuse_cpu_dense_video_pick(fam, kind)
-        refuse_cpu_dense_video_pick(fam, "gguf")
+                refuse_cpu_dense_video_pick(fam, kind, names)
+        refuse_cpu_dense_video_pick(fam, "gguf", names)
+    # LTX-2.0 shares the ltx-2 family with 2.3 but has no GGUF row: the picker keeps its pipeline, so the load does too.
+    ltx2 = by_repo["unsloth/ltx-2.3-gguf"]
+    for names in (
+        ("Lightricks/LTX-2",),
+        ("Lightricks/LTX-2", "Lightricks/LTX-2", "ltx-2-19b-dev.safetensors"),
+    ):
+        refuse_cpu_dense_video_pick(ltx2, "pipeline", names)
+    for names in (
+        ("unsloth/LTX-2.3-FP8",),
+        ("x/y", None, "ltx2.3-distilled.safetensors"),
+        ("me/ltx23-int8",),
+    ):
+        with pytest.raises(ValueError, match = "loads only as a GGUF here"):
+            refuse_cpu_dense_video_pick(ltx2, "single_file", names)
     # Wan2.2 TI2V-5B has a GGUF repo but no curated GGUF row: its pipeline row stays, so it is not refused.
     refuse_cpu_dense_video_pick(by_repo["unsloth/wan2.2-ti2v-5b-gguf"], "pipeline")
     _video_device(monkeypatch, "cuda")
@@ -393,8 +412,14 @@ def test_a_cpu_dense_video_pick_of_a_family_with_a_gguf_row_is_refused(monkeypat
 
 def test_the_video_load_validation_runs_the_refusal(monkeypatch):
     from core.inference.video import get_video_backend
+
     _video_device(monkeypatch, "cpu")
     with pytest.raises(ValueError, match = "loads only as a GGUF here"):
         get_video_backend().validate_load_request(
             "Lightricks/LTX-2.5-Diffusers", model_kind = "pipeline"
         )
+    # LTX-2.0's pipeline row is still offered on a CPU-only host, so its load is not refused for having no GGUF.
+    try:
+        get_video_backend().validate_load_request("Lightricks/LTX-2", model_kind = "pipeline")
+    except ValueError as exc:
+        assert "loads only as a GGUF here" not in str(exc)

@@ -496,11 +496,21 @@ CPU_GGUF_ONLY_VIDEO_REPOS = frozenset(
 )
 
 
-def refuse_cpu_dense_video_pick(fam: Any, kind: Optional[str]) -> None:
-    """A non-GGUF pick of such a family on a CPU-only torch: refused, as the picker hides it. The developer kill switch
-    UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK=1 lifts it."""
+# The ltx-2 family serves LTX-2.0 and LTX-2.3, but only 2.3 has a GGUF row: a 2.0 pick keeps its pipeline row.
+_LTX23_NAME = re.compile(r"ltx[-_.]?2[-_.]?3(?!\d)", re.IGNORECASE)
+
+
+def refuse_cpu_dense_video_pick(
+    fam: Any,
+    kind: Optional[str],
+    names: tuple = (),
+) -> None:
+    """A non-GGUF pick of such a family on a CPU-only torch: refused, as the picker hides it. ``names``: the pick's
+    repo ids and file name. The developer kill switch UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK=1 lifts it."""
     repo = str(getattr(fam, "gguf_repo", None) or "").lower()
     if kind == "gguf" or repo not in CPU_GGUF_ONLY_VIDEO_REPOS:
+        return
+    if repo == "unsloth/ltx-2.3-gguf" and not any(_LTX23_NAME.search(str(n or "")) for n in names):
         return
     from .diffusion_engine_router import cpu_gguf_rule_enabled
 
@@ -6034,7 +6044,7 @@ class VideoBackend:
                 f"{', '.join(supported_video_family_names())}. If this is a variant of one "
                 f"of them, pass family_override with that family name."
             )
-        refuse_cpu_dense_video_pick(fam, kind)
+        refuse_cpu_dense_video_pick(fam, kind, (repo_id, display_repo_id, gguf_filename))
         # Network-free, so refused before any eviction.
         refusal = video_checkpoint_refusal(fam, repo_id, display_repo_id, gguf_filename)
         if refusal:
