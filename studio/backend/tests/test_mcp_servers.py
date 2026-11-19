@@ -2994,7 +2994,7 @@ def test_controller_loads_searched_and_named_mcp_tools(tmp_path, monkeypatch, se
     assert named.action == "execute" and named.arguments == {"n": 3}
     assert "mcp__srv1__ping" not in _names(controller.active_tools())
 
-    # Later turns accept the tools the thread ran without listing them; a tool only loaded is not.
+    # Later turns accept the tools the thread ran without listing them; one only loaded needs its search replayed.
     def matches_for(thread_id):
         return _thread_turn(tools_mod, searching, [{"role": "user", "content": "x"}], thread_id)[2]
 
