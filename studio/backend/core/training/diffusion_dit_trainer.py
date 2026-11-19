@@ -3478,9 +3478,10 @@ def _train_dit(
     fast_lora_layers = 0
     fast_lora_hooks = ()
     if not compiled and device in ("cuda", "xpu") and fast_lora_enabled():
-        if _dequant_cache_wanted(base_is_bnb, device, fp16_amp):
+        int8_cache = base_precision == "int8"
+        if _dequant_cache_wanted(base_is_bnb, device, fp16_amp, int8_base = int8_cache):
             dequant_cache = Nf4DequantCache()
-        fast_lora_layers = install_fast_lora(transformer, dequant_cache)
+        fast_lora_layers = install_fast_lora(transformer, dequant_cache, int8 = int8_cache)
         if fast_lora_layers:
             # After each optimizer step: recast the bf16 masters; after step 1: size the dequant cache.
             fast_lora_hooks = attach_training_hooks(
@@ -4026,12 +4027,18 @@ def _warn_fp16_compile_declined(cfg, on_event) -> bool:
     return True
 
 
-def _dequant_cache_wanted(base_is_bnb, device, fp16_amp) -> bool:
-    """nf4 dequant cache on CUDA; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
-    (on a T4 both planned from step 1's free memory and step 2 OOMed)."""
-    from core.training.diffusion_lora_fast import dequant_cache_enabled
+def _dequant_cache_wanted(
+    base_is_bnb,
+    device,
+    fp16_amp,
+    int8_base = False,
+) -> bool:
+    """nf4 / int8 dequant cache on CUDA; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
+    (on a T4 both planned from step 1's free memory and step 2 OOMed). int8 runs eager, so the cache is its only
+    relief from torchao's per-call weight cast."""
+    from core.training.diffusion_lora_fast import dequant_cache_enabled, int8_dequant_cache_enabled
     return (
-        base_is_bnb
+        (base_is_bnb or (int8_base and int8_dequant_cache_enabled()))
         and device == "cuda"
         and not fp16_amp
         and not torch_is_rocm()
