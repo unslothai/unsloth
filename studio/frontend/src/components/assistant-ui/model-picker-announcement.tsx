@@ -10,10 +10,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  ChevronDownStandardIcon,
-  ChevronRightStandardIcon,
-} from "@/lib/chevron-icons";
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Brain03Icon,
@@ -21,13 +18,16 @@ import {
   CloudIcon,
   Compass01Icon,
   Download01Icon,
+  FilterHorizontalIcon,
   GridViewIcon,
+  PlusSignIcon,
   Search01Icon,
   SparklesIcon,
   StarIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowUpIcon, MicIcon } from "lucide-react";
 import { type FC, useRef, useState, useSyncExternalStore } from "react";
 
 // Literal copies live in Reset preferences (general-tab.tsx) and ACCOUNT_CHROME_KEYS.
@@ -143,7 +143,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               <MascotImg
                 src="Sloth emojis/sloth magnify final.png"
                 aria-hidden="true"
-                className="pointer-events-none absolute right-3 bottom-0 h-[calc(80px*var(--ui-space-scale,1))] w-auto translate-y-[14%]"
+                className="pointer-events-none absolute right-3 bottom-0 h-[calc(80px*var(--ui-space-scale,1))] w-auto"
               />
             </button>
             <button
@@ -201,13 +201,13 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               />
             </Button>
           </div>
-          <ul className="mt-7 grid grid-cols-2 gap-2.5">
+          <ul className="mt-7 grid grid-cols-2 gap-2">
             {FEATURES.map((feature) => (
               <li
                 key={feature.label}
-                className="flex items-center gap-3 rounded-2xl bg-muted/50 p-3.5"
+                className="flex items-center gap-2.5 rounded-full bg-muted/50 py-1.5 pr-4 pl-1.5"
               >
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary">
                   <HugeiconsIcon
                     icon={feature.icon}
                     strokeWidth={1.9}
@@ -285,77 +285,70 @@ const CardArt: FC = () => (
 );
 
 /** The composer, its model chip, and the picker it opens, drawn with live theme colours. */
+/** The composer with its chip open, styled like the real picker and composer. */
 const DialogHero: FC = () => (
   <div
     aria-hidden="true"
-    className="relative h-[calc(272px*var(--ui-space-scale,1))] overflow-hidden rounded-[calc(20px*var(--ui-space-scale,1))] bg-muted/50"
+    className="relative h-[calc(300px*var(--ui-space-scale,1))] overflow-hidden rounded-[calc(20px*var(--ui-space-scale,1))] bg-muted/50"
   >
-    <MascotImg
-      src="Sloth emojis/UnSloth Sparkling large.png"
-      className="absolute bottom-[calc(76px*var(--ui-space-scale,1))] left-10 size-28 max-sm:right-5 max-sm:left-auto max-sm:size-16"
-    />
-
-    <div className="absolute top-9 right-14 flex w-[calc(250px*var(--ui-space-scale,1))] max-sm:right-auto max-sm:left-6 max-sm:w-[calc(224px*var(--ui-space-scale,1))] flex-col gap-1.5 rounded-2xl p-2 bg-white shadow-[var(--composer-shadow)] dark:bg-card">
-      <div className="flex items-center gap-3 px-1.5 pt-0.5 text-muted-foreground">
+    <div className="absolute top-5 right-6 flex w-[calc(264px*var(--ui-space-scale,1))] flex-col gap-2 rounded-2xl bg-white p-2 shadow-[var(--composer-shadow)] max-sm:w-[calc(236px*var(--ui-space-scale,1))] dark:bg-card">
+      <div className="flex items-center gap-3.5 px-2 pt-1 text-muted-foreground">
         <HugeiconsIcon icon={StarIcon} className="size-3.5" />
         <HugeiconsIcon icon={Compass01Icon} className="size-3.5" />
-        <span className="relative text-primary">
+        <span className="relative text-foreground">
           <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
-          <span className="absolute inset-x-0 -bottom-1 h-0.5 rounded-full bg-primary" />
+          <span className="absolute inset-x-0 -bottom-1.5 h-0.5 rounded-full bg-primary" />
         </span>
         <HugeiconsIcon icon={CloudIcon} className="size-3.5" />
+        <LogoDot src="/hub/profile/logo/google.png" className="size-3.5" />
+        <LogoDot src="/hub/profile/logo/qwen.png" className="size-3.5" />
       </div>
-      <div className="flex items-center gap-1.5 rounded-lg bg-muted px-2 py-1 text-muted-foreground text-ui-11">
+      <div className="flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1.5 text-muted-foreground text-ui-11">
         <HugeiconsIcon icon={Search01Icon} className="size-3" />
-        Search on device models
+        <span className="flex-1">Search on device models</span>
+        <HugeiconsIcon icon={FilterHorizontalIcon} className="size-3" />
       </div>
-      <div className="flex flex-col gap-0.5">
+      <div className="flex flex-col">
         {MOCK_ROWS.map((row) => (
           <div
             key={row.name}
             className={cn(
-              "flex items-center gap-2 rounded-lg px-1.5 py-1 text-ui-11",
-              "active" in row && row.active
-                ? "bg-primary/12 text-foreground"
-                : "text-foreground/80",
+              "flex items-center gap-2 rounded-lg px-2 py-1.5 text-foreground text-ui-11",
+              "active" in row && row.active && "bg-muted-foreground/10",
             )}
           >
             <LogoDot src={row.logo} className="size-4" />
-            <span className="min-w-0 flex-1 truncate font-medium">
-              {row.name}
-            </span>
-            <span className="rounded-md bg-muted px-1 font-mono text-muted-foreground text-ui-11">
+            <span className="min-w-0 flex-1 truncate">{row.name}</span>
+            {"active" in row && row.active ? (
+              <span className="size-1.5 rounded-full bg-primary" />
+            ) : null}
+            <span className="rounded-full bg-muted px-1.5 font-mono text-muted-foreground text-ui-11">
               {row.quant}
             </span>
-            {"active" in row && row.active ? (
-              <HugeiconsIcon
-                icon={Tick02Icon}
-                strokeWidth={2.5}
-                className="size-3 text-primary"
-              />
-            ) : (
-              <span className="size-3" />
-            )}
+            <HugeiconsIcon
+              icon={StarIcon}
+              className="size-3 text-muted-foreground/60"
+            />
           </div>
         ))}
       </div>
     </div>
 
-    <div className="absolute inset-x-6 bottom-6 flex h-[calc(52px*var(--ui-space-scale,1))] items-end justify-between rounded-2xl px-3.5 pb-2.5 bg-white shadow-[var(--composer-shadow)] dark:bg-card">
-      <span className="absolute top-2.5 left-4 text-muted-foreground text-xs">
-        Ask anything
-      </span>
-      <span />
-      <span className="flex items-center gap-1.5 rounded-full bg-primary/12 py-0.5 pr-2 pl-1 font-medium text-foreground text-ui-11">
-        <LogoDot src="/hub/profile/logo/google.png" className="size-4" />
-        gemma-4-E4B-it
-        <span className="text-muted-foreground">Thinking</span>
-        <HugeiconsIcon
-          icon={ChevronDownStandardIcon}
-          strokeWidth={2}
-          className="size-3 text-muted-foreground"
-        />
-      </span>
+    <div className="absolute inset-x-6 bottom-6 flex flex-col gap-3 rounded-[calc(22px*var(--ui-space-scale,1))] bg-white px-3 pt-3 pb-2.5 shadow-[var(--composer-shadow)] dark:bg-card">
+      <span className="px-1.5 text-muted-foreground text-xs">Ask anything</span>
+      <div className="flex items-center gap-1.5 text-muted-foreground">
+        <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+        <span className="flex-1" />
+        <span className="flex items-center gap-1.5 rounded-full bg-muted-foreground/10 py-1 pr-2.5 pl-1.5 font-medium text-foreground text-xs min-w-0 whitespace-nowrap">
+          <LogoDot src="/hub/profile/logo/google.png" className="size-3.5" />
+          <span className="min-w-0 truncate">gemma-4-E4B-it</span>
+          <span className="shrink-0 text-muted-foreground">Thinking</span>
+        </span>
+        <MicIcon className="mx-1 size-4" />
+        <span className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          <ArrowUpIcon className="size-4 stroke-2" />
+        </span>
+      </div>
     </div>
   </div>
 );
