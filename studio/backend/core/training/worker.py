@@ -56,6 +56,7 @@ from utils.hf_dataset_options import hf_dataset_split_instruction_names
 
 # Light module: the MLX branch runs on torch-less hosts.
 from core.training.dataset_bounds import (
+    ROW_BOUND_MARKER_FILE,
     bound_dataset_rows,
     max_train_rows_for_config,
     record_row_bound,
@@ -3155,12 +3156,26 @@ def _synchronize_mlx_before_final_save(trainer, synchronize):
     raise_distributed_failure(error is not None, "final synchronization", error)
 
 
+def _remove_untrained_mlx_output_dir(output_dir):
+    try:
+        if os.listdir(output_dir) == [ROW_BOUND_MARKER_FILE]:
+            os.remove(os.path.join(output_dir, ROW_BOUND_MARKER_FILE))
+            os.rmdir(output_dir)
+    except OSError:
+        pass
+
+
 def _finalize_mlx_training(
     trainer, snapshot_stop, output_dir, synchronize, send, write_stop_checkpoint
 ):
     stopped, cancelled = _mlx_worker_finalization_state(trainer, snapshot_stop)
     if cancelled:
         send("complete", output_dir = None, status_message = "Training cancelled")
+        return
+    if stopped and getattr(trainer, "_global_step", None) == 0:
+        if bool(trainer.is_main_process):
+            _remove_untrained_mlx_output_dir(output_dir)
+        send("complete", output_dir = None, saved = False, status_message = "Training stopped")
         return
 
     if stopped:
@@ -3424,7 +3439,11 @@ def _run_mlx_training(
                 else:
                     s3_download.cleanup()
         except S3DownloadCancelled:
-            _send("complete", output_dir = None, status_message = "Training cancelled")
+            _send(
+                "complete",
+                output_dir = None,
+                status_message = "Training stopped" if _stop_save[0] else "Training cancelled",
+            )
             return
     else:
         raise ValueError("No dataset specified")
@@ -3437,7 +3456,11 @@ def _run_mlx_training(
         eval_dataset = _load_local(config["local_eval_datasets"], EVAL_SPLITS)
 
     if _is_stop_requested():
-        _send("complete", output_dir = None, status_message = "Training cancelled")
+        _send(
+            "complete",
+            output_dir = None,
+            status_message = "Training stopped" if _stop_save[0] else "Training cancelled",
+        )
         return
 
     _send("status", status_message = f"Loading {model_name}...")

@@ -81,7 +81,6 @@ brew install --cask unsloth
 ```powershell
 winget install --id UnslothAI.Unsloth -e
 ```
-On a managed work PC where endpoint protection blocks `irm ... | iex`, use winget instead.
 
 #### Community:
 

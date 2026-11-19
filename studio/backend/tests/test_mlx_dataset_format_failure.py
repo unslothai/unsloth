@@ -138,6 +138,7 @@ def _run_mlx_until_model_load(
     prepare = None,
     exit_stack = None,
     on_load = None,
+    stop_save = True,
 ):
     """Runs the real _run_mlx_training with MLX stubbed; a model load fails the test."""
     loaded = []
@@ -189,7 +190,7 @@ def _run_mlx_until_model_load(
     monkeypatch.setattr(
         _worker,
         "_start_mlx_stop_poller",
-        lambda _queue: ([True], stop_requested, [None], lambda: stop_requested[0], None),
+        lambda _queue: ([stop_save], stop_requested, [None], lambda: stop_requested[0], None),
     )
 
     class _Queue:
@@ -205,7 +206,10 @@ def test_mlx_dataset_error_surfaces_before_the_model_loads(monkeypatch):
         _run_mlx_until_model_load(monkeypatch, {"s3_config": {"bucket": "b"}}, [False])
 
 
-def test_mlx_stop_during_dataset_load_skips_the_model_load(monkeypatch):
+@pytest.mark.parametrize(
+    "stop_save, message", [(True, "Training stopped"), (False, "Training cancelled")]
+)
+def test_mlx_stop_during_dataset_load_skips_the_model_load(monkeypatch, stop_save, message):
     stop_requested = [False]
 
     def _load_and_stop(*_args):
@@ -214,12 +218,12 @@ def test_mlx_stop_during_dataset_load_skips_the_model_load(monkeypatch):
 
     monkeypatch.setattr(_worker, "_load_hf_train_and_eval_datasets", _load_and_stop)
     loaded, events = _run_mlx_until_model_load(
-        monkeypatch, {"hf_dataset": "org/data"}, stop_requested
+        monkeypatch, {"hf_dataset": "org/data"}, stop_requested, stop_save = stop_save
     )
 
     assert loaded == []
     assert events[-1]["type"] == "complete"
-    assert events[-1]["status_message"] == "Training cancelled"
+    assert events[-1]["status_message"] == message
 
 
 def _checkpoint_with_tokens(path, *tokens):
