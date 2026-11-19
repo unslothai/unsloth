@@ -13,6 +13,7 @@ register("./store-settings-resolver.mjs", import.meta.url);
 
 const { settingsHttp } = await import("./helpers/store-stubs/settings-http.ts");
 const {
+  CROSS_WINDOW_EDIT_KEY,
   CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY,
   CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
   CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
@@ -24,9 +25,11 @@ async function settled(): Promise<void> {
 }
 
 function writeFromAnotherWindow(key: string, value: unknown): void {
-  const newValue = JSON.stringify(value);
-  localStorageFake.set(key, newValue);
-  fireWindowEvent("storage", { key, newValue });
+  const raw = typeof value === "number" ? String(value) : JSON.stringify(value);
+  localStorageFake.set(key, raw);
+  const newValue = JSON.stringify({ key, nonce: Math.random() });
+  localStorageFake.set(CROSS_WINDOW_EDIT_KEY, newValue);
+  fireWindowEvent("storage", { key: CROSS_WINDOW_EDIT_KEY, newValue });
 }
 
 test("a site blocked in another window stays blocked when this window saves its list", async () => {
@@ -52,6 +55,9 @@ test("a site blocked in another window stays blocked when this window saves its 
     blockedDomains: [...policy.blockedDomains, "pinterest.com"],
   });
   await settled();
+
+  const edit = JSON.parse(localStorageFake.get(CROSS_WINDOW_EDIT_KEY) ?? "null");
+  assert.equal(edit?.key, CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY);
 
   const sent = settingsHttp.puts.filter((put) => "researchWebsitePolicy" in put);
   assert.deepEqual(sent.at(-1)?.researchWebsitePolicy, {

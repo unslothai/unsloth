@@ -573,34 +573,16 @@ const CROSS_WINDOW_SETTINGS = [
   [CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, "researchModelTimeoutSeconds", loadResearchModelTimeoutSeconds],
 ] as const;
 
-let sendingPatch: SettingsPatch = {};
-
-function hasUnsentSettingEdit(field: string): boolean {
-  return field in pendingPatch || field in sendingPatch || (preHydrationPatch !== null && field in preHydrationPatch);
-}
-
-// A window that loaded settings before this save landed cached the old value; rewriting it notifies that window.
-function rebroadcastSavedSettings(sent: SettingsPatch): void {
-  const state = useChatRuntimeStore.getState();
-  for (const [key, field] of CROSS_WINDOW_SETTINGS) {
-    if (!(field in sent) || hasUnsentSettingEdit(field)) continue;
-    const { encode } = MIRRORED_SETTINGS[field];
-    const raw = encode(state[field]);
-    if (raw === encode(sent[field]) && readStorageValue(key) !== raw) writeStorageValue(key, raw);
-  }
-}
+// Edits only: a settings load also rewrites the value keys, with whatever the server had when it answered.
+export const CROSS_WINDOW_EDIT_KEY = "unsloth_chat_cross_window_setting_edit";
 
 async function flushSettingsPatch(keepalive = false): Promise<void> {
   if (Object.keys(pendingPatch).length === 0) return;
   const patch = pendingPatch;
   pendingPatch = {};
-  sendingPatch = patch;
   try {
     await savePersistedChatSettingsPatch(patch, { keepalive });
-    sendingPatch = {};
-    rebroadcastSavedSettings(patch);
   } catch (error) {
-    sendingPatch = {};
     // extra="forbid" refuses the whole body on one bad field; drop the fields the server named.
     const { patch: retryable, progressed } = retryablePatchAfterFailure(
       patch,
@@ -915,6 +897,9 @@ function persistSetting(key: string, raw: string): void {
       mirrorSettingToBackend(key, raw);
     }
     writeStorageValue(key, raw);
+    if (CROSS_WINDOW_SETTINGS.some(([crossKey]) => crossKey === key)) {
+      writeStorageValue(CROSS_WINDOW_EDIT_KEY, JSON.stringify({ key, nonce: Math.random() }));
+    }
   };
   if (
     mirrored &&
@@ -6562,17 +6547,22 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
   window.addEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
   window.addEventListener("storage", (event) => {
-    for (const [key, field, load] of CROSS_WINDOW_SETTINGS) {
-      if (event.key !== key && event.key !== null) continue;
-      // Our own unsent edit is newer than a value another window's settings load cached.
-      if (hasUnsentSettingEdit(field)) continue;
-      // Counts as an edit, so an older settings GET still in flight cannot write it back.
-      scalarSettingMutationVersions[field] += 1;
-      useChatRuntimeStore.setState((state) => ({
-        [field]: load(),
-        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      }));
+    if (event.key !== CROSS_WINDOW_EDIT_KEY || !event.newValue) return;
+    let edit: { key?: unknown };
+    try {
+      edit = JSON.parse(event.newValue);
+    } catch {
+      return;
     }
+    const match = CROSS_WINDOW_SETTINGS.find(([key]) => key === edit.key);
+    if (!match) return;
+    const [, field, load] = match;
+    // Counts as an edit here too, so an older settings GET still in flight cannot write it back.
+    scalarSettingMutationVersions[field] += 1;
+    useChatRuntimeStore.setState((state) => ({
+      [field]: load(),
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    }));
   });
 }
 

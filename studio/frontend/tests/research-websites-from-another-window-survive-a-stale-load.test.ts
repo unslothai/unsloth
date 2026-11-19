@@ -12,38 +12,36 @@ localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
 register("./store-settings-resolver.mjs", import.meta.url);
 
 const { settingsHttp } = await import("./helpers/store-stubs/settings-http.ts");
-const { CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, useChatRuntimeStore } = await import(
-  "../src/features/chat/stores/chat-runtime-store.ts"
-);
+const { CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, CROSS_WINDOW_EDIT_KEY, useChatRuntimeStore } =
+  await import("../src/features/chat/stores/chat-runtime-store.ts");
+
+const KEY = CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY;
+const policy = (...blockedDomains: string[]) => ({ allowedDomains: [], blockedDomains });
+
+function editInAnotherWindow(value: unknown): void {
+  const raw = JSON.stringify(value);
+  localStorageFake.set(KEY, raw);
+  const newValue = JSON.stringify({ key: KEY, nonce: Math.random() });
+  localStorageFake.set(CROSS_WINDOW_EDIT_KEY, newValue);
+  fireWindowEvent("storage", { key: CROSS_WINDOW_EDIT_KEY, newValue });
+}
 
 test("a settings load answered before another window's save does not undo that save", async () => {
-  const stale = { allowedDomains: [], blockedDomains: ["reddit.com"] };
-  const fresh = { allowedDomains: [], blockedDomains: ["reddit.com", "pinterest.com"] };
   let answer!: (settings: Record<string, unknown>) => void;
   settingsHttp.getResponses.push(new Promise((resolve) => (answer = resolve)));
   const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
 
-  const newValue = JSON.stringify(fresh);
-  localStorageFake.set(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, newValue);
-  fireWindowEvent("storage", { key: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, newValue });
-  answer({ researchWebsitePolicy: stale });
+  editInAnotherWindow(policy("reddit.com", "pinterest.com"));
+  answer({ researchWebsitePolicy: policy("reddit.com") });
   await hydrating;
 
-  assert.deepEqual(useChatRuntimeStore.getState().researchWebsitePolicy, fresh);
-  assert.deepEqual(JSON.parse(localStorageFake.get(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) ?? "null"), fresh);
+  assert.deepEqual(useChatRuntimeStore.getState().researchWebsitePolicy, policy("reddit.com", "pinterest.com"));
+  assert.deepEqual(JSON.parse(localStorageFake.get(KEY) ?? "null"), policy("reddit.com", "pinterest.com"));
 });
 
-test("another window's settings load cannot undo an edit this window has not saved yet", async () => {
-  const edited = { allowedDomains: [], blockedDomains: ["reddit.com", "pinterest.com", "quora.com"] };
-  const stale = JSON.stringify({ allowedDomains: [], blockedDomains: ["reddit.com"] });
-  useChatRuntimeStore.getState().setResearchWebsitePolicy(edited);
-
-  localStorageFake.set(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, stale);
-  fireWindowEvent("storage", { key: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, newValue: stale });
-  assert.deepEqual(useChatRuntimeStore.getState().researchWebsitePolicy, edited);
-
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  const sent = settingsHttp.puts.filter((put) => "researchWebsitePolicy" in put);
-  assert.deepEqual(sent.at(-1)?.researchWebsitePolicy, edited);
-  assert.deepEqual(JSON.parse(localStorageFake.get(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) ?? "null"), edited);
+test("another window caching an older server value is not taken as an edit", () => {
+  const stale = JSON.stringify(policy("reddit.com"));
+  localStorageFake.set(KEY, stale);
+  fireWindowEvent("storage", { key: KEY, newValue: stale });
+  assert.deepEqual(useChatRuntimeStore.getState().researchWebsitePolicy, policy("reddit.com", "pinterest.com"));
 });
