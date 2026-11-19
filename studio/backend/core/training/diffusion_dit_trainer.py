@@ -37,6 +37,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.training.diffusion_gc_budget import (
+    StepReplay,
+    enable_budgeted_checkpointing,
+    is_out_of_memory,
+)
 from core.training.diffusion_load_progress import report_model_load_progress
 from core._torchao_stub import is_stubbed, torch_is_rocm
 from core.training.diffusion_train_common import (
@@ -1813,6 +1818,141 @@ def _flux3_training_scheduler(cfg):
     return FlowMatchEulerDiscreteScheduler.from_config(shipped.config)
 
 
+# Same names as published MOSS LoRAs (Angais/MOSS-Image-PixelArt-16x16), so adapters are interchangeable.
+_MOSS_TARGETS = (
+    "proj.q",
+    "proj.k",
+    "proj.v",
+    "proj.o",
+    "proj.ffn_up_gate",
+    "proj.ffn_down",
+)
+# Dense under nf4: _MOSS_IMAGE_QUANT_KEEP plus latent in / out; bitsandbytes matches "<name>." so names are whole.
+_MOSS_NF4_KEEP = (
+    "text_embedder",
+    "time_embedding",
+    "shared_block_modulation",
+    "video_head_modulation",
+    "video_embedder",
+    "final_linear_video",
+)
+
+
+def _moss_load_conditioners(cfg, device, weight_dtype):
+    import torch
+    from core.inference.diffusion_moss_image import load_moss_image_pipeline
+
+    pipe = load_moss_image_pipeline(
+        cfg.base_model, torch.bfloat16, hf_token = cfg.hf_token, with_transformer = False
+    )
+    return pipe, pipe.vae
+
+
+def _moss_nf4_config():
+    cfg = _bnb_4bit_config()
+    cfg.llm_int8_skip_modules = list(_MOSS_NF4_KEEP)
+    return cfg
+
+
+def _moss_load_transformer(cfg, device, weight_dtype, base_precision):
+    import torch
+    from core.inference.diffusion_moss_image import MOSSImageTransformer
+
+    if base_precision == "nf4" and not repo_is_prequantized(cfg.base_model):
+        return MOSSImageTransformer.from_pretrained(
+            cfg.base_model,
+            subfolder = "transformer",
+            quantization_config = _moss_nf4_config(),
+            device_map = {"": device},
+            torch_dtype = torch.bfloat16,
+            token = cfg.hf_token,
+        )
+    return _load_dit_transformer(MOSSImageTransformer, cfg, device, base_precision)
+
+
+def _moss_encode_prompts(pipe, captions, device):
+    _encoders_to_device(pipe, device)
+    out = []
+    for cap in captions:
+        embeds, _mask = pipe.encode_prompt(cap, device = device)
+        out.append((embeds[0].cpu(),))
+    return out
+
+
+def _moss_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    """Right-padded ``(embeds, mask)``; mask is None for equal lengths (no host sync in the forward)."""
+    import torch
+
+    rows = [e[0].to(device = device, non_blocking = True).to(dtype = weight_dtype) for e in entries]
+    lengths = [int(r.shape[0]) for r in rows]
+    if len(set(lengths)) == 1:
+        return (torch.stack(rows), None)
+    embeds = torch.nn.utils.rnn.pad_sequence(rows, batch_first = True)
+    mask = (
+        torch.arange(embeds.shape[1], device = embeds.device)[None]
+        < torch.tensor(lengths, device = embeds.device)[:, None]
+    )
+    return (embeds, mask)
+
+
+def _moss_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    embeds, mask = embeds_batch
+    # Timestep is sigma * 1000, as MOSSImagePipeline passes it.
+    kwargs = {} if mask is None else {"encoder_attention_mask": mask}
+    return transformer(noisy, timesteps, encoder_hidden_states = embeds, return_dict = False, **kwargs)[
+        0
+    ]
+
+
+# Patchified 2x2 and batch-norm normalised, the inverse of MOSSImagePipeline.vae_decode.
+_moss_encode_latents = _flux2_encode_latents
+_moss_encode_latent_stats = _flux2_encode_latent_stats
+
+
+def _moss_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
+    """``transformer.*`` keys plus adapter metadata, as MOSSImagePipeline.load_lora_weights reads."""
+    import inspect
+
+    from diffusers.loaders import QwenImageLoraLoaderMixin
+
+    save = QwenImageLoraLoaderMixin.save_lora_weights
+    kwargs = {}
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
+    )
+
+
+def _moss_training_scheduler(cfg):
+    """Shift 5 baked into the sigmas: MOSSImageScheduler's table is unshifted, so training from it draws shift-1 noise."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    conf = FlowMatchEulerDiscreteScheduler.load_config(
+        cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+    )
+    return FlowMatchEulerDiscreteScheduler(
+        num_train_timesteps = int(conf.get("num_train_timesteps") or 1000),
+        shift = float(conf.get("shift") or 5.0),
+    )
+
+
 # Targets fully qualified: a bare to_q would also match audio and cross-modality attention, so keep audio out of the LoRA targets and the loss.
 _LTX2_TARGETS = (
     "attn1.to_q",
@@ -2336,6 +2476,25 @@ _SPECS: dict[str, _FamilySpec] = {
         training_scheduler = _flux3_training_scheduler,
         save_takes_metadata = True,
         timestep_density = "none",
+    ),
+    "moss-image": _FamilySpec(
+        family = "moss-image",
+        lora_targets = _MOSS_TARGETS,
+        # ComfyUI runs MOSS-Image in bf16 / fp32 only: its residual stream overflows fp16.
+        force_bf16 = True,
+        dense_bf16_gb = 10.2,
+        load_conditioners = _moss_load_conditioners,
+        load_transformer = _moss_load_transformer,
+        encode_prompts = _moss_encode_prompts,
+        encode_latents = _moss_encode_latents,
+        encode_latent_stats = _moss_encode_latent_stats,
+        collate = _moss_collate,
+        forward = _moss_forward,
+        save = _moss_save,
+        latent_shape = _flux2_latent_shape,
+        decode_latents = _flux2_decode_latents,
+        training_scheduler = _moss_training_scheduler,
+        save_takes_metadata = True,
     ),
     "flux.2-dev": _FamilySpec(
         family = "flux.2-dev",
@@ -3190,8 +3349,12 @@ def _train_dit(
             target_modules = list(use_lora_targets),
         )
     )
+    gc_budget = None
     if cfg.gradient_checkpointing:
-        enable_diffusion_gradient_checkpointing(transformer)
+        # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+        gc_budget = enable_budgeted_checkpointing(transformer, device)
+        if gc_budget is None:
+            enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
@@ -3261,7 +3424,50 @@ def _train_dit(
         num_training_steps = cfg.train_steps,
     )
 
-    _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
+    from core.training.diffusion_lora_fast import (
+        Nf4DequantCache,
+        attach_training_hooks,
+        bucket_activation_scale,
+        cache_vram_handler,
+        set_vram_request_handler,
+        dequant_cache_enabled,
+        fast_lora_enabled,
+        fast_lora_stats,
+        install_fast_lora,
+        mark_lora_updated,
+        uninstall_fast_lora,
+    )
+
+    # Eager only: a compiled graph already fuses PEFT's casts. The dequant cache needs CUDA's free-memory probe.
+    dequant_cache = None
+    fast_lora_layers = 0
+    fast_lora_hooks = ()
+    if not compiled and device in ("cuda", "xpu") and fast_lora_enabled():
+        if base_is_bnb and device == "cuda" and not torch_is_rocm() and dequant_cache_enabled():
+            dequant_cache = Nf4DequantCache()
+        fast_lora_layers = install_fast_lora(transformer, dequant_cache)
+        if fast_lora_layers:
+            # After each optimizer step: recast the bf16 masters; after step 1: size the dequant cache.
+            fast_lora_hooks = attach_training_hooks(
+                optimizer,
+                dequant_cache,
+                bucket_activation_scale(canvases),
+                lambda stats: _emit(on_event, "dequant_cache_planned", **stats),
+                lambda kind, stats: _emit(on_event, kind, **stats),
+            )
+            if dequant_cache is not None:
+                # Studio asks for this room back before another model loads on the card (lend_vram).
+                set_vram_request_handler(cache_vram_handler(dequant_cache))
+        else:
+            dequant_cache = None
+
+    _emit(
+        on_event,
+        "model_load_completed",
+        compiled = compiled,
+        base_precision = base_precision,
+        fast_lora_layers = fast_lora_layers,
+    )
     # Read the commit after the base is on disk: an earlier identity says unresolved, so resume cannot detect a moved repo. Record the repo actually fetched.
     identity = with_resolved_revision(identity, fetch_cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
@@ -3398,6 +3604,9 @@ def _train_dit(
             return
         t_round = time.time()
         parked = next(sample_vae.parameters()).device.type == "cpu"
+        if dequant_cache is not None:
+            # The preview needs the room; the following steps refill the cache.
+            dequant_cache.suspend()
         try:
             with isolated_sampling(device, compiled):
                 transformer.eval()
@@ -3411,6 +3620,11 @@ def _train_dit(
             sample_plan = None
         finally:
             transformer.train()
+            if dequant_cache is not None:
+                dequant_cache.resume()
+            if fast_lora_layers:
+                # A preview may swap EMA weights in and out of the LoRA masters.
+                mark_lora_updated()
             if parked:
                 sample_vae.to("cpu")
                 if device == "cuda":
@@ -3425,6 +3639,44 @@ def _train_dit(
     if sample_plan is not None and resumed < cfg.train_steps:
         _sample(resumed)
 
+    def _forward_backward(latents, noise, timesteps, sigmas, noisy, embeds):
+        with autocast:
+            model_pred = spec.forward(
+                transformer, noisy, timesteps, sigmas, embeds, cfg, device, weight_dtype
+            )
+            target = noise - latents
+            if bell_weights is None:
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+            else:
+                per = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                w_idx = (sigmas.flatten().float() * num_train_ts).long().clamp(0, num_train_ts - 1)
+                w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
+                loss = (per * w).mean()
+        (loss / cfg.gradient_accumulation_steps).backward()
+        return loss
+
+    def _retry_fully_checkpointed():
+        # Partial gradients of the failed micro-step are already accumulated, so the whole step reruns from its inputs.
+        gc_budget.fall_back()
+        optimizer.zero_grad(set_to_none = True)
+        gc.collect()
+        _empty_device_cache(device)
+        _emit(
+            on_event,
+            "warning",
+            message = (
+                "Ran out of GPU memory while keeping block activations; every block is checkpointed "
+                "from this step on."
+            ),
+        )
+        acc = None
+        for loss in replay.replay(_forward_backward):
+            acc = accumulate_loss(acc, loss, cfg.gradient_accumulation_steps)
+        replay.clear()
+        return acc
+
+    # Host copies of the step's inputs and RNG states, only while a budgeted step could still need a rerun.
+    replay = StepReplay(device) if gc_budget is not None else None
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(resumed, cfg.train_steps):
@@ -3433,6 +3685,8 @@ def _train_dit(
             break
         optimizer.zero_grad(set_to_none = True)
         step_acc = None
+        if replay is not None:
+            replay.clear()
         for _ in range(cfg.gradient_accumulation_steps):
             idxs = index_sampler.next_batch(batch_size)
             if canvases is not None:
@@ -3483,30 +3737,46 @@ def _train_dit(
                 weight_dtype,
                 pad_to = qwen_pad_to,
             )
-            with autocast:
-                model_pred = spec.forward(
-                    transformer, noisy, timesteps, sigmas, embeds, cfg, device, weight_dtype
-                )
-                target = noise - latents
-                if bell_weights is None:
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
-                else:
-                    per = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
-                    w_idx = (
-                        (sigmas.flatten().float() * num_train_ts).long().clamp(0, num_train_ts - 1)
-                    )
-                    w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
-                    loss = (per * w).mean()
-            (loss / cfg.gradient_accumulation_steps).backward()
-            step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
+            inputs = (latents, noise, timesteps, sigmas, noisy, embeds)
+            if gc_budget is not None and not gc_budget.planned and canvases is not None:
+                # Bucketed runs: the plan is measured on this step's canvas and scaled to the largest bucket.
+                gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idxs))
+            if replay is not None and gc_budget.can_retry:
+                replay.record(inputs)
+            oom = False
+            try:
+                loss = _forward_backward(*inputs)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+                if replay is None or not gc_budget.can_retry or not is_out_of_memory(exc):
+                    raise
+                oom = True
+            if oom:
+                # Outside the except block so the failed graph dies with its traceback; drop every device reference
+                # to the step's micro-batches so the host-copy rerun has a clean step's memory.
+                inputs = latents = noise = timesteps = t_indices = sigmas = noisy = embeds = None
+                px = loss = step_acc = None
+                step_acc = _retry_fully_checkpointed()
+            else:
+                step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
 
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
             # Pre-clip norm: the UI's health signal.
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         step_loss = loss_value(step_acc)
+        plan_now = gc_budget is not None and not gc_budget.planned
+        if plan_now:
+            fb_peak = torch.cuda.max_memory_allocated()
+            alloc_before_step = torch.cuda.memory_allocated()
         optimizer.step()
         lr_sched.step()
+        if plan_now:
+            _plan_gc_budget(
+                gc_budget,
+                fb_peak,
+                alloc_before_step,
+                max(c[0] * c[1] for c in canvases) if canvases is not None else None,
+            )
         if ema is not None:
             ema.update(transformer)
 
@@ -3559,6 +3829,18 @@ def _train_dit(
         if stop_now:
             stopped = True
             break
+
+    if fast_lora_layers:
+        stats = fast_lora_stats()
+        if dequant_cache is not None:
+            stats["dequant"] = dequant_cache.stats()
+            set_vram_request_handler(None)
+            dequant_cache.release()
+        _emit(on_event, "fast_lora_stats", **stats)
+        for handle in fast_lora_hooks:
+            handle.remove()
+        # Saving and any later reuse of this transformer see PEFT's own modules again.
+        uninstall_fast_lora(transformer)
 
     lora_path: Optional[str] = None
     catalog_path: Optional[str] = None
@@ -3613,6 +3895,37 @@ def _train_dit(
         discarded = bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)
+
+
+def _plan_gc_budget(
+    gc_budget,
+    fb_peak,
+    alloc_before_step,
+    max_canvas_area = None,
+) -> None:
+    """After the first step: keep as many blocks' activations as the measured free memory allows. Never raises."""
+    import logging
+
+    import torch
+
+    log = logging.getLogger(__name__)
+    try:
+        # The optimizer's first step allocates its moments, which every later step carries.
+        projected = int(fb_peak) + max(0, torch.cuda.memory_allocated() - int(alloc_before_step))
+        free, total = torch.cuda.mem_get_info()
+        kept = gc_budget.plan(
+            projected, free, torch.cuda.memory_reserved(), total, max_canvas_area = max_canvas_area
+        )
+    except Exception as exc:  # noqa: BLE001 -- an optimisation only: every block stays checkpointed
+        gc_budget.fall_back()
+        log.info("gradient checkpointing budget not applied: %s", exc)
+        return
+    log.info(
+        "gradient checkpointing: keeping activations for %d of %d blocks (%.2f GiB)",
+        kept,
+        gc_budget.total_blocks,
+        gc_budget.kept_bytes / (1 << 30),
+    )
 
 
 def _make_optimizer(

@@ -60,6 +60,7 @@ const MODEL_DEFAULTS: Array<{
   { match: "moss-image", steps: 25, guidance: 2.5 },
   { match: "moss_image", steps: 25, guidance: 2.5 },
   { match: "mossimage", steps: 25, guidance: 2.5 },
+  { match: "kromoss", steps: 25, guidance: 2.5 },
   { match: "lumina", steps: 50, guidance: 4 },
   // Distilled checkpoints use their publishers' recipes; each must precede its family's key.
   { match: "hunyuanimage-2.1-distilled", steps: 8, guidance: 3.25 },

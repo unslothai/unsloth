@@ -527,13 +527,14 @@ def install(
     logger: Any = None,
     speed_active: bool = True,
     speed_unset_only: bool = False,
+    policy: Any = None,
 ) -> int:
     """Route the pipeline's DiT attention dispatch calls to the INT8 kernel where this card and the switch allow it
     (module docstring). ``speed_active=False`` (speed off) keeps the automatic route off so output stays
-    bit-identical; a request by name or the env switch still routes. Returns the number of modules routed; never
-    raises."""
+    bit-identical; a request by name or the env switch still routes. ``policy``: the load's ``Int8Policy`` (its
+    ``on`` / ``off`` beat the env switch). Returns the number of modules routed; never raises."""
     try:
-        return _install(pipe, target, requested, logger, speed_active, speed_unset_only)
+        return _install(pipe, target, requested, logger, speed_active, speed_unset_only, policy)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors keep their backend
         remove(pipe)
         if logger is not None:
@@ -600,12 +601,19 @@ def _race_wins(
 
 
 def long_verdict(
-    device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Any, name: str
+    device: Any,
+    dtype: Any,
+    heads: int,
+    head_dim: int,
+    incumbent: Any,
+    name: str,
+    tokens: Optional[tuple] = None,
 ) -> Optional[int]:
-    """The token count from which the kernel wins at ``LONG_RACE_TOKENS`` (where it lost the card race), or None."""
+    """The token count from which the kernel wins at ``LONG_RACE_TOKENS`` (where it lost the card race), or None.
+    ``tokens``: another (large, small) pair (a family's ``FAMILY_RACE_TOKENS``)."""
     from . import diffusion_int8_attention as I8
 
-    large, small = LONG_RACE_TOKENS
+    large, small = tokens or LONG_RACE_TOKENS
     if not _race_wins(device, dtype, heads, head_dim, incumbent, name, large):
         return None
     if _race_wins(device, dtype, heads, head_dim, incumbent, name, small):
@@ -723,13 +731,14 @@ def _install(
     logger: Any,
     speed_active: bool = True,
     speed_unset_only: bool = False,
+    policy: Any = None,
 ) -> int:
     import torch
 
     from . import diffusion_int8_attention as I8
 
     remove(pipe)
-    setting = I8.mode()
+    setting = I8.mode(policy)
     if setting == "off" or not enabled():
         return 0
     forced = setting == "force" or I8.requested(requested)
@@ -776,7 +785,7 @@ def _install(
         return 0
     I8.int8_attention_op()
     original = original_dispatch()
-    env_force = setting == "force"
+    env_force = setting == "force" and I8.env_forced(policy)
     cards = [index] + [c for c in _secondary_cards(index, _dits(pipe)) if c != index]
     report: dict = {}
     routed = 0

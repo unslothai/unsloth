@@ -722,6 +722,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3ModularPipeline",
+        # As FLUX.2 Klein: per-process reduction-config / cuDNN picks moved one seed 0.003-0.007 LPIPS on L4.
+        filter_reduction_configs = True,
+        cudnn_benchmark = False,
         # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
         # (black-forest-labs/flux-3-image-klein-comfy, byte-identical), which scored better than an INT8 built with
         # the keep-list, so the prequant loader reads it through the ComfyUI quant path. The FP8 file is Studio's own.
@@ -796,6 +799,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
+        # As FLUX.2 Klein: per-process reduction-config / cuDNN picks moved one seed 0.003-0.007 LPIPS on L4.
+        filter_reduction_configs = True,
+        cudnn_benchmark = False,
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
         # the loader checks the stored exclude set against it. The base has its own repo.
         prequant_repos = (
@@ -1497,6 +1503,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             quant_names = ("moss-image-base",),
             # fp8 scored LPIPS 0.163 (int8 ConvRot 0.058): explicit picks only.
             auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
+            # fp8 trails int8 at inference, so it is no training base.
+            train_scheme_deny = frozenset({"fp8", "mxfp8"}),
             # NVFP4 scored LPIPS 0.383 vs bf16 (INT8-ConvRot 0.058); as FLUX.3, a passing gate record lifts it.
             scheme_deny = frozenset({"nvfp4"}),
             # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
@@ -1526,7 +1534,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_excluded_bases = ("openmoss-team/moss-image-base",),
         # Qwen3.5-9B int8 ConvRot: LPIPS 0.059 vs bf16; without the hosted file auto keeps bf16.
         te_quant_auto = "int8",
-        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image"),
+        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image", "kromoss"),
         prompt_hint = (
             "MOSS-Image reads plain captions, tag lists or JSON layouts; raise CFG (3 to 6) for short prompts."
         ),
@@ -1543,6 +1551,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
         sd_cpp_arch_marker = "MOSS-Image",
         sd_cpp_scheduler = "simple",
+        trainable = True,
+        train_base_repos = ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"),
     ),
     # MiniMax-H3-Image: 33B H3 DiT without audio plus per-step PDD heads, conditioned by Qwen3-VL-32B. diffusers has
     # no class yet, so diffusion_minimax_h3_image loads, converts, quantizes and places it itself.
@@ -2378,6 +2388,7 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("moss-image", 25, 2.5),
     ("moss_image", 25, 2.5),
     ("mossimage", 25, 2.5),
+    ("kromoss", 25, 2.5),
     # SDXL-Turbo: 1 step, CFG 1. "sdxl-turbo" must precede "sdxl".
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),

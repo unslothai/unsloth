@@ -3869,6 +3869,37 @@ html[data-chat-font] .aui-root {
 			content: attr(data-pill-label);
 			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-(--tooltip-fg) shadow-(--tooltip-shadow);
 		}
+
+		/* The icon chip opens the picker, which has Eject. */
+		@media (width < 48rem) {
+			.composer-model-chip [data-eject-hit] {
+				pointer-events: none;
+			}
+			.composer-model-chip [data-eject-hit] > span {
+				visibility: visible !important;
+			}
+			.composer-model-chip [data-eject-hit] > svg {
+				visibility: hidden !important;
+			}
+			.composer-model-chip[data-pill-detail]:not([data-state="open"]):hover::after {
+				content: attr(data-pill-label) " · " attr(data-pill-detail);
+			}
+			.composer-model-chip[data-pill-label]:not([data-state="open"]):hover::after {
+				left: auto;
+				right: 0;
+				translate: none;
+				max-width: calc(100vw - 2rem);
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+		}
+		/* A tap leaves :hover stuck. */
+		@media (width < 48rem) and (hover: none) {
+			.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after,
+			.composer-model-chip[data-pill-detail]:not([data-state="open"]):hover::after {
+				content: none;
+			}
+		}
 	}
 
 	/* Menu selection tick. Raised 1px so it reads level with the label. */
@@ -5445,26 +5476,46 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 /* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
 @supports selector(::-webkit-scrollbar) {
-	.aui-thread-root [data-streamdown="code-block-body"] {
+	:is([data-streamdown="code-block"], [data-streamdown="code-block-body"]) {
 		scrollbar-width: auto;
 		scrollbar-color: auto;
 	}
 }
 
-.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar {
+:is([data-streamdown="code-block"], [data-streamdown="code-block-body"])::-webkit-scrollbar {
 	height: 6px;
 }
 
-.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+:is([data-streamdown="code-block"], [data-streamdown="code-block-body"])::-webkit-scrollbar-thumb:horizontal {
 	background: transparent;
 }
 
-.aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+[data-streamdown="code-block"]:is(:hover, :focus-within)::-webkit-scrollbar-thumb:horizontal,
+[data-streamdown="code-block"]:is(:hover, :focus-within) [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
-.dark .aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+.dark [data-streamdown="code-block"]:is(:hover, :focus-within)::-webkit-scrollbar-thumb:horizontal,
+.dark [data-streamdown="code-block"]:is(:hover, :focus-within) [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
 	background: oklch(0.72 0 0 / 0.4);
+}
+
+/* A classic page scrollbar must not narrow the Translate panes. */
+main[data-translate-page] {
+	scrollbar-gutter: stable;
+}
+
+/* Dark keeps its wash: --accent would read as a second selection colour. */
+html.dark .translate-page .hub-tab-toggle-pill {
+	background-color: rgb(255 255 255 / calc(0.09 * var(--contrast-wash-gain, 1)));
+}
+
+/* Firefox has no per-axis thumb, so the whole bar waits for hover there. */
+@supports not selector(::-webkit-scrollbar) {
+	[data-streamdown="code-block"]:not(:hover, :focus-within),
+	[data-streamdown="code-block"]:not(:hover, :focus-within) [data-streamdown="code-block-body"] {
+		scrollbar-color: transparent transparent;
+	}
 }
 
 /* Classic, not overlay: a wide chat table shows it scrolls before it is touched. */
@@ -7915,6 +7966,11 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-
 html[data-glass] :is([data-slot="chat-settings-panel"], [data-slot$="popover-content"], [data-slot="dialog-content"], [data-slot="sheet-content"], [data-slot$="menu-content"]) .sticky {
   -webkit-backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
   backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
+}
+/* The connection model list's edge fade is a mask, which leaves its pinned header's frost see-through. */
+html[data-glass] ul:has(> [data-fold-header][data-stuck]) {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
 }
 /* A glass menu's fill is see-through, so a pinned Run settings row painting it again reads as a darker block: one blurred layer per row frosts what scrolls under it instead. */
 html[data-glass][data-glass-menus] .composer-run-settings :is([data-config-header-row], [data-pinned-footer]) {

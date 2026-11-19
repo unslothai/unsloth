@@ -5,6 +5,8 @@
 Inference API routes for model loading and text generation.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
+import copy
 import math
 import os
 import shutil
@@ -178,6 +180,7 @@ from core.inference.llama_admission import (
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
 from core.inference.http_stream import SSE_LINE_END, aiter_sse_lines
+from core.inference.sse import SSELineDecoder, iter_sse_lines
 from core.inference import model_slots
 from core.inference.llama_cpp import (
     _TERMINAL_RETIREMENT_HOOKS,
@@ -352,7 +355,8 @@ _LOST_CONNECTION_MSG = (
 _OVERSIZE_TOKENS_RE = _re.compile(
     r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"
 )
-_LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned 4\d\d: (.*)", _re.DOTALL)
+# 501 is llama-server's not_supported_error (e.g. chat on a decision-only model).
+_LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned (?:4\d\d|501): (.*)", _re.DOTALL)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -2017,8 +2021,17 @@ def _openai_llama_admission_compact_image_part(part: dict) -> dict:
     return {"type": "image_url", "image_url": compact_image_url}
 
 
+def _mcp_replay_uncapped(payload) -> bool:
+    """A compacting GGUF chat keeps every tool picture: its tool loop does too and lets the fit make
+    room, so the follow-up prompt matches what the loop last sent (#18231)."""
+    return payload is not None and _rolling_context_policy(payload) == "truncate_oldest"
+
+
 def _openai_llama_admission_messages_for_estimate(
-    messages, *, vision: bool = True
+    messages,
+    *,
+    vision: bool = True,
+    uncapped: bool = False,
 ) -> tuple[list[dict], int]:
     """Strip image bytes before estimating text; mtmd token counts follow the model, not base64 size."""
     estimate_messages = []
@@ -2105,7 +2118,9 @@ def _openai_llama_admission_messages_for_estimate(
             estimate_message["content"] = estimate_content
         estimate_messages.append(estimate_message)
     # Cap replay images separately from caller attachments, matching GGUF promotion.
-    return estimate_messages, image_parts + min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
+    if not uncapped:
+        envelope_image_parts = min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
+    return estimate_messages, image_parts + envelope_image_parts
 
 
 def _conversation_video_clips(messages) -> list[str]:
@@ -2219,7 +2234,7 @@ def _openai_llama_admission_tokens(
     elif isinstance(messages, list) and messages:
         try:
             estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-                messages, vision = vision
+                messages, vision = vision, uncapped = _mcp_replay_uncapped(payload)
             )
             prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
@@ -2372,7 +2387,9 @@ def _count_gguf_admission_prompt(
     budget = _openai_llama_admission_budget(llama_backend) or 0
     try:
         text_messages, images = _openai_llama_admission_messages_for_estimate(
-            messages, vision = bool(getattr(llama_backend, "is_vision", False))
+            messages,
+            vision = bool(getattr(llama_backend, "is_vision", False)),
+            uncapped = _mcp_replay_uncapped(payload),
         )
         if prepared_body is None:
             template_kwargs = llama_backend._request_reasoning_kwargs(
@@ -4160,8 +4177,10 @@ _ARTIFACT_PAGE_PRELUDE = """<script>(() => {
 # Inserted after a leading doctype (before it means quirks mode), else first. Never after a later
 # "<head>": that text may sit in a comment or a script string. The parser opens the head for the
 # script and folds a later <html>'s attributes into the root.
+# A comment body never contains "-->", so each comment has one match: a lazy `.*?` could also span
+# later comments, and a run of `<!---->` without a doctype then backtracks exponentially.
 _ARTIFACT_PAGE_PRELUDE_AT = _re.compile(
-    r"\A\ufeff?(?:\s|<!--.*?-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
+    r"\A\ufeff?(?:\s|<!--(?:(?!-->).)*-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
 )
 
 
@@ -8043,24 +8062,20 @@ def _monitor_anthropic_response(
 
     async def _monitored_body():
         terminal = False
+        decoder = SSELineDecoder()
+
+        def _watch(line: str) -> None:
+            nonlocal terminal
+            if _monitor_anthropic_sse_line(monitor_id, line.strip(), context_length) == "error":
+                terminal = True
+
         try:
             async for chunk in body_iterator:
-                text = (
-                    chunk.decode("utf-8", errors = "ignore")
-                    if isinstance(chunk, (bytes, bytearray))
-                    else str(chunk)
-                )
-                for line in SSE_LINE_END.split(text):
-                    if (
-                        _monitor_anthropic_sse_line(
-                            monitor_id,
-                            line.strip(),
-                            context_length,
-                        )
-                        == "error"
-                    ):
-                        terminal = True
+                for line in decoder.feed(chunk):
+                    _watch(line)
                 yield chunk
+            for line in decoder.flush():
+                _watch(line)
             if not terminal:
                 api_monitor.finish(
                     monitor_id,
@@ -9133,6 +9148,27 @@ def _canonical_model_identity(model_id: Optional[str]) -> str:
     return (hf_cache_repo_id(model_id) or str(model_id)).lower()
 
 
+def _as_ollama_mlx_request(request):
+    """*request* advertised as the Ollama MLX tag whose checkpoint path it names. The build happens
+    under the load's lease, on its own executor: a lease held by a running load must not park a
+    default-executor thread here."""
+    from hub.services.models.ollama import ollama_mlx_ref_for_path
+
+    # A leased request is authorized only once its lease verifies.
+    if getattr(request, "native_path_lease", None):
+        return request
+    ref = isinstance(request.model_path, str) and ollama_mlx_ref_for_path(request.model_path)
+    if not ref or not hasattr(request, "_advertised_id") or request._advertised_id:
+        return request
+    try:
+        public_id = ollama_model_ref_public_id(ref)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+    resolved = request.model_copy()
+    resolved._advertised_id = public_id
+    return resolved
+
+
 def _as_ollama_manifest_request(request):
     """*request* with a materialized Ollama ``.gguf`` link rewritten to the tag that produced it."""
     from hub.services.models.ollama import ollama_manifest_ref_for_path, ollama_model_ref_files
@@ -9197,18 +9233,37 @@ def _as_local_scan_folder_request(request, owner_session: bool):
     return request.model_copy(update = {"model_path": load_path, "gguf_variant": variant})
 
 
+def _names_ollama_tag(path: str) -> bool:
+    return is_ollama_manifest_ref(path) or any(
+        part in (".studio_links", "ollama_links") for part in Path(path).parts
+    )
+
+
+def _acquire_ollama_lease(model_path: str, native_path_lease):
+    """The GGUF tag's lease, or an MLX tag's whose checkpoint path *model_path* is, else None."""
+    from hub.services.models.ollama import acquire_ollama_mlx_ref, ollama_mlx_ref_for_path
+
+    if is_ollama_manifest_ref(model_path):
+        return acquire_ollama_model_ref(model_path)
+    ref = not native_path_lease and ollama_mlx_ref_for_path(model_path)
+    return acquire_ollama_mlx_ref(ref) if ref else None
+
+
 async def _lease_ollama_model_ref(
     request: LoadRequest | ValidateModelRequest, *, operation: str, stack: ExitStack
 ) -> Optional[str]:
-    if not is_ollama_manifest_ref(request.model_path):
+    path = request.model_path
+    # Only Ollama tags take the lease pool: an unrelated load must not queue behind a held lease.
+    if not isinstance(path, str) or not _names_ollama_tag(path):
         return None
     loop = asyncio.get_running_loop()
     lease_future = loop.run_in_executor(
         _OLLAMA_LEASE_EXECUTOR,
         run_as,
         current_account(),
-        acquire_ollama_model_ref,
+        _acquire_ollama_lease,
         request.model_path,
+        getattr(request, "native_path_lease", None),
     )
     try:
         lease = await asyncio.shield(lease_future)
@@ -9216,20 +9271,24 @@ async def _lease_ollama_model_ref(
 
         def _release_cancelled_lease(done):
             try:
-                done.result().release()
+                if done.result() is not None:
+                    done.result().release()
             except BaseException:
                 pass
 
         lease_future.add_done_callback(_release_cancelled_lease)
         raise
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         logger.warning("inference.ollama_materialize_failed: %s", exc)
         raise HTTPException(
             status_code = 400,
             detail = redact_native_paths(str(exc)),
         ) from exc
+    if lease is None:
+        return None
     stack.callback(lease.release)
-    return lease.path
+    # An MLX tag loads by its checkpoint path, which the request already names.
+    return lease.path if is_ollama_manifest_ref(request.model_path) else None
 
 
 def _defers_access_to_native_grant(request) -> bool:
@@ -9610,12 +9669,23 @@ def _target_accepts_request_input(
             need_image,
             gguf_companion_roots,
         )
-    if needs_video and not _target_accepts_video_input(load_path):
-        return False
-    if needs_audio and not _target_accepts_audio_input(load_path):
-        return False
-    # need_image, not needs_vision: audio sets needs_vision but needs no vision tower.
-    return _target_is_vision(load_path) if (needs_vision and need_image) else True
+    # An MLX tag's lease builds it for its current manifest, so the probes read what a load would.
+    lease = None
+    if _names_ollama_tag(load_path):
+        try:
+            lease = _acquire_ollama_lease(load_path, None)
+        except (OSError, ValueError) as exc:
+            logger.warning("inference.ollama_mlx_materialize_failed: %s", exc)
+    try:
+        if needs_video and not _target_accepts_video_input(load_path):
+            return False
+        if needs_audio and not _target_accepts_audio_input(load_path):
+            return False
+        # need_image, not needs_vision: audio sets needs_vision but needs no vision tower.
+        return _target_is_vision(load_path) if (needs_vision and need_image) else True
+    finally:
+        if lease is not None:
+            lease.release()
 
 
 def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
@@ -12388,7 +12458,11 @@ async def _maybe_auto_switch_model(
         if (
             (target_requires_vision or require_audio_input)
             and resolved is not None
-            and not await asyncio.to_thread(
+            and not await asyncio.get_running_loop().run_in_executor(
+                # Its lease wait belongs on the lease pool, never the default executor.
+                _OLLAMA_LEASE_EXECUTOR if _names_ollama_tag(target_id) else None,
+                run_as,
+                current_account(),
                 _target_accepts_request_input,
                 target_id,
                 target_is_gguf,
@@ -19678,6 +19752,7 @@ async def _load_model_impl(
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     await _require_drafter_access(request)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    request = await asyncio.to_thread(run_as, current_account(), _as_ollama_mlx_request, request)
     _requested_model_id = request.model_path
     request = await asyncio.to_thread(
         _as_local_scan_folder_request, request, _owner_session(fastapi_request)
@@ -21243,6 +21318,7 @@ async def validate_model(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    request = await asyncio.to_thread(run_as, current_account(), _as_ollama_mlx_request, request)
     # The chat flow validates before /load; offline the remote probe would refuse the id.
     request = await asyncio.to_thread(
         _as_local_scan_folder_request, request, _owner_session(fastapi_request)
@@ -29785,6 +29861,21 @@ def _external_fit_limits(payload, prompt_tokens: int) -> tuple[int, Optional[int
     return context_length, max_tokens
 
 
+def _overflow_retry_thresholds(refused_tokens: int, max_tokens: Optional[int]) -> list[int]:
+    """Half the refused prompt, then looser, then the trigger whose prompt budget is one token
+    under the refused prompt: a dominant latest turn still gets the older turns dropped."""
+    from core.inference.context_window import prompt_budget
+
+    low, high = 1, max(2, 2 * refused_tokens + (max_tokens or 0))
+    while low < high:
+        mid = (low + high) // 2
+        if prompt_budget(mid, max_tokens) >= refused_tokens - 1:
+            high = mid
+        else:
+            low = mid + 1
+    return [max(1, refused_tokens * eighths // 8) for eighths in (4, 5, 6, 7)] + [low]
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -30564,7 +30655,7 @@ async def _proxy_to_external_provider(
                     max_calls = (
                         payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
@@ -30964,10 +31055,27 @@ async def _proxy_to_external_provider(
                 "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
             }
         )
+    # No summary call; dropped turns go to the archive. "rolling" is the pre-summary cloud fit.
+    _evict_only = (
+        managed is None
+        and payload.compaction_mode in ("rolling", "checkpoint")
+        and not _provider_compacts
+    )
+    _rolling_only = _evict_only and payload.compaction_mode == "rolling"
     # Eviction's replacement: providers that compact server-side keep doing so themselves.
-    _auto_summary = bool(payload.compaction_threshold) and _rolling and not _provider_compacts
+    _auto_summary = (
+        bool(payload.compaction_threshold)
+        and _rolling
+        and not _provider_compacts
+        and not _evict_only
+    )
     # /compact. A saved thread only, so the summary outlives this request.
-    _compact_now = managed is None and payload.compact_context is True and bool(payload.thread_id)
+    _compact_now = (
+        managed is None
+        and not _evict_only
+        and payload.compact_context is True
+        and bool(payload.thread_id)
+    )
     _first_turn_overrides: dict = {}
     if _compact_now and _provider_compacts:
         _native_trigger = None
@@ -30985,7 +31093,13 @@ async def _proxy_to_external_provider(
             _first_turn_overrides = {"compaction_threshold": _native_trigger}
     _manual_summary_pending = _compact_now and not _first_turn_overrides
     _has_saved_summary = False
-    if managed is None and payload.thread_id and not _auto_summary and not _manual_summary_pending:
+    if (
+        managed is None
+        and not _evict_only
+        and payload.thread_id
+        and not _auto_summary
+        and not _manual_summary_pending
+    ):
         from core.inference import cloud_compaction as _cloud_compaction
         _has_saved_summary = await asyncio.to_thread(
             _cloud_compaction.thread_has_summaries, str(payload.thread_id)
@@ -30994,10 +31108,44 @@ async def _proxy_to_external_provider(
     _fit_active = _auto_summary or (
         managed is None and (_manual_summary_pending or _has_saved_summary)
     )
+    if _evict_only:
+        # An earlier summary is not replayed: the turns it covered are evicted like any others.
+        _fit_active = (bool(payload.compaction_threshold) and _rolling) or (
+            not _rolling_only and payload.compact_context is True and bool(payload.thread_id)
+        )
+        if not _fit_active and not _rolling_only and payload.thread_id:
+            # A /compact epoch stays in force with auto-compact off, as a saved summary does.
+            from storage import studio_db as _studio_db
+            _fit_active = bool(
+                await asyncio.to_thread(
+                    _studio_db.chat_thread_has_context_truncation, str(payload.thread_id)
+                )
+            )
+    _evicting_fit = managed is not None or _evict_only
+    # The mode names its context policy, over the process default and a checkpoint saved under the other mode.
+    _evicting_payload = (
+        payload.model_copy(update = {"context_policy": payload.compaction_mode})
+        if _evict_only
+        else payload
+    )
+    if _evict_only and _fit_active and not (payload.compaction_threshold and _rolling):
+        # /compact or its epoch, auto-compact off or the error policy: nothing past it is evicted.
+        _evicting_payload = _evicting_payload.model_copy(
+            update = {
+                "compaction_threshold": payload.context_window or _EXTERNAL_COMPACTION_THRESHOLD_MAX
+            }
+        )
 
     # Managed local engines keep the evicting fit, with its /compact checkpoint epochs.
     _checkpoint_pass: dict = {}
-    _first_payload = payload
+    _first_payload = _evicting_payload
+    # The prompt last sent, so an overflow refit evicts below what the provider refused.
+    _last_fit = None
+
+    # As the plain fit decides it: a cloud model that never gets Studio tools cannot search an epoch.
+    _model_can_reset = managed is not None or provider_model_runs_local_tools(
+        provider_type, payload.external_model or payload.model
+    )
 
     async def _managed_context_fitter(messages, tools):
         nonlocal _first_payload
@@ -31013,15 +31161,17 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
                 # The NPU has no compaction of its own, so /compact resets here as on GGUF.
-                can_reset = not _tool_calls_are_disabled(payload),
+                can_reset = (
+                    not _rolling_only and not _tool_calls_are_disabled(payload) and _model_can_reset
+                ),
                 first_pass = first_pass,
-                replays_manual = True,
+                replays_manual = not _rolling_only,
             )
 
         refit = not later
         if later:
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                fit, candidate, payload, False
+                fit, candidate, _evicting_payload, False
             )
             refit = bool(
                 truncation and (truncation.get("dropped_messages") or not truncation.get("fits"))
@@ -31029,14 +31179,17 @@ async def _proxy_to_external_provider(
             if refit:
                 # Boundaries must count the full branch, so an overflow refits it without /compact.
                 fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                    fit, messages, payload.model_copy(update = {"compact_context": None}), True
+                    fit,
+                    messages,
+                    _evicting_payload.model_copy(update = {"compact_context": None}),
+                    True,
                 )
         else:
             # /compact applies to the loop's first fit only, whether or not it evicted anything.
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                 fit, messages, _first_payload, True
             )
-            _first_payload = payload.model_copy(update = {"compact_context": None})
+            _first_payload = _evicting_payload.model_copy(update = {"compact_context": None})
         # A refit moves the boundary, so the next pass extends this result, not the stale one.
         if (later and not refit) or (refit and truncation and truncation.get("checkpoint") is True):
             _checkpoint_pass.update(input = list(messages), fitted = fitted)
@@ -31054,12 +31207,32 @@ async def _proxy_to_external_provider(
         """Yields a progress line when a summary has to be written first, then
         ``(messages, max_tokens, truncation_line)``."""
         nonlocal _external_truncation, _manual_summary_pending
+        nonlocal _evicting_payload, _first_payload, _last_fit
         from core.inference import cloud_compaction
 
         if force is None and _manual_summary_pending:
             force = "manual"
         _manual_summary_pending = False
-        if managed is not None:
+        if _evict_only and force == "overflow":
+            # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
+            # the loop's later passes. The window stays: the fit clamps the reply cap against it.
+            refused = _last_fit if _last_fit is not None else messages
+            refused_tokens = _external_token_counter(payload, tools)(refused)
+            unbounded, first_unbounded = _evicting_payload, _first_payload
+            for threshold in _overflow_retry_thresholds(
+                refused_tokens, _effective_max_tokens(unbounded)
+            ):
+                bound = {"compaction_threshold": threshold}
+                _evicting_payload = unbounded.model_copy(update = bound)
+                _first_payload = first_unbounded.model_copy(update = bound)
+                _checkpoint_pass.clear()
+                # A copy per probe: the fit shortens oversized attachments in place.
+                fitted, truncation, fallback_max_tokens = await _managed_context_fitter(
+                    copy.deepcopy(messages), tools
+                )
+                if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
+                    break
+        elif _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
             if plan is None:
@@ -31084,6 +31257,7 @@ async def _proxy_to_external_provider(
             )
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
+        _last_fit = fitted
         if truncation and truncation.get("dropped_messages"):
             _external_truncation = truncation
         truncation_line = None
@@ -31137,15 +31311,17 @@ async def _proxy_to_external_provider(
     _deferred_fit_plan = None
     # An overflow refit starts from the transcript, not from a prompt that already holds a summary.
     _unfitted_messages = chat_messages
-    if _fit_active and not run_studio_tool_loop and managed is not None:
+    if _fit_active and not run_studio_tool_loop and _evicting_fit:
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
             _fit_external_context,
             chat_messages,
-            payload,
+            _evicting_payload,
             tools = _external_fit_tools,
             # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
-            can_reset = bool(managed.supports_tools) and not _tool_calls_are_disabled(payload),
-            replays_manual = True,
+            can_reset = (bool(managed.supports_tools) if managed is not None else _model_can_reset)
+            and not _tool_calls_are_disabled(payload)
+            and not _rolling_only,
+            replays_manual = not _rolling_only,
         )
         try:
             _refuse_what_ollama_would_cut(
@@ -31154,6 +31330,7 @@ async def _proxy_to_external_provider(
         except context_refusal.ContextBudgetExceeded as exc:
             raise _context_budget_http_error(exc)
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
+        _last_fit = chat_messages
     elif _fit_active and not run_studio_tool_loop:
         _prefit_plan = await asyncio.to_thread(
             _plan_external_compaction,
@@ -31264,7 +31441,7 @@ async def _proxy_to_external_provider(
                     max_calls = (
                         payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
@@ -31897,18 +32074,18 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         body = response.body_iterator
         # Opened after every refusal: a window marks any load it overlaps as shared for good.
         output_mark = npu.output_mark(upstream)
+        lines = iter_sse_lines(body)
         try:
-            async for piece in body:
-                text = piece.decode("utf-8") if isinstance(piece, bytes) else piece
-                for line in text.split("\n"):
-                    if line.startswith("data:") and '"error"' in line:
-                        line = await asyncio.to_thread(
-                            _explain_npu_error_line, npu, output_mark, line
-                        )
-                    if line.strip():
-                        yield line
+            async for line in lines:
+                if line.startswith("data:") and '"error"' in line:
+                    line = await asyncio.to_thread(_explain_npu_error_line, npu, output_mark, line)
+                if line.strip():
+                    yield line
         finally:
-            await body.aclose()
+            try:
+                await lines.aclose()
+            finally:
+                await body.aclose()
 
     if wants_stream:
 
@@ -32576,20 +32753,22 @@ def _restore_connection_tool_extras(subject: Optional[str], messages: Any) -> No
 
 async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
     recorder = _ConnectionExtrasRecorder(subject)
-    pending = ""
+    decoder = SSELineDecoder()
+
+    def _record(line: str) -> None:
+        if line.startswith("data:") and ('"tool_calls"' in line or '"extra_content"' in line):
+            try:
+                recorder.chunk(json.loads(line[5:]))
+            except ValueError:
+                pass
+
     try:
         async for chunk in chunks:
             yield chunk
-            pending += chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
-            *complete, pending = pending.split("\n")
-            for line in complete:
-                if line.startswith("data:") and (
-                    '"tool_calls"' in line or '"extra_content"' in line
-                ):
-                    try:
-                        recorder.chunk(json.loads(line[5:]))
-                    except ValueError:
-                        pass
+            for line in decoder.feed(chunk):
+                _record(line)
+        for line in decoder.flush():
+            _record(line)
     finally:
         await chunks.aclose()
 
@@ -32672,7 +32851,13 @@ async def _collect_chat_completion(lines, model: str):
             break
         if not data:
             continue
-        chunk = json.loads(data)
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            logger.warning("chat connection stream dropped an unparsable data line")
+            continue
+        if not isinstance(chunk, dict):
+            continue
         error = chunk.get("error")
         if error:
             message = error.get("message") if isinstance(error, dict) else str(error)
@@ -34225,7 +34410,7 @@ async def produce_openai_chat_completions(
                     tool_choice = payload.tool_choice,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
-                    else 25,
+                    else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                     tool_call_timeout = payload.tool_call_timeout
                     if payload.tool_call_timeout is not None
                     else 300,
@@ -36088,7 +36273,9 @@ async def produce_openai_chat_completions(
         _sf_is_gptoss = False
 
     _sf_tool_budget = (
-        payload.max_tool_calls_per_message if payload.max_tool_calls_per_message is not None else 25
+        payload.max_tool_calls_per_message
+        if payload.max_tool_calls_per_message is not None
+        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
     )
 
     # _sf_cli_policy, _sf_tools_on and _sf_mcp_allowed resolve first, so both paths share one decision.
@@ -42675,21 +42862,25 @@ class _InProcessChatStream:
     async def chunks(self):
         """Each chat chunk as a dict, or ``_LLAMA_STREAM_KEEPALIVE`` for a stall keepalive."""
         self._started = True
-        async for raw in self._iterator:
-            text = raw.decode() if isinstance(raw, bytes) else raw
-            for line in text.split("\n"):
+        lines = iter_sse_lines(self._iterator)
+        try:
+            async for line in lines:
                 if line.startswith(":"):
                     yield _LLAMA_STREAM_KEEPALIVE
                     continue
-                if not line.startswith("data: "):
+                if not line.startswith("data:"):
                     continue
-                data = line[6:]
+                data = line[5:]
+                if data.startswith(" "):
+                    data = data[1:]
                 if data.strip() == "[DONE]":
                     return
                 try:
                     yield json.loads(data)
                 except json.JSONDecodeError:
                     continue
+        finally:
+            await lines.aclose()
 
     async def next_chunk(self, chunks):
         """The next of ``chunks``, or None at its end, a Stop the source raised included."""
@@ -42798,17 +42989,16 @@ async def _responses_in_process_stream(
 
 
 async def _sse_data_lines(chunks):
-    pending = ""
+    # This wrapper owns closing chunks; iter_sse_lines does not.
+    lines = iter_sse_lines(chunks)
     try:
-        async for chunk in chunks:
-            pending += chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            *complete, pending = pending.split("\n")
-            for line in complete:
-                yield line
-        if pending:
-            yield pending
+        async for line in lines:
+            yield line
     finally:
-        await chunks.aclose()
+        try:
+            await lines.aclose()
+        finally:
+            await chunks.aclose()
 
 
 async def _responses_stream(
@@ -43135,6 +43325,8 @@ async def _responses_stream(
                     chunk_data = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(chunk_data, dict):
+                    continue
                 for event in translator.feed(chunk_data):
                     yield event
                 if translator.terminated:
@@ -43430,7 +43622,12 @@ async def _responses_from_stream(response: StreamingResponse, payload: Responses
     terminal = None
     async for line in _sse_data_lines(response.body_iterator):
         if line.startswith("data:"):
-            event = json.loads(line[5:])
+            try:
+                event = json.loads(line[5:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
             if event.get("type") in (
                 "response.completed",
                 "response.incomplete",
@@ -45004,7 +45201,7 @@ def _anthropic_chat_fields(
             sandbox_level = payload.sandbox_level,
             bypass_permissions = bool(payload.bypass_permissions),
             rag_scope = getattr(payload, "rag_scope", None),
-            max_tool_calls_per_message = 25,
+            max_tool_calls_per_message = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
             tool_call_timeout = 300,
             auto_heal_tool_calls = True,
         )
@@ -45256,7 +45453,12 @@ async def _anthropic_events_from_openai_sse(
                 break
             if not data:
                 continue
-            parsed = json.loads(data)
+            try:
+                parsed = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
             if parsed.get("error"):
                 yield _anthropic_connection_error_event(parsed["error"])
                 return
@@ -46850,7 +47052,7 @@ async def anthropic_messages(
                 stop = stop,
                 seed = payload.seed,
                 cancel_event = cancel_event,
-                max_tool_iterations = 25,
+                max_tool_iterations = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                 on_conversation_grew = _anthropic_recost,
                 auto_heal_tool_calls = True,
                 nudge_tool_calls = payload.nudge_tool_calls,
@@ -48162,14 +48364,16 @@ async def _anthropic_passthrough_stream(
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
-                if not raw_line or not raw_line.startswith("data: "):
+                if not raw_line or not raw_line.startswith("data:"):
                     continue
-                data_str = raw_line[6:]
+                data_str = raw_line[5:]
                 if data_str.strip() == "[DONE]":
                     break
                 try:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(chunk, dict):
                     continue
                 lines, failed = _anthropic_passthrough_chunk_lines(
                     emitter, chunk, request, disable_parallel_tool_use
@@ -48839,7 +49043,12 @@ def _openai_messages_for_gguf_chat(
         _splice_image_into_last_user(messages, image_part)
     has_image = _normalize_anthropic_openai_images(messages, is_vision)
     return (
-        promote_mcp_history_images(messages, vision = is_vision, promoted_out = promoted_out),
+        promote_mcp_history_images(
+            messages,
+            vision = is_vision,
+            promoted_out = promoted_out,
+            limit = None if _mcp_replay_uncapped(payload) else _MCP_MAX_TOTAL_MODEL_IMAGES,
+        ),
         has_image,
     )
 
@@ -51245,6 +51454,8 @@ async def load_diffusion_model_gated(
                 transformer_quant_fast_accum = request.transformer_quant_fast_accum,
                 transformer_prequant_path = request.transformer_prequant_path,
                 attention_backend = request.attention_backend,
+                # Only when set: older engines and test doubles take no such argument.
+                **({"int8_attention": request.int8_attention} if request.int8_attention else {}),
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,

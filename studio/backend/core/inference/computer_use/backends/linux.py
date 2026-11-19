@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Linux on X11 through XTEST and Pillow's screen grab; Wayland sessions are reported unsupported."""
+"""Linux on X11 through XTEST and Pillow's screen grab; Wayland sessions use wayland.py."""
 
 from __future__ import annotations
 
@@ -43,11 +43,14 @@ _APP_DIRS = (
 )
 
 
-def _session_problem() -> Optional[str]:
-    wayland = os.environ.get("WAYLAND_DISPLAY") or (
+def wayland_session() -> bool:
+    return bool(os.environ.get("WAYLAND_DISPLAY")) or (
         os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
     )
-    if wayland:
+
+
+def _session_problem() -> Optional[str]:
+    if wayland_session():
         return (
             "This is a Wayland session, where an application can't see or control other windows. "
             "Sign in with an X11 (Xorg) session to use computer use."

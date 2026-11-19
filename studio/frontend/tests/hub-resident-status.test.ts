@@ -184,18 +184,57 @@ test("a speech model in the slot clears the pick even while idle unload is armed
   assert.deepEqual(cleared, ["cleared"]);
 });
 
-test("a model Translate loaded does not become the chat model", () => {
-  for (const checkpoint of [null, "unsloth/gemma-4-E2B-it-GGUF"]) {
-    const adopted = adoptResidentModelStatus(
-      { checkpointId: "unsloth/Hy-MT2-1.8B-GGUF", ggufVariant: "Q4_K_M" },
-      emptyStore({ checkpoint, activeGgufVariant: checkpoint && "Q4_K_M" }),
-      refusing({
-        setCheckpoint: "Translate holds the slot; chat keeps its own pick",
-        clearCheckpoint: "Chat settles its own pick against the slot",
+const TRANSLATE_HELD = {
+  checkpointId: "unsloth/Hy-MT2-1.8B-GGUF",
+  ggufVariant: "Q4_K_M",
+};
+
+function evictionSpies() {
+  const calls: string[] = [];
+  return {
+    calls,
+    actions: {
+      ...refusing({
+        setCheckpoint: "Translate holds the slot; it is not the chat model",
         applyStatus: "its status describes a model chat is not talking to",
       }),
+      clearCheckpoint: () => calls.push("clearCheckpoint"),
+      markEvicted: () => calls.push("markEvicted"),
+    },
+  };
+}
+
+test("a model Translate loaded does not become the chat model", () => {
+  const { calls, actions } = evictionSpies();
+  const adopted = adoptResidentModelStatus(TRANSLATE_HELD, emptyStore(), actions);
+  assert.equal(adopted, false);
+  assert.deepEqual(calls, ["markEvicted"]);
+});
+
+test("a chat model Translate evicted is dropped, as Chat drops it", () => {
+  const { calls, actions } = evictionSpies();
+  const adopted = adoptResidentModelStatus(
+    TRANSLATE_HELD,
+    emptyStore({
+      checkpoint: "unsloth/gemma-4-E2B-it-GGUF",
+      activeGgufVariant: "Q4_K_M",
+      residentCheckpoint: "unsloth/gemma-4-E2B-it-GGUF",
+    }),
+    actions,
+  );
+  assert.equal(adopted, true);
+  assert.deepEqual(calls, ["clearCheckpoint"]);
+});
+
+test("a chat pick that was never loaded stays picked beside Translate's model", () => {
+  for (const residentCheckpoint of [null, undefined]) {
+    const { calls, actions } = evictionSpies();
+    adoptResidentModelStatus(
+      TRANSLATE_HELD,
+      emptyStore({ checkpoint: "unsloth/gemma-4-E2B-it-GGUF", residentCheckpoint }),
+      actions,
     );
-    assert.equal(adopted, false);
+    assert.deepEqual(calls, ["markEvicted"]);
   }
 });
 
