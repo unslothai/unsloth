@@ -102,6 +102,14 @@ export function keepVoiceHeard(
   return { ...next, voiceHeard: live.voiceHeard };
 }
 
+/** Sent at the head of the next user turn and shown under the reply, so the model is told rather than silently cut. */
+export function heardNote(content: readonly Part[], cut: HeardCut): string {
+  const words = heardTail(content, cut);
+  return words
+    ? `[I cut in after "…${words}" and didn't hear the rest of your reply.]`
+    : "[I cut in before hearing any of your reply.]";
+}
+
 let graphemeSegmenter: Intl.Segmenter | undefined;
 
 export function heardTail(content: readonly Part[], cut: HeardCut, words = 6): string {

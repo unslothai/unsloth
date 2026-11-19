@@ -29,6 +29,7 @@ import {
   modelVisibleMessage,
   toolOnlyImages,
   withHeardCut,
+  withHeardNotes,
 } from "./mcp-image";
 import { llamaServerLoadFields } from "../lib/load-request";
 import {
@@ -1881,7 +1882,7 @@ function pruneOutboundHistory(
   messages: RunMessages,
   includeReasoningContent: boolean,
 ): RunMessage[] {
-  const history = [...messages];
+  const history = withHeardNotes(messages);
   // Judged on the heard cut, not the full reply.
   const abandoned = history.map((message) =>
     isAbandonedAssistantTurn(withHeardCut(message), includeReasoningContent),

@@ -67,10 +67,10 @@ test("Settings > Voice > Voice mode has a labelled switch for every setting", as
   }
 });
 
-test("the defaults: heard cut off, the rest on", () => {
+test("the defaults: every switch on", () => {
   assert.deepEqual(VOICE_ROLLOUT_DEFAULTS, {
     clauseFirstChunk: true,
     speechNormalize: true,
-    heardCut: false,
+    heardCut: true,
   });
 });

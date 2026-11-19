@@ -129,7 +129,7 @@ export type VoiceRolloutSetting =
 export const VOICE_ROLLOUT_DEFAULTS: Readonly<Record<VoiceRolloutSetting, boolean>> = {
   clauseFirstChunk: true,
   speechNormalize: true,
-  heardCut: false,
+  heardCut: true,
 };
 
 // Saves holding the retired "both" fall back to the default.

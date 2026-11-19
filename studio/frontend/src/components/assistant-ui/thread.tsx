@@ -8450,25 +8450,48 @@ const DiffusionCanvas: FC = () => {
 
 const ResearchMessageRunIdContext = createContext<string | null>(null);
 
-const VoiceHeardNote: FC = () => {
+type HeardPrompts = {
+  /** Prompt id to the cut reply before it and the last words heard of it. */
+  byPrompt: Map<string, { replyId: string; words: string }>;
+  followed: Set<string>;
+};
+const HEARD_PROMPTS_KEY = "voice-heard-prompts";
+
+function heardPrompts(messages: readonly { id: string; role: string; metadata?: unknown; content: readonly unknown[] }[]): HeardPrompts {
+  return memoOnArrayByKey(messages, HEARD_PROMPTS_KEY, () => {
+    const byPrompt: HeardPrompts["byPrompt"] = new Map();
+    const followed = new Set<string>();
+    messages.forEach((reply, index) => {
+      const prompt = messages[index + 1];
+      if (reply.role !== "assistant" || prompt?.role !== "user") return;
+      followed.add(reply.id);
+      const cut = savedHeardCut(reply.metadata);
+      if (cut) {
+        byPrompt.set(prompt.id, {
+          replyId: reply.id,
+          words: heardTail(reply.content as readonly { type: string; text?: string }[], cut),
+        });
+      }
+    });
+    return { byPrompt, followed };
+  });
+}
+
+/** One look for both places the cut shows; the prompt after it carries the same fact to the model (heardNote). */
+const VoiceHeardNoteRow: FC<{ replyId: string; words: string; className?: string }> = ({ replyId, words, className }) => {
   const t = useT();
   const aui = useAui();
-  const messageId = useAuiState(({ message }) => message.id);
-  const offset = useAuiState(({ message }) => savedHeardCut(message.metadata)?.offset ?? null);
-  const content = useAuiState(({ message }) => message.content);
   const [saving, setSaving] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  if (offset === null) return null;
-  const words = heardTail(content as readonly { type: string; text?: string }[], { offset });
   const restoreFullReply = async () => {
     // Unmounts on restore: focus moves off its button first or drops to the page.
     const hadFocus = document.activeElement === buttonRef.current;
     setSaving(true);
-    clearPendingHeardCut(messageId);
+    clearPendingHeardCut(replyId);
     try {
       await setThreadMessageVoiceHeard({
         thread: { export: () => aui.thread().export(), import: (data) => aui.thread().import(data) },
-        messageId,
+        messageId: replyId,
         remoteId:
           aui.threadListItem().getState().remoteId ||
           useChatRuntimeStore.getState().activeThreadId ||
@@ -8485,18 +8508,51 @@ const VoiceHeardNote: FC = () => {
     }
   };
   return (
-    <p className="aui-voice-heard-note mt-1 text-sm text-foreground">
-      {words ? t("voice.interrupted.spokenUpTo", { words }) : t("voice.interrupted.none")}{" "}
+    <p dir="auto" className={cn("text-pretty text-ui-13 text-muted-foreground [overflow-wrap:anywhere]", className)}>
+      <HugeiconsIcon
+        icon={VolumeMute02Icon}
+        strokeWidth={1.75}
+        className="me-1.5 inline-block size-3.5 align-[-0.15em]"
+        aria-hidden="true"
+      />
+      {words ? t("voice.interrupted.spokenUpTo", { words }) : t("voice.interrupted.none")}
+      <span aria-hidden="true" className="mx-1.5">·</span>
       <button
         ref={buttonRef}
         type="button"
-        className="font-medium underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-60"
+        className="-mx-1 whitespace-nowrap rounded-md px-1 py-0.5 font-medium text-foreground/80 underline decoration-foreground/30 underline-offset-[3px] transition-colors hover:text-foreground hover:decoration-foreground/70 focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60"
         onClick={() => void restoreFullReply()}
         disabled={saving}
+        aria-busy={saving || undefined}
       >
         {t("voice.interrupted.useFull")}
       </button>
     </p>
+  );
+};
+
+/** A cut reply nothing has answered yet; once a prompt follows, the note moves onto it. */
+const VoiceHeardNote: FC = () => {
+  const messageId = useAuiState(({ message }) => message.id);
+  const offset = useAuiState(({ message }) => savedHeardCut(message.metadata)?.offset ?? null);
+  const content = useAuiState(({ message }) => message.content);
+  const followed = useAuiState(({ thread, message }) => heardPrompts(thread.messages).followed.has(message.id));
+  if (offset === null || followed) return null;
+  const words = heardTail(content as readonly { type: string; text?: string }[], { offset });
+  return <VoiceHeardNoteRow replyId={messageId} words={words} className="aui-voice-heard-note mt-1" />;
+};
+
+/** Above the prompt the model reads it with, so the chat shows what the model was told. */
+const VoiceHeardPromptNote: FC = () => {
+  const replyId = useAuiState(({ thread, message }) => heardPrompts(thread.messages).byPrompt.get(message.id)?.replyId ?? null);
+  const words = useAuiState(({ thread, message }) => heardPrompts(thread.messages).byPrompt.get(message.id)?.words ?? null);
+  if (replyId === null || words === null) return null;
+  return (
+    <VoiceHeardNoteRow
+      replyId={replyId}
+      words={words}
+      className="aui-voice-heard-prompt-note max-w-[80%] text-end"
+    />
   );
 };
 
@@ -9382,6 +9438,7 @@ const UserMessage: FC = () => {
       {...focusReveal}
     >
       <WindowedMessageBody>
+      <VoiceHeardPromptNote />
       <ScheduledTaskSource />
       <UserMessageAttachments />
       <UserMessageAudio />
