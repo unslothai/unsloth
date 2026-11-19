@@ -333,6 +333,35 @@ def test_start_mid_run_is_refused_without_waiting(monkeypatch):
     assert started == []
 
 
+class _PastTheLlmGuard(Exception):
+    pass
+
+
+def _start_diffusion(monkeypatch):
+    def reached(raw):
+        raise _PastTheLlmGuard
+
+    monkeypatch.setattr(rt, "_resolve_diffusion_data_dir", reached)
+    body = rt.DiffusionTrainingStartRequest(base_model = "org/sdxl", data_dir = "d", output_dir = "run")
+    return asyncio.run(rt.start_diffusion_training(body, current_subject = "t", via_api_key = False))
+
+
+def test_diffusion_start_right_after_a_finished_llm_run_waits_for_the_worker_to_exit(monkeypatch):
+    b = _running(monkeypatch)
+    b._proc = _ExitingProc()
+    b._handle_event(dict(_DONE))
+    with pytest.raises(_PastTheLlmGuard):
+        _start_diffusion(monkeypatch)
+
+
+def test_diffusion_start_mid_llm_run_is_refused_without_waiting(monkeypatch):
+    b = _running(monkeypatch)
+    b._proc = _NeverJoinedProc()
+    with pytest.raises(rt.HTTPException) as exc:
+        _start_diffusion(monkeypatch)
+    assert exc.value.status_code == 409
+
+
 def test_status_retains_resolved_repo_through_preparation_and_clears_on_next_load(monkeypatch):
     b = _running(monkeypatch)
     b._handle_event({"type": "model_load_started"})
