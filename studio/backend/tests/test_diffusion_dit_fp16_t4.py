@@ -11,6 +11,7 @@ import random
 import pytest
 import torch
 
+import core.inference.rocm_bf16 as rocm_bf16
 import core.training.diffusion_dit_trainer as dit
 import core.training.diffusion_train_common as dtc
 from core.training.diffusion_train_common import DiffusionLoraConfig
@@ -30,6 +31,9 @@ def card(monkeypatch):
     monkeypatch.delenv(getattr(dtc, "DIT_FP16_ENV", "UNSLOTH_STUDIO_DIT_FP16"), raising = False)
     for mod in (dtc, dit):
         monkeypatch.setattr(mod, "torch_is_rocm", lambda: False)
+    # native_bf16_supported reads the torch build too: on a ROCm host it would answer for the AMD card.
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: False)
 
     def set_cap(cap):
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
