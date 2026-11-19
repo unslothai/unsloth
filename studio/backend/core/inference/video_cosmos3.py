@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cosmos3 pipeline; load refuses a missing guardrail, opt out with UNSLOTH_COSMOS3_SAFETY_CHECKER=0."""
+"""Cosmos3 pipeline. The Cosmos guardrail safety checker is off by default; UNSLOTH_COSMOS3_SAFETY_CHECKER=1 turns it on."""
 
 from __future__ import annotations
 
@@ -12,7 +12,9 @@ import importlib
 import importlib.util
 import json
 import os
+import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -27,8 +29,9 @@ GUARDRAIL_PACKAGE = "cosmos_guardrail"
 GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
 _GUARDRAIL_STEPS = (
     f"accept its licence at https://huggingface.co/{GUARDRAIL_REPO}, add that account's Hugging Face token in "
-    f"Settings, and load again. Or set {SAFETY_CHECKER_ENV}=0 to run without it at your own responsibility."
+    f"Settings, and load again. Or unset {SAFETY_CHECKER_ENV} (the checker is off by default) to load without it."
 )
+_CHECKER_ON = f"The Cosmos safety checker is on ({SAFETY_CHECKER_ENV}=1)"
 # Fallback when the index is not on disk yet (validation is network-free).
 _BASE_SAFETY_CHECKER = {
     "nvidia/cosmos3-nano": True,
@@ -44,8 +47,11 @@ def is_cosmos3_listing(names: Iterable[str]) -> bool:
     )
 
 
-def safety_checker_opted_out() -> bool:
-    return os.environ.get(SAFETY_CHECKER_ENV, "").strip().lower() in ("0", "false", "no", "off")
+def safety_checker_requested() -> bool:
+    """Whether the Cosmos guardrail runs. Off by default for every Cosmos3 checkpoint (OpenMDW 1.1 has no guardrail
+    clause; the model cards run it, so this departs from them by choice); UNSLOTH_COSMOS3_SAFETY_CHECKER=1 turns it
+    on, and the guardrail package, its gated weights and their access check then apply as before."""
+    return os.environ.get(SAFETY_CHECKER_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def guardrail_installed() -> bool:
@@ -108,13 +114,137 @@ def load_request_refusal(
     return None
 
 
-def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[str]:
-    """Why this load cannot start, or None: the checkpoint enables the guardrail and the package is missing."""
-    if safety_checker_opted_out() or guardrail_installed():
+def guardrail_refusal(repo_id: str) -> Optional[str]:
+    """Why this load cannot start, or None: the safety checker was turned on and its package is missing."""
+    if not safety_checker_requested() or guardrail_installed():
         return None
-    if not checkpoint_enables_safety_checker(repo_id, index):
+    from .cosmos_guardrail_install import manual_install_command
+
+    return (
+        f"{_CHECKER_ON} for '{repo_id}', and it needs NVIDIA's gated Cosmos guardrail. Install it with Install "
+        f"guardrail on the Video page or run `{manual_install_command()}`, then {_GUARDRAIL_STEPS}"
+    )
+
+
+def refresh_guardrail_import() -> bool:
+    """Point an already-imported Diffusers at a guardrail installed after it was imported, so no restart is needed.
+
+    Diffusers reads ``cosmos_guardrail``'s presence once at import, and a Cosmos pipeline module imported before the
+    install keeps a stub ``CosmosSafetyChecker`` that raises; the pipeline also gates its checks on that class."""
+    importlib.invalidate_caches()
+    if not guardrail_installed():
+        return False
+    utils = sys.modules.get("diffusers.utils.import_utils")
+    stale_flag = utils is not None and not getattr(utils, "_cosmos_guardrail_available", True)
+    stale = [
+        module
+        for name, module in list(sys.modules.items())
+        if name.startswith("diffusers.pipelines.cosmos.")
+        and module is not None
+        and str(getattr(getattr(module, "CosmosSafetyChecker", None), "__module__", "")).startswith(
+            "diffusers."
+        )
+    ]
+    if not stale_flag and not stale:
+        return True
+    real = getattr(importlib.import_module(GUARDRAIL_PACKAGE), "CosmosSafetyChecker", None)
+    if real is None:
+        return False
+    if stale_flag:
+        try:
+            from importlib.metadata import version
+            utils._cosmos_guardrail_version = version("cosmos-guardrail")
+        except Exception:  # noqa: BLE001
+            pass
+        utils._cosmos_guardrail_available = True
+    for module in stale:
+        module.CosmosSafetyChecker = real
+    return True
+
+
+# Small files the guardrail fetches on its first build (blocklist/*, face_blur_filter/*); all of them gated.
+GUARDRAIL_PROBE_FILES = ("blocklist/custom/branding", "face_blur_filter/Resnet50_Final.pth")
+_PROBE_TIMEOUT_S = 10.0
+# A granted probe is remembered per token, so the route's check and the load's own one send one request.
+_PROBE_OK_TTL_S = 60.0
+_probe_ok: dict[str, float] = {}
+_probe_lock = threading.Lock()
+
+
+def _guardrail_cached() -> bool:
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001
+        return False
+    for name in GUARDRAIL_PROBE_FILES:
+        try:
+            if not isinstance(try_to_load_from_cache(GUARDRAIL_REPO, name), str):
+                return False
+        except Exception:  # noqa: BLE001 -- an unreadable cache is a miss
+            return False
+    return True
+
+
+def _hub_offline() -> bool:
+    try:
+        from huggingface_hub import constants
+        if getattr(constants, "HF_HUB_OFFLINE", False):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _probe_key(token: Any) -> str:
+    import hashlib
+    return hashlib.sha256(repr(token).encode("utf-8")).hexdigest()
+
+
+def guardrail_access_preflight(
+    repo_id: str,
+    hf_token: Any = None,
+    *,
+    local_files_only: bool = False,
+) -> Optional[str]:
+    """Refusal for a load whose guardrail weights this token cannot fetch, checked before any model download.
+
+    Only when the safety checker was turned on and its package is present. One metadata request on a small gated
+    guardrail file with the load's token (None = the ambient login). Only a 401 / 403 refuses: a cached guardrail,
+    offline mode and network errors all let the load go on as before."""
+    if not safety_checker_requested() or not guardrail_installed():
         return None
-    return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail: pip install cosmos-guardrail, restart, {_GUARDRAIL_STEPS}"
+    if local_files_only or _hub_offline() or _guardrail_cached():
+        return None
+    if isinstance(hf_token, str):
+        hf_token = hf_token.strip() or None
+    key = _probe_key(hf_token)
+    now = time.monotonic()
+    with _probe_lock:
+        if _probe_ok.get(key, 0.0) > now:
+            return None
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        get_hf_file_metadata(
+            hf_hub_url(GUARDRAIL_REPO, GUARDRAIL_PROBE_FILES[0]),
+            token = hf_token,
+            timeout = _PROBE_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 -- only an access refusal stops the load
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        gated = any(cls.__name__ == "GatedRepoError" for cls in type(exc).__mro__)
+        if gated or status in (401, 403):
+            logger.warning("video.cosmos3: guardrail access refused before the download: %s", exc)
+            return (
+                f"{_CHECKER_ON} for '{repo_id}', and it needs NVIDIA's gated Cosmos guardrail, but this Hugging Face "
+                f"token has no access: {_GUARDRAIL_STEPS}"
+            )
+        logger.info(
+            "video.cosmos3: guardrail access check skipped (%s: %s)", type(exc).__name__, exc
+        )
+        return None
+    with _probe_lock:
+        _probe_ok[key] = now + _PROBE_OK_TTL_S
+    return None
 
 
 def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
@@ -125,7 +255,7 @@ def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
     found = _HUB_REPO_RE.search(str(gated)) if gated is not None else None
     if found is None or found.group(1).rstrip(".").lower() != GUARDRAIL_REPO.lower():
         return None
-    return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail: {_GUARDRAIL_STEPS}"
+    return f"{_CHECKER_ON} for '{repo_id}', and it needs NVIDIA's gated Cosmos guardrail: {_GUARDRAIL_STEPS}"
 
 
 _UNSET = object()
@@ -174,16 +304,28 @@ def guardrail_hub_token(token: Any):
 
 
 def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any]:
-    """``from_pretrained`` kwargs: no sound tokenizer; guardrail off only on the explicit opt-out."""
+    """``from_pretrained`` kwargs: no sound tokenizer; the safety checker set explicitly, off unless requested."""
     kwargs: dict[str, Any] = dict.fromkeys(NONE_COMPONENTS)
-    if safety_checker_opted_out():
-        kwargs["enable_safety_checker"] = False
-        if checkpoint_enables_safety_checker(repo_id, index):
-            logger.warning(
-                "video.cosmos3: %s=0, so '%s' loads without the Cosmos guardrail its checkpoint runs by default",
-                SAFETY_CHECKER_ENV,
-                repo_id,
-            )
+    if safety_checker_requested():
+        try:
+            refresh_guardrail_import()
+        except Exception as exc:  # noqa: BLE001 -- the pipeline's own import error names the package
+            logger.info("video.cosmos3: could not refresh the guardrail import: %s", exc)
+        kwargs["enable_safety_checker"] = True
+        logger.info(
+            "video.cosmos3: the Cosmos guardrail safety checker is on for '%s' (%s=1)",
+            repo_id,
+            SAFETY_CHECKER_ENV,
+        )
+        return kwargs
+    kwargs["enable_safety_checker"] = False
+    card = " (its model card runs it)" if checkpoint_enables_safety_checker(repo_id, index) else ""
+    logger.info(
+        "video.cosmos3: the Cosmos guardrail safety checker is off for '%s'%s; set %s=1 to turn it on",
+        repo_id,
+        card,
+        SAFETY_CHECKER_ENV,
+    )
     return kwargs
 
 

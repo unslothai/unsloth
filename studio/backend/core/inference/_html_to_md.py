@@ -73,15 +73,25 @@ def _style_hides_element(style: str) -> bool:
     return False
 
 
+def _has_role(attr_dict: dict, role: str) -> bool:
+    value = attr_dict.get("role")
+    return bool(value) and role in value.lower().split()
+
+
 def _is_hidden_element(attr_dict: dict) -> bool:
-    """Any present hidden attribute counts, even hidden=false, since presence means not rendered; aria-hidden=true and inline hiding styles count too"""
+    """Any present hidden attribute counts, even hidden=false, except until-found and tab panels, which tabbed docs ship
+    hidden (Headless UI adds display:none too); aria-hidden=true and inline hiding styles count too"""
+    tab_panel_shipped_hidden = False
     if "hidden" in attr_dict:
-        return True
+        hidden = (attr_dict["hidden"] or "").strip().lower()
+        tab_panel_shipped_hidden = _has_role(attr_dict, "tabpanel")
+        if hidden != "until-found" and not tab_panel_shipped_hidden:
+            return True
     aria_hidden = attr_dict.get("aria-hidden")
     if aria_hidden and aria_hidden.strip().lower() == "true":
         return True
     style = attr_dict.get("style")
-    return bool(style) and _style_hides_element(style)
+    return bool(style) and not tab_panel_shipped_hidden and _style_hides_element(style)
 
 
 _MATH_INVISIBLE = {0x2061: " ", 0x2062: None, 0x2063: None, 0x2064: None}
@@ -844,6 +854,166 @@ class _TitleButtonScan:
 # (len, hash) of recent pages -> their title buttons, so main-content passes over one page scan it once
 _TITLE_BUTTON_CACHE: dict[tuple[int, int], frozenset[tuple[int, int]]] = {}
 _TITLE_BUTTON_CACHE_SIZE = 4
+_TabLabels = tuple[dict[str, str], dict[str, str], dict[tuple[int, int], str]]
+_TAB_LABEL_CACHE: dict[tuple[int, int], _TabLabels] = {}
+_MAX_TAB_LABEL_CHARS = 80
+# what the renderer skips, except buttons, which sphinx-tabs uses as tabs
+_TAB_LABEL_SKIP = _SKIP_TAGS - {"button"}
+_TAB_PANEL = re.compile(r"tabpanel", re.IGNORECASE)
+_TAB_PANEL_PAIRING = re.compile(r"aria-labelledby|aria-controls|tablist", re.IGNORECASE)
+
+
+class _TabLabelScan(HTMLParser):
+    """Tab text by id for aria-labelledby; panel_labels by panel id for a tab's aria-controls; order_labels by panel
+    start-tag position for Headless UI and Docusaurus, which pair panels with tabs only by order and may have no ids."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs = True)
+        self.labels: dict[str, str] = {}
+        self.panel_labels: dict[str, str] = {}
+        self.order_labels: dict[tuple[int, int], str] = {}
+        self._slot_labels: list[str] = []
+        self._tab_slot = -1
+        self._open: list[str] = []
+        # per-tag _open indices, so an end tag that matches nothing costs O(1) rather than a stack walk
+        self._open_at: dict[str, list[int]] = {}
+        self._muted_at = -1  # _open index of the outermost skipped or hidden element
+        self._tab_at = -1  # _open index of the tab being read
+        self._tab_id = ""
+        self._tab_controls = ""
+        self._tab_selected = False
+        self._selected_panels: set[str] = set()
+        self._parts: list[str] = []
+        self._list_at = -1  # _open index of the tablist being read
+        self._list_tabs: list[int] = []
+        self._list_explicit = False
+        self._closed_list: tuple[int, list[int]] | None = None
+        # (wrapper _open index, tab slots, (panel position, has aria-labelledby)), innermost last
+        self._groups: list[tuple[int, list[int], list[tuple[tuple[int, int], bool]]]] = []
+
+    def _finish_tab(self) -> None:
+        # capped here too, so joining many long labels per panel stays linear
+        label = " ".join("".join(self._parts).split())[:_MAX_TAB_LABEL_CHARS]
+        if label and self._tab_id:
+            self.labels.setdefault(self._tab_id, label)
+        if self._tab_slot >= 0:
+            self._slot_labels[self._tab_slot] = label
+        # a panel several tabs control shows the selected one's content; with none selected it is ambiguous
+        for panel_id in self._tab_controls.split():
+            if panel_id in self._selected_panels:
+                continue
+            if self._tab_selected:
+                self._selected_panels.add(panel_id)
+                self.panel_labels[panel_id] = label
+            else:
+                self.panel_labels[panel_id] = "" if panel_id in self.panel_labels else label
+        self._tab_at = -1
+        self._tab_slot = -1
+        self._parts = []
+
+    def _pop_to(self, i: int) -> None:
+        if 0 <= self._tab_at and i <= self._tab_at:
+            self._finish_tab()
+        if 0 <= self._list_at and i <= self._list_at:
+            if not self._list_explicit:
+                self._closed_list = (self._list_at, self._list_tabs)
+            self._list_at = -1
+        if self._closed_list and i < self._closed_list[0]:
+            self._closed_list = None
+        while self._groups and self._groups[-1][0] >= i:
+            self._finish_group()
+        for tag in self._open[i:]:
+            self._open_at[tag].pop()
+        del self._open[i:]
+        if self._muted_at >= i:
+            self._muted_at = -1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # an omitted </li> or </p> ends the element at a sibling that closes it, a tab included
+        while self._open and tag in _IMPLICIT_CLOSERS.get(self._open[-1], ()):
+            self._pop_to(len(self._open) - 1)
+        # order-paired panels live in the element right after the tablist
+        if self._closed_list:
+            if tag not in _VOID_TAGS:
+                self._groups.append((len(self._open), self._closed_list[1], []))
+            self._closed_list = None
+        attr_dict = dict(attrs)
+        if tag in _VOID_TAGS:
+            # a void tab still takes its slot
+            if self._take_slot(attr_dict, len(self._open) - 1):
+                self._start_tab(attr_dict, len(self._open))
+                self._finish_tab()
+            return
+        self._open_at.setdefault(tag, []).append(len(self._open))
+        self._open.append(tag)
+        if self._muted_at < 0 and (tag in _TAB_LABEL_SKIP or _is_hidden_element(attr_dict)):
+            self._muted_at = len(self._open) - 1
+        if self._list_at < 0 and _has_role(attr_dict, "tablist"):
+            self._list_at = len(self._open) - 1
+            self._list_tabs = []
+            self._list_explicit = False
+        if self._take_slot(attr_dict, len(self._open) - 2):
+            self._start_tab(attr_dict, len(self._open) - 1)
+
+    def _start_tab(self, attr_dict: dict, at: int) -> None:
+        self._tab_at = at
+        self._tab_slot = self._list_tabs[-1] if self._list_at >= 0 and self._list_tabs else -1
+        self._tab_id = attr_dict.get("id") or ""
+        self._tab_controls = attr_dict.get("aria-controls") or ""
+        self._tab_selected = (attr_dict.get("aria-selected") or "").strip().lower() == "true"
+
+    def _take_slot(self, attr_dict: dict, parent: int) -> bool:
+        """Count a tab in the open tablist, or a panel in the innermost group's wrapper; True for a tab to read."""
+        if self._tab_at >= 0:
+            return False
+        if _has_role(attr_dict, "tab"):
+            if self._list_at >= 0:
+                self._list_tabs.append(len(self._slot_labels))
+                self._slot_labels.append("")
+                self._list_explicit |= bool((attr_dict.get("aria-controls") or "").strip())
+            return True
+        if self._groups and self._groups[-1][0] == parent and _has_role(attr_dict, "tabpanel"):
+            linked = bool((attr_dict.get("aria-labelledby") or "").strip())
+            self._groups[-1][2].append((self.getpos(), linked))
+        return False
+
+    def _finish_group(self) -> None:
+        _, slots, panels = self._groups.pop()
+        # order pairs only when every tab has its panel (else labels after a gap shift) and no panel names its tab
+        if len(panels) == len(slots) and not any(linked for _, linked in panels):
+            for slot, (pos, _) in zip(slots, panels):
+                if self._slot_labels[slot]:
+                    self.order_labels[pos] = self._slot_labels[slot]
+
+    def handle_endtag(self, tag: str) -> None:
+        # stray end tags, and the </img> HTMLParser sends after <img/>, match nothing and are ignored
+        positions = self._open_at.get(tag)
+        if positions:
+            self._pop_to(positions[-1])
+
+    def handle_data(self, data: str) -> None:
+        if self._tab_at >= 0 and self._muted_at < 0 and len(self._parts) < 64:
+            self._parts.append(data)
+
+    def close(self) -> None:
+        super().close()
+        while self._groups:
+            self._finish_group()
+
+
+def _tab_labels(source_html: str, key: tuple[int, int]) -> _TabLabels:
+    labels = _TAB_LABEL_CACHE.get(key)
+    if labels is None:
+        labels = ({}, {}, {})
+        if _TAB_PANEL.search(source_html) and _TAB_PANEL_PAIRING.search(source_html):
+            scan = _TabLabelScan()
+            scan.feed(source_html)
+            scan.close()
+            labels = (scan.labels, scan.panel_labels, scan.order_labels)
+        if len(_TAB_LABEL_CACHE) >= _TITLE_BUTTON_CACHE_SIZE:
+            _TAB_LABEL_CACHE.clear()
+        _TAB_LABEL_CACHE[key] = labels
+    return labels
 
 
 class _MarkdownRenderer(HTMLParser):
@@ -868,6 +1038,9 @@ class _MarkdownRenderer(HTMLParser):
         self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
+        self.tab_labels: dict[str, str] = {}  # tab id -> its text, from _TabLabelScan
+        self.panel_labels: dict[str, str] = {}
+        self.order_labels: dict[tuple[int, int], str] = {}
         self._title_scan: _TitleButtonScan | None = None
         self._site_links = site_links
         self._out: list[str] = []
@@ -918,14 +1091,17 @@ class _MarkdownRenderer(HTMLParser):
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
+        self._link_depth: int = -1
         self._link_seq: int = 0
         # a link wrapping a heading emits after the mark pops, so the tee is told to treat it so
         self._link_had_heading: bool = False
         self._link_heading_parts: list[str] = []
         self._emit_as_heading: bool = False
         self._replaying: bool = False
-        # Credited only at </a>: an <a> left open adopts body prose, which is not furniture.
+        # Credited only at </a> or a nested <a>: an <a> left open adopts body prose, which is not furniture.
         self._link_header_chars: int = 0
+        self._link_open_state: tuple = ()
+        self._closed_link_for: bool = False
 
         self._list_stack: list[str] = []  # "ul" or "ol"
         self._ol_counter: list[int] = []
@@ -1299,6 +1475,30 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row = []
         self._row_has_th = False
 
+    def _link_output_state(self) -> tuple:
+        frame = self._header_stack[-1] if self._header_stack else None
+        quote = self._bq_stack[-1] if self._bq_stack else None
+        row = self._current_row if self._in_table else None
+        cell = self._cell_seq if self._in_cell else -1
+        return (
+            frame,
+            len(self._heading_marks),
+            quote,
+            row,
+            cell,
+            self._table_depth(),
+            len(self._sup_starts),
+            self._inline_code_depth,
+        )
+
+    def _link_routes_unchanged(self) -> bool:
+        # buffers compare by identity: two empty quotes or rows are equal lists but different targets
+        now = self._link_output_state()
+        return all(
+            saved is cur or (not isinstance(saved, list) and saved == cur)
+            for saved, cur in zip(self._link_open_state, now)
+        ) and len(self._link_open_state) == len(now)
+
     # Link text helper: normalize whitespace so block content in <a> stays single-line.
     def _finish_link(self) -> None:
         text = re.sub(r"\s+", " ", "".join(self._link_text_parts)).strip()
@@ -1356,12 +1556,32 @@ class _MarkdownRenderer(HTMLParser):
                     break
             if close_at is None:
                 break
+            closed = self._open_tags[close_at]
             self._truncate_open_tags(close_at)
+            if closed == "p" and tag != "p" and self._in_link and self._link_depth > close_at:
+                # a block opened inside <p><a> stays linked: browsers reopen the anchor inside it
+                self._link_depth = close_at - 1
+            closes_header = self._finish_link_unless_header_closes(close_at)
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= close_at:
                 self._heading_marks.pop()
             self._close_header_frames(close_at)
+            if closes_header:
+                self._finish_link_closed_at(close_at)
+
+    def _finish_link_unless_header_closes(self, index: int) -> bool:
+        """Finish while heading marks still tee the title; a closing header frame drains first, or the link lands inside it."""
+        closes_header = bool(self._header_stack) and self._header_stack[-1].depth >= index
+        if not closes_header:
+            self._finish_link_closed_at(index)
+        return closes_header
+
+    def _finish_link_closed_at(self, index: int) -> None:
+        if self._in_link and self._link_depth >= index:
+            if self._header_stack:
+                self._header_stack[-1].link_chars += self._link_header_chars
+            self._finish_link()
 
     def _close_header_frames(
         self,
@@ -1531,7 +1751,7 @@ class _MarkdownRenderer(HTMLParser):
                 or (_is_aria_heading(attr_dict) if aria_heading is None else aria_heading)
             ):
                 self._heading_marks.append(len(self._open_tags) - 1)
-                if self._in_link:
+                if self._in_link or self._closed_link_for:
                     self._link_had_heading = True
             if (
                 self._strip_header
@@ -1585,6 +1805,8 @@ class _MarkdownRenderer(HTMLParser):
         i = -1 if tag in _VOID_TAGS else _innermost_index(self._open_tags, tag)
         if i >= 0:
             self._truncate_open_tags(i)
+            # an explicit </a> finishes in _close_rendered_tag
+            closes_header = tag != "a" and self._finish_link_unless_header_closes(i)
             while self._hidden_marks and self._hidden_marks[-1] >= i:
                 self._hidden_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= i:
@@ -1592,6 +1814,8 @@ class _MarkdownRenderer(HTMLParser):
             # _close_header_frames' own loop test
             if self._header_stack and self._header_stack[-1].depth >= i:
                 self._close_header_frames(i, own_tag = tag == "header")
+            if closes_header:
+                self._finish_link_closed_at(i)
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
             if self._scope_depth == 0 and self._scope_seg_start is not None:
@@ -1765,8 +1989,49 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag == "form":
             self._form_pointer = True
-        if not self._enter_tag(tag, attr_dict, hidden, aria_heading):
+        # a nested <a> implicitly closes the open one, even when hidden, when its text still routes where
+        # the link opened; <pre> text skips the link buffer
+        if (
+            tag == "a"
+            and self._in_link
+            and not self._in_pre
+            and not self._link_had_heading
+            and self._link_routes_unchanged()
+        ):
+            if self._header_stack:
+                self._header_stack[-1].link_chars += self._link_header_chars
+            self._finish_link()
+            # the closing anchor still records its own heading as one inside a link, as before
+            self._closed_link_for = True
+        entered = self._enter_tag(tag, attr_dict, hidden, aria_heading)
+        if self._closed_link_for:
+            self._closed_link_for = False
+            # a suppressed anchor never becomes the link, so its heading must not carry to the next one
+            if not entered:
+                self._link_had_heading = False
+        if not entered:
             return
+
+        # every panel is read, so name each by its tab rather than leave the model to count tabs
+        if (
+            (self.tab_labels or self.panel_labels or self.order_labels)
+            and not (self._in_pre or self._in_table)
+            and _has_role(attr_dict, "tabpanel")
+        ):
+            ids = dict.fromkeys((attr_dict.get("aria-labelledby") or "").split())
+            panel_id = attr_dict.get("id") or ""
+            # capped, so a repeated id cannot multiply the page; aria-labelledby, then aria-controls (even an
+            # ambiguous one), outrank order
+            if ids:
+                label = " ".join(self.tab_labels[i] for i in ids if i in self.tab_labels)[
+                    :_MAX_TAB_LABEL_CHARS
+                ]
+            elif panel_id in self.panel_labels:
+                label = self.panel_labels[panel_id]
+            else:
+                label = self.order_labels.get(self.getpos(), "")
+            if label:
+                self._emit(f"\n\n**{label}**\n\n")
 
         if tag in _HEADING_TAGS:
             level = int(tag[1])
@@ -1777,8 +2042,10 @@ class _MarkdownRenderer(HTMLParser):
             self._link_text_parts = []
             self._link_heading_parts = []
             self._in_link = True
+            self._link_depth = len(self._open_tags) - 1
             self._link_seq += 1
             self._link_header_chars = 0
+            self._link_open_state = self._link_output_state()
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
@@ -2316,6 +2583,7 @@ def _new_renderer(
             page_span_limit = 2 * len(source_html),
         )
         renderer.title_buttons = title_buttons
+        renderer.tab_labels, renderer.panel_labels, renderer.order_labels = tab_labels
         renderer._title_scan = scan
         if tokens is None:
             renderer.feed(source_html)
@@ -2331,6 +2599,7 @@ def _new_renderer(
         return renderer
 
     key = (len(source_html), hash(source_html))
+    tab_labels = _tab_labels(source_html, key)
     known = _TITLE_BUTTON_CACHE.get(key)
     if known is not None:
         return build(known, None)

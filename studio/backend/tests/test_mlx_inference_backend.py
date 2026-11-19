@@ -138,6 +138,8 @@ PLAIN_HELPERS = {
     ),
     "_VERIFY_GDN_MAX_ROWS": 16,
     "_FIRST_USE_WORK": [0],
+    # Read by zoo's speculative.py head replay (unsloth_zoo #2474); the stub holds no QSA cache trims.
+    "_QSA_TRIM_HELD": [],
 }
 
 
@@ -152,10 +154,22 @@ def _unless_failed_buffer(error):
     """zoo re-raises a failed Metal command buffer (unsloth_zoo #2333); the stub has none to fail."""
 
 
+def _no_replay(*_args, **_kwargs):
+    """zoo's head-replay and lazy-verify helpers (unsloth_zoo #2474) need Metal and a QSA cache;
+    the stub answers as if no replay can be bound."""
+    return None
+
+
 NEUTRAL_PLAIN_HELPERS = {
     "fused_drafter_ops": _fused_drafter_ops,
     "fused_drafter_layers": _fused_drafter_ops,
     "_unless_failed_buffer": _unless_failed_buffer,
+    "_ast_fingerprint": _no_replay,
+    "_bindings_intact": _no_replay,
+    "_resolved_bindings": _no_replay,
+    # unsloth_zoo #2586: the head replay tries several contracts through this resolver.
+    "_first_resolved": _no_replay,
+    "_verify_with_lazy_replay": _no_replay,
 }
 
 
@@ -7607,6 +7621,28 @@ def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
     assert payload.tools[0]["type"] == "function"
 
 
+def test_an_mlx_count_merges_memory_into_the_normalized_developer_turn(monkeypatch):
+    from core import chat_memory
+
+    monkeypatch.setattr(
+        chat_memory, "context", lambda *_: {"text": "Remembered preference: concise answers"}
+    )
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = [
+            {"role": "developer", "content": "Follow these instructions."},
+            {"role": "user", "content": "hello"},
+        ],
+        enable_tools = False,
+    )
+    assert backend.messages == [{"role": "user", "content": "hello"}]
+    assert backend.system == (
+        "Follow these instructions.\n\nRemembered preference: concise answers"
+    )
+
+
 def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
     """Request wins verbatim; none takes the trained window; unreadable dims yield nothing."""
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -7960,6 +7996,56 @@ def test_a_count_prices_one_picture_where_the_template_marks_one(monkeypatch):
 
     assert backend.count_chat_tokens([turn, turn], images = [old, new]) == 524
     assert rendered == [(1, [new])]
+
+
+def _soft_token_processor(monkeypatch):
+    """A Gemma 4-shaped processor: every image costs its call's max_soft_tokens, 280 by default."""
+    module = types.ModuleType("fake_gemma4_processing")
+    module._SUPPORTED_SOFT_TOKENS = (70, 140, 280, 560, 1120, 2240)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    base = type("ImageProcessor", (), {"__module__": module.__name__, "max_soft_tokens": 280})
+    # A subclass defined elsewhere, as Gemma 4 Unified's is.
+    image_processor = type("UnifiedImageProcessor", (base,), {"__module__": "fake_gemma4_unified"})
+
+    class Processor:
+        def __init__(self):
+            self.image_processor = image_processor()
+
+        def __call__(
+            self,
+            text = None,
+            images = None,
+            images_kwargs = None,
+        ):
+            soft = (images_kwargs or {}).get("max_soft_tokens", 280)
+            return {"input_ids": SimpleNamespace(size = len(text.split()) + soft * len(images or ()))}
+
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.prepare_inputs = lambda processor, *, prompts, images = None, **_k: processor(
+        text = prompts, images = images
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    return Processor()
+
+
+def test_a_screenshot_request_lifts_the_soft_token_budget_for_its_own_calls_only(monkeypatch):
+    backend = _vision_backend()
+    backend._processor = processor = _soft_token_processor(monkeypatch)
+    backend._render_vlm_prompt = lambda messages, images, **_k: ("one two", None, None)
+    turn, streamed = [{"role": "user", "content": "what"}], []
+
+    def _generate_vlm(*_a, **_k):
+        streamed.append(backend._processor(text = "p", images = [object()])["input_ids"].size)
+        yield "done"
+
+    backend._generate_vlm = _generate_vlm
+    assert backend.count_chat_tokens(turn, images = [object()], computer_use = True) == 1122
+    assert backend.count_chat_tokens(turn, images = [object()]) == 282
+    assert backend.image_tokens(1008, 560) == 1120
+    for computer_use in (True, False):
+        assert list(backend.generate_chat_response(turn, computer_use = computer_use)) == ["done"]
+    assert streamed == [1121, 281]
+    assert backend._processor is processor
 
 
 def test_a_count_through_mlx_lm_prices_the_ids_generation_embeds(monkeypatch):
@@ -8323,6 +8409,77 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
     assert (
         _apply_compaction_nudge("", backend.tools) in backend.system
     ), "the count omitted the compaction nudge the completion appends"
+
+
+class _LengthCountingBackend(_RenderRecordingBackend):
+    """Counts system and content characters plus five per tool, so each part is predictable."""
+
+    def __init__(self):
+        super().__init__()
+        self.systems = []
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        super().count_chat_tokens(messages, system_prompt, **kwargs)
+        self.systems.append(system_prompt)
+        tokens = sum(len(str(m.get("content") or "")) for m in messages) + len(system_prompt)
+        return tokens + 5 * len(kwargs.get("tools") or []), "mlx/model"
+
+
+def test_an_mlx_breakdown_sums_to_the_total_and_has_no_prompt(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    backend = _LengthCountingBackend()
+    served = _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        enabled_tools = ["web_search"],
+        breakdown = True,
+    )
+    body = json.loads(served.body)
+    parts = body["breakdown"]
+    full, bare, no_instructions = backend.systems
+    assert no_instructions == "" and full.startswith(bare) and len(full) > len(bare)
+    # The tool nudge is in the prompt only for the tools, so it counts under them.
+    assert parts["system"] == len(bare)
+    assert parts["tools"] == 5 + len(full) - len(bare)
+    assert parts["messages"] == 2
+    assert parts["system"] + parts["tools"] + parts["messages"] == body["input_tokens"]
+    assert parts["tool_names"] == ["web_search"]
+    # The MLX count tokenizes in the worker and returns no rendered text.
+    assert body["prompt"] is None
+
+
+def test_an_mlx_count_keeps_the_nudge_when_a_forced_tool_narrows_to_none(monkeypatch):
+    """Only /context's tool-free render drops the nudge: the completion still sends it here."""
+    from core.inference import chat_template_helpers
+    from routes import inference as route
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(chat_template_helpers, "renderable_tool_catalog", lambda *a, **k: [])
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        enabled_tools = ["web_search"],
+        tool_choice = {"type": "function", "function": {"name": "web_search"}},
+    )
+    assert not backend.tools
+    nudge = route._build_tool_action_nudge(
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        model_name = "mlx/model",
+        full_access = False,
+        user_folder = None,
+    )
+    assert backend.system == nudge
 
 
 def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):
@@ -9856,6 +10013,34 @@ def test_advance_raises_on_a_token_the_grammar_rejects(tiny_tokenizer):
     with pytest.raises(gc.GrammarDesyncError, match = "desynced on token") as excinfo:
         constraint.advance(int(illegal))
     assert not isinstance(excinfo.value, ResponseFormatError)
+
+
+def test_the_forward_is_queued_before_the_host_advances_the_grammar_and_builds_its_mask(
+    tiny_tokenizer, monkeypatch
+):
+    mx = _metal_mx()
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    processor = gc.make_grammar_logits_processor(constraint)
+    width, brace = len(tiny_tokenizer), tiny_tokenizer.encode("{", add_special_tokens = False)[0]
+    prompt = mx.array([3, 4, 5])
+    processor(prompt, mx.zeros((1, width)))
+    events, queue = [], mx.async_eval
+    monkeypatch.setattr(
+        mx, "async_eval", lambda *arrays: events.append(("queued", arrays)) or queue(*arrays)
+    )
+    advance, mask = constraint.advance, constraint.mask_logits
+    monkeypatch.setattr(
+        constraint, "advance", lambda token: events.append(("advance", token)) or advance(token)
+    )
+    monkeypatch.setattr(
+        constraint, "mask_logits", lambda logits: events.append(("mask", logits)) or mask(logits)
+    )
+    logits = mx.zeros((1, width)) + 1
+    processor(mx.concatenate([prompt, mx.array([brace])]), logits)
+    assert [kind for kind, _ in events] == ["queued", "queued", "advance", "mask"]
+    # The new tokens are queued apart from the forward, so reading them never waits for it.
+    (unseen,), (forward,) = events[0][1], events[1][1]
+    assert unseen.tolist() == [brace] and forward is logits and events[3][1] is logits
 
 
 def test_binding_waits_for_the_logits_width_a_padded_lm_head_widens(tiny_tokenizer):

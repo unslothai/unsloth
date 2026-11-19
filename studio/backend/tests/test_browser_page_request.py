@@ -656,7 +656,11 @@ def test_page_requests_hold_a_slot_until_their_worker_ends(monkeypatch):
     monkeypatch.setattr(browser_mod, "_PAGE_REQUEST_SLOTS", slots)
     release, finished = threading.Event(), threading.Event()
 
-    def stalled(request, cancel_event):
+    def stalled(
+        request,
+        cancel_event,
+        subject = None,
+    ):
         release.wait(10)
         finished.set()
         return {}

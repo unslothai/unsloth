@@ -245,7 +245,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
-    // CUDA / ROCm only. Keeps the official id (loader reads VAE, tokenizer, config from it), so no fetchedFrom.
+    // CUDA / ROCm only; keeps the official id (the loader reads VAE, tokenizer, config from it).
     // Size is the bf16 total; the fit rule reads the measured offload tiers instead.
     canonicalId: "MiniMaxAI/MiniMax-H3-Image",
     displayName: "MiniMax-H3-Image",
@@ -266,6 +266,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
           { gpuGb: 39, systemRamGb: 64, requiresDenseQuant: true },
         ],
       }),
+      gguf("unsloth/MiniMax-H3-Image-GGUF"),
     ],
   },
   {
@@ -735,17 +736,23 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "nvidia/Cosmos3-Nano",
     displayName: "Cosmos3 Nano",
-    description: "Text and image to video up to 720p · needs cosmos-guardrail",
+    description: "Text and image to video up to 720p",
     scope: "video",
-    requires: "cosmos-guardrail",
-    artifacts: [bf16Pipeline("nvidia/Cosmos3-Nano", 32, { totalParams: 15750057456 })],
+    artifacts: [
+      bf16Pipeline("nvidia/Cosmos3-Nano", 32, { totalParams: 15750057456 }),
+      // NVIDIA's ModelOpt FP8 build: W8A8 fp8 GEMMs on RTX 40 / Hopper / Blackwell, weight-only elsewhere.
+      fp8Pipeline("nvidia/Cosmos3-Nano-FP8", 20, { totalParams: 15750057456 }),
+    ],
   },
   {
     canonicalId: "nvidia/Cosmos3-Edge",
     displayName: "Cosmos3 Edge",
     description: "Text and image to video up to 480p, small",
     scope: "video",
-    artifacts: [bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 })],
+    artifacts: [
+      bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 }),
+      fp8Pipeline("nvidia/Cosmos3-Edge-FP8", 6, { totalParams: 3858999728 }),
+    ],
   },
 ];
 
@@ -1039,6 +1046,12 @@ export function artifactForRepoId(
   if (!artifact) return null;
   const group = index.byId.get(repoId.trim().toLowerCase());
   return group ? { group, artifact } : null;
+}
+
+export function isMediaCatalogRepo(repoId: string): boolean {
+  return [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG].some(
+    (catalog) => artifactForRepoId(repoId, catalog) !== null,
+  );
 }
 
 const BYTES_PER_GB = 1024 ** 3;

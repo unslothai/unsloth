@@ -7,6 +7,7 @@ switching between models needing different transformers versions (e.g. GLM-4.7-F
 Qwen needs 4.57.x), the old subprocess is killed and a new one spawned with the correct version.
 Pattern follows core/training/training.py."""
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import atexit
 import contextvars
 import base64
@@ -409,6 +410,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
     return {
         "is_vision": model_info.get("is_vision", False),
         "is_lora": model_info.get("is_lora", False),
+        "model_type": model_info.get("model_type"),
         "is_mlx": model_info.get("is_mlx", False),
         "loaded_auto_map": model_info.get("loaded_auto_map"),
         "display_name": model_info.get("display_name", model_name),
@@ -2223,6 +2225,7 @@ class InferenceOrchestrator:
 
     # Bumped at publish, not load start, so a same-model reload mid-install is detected.
     load_generation: int = 0
+    _image_token_counts: tuple = (None, None)
     # Cleared at each publish; only an explicit UI load sets it, pinning the model against idle unload.
     _loaded_by_user_action: bool = False
 
@@ -2617,7 +2620,9 @@ class InferenceOrchestrator:
                     failure = AudioCppFailure.from_payload(resp.get("failure"))
                     if failure is not None:
                         raise AudioCppFailureError(error, failure)
-                    raise Exception(error)
+                    load_error = Exception(error)
+                    load_error.error_kind = resp.get("error_kind")
+                    raise load_error
 
         except Exception as exc:
             self.loading_models.discard(model_name)
@@ -3095,6 +3100,62 @@ class InferenceOrchestrator:
         if error:
             raise RuntimeError(error)
         return int(resp["input_tokens"]), resp.get("model")
+
+    @property
+    def context_length(self) -> Optional[int]:
+        return (self.models.get(self.active_model_name) or {}).get("context_length")
+
+    def image_tokens(
+        self,
+        width: int,
+        height: int,
+        timeout: float = 30.0,
+    ) -> Optional[int]:
+        """Prompt tokens a computer-use screenshot of this size costs the loaded model, cached per
+        load; None while busy or when the worker cannot count it."""
+        if getattr(self, "_managed_engine", None) is not None or self.active_model_name is None:
+            return None
+        generation, counts = self._image_token_counts
+        if generation != self.load_generation:
+            counts = {}
+            self._image_token_counts = (self.load_generation, counts)
+        if (width, height) in counts:
+            return counts[(width, height)]
+        if not self._gen_lock.acquire(blocking = False):
+            return None
+        try:
+            with contextlib.ExitStack() as held:
+                # Reserved before the idle check, so a dispatched chat cannot slip in ahead of the count.
+                try:
+                    held.enter_context(self._reserve_worker("a screenshot is being sized"))
+                except RuntimeError:
+                    return None
+                with self._mailbox_lock:
+                    if self._mailboxes:
+                        return None
+                request_id = str(uuid.uuid4())
+                read_one, _drain, release_mailbox = self._direct_reader(request_id)
+                try:
+                    self._send_cmd(
+                        {
+                            "type": "image_tokens",
+                            "request_id": request_id,
+                            "width": width,
+                            "height": height,
+                        }
+                    )
+                    resp = self._await_reply(
+                        read_one, request_id, "image_tokens_response", "image tokens", timeout
+                    )
+                finally:
+                    release_mailbox()
+        finally:
+            self._gen_lock.release()
+        if resp is None or resp.get("error"):
+            return None
+        tokens = resp.get("tokens")
+        counts[(width, height)] = tokens if type(tokens) is int else None
+        return counts[(width, height)]
 
     def compact_chat_context(
         self,
@@ -3677,7 +3738,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
-        max_tool_iterations: int = 25,
+        max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,

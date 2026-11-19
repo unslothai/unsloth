@@ -143,7 +143,9 @@ def _bench_int8pack_vs_dense(layer: Any, dtype: Any, device: Any) -> tuple:
     scale = layer.weight_scale.view(torch.float32).to(device).to(dtype).contiguous()
     w = (w_q.to(dtype) * scale.unsqueeze(1)).contiguous()
     x = torch.randn(_INT8PACK_PROBE_ROWS, layer.in_features, dtype = dtype, device = device)
-    sync = torch.mps.synchronize if device.type == "mps" else (lambda: None)
+    from .diffusion_device import mps_synchronize
+
+    sync = mps_synchronize if device.type == "mps" else (lambda: None)
     kernel = lambda: torch._weight_int8pack_mm(x, w_q, scale)
     dense = lambda: torch.nn.functional.linear(x, w)
     kernel()
@@ -457,6 +459,35 @@ def _autocast_on(x: Any) -> bool:
         return bool(torch.is_autocast_enabled() or torch.is_autocast_cpu_enabled())
 
 
+def fused_w8a8_serves(module: Any) -> bool:
+    """Whether ``module`` holds native int8 W8A8 linears that the compiled function serves (CUDA, not ROCm, an
+    inductor runtime, not disabled and not failed). It never runs inside a CUDA-graph capture, so a captured step
+    bakes those linears' eager kernels instead. Never raises."""
+    try:
+        if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
+            return False
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
+            return False
+        from .diffusion_speed import torch_compile_runtime_available
+
+        if not torch_compile_runtime_available():
+            return False
+        cards = set()
+        for m in module.modules():
+            if is_native_linear(m) and bool(getattr(m, "act_int8", False)):
+                device = getattr(getattr(m, "weight_q", None), "device", None)
+                cards.add(_device_key(device if getattr(device, "type", None) == "cuda" else None))
+        failed = _FUSED_STATE.get("devices", {})
+        # A card whose compiled linear failed runs eager kernels there: no compiled linear left to keep out of a graph.
+        return any(failed.get(card) is None for card in cards)
+    except Exception:  # noqa: BLE001 - unknown keeps the caller's default
+        return False
+
+
 def fused_w8a8_state() -> dict:
     """``failed``: the process-wide reason, else the first card's; ``devices``: each card's (None = runs it)."""
     devices = dict(_FUSED_STATE.get("devices", {}))
@@ -493,6 +524,7 @@ def native_linear_class():
     from torch import nn
     from torch.nn import functional as F
 
+    from . import diffusion_native_w8a8_cuda as cuda_rotq
     from . import diffusion_native_w8a8_rdna as rdna
 
     class NativeWeightOnlyLinear(nn.Module):
@@ -613,6 +645,16 @@ def native_linear_class():
                     rdna.shape_supported(self.in_features, self.out_features, self.rot_group)
                     and rdna.prepare()
                 )
+                # NVIDIA: the fused rotation + act quant compiled forwards take, probed once per card in eager. Only
+                # on a live CUDA context (diffusion_speed probes the denoiser's card again before the compile).
+                if (
+                    not self._rdna
+                    and cuda_rotq.shape_ok(self.in_features, self.rot_group)
+                    and torch.cuda.is_initialized()
+                ):
+                    cuda_rotq.prepare()
+            # this load's kill switches (probe results stay cached per card; routing is per Linear, refreshed by install)
+            self._cuda_rotq_load, self._cuda_gemm_load = cuda_rotq.load_switches()
 
         def _widen(self, codes: Any) -> Any:
             """Exact float32 values of a row slice of ``weight_q``, as the eager branches below."""
@@ -701,11 +743,15 @@ def native_linear_class():
             if not self.rot_group and (torch.compiler.is_compiling() or not xq.is_contiguous()):
                 op = getattr(self, "_row_major", None)
                 xq = op(xq) if op is not None else xq.contiguous()
+            return self._int_mm_from_q(xq, x_scale, x2.dtype)
+
+        def _int_mm_from_q(self, xq: Any, x_scale: Any, x_dtype: Any) -> Any:
+            """int8 GEMM + fp32 epilogue of ``_int_mm_rows`` from its codes and fp32 [rows, 1] scales."""
             w_scale = self.weight_scale.view(torch.float32)
             if (
                 self.bias is None
-                and x2.dtype == torch.float16
-                and x2.is_cuda
+                and x_dtype == torch.float16
+                and xq.is_cuda
                 and not torch.compiler.is_compiling()
             ):
                 from . import diffusion_int8_cutlass as _cut  # noqa: PLC0415
@@ -722,6 +768,40 @@ def native_linear_class():
             else:
                 out = out.mul_(w_scale)
             return out
+
+        def _cuda_rotq_on(self, x: Any) -> bool:
+            """NVIDIA, traced forward only: the fused rotation + act quant (``diffusion_native_w8a8_cuda``)."""
+            if not (
+                self.rot_group
+                and torch.compiler.is_compiling()
+                and x.is_cuda
+                and x.dtype == torch.bfloat16
+                and cuda_rotq.shape_ok(self.in_features, self.rot_group)
+            ):
+                return False
+            # The custom op has no backward: a graph that needs input gradients keeps the stock maths.
+            if x.requires_grad and torch.is_grad_enabled():
+                return False
+            if not getattr(self, "_cuda_rotq_load", True):
+                return False
+            return cuda_rotq.enabled_for(x.device.index) and self._int_mm_ok(
+                x.numel() // max(1, self.in_features)
+            )
+
+        def _forward_cuda_rotq(self, x: Any) -> Any:
+            x2 = x.reshape(-1, self.in_features)
+            xq, xs = cuda_rotq.rotq(x2, self.rot_group)
+            if (
+                getattr(self, "_cuda_gemm_load", True)
+                and cuda_rotq.gemm_enabled_for(x.device.index)
+            ) and cuda_rotq.gemm_shape_ok(self.in_features, self.out_features):
+                # dequant + bias inside the GEMM: bf16 out, no int32 [rows, N] round trip
+                out = cuda_rotq.gemm(
+                    xq, self.weight_q, xs, self.weight_scale.view(torch.float32), self.bias
+                )
+            else:
+                out = self._int_mm_from_q(xq, xs, x.dtype).to(x.dtype)
+            return out.reshape(*x.shape[:-1], self.out_features)
 
         def _forward_rdna(self, x: Any) -> Any:
             x2 = x.reshape(-1, self.in_features)
@@ -896,6 +976,8 @@ def native_linear_class():
                     return out
             if self.act_int8 and self._rdna_on(x):
                 return self._forward_rdna(x)
+            if self.act_int8 and self._cuda_rotq_on(x):
+                return self._forward_cuda_rotq(x)
             if self.act_int8 and x.is_cuda and not torch.compiler.is_compiling():
                 out = self._forward_fused(x)
                 if out is not None:

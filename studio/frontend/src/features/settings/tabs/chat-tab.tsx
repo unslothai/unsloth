@@ -4,6 +4,7 @@
 import { LazyImportBoundary } from "@/components/lazy-import-boundary";
 import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
+import { ArrowRightIcon } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -31,6 +32,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  Cursor02Icon,
   Download01Icon,
   LayoutTwoColumnIcon,
   LibrariesIcon,
@@ -106,6 +108,17 @@ const PLUS_MENU_SETTINGS: {
     icon: (
       <HugeiconsIcon
         icon={CursorInWindowIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "computerUse",
+    labelKey: "settings.chat.menu.computerUse",
+    icon: (
+      <HugeiconsIcon
+        icon={Cursor02Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -357,6 +370,18 @@ export function ChatTab() {
   const setShowMemoryBar = useChatRuntimeStore(
     (state) => state.setShowMemoryBar,
   );
+  const pickerExpandLoaded = useChatRuntimeStore(
+    (state) => state.pickerExpandLoaded,
+  );
+  const setPickerExpandLoaded = useChatRuntimeStore(
+    (state) => state.setPickerExpandLoaded,
+  );
+  const pickerMonochromeIcons = useChatRuntimeStore(
+    (state) => state.pickerMonochromeIcons,
+  );
+  const setPickerMonochromeIcons = useChatRuntimeStore(
+    (state) => state.setPickerMonochromeIcons,
+  );
   const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore(
     (state) => state.setFitOnDeviceOnly,
@@ -511,6 +536,7 @@ export function ChatTab() {
           >
             <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
             {t("settings.chat.library.action")}
+            <ArrowRightIcon data-icon="inline-end" strokeWidth={1.75} />
           </Button>
         </SettingsRow>
       </SettingsSection>
@@ -916,6 +942,30 @@ export function ChatTab() {
             aria-label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
             checked={fitOnDeviceOnly}
             onCheckedChange={setFitOnDeviceOnly}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerExpandLoaded")}
+          description={t(
+            "settings.chat.modelSelection.pickerExpandLoadedDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerExpandLoaded")}
+            checked={pickerExpandLoaded}
+            onCheckedChange={setPickerExpandLoaded}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+          description={t(
+            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+            checked={pickerMonochromeIcons}
+            onCheckedChange={setPickerMonochromeIcons}
           />
         </SettingsRow>
       </SettingsSection>

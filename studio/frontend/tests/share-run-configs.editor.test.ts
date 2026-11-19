@@ -283,6 +283,8 @@ const none = { ggufVariant: undefined };
 const u = undefined;
 const c = { config: {} };
 const q8 = { ggufVariant: "Q8", config: {} };
+const ollamaGguf = "ollama-manifest:%2Fh%2Fllama3";
+const ollamaMlx = "/h/.studio_links/0c918e29a9/mlx/gemma4-e4b-mlx";
 
 test("run config targets resolve model identity, format and local capability", () => {
   // [link value, recipient selection, chosen model, expected id and meta]
@@ -306,6 +308,9 @@ test("run config targets resolve model identity, format and local capability", (
     [q8, { loadedIsGguf: false }, u, { isGguf: false, ...none }],
     [c, at(""), "a/n", { id: "a/n", isGguf: true, ...none }],
     [c, at("a/n"), u, { id: "a/n", isGguf: true, ...none }],
+    [c, at(""), ollamaGguf, { id: ollamaGguf, isGguf: true, ...none }],
+    [c, at(""), ollamaMlx, { id: ollamaMlx, isGguf: false, ...none }],
+    [c, at(ollamaMlx), u, { id: ollamaMlx, isGguf: false, ...none }],
   ] as const;
   for (const [value, overrides, chosen, expected] of rows) {
     const state = { ...selection, ...overrides };

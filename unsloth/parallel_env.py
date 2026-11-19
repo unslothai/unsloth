@@ -11,7 +11,8 @@
 
 Keys: dp, tp, pp, cp (positive integers; dp may be omitted and then fills the world), cp_backend (auto, ulysses,
 ring), fsdp (0 / 1: native FSDP2 over the data parallel ranks instead of DDP-style averaging; fsdp=N with N > 1
-is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b), pp_microbatches.
+is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b; default
+1f1b), pp_microbatches.
 transformers' DistributedConfig names are accepted too (tp_size, pp_size, fsdp_size, cp_size); ep / ep_size and
 efsdp are reserved and refused until expert parallel lands. The flag is parsed once, at `import unsloth`, and translated to the variables
 the existing paths read: UNSLOTH_TP_SIZE, UNSLOTH_PP_SIZE, UNSLOTH_FSDP2, UNSLOTH_PP_SCHEDULE,
@@ -24,6 +25,9 @@ mesh["pp"], context parallel mesh["cp"], and data parallel gradients (FSDP2 shar
 flattened (dp, cp) mesh, because context parallel peers hold different tokens of the same rows. The data loader
 splits over dp only. Size-1 axes are left out of the mesh, so they create no process group.
 
+UNSLOTH_PARALLEL=auto (opt-in) picks DDP when the model and its training state fit on every GPU, else native
+FSDP2, once per process at the first from_pretrained (unsloth/parallel_auto.py).
+
 Imports nothing heavy at module level: the flag is translated before transformers / accelerate read it.
 """
 
@@ -31,6 +35,8 @@ from __future__ import annotations
 
 import math
 import os
+import sys
+import warnings
 
 __all__ = [
     "ParallelSpec",
@@ -46,6 +52,7 @@ __all__ = [
 FLAG = "UNSLOTH_PARALLEL"
 CP_BACKENDS = ("auto", "ulysses", "ring")
 PP_SCHEDULES = ("gpipe", "1f1b")
+DEFAULT_PP_SCHEDULE = "1f1b"  # UNSLOTH_PP_SCHEDULE unset (layout.schedule_auto)
 _SIZE_KEYS = ("dp", "tp", "pp", "cp")
 _ALIASES = {
     "microbatches": "pp_microbatches",
@@ -118,6 +125,9 @@ def parse_parallel_spec(raw, source = FLAG):
     """'dp=2,tp=2,cp=2,cp_backend=ulysses' -> ParallelSpec; ValueError naming the bad part otherwise."""
     spec = ParallelSpec()
     if raw is None or not str(raw).strip():
+        return spec
+    if str(raw).strip().lower() == "auto":
+        spec["auto"] = True  # DDP or FSDP2 by memory, resolved later (parallel_auto.py)
         return spec
     for part in str(raw).replace(";", ",").split(","):
         part = part.strip()
@@ -274,8 +284,99 @@ def apply_parallel_env(environ = None):
     if raw is None or not str(raw).strip():
         return None
     spec = parse_parallel_spec(raw)
+    if spec.get("auto"):
+        from .parallel_auto import check_auto_env
+        check_auto_env(environ)
+        return spec
     environ.update(translate(spec, environ))
     return spec
+
+
+def bind_local_cuda_device(environ = None):
+    """Make cuda:LOCAL_RANK current on a torchrun rank before anything touches CUDA: otherwise the first
+    CUDA call during import opens a context on cuda:0 in every rank (~0.8 GB each on a B200, all on GPU 0)."""
+    environ = os.environ if environ is None else environ
+    try:
+        world = int(environ.get("WORLD_SIZE", "1") or "1")
+        local = int(environ["LOCAL_RANK"])
+    except (KeyError, ValueError):
+        return None
+    if world <= 1 or local <= 0 or environ.get("UNSLOTH_FORCE_CPU", "0") == "1":
+        return None
+    try:
+        import torch
+        if not torch.cuda.is_available() or local >= torch.cuda.device_count():
+            return None
+        torch.cuda.set_device(local)
+    except Exception:
+        return None
+    return local
+
+
+ALLOCATOR_ENV = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF")
+
+
+def _allocator_env_value(torch, environ):
+    """The caching allocator settings this torch reads from the environment (None when unset): the first of its
+    variables that is set wins, an empty one included."""
+    hip = bool(getattr(torch.version, "hip", None))
+    try:
+        major, minor = (int(x) for x in torch.__version__.split(".")[:2])
+    except ValueError:
+        major, minor = 2, 10
+    if (major, minor) >= (2, 10):
+        # c10/core/AllocatorConfig.cpp from 2.10: the legacy names still come first, on every platform.
+        names = ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+    elif hip:
+        # c10/cuda/CUDAAllocatorConfig.h: ROCm builds fall back to the HIP name when the CUDA one is unset.
+        names = ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF")
+    else:
+        names = ("PYTORCH_CUDA_ALLOC_CONF",)
+    for name in names:
+        if environ.get(name) is not None:
+            return environ[name]
+    return None
+
+
+def cuda_started():
+    """Whether CUDA (or HIP) has started in this process, without importing torch or starting it."""
+    torch = sys.modules.get("torch")
+    try:
+        return bool(torch is not None and torch.cuda.is_initialized())
+    except Exception:
+        return False
+
+
+def apply_late_allocator_env(before, environ = None):
+    """`bind_local_cuda_device` starts CUDA on torchrun ranks > 0 at import, which fixes the caching allocator's
+    settings before unsloth_zoo exports its default (expandable_segments): those ranks ran without it while rank 0
+    had it (Qwen3.8-27B 4-bit FSDP2 on 2x T4: 2.2 GiB more reserved on rank 1 at sharding). After the zoo import,
+    apply what it changed (`before`: the ALLOCATOR_ENV values before it) at runtime. Returns the settings applied,
+    or None (nothing changed, or CUDA not started yet: torch then reads the environment itself)."""
+    environ = os.environ if environ is None else environ
+    if all(environ.get(k) == before.get(k) for k in ALLOCATOR_ENV):
+        return None
+    try:
+        import torch
+
+        if not torch.cuda.is_initialized():
+            return None
+        setter = getattr(torch.cuda.memory, "_set_allocator_settings", None)
+        if setter is None:
+            return None
+        value = _allocator_env_value(torch, environ) or ""
+        had = _allocator_env_value(torch, before) or ""
+        if "expandable_segments" not in value and "expandable_segments:true" in had.lower():
+            value = ",".join(x for x in (value, "expandable_segments:False") if x)
+        if not value:
+            return None
+        with warnings.catch_warnings():
+            # torch 2.10+ deprecates the name (FutureWarning) but keeps it as an alias of the accelerator setter.
+            warnings.simplefilter("ignore", FutureWarning)
+            setter(value)
+        return value
+    except Exception:
+        return None
 
 
 def env_cp_size(environ = None):
@@ -440,9 +541,13 @@ class ParallelLayout:
         schedule = "gpipe",
         cp = 1,
         cp_backend = None,
+        schedule_auto = False,
     ):
         self.tp, self.dp, self.world, self.fsdp2 = tp, dp, world, fsdp2
         self.pp, self.microbatches, self.schedule = pp, microbatches, schedule
+        # UNSLOTH_PP_SCHEDULE unset: 1F1B, run as GPipe on a step with fewer micro-batches than stages (no
+        # fully masked filler rows); an explicit schedule is kept as given.
+        self.schedule_auto = schedule_auto
         self.cp, self.cp_backend = cp, cp_backend
         self._mesh = None
         self._grad_mesh = None
@@ -580,19 +685,30 @@ def read_layout():
             f"launch with torchrun --nproc-per-node {pp * tp * cp} (or a multiple of {pp * tp * cp} for {what}), or "
             f"unset {' / '.join(name for name in names.split(' x '))}."
         )
-    microbatches, schedule = None, "gpipe"
+    microbatches, schedule, schedule_auto = None, "gpipe", False
     if pp > 1:
         microbatches = _int_env("UNSLOTH_PP_MICROBATCHES")
-        schedule = (
-            (os.environ.get("UNSLOTH_PP_SCHEDULE") or "gpipe").strip().lower().replace("-", "")
-        )
+        asked = (os.environ.get("UNSLOTH_PP_SCHEDULE") or "").strip()
+        # Default 1F1B: on 2x T4 (pp=2, 4-bit LoRA, same micro-batches) it beat GPipe by 6-12% on Llama-3.2-1B
+        # and Qwen3.5-2B / 4B and tied on Gemma-4-E2B (bound by its larger last stage), with the same losses
+        # and a lower first-stage peak.
+        schedule_auto = not asked
+        schedule = (asked or DEFAULT_PP_SCHEDULE).lower().replace("-", "")
         schedule = schedule.replace("_", "")
         if schedule not in PP_SCHEDULES:
             raise ValueError(
                 f"Unsloth: UNSLOTH_PP_SCHEDULE={os.environ.get('UNSLOTH_PP_SCHEDULE')!r} must be one of "
                 f"{PP_SCHEDULES}."
             )
-        if schedule == "1f1b" and microbatches is not None and microbatches < pp:
+        if schedule_auto and microbatches is not None and microbatches < pp:
+            # Every step would fall back to GPipe: resolve it here so sharded loading records the same schedule.
+            schedule = "gpipe"
+        if (
+            schedule == "1f1b"
+            and microbatches is not None
+            and microbatches < pp
+            and not schedule_auto
+        ):
             raise ValueError(
                 f"Unsloth: UNSLOTH_PP_SCHEDULE=1f1b needs UNSLOTH_PP_MICROBATCHES >= UNSLOTH_PP_SIZE "
                 f"({microbatches} < {pp})."
@@ -626,6 +742,7 @@ def read_layout():
         schedule,
         cp = cp,
         cp_backend = cp_backend,
+        schedule_auto = schedule_auto,
     )
     from .parallel_capabilities import check_layout
 
@@ -664,7 +781,8 @@ def describe_trainer_layout(
     if pp > 1:
         mb = getattr(layout, "microbatches", None)
         parts.append(
-            f"pp schedule {getattr(layout, 'schedule', 'gpipe')}, {mb or 'auto'} micro-batches"
+            f"pp schedule {getattr(layout, 'schedule', 'gpipe')}"
+            f"{' (default)' if getattr(layout, 'schedule_auto', False) else ''}, {mb or 'auto'} micro-batches"
         )
     args = getattr(trainer, "args", None)
     if args is not None:

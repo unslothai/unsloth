@@ -23,7 +23,7 @@ import sys
 from collections import OrderedDict
 from collections.abc import Mapping
 from functools import wraps
-from typing import Any, Iterable, Optional, Sequence, Tuple
+from typing import Any, Iterable, NamedTuple, Optional, Sequence, Tuple
 
 import torch
 
@@ -52,6 +52,16 @@ _XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
+
+# Set by prepare_packed_block instead of packed_seq_lengths: (cu_seqlens, max_seqlen-length tensor).
+PACKED_BLOCK_KWARG = "_unsloth_packed_varlen"
+
+
+class PackedVarlen(NamedTuple):
+    lengths: torch.Tensor
+    cu_seqlens: torch.Tensor
+    max_seqlen: Any
+
 
 # Per device: (lengths, cu_seqlens, host tuple) from the one D2H read in get_packed_info_from_kwargs
 _PACKED_HOST_LENGTHS_CACHE: dict = {}
@@ -933,6 +943,21 @@ _KWARGS_KERNELS = {
 _KWARGS_TRACE: list = [None]
 
 
+def _kernels_func_target(fn):
+    """With `kernels` installed, hub functions are `Func` modules whose class forward holds the closure."""
+    if not isinstance(fn, torch.nn.Module):
+        return None
+    for cls in type(fn).__mro__:
+        forward = vars(cls).get("forward")
+        try:
+            target = inspect.getclosurevars(forward).nonlocals.get("func") if forward else None
+        except (TypeError, ValueError):
+            target = None
+        if callable(target):
+            return target
+    return None
+
+
 def _hub_closure(fn) -> dict:
     """Kernel-hub wrapper closure nonlocals, unwrapping Unsloth's probes and pass-through wrappers; {} if none."""
     for _ in range(8):
@@ -948,6 +973,7 @@ def _hub_closure(fn) -> dict:
             getattr(fn, "_unsloth_varlen_probe_of", None)
             or getattr(fn, "_unsloth_undisabled", None)
             or getattr(fn, "__wrapped__", None)
+            or _kernels_func_target(fn)
         )
     return {}
 
@@ -1181,6 +1207,13 @@ def _ple_input_with_gaps(tensor, varlen, gap, fill_value):
     return expanded.index_copy(1, positions, tensor), positions
 
 
+# Eager: the dynamic gapped length fails inductor's backward tiling (CantSplit) in the block compile.
+@torch.compiler.disable
+def _ple_gapped_call(fn, tensor, varlen, gap, fill_value, past_key_values):
+    expanded, positions = _ple_input_with_gaps(tensor, varlen, gap, fill_value)
+    return fn(expanded, past_key_values).index_select(1, positions)
+
+
 def _wrap_ple_boundaries(module) -> None:
     # PLE's dilated conv has no seq_idx kernel: pad zero history before each document, gather real outputs.
     conv_orig = module._short_conv
@@ -1198,12 +1231,11 @@ def _wrap_ple_boundaries(module) -> None:
         varlen = packed_input(hidden_states, past_key_values)
         if varlen is None:
             return conv_orig(hidden_states, past_key_values)
-        expanded, positions = _ple_input_with_gaps(
-            hidden_states, varlen, module.short_conv_state_len, 0
+        output = _ple_gapped_call(
+            conv_orig, hidden_states, varlen, module.short_conv_state_len, 0, past_key_values
         )
-        output = conv_orig(expanded, past_key_values)
         module._unsloth_varlen_conv_hit = True
-        return output.index_select(1, positions)
+        return output
 
     @wraps(embedding_orig)
     def ngram_embedding(input_ids, past_key_values):
@@ -1211,12 +1243,16 @@ def _wrap_ple_boundaries(module) -> None:
         if varlen is None:
             return embedding_orig(input_ids, past_key_values)
         # Boundaries need not hold EOS: synthetic EOS history resets the n-gram hash like a separate forward.
-        expanded, positions = _ple_input_with_gaps(
-            input_ids, varlen, embedding.context_len, embedding.eos_token_id
+        output = _ple_gapped_call(
+            embedding_orig,
+            input_ids,
+            varlen,
+            embedding.context_len,
+            embedding.eos_token_id,
+            past_key_values,
         )
-        output = embedding_orig(expanded, past_key_values)
         module._unsloth_varlen_embedding_hit = True
-        return output.index_select(1, positions)
+        return output
 
     module._short_conv = short_conv
     embedding.forward = ngram_embedding
@@ -1366,6 +1402,22 @@ def _auto_hybrid_device_ok(module) -> bool:
         return True
     weight = next(module.parameters(), None)
     return torch.version.hip is None and weight is not None and weight.device.type == "cuda"
+
+
+def _hybrid_opt_in_device(modules) -> Optional[str]:
+    for module in modules:
+        if _auto_hybrid_device_ok(module):
+            continue
+        if torch.version.hip is not None:
+            return "ROCm"
+        weight = next(module.parameters(), None)
+        return weight.device.type if weight is not None else "this device"
+    return None
+
+
+def hybrid_packing_opt_in_device(model) -> Optional[str]:
+    """Device a hybrid model packs on through UNSLOTH_EXPERIMENTAL_HYBRID_PACKING=1 alone, else None."""
+    return getattr(model, "_unsloth_hybrid_opt_in_device", None)
 
 
 def _probe_target(modules):
@@ -1650,6 +1702,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             forward_sig = inspect.signature(forward_orig)
         except (TypeError, ValueError):
             forward_sig = None
+        takes_use_cache = forward_sig is not None and (
+            "use_cache" in forward_sig.parameters
+            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in forward_sig.parameters.values())
+        )
 
         # A bound method with no __wrapped__: accelerate's unwrap_model(keep_fp32_wrapper = False),
         # run by TRL every step, rebinds the forward it finds with MethodType(forward, model), which
@@ -1677,6 +1733,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_fused_hit = False
                     module._unsloth_varlen_kwargs_hit = False
                     module._unsloth_varlen_embedding_hit = False
+            if varlen is not None and takes_use_cache and bound.get("use_cache") is None:
+                if "use_cache" in kwargs or "use_cache" not in bound:
+                    # A packed-forward cache makes transformers drop the per-document mask (QSA spans docs).
+                    kwargs["use_cache"] = False
             outer, _PACKED[0] = _PACKED[0], varlen
             try:
                 out = forward_orig(*args, **kwargs)
@@ -1719,6 +1779,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         model._unsloth_varlen_forward_wrapped = True
 
     _wrap_generate_clears_varlen(model, hybrid_modules)
+    model._unsloth_hybrid_opt_in_device = (
+        None if torch_varlen_only else _hybrid_opt_in_device(hybrid_modules)
+    )
     HYBRID_PACKING_STATS["patched"] += 1
     return True
 
@@ -1861,6 +1924,10 @@ def get_packed_info_from_kwargs(
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, int]]:
     """Return packed metadata, optionally inferring a mask-free prefill's boundaries."""
 
+    prepared = kwargs.get(PACKED_BLOCK_KWARG)
+    if prepared is not None:
+        cu_seqlens, carrier = prepared
+        return PackedVarlen(cu_seqlens[1:] - cu_seqlens[:-1], cu_seqlens, carrier.shape[0])
     seq_lengths = kwargs.get("packed_seq_lengths")
     if seq_lengths is None:
         # Callers must exclude padding masks and cached decoding before opting in.
@@ -1911,6 +1978,10 @@ def get_packed_info_from_kwargs(
             host = tuple(lengths.tolist())
 
     max_seqlen = max(host)
+    # Compiled callers (Ulysses attention in a compiled block) read this eager cache entry: the document
+    # count changes every packed batch, so without the mark each new count recompiled them.
+    torch._dynamo.maybe_mark_dynamic(lengths, 0)
+    torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
     result = (lengths, cu_seqlens, max_seqlen)
     # Meta shapes carry symbolic host scalars without allocating device memory.
     row_shape = torch.empty((sum(host), max_seqlen), device = "meta")
@@ -1967,6 +2038,8 @@ def cover_padded_cu_seqlens(
     seq_info: Tuple[torch.Tensor, torch.Tensor, int], total_tokens: int
 ) -> Tuple[torch.Tensor, int]:
     """Flash varlen leaves rows past cu_seqlens[-1] unwritten, so the pad tail gets a segment."""
+    if isinstance(seq_info, PackedVarlen):
+        return seq_info.cu_seqlens, seq_info.max_seqlen
     _, cu_seqlens, max_seqlen = seq_info
     device = cu_seqlens.device
     entry = _PADDED_CU_SEQLENS_CACHE.get(device)

@@ -448,6 +448,8 @@ function isSnapshotIgnored(
   );
 }
 
+export const IMAGE_CHECKPOINT_PATH_RE = /^(?:[^/\\.][^/\\]*\/)*[^/\\]+\.safetensors$/i;
+
 const modelCache = new LruMap<string, SizeCacheEntry<ModelSizeInfo>>(128);
 const modelInflight = new Map<string, InflightSizeEntry<ModelSizeInfo>>();
 
@@ -477,17 +479,22 @@ export function fetchModelSize(
       }
       const data = (await res.json()) as ModelInfoApiResponse;
       const siblings = data.siblings ?? [];
+      const names = siblings.map((s) => s.rfilename ?? "");
       // SDXL repos can package alternate whole checkpoints alongside their Diffusers component folders.
-      const imageCheckpointCandidates = data.config?.diffusers?._class_name === "StableDiffusionXLPipeline"
+      const checkpointRe = data.config?.diffusers?._class_name === "StableDiffusionXLPipeline"
+        ? /^[^/\\]+\.safetensors$/i
+        : !names.includes("model_index.json") && !names.includes("config.json")
+          ? IMAGE_CHECKPOINT_PATH_RE
+          : null;
+      const imageCheckpointCandidates = checkpointRe
         ? siblings.flatMap(({ rfilename, size }) =>
-            rfilename && /^[^/\\]+\.safetensors$/i.test(rfilename) && !/[-_]\d+-of-\d+\./i.test(rfilename)
+            rfilename && checkpointRe.test(rfilename) && !/[-_]\d+-of-\d+\./i.test(rfilename)
               ? [{ filename: rfilename, bytes: size ?? null }]
               : [],
           )
         : [];
       const skipConsolidated = shipsTransformersWeights(siblings);
       const skipDuplicateFormats = shipsRootSafetensors(siblings);
-      const names = siblings.map((s) => s.rfilename ?? "");
       const redundantBins = redundantTorchBinFiles(names);
       const precisionFolders = names.includes("config.json")
         ? precisionVariantFolders(names)

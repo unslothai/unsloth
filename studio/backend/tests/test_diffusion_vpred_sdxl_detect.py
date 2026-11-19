@@ -207,9 +207,7 @@ def test_a_pipeline_pick_makes_no_hub_call(hub_cache, monkeypatch):
     assert detect_family_for_pick(NOOB) is None
 
 
-def test_prefetch_is_skipped_for_named_overridden_local_and_gguf_picks(
-    hub_cache, monkeypatch, tmp_path
-):
+def test_prefetch_is_skipped_for_named_overridden_and_local_picks(hub_cache, monkeypatch, tmp_path):
     import huggingface_hub
 
     def boom(*a, **k):
@@ -219,7 +217,6 @@ def test_prefetch_is_skipped_for_named_overridden_local_and_gguf_picks(
     monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", boom)
     evidence.prefetch_for_pick("stabilityai/stable-diffusion-xl-base-1.0", None, None, None)
     evidence.prefetch_for_pick(NOOB, NOOB_FILE, "sdxl", None)
-    evidence.prefetch_for_pick(NOOB, "noob-Q4_K.gguf", None, None)
     evidence.prefetch_for_pick(str(tmp_path), None, None, None)
 
 
@@ -1091,3 +1088,33 @@ def test_the_catalog_never_offers_a_checkpoint_the_loader_vetoes_by_name(monkeyp
     get_diffusion_backend().validate_load_request(
         repo, gguf_filename = "edition.safetensors", family_override = None, model_kind = "single_file"
     )
+
+
+@pytest.mark.parametrize(
+    "keys, offered",
+    [
+        (
+            [
+                "img_in.weight",
+                "single_stream_modulation.lin.weight",
+                "double_stream_modulation_img.lin.weight",
+            ],
+            True,
+        ),
+        (["model.embed_tokens.weight", "model.layers.0.self_attn.q_proj.weight"], False),
+        (["encoder.conv_in.weight", "decoder.conv_in.weight"], False),
+    ],
+)
+def test_a_single_file_repo_offers_only_its_transformer(monkeypatch, keys, offered):
+    from hub.routes.inventory import is_sdxl_checkpoint
+
+    _stub_header(monkeypatch, [keys])
+    repo = "Comfy-Org/Flux-2-Klein-4B"
+    filename = "split_files/diffusion_models/flux-2-klein-4b.safetensors"
+    assert is_sdxl_checkpoint(repo, filename, None, False, "u") is offered
+
+
+def test_a_bare_sdxl_unet_is_not_offered_as_a_checkpoint(monkeypatch):
+    from hub.routes.inventory import is_sdxl_checkpoint
+    _stub_header(monkeypatch, [SDXL_UNET_KEYS[:5]])
+    assert not is_sdxl_checkpoint("example/sdxl-unet", "unet.safetensors", None, False, "u")

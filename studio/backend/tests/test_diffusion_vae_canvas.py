@@ -21,6 +21,9 @@ def _clean_env(monkeypatch):
 
 
 def _image_vae_cls():
+    # The VAE is diffusers' or the vendored copy, which builds on diffusers' base classes; the backend
+    # test shards do not install diffusers.
+    pytest.importorskip("diffusers")
     from core.inference.diffusion_minimax_h3_image import vae_class
     return vae_class()
 

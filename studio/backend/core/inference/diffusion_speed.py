@@ -336,6 +336,16 @@ def resolve_speed_mode(
     return normalize_speed_mode(value)
 
 
+def int8_attention_speed_active(
+    speed_mode: Optional[str], effective_speed: str, deferred: bool
+) -> bool:
+    """Whether the automatic INT8 attention routes race at load: a speed profile is active, or speed was left unset
+    and no deferred profile follows (an int8 DiT the offload streams, a load that cannot compile). The kernel needs no
+    compile and passes an accuracy check and a race per card; speed off by request stays bit-identical, and a deferred
+    profile installs the routes when it engages."""
+    return effective_speed != SPEED_OFF or (speed_mode is None and not deferred)
+
+
 @lru_cache(maxsize = 1)
 def torch_compile_runtime_available() -> bool:
     """Triton has no Windows wheel; TORCHDYNAMO_DISABLE is honored on every platform."""
@@ -481,6 +491,34 @@ def _fp16_compile_capable(target: Any) -> bool:
         )
         return tuple(cap)[:2] >= _FP16_COMPILE_MIN_CAPABILITY
     except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's eager path
+        return False
+
+
+# 1 keeps the step graph over an eager denoiser whose native int8 W8A8 linears run compiled outside a capture.
+STEP_GRAPH_NATIVE_W8A8_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_NATIVE_W8A8"
+STEP_GRAPH_EAGER_W8A8_REASON = (
+    "the uncompiled denoiser's native int8 linears run as compiled functions, which a captured step would replace "
+    "with their slower eager kernels"
+)
+
+
+def step_graph_bakes_eager_w8a8(pipe: Any) -> bool:
+    """Whether a step CUDA graph over this (uncompiled) denoiser would capture its native int8 W8A8 linears as eager
+    kernels: the compiled W8A8 function never runs inside a capture (diffusion_native_quant._forward_fused). On a T4,
+    FLUX.3 Klein int8 at Speed default rendered 42.5 s per image with the graph and 34 s without (speed off, same
+    pixels): the step is compute-bound there, so the unfused rotate / quantise kernels cost more than graph replay
+    saves. ``UNSLOTH_DIFFUSION_STEP_GRAPH_NATIVE_W8A8=1`` keeps the graph. Never raises."""
+    if (os.environ.get(STEP_GRAPH_NATIVE_W8A8_ENV) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return False
+    try:
+        from .diffusion_native_quant import fused_w8a8_serves  # noqa: PLC0415 - heavy import, load time only
+        return any(fused_w8a8_serves(dit) for dit in _denoiser_dits(pipe))
+    except Exception:  # noqa: BLE001 - unknown keeps the graph
         return False
 
 
@@ -690,6 +728,14 @@ def apply_speed_optims(
                 logger = logger,
                 offloaded = after_placement,
             )
+            # fp16 cards only: measured there (T4, and the sm120 fp16 path); bf16 loads keep the graph unchanged.
+            if (
+                ok
+                and not applied["compiled"]
+                and _is_float16(getattr(target, "dtype", None))
+                and step_graph_bakes_eager_w8a8(pipe)
+            ):
+                ok, reason = False, STEP_GRAPH_EAGER_W8A8_REASON
             if ok and after_placement:
                 # The slot and the recorded copies depend on the hooks placement installs: arm_graphs_after_placement.
                 ok, reason = False, "armed after placement"
@@ -1384,6 +1430,16 @@ def _compile_repeated_blocks(
                 )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
+        # Native W8A8 ConvRot Linears (offloaded int8 DiTs read as native Linears): probe the fused rotation + act quant
+        # on the card the denoiser computes on, before the compile traces them.
+        try:
+            from .diffusion_native_w8a8_cuda import install as install_native_rotq
+            moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
+            transformer._unsloth_native_rotq = install_native_rotq(
+                transformer, logger, device = onload_device if moved else None
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "native int8 rotation + act quant", exc)
         # Patches run after the int8 GEMM swap; ConvRot sharing reads the swap's leftovers.
         _install_compile_patches(
             "pre_compile",
@@ -1839,8 +1895,14 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE."""
+    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE. Never on
+    Windows ROCm: a compiled decode skips the eager routing (diffusion_vae_attn_chunked) that keeps the VAE's head-512
+    attention off the fused kernels that miscompute it there."""
     if _fused_vae_planned(pipe):
+        return False
+    from .diffusion_vae_attn_chunked import windows_rocm
+
+    if windows_rocm():
         return False
     if _denoiser_unet(pipe) is not None:
         return True

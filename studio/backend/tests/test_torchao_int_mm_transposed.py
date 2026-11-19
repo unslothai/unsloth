@@ -77,6 +77,16 @@ def test_rocm_keeps_the_row_major_copy(monkeypatch):
     assert seen[-1].is_contiguous()
 
 
+def test_a_tag_only_rocm_wheel_keeps_the_row_major_copy(monkeypatch):
+    # AMD SDK / Radeon wheels leave torch.version.hip unset; the ROCm tag is only in __version__.
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.11.0+rocm7.13.0", raising = False)
+    fn, seen = _patched(monkeypatch)
+    x, w = _operands()
+    fn(x, w.t())
+    assert seen[-1].is_contiguous()
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU (cuBLASLt int8)")
 @pytest.mark.parametrize(
     "m,k,n", [(4384, 7168, 5376), (4128, 5376, 7168), (17, 64, 32), (1024, 14336, 5376)]
@@ -108,3 +118,25 @@ def test_cuda_transposed_int_mm_is_exact(monkeypatch, m, k, n):
     torch.cuda.synchronize()
     ref = (x.double() @ w.double().t()).to(torch.int64)
     assert torch.equal(got.to(torch.int64), ref)
+
+
+def test_off_grid_fallback_returns_on_the_operand_card(monkeypatch):
+    fn, _seen = _patched(monkeypatch)
+    moved = []
+
+    class _Result:
+        def to(self, device):
+            moved.append(device)
+            return self
+
+    class _Operand:
+        def __init__(self, shape):
+            self.shape = shape
+            self.device = torch.device("cuda", 1)
+
+        def cpu(self):
+            return torch.zeros(self.shape, dtype = torch.int8)
+
+    monkeypatch.setattr(torch, "matmul", lambda a, b: _Result())
+    fn(_Operand((16, 65)), _Operand((65, 32)))
+    assert moved == [torch.device("cuda", 1)]

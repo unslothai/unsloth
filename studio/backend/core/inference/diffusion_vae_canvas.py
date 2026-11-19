@@ -288,12 +288,10 @@ def _is_oom(exc: BaseException) -> bool:
 
 
 def _is_rocm() -> bool:
-    try:
-        from .rocm_bf16 import is_rocm_torch
-        return bool(is_rocm_torch())
-    except Exception:  # noqa: BLE001
-        import torch
-        return bool(getattr(torch.version, "hip", None))
+    import torch
+
+    from .rocm_bf16 import is_rocm_torch
+    return is_rocm_torch(torch)
 
 
 class _Replica:

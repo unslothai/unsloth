@@ -269,6 +269,13 @@ def _run_finished(backend) -> bool:
     return bool(check()) if callable(check) else False
 
 
+async def _await_finished_worker_exit(backend) -> None:
+    """A run that reported terminal holds the GPU until its worker exits: give that exit the stop grace
+    before a new start reads is_training_active()."""
+    if _run_finished(backend):
+        await asyncio.to_thread(backend.wait_for_finished_worker)
+
+
 def _run_active(backend) -> bool:
     """Liveness minus terminal: a run that reported terminal is done even while its worker
     tears down. The GPU admission guards deliberately keep using is_training_active(), since
@@ -2287,6 +2294,7 @@ async def _admit_training_request(
             raise HTTPException(status_code = 409, detail = str(exc))
         if not effective_load_in_4bit:
             training_kwargs["load_in_4bit"] = False
+            training_kwargs["load_in_4bit_forced_16bit"] = True
             logger.info(
                 "Latest-transformers sidecar active for %s - sizing and "
                 "training in 16-bit (4-bit is disabled for brand-new "
@@ -2389,6 +2397,7 @@ async def start_training(
                 except S3DependencyUnavailable as exc:
                     raise HTTPException(status_code = 501, detail = str(exc)) from exc
 
+        await _await_finished_worker_exit(backend)
         if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             _reject_start_request(
@@ -3726,7 +3735,9 @@ async def start_diffusion_training(
 
     # Refuse while an LLM training run holds the GPU (symmetric with start_training).
     try:
-        if get_training_backend().is_training_active():
+        llm_backend = get_training_backend()
+        await _await_finished_worker_exit(llm_backend)
+        if llm_backend.is_training_active():
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -3787,8 +3798,8 @@ async def start_diffusion_training(
             detail = (
                 "cond_cache_dir is not supported for the sdxl family: its trainer uses a "
                 "per-run in-memory latent cache and would ignore the persistent one. Omit it, "
-                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, qwen-image, "
-                "z-image, krea-2), which reuses conditioning across runs."
+                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, flux.3-klein-base, "
+                "qwen-image, z-image, krea-2), which reuses conditioning across runs."
             ),
         )
 
@@ -3856,6 +3867,7 @@ async def start_diffusion_training(
         _assert_trusted_base_model(
             config.get("base_model", ""),
             allow_modular = normalized_cfg.resolved_family in MODULAR_BASE_FAMILIES,
+            family = normalized_cfg.resolved_family,
         )
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))

@@ -1375,6 +1375,102 @@ def test_strict_ooxml_reads_like_transitional(tmp_path, builder, extension):
     assert _text(strict) == _text(transitional) != ""
 
 
+@pytest.mark.parametrize("strict", [False, True])
+def test_namespace_urls_are_preserved_in_spreadsheet_text(tmp_path, strict):
+    value = (
+        "http://purl.oclc.org/ooxml/spreadsheetml/main "
+        "http://purl.oclc.org/ooxml/presentationml/main "
+        "http://purl.oclc.org/ooxml/drawingml/main "
+        "http://purl.oclc.org/ooxml/drawingml/chart "
+        "http://purl.oclc.org/ooxml/drawingml/diagram "
+        'xmlns:r="http://purl.oclc.org/ooxml/officeDocument/relationships"'
+    )
+    source = _xlsx_strings(tmp_path / "urls.xlsx", f"<t>{escape(value)}</t>", escape(value))
+    if strict:
+        source = _strict(source, tmp_path / "strict-urls.xlsx")
+    assert office_formats.xlsx(str(source)) == [
+        (f"Sheet: Text\n{value} | {value} | {value} | 42 | #VALUE!", None)
+    ]
+
+
+def test_namespace_url_in_an_odt_paragraph_is_not_rewritten(tmp_path):
+    value = "http://purl.oclc.org/ooxml/spreadsheetml/main"
+    source = _odf(
+        tmp_path / "namespace.odt", f"<office:text><text:p>{value}</text:p></office:text>"
+    )
+    assert _text(source) == value
+
+
+def _utf16_xml_package(source, target, codec):
+    import codecs
+
+    bom = codecs.BOM_UTF16_LE if codec == "utf-16-le" else codecs.BOM_UTF16_BE
+    with zipfile.ZipFile(source) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    for name, data in members.items():
+        if name.endswith((".xml", ".rels")):
+            xml = ET.tostring(ET.fromstring(data), encoding = "unicode")
+            members[name] = bom + ('<?xml version="1.0" encoding="utf-16"?>' + xml).encode(codec)
+    return _zip(target, members)
+
+
+@pytest.mark.parametrize("builder, extension", [(build_xlsx, ".xlsx"), (build_pptx, ".pptx")])
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("strict", [False, True])
+def test_ooxml_namespace_handling_is_independent_of_xml_encoding(
+    tmp_path, builder, extension, codec, strict
+):
+    source = builder(tmp_path / f"source{extension}")
+    expected = _text(source)
+    if strict:
+        source = _strict(source, tmp_path / f"strict{extension}")
+    wide = _utf16_xml_package(source, tmp_path / f"wide{extension}", codec)
+    assert _text(wide) == expected != ""
+
+
+def test_strict_namespace_declaration_can_use_an_xml_character_reference(tmp_path):
+    source = _strict(build_xlsx(tmp_path / "plain.xlsx"), tmp_path / "strict.xlsx")
+    with zipfile.ZipFile(source) as archive:
+        members = {
+            name: archive.read(name).replace(b"spreadsheetml/main", b"spreadsheetml/m&#x61;in")
+            for name in archive.namelist()
+        }
+    escaped = _zip(tmp_path / "escaped.xlsx", members)
+    assert _text(escaped) == _text(source) != ""
+
+
+@pytest.mark.parametrize("codec", ["utf-8", "utf-16-le"])
+def test_strict_xml_names_survive_incremental_parser_feeds(tmp_path, codec):
+    value = "zebramarker " + "x" * (1 << 20) + " end"
+    source = _xlsx_strings(tmp_path / "large.xlsx", f"<t>{value}</t>", value)
+    source = _strict(source, tmp_path / "strict-large.xlsx")
+    if codec != "utf-8":
+        source = _utf16_xml_package(source, tmp_path / "wide-large.xlsx", codec)
+    sections = office_formats.xlsx(str(source))
+    assert len(sections) == 1
+    assert sections[0] == (f"Sheet: Text\n{value} | {value} | {value} | 42 | #VALUE!", None)
+
+
+def test_utf16_strict_workbook_is_searchable_after_upload(rag_home, stub_embeddings, tmp_path):
+    if not rag_db.rag_available():
+        pytest.skip("sqlite-vec unavailable here")
+    source = _strict(build_xlsx(tmp_path / "plain.xlsx"), tmp_path / "strict.xlsx")
+    source = _utf16_xml_package(source, tmp_path / "upload.xlsx", "utf-16-be")
+    stored, filename, _ = _save_upload(
+        UploadFile(file = io.BytesIO(source.read_bytes()), filename = source.name)
+    )
+    scope = store.thread_scope("strict-namespace")
+    _, job = ingestion.start_ingestion(
+        scope, None, "strict-namespace", filename, stored, background = False
+    )
+    assert ingestion.get_job_status(job)["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        assert store.search_lexical(conn, scope, "zebramarker", 5)
+    finally:
+        conn.close()
+
+
 def test_odt_skips_tracked_deletions_and_reads_nested_tables_once(tmp_path):
     path = _odf(
         tmp_path / "changes.odt",
@@ -1523,11 +1619,14 @@ def test_ods_refuses_runaway_repeats(tmp_path):
         parsers.parse(str(path))
 
 
-def test_xml_entities_are_refused(tmp_path):
-    path = _zip(
-        tmp_path / "bomb.odt", {"content.xml": '<!DOCTYPE x [<!ENTITY a "aaaa">]><x>&a;</x>'}
-    )
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("codec", ["utf-8", "utf-16-le", "utf-16-be"])
+def test_xml_entities_are_refused(tmp_path, codec):
+    xml = '<!DOCTYPE x [<!ENTITY a "aaaa">]><x>&a;</x>'
+    if codec != "utf-8":
+        bom = "\ufeff".encode(codec)
+        xml = bom + ('<?xml version="1.0" encoding="utf-16"?>' + xml).encode(codec)
+    path = _zip(tmp_path / "bomb.odt", {"content.xml": xml})
+    with pytest.raises(ValueError, match = "entity declarations"):
         parsers.parse(str(path))
 
 

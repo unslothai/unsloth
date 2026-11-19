@@ -1380,6 +1380,7 @@ def _push_with_mtp_head(save_kwargs):
         private = save_kwargs["private"],
         exist_ok = True,
     )
+    _refuse_private_push_to_public_repo(repo_id, save_kwargs["private"], api = api)
     revision = save_kwargs["revision"]
     if revision is not None and not revision.startswith("refs/pr/"):
         try:
@@ -1460,6 +1461,17 @@ def _is_gpt_oss(model):
         "gpt-oss",
         "gpt_oss",
     )
+
+
+def _has_expert_lora(model):
+    """LoRA on MoE experts: a target_parameters ParamWrapper or per-expert Linear LoRA."""
+    try:
+        for name, module in model.named_modules():
+            if ".experts" in f".{name}" and getattr(module, "lora_A", None):
+                return True
+    except Exception:
+        return False
+    return False
 
 
 def _is_vlm(model):
@@ -1591,6 +1603,15 @@ def _normalize_tied_weights_keys_for_save(save_fn):
     return wrapper
 
 
+def _release_nf4_dequant_cache():
+    """Merging needs the memory the training-time NF4 dequant cache held. A module-level helper rather than a local import, because `unsloth_save_model` forwards its own locals() as keywords."""
+    try:
+        from .kernels.dequant_cache import clear_dequant_cache
+    except Exception:
+        return
+    clear_dequant_cache()
+
+
 @_model_parallel_refuses_save("unsloth_save_model")
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
@@ -1620,6 +1641,7 @@ def unsloth_save_model(
     datasets: Optional[List[str]] = None,
 ):
     _refuse_mtp_variant(model, variant)
+    _release_nf4_dequant_cache()
     if push_to_hub and _attached_mtp_head(model) is not None:
         return _push_with_mtp_head(dict(locals()))
 
@@ -3426,6 +3448,33 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 """
 
 
+def _refuse_private_push_to_public_repo(
+    repo_id,
+    private,
+    token = None,
+    api = None,
+):
+    """create_repo(private=True) leaves an existing public repo public, so refuse before the first upload.
+
+    No-op when `private` is falsy or the visibility lookup fails. Visibility is never changed here.
+    """
+    if not private:
+        return
+    try:
+        if api is None:
+            api = HfApi(token = token)
+        is_private = getattr(api.repo_info(repo_id = repo_id, repo_type = "model"), "private", None)
+    except Exception as exc:
+        print(f"Unsloth: Could not confirm the visibility of {repo_id} ({exc}); continuing.")
+        return
+    if is_private is False:
+        raise RuntimeError(
+            f"Unsloth: private=True was requested but the Hugging Face repo {repo_id!r} already exists and is "
+            "public. Refusing to upload so private weights are not published. Make the repo private on the Hub, "
+            "push to a new repo id, or pass private=False."
+        )
+
+
 def _determine_username(save_directory, old_username, token):
     username = ""
     save_directory = save_directory.lstrip("./")
@@ -3488,6 +3537,7 @@ def create_huggingface_repo(
                 logger.warning_once(
                     f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
                 )
+    _refuse_private_push_to_public_repo(save_directory, private, token = token)
     hf_api = HfApi(token = token)
     return save_directory, hf_api
 
@@ -3539,6 +3589,7 @@ def upload_to_huggingface(
                 logger.warning_once(
                     f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
                 )
+    _refuse_private_push_to_public_repo(save_directory, private, token = token)
 
     if file_location is not None:
         hf_api = HfApi(token = token)
@@ -5191,6 +5242,13 @@ def unsloth_save_pretrained_gguf(
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
     is_gpt_oss = _is_gpt_oss(self)
+    if is_gpt_oss and _has_expert_lora(self):
+        # MXFP4 route keeps downloaded packed experts, silently dropping expert LoRA.
+        logger.warning_once(
+            "Unsloth: GPT-OSS with LoRA on the MoE experts is exported from a 16-bit merge, "
+            "since the MXFP4 GGUF route would drop the expert adapter."
+        )
+        is_gpt_oss = False
 
     # Will this fit? Ask before the merge. Runs here because `arguments` below snapshots locals(), so a redirected save_directory must be in place first. gpt-oss takes the mxfp4 route, not the merge/convert/quantize one this sizes.
     _gguf_prewarm_ok = True
@@ -5885,6 +5943,7 @@ def unsloth_push_to_hub_gguf(
             private = private,
             exist_ok = True,
         )
+        _refuse_private_push_to_public_repo(full_repo_id, private, api = api)
         if revision is not None and not revision.startswith("refs/pr/"):
             try:
                 api.create_branch(
@@ -6335,6 +6394,12 @@ def _unsloth_save_lora_gguf(
                 "See the output above for details."
             )
 
+        if not os.path.isfile(out_gguf):
+            raise RuntimeError(
+                f"Unsloth: LoRA GGUF conversion reported success but wrote no .gguf file to "
+                f"{out_gguf}. See the output above for details."
+            )
+
         if not push_to_hub:
             print(f"Unsloth: Done. Saved LoRA GGUF to '{out_gguf}'")
             return out_gguf
@@ -6349,6 +6414,7 @@ def _unsloth_save_lora_gguf(
             private = private,
             exist_ok = True,
         )
+        _refuse_private_push_to_public_repo(save_directory, private, api = api)
         # huggingface_hub>=1.20 refuses create_pr with a revision in upload_folder, so a branch made first would be left behind.
         if revision is not None and not create_pr and not revision.startswith("refs/pr/"):
             api.create_branch(
@@ -6719,6 +6785,7 @@ def _push_merged_to_hub_revision(save_kwargs):
         private = save_kwargs["private"],
         exist_ok = True,
     )
+    _refuse_private_push_to_public_repo(repo_id, save_kwargs["private"], api = api)
     revision = save_kwargs["revision"]
     if revision is not None and not revision.startswith("refs/pr/"):
         try:
@@ -7270,7 +7337,9 @@ def _tp_collective_save(method):
                     adapter = isinstance(self, PeftModel) and not torch.is_inference_mode_enabled()
                     select = "adapters" if adapter else "all"
                     return tp_collective(self, method, lambda: fn(self, *args, **kwargs), select)
-            elif getattr(self, "__dict__", {}).get("_unsloth_tp_world_save"):
+            elif getattr(self, "__dict__", {}).get(
+                "_unsloth_tp_world_save"
+            ) or _plain_data_parallel_push(self, method, fn, args, kwargs):
                 from .models.tp_replica import tp_world_push
                 return tp_world_push(method, lambda: fn(self, *args, **kwargs))
             return fn(self, *args, **kwargs)
@@ -7278,6 +7347,34 @@ def _tp_collective_save(method):
         return wrapper
 
     return decorate
+
+
+def _fsdp2_world():
+    import torch.distributed as dist
+    return dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+
+
+def _plain_data_parallel_push(model, method, fn, args, kwargs):
+    """Plain DDP Hub upload: identical weights on every rank, so rank 0 alone uploads (FSDP saves gather)."""
+    import torch.distributed as dist
+
+    if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+        return False
+    if not isinstance(model, torch.nn.Module):
+        return False
+    from .models.fsdp2_save import fsdp2_units
+
+    if fsdp2_units(model):
+        return False
+    try:  # FSDP1 state dict hooks all-gather on every rank
+        from torch.distributed.fsdp import FullyShardedDataParallel
+        if any(isinstance(m, FullyShardedDataParallel) for m in model.modules()):
+            return False
+    except Exception:
+        pass
+    return method == "push_to_hub" or bool(
+        _fsdp2_save_arguments(fn, model, args, kwargs).get("push_to_hub")
+    )
 
 
 def _fsdp2_rank():
@@ -8234,6 +8331,7 @@ def _unsloth_save_compressed_tensors(
         # Validate Hub access up front, so a bad token or denied repo fails before the expensive merge and quantization; create_repo is idempotent.
         if push_to_hub:
             from huggingface_hub import HfApi
+
             api = HfApi(token = token)
             api.create_repo(
                 repo_id = repo_id,
@@ -8241,6 +8339,7 @@ def _unsloth_save_compressed_tensors(
                 private = merge_kwargs.get("private", None),
                 exist_ok = True,
             )
+            _refuse_private_push_to_public_repo(repo_id, merge_kwargs.get("private", None), api = api)
 
         # Merge to 16bit at local_dir via unsloth_generic_save, so adapters are merged and full-finetuned models written in 16bit alike. The subprocess reloads this staging checkpoint with default weight filenames, so never write variant-named shards here; the user's variant goes on the final compressed checkpoint.
         variant = merge_kwargs.pop("variant", None)
@@ -8493,6 +8592,7 @@ def _unsloth_save_torchao(
     try:
         if push_to_hub:
             from huggingface_hub import HfApi
+
             api = HfApi(token = token)
             api.create_repo(
                 repo_id = repo_id,
@@ -8500,6 +8600,7 @@ def _unsloth_save_torchao(
                 private = merge_kwargs.get("private", None),
                 exist_ok = True,
             )
+            _refuse_private_push_to_public_repo(repo_id, merge_kwargs.get("private", None), api = api)
 
         # Merge to 16bit at a staging dir, LoRA and base alike. The reload reads default weight filenames, so never write variant-named shards here.
         merge_kwargs.pop("variant", None)
@@ -8954,6 +9055,7 @@ def _unsloth_save_openvino(
         if push_to_hub:
             api = HfApi(token = token)
             api.create_repo(repo_id = repo_id, repo_type = "model", private = private, exist_ok = True)
+            _refuse_private_push_to_public_repo(repo_id, private, api = api)
 
         print("Unsloth: Merging to 16bit before OpenVINO export...")
         unsloth_generic_save(
@@ -9147,8 +9249,8 @@ def unsloth_tokenizer_save_pretrained(
     push_to_hub = False,
     **kwargs,
 ):
-    if self.__dict__.get("_unsloth_tp_world_save"):
-        from .models.tp_replica import tp_world_save
+    if self.__dict__.get("_unsloth_tp_world_save") or _fsdp2_world() > 1:
+        from .models.tp_replica import tp_world_push, tp_world_save
 
         push_kwargs = dict(kwargs)
         repo_id = push_kwargs.pop("repo_id", save_directory)
@@ -9160,7 +9262,7 @@ def unsloth_tokenizer_save_pretrained(
             save_directory,
         )
         if push_to_hub:
-            self.push_to_hub(repo_id, **push_kwargs)
+            tp_world_push("tokenizer.push_to_hub", lambda: self.push_to_hub(repo_id, **push_kwargs))
         return result
     return _unsloth_tokenizer_save_pretrained(
         self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
@@ -9220,6 +9322,12 @@ def _unsloth_tokenizer_save_pretrained(
 def patch_saving_functions(model, vision = False):
     import inspect
     from typing import Callable, Optional, Union, List
+
+    try:  # adapter saves of a model with frozen lookup tables write frozen_tables.json next to the adapter
+        from .models.frozen_table_provenance import install as _install_table_provenance
+        _install_table_provenance()
+    except Exception:
+        pass
 
     if model.push_to_hub.__name__ == "unsloth_push_to_hub":
         original_push_to_hub = model.original_push_to_hub

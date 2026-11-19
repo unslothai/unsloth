@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A managed account converts to Q4NX only from GGUFs inside its own workspace."""
+"""Q4NX export: only the owner of a machine with an AMD NPU and FastFlowLM, and never another account's GGUF."""
 
 from __future__ import annotations
 
@@ -17,6 +17,12 @@ from utils.paths import workspace_root
 
 ALICE = AccountContext("alice-q4nx-account", "alice")
 BOB = AccountContext("bob-q4nx-account", "bob")
+
+
+@pytest.fixture(autouse = True)
+def npu_machine(monkeypatch):
+    from utils import q4nx_export_gate
+    monkeypatch.setattr(q4nx_export_gate, "q4nx_export_allowed", lambda: True)
 
 
 def _convert(
@@ -116,3 +122,141 @@ def test_managed_account_and_owner_reach_the_converter_for_allowed_paths(convert
             _convert(account, path)
         assert exc.value.status_code == 400 and "stop before converting" in exc.value.detail
     assert len(converted) == 2
+
+
+@pytest.mark.parametrize("depth, registered", [(("q4nx",), False), (("a", "b", "c", "d"), True)])
+def test_a_conversion_deeper_than_the_npu_scan_is_registered(
+    monkeypatch, authorized, depth, registered
+):
+    from utils.paths.storage_roots import exports_root
+
+    out = exports_root().joinpath(*depth, "m.Q4_1-q4nx")
+    calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def to_thread(fn, *args, **kwargs):
+        if fn is export_routes.account_access.authorize_download:
+            return None
+        if fn is export_routes._try_register_external_export:
+            calls.append(args[0])
+            return True, str(args[0])
+        if fn is export_routes._export_details:
+            return {"output_path": str(args[0])}
+        return str(out)
+
+    monkeypatch.setattr(export_routes.asyncio, "to_thread", to_thread)
+    _convert(OWNER, repo_id = "org/r-GGUF", filename = "m.Q4_1.gguf")
+    assert calls == ([out] if registered else [])
+
+
+@pytest.mark.parametrize("depth, registered", [(("gguf",), False), (("a", "b", "c", "d"), True)])
+def test_a_gguf_export_with_q4nx_deeper_than_the_npu_scan_registers_its_save_folder(
+    monkeypatch, depth, registered
+):
+    from models import ExportGGUFRequest
+    from utils.paths.storage_roots import exports_root
+
+    save = exports_root().joinpath(*depth)
+    calls = []
+
+    async def supported():
+        return None
+
+    async def to_thread(fn, *args, **kwargs):
+        if fn is export_routes._try_register_external_export:
+            calls.append(args[0])
+            return True, str(args[0])
+        if fn is export_routes._export_details:
+            return {"output_path": str(args[0])}
+        return True, "ok", str(save)
+
+    monkeypatch.setattr(export_routes, "_ensure_export_supported", supported)
+    backend = type("Backend", (), {"export_gguf": None, "decision": None})()
+    monkeypatch.setattr(export_routes, "get_export_backend", lambda: backend)
+    monkeypatch.setattr(export_routes, "_with_drafter", lambda details, path: details)
+    monkeypatch.setattr(export_routes.asyncio, "to_thread", to_thread)
+    request = ExportGGUFRequest(
+        save_directory = "/".join(depth), quantization_method = "q4_1", npu_q4nx = True
+    )
+    asyncio.run(export_routes.export_gguf(request, "subject", allow_ambient = False))
+    assert calls == ([save] if registered else [])
+
+
+def test_a_machine_without_an_npu_and_fastflowlm_is_refused_before_anything(
+    monkeypatch, authorized
+):
+    from utils import q4nx_export_gate
+
+    monkeypatch.setattr(q4nx_export_gate, "q4nx_export_allowed", lambda: False)
+    with pytest.raises(HTTPException) as exc:
+        _convert(ALICE, repo_id = "org/private-GGUF", filename = "m.Q4_1.gguf")
+    assert exc.value.status_code == 403
+    assert authorized == []
+
+
+@pytest.mark.parametrize(
+    "status, allowed",
+    [
+        ({"supported": True, "ready": True}, True),
+        # An NPU whose FastFlowLM runtime is not installed yet.
+        ({"supported": True, "ready": False}, False),
+        # NVIDIA or any other machine without a supported NPU.
+        ({"supported": False, "ready": False}, False),
+        ({"supported": False, "ready": True}, False),
+    ],
+)
+def test_q4nx_export_needs_an_npu_and_its_runtime(monkeypatch, status, allowed):
+    from core.inference import npu_backend
+    from utils import q4nx_export_gate as gate
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        npu_backend, "get_npu_backend", lambda: type("B", (), {"status": lambda self: status})()
+    )
+    assert gate.q4nx_export_allowed() is allowed
+
+
+def test_a_failed_npu_probe_refuses_q4nx_export(monkeypatch):
+    from core.inference import npu_backend
+    from utils import q4nx_export_gate as gate
+
+    def broken():
+        raise RuntimeError("probe failed")
+
+    monkeypatch.undo()
+    monkeypatch.setattr(npu_backend, "get_npu_backend", broken)
+    assert gate.q4nx_export_allowed() is False
+
+
+def test_a_managed_account_is_refused_as_if_there_were_no_npu(monkeypatch):
+    from core.inference import npu_backend
+    from utils import q4nx_export_gate as gate
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        npu_backend,
+        "get_npu_backend",
+        lambda: type("B", (), {"status": lambda self: {"supported": True, "ready": True}})(),
+    )
+    real_to_thread = asyncio.to_thread
+    calls = []
+
+    async def to_thread(fn, *args, **kwargs):
+        if fn is export_routes.account_access.authorize_download:
+            return await real_to_thread(fn, *args, **kwargs)
+        calls.append(fn)
+        raise RuntimeError("stop before converting")
+
+    monkeypatch.setattr(export_routes.asyncio, "to_thread", to_thread)
+    monkeypatch.setattr(
+        export_routes.account_access, "authorize_download", lambda repo, repo_type, token: None
+    )
+    # Same answer as a machine without an NPU, so the status stays hidden from the account.
+    with pytest.raises(HTTPException) as exc:
+        _convert(ALICE, repo_id = "org/m-GGUF", filename = "m.Q4_1.gguf")
+    assert exc.value.status_code == 403
+    assert exc.value.detail == gate.Q4NX_EXPORT_UNAVAILABLE_DETAIL
+    with pytest.raises(HTTPException) as exc:
+        _convert(OWNER, repo_id = "org/m-GGUF", filename = "m.Q4_1.gguf")
+    assert exc.value.status_code == 400 and "stop before converting" in exc.value.detail
+    assert len(calls) == 1

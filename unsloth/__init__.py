@@ -48,6 +48,11 @@ from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
 _apply_fsdp2_env()
 del _apply_fsdp2_env
 
+from .parallel_env import bind_local_cuda_device as _bind_local_cuda_device
+
+_bind_local_cuda_device()
+del _bind_local_cuda_device
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -250,6 +255,12 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        from .import_fixes import fix_transformers_config_commit_hash as _fix_commit_hash
+        _fix_commit_hash()
+        del _fix_commit_hash
+    except Exception:
+        pass
+    try:
         # Same reason: MLX loads hub configs and saves tokenizers through transformers too.
         from .import_fixes import (
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
@@ -261,6 +272,15 @@ if _IS_MLX:
         _fix_template_names()
         _fix_vocab_paths()
         del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
+    except Exception:
+        pass
+    try:
+        # MLX can load hub checkpoints through transformers too; a no-op where its quantizers are absent.
+        from .import_fixes import (
+            fix_transformers_quantizer_unquantized_converters as _fix_unquantized_converters,
+        )
+        _fix_unquantized_converters()
+        del _fix_unquantized_converters
     except Exception:
         pass
     try:
@@ -421,6 +441,9 @@ if _IS_MLX:
 
     FastTextModel = FastLanguageModel
     FastModel = FastLanguageModel
+    # The MLX loader dispatches on the checkpoint's config, not on the class.
+    FastLlamaModel = FastMistralModel = FastGraniteModel = FastLanguageModel
+    FastQwen2Model = FastQwen3Model = FastQwen3MoeModel = FastFalconH1Model = FastLanguageModel
 
     class FastSentenceTransformer:
         @staticmethod
@@ -464,19 +487,31 @@ if _IS_MLX:
 
     is_bf16_supported = is_bfloat16_supported
 
+    def _mlx_memory_fn(name):
+        import mlx.core as mx
+
+        fn = getattr(mx, name, None)
+        if fn is None and hasattr(mx, "metal"):
+            fn = getattr(mx.metal, name, None)
+        return fn if callable(fn) else None
+
+    def _mlx_memory_bytes(name):
+        fn = _mlx_memory_fn(name)
+        return int(fn()) if fn is not None else 0
+
+    def _mlx_peak_memory_bytes():
+        # mx.reset_peak_memory zeroes the peak, where torch resets it to current usage.
+        return max(_mlx_memory_bytes("get_peak_memory"), _mlx_memory_bytes("get_active_memory"))
+
     def get_gpu_memory_stats():
         """Return MLX device stats, peak memory, and total memory in GiB."""
         import mlx.core as mx
 
         info = mx.device_info()
         total = info.get("memory_size") or info.get("max_recommended_working_set_size") or 0
-        get_peak_memory = getattr(mx, "get_peak_memory", None)
-        if get_peak_memory is None and hasattr(mx, "metal"):
-            get_peak_memory = getattr(mx.metal, "get_peak_memory", None)
-        peak = get_peak_memory() if callable(get_peak_memory) else 0
         stats = _UnslothDeviceStats(info.get("device_name", "Apple GPU"), total)
         max_memory = _bytes_to_gb(total) or 1.0
-        return stats, _bytes_to_gb(peak), max_memory
+        return stats, _bytes_to_gb(_mlx_peak_memory_bytes()), max_memory
 
     def clear_gpu_memory():
         """Clear MLX's cached GPU memory for compatibility cleanup helpers."""
@@ -533,43 +568,26 @@ if _IS_MLX:
                 return get_device_properties(device).name
 
             def max_memory_reserved(device = None):
-                """Return MLX peak memory in bytes for torch.cuda compatibility API."""
-                return int(get_gpu_memory_stats()[1] * 1024 * 1024 * 1024)
+                """MLX peak memory in exact bytes, never below memory_reserved."""
+                return _mlx_peak_memory_bytes()
 
             def empty_cache():
                 """Clear MLX cache through torch.cuda.empty_cache()."""
                 clear_gpu_memory()
 
-            def _mlx_active_memory_bytes():
-                """Current active MLX memory in bytes (not the peak high-water mark)."""
-                import mlx.core as mx
-
-                get_active = getattr(mx, "get_active_memory", None)
-                if get_active is None and hasattr(mx, "metal"):
-                    get_active = getattr(mx.metal, "get_active_memory", None)
-                return int(get_active()) if callable(get_active) else 0
-
             def memory_current(device = None):
-                """Return CURRENT MLX memory in bytes. torch.cuda.memory_reserved /
-                memory_allocated report live usage, not the peak (that is max_*)."""
-                return _mlx_active_memory_bytes()
+                """Live MLX memory in bytes; the peak is max_*."""
+                return _mlx_memory_bytes("get_active_memory")
 
             def mem_get_info(device = None):
-                """Return (free, total) bytes for torch.cuda compatibility API.
-                Free uses CURRENT active memory, not the peak high-water mark, so
-                a capacity check stays accurate after a transient spike."""
+                """(free, total) bytes; free uses live memory, not the peak, so it recovers after a spike."""
                 total = int(get_gpu_memory_stats()[2] * 1024 * 1024 * 1024)
-                return (max(total - _mlx_active_memory_bytes(), 0), total)
+                return (max(total - memory_current(), 0), total)
 
             def reset_peak_memory_stats(device = None):
-                """Reset MLX's peak-memory counter so a later max_memory_reserved /
-                max_memory_allocated scopes to the run, not earlier model-load peaks."""
-                import mlx.core as mx
-
-                reset = getattr(mx, "reset_peak_memory", None)
-                if reset is None and hasattr(mx, "metal"):
-                    reset = getattr(mx.metal, "reset_peak_memory", None)
-                if callable(reset):
+                """Scope later max_* calls to the run, not earlier model-load peaks."""
+                reset = _mlx_memory_fn("reset_peak_memory")
+                if reset is not None:
                     reset()
 
             def synchronize(device = None):
@@ -1669,6 +1687,19 @@ if _IS_MLX:
         """Alias ShareGPT standardization to the shared dataset-format helper."""
         return standardize_data_formats(*args, **kwargs)
 
+    def to_sharegpt(*args, **kwargs):
+        from .chat_templates import to_sharegpt as _to_sharegpt
+        return _to_sharegpt(*args, **kwargs)
+
+    from unsloth_zoo import rl_environments as _rl_environments
+
+    check_python_modules = _rl_environments.check_python_modules
+    create_locked_down_function = _rl_environments.create_locked_down_function
+    execute_with_time_limit = _rl_environments.execute_with_time_limit
+    Benchmarker = _rl_environments.Benchmarker
+    is_port_open = _rl_environments.is_port_open
+    launch_openenv = _rl_environments.launch_openenv
+
     def train_on_responses_only(*args, **kwargs):
         """Mask non-response tokens through the shared zoo dataset helper."""
         # Prefer the chat_templates export, which bounds the zoo's map() workers; it is None without torch.
@@ -2052,6 +2083,25 @@ if _IS_MLX:
             fields.append(
                 ("loss_type", list[str], _dataclasses.field(default_factory = lambda: ["sigmoid"]))
             )
+        # Fields are collected along the reversed MRO, so UnslothTrainingArguments' copy of each
+        # MLXTrainingConfig field would hide the zoo config's own default (e.g. GRPO's loss_type).
+        declared = {name for name, *_ in fields}
+        base_fields = {field.name: field for field in _dataclasses.fields(MLXTrainingConfig)}
+        for name, field in zoo_fields.items():
+            base = base_fields.get(name)
+            if base is None or name in declared:
+                continue
+            if (field.default, field.default_factory) == (base.default, base.default_factory):
+                continue
+            fields.append(
+                (
+                    name,
+                    field.type,
+                    _dataclasses.field(
+                        default = field.default, default_factory = field.default_factory
+                    ),
+                )
+            )
         return fields
 
     def _build_mlx_trl_policy_trainers():
@@ -2168,6 +2218,14 @@ else:
         del _sys_mod
         from ._cpu_init import *  # __all__ carries __version__
 
+    # Both backends: the CPU path never runs _gpu_init.
+    try:
+        from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
+        _fix_dsv41()
+        del _fix_dsv41
+    except Exception:
+        pass
+
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
     try:
@@ -2269,6 +2327,15 @@ from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
 
 _uninstall_metadata_cache(_metadata_cache_token)
 del _uninstall_metadata_cache, _metadata_cache_token
+
+# GPU backend only: the CPU backend (and MLX) never loads unsloth.kernels, and sets no compile cache tag.
+if not globals().get("_IS_CPU_BACKEND", True):
+    try:
+        from .kernels.triton_launch import sync_compile_cache_tag_to_workers as _sync_tag
+        _sync_tag()
+        del _sync_tag
+    except Exception:
+        pass
 
 from ._import_gc import restore_gc_threshold as _restore_gc_threshold
 

@@ -54,6 +54,11 @@ def _is_fake_tensor(x):
         return False
 
 
+def _is_rocm_torch(torch) -> bool:
+    from .rocm_bf16 import is_rocm_torch
+    return is_rocm_torch(torch)
+
+
 def _make_safe_int_mm(mod, original):
     """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
     import torch
@@ -61,10 +66,9 @@ def _make_safe_int_mm(mod, original):
     out_dtype = mod.out_dtype
     dynamo_is_compiling = mod.dynamo_is_compiling
     # ROCm (hipBLASLt) keeps torchao's row-major copy; the TN layout below is only checked on cuBLASLt.
-    keep_transposed = (
-        os.environ.get(_TORCHAO_INT_MM_TRANSPOSED_ENV, "1").strip() != "0"
-        and getattr(torch.version, "hip", None) is None
-    )
+    keep_transposed = os.environ.get(
+        _TORCHAO_INT_MM_TRANSPOSED_ENV, "1"
+    ).strip() != "0" and not _is_rocm_torch(torch)
 
     @functools.wraps(original)
     def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
@@ -85,8 +89,9 @@ def _make_safe_int_mm(mod, original):
         bad_dimensions_for_cublas = not (j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8)
 
         if device_cpu or bad_dimensions_for_cublas:
+            # back to the operand's card: a bare device type is the current card
             return torch.matmul(input.cpu().to(torch.int32), mat2.cpu().to(torch.int32)).to(
-                input.device.type
+                input.device
             )
 
         # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads

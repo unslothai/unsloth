@@ -221,6 +221,7 @@ test("modern assistant turns rebuild their tool call from the output items, resu
             call_id: "call_9",
             output: [
               { type: "input_text", text: "sunny, 21C" },
+              { type: "input_text", text: "windy" },
               { type: "input_image", image_url: "data:image/png;base64,AAAA" },
             ],
           },
@@ -237,7 +238,7 @@ test("modern assistant turns rebuild their tool call from the output items, resu
   assert.equal(reasoning.type, "reasoning");
   assert.equal(toolCall.type, "tool-call");
   assert.deepEqual(toolCall.args, { query: "lisbon" });
-  assert.equal(toolCall.result, "sunny, 21C");
+  assert.equal(toolCall.result, "sunny, 21C\nwindy");
   assert.deepEqual(image, { type: "image", image: "data:image/png;base64,AAAA" });
   assert.deepEqual(body, { type: "text", text: "Lisbon is sunny." });
   // `content` mirrors the final output message, so it must not be appended twice.
@@ -663,9 +664,103 @@ test("built-in Responses tools import as tool parts rather than disappearing", (
     calls.map((call) => call.toolName),
     ["web_search", "code_execution"],
   );
-  assert.deepEqual(calls[0].args, { type: "search", query: "lisbon weather" });
-  assert.deepEqual(calls[1].args, { type: "exec", commands: ["ls -la"] });
+  assert.deepEqual(calls[0].args, { type: "search", query: "lisbon weather", _server_tool: true });
+  assert.deepEqual(calls[1].args, { kind: "bash", command: "ls -la", _server_tool: true });
   assert.equal(calls[1].result, "total 0");
+});
+
+test("non-function call items keep their name, arguments and result", () => {
+  const record = recordOf(
+    [
+      {
+        id: "a",
+        parentId: null,
+        role: "assistant",
+        timestamp: 1,
+        content: "done",
+        output: [
+          {
+            type: "mcp_call",
+            id: "mcp_1",
+            name: "read_file",
+            server_label: "filesystem",
+            arguments: '{"path":"/tmp/notes.txt"}',
+            output: "file contents",
+            status: "completed",
+          },
+          {
+            type: "code_interpreter_call",
+            id: "ci_1",
+            code: "print(2 + 2)",
+            container_id: "cnt_1",
+            status: "completed",
+          },
+          { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+        ],
+      },
+    ],
+    "a",
+  );
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.equal(calls[0].toolName, "filesystem__read_file");
+  assert.deepEqual(calls[0].args, { path: "/tmp/notes.txt", _server_tool: true });
+  assert.equal(calls[0].result, "file contents");
+  assert.equal(calls[1].toolName, "code_execution");
+  assert.deepEqual(calls[1].args, { command: "print(2 + 2)", _server_tool: true });
+});
+
+test("builtin calls keep inline outputs and results arrays", () => {
+  const record = recordOf(
+    [
+      {
+        id: "a",
+        parentId: null,
+        role: "assistant",
+        timestamp: 1,
+        content: "done",
+        output: [
+          {
+            type: "code_interpreter_call",
+            id: "ci_1",
+            code: "print(2 + 2)",
+            outputs: [{ type: "logs", logs: "4" }],
+            status: "completed",
+          },
+          {
+            type: "file_search_call",
+            id: "fs_1",
+            queries: ["revenue"],
+            results: [{ file_id: "f1", filename: "q3.pdf", score: 0.9, text: "rev" }],
+            status: "completed",
+          },
+          {
+            type: "local_shell_call",
+            id: "ls_1",
+            action: { type: "exec", command: ["ls", "-la"] },
+            status: "in_progress",
+          },
+          { type: "web_search_call", id: "ws_1", action: { type: "search", query: "cats" } },
+        ],
+      },
+    ],
+    "a",
+  );
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.deepEqual(calls[0].result, [{ type: "logs", logs: "4" }]);
+  assert.deepEqual(calls[1].result, [
+    { file_id: "f1", filename: "q3.pdf", score: 0.9, text: "rev" },
+  ]);
+  // Client-run calls keep no status-based result and no hosted marker; hosted calls default to completed.
+  assert.equal(calls[2].result, undefined);
+  assert.equal((calls[2].args as Record<string, unknown>)._server_tool, undefined);
+  assert.equal(calls[3].result, "completed");
+  assert.equal((calls[3].args as Record<string, unknown>)._server_tool, true);
 });
 
 test("a multimodal turn keeps its text and image when detection routes it here", () => {
@@ -894,7 +989,7 @@ test("a tool result keeps its text under any of the three part names, and portab
   const conversation = openWebUIRecordToConversation(record, "fallback");
   assert.ok(conversation);
   const [call] = parts(conversation, 0).filter((part) => part.type === "tool-call");
-  assert.equal(call.result, "first second third");
+  assert.equal(call.result, "first\n second\n third");
   assert.deepEqual(
     parts(conversation, 0).filter((part) => part.type === "image"),
     [{ type: "image", image: "https://example.com/chart.png" }],
@@ -1040,4 +1135,36 @@ test("missing send times are distinguished from real Open WebUI timestamps", () 
   assert.ok(conversation);
   assert.equal(conversation.messages[0].metadata?.createdAtEstimated, true);
   assert.notEqual(conversation.messages[1].metadata?.createdAtEstimated, true);
+});
+
+test("hosted calls replay cannot strip get no made-up result", () => {
+  const record = recordOf(
+    [
+      {
+        id: "a",
+        parentId: null,
+        role: "assistant",
+        timestamp: 1,
+        content: "done",
+        output: [
+          { type: "file_search_call", id: "fs_1", queries: ["revenue"], status: "completed" },
+          { type: "mcp_call", id: "mcp_1", name: "read_file", server_label: "fs", arguments: "{}", status: "completed" },
+          { type: "web_search_call", id: "ws_1", action: { type: "search", query: "cats" }, status: "completed" },
+        ],
+      },
+    ],
+    "a",
+  );
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.deepEqual(
+    calls.map((call) => [call.toolName, call.result]),
+    [
+      ["file_search", undefined],
+      ["fs__read_file", undefined],
+      ["web_search", "completed"],
+    ],
+  );
 });

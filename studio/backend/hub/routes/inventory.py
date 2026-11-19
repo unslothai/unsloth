@@ -153,7 +153,7 @@ def get_models_folder(
 @router.get("/sdxl-checkpoint", response_model = bool)
 def is_sdxl_checkpoint(
     repo_id: str = Query(..., min_length = 1, max_length = 192),
-    filename: str = Query(..., pattern = r"(?i)^[^/\\]+\.safetensors$"),
+    filename: str = Query(..., pattern = r"(?i)^(?:[^/\\.][^/\\]*/)*[^/\\]+\.safetensors$"),
     revision: Optional[str] = Query(None, pattern = r"^[0-9a-f]{40}$"),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),

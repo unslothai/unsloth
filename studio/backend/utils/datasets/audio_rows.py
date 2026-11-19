@@ -42,7 +42,7 @@ def resolve_audio_columns(dataset, custom_format_mapping: dict = None) -> dict:
         speaker_col = "speaker_id"
 
     if audio_col is None or text_col is None or speaker_col is None:
-        from hub.utils.dataset_format import detect_multimodal_dataset
+        from utils.datasets.format_detection import detect_multimodal_dataset
 
         detected = detect_multimodal_dataset(dataset)
         audio_col = audio_col or detected["detected_audio_column"]
@@ -106,8 +106,8 @@ def resolve_audio_vlm_image_column(
     for col, role in (custom_format_mapping or {}).items():
         if role == "image" and col in cols and col not in reserved:
             return col
-    from hub.utils.dataset_format import (
-        _first_row,
+    from hub.utils.dataset_format import _first_row
+    from utils.datasets.format_detection import (
         _is_image_list_item,
         _is_image_value,
         detect_multimodal_dataset,

@@ -750,6 +750,47 @@ def _load_gguf_backend(
     return ChatBackend("gguf", llama_backend)
 
 
+_SECURITY_BLOCKS = ("malware_blocked", "remote_code_blocked")
+
+
+def _http_error_text(exc: Exception) -> str:
+    # str(HTTPError) is only "HTTP Error <code>: <reason>"; the server's cause is in the body.
+    import urllib.error
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            detail = json.loads(exc.read() or b"{}").get("detail")
+        except Exception:
+            detail = None
+        if isinstance(detail, str) and detail:
+            return f"HTTP Error {exc.code}: {detail}"
+    return str(exc)
+
+
+def _exit_if_refused_load(
+    model: str,
+    reason: str,
+    trust_remote_code: bool,
+    error_kind: Optional[str] = None,
+) -> None:
+    if error_kind in _SECURITY_BLOCKS:
+        typer.echo(f"Error: {reason}", err = True)
+        typer.echo(
+            "The repository security scan refused this load; --trust-remote-code never "
+            "overrides it.",
+            err = True,
+        )
+        raise typer.Exit(code = 1)
+    # transformers and the server both phrase this refusal with the kwarg name.
+    if trust_remote_code or "trust_remote_code" not in reason:
+        return
+    typer.echo(
+        f"Error: {model} needs its own modelling code to load. If you trust this repository, "
+        "rerun with --trust-remote-code (it executes Python from the repo).",
+        err = True,
+    )
+    raise typer.Exit(code = 1)
+
+
 def load_chat_backend(
     model: str,
     *,
@@ -760,6 +801,7 @@ def load_chat_backend(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
     model_config = None,
     fresh_backend: bool = False,
 ):
@@ -805,7 +847,7 @@ def load_chat_backend(
             from core.inference import get_inference_backend
             backend = get_inference_backend()
         try:
-            loaded = backend.load_model(
+            load_kwargs = dict(
                 config = model_config,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
@@ -813,7 +855,13 @@ def load_chat_backend(
                 tensor_parallel = tensor_parallel,
                 mlx_distributed = is_mlx_distributed,
             )
+            if trust_remote_code:
+                load_kwargs["trust_remote_code"] = trust_remote_code
+            loaded = backend.load_model(**load_kwargs)
         except Exception as exc:
+            _exit_if_refused_load(
+                model, str(exc), trust_remote_code, getattr(exc, "error_kind", None)
+            )
             if not is_mlx_distributed:
                 raise
             if rank == 0:
@@ -1070,8 +1118,12 @@ class HttpChatBackend:
         speculative_type: Optional[SpeculativeType] = None,
         spec_draft_n_max: Optional[int] = None,
         llama_extra_args: Optional[List[str]] = None,
+        trust_remote_code: bool = False,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
+        status = None if model.lower().endswith(".gguf") else self._inference_status()
+        if max_seq_length is None:
+            max_seq_length = _resident_npu_context(status, model)
         payload = {
             "model_path": model,
             "hf_token": hf_token,
@@ -1086,7 +1138,9 @@ class HttpChatBackend:
             payload["speculative_type"] = speculative_type
         if spec_draft_n_max is not None:
             payload["spec_draft_n_max"] = spec_draft_n_max
-        resident_variant = self._resident_gguf_variant(model)
+        if trust_remote_code:
+            payload["trust_remote_code"] = trust_remote_code
+        resident_variant = self._resident_gguf_variant(model, status)
         if resident_variant:
             payload["gguf_variant"] = resident_variant
         self.gguf_variant = resident_variant
@@ -1097,19 +1151,22 @@ class HttpChatBackend:
                 self._request("POST", "/api/inference/load", payload),
             )
         except Exception as exc:
-            typer.echo(f"Model load failed: {exc}", err = True)
+            reason = _http_error_text(exc)
+            _exit_if_refused_load(model, reason, trust_remote_code)
+            typer.echo(f"Model load failed: {reason}", err = True)
             raise typer.Exit(code = 1)
         self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
 
-    def _resident_gguf_variant(self, model: str) -> Optional[str]:
-        if model.lower().endswith(".gguf"):
-            return None
+    def _inference_status(self) -> Optional[dict]:
         try:
             with self._request("GET", "/api/inference/status", timeout = 30) as response:
                 status = json.loads(response.read())
         except Exception:
             return None
-        if not isinstance(status, dict) or not status.get("is_gguf"):
+        return status if isinstance(status, dict) else None
+
+    def _resident_gguf_variant(self, model: str, status: Optional[dict]) -> Optional[str]:
+        if not status or not status.get("is_gguf"):
             return None
         # A local load's active_model is only its basename.
         loaded = status.get("model_identifier") or status.get("active_model")
@@ -1223,11 +1280,23 @@ class HttpChatBackend:
         pass
 
 
+def _resident_npu_context(status: Optional[dict], model: str) -> int:
+    """The context the resident NPU model was asked for (0 = Auto) when it is `model`, else 0:
+    /load keeps an NPU model only when the requested context matches exactly."""
+    if not status or not status.get("is_npu") or status.get("model_identifier") != model:
+        return 0
+    requested = status.get("requested_context_length")
+    return requested if isinstance(requested, int) and requested > 0 else 0
+
+
 def server_load_opts(ctx, load_opts: dict) -> dict:
-    """Drop an untyped --load-in-4bit so the server can keep a resident model's precision."""
+    """Drop an untyped --load-in-4bit or --max-seq-length so the server can keep a resident
+    model's precision, and a resident NPU model's context."""
     opts = dict(load_opts)
-    if ctx.get_parameter_source("load_in_4bit").name != "COMMANDLINE":
-        opts["load_in_4bit"] = None
+    for name in ("load_in_4bit", "max_seq_length"):
+        source = ctx.get_parameter_source(name)
+        if source is None or source.name != "COMMANDLINE":
+            opts[name] = None
     return opts
 
 
@@ -1241,6 +1310,7 @@ def connect_studio_server(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
 ):
     """Backend on a running Unsloth server, or None (caller loads locally)."""
     base_url = find_studio_server()
@@ -1280,14 +1350,12 @@ def connect_studio_server(
 
     npu_path = npu_model_path(model)
     if npu_path:
-        # `unsloth inference` passes the bare id the picker shows; load it by its model path.
-        model = npu_path
         try:
-            prepare_npu_model(
+            model = prepare_npu_model(
                 lambda method, path, payload, timeout: backend._request(
                     method, path, payload, timeout = timeout
                 ),
-                model,
+                npu_path,
                 lambda line: typer.echo(line, err = True),
             )
         except RuntimeError as exc:
@@ -1302,5 +1370,6 @@ def connect_studio_server(
         speculative_type = speculative_type,
         spec_draft_n_max = spec_draft_n_max,
         llama_extra_args = llama_extra_args,
+        trust_remote_code = trust_remote_code,
     )
     return backend

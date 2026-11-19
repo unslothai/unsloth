@@ -105,7 +105,7 @@ export type StandingConfigDefaults = {
     savedIndexKind: GpuIndexKind | null | undefined,
   ) => number[] | null;
   defaultEngineGpuIds?: number[];
-  /** Unset length is not 0: a GGUF re-pick resolves to the resident context. */
+  /** The length the load would send: an unset GGUF length resolves to 0 (Auto). */
   resolveContextLength: (customContextLength: number | null) => number;
   /** Server default for an unset `--parallel`; null when unreadable. */
   parallelSlots: number | null;
@@ -221,7 +221,7 @@ const cleanTemplate = (value: string | null | undefined): string | null =>
 
 const SETTING_CHECKS: SettingCheck[] = [
   {
-    // Resolved, not raw: unset is Auto, sent as 0 cross-model or resident ctx on a re-pick.
+    // Resolved, not raw: an unset length is sent as 0 for GGUF and as a default for other engines.
     pinned: () => true,
     agrees: (c, s, standing) =>
       standing.resolveContextLength(c.customContextLength ?? null) ===
