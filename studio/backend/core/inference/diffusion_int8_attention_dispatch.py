@@ -788,6 +788,7 @@ def _install(
     candidates = []
     cuda_only = set()
     family: dict = {}
+    dits_of: dict = {}
     for dit in _dits(pipe):
         if not forced and (
             type(dit).__name__ not in auto_dits
@@ -815,6 +816,7 @@ def _install(
                 )
         candidates.extend(mods)
         family.update((id(m), type(dit).__name__) for m in mods)
+        dits_of.update((id(m), dit) for m in mods)
         if not forced and not rocm and type(dit).__name__ in AUTO_CUDA_ONLY:
             cuda_only.update(id(m) for m in mods)
     if not candidates or install_dispatch_route() == 0:
@@ -878,6 +880,8 @@ def _install(
             cards = floors,
         )
         route.sinks = I8.sink_mode(family.get(id(m), ""), forced)
+        if route.sinks:
+            I8.note_sink_checkpoint(dits_of.get(id(m)))
         if not forced:
             for card in floors:
                 I8.register_route(card, head_dim, _raise_route_floor(route, card))

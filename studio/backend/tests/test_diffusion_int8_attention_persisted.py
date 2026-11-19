@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import contextlib
+import types
 
 import pytest
 import torch
@@ -190,7 +191,9 @@ def _plan(decision):
 
 
 def test_a_sink_decision_is_raced_again_for_every_load(machine, monkeypatch):
-    """Sink race verdicts are per load: never reused across processes or after forget_plans."""
+    """Sink race verdicts of a DiT with no known checkpoint are per load: never reused across processes or after
+    forget_plans."""
+    monkeypatch.setattr(I, "_SINK_DIT", [None])
     monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
     monkeypatch.setattr(I, "_GRAPHED", [False])
@@ -225,7 +228,52 @@ def test_a_sink_decision_is_raced_again_for_every_load(machine, monkeypatch):
     I.forget_plans()
 
 
+def test_a_sink_verdict_persists_per_checkpoint(machine, monkeypatch):
+    """A race that ran to the end keeps its verdict for the checkpoint it raced on (DiT class and _name_or_path), card
+    and bucket: the next load of that checkpoint takes it with no race (and so before its first clipped call, see
+    _learn_now); another checkpoint of the same class races again."""
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_GRAPHED", [False])
+    monkeypatch.setattr(I, "_SINK_DIT", [None])
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: None)
+    decision = (0, (("bn", 128),), 1, 24, 128, torch.bfloat16, None, 16, 16, I.MODE_RACE)
+    races = []
+
+    def dit(path):
+        return type(
+            "QwenImage21Transformer2DModel",
+            (),
+            {"config": types.SimpleNamespace(_name_or_path = path)},
+        )()
+
+    def race(plan, answer):
+        def run():
+            races.append(answer)
+            plan["sink_race"] = {"incumbent": 1.0, "sinks": 1.2, "plain": 1.1}
+            return answer
+
+        return run
+
+    I.note_sink_checkpoint(dit("Qwen/Qwen-Image-2.1"))
+    plan = _plan(decision)
+    assert I._choose_path(plan, race(plan, False))[0] is False and races == [False]
+    I.forget_plans()
+    machine["new_process"]()
+    plan = _plan(decision)
+    assert I._known_verdict(plan) is False
+    assert I._choose_path(plan, lambda: pytest.fail("persisted: no race"))[0] is False
+    I.forget_plans()
+    machine["new_process"]()
+    I.note_sink_checkpoint(dit("Qwen/Qwen-Image-2.1-Turbo"))
+    plan = _plan(decision)
+    assert I._known_verdict(plan) is None
+    assert I._choose_path(plan, race(plan, True))[0] is True and races == [False, True]
+    I.forget_plans()
+
+
 def test_an_out_of_memory_sink_race_is_not_persisted(machine, monkeypatch):
+    monkeypatch.setattr(I, "_SINK_DIT", [("QwenImage21Transformer2DModel", "Qwen/Qwen-Image-2.1")])
     monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
     monkeypatch.setattr(I, "_GRAPHED", [False])
