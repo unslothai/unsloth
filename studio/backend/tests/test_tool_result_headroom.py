@@ -22,14 +22,30 @@ def conversation():
         {"role": "user", "content": "Identify every exception in agreement.docx."},
     ]
     for index in range(3):
-        messages.extend([
-            {"role": "assistant", "content": "", "tool_calls": [{
-                "id": str(index), "type": "function",
-                "function": {"name": "python", "arguments": '{"code":"print(records)"}'},
-            }]},
-            {"role": "tool", "tool_call_id": str(index), "name": "python",
-             "content": "exception facts " * 400},
-        ])
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": str(index),
+                            "type": "function",
+                            "function": {
+                                "name": "python",
+                                "arguments": '{"code":"print(records)"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": str(index),
+                    "name": "python",
+                    "content": "exception facts " * 400,
+                },
+            ]
+        )
     return messages
 
 
@@ -38,13 +54,20 @@ def test_clipped_output_recovery_reserves_space_and_keeps_latest_exchange(policy
     messages = conversation()
     fit = fit_checkpoint_context if policy == "checkpoint" else fit_rolling_context
     options = {"can_reset": True} if policy == "checkpoint" else {}
-    before, change = fit(messages, context_length=8192, max_tokens=None,
-                         count_tokens=count, **options)
+    before, change = fit(
+        messages, context_length = 8192, max_tokens = None, count_tokens = count, **options
+    )
     assert change is None
     assert before == messages
 
-    fitted, change = fit(messages, context_length=8192, max_tokens=None,
-                         count_tokens=count, prompt_reserve_tokens=2048, **options)
+    fitted, change = fit(
+        messages,
+        context_length = 8192,
+        max_tokens = None,
+        count_tokens = count,
+        prompt_reserve_tokens = 2048,
+        **options,
+    )
     assert change["fits"]
     assert change["dropped_messages"] > 0
     assert change["prompt_tokens_after"] == count(fitted)
@@ -59,8 +82,13 @@ def test_reserve_cannot_refuse_a_user_message_that_fits():
     messages = [{"role": "user", "content": "document " * 2100}]
     assert 4096 < count(messages) < 6144
     fitted, change = _fit_with_instruction_pins(
-        messages, context_length=8192, max_tokens=None, count_tokens=count,
-        can_reset=False, context_policy="rolling", prompt_reserve_tokens=2048,
+        messages,
+        context_length = 8192,
+        max_tokens = None,
+        count_tokens = count,
+        can_reset = False,
+        context_policy = "rolling",
+        prompt_reserve_tokens = 2048,
     )
     assert fitted == messages
     assert change is None or change["fits"]

@@ -13442,8 +13442,7 @@ PYTHON_TOOL = {
         "name": "python",
         "description": "Execute Python code in a sandbox and return stdout/stderr. "
         "Each call starts a fresh process: imports and variables do not persist; files do. "
-        "Include the imports and inputs required by each call."
-        + _SANDBOX_PATHS_NOTE,
+        "Include the imports and inputs required by each call." + _SANDBOX_PATHS_NOTE,
         "parameters": {
             "type": "object",
             "properties": {
@@ -17949,13 +17948,18 @@ def _dense_char_limit(
         floor = min(floor, _exact_prefix_chars(text, room_chars, float(room), ctx, 0))
     fallback = (
         min(max_chars, _dense_prefix_chars(text, share * _UNMEASURED_ROOM_MARGIN))
-        if measured_room else None
+        if measured_room
+        else None
     )
     if fallback is not None:
         floor = min(floor, fallback)
     fitted = _dense_prefix_chars(text, share)
     fitted = _exact_prefix_chars(
-        text, min(fitted, max_chars), share, ctx, floor,
+        text,
+        min(fitted, max_chars),
+        share,
+        ctx,
+        floor,
         fallback_chars = fallback,
     )
     fitted = min(max_chars, max(floor, fitted))
@@ -17964,12 +17968,15 @@ def _dense_char_limit(
         # fit, leaving a little framing headroom; do not shrink already-fitting
         # short results or their error details to pay for this optional expansion.
         expanded = _exact_prefix_chars(
-            text, min(len(text), max_chars), max(0.0, float(room) - 64), ctx, 0,
+            text,
+            min(len(text), max_chars),
+            max(0.0, float(room) - 64),
+            ctx,
+            0,
             fallback_chars = min(fitted, fallback),
         )
         return max(fitted, expanded)
     return fitted
-
 
 
 def _truncate_page_text(text: str, max_chars: int) -> str:
@@ -22418,8 +22425,11 @@ def _truncate(
     # caps always appended it past the cap.
     if _request_result_room() is not None:
         limit = _dense_char_limit(
-            text, cap, cost + _RESULT_NOTICE_RESERVE
-            + (64 if reader == "python" and workdir and scope is not None else 0)
+            text,
+            cap,
+            cost
+            + _RESULT_NOTICE_RESERVE
+            + (64 if reader == "python" and workdir and scope is not None else 0),
         )
     if limit <= 0 and len(_zero_room_stub(size, None, True)) >= len(text):
         # Before the spill: no file for output that is never cut.
@@ -24185,7 +24195,9 @@ def _python_exec(
             _note_tool_execution(prepared.execution_record)
         # A run that wrote its file then hung still produced it.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted, reader = "python")
+            ended = _timed_out_result(
+                output, timeout, spill_dir, spill_scope, omitted, reader = "python"
+            )
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -24208,8 +24220,12 @@ def _python_exec(
         result = _defuse_sentinels(result)
         result = (
             _truncate(
-                result, workdir = spill_dir, scope = spill_scope, hint = hint,
-                omitted = omitted, reader = "python",
+                result,
+                workdir = spill_dir,
+                scope = spill_scope,
+                hint = hint,
+                omitted = omitted,
+                reader = "python",
             )
             if result.strip()
             else "(no output)" + hint

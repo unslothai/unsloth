@@ -1195,7 +1195,8 @@ def _truncated_output_notice(result: str) -> str | None:
         return None
     saved = re.search(
         r"full output saved to (\.unsloth_tool_output/[a-f0-9]{12}\.txt)\b",
-        result, re.I,
+        result,
+        re.I,
     )
     if saved is None:
         return "The result was truncated; no complete saved-output reference is available."
@@ -1206,7 +1207,12 @@ def _truncated_output_notice(result: str) -> str | None:
     return notice
 
 
-def _partial_duplicate_result(tool_name: str, notice: str, *, final: bool = False) -> str:
+def _partial_duplicate_result(
+    tool_name: str,
+    notice: str,
+    *,
+    final: bool = False,
+) -> str:
     prefix = (
         f"The earlier {tool_name} call already ran; it was not executed again. "
         "Its output was TRUNCATED, so you have not seen all of the results. "
@@ -1226,7 +1232,8 @@ def _partial_duplicate_result(tool_name: str, notice: str, *, final: bool = Fals
         "the missing information. "
     )
     return (
-        prefix + "Do not repeat the original call or print the entire output again. "
+        prefix
+        + "Do not repeat the original call or print the entire output again. "
         + recovery
         + "Do not infer missing entries or claim the analysis is complete from a partial result. "
         + notice

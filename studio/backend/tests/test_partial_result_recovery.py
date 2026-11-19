@@ -7,25 +7,35 @@ import pytest
 from core.inference.tool_loop_controller import ToolLoopController
 
 
-def call(name="python", arguments=None):
-    return {"id": "one", "type": "function", "function": {
-        "name": name, "arguments": json.dumps(arguments or {"code": "print(records)"})
-    }}
+def call(name = "python", arguments = None):
+    return {
+        "id": "one",
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps(arguments or {"code": "print(records)"}),
+        },
+    }
 
 
-def controller(name="python"):
-    return ToolLoopController(tools=[{"type": "function", "function": {"name": name}}])
+def controller(name = "python"):
+    return ToolLoopController(tools = [{"type": "function", "function": {"name": name}}])
 
 
-NOTICE = ("rows\n... (truncated to 200 chars for the model; showing lines 1-10 of 100, "
-          "5000 chars total. Full output saved to .unsloth_tool_output/abcdef123456.txt)")
+NOTICE = (
+    "rows\n... (truncated to 200 chars for the model; showing lines 1-10 of 100, "
+    "5000 chars total. Full output saved to .unsloth_tool_output/abcdef123456.txt)"
+)
 
 
-@pytest.mark.parametrize("result", [
-    NOTICE,
-    "(output omitted: 5000 chars, no context room left, full output saved to .unsloth_tool_output/abcdef123456.txt)",
-    "... (tool result truncated to 50,000 chars for the model; full output saved to .unsloth_tool_output/abcdef123456.txt)",
-])
+@pytest.mark.parametrize(
+    "result",
+    [
+        NOTICE,
+        "(output omitted: 5000 chars, no context room left, full output saved to .unsloth_tool_output/abcdef123456.txt)",
+        "... (tool result truncated to 50,000 chars for the model; full output saved to .unsloth_tool_output/abcdef123456.txt)",
+    ],
+)
 def test_partial_duplicate_recovers_saved_output_without_reexecution(result):
     ledger = controller()
     ledger.record_result(ledger.prepare_call(call()), result)

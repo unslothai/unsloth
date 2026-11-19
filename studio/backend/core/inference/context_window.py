@@ -699,7 +699,9 @@ def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]
 
 
 def compact_completed_tool_arguments(
-    messages: list[dict], *, protect_last: int = 0,
+    messages: list[dict],
+    *,
+    protect_last: int = 0,
     preserve_failed: bool = False,
     protected_message_ids: Optional[set[int]] = None,
 ) -> tuple[list[dict], int]:
@@ -734,7 +736,13 @@ def compact_completed_tool_arguments(
                 head = reply[:200].strip().lower()
                 if head.startswith("exit code") or any(
                     marker in head
-                    for marker in (*_FAILED_REPLY_MARKERS, "timed out", "timeout", "cancelled", "canceled")
+                    for marker in (
+                        *_FAILED_REPLY_MARKERS,
+                        "timed out",
+                        "timeout",
+                        "cancelled",
+                        "canceled",
+                    )
                 ):
                     new_calls.append(call)
                     continue

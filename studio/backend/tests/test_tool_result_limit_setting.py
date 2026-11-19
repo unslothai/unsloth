@@ -276,14 +276,14 @@ def test_an_api_model_mcp_result_honours_a_lowered_environment_cap(monkeypatch):
 def test_automatic_can_be_restored_without_overriding_an_explicit_default():
     with _client(OWNER) as client:
         assert client.get("/tool-result-limit").json()["automatic"] is True
-        explicit = client.put("/tool-result-limit", json={"max_chars": 16000})
+        explicit = client.put("/tool-result-limit", json = {"max_chars": 16000})
         assert explicit.status_code == 200
         assert explicit.json()["automatic"] is False
-        restored = client.put("/tool-result-limit", json={"max_chars": None})
+        restored = client.put("/tool-result-limit", json = {"max_chars": None})
         assert restored.status_code == 200
         assert restored.json()["automatic"] is True
         assert restored.json()["max_chars"] == 16000
-        assert client.put("/tool-result-limit", json={}).status_code == 422
+        assert client.put("/tool-result-limit", json = {}).status_code == 422
 
 
 @pytest.mark.parametrize("value", ["16000", "invalid", "-1"])
@@ -291,14 +291,16 @@ def test_environment_limit_never_becomes_automatic(monkeypatch, value):
     monkeypatch.setenv(limit.MAX_CHARS_ENV, value)
     assert limit.is_automatic() is False
     with _client(OWNER) as client:
-        assert client.put("/tool-result-limit", json={"max_chars": None}).status_code == 409
+        assert client.put("/tool-result-limit", json = {"max_chars": None}).status_code == 409
 
 
 def test_unreadable_or_invalid_saved_limit_does_not_enable_automatic(monkeypatch):
     monkeypatch.setattr(studio_db, "get_app_setting", lambda *args: "invalid")
     assert limit.is_automatic() is False
+
     def fail(*args):
         raise RuntimeError("unavailable")
+
     monkeypatch.setattr(studio_db, "get_app_setting", fail)
     assert limit.is_automatic() is False
 

@@ -20,12 +20,15 @@ def output_dir(monkeypatch, tmp_path):
     tools._REQUEST_RESULT_BUDGET.reset(token)
 
 
-@pytest.mark.parametrize("text", [
-    "".join(f"row {i:03d}: café 🦥\n" for i in range(100)),
-    "漢字🦥é" * 300,
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "".join(f"row {i:03d}: café 🦥\n" for i in range(100)),
+        "漢字🦥é" * 300,
+    ],
+)
 def test_python_paging_reads_the_next_unseen_chunk_without_a_shell(output_dir, text):
-    result = tools._truncate(text, limit=300, workdir=str(output_dir), reader="python")
+    result = tools._truncate(text, limit = 300, workdir = str(output_dir), reader = "python")
     assert "continue with:" in result
     prefix = result.split("\n\n... (truncated", 1)[0]
     code = result.split(" -- continue with:\n  ", 1)[1][:-1]
@@ -39,4 +42,7 @@ def test_python_paging_reads_the_next_unseen_chunk_without_a_shell(output_dir, t
 
 
 def test_complete_output_is_unchanged(output_dir):
-    assert tools._truncate("complete\n", limit=300, workdir=str(output_dir), reader="python") == "complete\n"
+    assert (
+        tools._truncate("complete\n", limit = 300, workdir = str(output_dir), reader = "python")
+        == "complete\n"
+    )
