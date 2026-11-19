@@ -1527,7 +1527,7 @@ export function useChatModelRuntime() {
         const readPickStatus = () =>
           getInferenceStatus(undefined, modelId).catch(() => null);
         const residentStatus = await readPickStatus();
-        // Warm the GPU cache first: a cold cache passes the pick through unvalidated, or drops a GGUF's Automatic default.
+        // Warm first: a cold cache passes the pick through unvalidated, or drops a GGUF's Automatic default.
         // The status falls back to the resident slot, so its is_gguf only speaks for the pick when it is the pick.
         if (
           residentStatus &&
@@ -2157,7 +2157,7 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.tensorSplit !== undefined
               ? pendingLoadConfig.tensorSplit
               : stateBeforeUnload.splitRatio;
-          // Drop stale cross-host GPU picks before /load; warm the device cache first, which a GGUF's Automatic default also needs.
+          // Drop stale cross-host GPU picks before /load; a GGUF's Automatic default needs the warm cache too.
           if (
             isGguf ||
             pendingLoadConfig?.selectedGpuIds !== undefined ||
