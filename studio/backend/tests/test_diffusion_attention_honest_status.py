@@ -2,8 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """An explicit attention pick (sage, flash, cuDNN, native, INT8 On) is what runs, or the status says what ran instead
-and why. The status is read off the attention modules, so it never names a backend no module routes to. Fake
-backends throughout: the routes, probes and kernels are stubs, the module census is real."""
+and why. Routes, probes and kernels are stubs; the module census is real."""
 
 from __future__ import annotations
 

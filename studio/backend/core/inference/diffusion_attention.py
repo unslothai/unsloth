@@ -845,8 +845,7 @@ def _stamp_decline(
     declined: Optional[dict],
     dits: bool = True,
 ) -> None:
-    """``dits=False`` (the status path, which may run while a compiled DiT renders) marks the pipeline objects only:
-    no attribute of a traced module changes after it compiled."""
+    """``dits=False`` (status path, may run mid-render): never mutate a compiled DiT."""
     targets = list(_attention_dits(pipe)) if pipe is not None and dits else []
     for obj in [pipe, *targets]:
         try:
@@ -886,8 +885,7 @@ def _module_route(proc: Any) -> Optional[str]:
 
 
 def attention_census(pipe: Any) -> dict[str, int]:
-    """How many attention modules of the pipeline's DiTs (or a list of views) route to each backend; {} when no
-    processor carries a dispatcher backend (a U-Net, an engine without diffusers processors). Never raises."""
+    """How many attention modules of the pipeline's DiTs (or a list of views) route to each backend; {} when none do. Never raises."""
     counts: dict[str, int] = {}
     seen: set[int] = set()
     for p in _pipes(pipe):
@@ -926,8 +924,7 @@ def _platform_name(target: Any) -> str:
 
 
 def explicit_attention_decline(target: Any, requested: Any) -> Optional[tuple[str, str]]:
-    """``(reason, status)`` when ``select_attention_backend`` drops an explicit pick before any kernel is tried (the
-    platform or the card cannot run it), else None."""
+    """``(reason, status)`` when ``select_attention_backend`` drops an explicit pick before any kernel is tried, else None."""
     try:
         alias = normalize_attention_backend(requested)
     except ValueError:
@@ -986,15 +983,12 @@ def attention_resolved_entry(
     target: Any = None,
     reason: Optional[str] = None,
 ) -> tuple:
-    """``(explicit, engaged, reason[, status])`` for ``build_resolved_record``, read off the attention modules: the
-    value is the backend the modules actually route to (never one with no module), and an explicit pick that did not
-    engage reads ``fell_back`` (``unsupported`` where the platform cannot run it) with why. ``reason`` replaces the
-    default reason of an honored pick."""
+    """``(explicit, engaged, reason[, status])`` for ``build_resolved_record``, read off the modules: never names a backend
+    no module runs; an explicit pick that did not engage reads ``fell_back`` / ``unsupported``."""
     census = attention_census(pipe) if pipe is not None else {}
     claimed = _status_name(engaged)
     value = claimed
     if census and not census.get(claimed):
-        # what the status would claim runs nowhere: name what does
         value = sorted(census, key = lambda k: (-census[k], k))[0]
     split = _census_note(census, value)
     try:
@@ -1050,8 +1044,7 @@ def attention_resolved_entry(
 
 
 def annotate_attention_resolved(resolved: Any, pipe: Any) -> Any:
-    """Adds the census beside the ``attention_backend`` entry: ``engaged`` (what runs), ``modules`` (how many attention
-    modules run it, None when the pipeline has no countable processors) and ``routed`` (every backend's count)."""
+    """Adds ``engaged``, ``modules`` (None when uncountable) and ``routed`` to the ``attention_backend`` entry."""
     entry = resolved.get("attention_backend") if isinstance(resolved, dict) else None
     if not isinstance(entry, dict):
         return resolved
@@ -1063,8 +1056,7 @@ def annotate_attention_resolved(resolved: Any, pipe: Any) -> Any:
 
 
 def live_attention_entry(entry: Any, pipe: Any, engaged: Any) -> Any:
-    """The load-time ``attention_backend`` entry, re-read when the modules moved since (a race that dropped INT8
-    modules after a generation): the badge never names a backend no module runs. Never raises."""
+    """The load-time ``attention_backend`` entry, re-read when the modules moved since. Never raises."""
     if not isinstance(entry, dict) or "routed" not in entry or pipe is None:
         return entry
     try:
@@ -4094,8 +4086,7 @@ def _apply_attention_backend(
     logger: Any = None,
     target: Any = None,
 ) -> Optional[str]:
-    """Sets ``backend`` (or native) on every DiT and returns what engaged. When the backend it was asked for did not
-    engage, the DiTs carry why (``ATTENTION_DECLINE_ATTR``), so the status can say what ran instead."""
+    """Sets ``backend`` (or native) on every DiT and returns what engaged; a decline is recorded in ``ATTENTION_DECLINE_ATTR``."""
     _APPLY_NOTES.why = None
     tried = None if backend in (None, ROCM_FLASH_CANDIDATE) else str(backend)
     try:

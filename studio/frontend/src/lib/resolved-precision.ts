@@ -13,8 +13,7 @@ export interface ResolvedControl {
   status?: string;
   reason: string;
   // int8_attention: whether Studio's INT8 attention kernel engaged (boolean), which build, how many modules.
-  // attention_backend: the backend the attention modules actually run (string), how many run it
-  // (null when the pipeline has no countable processors) and every backend's count in `routed`.
+  // attention_backend: the backend the modules run, its module count (null if uncountable), `routed` counts.
   engaged?: boolean | string;
   impl?: string | null;
   modules?: number | null;
@@ -125,10 +124,7 @@ export function resolvedSelectValue<T extends string>(
   return toOption(String(source));
 }
 
-/**
- * The attention backend the loaded build's attention modules run, read off its resolved entry (the
- * top-level field names the load's pick, which may run on no module); null for native SDPA.
- */
+/** The backend the attention modules actually run (not the pick); null for native SDPA. */
 export function engagedAttentionBackend(status: {
   attention_backend?: string | null;
   resolved?: Record<string, ResolvedControl> | null;
@@ -138,10 +134,7 @@ export function engagedAttentionBackend(status: {
   return value && value !== "native" ? value : null;
 }
 
-/**
- * The Attention select keeps the user's own pick when it fell back: the badge says what ran, and the
- * next load asks for the same backend again (it may run once its package is installed).
- */
+/** Keep the user's pick on fallback: the badge says what ran, the next load retries the pick. */
 export function resolvedRequestSelectValue<T extends string>(
   resolved: ResolvedControl | undefined | null,
   toOption: (value: string) => T | null,
