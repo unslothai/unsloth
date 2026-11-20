@@ -4291,14 +4291,19 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and not getattr(_pg_cfg, "attention_dropout", 0)
                         and not any(
                             getattr(_pg_cfg, _pg_a, None) is not None
-                            for _pg_a in (
-                                "mamba_d_ssm",
-                                "mamba_d_state",
-                                "mamba_expand",
-                                "num_experts",
-                                "num_local_experts",
-                                "n_routed_experts",
-                                "moe_intermediate_size",
+                            for _pg_a in ("mamba_d_ssm", "mamba_d_state", "mamba_expand")
+                        )
+                        # MoE only where prefix_grouper_hf verified every layer (opt-in, set by the check above).
+                        and (
+                            getattr(unwrapped_model, "_unsloth_prefix_grouper_moe_ok", False)
+                            or not any(
+                                getattr(_pg_cfg, _pg_a, None) is not None
+                                for _pg_a in (
+                                    "num_experts",
+                                    "num_local_experts",
+                                    "n_routed_experts",
+                                    "moe_intermediate_size",
+                                )
                             )
                         )
                     )
