@@ -9,7 +9,7 @@ import os
 _CHUNK_ROWS = 10_000
 
 
-def _row_chunks(path):
+def _row_chunks(path, size = _CHUNK_ROWS):
     with open(path, encoding = "utf-8-sig") as file:
         head = file.read(1)
         while head.isspace():
@@ -19,14 +19,14 @@ def _row_chunks(path):
             rows = json.load(file)
             if not isinstance(rows, list):
                 raise ValueError("not a JSON array")
-            for start in range(0, len(rows), _CHUNK_ROWS):
-                yield rows[start : start + _CHUNK_ROWS]
+            for start in range(0, len(rows), size):
+                yield rows[start : start + size]
             return
         rows = []
         for line in file:
             if line.strip():
                 rows.append(json.loads(line))
-                if len(rows) == _CHUNK_ROWS:
+                if len(rows) == size:
                     yield rows
                     rows = []
         if rows:
@@ -68,12 +68,7 @@ def has_timestamp(data_type):
 
 
 def head_rows(path, count):
-    rows = []
-    for chunk in _row_chunks(path):
-        rows.extend(chunk[: count - len(rows)])
-        if len(rows) >= count:
-            break
-    return rows
+    return next(_row_chunks(path, count), []) if count > 0 else []
 
 
 def timestamps_as_strings(data_type):
