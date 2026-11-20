@@ -2220,6 +2220,14 @@ def _prefix_user_text(message: dict, prefix: str) -> dict:
     return message
 
 
+def _recovery_notice_tail(messages: list[dict], notice: dict, status: str) -> list[dict]:
+    """Keep user turns alternating without altering the tool exchange or user content."""
+    if messages and messages[-1].get("role") in ("user", "tool"):
+        # Strict templates can skip tool exchanges when checking role alternation.
+        return [{"role": "assistant", "content": status}, notice]
+    return [notice]
+
+
 # A readable local name for the shared `context_window` policy, not a second implementation.
 _retrieval_budget = retrieval_budget
 
@@ -41156,7 +41164,9 @@ class LlamaCppBackend:
                                 "Keep each call's arguments brief."
                             ),
                         }
-                        _retry_messages = list(conversation) + [_retry_note]
+                        _retry_messages = list(conversation) + _recovery_notice_tail(
+                            conversation, _retry_note, "The tool-call generation was interrupted."
+                        )
                         if _loop_continuation_fits(_retry_messages, safe_tools, _reasoning_kw):
                             conversation[:] = _retry_messages
                             continue_final_message = False
@@ -42891,6 +42901,8 @@ class LlamaCppBackend:
             candidate_messages,
             continue_flag: bool,
             reasoning_kw = _UNSET,
+            *,
+            tools_override = _UNSET,
         ) -> bool:
             """Whether the continuation fits once the partial is appended; an uncountable prompt
             fails open."""
@@ -42900,7 +42912,7 @@ class LlamaCppBackend:
                 _tokens = self.count_chat_tokens(
                     self._countable_messages(candidate_messages),
                     None,
-                    _final_tools,
+                    _final_tools if tools_override is _UNSET else tools_override,
                     strict = True,
                     chat_template_kwargs = (
                         stream_payload.get("chat_template_kwargs")
@@ -43113,16 +43125,23 @@ class LlamaCppBackend:
                                 "If information is missing, state exactly what is incomplete."
                             ),
                         }
-                        _answer_messages = list(stream_payload["messages"]) + [_answer_note]
+                        _answer_tail = _recovery_notice_tail(
+                            stream_payload["messages"],
+                            _answer_note,
+                            "I have not given a final answer yet.",
+                        )
+                        _answer_messages = list(stream_payload["messages"]) + _answer_tail
                         _answer_cap = _remaining_output_budget()
                         if (
                             not _final_tool_retry
                             and _answer_cap != 0
-                            and _continuation_would_be_served(_answer_messages, False)
+                            and _continuation_would_be_served(
+                                _answer_messages, False, tools_override = None
+                            )
                         ):
                             _final_tool_retry = True
                             stream_payload["messages"] = _answer_messages
-                            _record_refit_tail(_answer_messages, [_answer_note], False)
+                            _record_refit_tail(_answer_messages, _answer_tail, False)
                             # Remove the declarations as well as forbidding calls: some
                             # model templates otherwise keep steering toward execution.
                             stream_payload.pop("tools", None)

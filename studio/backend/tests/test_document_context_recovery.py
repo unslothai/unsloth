@@ -79,6 +79,7 @@ def test_context_full_tool_turn_retries_without_executing_any_cut_calls(monkeypa
     )
     assert calls == [("terminal", {"command": "echo safe"})]
     assert len(payloads) == 3
+    assert [m["role"] for m in payloads[1]["messages"]] == ["user", "assistant", "user"]
     assert "NONE" in payloads[1]["messages"][-1]["content"]
     assert "echo unsafe" not in json.dumps(payloads[1]["messages"])
     assert events[-1]["usage"]["completion_tokens"] == 1126
@@ -280,3 +281,51 @@ def test_empty_answer_after_final_retry_is_not_success(monkeypatch):
     with pytest.raises(RuntimeError, match = "could not produce a final answer"):
         _run_tool_loop(backend, [{"role": "user", "content": "Search."}], [_web_search_tool()])
     assert len(payloads) == 3
+
+
+@pytest.mark.parametrize("charge_schemas", [False, True])
+def test_final_retry_after_user_nudge_uses_servable_prompt(monkeypatch, charge_schemas):
+    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+
+    # Skipping two different tools creates a user notice after the tool results.
+    calls = "".join(
+        '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+        for i in range(_MAX_TOOL_CALLS_PER_TURN + 1)
+    )
+    calls += '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+    backend, payloads = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": calls}), _done()],
+            _answer('{"name":"web_search","parameters":{"query":"again"}}'),
+            _answer("Verified result: safe."),
+        ],
+    )
+    retry_counts = []
+
+    def count(messages, _system, schemas, **kwargs):
+        if "Give your final answer now" in messages[-1]["content"]:
+            retry_counts.append((schemas, kwargs.get("continue_final_message")))
+            if charge_schemas and schemas:
+                return 4096
+        return 300
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count)
+    executed = _record_tool_calls(monkeypatch, "safe")
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Search."}],
+        [_web_search_tool(), tools.PYTHON_TOOL],
+    )
+
+    assert len(executed) == _MAX_TOOL_CALLS_PER_TURN
+    assert len(payloads) == 3
+    original_nudge = payloads[1]["messages"][-1]
+    assert original_nudge["role"] == "user"
+    assert "more tool call(s)" in original_nudge["content"]
+    retry = payloads[-1]
+    assert retry["messages"][-3] == original_nudge
+    assert [m["role"] for m in retry["messages"][-3:]] == ["user", "assistant", "user"]
+    assert retry_counts == [(None, False)]
+    assert "tools" not in retry
+    assert retry["add_generation_prompt"] is True
