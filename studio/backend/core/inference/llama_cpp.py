@@ -15694,6 +15694,24 @@ class LlamaCppBackend:
         n_layers = self.n_layers
         return requested == -1 or (bool(n_layers) and requested > n_layers)
 
+    def _fit_may_place_every_layer(
+        self,
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        """The fitter owns placement with no layer cap and nothing pinned to the CPU."""
+        args = [str(a) for a in argv or ()]
+        if not fit_is_effectively_on(args, env) or _device_selection_is_cpu(args, env):
+            return False
+        if _args_place_tensors_on_cpu(args) or _env_places_tensors_on_cpu(env):
+            return False
+        try:
+            requested = parse_gpu_layers_override(args)
+        except ValueError:
+            return False
+        n_layers = self.n_layers
+        return requested is None or requested == -1 or (bool(n_layers) and requested > n_layers)
+
     def _launch_forces_full_offload(
         self,
         argv: Iterable[str],
@@ -15758,9 +15776,16 @@ class LlamaCppBackend:
             names = {device.strip().lower() for device in str(pinned).split(",")}
             reachable = {idx for idx, _free in rows if f"vulkan{idx}" in names}
         pool = 0
+        every_layer = self._argv_offloads_every_layer(argv, env)
+        # The fitter fills each device up to its free reading less the --fit-target margin (#18001).
+        fit_margin = None
+        if not every_layer and self._fit_may_place_every_layer(argv, env):
+            fit_margin = _single_device_fit_margin(argv, env)
+            if fit_margin is None:
+                fit_margin = _LLAMA_FIT_TARGET_DEFAULT_MIB
         if (
             shared_gpu_ids
-            and self._argv_offloads_every_layer(argv, env)
+            and (every_layer or fit_margin is not None)
             # Tensor-split positions cannot be mapped reliably to probe indices.
             and not _extra_args_set_any_flag(argv, _TENSOR_SPLIT_FLAGS)
             and not str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT") or "").strip()
@@ -15772,6 +15797,8 @@ class LlamaCppBackend:
                 if idx not in shared_gpu_ids or idx not in reachable:
                     continue
                 backed = self._igpu_backed_usable_mib(free)
+                if fit_margin is not None:
+                    backed = min(backed, max(0, int(free + _IGPU_HOST_RESERVE_MIB - fit_margin)))
                 if backed < free:
                     logger.info(
                         f"Vulkan device VK{idx} offers {free}MiB to placement; "

@@ -3128,6 +3128,47 @@ def test_the_paging_headroom_cap_reads_only_a_lone_windows_vulkan_igpu(monkeypat
     assert withdrawn == (["-m", "x.gguf", "--fit-target", "512"], {0: 512.0})
 
 
+@pytest.mark.parametrize(
+    "gguf_gib, oversized",
+    [(6.24, False), (11.3, False), (21.0, True)],
+    ids = ["gemma-12b", "gpt-oss-20b", "past-the-pool"],
+)
+def test_a_fit_owned_vulkan_igpu_load_credits_what_the_fitter_can_place(
+    tmp_path, monkeypatch, gguf_gib, oversized
+):
+    """#18001: Manual mode with Auto layers (--fit on) priced a 780M's whole model as host RAM."""
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 22137, 0)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(gguf_gib * _GiB)
+    backend._lazy_auto_resolves_off = lambda **_kw: True
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(supports_load_mode = True, supports_load_mode_auto = True, supports_fit_target = True)
+    monkeypatch.setattr(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps)
+    monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 7843))
+    monkeypatch.setattr(LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 15992))
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(lambda *_a, **_k: 16 * _GiB)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_igpu_dedicated_used_bytes", staticmethod(lambda: 300 * 1024 * 1024)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    cmd = _launch(backend, gguf, gpu_memory_mode = "manual")["cmd"]
+
+    assert _modes(cmd, "--fit") == ["on"], cmd
+    warning = backend.last_load_warning or ""
+    if oversized:
+        assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+        assert "does not fit in GPU memory" in warning, warning
+    else:
+        assert _modes(cmd, "--load-mode") == [], cmd
+        assert _modes(cmd, "--fit-target") == ["512"], cmd
+        assert "does not fit in GPU memory" not in warning, warning
+
+
 def test_the_igpu_dedicated_usage_is_read_for_the_carve_out_adapter(monkeypatch):
     import utils.hardware.hardware as hw
 
