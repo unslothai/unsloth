@@ -150,6 +150,7 @@ class WorkingEvidence:
         generate: Callable[[list[dict], int], Iterable[str | dict]],
         cancelled: Callable[[], bool],
         completion_budget: int | None = None,
+        pending_probe: dict | None = None,
     ) -> tuple[list[dict], dict | None]:
         """Return a replacement and its anchor only after generation and exact fit succeed."""
         if self.calls >= MAX_CALLS or cancelled() or not self.query:
@@ -203,7 +204,12 @@ class WorkingEvidence:
             candidate, anchor, original = self._place(conversation, prefix)
             if anchor is None:
                 return conversation, None
-            if count_prompt(counting_copy(candidate)) > prompt_budget or cancelled():
+            priced = (
+                [*candidate, pending_probe]
+                if pending_probe is not None
+                else counting_copy(candidate)
+            )
+            if count_prompt(priced) > prompt_budget or cancelled():
                 return conversation, None
             self.summary, self.prefix = summary, prefix
             self._with_evidence, self._without_evidence = anchor, original

@@ -39358,7 +39358,14 @@ class LlamaCppBackend:
         _working_evidence = WorkingEvidence(_request_branch)
         _working_evidence_seconds = 0.0
 
-        def _archive_current_context(current, before, **archive_kwargs):
+        def _archive_current_context(
+            current,
+            before,
+            *,
+            handover_budget = None,
+            pending_probe = None,
+            **archive_kwargs,
+        ):
             nonlocal _working_evidence_seconds
             nonlocal _accumulated_completion_tokens
             nonlocal _accumulated_predicted_ms, _accumulated_predicted_n
@@ -39428,7 +39435,10 @@ class LlamaCppBackend:
                 result["conversation"],
                 before,
                 context_length = self._effective_context_length,
-                prompt_budget = prompt_budget(self._effective_context_length, max_tokens),
+                prompt_budget = handover_budget
+                if handover_budget is not None
+                else prompt_budget(self._effective_context_length, max_tokens),
+                pending_probe = pending_probe,
                 count_summary = lambda record: self.count_chat_tokens(
                     neutralize_control_markup_in_messages(record, None, self.markup_profile),
                     strict = True,
@@ -41405,6 +41415,7 @@ class LlamaCppBackend:
                             "tool_call_id": decision.tool_call_id,
                         }
                         try:
+                            _result_reserve = min(2048, self._effective_context_length // 4)
                             _pending_before = list(conversation)
                             _pending_fitted, _pending_cut = _fit_with_instruction_pins(
                                 [*conversation, _pending_probe],
@@ -41418,9 +41429,7 @@ class LlamaCppBackend:
                                 on_compacting = _compaction_reporter(perf_callback),
                                 context_length = self._effective_context_length,
                                 max_tokens = _iteration_max_tokens,
-                                prompt_reserve_tokens = min(
-                                    2048, self._effective_context_length // 4
-                                ),
+                                prompt_reserve_tokens = _result_reserve,
                                 count_tokens = lambda fitted: self.count_chat_tokens(
                                     neutralize_control_markup_in_messages(
                                         self._countable_messages(fitted),
@@ -41459,6 +41468,11 @@ class LlamaCppBackend:
                                 _archived = _archive_current_context(
                                     conversation,
                                     _pending_before,
+                                    pending_probe = _pending_probe,
+                                    handover_budget = tool_result_budget(
+                                        self._effective_context_length, _iteration_max_tokens, 0
+                                    )
+                                    - _result_reserve,
                                     thread_id = thread_id,
                                     branch_messages = _extend_live_branch(_pending_before),
                                     query_messages = _request_branch,
@@ -41469,7 +41483,7 @@ class LlamaCppBackend:
                                         self._effective_context_length,
                                         _iteration_max_tokens,
                                         int(_pending_cut.get("prompt_tokens_after") or 0)
-                                        + min(2048, self._effective_context_length // 4),
+                                        + _result_reserve,
                                         reply_returns = True,
                                     ),
                                     count_tokens = lambda fitted: self.count_chat_tokens(

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pytest
 
 from core.inference import llama_cpp, tools
+from core.inference.working_evidence import WorkingEvidence
 from test_compact_arguments_before_results import exchange
 from test_llama_cpp_tool_loop import _make_backend, _tool_call_sse, _done, _sse, _finish
 
@@ -111,6 +112,16 @@ def test_recalled_history_uses_only_room_left_after_the_live_result(
     stages = []
     budgets = []
 
+    pending_handover_limits = []
+    preserve = WorkingEvidence.preserve
+
+    def record_limit(state, *args, **kwargs):
+        if stages == ["archive"]:
+            pending_handover_limits.append(kwargs["prompt_budget"])
+        return preserve(state, *args, **kwargs)
+
+    monkeypatch.setattr(WorkingEvidence, "preserve", record_limit)
+
     def execute(name, arguments, **kwargs):
         stages.append("execute")
         return "L" * result_size
@@ -144,6 +155,10 @@ def test_recalled_history_uses_only_room_left_after_the_live_result(
             max_tool_iterations = 1,
             context_overflow = "truncate_oldest",
         )
+    )
+    assert pending_handover_limits
+    assert all(
+        llama_cpp.tool_result_budget(8192, None, limit) >= 2048 for limit in pending_handover_limits
     )
     assert stages[0] == "archive"
     assert stages.count("execute") == batch_size
