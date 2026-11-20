@@ -455,6 +455,19 @@ def _sdpa_policy_requested(device, dtype, head_dim, n_heads, n_kv_heads) -> bool
     return not flash or choice == math
 
 
+def _eager_varlen_rejects(module, kwargs, head_dim) -> bool:
+    """The layer-level conditions under which _static_window refuses every call of this layer (no tensors
+    needed): leaving a compiled block for such a layer only adds a graph break before the dense path."""
+    dropout = getattr(module, "attention_dropout", 0) if getattr(module, "training", False) else 0
+    return bool(
+        head_dim % 8 != 0
+        or dropout
+        or getattr(module, "is_causal", True) is False
+        or kwargs.get("position_bias") is not None
+        or _softcapped(module, kwargs)
+    )
+
+
 def _static_window(module, query, key, value, dropout, is_causal, kwargs):
     """The window for a call a varlen kernel can take (shapes, dtypes, masking), else _NO_WINDOW.
     Only shapes, dtypes and attributes: also safe while tracing."""
@@ -1155,7 +1168,8 @@ def _block_varlen_prepare(
     ):
         # ROCm builds whose flash varlen disagrees with its fake kernel (gfx1151, torch 2.11) cannot run it
         # in the graph, and a traced call would attend over the dense mask: the eager wrapper runs varlen.
-        return _LEAVE_BLOCK
+        # A layer the eager wrapper rejects anyway (_static_window) keeps the dense path inside the graph.
+        return None if _eager_varlen_rejects(attention, kwargs, head_dim) else _LEAVE_BLOCK
     _, cu_seqlens, max_seqlen = seq_info
     # The segment count changes every step: one graph for all of them.
     torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
