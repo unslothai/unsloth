@@ -127,8 +127,12 @@ def test_native_path_lease_keeps_the_requested_id(monkeypatch):
 _REPO = "unsloth/Tiny-Probe-GGUF"
 
 
-def _cache_repo(root, files):
-    repo_dir = root / ("models--" + _REPO.replace("/", "--"))
+def _cache_repo(
+    root,
+    files,
+    repo = _REPO,
+):
+    repo_dir = root / ("models--" + repo.replace("/", "--"))
     (repo_dir / "refs").mkdir(parents = True)
     (repo_dir / "refs" / "main").write_text("abc")
     snapshot = repo_dir / "snapshots" / "abc"
@@ -192,6 +196,35 @@ def test_active_hub_cache_copy_keeps_the_repo_id(roots, in_scan_folder):
     for variant in (None, "Q8_0"):
         request = _request(model_path = _REPO, gguf_variant = variant)
         assert inf._as_local_scan_folder_request(request, True) is request
+
+
+def test_a_pinned_quant_only_the_parked_copy_holds_loads_from_it(roots):
+    # The quant race: the active cache holds one complete quant while a parked copy holds
+    # another. A pin names the exact artifact, so it resolves to the row holding it instead
+    # of falling through to a remote download; the bare id keeps loading the active-cache
+    # copy, which already loads by repo id. (The repo/file.gguf id form resolves through
+    # the same resolve_local_gguf and picks the variant match up the same way.)
+    active, scan = roots
+    _cache_repo(active, ["Tiny-Probe-Q8_0.gguf"])
+    parked = _cache_repo(scan, ["Tiny-Probe-UD-Q5_K_XL.gguf"])
+    bare = _request(model_path = _REPO)
+    assert inf._as_local_scan_folder_request(bare, True) is bare
+    pinned = inf._as_local_scan_folder_request(
+        _request(model_path = _REPO, gguf_variant = "UD-Q5_K_XL"), True
+    )
+    assert (pinned.model_path, pinned.gguf_variant) == (str(parked), "UD-Q5_K_XL")
+
+
+def test_a_pin_never_crosses_to_a_different_repo_sharing_the_label(roots):
+    # Two repos share the display label "Model-GGUF" (org-a cached, org-b parked). A pin
+    # on the bare label must not resolve into the other repo's copy; the repo's own id
+    # still resolves its quants.
+    active, scan = roots
+    _cache_repo(active, ["Model-Q8_0.gguf"], repo = "org-a/Model-GGUF")
+    parked = _cache_repo(scan, ["Model-Q4_K_M.gguf"], repo = "org-b/Model-GGUF")
+    resolver.invalidate_index()
+    assert resolver.resolve_local_gguf("Model-GGUF:Q4_K_M") is None
+    assert resolver.resolve_local_gguf("org-b/Model-GGUF:Q4_K_M")[0] == str(parked)
 
 
 def test_weightless_hub_skeleton_does_not_hide_the_scan_folder_copy(roots):
