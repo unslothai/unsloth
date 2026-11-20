@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { errorMessage } from "@/lib/error-message";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,12 +11,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useT, type TranslationKey } from "@/i18n";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { estimateTokenCount } from "@/lib/estimate-tokens";
 import { toast } from "@/lib/toast";
-import { useEffect, useRef, useState } from "react";
-import { errorText } from "../api";
-import { prepareCharacterRun, textOf, type CharacterRun } from "../chat-runtime";
+import { useCopyFeedback } from "@/hooks/use-copy-feedback";
+import { useEffect, useState } from "react";
+import { prepareCharacterRun, type CharacterRun } from "../chat-runtime";
+import { textOf } from "../prompt/round";
 import { useAskBridge } from "./ask-bridge";
 
 const ROLE_LABEL: Record<string, TranslationKey> = {
@@ -30,9 +31,7 @@ type Inspected = { status: "loading" } | { status: "ready"; run: CharacterRun } 
 export function PromptInspectorDialog({ open, threadId, onClose }: { open: boolean; threadId: string; onClose: () => void }) {
   const t = useT();
   const [inspected, setInspected] = useState<Inspected>({ status: "loading" });
-  const [copied, setCopied] = useState(false);
-  const copiedTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
+  const { copied, copy } = useCopyFeedback();
 
   useEffect(() => {
     if (!open) return;
@@ -46,7 +45,7 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
         setInspected(next ? { status: "ready", run: next } : { status: "error", message: t("characters.panel.promptUnavailable") });
       },
       (error: unknown) => {
-        if (live) setInspected({ status: "error", message: errorText(error) });
+        if (live) setInspected({ status: "error", message: errorMessage(error) });
       },
     );
     return () => {
@@ -130,14 +129,8 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
               variant="outline"
               size="sm"
               onClick={() => {
-                void copyToClipboard(run.system).then((ok) => {
-                  if (!ok) {
-                    toast.error(t("characters.panel.copyFailed"));
-                    return;
-                  }
-                  setCopied(true);
-                  window.clearTimeout(copiedTimer.current);
-                  copiedTimer.current = window.setTimeout(() => setCopied(false), 1500);
+                void copy(run.system).then((ok) => {
+                  if (!ok) toast.error(t("characters.panel.copyFailed"));
                 });
               }}
             >

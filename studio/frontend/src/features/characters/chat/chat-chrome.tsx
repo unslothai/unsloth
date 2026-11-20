@@ -15,7 +15,7 @@ import { BubbleChatIcon, ImageCompositionIcon, LayoutLeftIcon } from "@hugeicons
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Portrait } from "../components/portrait";
-import { chatViewOf, setChatView } from "../stage-focus";
+import { chatViewOf, setChatView } from "../chat-view";
 import type { ChatView } from "../types";
 import { useThreadScene } from "./use-thread-scene";
 
@@ -47,10 +47,7 @@ export function CastChip({ threadId, onOpen }: { threadId: string | null | undef
         {shown.map((character) => (
           <Portrait
             key={character.id}
-            id={character.id}
-            name={character.name}
-            hasImage={character.hasAvatar}
-            rev={character.avatarRev}
+            subject={character}
             className="size-6.5 rounded-full text-[0.62rem] ring-2 ring-background"
           />
         ))}

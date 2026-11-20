@@ -4,7 +4,7 @@
 import { useAui, type CreateAppendMessage, type ThreadMessage } from "@assistant-ui/react";
 import { useCallback } from "react";
 import { create } from "zustand";
-import { ROLEPLAY_SPEAKER_RUN_KEY } from "../chat-runtime";
+import { CHARACTER_SPEAKER_RUN_KEY } from "../chat-runtime";
 
 type Ask = (characterId: string, name: string) => void;
 type Messages = () => readonly ThreadMessage[];
@@ -42,7 +42,7 @@ export function useAskToReply(): Ask {
         // Persisted and exported as is; the prompt builder replaces it with its own instruction.
         content: [{ type: "text", text: `[${name}'s turn]` }],
         metadata: { custom: { roleplay: { kind: "turn", speakerId: characterId } } },
-        runConfig: { custom: { [ROLEPLAY_SPEAKER_RUN_KEY]: characterId } },
+        runConfig: { custom: { [CHARACTER_SPEAKER_RUN_KEY]: characterId } },
         createdAt: new Date(),
       };
       void thread.append(message);

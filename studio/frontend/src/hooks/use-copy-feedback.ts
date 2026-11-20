@@ -18,10 +18,11 @@ export function useCopyFeedback(resetMs = 1500) {
   const copy = useCallback(
     async (value: string) => {
       const ok = await copyToClipboard(value);
-      if (!ok) return;
+      if (!ok) return false;
       setCopied(true);
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       timeoutRef.current = setTimeout(() => setCopied(false), resetMs);
+      return true;
     },
     [resetMs],
   );

@@ -3,25 +3,20 @@
 
 import { notifyChatHistoryUpdated } from "@/features/chat/api/chat-api";
 import { writeBranchHead } from "@/features/chat/utils/branch-head";
+import { useT } from "@/i18n";
+import { errorMessage } from "@/lib/error-message";
 import { downloadBlobStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { openFilePicker } from "@/lib/open-file-picker";
 import { toast } from "@/lib/toast";
-import type { TranslationKey } from "@/i18n";
-import {
-  createCharacterChat,
-  deleteCharacter,
-  duplicateCharacter,
-  errorText,
-  exportCharacter,
-  importCharacterFile,
-  updateCharacter,
-} from "./api";
-import { resolvePersona } from "./chat-runtime";
+import { useNavigate } from "@tanstack/react-router";
+import { useCallback, useRef, useState } from "react";
+import * as charactersApi from "./api";
+import { resolvePersona } from "./persona";
 import { applyMacros } from "./prompt/macros";
 import { useCharactersStore } from "./store";
-import type { Character } from "./types";
+import type { Character, Persona } from "./types";
 
-type T = (key: TranslationKey, values?: Record<string, string | number>) => string;
+type T = ReturnType<typeof useT>;
 
 /** Opens a new chat with these characters and returns its thread id. */
 export async function startCharacterChat(
@@ -45,7 +40,7 @@ export async function startCharacterChat(
       ),
     ]),
   );
-  const created = await createCharacterChat({
+  const created = await charactersApi.createCharacterChat({
     characterIds,
     personaId: persona.id,
     userName: persona.name,
@@ -62,6 +57,34 @@ export async function startCharacterChat(
   return created.threadId;
 }
 
+/** Starts a chat and opens it; resolves false (after a toast) when it could not start. */
+export function useOpenCharacterChat(): { open: (characterIds: string[]) => Promise<boolean>; starting: boolean } {
+  const t = useT();
+  const navigate = useNavigate();
+  const [starting, setStarting] = useState(false);
+  const busy = useRef(false);
+  const open = useCallback(
+    async (characterIds: string[]) => {
+      if (busy.current) return false;
+      busy.current = true;
+      setStarting(true);
+      try {
+        const threadId = await startCharacterChat(characterIds);
+        void navigate({ to: "/chat", search: { thread: threadId } });
+        return true;
+      } catch (error) {
+        toast.error(t("characters.chat.startFailed"), { description: errorMessage(error) });
+        return false;
+      } finally {
+        busy.current = false;
+        setStarting(false);
+      }
+    },
+    [navigate, t],
+  );
+  return { open, starting };
+}
+
 export const CARD_EXTENSIONS = ".png,.json,.charx";
 const CARD_ACCEPT = `${CARD_EXTENSIONS},image/png,application/json`;
 
@@ -75,7 +98,7 @@ export async function importCards(files: File[], t: T): Promise<Character[]> {
   for (const file of files) {
     const toastId = toast.loading(t("characters.importing", { name: file.name }));
     try {
-      const result = await importCharacterFile(file, file.name);
+      const result = await charactersApi.importCharacterFile(file, file.name);
       useCharactersStore.getState().upsert(result.character);
       imported.push(result.character);
       if (result.warnings.length) {
@@ -89,7 +112,7 @@ export async function importCards(files: File[], t: T): Promise<Character[]> {
     } catch (error) {
       toast.error(t("characters.importFailed", { name: file.name }), {
         id: toastId,
-        description: errorText(error),
+        description: errorMessage(error),
       });
     }
   }
@@ -97,38 +120,38 @@ export async function importCards(files: File[], t: T): Promise<Character[]> {
   return imported;
 }
 
-export async function exportCharacterFile(character: Character, format: "png" | "json", t: T): Promise<void> {
+export async function exportCharacter(character: Character, format: "png" | "json", t: T): Promise<void> {
   try {
-    const { blob, filename } = await exportCharacter(character.id, format);
+    const { blob, filename } = await charactersApi.exportCharacter(character.id, format);
     await downloadBlobStreaming(blob, filename);
     toast.success(t("characters.exported", { name: filename }));
   } catch (error) {
     if (isDownloadCancelled(error)) return;
-    toast.error(t("characters.exportFailed"), { description: errorText(error) });
+    toast.error(t("characters.exportFailed"), { description: errorMessage(error) });
   }
 }
 
-export async function duplicateCharacterAction(character: Character, t: T): Promise<Character | null> {
+export async function duplicateCharacter(character: Character, t: T): Promise<Character | null> {
   try {
-    const copy = await duplicateCharacter(character.id);
+    const copy = await charactersApi.duplicateCharacter(character.id);
     useCharactersStore.getState().upsert(copy);
     toast.success(t("characters.duplicated", { name: copy.name }));
     return copy;
   } catch (error) {
-    toast.error(t("characters.duplicateFailed"), { description: errorText(error) });
+    toast.error(t("characters.duplicateFailed"), { description: errorMessage(error) });
     return null;
   }
 }
 
-export async function deleteCharacterAction(character: Character, t: T): Promise<boolean> {
+export async function deleteCharacter(character: Character, t: T): Promise<boolean> {
   try {
-    await deleteCharacter(character.id);
+    await charactersApi.deleteCharacter(character.id);
     useCharactersStore.getState().remove(character.id);
     toast.success(t("characters.deleted", { name: character.name }));
     notifyChatHistoryUpdated();
     return true;
   } catch (error) {
-    toast.error(t("characters.deleteFailed"), { description: errorText(error) });
+    toast.error(t("characters.deleteFailed"), { description: errorMessage(error) });
     return false;
   }
 }
@@ -137,10 +160,30 @@ export async function toggleFavorite(character: Character): Promise<void> {
   const store = useCharactersStore.getState();
   store.upsert({ ...character, favorite: !character.favorite });
   try {
-    store.upsert(await updateCharacter(character.id, { favorite: !character.favorite }));
+    store.upsert(await charactersApi.updateCharacter(character.id, { favorite: !character.favorite }));
   } catch (error) {
     store.upsert(character);
-    toast.error(errorText(error));
+    toast.error(errorMessage(error));
   }
 }
 
+export async function makeDefaultPersona(persona: Persona): Promise<void> {
+  const store = useCharactersStore.getState();
+  try {
+    store.upsertPersona(await charactersApi.updatePersona(persona.id, { isDefault: true }));
+    await store.refreshPersonas();
+  } catch (error) {
+    toast.error(errorMessage(error));
+  }
+}
+
+export async function deletePersona(persona: Persona): Promise<void> {
+  const store = useCharactersStore.getState();
+  try {
+    await charactersApi.deletePersona(persona.id);
+    store.removePersona(persona.id);
+    await store.refreshPersonas();
+  } catch (error) {
+    toast.error(errorMessage(error));
+  }
+}

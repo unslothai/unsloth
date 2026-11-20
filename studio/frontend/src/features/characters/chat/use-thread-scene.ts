@@ -2,16 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useMemo, useState } from "react";
-import { useUserProfileStore } from "@/features/profile";
-import { castOf, resolvePersona } from "../chat-runtime";
-import { isCharacterChat, useCharactersStore } from "../store";
+import { isCharacterChat } from "../chat-gate";
+import { resolvePersona, useAccountName } from "../persona";
+import { castOf } from "../prompt/round";
+import { useCharactersStore } from "../store";
 import type { Character, ChatScene, ResolvedPersona } from "../types";
 
 export interface ThreadScene {
+  threadId: string;
   scene: ChatScene;
   cast: Character[];
   persona: ResolvedPersona;
-  group: boolean;
+  isGroup: boolean;
 }
 
 const RETRIES = 3;
@@ -26,8 +28,8 @@ export function useThreadScene(threadId: string | null | undefined): ThreadScene
   const personas = useCharactersStore((s) => s.personas);
   const status = useCharactersStore((s) => s.status);
   const personasStatus = useCharactersStore((s) => s.personasStatus);
-  // The persona falls back to the profile name, so follow it too.
-  const profileName = useUserProfileStore((s) => `${s.nickname}|${s.displayName}`);
+  // The persona falls back to the account's name, so follow it too.
+  const accountName = useAccountName();
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -58,11 +60,14 @@ export function useThreadScene(threadId: string | null | undefined): ThreadScene
   }, [scene, status, personasStatus]);
 
   return useMemo(() => {
-    if (!scene) return null;
+    if (!scene || !threadId) return null;
     const cast = castOf(scene, characters);
     if (cast.length === 0) return null;
-    return { scene, cast, persona: resolvePersona(scene, personas), group: cast.length > 1 };
-    // profileName is read through resolvePersona's store access.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, characters, personas, profileName]);
+    return { threadId, scene, cast, persona: resolvePersona(scene, personas, accountName), isGroup: cast.length > 1 };
+  }, [threadId, scene, characters, personas, accountName]);
+}
+
+/** Whether this thread is a character chat, for UI outside CharacterStage. */
+export function useIsCharacterChat(threadId: string | null | undefined): boolean {
+  return useThreadScene(threadId) !== null;
 }

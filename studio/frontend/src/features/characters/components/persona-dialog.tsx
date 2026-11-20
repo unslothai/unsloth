@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { errorMessage } from "@/lib/error-message";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -19,9 +20,10 @@ import { openFilePicker } from "@/lib/open-file-picker";
 import { toast } from "@/lib/toast";
 import { ImageUpload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
-import { createPersona, errorText, removePersonaAvatar, updatePersona, uploadPersonaAvatar } from "../api";
-import { PICTURE_ACCEPT, pictureFits } from "../images";
+import { useObjectUrl } from "@/hooks/use-object-url";
+import { useEffect, useState } from "react";
+import { createPersona, removePersonaAvatar, updatePersona, uploadPersonaAvatar } from "../api";
+import { applyAvatarChoice, AVATAR_ACCEPT, avatarFits, type AvatarChoice } from "../avatar-upload";
 import { useCharactersStore } from "../store";
 import type { Persona } from "../types";
 import { Portrait } from "./portrait";
@@ -37,23 +39,17 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
   const [name, setName] = useState("");
   const [about, setAbout] = useState("");
   const [isDefault, setIsDefault] = useState(false);
-  const [picture, setPicture] = useState<File | null | "remove">(null);
+  const [avatar, setAvatar] = useState<AvatarChoice>(null);
   const [saving, setSaving] = useState(false);
   // A persona this dialog created, kept so a retry after a failed portrait upload updates it.
   const [created, setCreated] = useState<Persona | null>(null);
-  const previewUrl = useMemo(
-    () => (picture instanceof File ? URL.createObjectURL(picture) : null),
-    [picture],
-  );
-  useEffect(() => () => {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-  }, [previewUrl]);
+  const previewUrl = useObjectUrl(avatar instanceof File ? avatar : null);
   useEffect(() => {
     if (!open) return;
     setName(persona?.name ?? "");
     setAbout(persona?.description ?? "");
     setIsDefault(persona?.isDefault ?? false);
-    setPicture(null);
+    setAvatar(null);
     setCreated(null);
   }, [open, persona]);
 
@@ -69,21 +65,20 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
         setCreated(saved);
         useCharactersStore.getState().upsertPersona(saved);
       }
-      if (picture instanceof File) saved = await uploadPersonaAvatar(saved.id, picture);
-      else if (picture === "remove" && saved.hasAvatar) saved = await removePersonaAvatar(saved.id);
+      saved = await applyAvatarChoice(saved, avatar, uploadPersonaAvatar, removePersonaAvatar);
       useCharactersStore.getState().upsertPersona(saved);
       if (saved.isDefault) await useCharactersStore.getState().refreshPersonas().catch(() => undefined);
       onClose();
     } catch (error) {
       toast.error(t("characters.personas.saveFailed"), {
-        description: errorText(error),
+        description: errorMessage(error),
       });
     } finally {
       setSaving(false);
     }
   }
 
-  const showImage = picture === "remove" ? false : Boolean(previewUrl) || Boolean(persona?.hasAvatar);
+  const showAvatar = avatar === "remove" ? false : Boolean(previewUrl) || Boolean(persona?.hasAvatar);
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="sm:max-w-lg">
@@ -101,11 +96,8 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
           <div className="flex items-center gap-4">
             <Portrait
               kind="persona"
-              id={persona?.id}
-              name={name || "?"}
-              hasImage={showImage}
-              rev={persona?.avatarRev ?? 0}
-              imageUrl={previewUrl ?? (picture === "remove" ? null : undefined)}
+              subject={{ id: persona?.id, name: name || "?", hasAvatar: showAvatar, avatarRev: persona?.avatarRev ?? 0 }}
+              imageUrl={previewUrl ?? (avatar === "remove" ? null : undefined)}
               className="size-16 rounded-2xl text-[1.6rem]"
             />
             <div className="flex flex-wrap gap-2">
@@ -114,16 +106,16 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
                 variant="outline"
                 size="sm"
                 onClick={() =>
-                  openFilePicker(PICTURE_ACCEPT, ([file]) => {
-                    if (file && pictureFits(file, t)) setPicture(file);
+                  openFilePicker(AVATAR_ACCEPT, ([file]) => {
+                    if (file && avatarFits(file, t)) setAvatar(file);
                   })
                 }
               >
                 <HugeiconsIcon icon={ImageUpload01Icon} strokeWidth={1.75} className="size-icon" />
-                {showImage ? t("characters.editor.changePicture") : t("characters.editor.uploadPicture")}
+                {showAvatar ? t("characters.editor.changePicture") : t("characters.editor.uploadPicture")}
               </Button>
-              {showImage ? (
-                <Button type="button" variant="ghost" size="sm" onClick={() => setPicture("remove")}>
+              {showAvatar ? (
+                <Button type="button" variant="ghost" size="sm" onClick={() => setAvatar("remove")}>
                   {t("characters.editor.removePicture")}
                 </Button>
               ) : null}

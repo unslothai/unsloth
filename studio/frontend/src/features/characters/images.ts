@@ -5,19 +5,16 @@ import { useEffect, useState } from "react";
 import { openImageViewer } from "@/components/image-viewer";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
-import { toast } from "@/lib/toast";
-import { fetchImage } from "./api";
-import { isTitle } from "./prompt/speakers";
+import { fetchAvatar, type AvatarKind } from "./api";
+import { AVATAR_TYPES } from "./avatar-upload";
 
-type Kind = "character" | "persona";
-
-// One URL per picture: a new revision replaces (and revokes) the old one, so edits never pile up blobs.
+// One URL per avatar: a new revision replaces (and revokes) the old one, so edits never pile up blobs.
 const cache = new BlobUrlCache(Number.POSITIVE_INFINITY);
 const cachedRevs = new Map<string, number>();
 const pending = new Map<string, Promise<string | null>>();
 let generation = 0;
 
-function slot(kind: Kind, id: string): string {
+function slot(kind: AvatarKind, id: string): string {
   return `${kind}:${id}`;
 }
 
@@ -25,7 +22,7 @@ function cachedUrl(key: string, rev: number): string | undefined {
   return cachedRevs.get(key) === rev ? cache.get(key) : undefined;
 }
 
-function loadImageUrl(kind: Kind, id: string, rev: number): Promise<string | null> {
+function loadAvatarUrl(kind: AvatarKind, id: string, rev: number): Promise<string | null> {
   const key = slot(kind, id);
   const known = cachedUrl(key, rev);
   if (known) return Promise.resolve(known);
@@ -33,7 +30,7 @@ function loadImageUrl(kind: Kind, id: string, rev: number): Promise<string | nul
   const hit = pending.get(pendingKey);
   if (hit) return hit;
   const started = generation;
-  const request = fetchImage(kind, id, rev)
+  const request = fetchAvatar(kind, id, rev)
     .then((blob) => {
       if (started !== generation) return null;
       // An older revision landing late must not replace a newer picture.
@@ -52,14 +49,14 @@ function loadImageUrl(kind: Kind, id: string, rev: number): Promise<string | nul
   return request;
 }
 
-/** The picture's object URL, or null while loading, when there is none, or when it failed. */
-export function useImageUrl(
-  kind: Kind,
+/** The avatar's object URL, or null while loading, when there is none, or when it failed. */
+export function useAvatarUrl(
+  kind: AvatarKind,
   id: string | null | undefined,
   rev: number,
-  hasImage: boolean,
+  hasAvatar: boolean,
 ): string | null {
-  const key = id && hasImage ? slot(kind, id) : null;
+  const key = id && hasAvatar ? slot(kind, id) : null;
   const [url, setUrl] = useState<string | null>(() => (key ? (cachedUrl(key, rev) ?? null) : null));
   useEffect(() => {
     if (!key || !id) {
@@ -72,7 +69,7 @@ export function useImageUrl(
       return;
     }
     let live = true;
-    void loadImageUrl(kind, id, rev).then((next) => {
+    void loadAvatarUrl(kind, id, rev).then((next) => {
       if (live) setUrl(next);
     });
     return () => {
@@ -165,46 +162,14 @@ if (typeof window !== "undefined") {
   });
 }
 
-const MAX_PICTURE_BYTES = 20 * 1024 * 1024;
-export const PICTURE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif";
-
-/** False, with a toast, for a picture over the server's upload limit. */
-export function pictureFits(file: File, t: (key: "characters.editor.pictureTooLarge") => string): boolean {
-  if (file.size <= MAX_PICTURE_BYTES) return true;
-  toast.error(t("characters.editor.pictureTooLarge"));
-  return false;
-}
-
-const EXTENSIONS: Record<string, string> = { "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
-
-export function viewPicture(kind: Kind, id: string, name: string, rev: number): void {
+export function viewAvatar(kind: AvatarKind, id: string, name: string, rev: number): void {
   const base = name.trim().replace(/[\\/:*?"<>|]+/g, "_") || kind;
   openImageViewer([
     {
       key: `${slot(kind, id)}:${rev}`,
       title: name,
-      fileName: (contentType) => `${base}.${EXTENSIONS[contentType] ?? "png"}`,
-      load: () => fetchImage(kind, id, rev),
+      fileName: (contentType) => `${base}.${AVATAR_TYPES[contentType]?.[0] ?? "png"}`,
+      load: () => fetchAvatar(kind, id, rev),
     },
   ]);
-}
-
-const HUES = [12, 28, 160, 190, 215, 250, 280, 330];
-
-/** A stable hue per name, so a portrait-less character keeps its color everywhere. */
-export function nameHue(name: string): number {
-  let hash = 0;
-  for (const char of name) hash = (hash * 31 + char.codePointAt(0)!) >>> 0;
-  return HUES[hash % HUES.length];
-}
-
-export function initials(name: string): string {
-  // "Inspector Theo Lindqvist" is TL, not IL.
-  const all = name.trim().split(/\s+/).filter(Boolean);
-  const start = all.findIndex((word) => !isTitle(word));
-  const words = start > 0 ? all.slice(start) : all;
-  if (words.length === 0) return "?";
-  const first = [...words[0]][0] ?? "";
-  const second = words.length > 1 ? ([...words[words.length - 1]][0] ?? "") : "";
-  return (first + second).toUpperCase();
 }

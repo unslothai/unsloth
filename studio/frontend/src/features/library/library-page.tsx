@@ -63,7 +63,7 @@ import { useFavoriteChatMatches } from "./chats/favorites";
 import { useChatFavoritesStore } from "./chats/favorites-store";
 import { CardSelectionContext } from "./components/card-selection";
 import { FolderGrid, ItemCard, Masonry } from "./components/library-cards";
-import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
+import { ConfirmDestructiveDialog } from "@/components/confirm-destructive-dialog";
 import { NameDialog } from "./components/library-dialogs";
 import { LibraryList } from "./components/library-list";
 import { LibraryPreview } from "./components/library-preview";
@@ -1212,7 +1212,7 @@ function LibraryView({
         onSubmit={submitName}
         onOpenChange={(open) => !open && setNameDialog(null)}
       />
-      <ConfirmDeleteDialog
+      <ConfirmDestructiveDialog
         open={pendingDelete !== null}
         title={deleteText?.title ?? ""}
         description={deleteText?.description ?? ""}

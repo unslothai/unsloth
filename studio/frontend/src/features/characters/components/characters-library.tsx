@@ -7,14 +7,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { useNativeFileDrop } from "@/features/native-intents";
 import { useT } from "@/i18n";
-import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { PlusSignIcon, Search01Icon, StarIcon, Upload01Icon, UserGroupIcon, WinkingIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { CARD_EXTENSIONS, importCards, pickCardFiles, startCharacterChat, toggleFavorite } from "../actions";
-import { errorText } from "../api";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { CARD_EXTENSIONS, importCards, pickCardFiles, toggleFavorite, useOpenCharacterChat } from "../actions";
 import {
   filterCharacters,
   groupTags,
@@ -27,7 +25,8 @@ import {
 import { useCharactersStore } from "../store";
 import type { Character } from "../types";
 import { CharacterCard } from "./character-card";
-import { CharactersPageHeader, LoadFailed } from "./characters-page-header";
+import { CharactersPageHeader } from "./characters-page-header";
+import { LoadFailed } from "./load-failed";
 import { GroupSelectBar } from "./group-select-bar";
 
 const TAG_CHIPS = 10;
@@ -45,7 +44,6 @@ export function CharactersLibrary() {
   const [sort, setSort] = useState<SortKey>(readSort);
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
-  const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     void refresh().catch(() => undefined);
@@ -59,28 +57,14 @@ export function CharactersLibrary() {
   );
   const selected = useMemo(() => liveSelection(picked, characters), [picked, characters]);
 
-  // Drag-and-drop anywhere on the page, the desktop app included.
+  // useNativeFileDrop also catches drops in Unsloth Desktop.
   const drop = useNativeFileDrop({
     onFiles: (files) => void importCards(files, t),
     accept: CARD_EXTENSIONS,
     multiple: true,
   });
 
-  const startChat = useCallback(
-    async (ids: string[]) => {
-      if (starting) return;
-      setStarting(true);
-      try {
-        const threadId = await startCharacterChat(ids);
-        void navigate({ to: "/chat", search: { thread: threadId } });
-      } catch (error) {
-        toast.error(t("characters.chat.startFailed"), { description: errorText(error) });
-      } finally {
-        setStarting(false);
-      }
-    },
-    [navigate, starting, t],
-  );
+  const { open: startChat, starting } = useOpenCharacterChat();
 
   const newCharacter = () => void navigate({ to: "/characters/$characterId/edit", params: { characterId: "new" } });
   const loading = status === "idle" || status === "loading";

@@ -2,53 +2,36 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChipInput } from "@/components/chip-input";
-import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
+import { ConfirmDestructiveDialog } from "@/components/confirm-destructive-dialog";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
-import { getInferenceStatus } from "@/features/chat/api/chat-api";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
+import { useLoadedContextLength } from "@/hooks/use-loaded-context-length";
 import { useLocale, useT } from "@/i18n";
 import { formatNumber } from "@/lib/intl-cache";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { ClampedNumberInput } from "../components/number-input";
-import { Card, Field, Section } from "../components/editor/editor-section";
+import { ClampedNumberInput } from "../components/clamped-number-input";
+import { EditorCard, EditorField, EditorSection } from "../components/editor/editor-section";
 import { GreetingsEditor } from "../components/editor/greetings-editor";
 import { PortraitPicker } from "../components/editor/portrait-picker";
-import { LorebookEditor } from "../components/lorebook-editor";
+import { LorebookEditor } from "../components/editor/lorebook-editor";
 import { addTags, MAX_TAG_CHARS, permanentPromptText } from "../draft";
+import { DEFAULT_NOTE_DEPTH } from "../prompt/defaults";
 import { useCharacterDraft } from "../hooks/use-character-draft";
 import { estimateTokenCount } from "@/lib/estimate-tokens";
-
-/** The loaded model's context length; read from the server when Chat has not loaded it into the store yet. */
-function useContextLength(): number | null {
-  const storeContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
-  const [statusContextLength, setStatusContextLength] = useState<number | null>(null);
-  useEffect(() => {
-    if (storeContextLength != null) return;
-    const controller = new AbortController();
-    getInferenceStatus(controller.signal)
-      .then((status) => setStatusContextLength(loadedContextFields(status).loadedContextLength))
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, [storeContextLength]);
-  return storeContextLength ?? statusContextLength;
-}
 
 export function CharacterEditorPage({ characterId }: { characterId: string | null }) {
   const t = useT();
   const locale = useLocale();
   const navigate = useNavigate();
-  const { original, draft, set, picture, setPicture, previewUrl, saving, showErrors, blocker, save } =
+  const { original, draft, set, avatar, setAvatar, previewUrl, saving, showErrors, blocker, save } =
     useCharacterDraft(characterId);
-  const contextLength = useContextLength();
+  const contextLength = useLoadedContextLength();
   useAppShellReadySignal();
 
   if (!draft) {
@@ -88,8 +71,8 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
 
       <div className="mt-7 grid gap-8 md:grid-cols-[260px_minmax(0,1fr)] lg:gap-12">
         <aside className="flex flex-col gap-5 md:sticky md:top-6 md:self-start">
-          <PortraitPicker original={original} name={draft.name} picture={picture} previewUrl={previewUrl} onChange={setPicture} />
-          <Field label={t("characters.editor.name")} htmlFor="character-name" error={showErrors && nameMissing ? t("characters.editor.nameRequired") : undefined}>
+          <PortraitPicker original={original} name={draft.name} avatar={avatar} previewUrl={previewUrl} onChange={setAvatar} />
+          <EditorField label={t("characters.editor.name")} htmlFor="character-name" error={showErrors && nameMissing ? t("characters.editor.nameRequired") : undefined}>
             <Input
               id="character-name"
               value={draft.name}
@@ -99,8 +82,8 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
               aria-invalid={showErrors && nameMissing}
               onChange={(event) => set("name", event.target.value)}
             />
-          </Field>
-          <Field label={t("characters.editor.tags")}>
+          </EditorField>
+          <EditorField label={t("characters.editor.tags")}>
             <ChipInput
               values={draft.tags}
               onAdd={(value) => set("tags", addTags(draft.tags, value))}
@@ -110,12 +93,12 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
               ariaLabel={t("characters.editor.tags")}
               removeLabel={(tag) => t("characters.editor.removeTag", { tag })}
             />
-          </Field>
+          </EditorField>
         </aside>
 
         <div className="flex min-w-0 flex-col gap-6">
-          <Card>
-            <Field label={t("characters.editor.description")} htmlFor="character-description" hint={t("characters.editor.descriptionHint")}>
+          <EditorCard>
+            <EditorField label={t("characters.editor.description")} htmlFor="character-description" hint={t("characters.editor.descriptionHint")}>
               <Textarea
                 id="character-description"
                 value={draft.description}
@@ -123,9 +106,9 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
                 className="max-h-[55vh] min-h-40 font-sans text-ui-15 leading-relaxed"
                 onChange={(event) => set("description", event.target.value)}
               />
-            </Field>
+            </EditorField>
             <p className="text-ui-12 text-muted-foreground">{t("characters.editor.macrosHint")}</p>
-          </Card>
+          </EditorCard>
 
           <GreetingsEditor
             firstMes={draft.firstMes}
@@ -138,17 +121,17 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
             {t("characters.editor.advanced")}
           </h2>
 
-          <Section title={t("characters.editor.personalitySection")} defaultOpen={Boolean(draft.personality || draft.scenario)}>
-            <Field label={t("characters.editor.personality")} htmlFor="character-personality" hint={t("characters.editor.personalityHint")}>
+          <EditorSection title={t("characters.editor.personalitySection")} defaultOpen={Boolean(draft.personality || draft.scenario)}>
+            <EditorField label={t("characters.editor.personality")} htmlFor="character-personality" hint={t("characters.editor.personalityHint")}>
               <Textarea id="character-personality" value={draft.personality} className="max-h-72 min-h-20 font-sans" onChange={(event) => set("personality", event.target.value)} />
-            </Field>
-            <Field label={t("characters.editor.scenario")} htmlFor="character-scenario" hint={t("characters.editor.scenarioHint")}>
+            </EditorField>
+            <EditorField label={t("characters.editor.scenario")} htmlFor="character-scenario" hint={t("characters.editor.scenarioHint")}>
               <Textarea id="character-scenario" value={draft.scenario} className="max-h-72 min-h-20 font-sans" onChange={(event) => set("scenario", event.target.value)} />
-            </Field>
-          </Section>
+            </EditorField>
+          </EditorSection>
 
-          <Section title={t("characters.editor.examplesSection")} defaultOpen={Boolean(draft.mesExample.trim())}>
-            <Field label={t("characters.editor.examplesSection")} htmlFor="character-examples" hint={t("characters.editor.examplesHint")}>
+          <EditorSection title={t("characters.editor.examplesSection")} defaultOpen={Boolean(draft.mesExample.trim())}>
+            <EditorField label={t("characters.editor.examplesSection")} htmlFor="character-examples" hint={t("characters.editor.examplesHint")}>
               <Textarea
                 id="character-examples"
                 value={draft.mesExample}
@@ -156,32 +139,32 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
                 className="max-h-[55vh] min-h-28 font-mono text-ui-13"
                 onChange={(event) => set("mesExample", event.target.value)}
               />
-            </Field>
-          </Section>
+            </EditorField>
+          </EditorSection>
 
-          <Section
+          <EditorSection
             title={t("characters.editor.promptSection")}
             defaultOpen={Boolean(draft.systemPrompt || draft.postHistoryInstructions || draft.depthPrompt?.prompt)}
           >
-            <Field label={t("characters.editor.systemPrompt")} htmlFor="character-system-prompt" hint={t("characters.editor.systemPromptHint")}>
+            <EditorField label={t("characters.editor.systemPrompt")} htmlFor="character-system-prompt" hint={t("characters.editor.systemPromptHint")}>
               <Textarea id="character-system-prompt" value={draft.systemPrompt} className="max-h-72 min-h-20 font-sans" onChange={(event) => set("systemPrompt", event.target.value)} />
-            </Field>
-            <Field label={t("characters.editor.postHistory")} htmlFor="character-post-history" hint={t("characters.editor.postHistoryHint")}>
+            </EditorField>
+            <EditorField label={t("characters.editor.postHistory")} htmlFor="character-post-history" hint={t("characters.editor.postHistoryHint")}>
               <Textarea
                 id="character-post-history"
                 value={draft.postHistoryInstructions}
                 className="max-h-72 min-h-16 font-sans"
                 onChange={(event) => set("postHistoryInstructions", event.target.value)}
               />
-            </Field>
-            <Field label={t("characters.editor.characterNote")} htmlFor="character-note" hint={t("characters.editor.characterNoteHint")}>
+            </EditorField>
+            <EditorField label={t("characters.editor.characterNote")} htmlFor="character-note" hint={t("characters.editor.characterNoteHint")}>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
                 <Textarea
                   id="character-note"
                   value={draft.depthPrompt?.prompt ?? ""}
                   className="max-h-60 min-h-16 flex-1 font-sans"
                   onChange={(event) =>
-                    set("depthPrompt", { prompt: event.target.value, depth: draft.depthPrompt?.depth ?? 4, role: draft.depthPrompt?.role ?? "system" })
+                    set("depthPrompt", { prompt: event.target.value, depth: draft.depthPrompt?.depth ?? DEFAULT_NOTE_DEPTH, role: draft.depthPrompt?.role ?? "system" })
                   }
                 />
                 <label className="flex shrink-0 flex-col gap-1 text-ui-12 text-muted-foreground" title={t("characters.editor.depthHint")}>
@@ -189,7 +172,7 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
                   <ClampedNumberInput
                     min={0}
                     max={100}
-                    value={draft.depthPrompt?.depth ?? 4}
+                    value={draft.depthPrompt?.depth ?? DEFAULT_NOTE_DEPTH}
                     className="h-9 w-20"
                     onChange={(depth) =>
                       set("depthPrompt", { prompt: draft.depthPrompt?.prompt ?? "", depth, role: draft.depthPrompt?.role ?? "system" })
@@ -197,10 +180,10 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
                   />
                 </label>
               </div>
-            </Field>
-          </Section>
+            </EditorField>
+          </EditorSection>
 
-          <Section title={t("characters.editor.lorebookSection")} defaultOpen={Boolean(draft.characterBook?.entries.length)}
+          <EditorSection title={t("characters.editor.lorebookSection")} defaultOpen={Boolean(draft.characterBook?.entries.length)}
             badge={draft.characterBook?.entries.length
               ? draft.characterBook.entries.length === 1
                 ? t("characters.lorebook.entriesOne")
@@ -208,10 +191,10 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
               : undefined}
           >
             <LorebookEditor book={draft.characterBook} onChange={(book) => set("characterBook", book)} />
-          </Section>
+          </EditorSection>
 
-          <Section title={t("characters.editor.groupSection")}>
-            <Field label={t("characters.editor.talkativeness")} hint={t("characters.editor.talkativenessHint")}>
+          <EditorSection title={t("characters.editor.groupSection")}>
+            <EditorField label={t("characters.editor.talkativeness")} hint={t("characters.editor.talkativenessHint")}>
               <div className="flex items-center gap-3">
                 <span className="text-ui-12 text-muted-foreground">{t("characters.editor.quiet")}</span>
                 <Slider
@@ -225,17 +208,17 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
                 />
                 <span className="text-ui-12 text-muted-foreground">{t("characters.editor.chatty")}</span>
               </div>
-            </Field>
-          </Section>
+            </EditorField>
+          </EditorSection>
 
-          <Section title={t("characters.editor.creatorSection")} defaultOpen={Boolean(draft.creatorNotes || draft.creator)}>
-            <Field label={t("characters.editor.creator")} htmlFor="character-creator">
+          <EditorSection title={t("characters.editor.creatorSection")} defaultOpen={Boolean(draft.creatorNotes || draft.creator)}>
+            <EditorField label={t("characters.editor.creator")} htmlFor="character-creator">
               <Input id="character-creator" value={draft.creator} maxLength={200} onChange={(event) => set("creator", event.target.value)} />
-            </Field>
-            <Field label={t("characters.editor.creatorNotes")} htmlFor="character-creator-notes" hint={t("characters.editor.creatorNotesHint")}>
+            </EditorField>
+            <EditorField label={t("characters.editor.creatorNotes")} htmlFor="character-creator-notes" hint={t("characters.editor.creatorNotesHint")}>
               <Textarea id="character-creator-notes" value={draft.creatorNotes} className="max-h-72 min-h-20 font-sans" onChange={(event) => set("creatorNotes", event.target.value)} />
-            </Field>
-          </Section>
+            </EditorField>
+          </EditorSection>
         </div>
       </div>
 
@@ -256,7 +239,7 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
         </div>
       </div>
 
-      <ConfirmDeleteDialog
+      <ConfirmDestructiveDialog
         open={blocker.status === "blocked"}
         title={t("characters.editor.unsavedTitle")}
         description={t("characters.editor.unsavedBody", { name: draft.name.trim() || t("characters.editor.newTitle") })}

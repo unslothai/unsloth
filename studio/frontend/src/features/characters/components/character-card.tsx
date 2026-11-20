@@ -21,7 +21,6 @@ type CharacterCardProps = {
   onEdit: () => void;
 };
 
-/** One character in the library grid: portrait first, name and a line of context on top of it. */
 export function CharacterCard({
   character,
   selecting,
@@ -59,10 +58,7 @@ export function CharacterCard({
         aria-label={character.name}
       >
         <Portrait
-          id={character.id}
-          name={character.name}
-          hasImage={character.hasAvatar}
-          rev={character.avatarRev}
+          subject={character}
           variant="card"
           className="aspect-[2/3] w-full"
         />

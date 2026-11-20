@@ -12,18 +12,17 @@ import { createContext, useContext, type ReactNode } from "react";
 import { MessageResponseModelBadge } from "@/components/assistant-ui/message-response-details-sheet";
 import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { Portrait } from "../components/portrait";
-import { RoleplayText } from "../components/roleplay-text";
+import { ActionText } from "../components/action-text";
 import { toggleOnStage } from "../stage-focus";
 import { hiddenRoleplayTurnKind, roleplayMetaOf } from "../meta";
 import { useCharactersStore } from "../store";
 import { useCharacterChat } from "./character-chat-context";
-import { useThreadScene } from "./use-thread-scene";
 
 /** The speaking character's name, so a reply's leading "Name:" can be hidden. */
-const RoleplaySpeakerNameContext = createContext<string | null>(null);
+const CharacterSpeakerNameContext = createContext<string | null>(null);
 
 export function useRoleplaySpeakerName(): string | null {
-  return useContext(RoleplaySpeakerNameContext);
+  return useContext(CharacterSpeakerNameContext);
 }
 
 /** When this message was written (a reply: when it finished), with the full date on hover. */
@@ -55,12 +54,12 @@ function MessageTime({ className }: { className?: string }) {
 /** Who said this reply: its stamped speaker, else the chat's only character. */
 function useReplySpeaker() {
   const thread = useCharacterChat();
-  const group = Boolean(thread?.group);
+  const isGroup = Boolean(thread?.isGroup);
   // Strings, not the record: a selector must return a stable value or the store re-renders forever.
   const speakerId = useAuiState(({ message, thread: state }) => {
     const meta = roleplayMetaOf(message);
     if (meta?.kind === "reply") return meta.speakerId;
-    if (!group || message.index < 1) return null;
+    if (!isGroup || message.index < 1) return null;
     // A reply saved without its speaker (an older run) answers the turn marker before it.
     const previous = roleplayMetaOf(state.messages[message.index - 1]);
     return previous?.kind === "turn" ? previous.speakerId : null;
@@ -73,16 +72,16 @@ function useReplySpeaker() {
   if (!thread) return null;
   if (speakerId) {
     const character = speaker ?? null;
-    return { id: speakerId, name: character?.name ?? speakerName, character, group: thread.group };
+    return { id: speakerId, name: character?.name ?? speakerName, character, isGroup: thread.isGroup };
   }
   if (thread.cast.length === 1) {
     const only = thread.cast[0];
-    return { id: only.id, name: only.name, character: only, group: false };
+    return { id: only.id, name: only.name, character: only, isGroup: false };
   }
   return null;
 }
 
-/** Who wrote a message: picture on the left, then name and time, then the message. Replies and the user's own messages share it. */
+/** Shared by replies and the user's own messages. */
 function SpeakerFrame({
   className,
   portrait,
@@ -124,16 +123,18 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   if (!speaker) return <>{children}</>;
   const character = speaker.character;
   return (
-    <RoleplaySpeakerNameContext.Provider value={speaker.name}>
+    <CharacterSpeakerNameContext.Provider value={speaker.name}>
       <SpeakerFrame
         className="roleplay-reply"
         speakerId={speaker.id}
         portrait={
           <Portrait
-            id={character?.id ?? speaker.id}
-            name={speaker.name}
-            hasImage={Boolean(character?.hasAvatar)}
-            rev={character?.avatarRev ?? 0}
+            subject={{
+              id: character?.id ?? speaker.id,
+              name: speaker.name,
+              hasAvatar: Boolean(character?.hasAvatar),
+              avatarRev: character?.avatarRev ?? 0,
+            }}
             label={character && thread ? t("characters.chat.showOnStage", { name: speaker.name }) : speaker.name}
             className={FRAME_PORTRAIT}
             onClick={
@@ -167,14 +168,13 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
       >
         {children}
       </SpeakerFrame>
-    </RoleplaySpeakerNameContext.Provider>
+    </CharacterSpeakerNameContext.Provider>
   );
 }
 
-/** Wraps the user's own message in a character chat the same way: the persona's picture, name and time. */
 export function RoleplayUserFrame({ children }: { children: ReactNode }) {
   const thread = useCharacterChat();
-  // Speaking as the account itself shows the account's own picture.
+  // Speaking as the account itself shows the account's own avatar.
   const profileAvatar = useUserProfileStore((s) => s.avatarDataUrl);
   if (!thread) return <>{children}</>;
   const { persona } = thread;
@@ -184,10 +184,7 @@ export function RoleplayUserFrame({ children }: { children: ReactNode }) {
       portrait={
         <Portrait
           kind="persona"
-          id={persona.id}
-          name={persona.name}
-          hasImage={persona.hasAvatar}
-          rev={persona.avatarRev}
+          subject={persona}
           imageUrl={persona.id ? undefined : profileAvatar}
           label={persona.name}
           className={FRAME_PORTRAIT}
@@ -207,24 +204,21 @@ export function RoleplayUserFrame({ children }: { children: ReactNode }) {
   );
 }
 
-/** For UI outside CharacterStage (the settings sheet): whether this thread is a character chat. */
-export function useIsRoleplayThread(threadId: string | null | undefined): boolean {
-  return useThreadScene(threadId) !== null;
-}
+export { useIsCharacterChat as useIsRoleplayThread } from "./use-thread-scene";
 
 /** The hidden bookkeeping turn this message is (the opening or a group turn marker), else null. */
 export function useHiddenRoleplayTurn(): "opening" | "turn" | null {
   return useAuiState(({ message }) => hiddenRoleplayTurnKind(message));
 }
 
-function RoleplayUserText() {
+function CharacterUserText() {
   const { text } = useMessagePartTextSafe();
-  return <RoleplayText text={text} className="whitespace-pre-wrap" />;
+  return <ActionText text={text} className="whitespace-pre-wrap" />;
 }
 
-const ROLEPLAY_USER_PARTS = { Text: RoleplayUserText };
+const CHARACTER_USER_PARTS = { Text: CharacterUserText };
 
 /** In a character chat, *actions* in the user's own messages read as italics too. */
-export function useRoleplayUserParts(): typeof ROLEPLAY_USER_PARTS | undefined {
-  return useCharacterChat() ? ROLEPLAY_USER_PARTS : undefined;
+export function useRoleplayUserParts(): typeof CHARACTER_USER_PARTS | undefined {
+  return useCharacterChat() ? CHARACTER_USER_PARTS : undefined;
 }

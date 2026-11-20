@@ -14,8 +14,6 @@ import {
 import { mergeCharacters } from "./meta";
 import type { Character, ChatScene, Persona } from "./types";
 
-export { isCharacterChat } from "./chat-gate";
-
 type LoadState = "idle" | "loading" | "ready" | "error";
 
 interface CharactersState {

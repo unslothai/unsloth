@@ -3,8 +3,8 @@
 
 import { Fragment, type ReactNode } from "react";
 
-/** Plain roleplay prose for previews: *actions* in italics, everything else as typed. */
-export function RoleplayText({ text, className }: { text: string; className?: string }) {
+/** Character prose for previews: *actions* in italics, everything else as typed. */
+export function ActionText({ text, className }: { text: string; className?: string }) {
   const parts: ReactNode[] = [];
   const pattern = /\*([^*\n]+)\*/g;
   let last = 0;

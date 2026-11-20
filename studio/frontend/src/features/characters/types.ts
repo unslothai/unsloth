@@ -4,6 +4,7 @@
 export type LorebookPosition = "before_char" | "after_char" | "at_depth";
 export type LorebookLogic = "and_any" | "not_all" | "not_any" | "and_all";
 
+// CCv2 character_book shape, kept snake_case as stored in cards.
 export interface LorebookEntry {
   id: string | number;
   keys: string[];

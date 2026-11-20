@@ -19,6 +19,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { pickCardFiles } from "../actions";
+import { LoadFailed } from "../components/load-failed";
 import { Portrait } from "../components/portrait";
 import { useCharactersStore } from "../store";
 
@@ -38,14 +39,14 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
   const order = useCharactersStore((s) => s.order);
   const status = useCharactersStore((s) => s.status);
   const [query, setQuery] = useState("");
-  const [several, setSeveral] = useState(mode === "add");
+  const [multiSelect, setMultiSelect] = useState(mode === "add");
   const [picked, setPicked] = useState<string[]>([]);
 
   useEffect(() => {
     if (!open) return;
     setQuery("");
     setPicked([]);
-    setSeveral(mode === "add");
+    setMultiSelect(mode === "add");
     if (useCharactersStore.getState().status !== "ready") void useCharactersStore.getState().refresh().catch(() => undefined);
   }, [open, mode]);
 
@@ -61,7 +62,7 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
   }, [order, characters, excludeKey, query]);
 
   function choose(id: string) {
-    if (!several) {
+    if (!multiSelect) {
       onPick([id]);
       return;
     }
@@ -96,16 +97,13 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
             {mode === "start" ? (
               <label className="flex items-center justify-between gap-3 px-1 text-ui-13 text-muted-foreground">
                 {t("characters.picker.group")}
-                <Switch checked={several} onCheckedChange={(next) => { setSeveral(next); setPicked([]); }} />
+                <Switch checked={multiSelect} onCheckedChange={(next) => { setMultiSelect(next); setPicked([]); }} />
               </label>
             ) : null}
             <ul className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2" data-testid="character-picker-list">
               {status === "error" && order.length === 0 ? (
-                <li className="flex flex-col items-center gap-2 py-6 text-center text-ui-14 text-muted-foreground" role="alert">
-                  {t("characters.loadFailed")}
-                  <Button variant="outline" size="sm" onClick={() => void useCharactersStore.getState().refresh().catch(() => undefined)}>
-                    {t("characters.retry")}
-                  </Button>
+                <li>
+                  <LoadFailed compact={true} onRetry={() => void useCharactersStore.getState().refresh().catch(() => undefined)} />
                 </li>
               ) : list.length === 0 ? (
                 <li className="py-6 text-center text-ui-14 text-muted-foreground">{t("characters.noMatches")}</li>
@@ -117,17 +115,14 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
                       <button
                         type="button"
                         onClick={() => choose(character.id)}
-                        aria-pressed={several ? selected : undefined}
+                        aria-pressed={multiSelect ? selected : undefined}
                         className={cn(
                           "flex w-full cursor-pointer items-center gap-3 rounded-2xl px-2 py-2 text-left transition-colors hover:bg-muted dark:hover:bg-card",
                           selected && "bg-primary/10 hover:bg-primary/15",
                         )}
                       >
                         <Portrait
-                          id={character.id}
-                          name={character.name}
-                          hasImage={character.hasAvatar}
-                          rev={character.avatarRev}
+                          subject={character}
                           className="size-11 rounded-[14px] text-[0.9rem]"
                         />
                         <span className="min-w-0 flex-1">
@@ -136,7 +131,7 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
                             {character.tags.slice(0, 4).join(" · ") || character.creator}
                           </span>
                         </span>
-                        {several ? (
+                        {multiSelect ? (
                           <span
                             className={cn(
                               "flex size-5 shrink-0 items-center justify-center rounded-full border-2 border-border",
@@ -180,7 +175,7 @@ export function CharacterPickerDialog({ open, mode, exclude = [], onClose, onPic
               {t("characters.newCharacter")}
             </Button>
           </div>
-          {several ? (
+          {multiSelect ? (
             <Button
               variant="dark"
               disabled={picked.length < (mode === "add" ? 1 : 2)}

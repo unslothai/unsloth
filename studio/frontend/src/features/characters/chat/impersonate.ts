@@ -7,8 +7,7 @@ import { localCompactionFields, localSamplingFields } from "@/features/chat/api/
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { getLocale, translate } from "@/i18n";
 import { readFastApiError } from "@/lib/format-fastapi-error";
-import { loadParticipants, textOf, toPromptCharacter } from "../chat-runtime";
-import { roleplayMetaOf } from "../meta";
+import { loadParticipants, promptHistoryOf, toPromptCharacter } from "../chat-runtime";
 import { buildImpersonationMessages, stripSpeakerPrefix } from "../prompt/build";
 import { useCharactersStore } from "../store";
 
@@ -17,18 +16,13 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
   const scene = useCharactersStore.getState().scenes[threadId];
   if (!scene) throw new Error(translate("characters.chat.noCast", undefined, getLocale()));
   const { cast, persona } = await loadParticipants(scene);
-  const chat = messages.filter((m) => m.role === "user" || m.role === "assistant");
-  const stamp = (message: ThreadMessage | undefined) =>
-    message?.createdAt instanceof Date && !Number.isNaN(message.createdAt.getTime()) ? message.createdAt : undefined;
+  // Pinned like a character reply's prompt, so a draft reuses the same cached system block.
+  const { input } = promptHistoryOf(threadId, messages);
   const prompt = buildImpersonationMessages({
     cast: cast.map(toPromptCharacter),
     persona: { name: persona.name, description: persona.description },
     scene: scene.settings,
-    // Pinned like a character reply's prompt, so a draft reuses the same cached system block.
-    seed: threadId,
-    startedAt: stamp(chat[0]),
-    now: stamp(chat[chat.length - 1]),
-    history: chat.map((m) => ({ role: m.role as "user" | "assistant", text: textOf(m), meta: roleplayMetaOf(m) })),
+    ...input,
   });
   const state = useChatRuntimeStore.getState();
   const { params } = state;

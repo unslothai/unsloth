@@ -12,14 +12,18 @@ export function pickPersona(scene: ChatScene | null, personas: Persona[]): Perso
   return personas.find((p) => p.id === scene.personaId) ?? fallback;
 }
 
-type MessageLike = { role?: string; metadata?: unknown };
+export type MessageLike = { role?: string; metadata?: unknown };
 
-/** The roleplay record on a thread message (`metadata.custom.roleplay`) or a stored one (`metadata.roleplay`). */
-export function roleplayMetaOf(message: MessageLike | null | undefined): RoleplayMessageMeta | null {
+/** The raw roleplay record on a thread message (`metadata.custom.roleplay`) or a stored one (`metadata.roleplay`). */
+function roleplayRecordOf(message: MessageLike | null | undefined): Record<string, unknown> | undefined {
   const metadata = message?.metadata as Record<string, unknown> | null | undefined;
-  if (!metadata) return null;
+  if (!metadata) return undefined;
   const custom = (metadata.custom as Record<string, unknown> | undefined) ?? metadata;
-  const value = custom?.roleplay as Record<string, unknown> | undefined;
+  return custom?.roleplay as Record<string, unknown> | undefined;
+}
+
+export function roleplayMetaOf(message: MessageLike | null | undefined): RoleplayMessageMeta | null {
+  const value = roleplayRecordOf(message);
   if (!value || typeof value !== "object" || typeof value.kind !== "string") return null;
   switch (value.kind) {
     case "opening":
@@ -53,10 +57,17 @@ export function isHiddenRoleplayTurn(message: MessageLike | null | undefined): b
 
 /** The planned speakers for a group round, stamped on its first reply. */
 export function roundPlanOf(message: MessageLike | null | undefined): string[] | null {
-  const metadata = message?.metadata as Record<string, unknown> | null | undefined;
-  const custom = (metadata?.custom as Record<string, unknown> | undefined) ?? metadata;
-  const plan = (custom?.roleplay as Record<string, unknown> | undefined)?.plan;
+  const plan = roleplayRecordOf(message)?.plan;
   return Array.isArray(plan) && plan.every((id) => typeof id === "string") ? (plan as string[]) : null;
+}
+
+/** The newest speaker among replies (and, if asked, turn markers). */
+export function lastSpeakerId(messages: readonly MessageLike[], includeTurns = false): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const meta = roleplayMetaOf(messages[i]);
+    if (meta?.kind === "reply" || (includeTurns && meta?.kind === "turn")) return meta.speakerId;
+  }
+  return null;
 }
 
 /** Keeps unchanged records (and the map itself) so a refetch doesn't re-render readers. */

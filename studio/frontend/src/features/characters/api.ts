@@ -14,10 +14,6 @@ import type {
 
 const CHARACTERS_API = "/api/characters";
 
-export function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 class CharactersApiError extends Error {
   readonly status: number;
   constructor(message: string, status: number) {
@@ -126,8 +122,10 @@ export async function removeCharacterAvatar(id: string): Promise<Character> {
   );
 }
 
-// rev is in the URL because the server marks pictures immutable: a new picture needs a new URL.
-export async function fetchImage(kind: "character" | "persona", id: string, rev: number): Promise<Blob> {
+export type AvatarKind = "character" | "persona";
+
+// rev is in the URL because the server marks avatars immutable: a new avatar needs a new URL.
+export async function fetchAvatar(kind: AvatarKind, id: string, rev: number): Promise<Blob> {
   const path =
     kind === "character"
       ? `${CHARACTERS_API}/${encodeURIComponent(id)}/avatar?rev=${rev}`

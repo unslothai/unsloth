@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatActivityTime } from "@/features/library/format";
 import { useLocale, useT } from "@/i18n";
-import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft01Icon,
@@ -19,13 +18,13 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { startCharacterChat, toggleFavorite } from "../actions";
-import { errorText, getCharacter, isNotFound, listCharacterChats } from "../api";
-import { resolvePersona } from "../chat-runtime";
+import { toggleFavorite, useOpenCharacterChat } from "../actions";
+import { getCharacter, isNotFound, listCharacterChats } from "../api";
+import { resolvePersona, useAccountName } from "../persona";
 import { CharacterActionsMenu } from "../components/character-actions-menu";
 import { Portrait } from "../components/portrait";
-import { RoleplayText } from "../components/roleplay-text";
-import { viewPicture } from "../images";
+import { ActionText } from "../components/action-text";
+import { viewAvatar } from "../images";
 import { applyMacros } from "../prompt/macros";
 import { useCharactersStore } from "../store";
 import type { CharacterChatSummary } from "../types";
@@ -40,7 +39,8 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
   const personas = useCharactersStore((s) => s.personas);
   const [missing, setMissing] = useState(false);
   const [chats, setChats] = useState<CharacterChatSummary[] | null>(null);
-  const [starting, setStarting] = useState(false);
+  const { open: openChat, starting } = useOpenCharacterChat();
+  const accountName = useAccountName();
   const [notesOpen, setNotesOpen] = useState(false);
   useAppShellReadySignal();
 
@@ -64,22 +64,9 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
   // Addressed to the persona a new chat would use, as the chat itself will be.
   const greeting = useMemo(() => {
     if (!character) return "";
-    const user = resolvePersona(null, personas).name || "User";
+    const user = resolvePersona(null, personas, accountName).name || "User";
     return applyMacros(character.firstMes, { char: character.name, user }).trim();
-  }, [character, personas]);
-
-  async function chat() {
-    if (!character || starting) return;
-    setStarting(true);
-    try {
-      const threadId = await startCharacterChat([character.id]);
-      void navigate({ to: "/chat", search: { thread: threadId } });
-    } catch (error) {
-      toast.error(t("characters.chat.startFailed"), { description: errorText(error) });
-    } finally {
-      setStarting(false);
-    }
-  }
+  }, [character, personas, accountName]);
 
   if (missing && !character) {
     return (
@@ -118,14 +105,11 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
       <div className="mt-5 grid gap-8 md:grid-cols-[minmax(0,300px)_1fr] lg:gap-12">
         <div className="md:sticky md:top-8 md:self-start">
           <Portrait
-            id={character.id}
-            name={character.name}
-            hasImage={character.hasAvatar}
-            rev={character.avatarRev}
+            subject={character}
             variant="card"
             label={t("characters.actions.viewPicture")}
             className="aspect-[2/3] w-full max-w-75 rounded-[28px] shadow-[0_24px_48px_-28px_rgb(0_0_0/0.55)] max-md:mx-auto max-md:max-w-60"
-            onClick={character.hasAvatar ? () => viewPicture("character", character.id, character.name, character.avatarRev) : undefined}
+            onClick={character.hasAvatar ? () => viewAvatar("character", character.id, character.name, character.avatarRev) : undefined}
           />
         </div>
 
@@ -161,7 +145,7 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
               </div>
             ) : null}
             <div className="mt-1 flex flex-wrap items-center gap-2">
-              <Button variant="primary" className="rounded-full px-5" disabled={starting} onClick={() => void chat()}>
+              <Button variant="primary" className="rounded-full px-5" disabled={starting} onClick={() => void openChat([character.id])}>
                 <HugeiconsIcon icon={BubbleChatIcon} strokeWidth={1.75} className="size-icon" />
                 {t("characters.actions.chat")}
               </Button>
@@ -199,7 +183,7 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
           {greeting ? (
             <section className="relative rounded-[22px] bg-muted/70 px-5 py-4 dark:bg-card">
               <p className="line-clamp-6 whitespace-pre-wrap font-sans text-ui-15 leading-relaxed text-foreground/90 [font-weight:410]">
-                <RoleplayText text={greeting} />
+                <ActionText text={greeting} />
               </p>
               <p className="mt-2 text-ui-12 text-muted-foreground">
                 {greetingsCount === 1

@@ -3,6 +3,7 @@
 
 import { escapeRegExp } from "../../../lib/escape-regexp.ts";
 import type { DepthPrompt, Lorebook, RoleplayMessageMeta, SceneSettings } from "../types";
+import { DEFAULT_NOTE_DEPTH } from "./defaults.ts";
 import { activateLorebook, loreBudget, type ActivatedLore } from "./lorebook.ts";
 import { applyMacros, applyNameMacros } from "./macros.ts";
 import { seededRandom, shortName } from "./speakers.ts";
@@ -63,7 +64,7 @@ export interface BuiltPrompt {
   lore: ActivatedLore;
   sections: PromptSection[];
   /** History is written with speaker names: a group, or a chat that was one. */
-  named: boolean;
+  namesTurns: boolean;
   /** The user's name as turns and stop strings write it; "Rin (you)" when a character is also Rin. */
   user: string;
 }
@@ -186,37 +187,15 @@ function characterSection(character: PromptCharacter, expand: (value: string) =>
 
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
-export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
-  const now = input.now ?? new Date();
-  const systemNow = input.startedAt ?? now;
-  const cast = input.cast;
-  const speaker = cast.find((c) => c.id === input.speakerId) ?? cast[0];
-  if (!speaker) throw new Error("A character chat needs at least one character.");
-  const group = cast.length > 1;
-  const names = cast.map((c) => c.name);
-  const history = input.history;
-  const persona = input.persona.name || "User";
-  const spoken = new Map<string, string>();
-  for (const entry of history) if (entry.meta?.kind === "reply") spoken.set(entry.meta.speakerId, entry.meta.speakerName);
-  // A persona sharing a character's name would read as that character in turns and stop strings.
-  const user = [...names, ...spoken.values()].some((name) => sameName(name, persona)) ? `${persona} (you)` : persona;
-  // In a group these must not name whoever is speaking, or the system block would change every turn.
-  const steadyChar = group ? cast[0].name : speaker.name;
-  const seed = input.seed ?? "";
-  // System text rolls once per chat; per-turn text once per turn, so a retry reads the same.
-  const expand = (value: string, options: { char?: string; original?: string; turn?: boolean } = {}) =>
-    applyMacros(value, {
-      char: options.char ?? speaker.name,
-      user,
-      now: options.turn ? now : systemNow,
-      group: names,
-      original: options.original,
-      random: seededRandom(`${seed}\u0001${options.turn ? history.length : "system"}\u0001${value}`),
-    });
+const isHiddenTurn = (meta: RoleplayMessageMeta | null | undefined) => meta?.kind === "opening" || meta?.kind === "turn";
 
+type Expand = (value: string, options?: { char?: string; original?: string; turn?: boolean }) => string;
+
+/** Fired lore for the whole cast, newest chat first, under one shared budget. */
+function castLore(cast: PromptCharacter[], history: HistoryEntry[], expand: Expand): ActivatedLore {
   const recent = [...history]
     .reverse()
-    .filter((entry) => entry.meta?.kind !== "opening" && entry.meta?.kind !== "turn")
+    .filter((entry) => !isHiddenTurn(entry.meta))
     .map((entry) => entry.text);
   const lore: ActivatedLore = { before: [], after: [], atDepth: [], fired: [] };
   // One budget for the whole cast, or each member's book would add its own.
@@ -228,7 +207,22 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     lore.atDepth.push(...activated.atDepth.map((d) => ({ ...d, content: expand(d.content, { char: member.name, turn: true }) })));
     lore.fired.push(...activated.fired);
   }
+  return lore;
+}
 
+function systemSections(args: {
+  cast: PromptCharacter[];
+  speaker: PromptCharacter;
+  group: boolean;
+  persona: { name: string; description: string };
+  personaName: string;
+  user: string;
+  steadyChar: string;
+  scene: SceneSettings;
+  lore: ActivatedLore;
+  expand: Expand;
+}): PromptSection[] {
+  const { cast, speaker, group, user, steadyChar, lore, expand } = args;
   const sections: PromptSection[] = [];
   const defaultFrame = expand(group ? GROUP_FRAME : SOLO_FRAME);
   const override = speaker.systemPrompt.trim() && !group ? speaker.systemPrompt : "";
@@ -242,9 +236,9 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     if (body) sections.push({ label: member.name, text: body });
   }
   if (lore.after.length) sections.push({ label: "More lore", text: lore.after.join("\n\n") });
-  const personaText = expand(input.persona.description, { char: steadyChar }).trim();
-  if (personaText) sections.push({ label: user === persona ? `${user} (you)` : user, text: personaText });
-  const sceneOverride = input.scene.scenario?.trim();
+  const personaText = expand(args.persona.description, { char: steadyChar }).trim();
+  if (personaText) sections.push({ label: user === args.personaName ? `${user} (you)` : user, text: personaText });
+  const sceneOverride = args.scene.scenario?.trim();
   const scenario = sceneOverride
     ? expand(sceneOverride, { char: steadyChar })
     : cast
@@ -265,17 +259,21 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
       text: `These examples show how ${group ? "the characters speak" : `${speaker.name} speaks`}. They are not part of the story.\n\n${examples.join("\n\n")}`,
     });
   }
-  const system = sections
-    .map((section, index) => (index === 0 ? section.text : `## ${section.label}\n${section.text}`))
-    .join("\n\n");
+  return sections;
+}
 
-  // An unanswered hidden turn (no greeting) would put two user turns in a row, which strict templates reject.
-  const sent = history.map(
-    (entry, index) =>
-      !(entry.meta?.kind === "opening" || entry.meta?.kind === "turn") || history[index + 1]?.role !== "user",
-  );
-  // A chat that was a group keeps its history attributed after its other members leave.
-  const named = group || history.some((entry) => entry.meta?.kind === "turn") || [...spoken.keys()].some((id) => id !== speaker.id);
+/** Each history entry as the lines its turn sends, before any notes are added. */
+function renderHistory(args: {
+  history: HistoryEntry[];
+  cast: PromptCharacter[];
+  speaker: PromptCharacter;
+  spoken: Map<string, string>;
+  steadyChar: string;
+  personaName: string;
+  user: string;
+  namesTurns: boolean;
+}): string[][] {
+  const { history, cast, speaker, spoken, steadyChar, user, namesTurns } = args;
   const nameOf = (id: string | undefined, fallback: string) =>
     cast.find((c) => c.id === id)?.name ?? (id ? spoken.get(id) : undefined) ?? fallback;
   // An untagged reply (from before the chat had a cast) keeps one author, not whoever speaks now.
@@ -285,7 +283,7 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     if (next?.role === "assistant") return steadyChar;
     return null;
   };
-  const parts: string[][] = history.map((entry, index) => {
+  return history.map((entry, index) => {
     const meta = entry.meta;
     const last = index === history.length - 1;
     // A marker asks the named character to speak again without a new user message.
@@ -293,24 +291,24 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     if (meta?.kind === "opening") return [entry.text.trim() || "[Start a new chat]"];
     if (entry.role === "assistant") {
       const name = replyNameOf(meta, cast, steadyChar);
-      return [replayedReply(entry.text, name, named, meta?.kind === "reply" ? meta.speakerName || name : name)];
+      return [replayedReply(entry.text, name, namesTurns, meta?.kind === "reply" ? meta.speakerName || name : name)];
     }
     // Names only: a re-rolled {{random}} or a fresh {{time}} would rewrite old turns on every send.
-    const text = applyNameMacros(entry.text, steadyChar, persona).trim();
-    const lines = [named ? `${user}: ${text}` : text];
-    const answeredBy = !last && named ? nextReplyName(index) : null;
+    const text = applyNameMacros(entry.text, steadyChar, args.personaName).trim();
+    const lines = [namesTurns ? `${user}: ${text}` : text];
+    const answeredBy = !last && namesTurns ? nextReplyName(index) : null;
     if (answeredBy) lines.push(nudgeText(answeredBy));
     return lines;
   });
+}
 
-  // Notes at a depth attach to the nearest user turn at or above that depth.
-  const injections: { depth: number; text: string }[] = [];
-  const note = input.scene.authorsNote;
-  if (note?.text?.trim()) injections.push({ depth: note.depth ?? 4, text: expand(note.text, { turn: true }) });
-  if (speaker.depthPrompt?.prompt.trim()) {
-    injections.push({ depth: speaker.depthPrompt.depth, text: expand(speaker.depthPrompt.prompt, { turn: true }) });
-  }
-  injections.push(...lore.atDepth.map((entry) => ({ depth: entry.depth, text: entry.content })));
+/** Attaches each note to the nearest sent user turn at or above its depth; returns which entries got one. */
+function injectDepthNotes(
+  parts: string[][],
+  history: HistoryEntry[],
+  sent: boolean[],
+  injections: { depth: number; text: string }[],
+): boolean[] {
   const noted = history.map(() => false);
   for (const injection of injections) {
     const start = Math.max(0, history.length - 1 - Math.max(0, injection.depth));
@@ -324,28 +322,82 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     parts[target].push(text.startsWith("[") ? text : `[${text}]`);
     noted[target] = true;
   }
+  return noted;
+}
+
+export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
+  const now = input.now ?? new Date();
+  const systemNow = input.startedAt ?? now;
+  const cast = input.cast;
+  const speaker = cast.find((c) => c.id === input.speakerId) ?? cast[0];
+  if (!speaker) throw new Error("A character chat needs at least one character.");
+  const group = cast.length > 1;
+  const names = cast.map((c) => c.name);
+  const history = input.history;
+  const personaName = input.persona.name || "User";
+  const spoken = new Map<string, string>();
+  for (const entry of history) if (entry.meta?.kind === "reply") spoken.set(entry.meta.speakerId, entry.meta.speakerName);
+  // A persona sharing a character's name would read as that character in turns and stop strings.
+  const user = [...names, ...spoken.values()].some((name) => sameName(name, personaName)) ? `${personaName} (you)` : personaName;
+  // In a group these must not name whoever is speaking, or the system block would change every turn.
+  const steadyChar = group ? cast[0].name : speaker.name;
+  const seed = input.seed ?? "";
+  // System text rolls once per chat; per-turn text once per turn, so a retry reads the same.
+  const expand: Expand = (value, options = {}) =>
+    applyMacros(value, {
+      char: options.char ?? speaker.name,
+      user,
+      now: options.turn ? now : systemNow,
+      group: names,
+      original: options.original,
+      random: seededRandom(`${seed}\u0001${options.turn ? history.length : "system"}\u0001${value}`),
+    });
+
+  const lore = castLore(cast, history, expand);
+  const sections = systemSections({
+    cast, speaker, group, persona: input.persona, personaName, user, steadyChar, scene: input.scene, lore, expand,
+  });
+  const system = sections
+    .map((section, index) => (index === 0 ? section.text : `## ${section.label}\n${section.text}`))
+    .join("\n\n");
+
+  // An unanswered hidden turn (no greeting) would put two user turns in a row, which strict templates reject.
+  const sent = history.map((entry, index) => !isHiddenTurn(entry.meta) || history[index + 1]?.role !== "user");
+  // A chat that was a group keeps its history attributed after its other members leave.
+  const namesTurns =
+    group || history.some((entry) => entry.meta?.kind === "turn") || [...spoken.keys()].some((id) => id !== speaker.id);
+  const parts = renderHistory({ history, cast, speaker, spoken, steadyChar, personaName, user, namesTurns });
+
+  const injections: { depth: number; text: string }[] = [];
+  const note = input.scene.authorsNote;
+  if (note?.text?.trim()) injections.push({ depth: note.depth ?? DEFAULT_NOTE_DEPTH, text: expand(note.text, { turn: true }) });
+  if (speaker.depthPrompt?.prompt.trim()) {
+    injections.push({ depth: speaker.depthPrompt.depth, text: expand(speaker.depthPrompt.prompt, { turn: true }) });
+  }
+  injections.push(...lore.atDepth.map((entry) => ({ depth: entry.depth, text: entry.content })));
+  const noted = injectDepthNotes(parts, history, sent, injections);
+
   // Final instructions ride the last user turn; after a reply there is none, so they are dropped.
   if (history.length && history[history.length - 1].role === "user") {
     const lastParts = parts[history.length - 1];
     const post = speaker.postHistoryInstructions.trim();
     if (post && !input.forUser) lastParts.push(expand(post, { original: "", turn: true }));
-    const lastIsMarker = history[history.length - 1].meta?.kind === "turn";
-    if (lastIsMarker) {
+    if (history[history.length - 1].meta?.kind === "turn") {
       // The nudge stays last, after any notes that landed on the marker; a turn for the user drops it.
       const nudge = lastParts.shift();
       if (nudge && !input.forUser) lastParts.push(nudge);
-    } else if (named && !input.forUser) {
+    } else if (namesTurns && !input.forUser) {
       lastParts.push(nudgeText(speaker.name));
     }
   }
   const texts = parts.map((lines) => lines.filter(Boolean).join("\n\n"));
 
   const stop = [`\n${user}:`];
-  if (named) {
+  if (namesTurns) {
     const others = new Set([...names, ...spoken.values()]);
     others.delete(speaker.name);
     for (const name of others) stop.push(`\n${name}:`);
   }
 
-  return { system, texts, sent, noted, stop, speaker, lore, sections, named, user };
+  return { system, texts, sent, noted, stop, speaker, lore, sections, namesTurns, user };
 }

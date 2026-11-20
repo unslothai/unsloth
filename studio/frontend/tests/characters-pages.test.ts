@@ -49,9 +49,9 @@ test("a cleared number field falls back instead of snapping mid-edit, and clamps
   assert.equal(clampNumber(642, 64), 642);
   assert.equal(clampNumber(250, 0, 100), 100);
   assert.equal(clampNumber(-3), -3);
-  const field = read("features/characters/components/number-input.tsx");
+  const field = read("features/characters/components/clamped-number-input.tsx");
   assert.match(field, /onBlur=\{\(\) => \{/);
-  assert.doesNotMatch(read("features/characters/components/lorebook-editor.tsx"), /Number\(event\.target\.value\) \|\|/);
+  assert.doesNotMatch(read("features/characters/components/editor/lorebook-editor.tsx"), /Number\(event\.target\.value\) \|\|/);
 });
 
 test("the save body clears an empty note and book and drops blank alternate greetings", () => {
@@ -110,9 +110,11 @@ test("a failed personas load offers a retry instead of a skeleton forever", () =
 test("saving then failing to open the chat keeps the save and leaves no unsaved-changes prompt", () => {
   const hook = read("features/characters/hooks/use-character-draft.ts");
   assert.match(hook, /setBaseline\(JSON\.stringify\(draft\)\);/);
-  const chatFailure = hook.slice(hook.indexOf("const threadId = await startCharacterChat"));
-  assert.match(chatFailure, /toast\.error\(t\("characters\.chat\.startFailed"\)/);
+  const chatFailure = hook.slice(hook.indexOf("const opened = await openChat"));
+  assert.match(chatFailure, /if \(!opened\) profile\(\);/);
   assert.doesNotMatch(chatFailure, /saveFailed/);
+  const actions = read("features/characters/actions.ts");
+  assert.match(actions.slice(actions.indexOf("export function useOpenCharacterChat")), /toast\.error\(t\("characters\.chat\.startFailed"\)/);
 });
 
 test("a new picture revision replaces the old object URL instead of leaking it", () => {
@@ -133,7 +135,7 @@ test("the profile resets per character, says not found only on a 404, and greets
   assert.match(read("app/routes/characters.$characterId.tsx"), /<CharacterProfilePage key=\{characterId\}/);
   const profile = read("features/characters/pages/character-profile-page.tsx");
   assert.match(profile, /isNotFound\(error\) && setMissing\(true\)/);
-  assert.match(profile, /resolvePersona\(null, personas\)\.name/);
+  assert.match(profile, /resolvePersona\(null, personas, accountName\)\.name/);
   assert.doesNotMatch(profile, /user: "\{\{user\}\}"/);
 });
 

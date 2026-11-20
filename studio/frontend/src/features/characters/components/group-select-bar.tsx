@@ -8,7 +8,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { Character } from "../types";
 import { Portrait } from "./portrait";
 
-/** The floating bar while picking characters for a group chat. */
 export function GroupSelectBar({
   selected,
   starting,
@@ -31,10 +30,7 @@ export function GroupSelectBar({
           {selected.slice(0, 5).map((character) => (
             <Portrait
               key={character.id}
-              id={character.id}
-              name={character.name}
-              hasImage={character.hasAvatar}
-              rev={character.avatarRev}
+              subject={character}
               className="size-7 rounded-full text-[0.8rem] ring-2 ring-popover"
             />
           ))}

@@ -6,11 +6,11 @@ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState, type ReactNode } from "react";
 
-export function Card({ children }: { children: ReactNode }) {
+export function EditorCard({ children }: { children: ReactNode }) {
   return <section className="flex flex-col gap-4 rounded-[24px] bg-muted/45 p-5 dark:bg-card">{children}</section>;
 }
 
-export function Field({
+export function EditorField({
   label,
   hint,
   htmlFor,
@@ -35,7 +35,7 @@ export function Field({
   );
 }
 
-export function Section({
+export function EditorSection({
   title,
   badge,
   defaultOpen = false,

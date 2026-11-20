@@ -41,7 +41,7 @@ import {
   readAttachmentText,
   truncateAttachmentPreviewText,
 } from "@/features/chat";
-import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
+import { ConfirmDestructiveDialog } from "@/components/confirm-destructive-dialog";
 import {
   addLibraryItemToProject,
   uploadLibraryFiles,
@@ -362,7 +362,7 @@ const SentImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: str
       >
         {children}
       </ImageGalleryDialog>
-      <ConfirmDeleteDialog
+      <ConfirmDestructiveDialog
         open={deleting !== null}
         title={t("library.dialog.deleteTitle", { name: deleting?.name || t("imageViewer.title") })}
         description={t("library.dialog.deleteAttachment")}

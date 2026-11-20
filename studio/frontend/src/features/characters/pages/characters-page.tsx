@@ -4,7 +4,7 @@
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Tabs } from "@/components/ui/tabs";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { CharactersLibrary } from "../components/character-library";
+import { CharactersLibrary } from "../components/characters-library";
 import { PersonasList } from "../components/personas-list";
 
 export function CharactersPage() {

@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useT } from "@/i18n";
 
-export function ConfirmDeleteDialog({
+export function ConfirmDestructiveDialog({
   open,
   title,
   description,

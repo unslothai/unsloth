@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { errorMessage } from "@/lib/error-message";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -24,13 +24,15 @@ import {
   VolumeHighIcon,
   VolumeMute01Icon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { startCharacterChat } from "../actions";
-import { errorText, updateCharacter, type ScenePatch } from "../api";
-import { profilePersona } from "../chat-runtime";
+import { useOpenCharacterChat } from "../actions";
+import { updateCharacter, type ScenePatch } from "../api";
+import { ClampedNumberInput } from "../components/clamped-number-input";
 import { Portrait } from "../components/portrait";
+import { useAccountName } from "../persona";
+import { DEFAULT_NOTE_DEPTH } from "../prompt/defaults";
 import { useCharactersStore } from "../store";
 import type { Character, ReplyOrder } from "../types";
 import { CharacterPickerDialog } from "./character-picker";
@@ -47,18 +49,19 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
   const personas = useCharactersStore((s) => s.personas);
   const [adding, setAdding] = useState(false);
   const [inspecting, setInspecting] = useState(false);
-  const [starting, setStarting] = useState(false);
+  const { open: openChat, starting } = useOpenCharacterChat();
+  const accountName = useAccountName();
   const ask = useBridgedAsk(threadId);
   const running = useChatRuntimeStore((s) => Boolean(s.runningByThreadId[threadId]));
   if (!thread) return null;
-  const { scene, cast, group } = thread;
+  const { scene, cast, isGroup } = thread;
   const settings = scene.settings;
 
   async function patch(update: ScenePatch) {
     try {
       await useCharactersStore.getState().patchScene(threadId, update);
     } catch (error) {
-      toast.error(t("characters.panel.updateFailed"), { description: errorText(error) });
+      toast.error(t("characters.panel.updateFailed"), { description: errorMessage(error) });
     }
   }
   const members = [...scene.cast].sort((a, b) => a.position - b.position);
@@ -77,10 +80,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
             return (
               <li key={character.id} className="group/member flex items-center gap-2.5 rounded-xl py-1 pl-1 pr-1 hover:bg-nav-surface-hover">
                 <Portrait
-                  id={character.id}
-                  name={character.name}
-                  hasImage={character.hasAvatar}
-                  rev={character.avatarRev}
+                  subject={character}
                   dimmed={muted}
                   className="size-8 rounded-[10px] text-[0.7rem]"
                 />
@@ -92,7 +92,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
                   {character.name}
                   {muted ? <span className="ml-1.5 text-ui-12 font-normal text-nav-fg-muted">{t("characters.panel.muted")}</span> : null}
                 </button>
-                {group ? (
+                {isGroup ? (
                   <>
                     <IconAction
                       label={t("characters.chat.replyNow", { name: character.name })}
@@ -137,7 +137,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
         </div>
       </div>
 
-      {group ? (
+      {isGroup ? (
         <div className="flex flex-col gap-2">
           <span className="text-ui-12 font-medium text-nav-fg-muted">{t("characters.panel.replyOrder")}</span>
           <ReplyOrderPicker value={settings.replyOrder ?? "natural"} onChange={(replyOrder) => setSettings({ replyOrder })} />
@@ -158,7 +158,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={PROFILE_PERSONA}>{t("characters.panel.personaProfile", { name: profilePersona().name })}</SelectItem>
+            <SelectItem value={PROFILE_PERSONA}>{t("characters.panel.personaProfile", { name: accountName })}</SelectItem>
             {personas.map((persona) => (
               <SelectItem key={persona.id} value={persona.id}>
                 {persona.name}
@@ -193,9 +193,13 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
         />
         <label className="flex items-center gap-2 self-end text-ui-12 text-nav-fg-muted">
           {t("characters.panel.noteDepth")}
-          <DepthInput
-            value={settings.authorsNote?.depth ?? 4}
-            onSave={(depth) => setSettings({ authorsNote: { depth } })}
+          <ClampedNumberInput
+            min={0}
+            max={100}
+            commitOnBlur={true}
+            className="h-7 w-16 text-ui-13"
+            value={settings.authorsNote?.depth ?? DEFAULT_NOTE_DEPTH}
+            onChange={(depth) => setSettings({ authorsNote: { depth } })}
           />
         </label>
       </div>
@@ -206,13 +210,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
         variant="outline"
         size="sm"
         disabled={starting}
-        onClick={() => {
-          setStarting(true);
-          void startCharacterChat(cast.map((c) => c.id))
-            .then((id) => navigate({ to: "/chat", search: { thread: id } }))
-            .catch((error) => toast.error(t("characters.chat.startFailed"), { description: errorText(error) }))
-            .finally(() => setStarting(false));
-        }}
+        onClick={() => void openChat(cast.map((c) => c.id))}
       >
         {t("characters.chat.newChatSameCast")}
       </Button>
@@ -239,7 +237,7 @@ function IconAction({
   disabled = false,
 }: {
   label: string;
-  icon: typeof BubbleChatIcon;
+  icon: IconSvgElement;
   onClick: () => void;
   disabled?: boolean;
 }) {
@@ -287,35 +285,6 @@ function ReplyOrderPicker({ value, onChange }: { value: ReplyOrder; onChange: (v
       </Select>
       <p className="text-ui-12 leading-snug text-nav-fg-muted">{current.hint}</p>
     </div>
-  );
-}
-
-/** A small number field that saves on blur, like the text fields beside it. */
-function DepthInput({ value, onSave }: { value: number; onSave: (value: number) => void }) {
-  const [draft, setDraft] = useState(String(value));
-  const typed = useRef(false);
-  useEffect(() => {
-    if (!typed.current) setDraft(String(value));
-  }, [value]);
-  return (
-    <Input
-      type="number"
-      min={0}
-      max={100}
-      className="h-7 w-16 text-ui-13"
-      value={draft}
-      onChange={(event) => {
-        typed.current = true;
-        setDraft(event.target.value);
-      }}
-      onBlur={() => {
-        if (!typed.current) return;
-        typed.current = false;
-        const next = Math.max(0, Math.min(100, Math.round(Number(draft)) || 0));
-        setDraft(String(next));
-        if (next !== value) onSave(next);
-      }}
-    />
   );
 }
 
@@ -382,7 +351,7 @@ function QuickEdit({ thread }: { thread: ThreadScene }) {
       useCharactersStore.getState().upsert(updated);
       setSaved(true);
     } catch (error) {
-      toast.error(t("characters.editor.saveFailed"), { description: errorText(error) });
+      toast.error(t("characters.editor.saveFailed"), { description: errorMessage(error) });
     }
   }
 
@@ -394,7 +363,7 @@ function QuickEdit({ thread }: { thread: ThreadScene }) {
       </summary>
       <div className="mt-2 flex flex-col gap-3">
         <p className="text-ui-12 leading-snug text-nav-fg-muted">{t("characters.panel.quickEditHint")}</p>
-        {thread.group ? (
+        {thread.isGroup ? (
           <Select value={target.id} onValueChange={setTargetId}>
             <SelectTrigger size="sm" className="w-full" aria-label={t("characters.panel.quickEdit")}>
               <SelectValue />

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
+import { ConfirmDestructiveDialog } from "@/components/confirm-destructive-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -14,14 +14,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useEffectiveProfile } from "@/features/profile";
 import { useT } from "@/i18n";
 import { TrashIcon } from "@/lib/hugeicons-derived";
-import { toast } from "@/lib/toast";
 import { Edit03Icon, MoreHorizontalIcon, PlusSignIcon, StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
-import { deletePersona, errorText, updatePersona } from "../api";
+import { deletePersona, makeDefaultPersona } from "../actions";
 import { useCharactersStore } from "../store";
 import type { Persona } from "../types";
-import { CharactersPageHeader, LoadFailed } from "./characters-page-header";
+import { CharactersPageHeader } from "./characters-page-header";
+import { LoadFailed } from "./load-failed";
 import { PersonaDialog } from "./persona-dialog";
 import { Portrait } from "./portrait";
 
@@ -37,25 +37,6 @@ export function PersonasList() {
   useEffect(() => {
     void refreshPersonas().catch(() => undefined);
   }, [refreshPersonas]);
-
-  async function makeDefault(persona: Persona) {
-    try {
-      useCharactersStore.getState().upsertPersona(await updatePersona(persona.id, { isDefault: true }));
-      await refreshPersonas();
-    } catch (error) {
-      toast.error(errorText(error));
-    }
-  }
-
-  async function remove(persona: Persona) {
-    try {
-      await deletePersona(persona.id);
-      useCharactersStore.getState().removePersona(persona.id);
-      await refreshPersonas();
-    } catch (error) {
-      toast.error(errorText(error));
-    }
-  }
 
   const loading = status === "idle" || status === "loading";
   return (
@@ -96,10 +77,7 @@ export function PersonasList() {
             >
               <Portrait
                 kind="persona"
-                id={persona.id}
-                name={persona.name}
-                hasImage={persona.hasAvatar}
-                rev={persona.avatarRev}
+                subject={persona}
                 className="size-12 rounded-2xl text-[1.2rem]"
               />
               <button type="button" className="min-w-0 flex-1 cursor-pointer text-left" onClick={() => setEditing(persona)}>
@@ -125,7 +103,7 @@ export function PersonasList() {
                     {t("characters.personas.edit")}
                   </DropdownMenuItem>
                   {!persona.isDefault ? (
-                    <DropdownMenuItem onSelect={() => void makeDefault(persona)}>
+                    <DropdownMenuItem onSelect={() => void makeDefaultPersona(persona)}>
                       <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} />
                       {t("characters.personas.makeDefault")}
                     </DropdownMenuItem>
@@ -143,7 +121,7 @@ export function PersonasList() {
       )}
 
       <PersonaDialog open={editing !== null} persona={editing === "new" ? null : editing} onClose={() => setEditing(null)} />
-      <ConfirmDeleteDialog
+      <ConfirmDestructiveDialog
         open={deleting !== null}
         title={t("characters.personas.deleteTitle", { name: deleting?.name ?? "" })}
         description={t("characters.personas.deleteBody")}
@@ -152,7 +130,7 @@ export function PersonasList() {
         onConfirm={() => {
           const target = deleting;
           setDeleting(null);
-          if (target) void remove(target);
+          if (target) void deletePersona(target);
         }}
       />
     </div>

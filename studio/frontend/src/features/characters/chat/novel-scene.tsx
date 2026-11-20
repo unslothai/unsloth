@@ -8,7 +8,8 @@ import { useAuiState } from "@assistant-ui/react";
 import { useObjectUrl } from "@/hooks/use-object-url";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Portrait } from "../components/portrait";
-import { nameHue, viewPicture } from "../images";
+import { nameHue } from "../components/portrait-monogram";
+import { viewAvatar } from "../images";
 import { shortName } from "../prompt/speakers";
 import { useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
@@ -99,7 +100,7 @@ function NovelFigure({
   const viewing = active || solo;
   const onClick = viewing
     ? character.hasAvatar
-      ? () => viewPicture("character", character.id, character.name, character.avatarRev)
+      ? () => viewAvatar("character", character.id, character.name, character.avatarRev)
       : undefined
     : onAsk;
   return (
@@ -122,10 +123,7 @@ function NovelFigure({
         onAnimationIteration={onAnimationIteration}
       >
         <Portrait
-          id={character.id}
-          name={character.name}
-          hasImage={character.hasAvatar}
-          rev={character.avatarRev}
+          subject={character}
           variant="card"
           cutout={true}
           className="novel-figure-picture size-full rounded-t-[40px]"

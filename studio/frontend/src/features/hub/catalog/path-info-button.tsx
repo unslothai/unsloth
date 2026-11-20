@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { MouseEvent } from "react";
-import { useCopyFeedback } from "../hooks/use-copy-feedback";
+import { useCopyFeedback } from "@/hooks/use-copy-feedback";
 
 export function PathInfoButton({
   path,

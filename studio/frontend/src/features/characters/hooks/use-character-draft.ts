@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { errorMessage } from "@/lib/error-message";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useBlocker, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { startCharacterChat } from "../actions";
-import {
-  createCharacter,
-  errorText,
-  getCharacter,
-  removeCharacterAvatar,
-  updateCharacter,
-  uploadCharacterAvatar,
-} from "../api";
+import { useObjectUrl } from "@/hooks/use-object-url";
+import { useEffect, useRef, useState } from "react";
+import { useOpenCharacterChat } from "../actions";
+import { createCharacter, getCharacter, removeCharacterAvatar, updateCharacter, uploadCharacterAvatar } from "../api";
+import { applyAvatarChoice, type AvatarChoice } from "../avatar-upload";
 import { blankDraft, draftOf, toSavePayload } from "../draft";
 import { useCharactersStore } from "../store";
 import type { Character, CharacterDraft } from "../types";
-
-export type PictureChoice = File | "remove" | null;
 
 /** Loads a character (or a blank one), tracks unsaved edits, and saves the fields and portrait together. */
 export function useCharacterDraft(characterId: string | null) {
@@ -27,7 +21,7 @@ export function useCharacterDraft(characterId: string | null) {
   const [original, setOriginal] = useState<Character | null>(null);
   const [draft, setDraft] = useState<CharacterDraft | null>(characterId ? null : blankDraft());
   const [baseline, setBaseline] = useState<string>(() => JSON.stringify(blankDraft()));
-  const [picture, setPicture] = useState<PictureChoice>(null);
+  const [avatar, setAvatar] = useState<AvatarChoice>(null);
   const [saving, setSaving] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
   const leaving = useRef(false);
@@ -45,7 +39,7 @@ export function useCharacterDraft(characterId: string | null) {
       })
       .catch((error) => {
         if (!live) return;
-        toast.error(errorText(error));
+        toast.error(errorMessage(error));
         void navigate({ to: "/characters" });
       });
     return () => {
@@ -53,12 +47,10 @@ export function useCharacterDraft(characterId: string | null) {
     };
   }, [characterId, navigate]);
 
-  const previewUrl = useMemo(() => (picture instanceof File ? URL.createObjectURL(picture) : null), [picture]);
-  useEffect(() => () => {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-  }, [previewUrl]);
+  const previewUrl = useObjectUrl(avatar instanceof File ? avatar : null);
+  const { open: openChat } = useOpenCharacterChat();
 
-  const dirty = draft !== null && (JSON.stringify(draft) !== baseline || picture !== null);
+  const dirty = draft !== null && (JSON.stringify(draft) !== baseline || avatar !== null);
   const blocker = useBlocker({
     shouldBlockFn: () => dirty && !leaving.current,
     enableBeforeUnload: () => dirty,
@@ -83,15 +75,14 @@ export function useCharacterDraft(characterId: string | null) {
       // Kept before the portrait upload, so a retry after a failed upload updates this character.
       setOriginal(saved);
       useCharactersStore.getState().upsert(saved);
-      if (picture instanceof File) saved = await uploadCharacterAvatar(saved.id, picture);
-      else if (picture === "remove" && saved.hasAvatar) saved = await removeCharacterAvatar(saved.id);
+      saved = await applyAvatarChoice(saved, avatar, uploadCharacterAvatar, removeCharacterAvatar);
       useCharactersStore.getState().upsert(saved);
       setOriginal(saved);
-      setPicture(null);
+      setAvatar(null);
       setBaseline(JSON.stringify(draft));
       toast.success(t("characters.editor.saved", { name: saved.name }));
     } catch (error) {
-      toast.error(t("characters.editor.saveFailed"), { description: errorText(error) });
+      toast.error(t("characters.editor.saveFailed"), { description: errorMessage(error) });
       setSaving(false);
       return;
     }
@@ -102,17 +93,11 @@ export function useCharacterDraft(characterId: string | null) {
       profile();
       return;
     }
-    try {
-      const threadId = await startCharacterChat([saved.id]);
-      void navigate({ to: "/chat", search: { thread: threadId } });
-    } catch (error) {
-      // The character is saved; only the chat failed to open.
-      toast.error(t("characters.chat.startFailed"), { description: errorText(error) });
-      profile();
-    } finally {
-      setSaving(false);
-    }
+    // The character is saved; only the chat failed to open.
+    const opened = await openChat([saved.id]);
+    setSaving(false);
+    if (!opened) profile();
   }
 
-  return { original, draft, set, picture, setPicture, previewUrl, saving, showErrors, blocker, save };
+  return { original, draft, set, avatar, setAvatar, previewUrl, saving, showErrors, blocker, save };
 }

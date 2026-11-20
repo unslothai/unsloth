@@ -414,7 +414,7 @@ test("a group reduced to one character keeps its history attributed", () => {
     now: NOW,
   });
   assert.equal(solo.texts[0], "Hi.");
-  assert.equal(solo.named, false);
+  assert.equal(solo.namesTurns, false);
 });
 
 test("a hidden turn with no reply after it is not sent", () => {

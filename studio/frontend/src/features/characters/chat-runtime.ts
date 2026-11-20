@@ -2,14 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ThreadMessage } from "@assistant-ui/react";
-import { getAuthToken } from "@/features/auth";
 import { getLocale, translate } from "@/i18n";
-import { addressNameOf, loginDisplayName } from "@/features/profile/hooks/use-effective-profile";
-import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
-import { decodeJwtSubject } from "@/features/profile/utils/jwt-subject";
 import { getCharacter } from "./api";
 import { isCharacterChat } from "./chat-gate";
-import { pickPersona, roleplayMetaOf } from "./meta";
+import { roleplayMetaOf } from "./meta";
+import { resolvePersona } from "./persona";
 import {
   buildCharacterPrompt,
   replyNameOf,
@@ -19,9 +16,9 @@ import {
 } from "./prompt/build";
 import { castOf, resolveSpeaker, textOf } from "./prompt/round";
 import { useCharactersStore } from "./store";
-import type { Character, ChatScene, Persona, ResolvedPersona } from "./types";
+import type { Character, ChatScene, ResolvedPersona } from "./types";
 
-export const ROLEPLAY_SPEAKER_RUN_KEY = "roleplaySpeakerId";
+export const CHARACTER_SPEAKER_RUN_KEY = "roleplaySpeakerId";
 
 export class CharacterChatUnavailableError extends Error {
   constructor(cause: unknown) {
@@ -57,27 +54,6 @@ export function toPromptCharacter(character: Character): PromptCharacter {
     depthPrompt: character.depthPrompt,
     characterBook: character.characterBook,
   };
-}
-
-/** The persona a chat speaks as (see pickPersona), else the account's name. */
-export function resolvePersona(scene: ChatScene | null, personas: Persona[]): ResolvedPersona {
-  const chosen = pickPersona(scene, personas);
-  if (chosen) {
-    return {
-      id: chosen.id,
-      name: chosen.name,
-      description: chosen.description,
-      hasAvatar: chosen.hasAvatar,
-      avatarRev: chosen.avatarRev,
-    };
-  }
-  return profilePersona();
-}
-
-/** The account speaking as itself, under the name the app addresses it by. */
-export function profilePersona(): ResolvedPersona {
-  const name = addressNameOf(useUserProfileStore.getState(), loginDisplayName(decodeJwtSubject(getAuthToken()))) || "User";
-  return { id: null, name, description: "", hasAvatar: false, avatarRev: 0 };
 }
 
 async function ensureLoaded(): Promise<void> {
@@ -135,6 +111,24 @@ function isKnownCharacterChat(threadId: string | null | undefined): boolean {
   return Boolean(store.scenes[threadId]) || threadId in store.chatIndex;
 }
 
+function stampOf(message: ThreadMessage | undefined): Date | undefined {
+  return message?.createdAt instanceof Date && !Number.isNaN(message.createdAt.getTime()) ? message.createdAt : undefined;
+}
+
+/** A thread's chat turns as prompt history, seeded and dated by the chat so a re-send builds the same text. */
+export function promptHistoryOf(threadId: string, messages: readonly ThreadMessage[]) {
+  const chat = messages.filter((m) => m.role === "user" || m.role === "assistant");
+  return {
+    chat,
+    input: {
+      seed: threadId,
+      startedAt: stampOf(chat[0]),
+      now: stampOf(chat[chat.length - 1]),
+      history: chat.map((m) => ({ role: m.role as "user" | "assistant", text: textOf(m), meta: roleplayMetaOf(m) })),
+    },
+  };
+}
+
 /** A character chat's run: the transformed history, its system prompt and stop strings; null for ordinary chats. */
 export async function prepareCharacterRun(args: {
   threadId: string | undefined;
@@ -165,7 +159,7 @@ export async function prepareCharacterRun(args: {
     if (scene.cast.length === 0) return null;
     throw new CharacterChatUnavailableError(null);
   }
-  const requested = args.runConfig?.custom?.[ROLEPLAY_SPEAKER_RUN_KEY];
+  const requested = args.runConfig?.custom?.[CHARACTER_SPEAKER_RUN_KEY];
   const speaker = resolveSpeaker({
     scene,
     cast,
@@ -173,23 +167,13 @@ export async function prepareCharacterRun(args: {
     requested: typeof requested === "string" ? requested : null,
   });
   if (!speaker) return null;
-  const chat = messages.filter((m) => m.role === "user" || m.role === "assistant");
-  const stamp = (message: ThreadMessage | undefined) =>
-    message?.createdAt instanceof Date && !Number.isNaN(message.createdAt.getTime()) ? message.createdAt : undefined;
+  const { chat, input } = promptHistoryOf(threadId, messages);
   const built = buildCharacterPrompt({
     cast: cast.map(toPromptCharacter),
     speakerId: speaker.speakerId,
     persona: { name: persona.name, description: persona.description },
     scene: scene.settings,
-    // Pinned to the chat's first and latest messages, so a re-send builds the same text.
-    seed: threadId,
-    startedAt: stamp(chat[0]),
-    now: stamp(chat[chat.length - 1]),
-    history: chat.map((m) => ({
-      role: m.role as "user" | "assistant",
-      text: textOf(m),
-      meta: roleplayMetaOf(m),
-    })),
+    ...input,
   });
   const byId = new Map(chat.map((m, index) => [m.id, built.texts[index]]));
   const unsent = new Set(chat.filter((_m, index) => !built.sent[index]).map((m) => m.id));
@@ -200,7 +184,7 @@ export async function prepareCharacterRun(args: {
     const meta = roleplayMetaOf(thread);
     const name = replyNameOf(meta, cast, cast[0].name);
     const recorded = meta?.kind === "reply" ? meta.speakerName || name : name;
-    return shapeReplayMessage(thread, byId.get(message.id)!, name, built.named, recorded) as unknown as M;
+    return shapeReplayMessage(thread, byId.get(message.id)!, name, built.namesTurns, recorded) as unknown as M;
   };
   return {
     system: built.system,
@@ -219,4 +203,3 @@ export async function prepareCharacterRun(args: {
   };
 }
 
-export { castOf, nextInRound, resolveSpeaker, textOf } from "./prompt/round";

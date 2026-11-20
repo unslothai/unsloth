@@ -9,9 +9,8 @@ import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { MAX_ALTERNATE_GREETINGS } from "../../draft";
-import { Card } from "./editor-section";
+import { EditorCard } from "./editor-section";
 
-/** The main greeting and its alternates, one tab each. */
 export function GreetingsEditor({
   firstMes,
   alternates,
@@ -33,7 +32,7 @@ export function GreetingsEditor({
   }
 
   return (
-    <Card>
+    <EditorCard>
       <div className="flex flex-col gap-1">
         <h2 className="text-ui-15 font-semibold text-foreground">{t("characters.editor.greetings")}</h2>
         <p className="text-ui-13 text-muted-foreground">{t("characters.editor.greetingsHint")}</p>
@@ -92,6 +91,6 @@ export function GreetingsEditor({
           </Button>
         ) : null}
       </div>
-    </Card>
+    </EditorCard>
   );
 }

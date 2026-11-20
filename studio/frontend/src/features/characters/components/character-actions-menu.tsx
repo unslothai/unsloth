@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
+import { ConfirmDestructiveDialog } from "@/components/confirm-destructive-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,7 +14,7 @@ import { TrashIcon } from "@/lib/hugeicons-derived";
 import { Copy01Icon, Download01Icon, Edit03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState, type ReactElement } from "react";
-import { deleteCharacterAction, duplicateCharacterAction, exportCharacterFile } from "../actions";
+import { deleteCharacter, duplicateCharacter, exportCharacter } from "../actions";
 import type { Character } from "../types";
 
 type CharacterActionsMenuProps = {
@@ -27,7 +27,6 @@ type CharacterActionsMenuProps = {
   onDeleted?: () => void;
 };
 
-/** Edit, duplicate, export and delete for one character, with the delete confirmation. */
 export function CharacterActionsMenu({
   character,
   trigger,
@@ -51,7 +50,7 @@ export function CharacterActionsMenu({
           ) : null}
           <DropdownMenuItem
             onSelect={() =>
-              void duplicateCharacterAction(character, t).then((copy) => {
+              void duplicateCharacter(character, t).then((copy) => {
                 if (copy) onDuplicated?.(copy);
               })
             }
@@ -59,11 +58,11 @@ export function CharacterActionsMenu({
             <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} />
             {t("common.duplicate")}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void exportCharacterFile(character, "png", t)}>
+          <DropdownMenuItem onSelect={() => void exportCharacter(character, "png", t)}>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
             {t("characters.actions.exportPng")}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void exportCharacterFile(character, "json", t)}>
+          <DropdownMenuItem onSelect={() => void exportCharacter(character, "json", t)}>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
             {t("characters.actions.exportJson")}
           </DropdownMenuItem>
@@ -74,7 +73,7 @@ export function CharacterActionsMenu({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <ConfirmDeleteDialog
+      <ConfirmDestructiveDialog
         open={deleting}
         title={t("characters.deleteTitle", { name: character.name })}
         description={t("characters.deleteBody", { name: character.name })}
@@ -82,7 +81,7 @@ export function CharacterActionsMenu({
         onOpenChange={setDeleting}
         onConfirm={() => {
           setDeleting(false);
-          void deleteCharacterAction(character, t).then((ok) => {
+          void deleteCharacter(character, t).then((ok) => {
             if (ok) onDeleted?.();
           });
         }}

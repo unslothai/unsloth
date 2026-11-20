@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { errorMessage } from "@/lib/error-message";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -12,10 +13,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { useEffect, useRef, useState } from "react";
 import { Portrait } from "../components/portrait";
-import { roleplayMetaOf } from "../meta";
+import { lastSpeakerId, roleplayMetaOf } from "../meta";
 import { shortName } from "../prompt/speakers";
 import { writeMyReply } from "./impersonate";
-import { errorText } from "../api";
 import { useAskToReply } from "./ask-bridge";
 import { useCharacterChat } from "./character-chat-context";
 
@@ -32,14 +32,7 @@ export function RoleplaySpeakerBar() {
   // Every composer mounts this bar; in an ordinary chat its selectors do no work per token.
   const active = thread !== null;
   const running = useAuiState(({ thread: state }) => active && state.isRunning);
-  const lastSpeakerId = useAuiState(({ thread: state }) => {
-    if (!active) return null;
-    for (let i = state.messages.length - 1; i >= 0; i -= 1) {
-      const meta = roleplayMetaOf(state.messages[i]);
-      if (meta?.kind === "reply") return meta.speakerId;
-    }
-    return null;
-  });
+  const lastReplySpeakerId = useAuiState(({ thread: state }) => (active ? lastSpeakerId(state.messages) : null));
   const runningSpeakerId = useAuiState(({ thread: state }) => {
     if (!active) return null;
     const last = state.messages[state.messages.length - 1];
@@ -74,7 +67,7 @@ export function RoleplaySpeakerBar() {
       if (text && untouched && aui.threads().getState().mainThreadId === origin) aui.composer().setText(text);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
-        toast.error(t("characters.chat.writeFailed"), { description: errorText(error) });
+        toast.error(t("characters.chat.writeFailed"), { description: errorMessage(error) });
       }
     } finally {
       if (abort.current === controller) abort.current = null;
@@ -82,7 +75,7 @@ export function RoleplaySpeakerBar() {
     }
   }
 
-  const solo = !thread.group ? thread.cast[0] : null;
+  const solo = !thread.isGroup ? thread.cast[0] : null;
   return (
     <div
       className="roleplay-speaker-bar relative mb-2 flex items-center gap-1.5 px-1 pb-0.5"
@@ -97,7 +90,7 @@ export function RoleplaySpeakerBar() {
           className={cn(CHIP, "pl-1 pr-3")}
           title={t("characters.chat.continueScene", { name: shortName(solo.name) })}
         >
-          <Portrait id={solo.id} name={solo.name} hasImage={solo.hasAvatar} rev={solo.avatarRev} className="size-7 rounded-full text-[0.7rem]" />
+          <Portrait subject={solo} className="size-7 rounded-full text-[0.7rem]" />
           <HugeiconsIcon icon={PlayIcon} strokeWidth={1.8} className="size-3.5 text-muted-foreground" />
           <span className="truncate">{t("characters.chat.letContinue", { name: shortName(solo.name) })}</span>
         </button>
@@ -122,14 +115,11 @@ export function RoleplaySpeakerBar() {
                       "pl-0.5 pr-3",
                       speaking && "bg-primary/15 ring-1 ring-primary/40 disabled:opacity-100",
                       isMuted && "opacity-55",
-                      lastSpeakerId === character.id && !speaking && "ring-1 ring-border",
+                      lastReplySpeakerId === character.id && !speaking && "ring-1 ring-border",
                     )}
                   >
                     <Portrait
-                      id={character.id}
-                      name={character.name}
-                      hasImage={character.hasAvatar}
-                      rev={character.avatarRev}
+                      subject={character}
                       className={cn("size-7 rounded-full text-[0.7rem]", speaking && "animate-pulse")}
                     />
                     <span className="max-w-40 truncate">{character.name}</span>
@@ -165,7 +155,7 @@ export function useRoleplayComposerPlaceholder(): string | null {
   const t = useT();
   const thread = useCharacterChat();
   if (!thread) return null;
-  return thread.group
+  return thread.isGroup
     ? t("characters.chat.placeholderGroup")
     : t("characters.chat.placeholder", { name: thread.cast[0].name });
 }

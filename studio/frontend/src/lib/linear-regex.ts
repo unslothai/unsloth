@@ -4,7 +4,7 @@
 // Card regex keys run on every send and a JS RegExp can backtrack for minutes, so keys compile to a
 // Thompson NFA (linear in the text). Backreferences and lookaround have no linear form: null, skipped.
 
-import { escapeRegExp } from "../../../lib/escape-regexp.ts";
+import { escapeRegExp } from "./escape-regexp.ts";
 
 type Inst =
   | { op: "char"; test: (ch: string) => boolean }

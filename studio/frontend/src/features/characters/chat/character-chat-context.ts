@@ -4,13 +4,9 @@
 import { createContext, useContext } from "react";
 import type { ThreadScene } from "./use-thread-scene";
 
-export interface CharacterChat extends ThreadScene {
-  threadId: string;
-}
-
 /** The character chat a thread renders, worked out once by CharacterStage; null for an ordinary chat. */
-export const CharacterChatContext = createContext<CharacterChat | null>(null);
+export const CharacterChatContext = createContext<ThreadScene | null>(null);
 
-export function useCharacterChat(): CharacterChat | null {
+export function useCharacterChat(): ThreadScene | null {
   return useContext(CharacterChatContext);
 }

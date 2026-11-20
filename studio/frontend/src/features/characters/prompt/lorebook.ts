@@ -4,7 +4,8 @@
 import { escapeRegExp } from "../../../lib/escape-regexp.ts";
 import { estimateTokenCount } from "../../../lib/estimate-tokens.ts";
 import type { Lorebook, LorebookEntry } from "../types";
-import { linearRegex, type StepBudget } from "./linear-regex.ts";
+import { DEFAULT_INSERTION_ORDER, DEFAULT_LORE_BUDGET, DEFAULT_NOTE_DEPTH, DEFAULT_SCAN_DEPTH } from "./defaults.ts";
+import { linearRegex, type StepBudget } from "../../../lib/linear-regex.ts";
 
 export interface ActivatedLore {
   before: string[];
@@ -13,7 +14,6 @@ export interface ActivatedLore {
   /** Entries that fired, for the prompt inspector. */
   fired: { id: string | number; label: string; reason: "constant" | "keyword" }[];
 }
-
 
 const REGEX_KEY = /^\/(.+)\/([gimsuy]*)$/;
 const MAX_REGEX_KEY = 160;
@@ -42,13 +42,13 @@ export interface LoreBudget {
 }
 
 function bookBudget(book: Lorebook | null | undefined): number {
-  return book && book.token_budget > 0 ? book.token_budget : 1024;
+  return book && book.token_budget > 0 ? book.token_budget : DEFAULT_LORE_BUDGET;
 }
 
 export function loreBudget(books: readonly (Lorebook | null | undefined)[]): LoreBudget {
   const withEntries = books.filter((book) => book?.entries?.length);
   return {
-    tokens: withEntries.length ? Math.max(...withEntries.map(bookBudget)) : 1024,
+    tokens: withEntries.length ? Math.max(...withEntries.map(bookBudget)) : DEFAULT_LORE_BUDGET,
     regexSteps: { left: MAX_REGEX_STEPS },
   };
 }
@@ -115,6 +115,38 @@ function entryHits(entry: LorebookEntry, text: string, steps: StepBudget): boole
   }
 }
 
+export function emptyLorebook(): Lorebook {
+  return {
+    name: "",
+    scan_depth: DEFAULT_SCAN_DEPTH,
+    token_budget: DEFAULT_LORE_BUDGET,
+    recursive_scanning: false,
+    extensions: {},
+    entries: [],
+  };
+}
+
+/** A blank entry with the next free numeric id. */
+export function newLorebookEntry(entries: LorebookEntry[]): LorebookEntry {
+  const numeric = entries.map((entry) => Number(entry.id)).filter(Number.isFinite);
+  return {
+    id: numeric.length ? Math.max(...numeric) + 1 : 0,
+    keys: [],
+    secondary_keys: [],
+    content: "",
+    comment: "",
+    enabled: true,
+    constant: false,
+    selective: false,
+    case_sensitive: false,
+    insertion_order: DEFAULT_INSERTION_ORDER,
+    position: "before_char",
+    depth: DEFAULT_NOTE_DEPTH,
+    selective_logic: "and_any",
+    extensions: {},
+  };
+}
+
 /** Keys typed as one comma-separated line; a /regex/ key keeps its own commas, as in /a{2,4}/. */
 export function parseKeyList(text: string): string[] {
   const keys: string[] = [];
@@ -142,7 +174,7 @@ export function parseKeyList(text: string): string[] {
 }
 
 const priorityOf = (entry: LorebookEntry) => (typeof entry.priority === "number" ? entry.priority : 0);
-const orderOf = (entry: LorebookEntry) => entry.insertion_order ?? 100;
+const orderOf = (entry: LorebookEntry) => entry.insertion_order ?? DEFAULT_INSERTION_ORDER;
 
 /** Which lorebook entries the recent chat calls for, split by where they go in the prompt. */
 export function activateLorebook(
@@ -152,7 +184,7 @@ export function activateLorebook(
 ): ActivatedLore {
   const result: ActivatedLore = { before: [], after: [], atDepth: [], fired: [] };
   if (!book || !Array.isArray(book.entries) || book.entries.length === 0) return result;
-  const depth = Math.max(1, book.scan_depth || 4);
+  const depth = Math.max(1, book.scan_depth || DEFAULT_SCAN_DEPTH);
   // Oldest to newest, keeping the tail: an over-long window drops the oldest text, not a reply's ending.
   const chat = recentNewestFirst.slice(0, depth).reverse().join("\n");
   const live = book.entries.filter((entry) => entry.enabled !== false && entry.content?.trim());
@@ -184,7 +216,7 @@ export function activateLorebook(
   let used = 0;
   const kept: [LorebookEntry, "constant" | "keyword"][] = [];
   for (const [entry, reason] of ranked) {
-    const cost = (estimateTokenCount(entry.content) ?? 0);
+    const cost = estimateTokenCount(entry.content) ?? 0;
     // Even the first: an oversized system-block entry would fail every turn.
     if (used + cost > own || cost > budget.tokens) continue;
     used += cost;
@@ -195,7 +227,7 @@ export function activateLorebook(
   kept.sort(([a], [b]) => orderOf(a) - orderOf(b));
   for (const [entry, reason] of kept) {
     const content = entry.content.trim();
-    if (entry.position === "at_depth") result.atDepth.push({ depth: Math.max(0, entry.depth ?? 4), content });
+    if (entry.position === "at_depth") result.atDepth.push({ depth: Math.max(0, entry.depth ?? DEFAULT_NOTE_DEPTH), content });
     else if (entry.position === "after_char") result.after.push(content);
     else result.before.push(content);
     result.fired.push({ id: entry.id, label: entry.comment || entry.keys?.[0] || String(entry.id), reason });

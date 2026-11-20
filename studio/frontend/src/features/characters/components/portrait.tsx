@@ -3,14 +3,21 @@
 
 import { cn } from "@/lib/utils";
 import type { CSSProperties, MouseEvent } from "react";
-import { initials, nameHue, useImageUrl, useIsCutout } from "../images";
+import type { AvatarKind } from "../api";
+import { useAvatarUrl, useIsCutout } from "../images";
+import { initials, nameHue } from "./portrait-monogram";
 
-type PortraitProps = {
-  kind?: "character" | "persona";
+/** Whose avatar to show: a Character, Persona or ResolvedPersona fits as is. */
+export type PortraitSubject = {
   id: string | null | undefined;
   name: string;
-  hasImage: boolean;
-  rev: number;
+  hasAvatar: boolean;
+  avatarRev: number;
+};
+
+type PortraitProps = {
+  kind?: AvatarKind;
+  subject: PortraitSubject;
   className?: string;
   /** "avatar" crops to the face area (top), "card" fills a portrait frame. */
   variant?: "avatar" | "card";
@@ -18,17 +25,14 @@ type PortraitProps = {
   label?: string;
   imageUrl?: string | null;
   dimmed?: boolean;
-  /** A picture on a transparent background shows whole, standing on the frame's bottom, with no tile behind it. */
+  /** An avatar on a transparent background shows whole, standing on the frame's bottom, with no tile behind it. */
   cutout?: boolean;
 };
 
-/** A character's or persona's picture, or a tinted monogram when there is none. */
+/** A character's or persona's avatar, or a tinted monogram when there is none. */
 export function Portrait({
   kind = "character",
-  id,
-  name,
-  hasImage,
-  rev,
+  subject,
   className,
   variant = "avatar",
   onClick,
@@ -37,7 +41,8 @@ export function Portrait({
   dimmed,
   cutout: allowCutout = false,
 }: PortraitProps) {
-  const loaded = useImageUrl(kind, id, rev, hasImage && imageUrl === undefined);
+  const { id, name, hasAvatar, avatarRev } = subject;
+  const loaded = useAvatarUrl(kind, id, avatarRev, hasAvatar && imageUrl === undefined);
   const url = imageUrl === undefined ? loaded : imageUrl;
   const cutout = useIsCutout(url, allowCutout);
   const hue = nameHue(name);

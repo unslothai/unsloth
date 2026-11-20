@@ -57,10 +57,7 @@ export function CharacterChatMark({ threadId }: { threadId: string }) {
   return (
     <span className="relative -ml-1 flex shrink-0" aria-hidden={true} data-testid="character-chat-mark">
       <Portrait
-        id={first.id}
-        name={first.name}
-        hasImage={first.hasAvatar}
-        rev={first.avatarRev}
+        subject={first}
         className="size-4.5 rounded-full text-[0.5rem]"
       />
       {ids.length > 1 ? (
