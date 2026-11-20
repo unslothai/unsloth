@@ -4190,6 +4190,40 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
         return {}
 
 
+def rocm_linux_kernel_free_mib(device: Any = None, *, module: Any = None) -> Optional[int]:
+    """Free MiB of a ROCm device per DRM sysfs, which counts the Vulkan users and desktop hipMemGetInfo misses on Linux, or None. Matched by PCI address; a sysfs total off torch's by >10% (APU carve-out, partitioned card) is another scope. Never raises."""
+    if platform.system() != "Linux":
+        return None
+    try:
+        import torch
+
+        # AMD SDK / Radeon wheels leave version.hip unset; the tag is in __version__.
+        if not (getattr(torch.version, "hip", None) or "rocm" in str(torch.__version__).lower()):
+            return None
+        mod = module if module is not None else torch.cuda
+        index = mod.current_device() if device is None else device
+        props = mod.get_device_properties(index)
+        prefix = f"{int(props.pci_domain_id):04x}:{int(props.pci_bus_id):02x}:{int(props.pci_device_id):02x}."
+        torch_total = int(props.total_memory)
+        for bdf, _card_no, dev_dir in _rocm_linux_amdgpu_cards():
+            if not bdf.lower().startswith(prefix):
+                continue
+            with open(os.path.join(dev_dir, "mem_info_vram_used"), encoding = "utf-8") as f:
+                used_bytes = int(f.read().strip())
+            with open(os.path.join(dev_dir, "mem_info_vram_total"), encoding = "utf-8") as f:
+                total_bytes = int(f.read().strip())
+            if (
+                total_bytes <= 0
+                or torch_total <= 0
+                or abs(total_bytes - torch_total) > 0.1 * torch_total
+            ):
+                return None
+            return max(0, total_bytes - used_bytes) // (1024 * 1024)
+        return None
+    except Exception:
+        return None
+
+
 # ── Windows AMD/ROCm per-adapter VRAM (issue #7072) ──────────────────────────
 # Windows ROCm: hipMemGetInfo reports free==total, so read used from per-LUID counters.
 _ROCM_WIN_ADAPTER_MIN_BYTES = 64 * 1024 * 1024  # 64 MiB
