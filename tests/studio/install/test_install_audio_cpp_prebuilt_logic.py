@@ -1085,6 +1085,19 @@ def test_an_explicit_auto_env_still_detects_over_the_installed_request(monkeypat
     assert asked == ["cpu", "cuda"]
 
 
+def test_an_auto_env_that_reuses_the_same_archive_still_resets_the_installed_request(
+    monkeypatch, tmp_path
+):
+    asked = _install_cpu_on_a_cuda_host(monkeypatch, tmp_path)
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "cpu")
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_ACCELERATOR", "auto")
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_ACCELERATOR")
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    assert asked[-1] == "cuda"
+
+
 def test_an_unknown_accelerator_env_falls_back_to_auto(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("UNSLOTH_AUDIO_CPP_ACCELERATOR", "rocm")
     assert M._accelerator_from_env(tmp_path) == "auto"

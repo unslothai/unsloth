@@ -1137,20 +1137,21 @@ def _runtime_wheels_marker(requested: str, detected: Optional[str]) -> bool:
     return requested == "auto" and detected == "cuda" and _cuda_runtime_wheels_installable()
 
 
-def _mark_runtime_wheels_tried(
+def _refresh_kept_record(
     target: Path, record: dict, requested: str, detected: Optional[str]
 ) -> None:
-    """A kept CPU install records the wheel attempt too, or every run would retry it."""
+    """Record this run's request (and, for CPU, the wheel attempt) on a kept install."""
+    updated = {**record, "accelerator_request": requested, "detected_accelerator": detected}
     if (
-        record.get("accelerator") != "cpu"
-        or record.get("cuda_runtime_wheels_tried")
-        or not _runtime_wheels_marker(requested, detected)
+        record.get("accelerator") == "cpu"
+        and not record.get("cuda_runtime_wheels_tried")
+        and _runtime_wheels_marker(requested, detected)
     ):
+        updated["cuda_runtime_wheels_tried"] = True
+    if updated == record:
         return
     try:
-        (target / INSTALL_RECORD).write_text(
-            json.dumps({**record, "cuda_runtime_wheels_tried": True}, indent = 2), encoding = "utf-8"
-        )
+        (target / INSTALL_RECORD).write_text(json.dumps(updated, indent = 2), encoding = "utf-8")
     except OSError:
         pass
 
@@ -1395,7 +1396,7 @@ def _install_locked(
         and _intact_install(target, existing) is not None
     ):
         print(f"audio.cpp: already matches {chosen}", flush = True)
-        _mark_runtime_wheels_tried(target, existing, requested, detected)
+        _refresh_kept_record(target, existing, requested, detected)
         return _intact_install(target, existing)
     if (
         not force
@@ -1408,7 +1409,7 @@ def _install_locked(
     ):
         # The lookup named an older release than the one installed: never downgrade to it.
         print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
-        _mark_runtime_wheels_tried(target, existing, requested, detected)
+        _refresh_kept_record(target, existing, requested, detected)
         return _intact_install(target, existing)
 
     cudart = cudart_asset_for(list(assets), chosen)
