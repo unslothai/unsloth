@@ -907,7 +907,7 @@ class FastDecisionModel:
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
+        random_state = 3407,  # unsloth_zoo's MLX LoRA needs an int seed
         max_seq_length = None,
         use_rslora = False,
         use_dora = False,

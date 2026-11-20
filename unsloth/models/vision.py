@@ -5661,7 +5661,8 @@ class FastBaseModel:
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
+        # None keeps the caller's RNG (#14327); pass an int for a fixed LoRA init.
+        random_state = None,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
         modules_to_save = None,
@@ -5691,7 +5692,8 @@ class FastBaseModel:
             # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
-        transformers_set_seed(random_state)
+        if random_state is not None:
+            transformers_set_seed(random_state)
 
         # Models with their own projection names (native DeepSeek-V4.1) map the standard aliases to real Linears.
         _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
