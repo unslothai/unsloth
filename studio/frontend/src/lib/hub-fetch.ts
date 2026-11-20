@@ -157,9 +157,69 @@ async function probe(
   }
 }
 
+// Asking a rate-limited Hub again only extends the limit: until its window ends, a 429 answers
+// every request to that origin's bucket (API, /resolve/ downloads, pages) without a network call.
+const RATE_LIMIT_DEFAULT_MS = 60_000;
+const RATE_LIMIT_MAX_MS = 10 * 60_000;
+const rateLimitedUntil = new Map<string, number>();
+
+function rateLimitBucket(url: string): string | null {
+  try {
+    const parsed = new URL(url, globalThis.location?.href ?? "http://localhost/");
+    const path = parsed.pathname;
+    const kind = path.includes("/resolve/") ? "resolve" : path.startsWith("/api/") ? "api" : "pages";
+    return `${parsed.origin}|${kind}`;
+  } catch {
+    return null;
+  }
+}
+
+function rateLimitWindowMs(response: Response): number {
+  const retryAfter = response.headers.get("Retry-After")?.trim();
+  let ms = Number.NaN;
+  if (retryAfter) {
+    ms = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
+  } else {
+    // HF's RateLimit header: "api";r=0;t=<seconds until reset>
+    const reset = response.headers.get("RateLimit")?.match(/;\s*t=(\d+)/);
+    if (reset) ms = Number(reset[1]) * 1000;
+  }
+  if (!Number.isFinite(ms) || ms <= 0) ms = RATE_LIMIT_DEFAULT_MS;
+  return Math.min(Math.max(ms, 1000), RATE_LIMIT_MAX_MS);
+}
+
+/** Test hook: forget every rate-limit window. */
+export function resetHubRateLimits(): void {
+  rateLimitedUntil.clear();
+}
+
 export async function fetchHub(
   input: Parameters<typeof fetch>[0],
   init: RequestInit = {},
+): Promise<Response> {
+  const bucket = rateLimitBucket(requestUrl(input));
+  const until = bucket === null ? undefined : rateLimitedUntil.get(bucket);
+  if (until !== undefined) {
+    const left = until - Date.now();
+    if (left > 0) {
+      return new Response(null, {
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: { "Retry-After": String(Math.ceil(left / 1000)) },
+      });
+    }
+    rateLimitedUntil.delete(bucket as string);
+  }
+  const response = await fetchHubOnce(input, init);
+  if (response.status === 429 && bucket !== null) {
+    rateLimitedUntil.set(bucket, Date.now() + rateLimitWindowMs(response));
+  }
+  return response;
+}
+
+async function fetchHubOnce(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
 ): Promise<Response> {
   const url = requestUrl(input);
   const hfToken = sentHfToken(input, init, url);
