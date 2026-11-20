@@ -500,10 +500,25 @@ def ambient_hf_token():
 
 
 def account_hf_token(token):
-    """False is the Hub's anonymous sentinel; None would lend the installation token."""
-    if managed_account() and (not token or (isinstance(token, str) and not token.strip())):
-        return False
-    return token
+    """Resolve a request token without ever borrowing another account's credential.
+
+    Managed-account requests may omit ``X-Unsloth-HF-Token`` when the account has already
+    saved its own Hugging Face token in Settings.  The encrypted credential store is scoped
+    by ``studio_db_path()`` under the current account context, so reading it here is safe and
+    fixes download/load flows that do not echo the token in their request body.  ``False``
+    remains the Hub's anonymous sentinel when no account-scoped token exists; returning
+    ``None`` would allow the Hub client to fall back to the installation owner's token.
+    """
+    if not managed_account():
+        return token
+    if isinstance(token, str) and token.strip():
+        return token
+    try:
+        from storage import credential_secrets
+        saved = credential_secrets.get_hf_token()
+    except Exception:  # noqa: BLE001 - an unreadable credential must fail closed
+        saved = None
+    return saved.strip() if isinstance(saved, str) and saved.strip() else False
 
 
 def require_installation_owner() -> None:

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260" role="img" aria-labelledby="title desc">
+  <title id="title">Before: managed account Hugging Face token was dropped</title>
+  <desc id="desc">A saved managed-account token was not used when a download request omitted a header.</desc>
+  <rect width="900" height="260" fill="#fff7ed"/>
+  <text x="32" y="42" font-family="sans-serif" font-size="24" font-weight="700" fill="#9a3412">Before</text>
+  <g font-family="sans-serif" font-size="16" text-anchor="middle">
+    <rect x="32" y="88" width="190" height="92" rx="14" fill="#fed7aa" stroke="#c2410c" stroke-width="2"/>
+    <text x="127" y="122" fill="#7c2d12">Managed account</text>
+    <text x="127" y="148" fill="#7c2d12">saved HF token</text>
+    <rect x="292" y="88" width="190" height="92" rx="14" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+    <text x="387" y="122" fill="#991b1b">No request header</text>
+    <text x="387" y="148" fill="#991b1b">→ False</text>
+    <rect x="552" y="88" width="190" height="92" rx="14" fill="#fecaca" stroke="#b91c1c" stroke-width="2"/>
+    <text x="647" y="122" fill="#7f1d1d">Anonymous Hub call</text>
+    <text x="647" y="148" fill="#7f1d1d">gated repo → 404</text>
+  </g>
+  <path d="M222 134h64M482 134h64" stroke="#9a3412" stroke-width="3" marker-end="url(#arrow)"/>
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#9a3412"/></marker></defs>
+</svg>
