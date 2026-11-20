@@ -17235,6 +17235,9 @@ def _fetch_url_raw(
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
         return reason, "", ""
+    refused = _page_refusal(canonical_host)
+    if refused:
+        return refused, "", ""
 
     if proxy_hostname is None:
         proxy_hostname = os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1"
@@ -18047,8 +18050,6 @@ def _download_page(
     cancel_event = None,
     website_policy: dict | None = None,
 ):
-    # One deadline for the whole fetch so the HTML fallback does not get a fresh timeout.
-    deadline = None if timeout is None else time.monotonic() + timeout
     from .web_access_policy import check_url_access
 
     # Before the policy gate (needs a scheme) and the README routing (reads host/path).
@@ -18059,6 +18060,8 @@ def _download_page(
     refused = _page_refusal(_hostname)
     if refused:
         return refused
+    # One deadline for the whole fetch so the HTML fallback does not get a fresh timeout.
+    deadline = None if timeout is None else time.monotonic() + timeout
     policy_kwargs = {"website_policy": website_policy} if website_policy is not None else {}
     readme_api_url = _github_repo_readme_api_url(url)
     if readme_api_url:

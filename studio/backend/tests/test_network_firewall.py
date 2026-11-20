@@ -548,6 +548,22 @@ def test_the_proxy_asks_the_gate_before_it_dials_and_reports_what_moved(asking, 
     assert rows["example.cn"]["verdict"] == rows["example.org"]["verdict"] == "refused"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "the egress proxy backs the POSIX sandboxes")
+def test_the_proxy_refuses_a_host_with_a_nul_byte_before_the_gate(asking, monkeypatch):
+    from core.inference import sandbox_egress
+
+    dialled = []
+    monkeypatch.setattr(sandbox_egress, "_dial", lambda host, port: dialled.append(host))
+    proxy = sandbox_egress.EgressProxy(gate = _gate(_Chat("deny")))
+    try:
+        with socket.create_connection(("127.0.0.1", proxy.port), timeout = 10) as sock:
+            sock.sendall(b"CONNECT 93.184.216.34\x00.pypi.org:443 HTTP/1.1\r\n\r\n")
+            assert sock.recv(4096).startswith(b"HTTP/1.1 400")
+    finally:
+        proxy.close()
+    assert dialled == []
+
+
 def test_closing_the_proxy_ends_a_waiting_question(asking):
     from core.inference import sandbox_egress
 
@@ -712,6 +728,47 @@ def test_opening_a_page_asks_through_the_same_card_and_lists(asking, monkeypatch
     assert tools.is_high_risk_tool_call("web_search", {"url": "https://example.org/a"}) is False
 
 
+def test_a_github_file_read_does_not_reach_a_host_outside_the_allowed_list(asking, monkeypatch):
+    firewall.set_network_firewall(mode = "allowlist", allowed_sites = ["github.com"])
+    fetched = []
+    monkeypatch.setattr(
+        tools,
+        "_validate_and_resolve_host",
+        lambda hostname, port: fetched.append(hostname) or (False, "Blocked: test stops here.", []),
+    )
+    tools.execute_tool(
+        "web_search",
+        {"url": "https://github.com/o/r/blob/main/a.py"},
+        output_callback = _Chat("deny"),
+    )
+    assert fetched == ["github.com"]
+
+
+def test_a_slow_approval_does_not_use_up_the_page_read_time(asking, monkeypatch):
+    fetched = []
+    monkeypatch.setattr(
+        tools,
+        "_validate_and_resolve_host",
+        lambda hostname, port: fetched.append(hostname) or (False, "Blocked: test stops here.", []),
+    )
+
+    def slow_chat(event):
+        question = event["network_request"]
+        if not question.get("done"):
+            threading.Timer(
+                1.5,
+                network_requests.resolve_request,
+                (question["id"], "allow", question["session_id"], OWNER.account_id),
+            ).start()
+
+    token = tools._PAGE_GATE.set(_gate(slow_chat))
+    try:
+        out = tools._download_page("https://example.org/a", timeout = 1)
+    finally:
+        tools._PAGE_GATE.reset(token)
+    assert "timed out" not in out and fetched == ["example.org"]
+
+
 def test_allowed_only_refuses_an_unlisted_page_and_a_search_still_runs(asking, monkeypatch):
     firewall.set_network_firewall(mode = "allowlist")
     chat = _Chat("allow")
@@ -743,6 +800,34 @@ def test_allowed_only_keeps_the_browser_agent_to_the_allowed_websites(asking):
         "browser_navigate", {"ok": True, "url": "https://example.org/", "text": "secret"}, None
     )
     assert "withheld" in withheld and "secret" not in withheld
+
+
+@pytest.mark.parametrize(
+    "chat_allows, panel_allows",
+    [
+        (None, ["github.com", "pypi.org"]),
+        ({"allowedDomains": ["docs.github.com", "example.org"]}, ["docs.github.com"]),
+        ({"allowedDomains": ["example.org"]}, ["invalid"]),
+    ],
+)
+def test_allowed_only_limits_what_the_browser_panel_may_open(asking, chat_allows, panel_allows):
+    firewall.set_network_firewall(mode = "allowlist", allowed_sites = ["github.com", "pypi.org"])
+    sent = []
+    stop = threading.Event()
+
+    def panel(event):
+        sent.append(event["browser_action"])
+        stop.set()
+
+    browser_agent.execute_browser_tool(
+        "browser_click",
+        {"ref": "r1"},
+        cancel_event = stop,
+        output_callback = panel,
+        session_id = "session-1",
+        website_policy = chat_allows,
+    )
+    assert sent[0]["allowed_domains"] == panel_allows
 
 
 def test_early_page_reads_are_not_started_while_the_rules_may_ask(asking):

@@ -1079,7 +1079,9 @@ def execute_browser_tool(
                     "id": action_id,
                     "session_id": session_id or "",
                     **request,
-                    "allowed_domains": list(policy["allowedDomains"]),
+                    "allowed_domains": network_firewall.panel_allowed_domains(
+                        policy["allowedDomains"]
+                    ),
                     "blocked_domains": [
                         *policy["blockedDomains"],
                         *network_firewall.blocked_domains(),

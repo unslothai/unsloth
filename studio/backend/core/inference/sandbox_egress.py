@@ -276,6 +276,8 @@ class EgressProxy:
                     forward = "\r\n".join(
                         [f"{method} {path} {version}", *kept, "Connection: close", "", ""]
                     ).encode("latin-1")
+                if any(ord(c) <= 0x20 or ord(c) == 0x7F for c in host):
+                    raise ValueError(f"bad host: {host!r}")
                 refusal = self._gate.check(host, port) if self._gate is not None else None
                 if refusal:
                     raise EgressRefused(refusal)

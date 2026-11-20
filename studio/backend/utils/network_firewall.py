@@ -140,6 +140,20 @@ def blocked_domains() -> tuple[str, ...]:
     return _policy()[2]
 
 
+def panel_allowed_domains(chat_domains) -> list[str]:
+    """The browser panel takes an empty list as allow-all, so Allowed only narrows the chat's list to ours."""
+    mode, allowed, _ = _policy()
+    if mode != "allowlist":
+        return list(chat_domains)
+    if not chat_domains:
+        both = list(allowed)
+    else:
+        both = [d for d in chat_domains if _covers(allowed, d)]
+        both += [d for d in allowed if _covers(tuple(chat_domains), d) and d not in both]
+    # RFC 6761 reserves .invalid, so an empty intersection still opens nothing.
+    return both or ["invalid"]
+
+
 def blocks(host: str) -> bool:
     return _covers(_policy()[2], host.lower().rstrip("."))
 
