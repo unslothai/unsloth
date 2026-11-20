@@ -7,6 +7,7 @@ import type {
   RecipeExecutionBatch,
   RecipeExecutionKind,
   RecipeExecutionRecord,
+  RecipeExecutionStatus,
   RecipeSourceProgress,
 } from "../execution-types";
 import {
@@ -16,6 +17,13 @@ import {
 } from "./execution-helpers";
 
 const MAX_LOG_LINES = 1500;
+
+export function toEpochMs(ts: unknown): number | null {
+  if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) {
+    return null;
+  }
+  return ts > 10_000_000_000 ? ts : ts * 1000;
+}
 
 function formatEventTime(ts: unknown): string {
   if (typeof ts !== "number" || !Number.isFinite(ts)) {
@@ -82,6 +90,21 @@ function normalizeSourceProgress(input: unknown): RecipeSourceProgress | null {
   return raw as RecipeSourceProgress;
 }
 
+function terminalFinishedAt(
+  execution: RecipeExecutionRecord,
+  status: JobStatusResponse,
+  mappedStatus: RecipeExecutionStatus,
+): number | null {
+  const terminal =
+    mappedStatus === "completed" ||
+    mappedStatus === "error" ||
+    mappedStatus === "cancelled";
+  if (!terminal) {
+    return null;
+  }
+  return toEpochMs(status.finished_at) ?? execution.finishedAt ?? Date.now();
+}
+
 export function applyExecutionStatusSnapshot(
   execution: RecipeExecutionRecord,
   status: JobStatusResponse,
@@ -114,12 +137,8 @@ export function applyExecutionStatusSnapshot(
     model_usage: normalizeObject(status.model_usage),
     artifact_path: status.artifact_path ?? execution.artifact_path,
     error: status.error ?? null,
-    finishedAt:
-      mappedStatus === "completed" ||
-      mappedStatus === "error" ||
-      mappedStatus === "cancelled"
-        ? Date.now()
-        : null,
+    createdAt: toEpochMs(status.started_at) ?? execution.createdAt,
+    finishedAt: terminalFinishedAt(execution, status, mappedStatus),
   };
 }
 
