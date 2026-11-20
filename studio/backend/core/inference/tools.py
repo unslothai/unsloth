@@ -24178,6 +24178,12 @@ def _python_exec(
             firewalled, "python", session_id, thread_id, output_callback, cancel_event
         )
         if confinement is None or not confinement.confines:
+            # MXC builds its workload environment from the plan, so the checkpoint must be in it first.
+            if firewalled and sys.platform == "win32":
+                watched = _watched_network(gate, safe_env)
+                if watched is None:
+                    return network_firewall.CHECKPOINT_FAILED
+                safe_env, watch_close = watched
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
                     argv = (sys.executable, "-u", tmp_path),
@@ -24195,7 +24201,7 @@ def _python_exec(
                 user_folder = _is_user_project_folder(session_id, workdir),
                 host_script = code,
             )
-            if firewalled and not prepared.egress_proxy:
+            if firewalled and sys.platform != "win32" and not prepared.egress_proxy:
                 watched = _watched_network(gate, prepared.env)
                 if watched is None:
                     return network_firewall.CHECKPOINT_FAILED
@@ -24475,6 +24481,11 @@ def _bash_exec(
             firewalled, "terminal", session_id, thread_id, output_callback, cancel_event
         )
         if confinement is None or not confinement.confines:
+            if firewalled and sys.platform == "win32":
+                watched = _watched_network(gate, safe_env)
+                if watched is None:
+                    return network_firewall.CHECKPOINT_FAILED
+                safe_env, watch_close = watched
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
                     argv = tuple(shell_argv),
@@ -24491,7 +24502,7 @@ def _bash_exec(
                 host_access_approved = host_reach_approved,
                 user_folder = chosen_folder,
             )
-            if firewalled and not prepared.egress_proxy:
+            if firewalled and sys.platform != "win32" and not prepared.egress_proxy:
                 watched = _watched_network(gate, prepared.env)
                 if watched is None:
                     return network_firewall.CHECKPOINT_FAILED

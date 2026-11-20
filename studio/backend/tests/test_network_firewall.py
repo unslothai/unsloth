@@ -672,6 +672,53 @@ def test_open_mode_leaves_code_outside_the_os_sandbox_as_it_was(store):
     assert out.strip() == "PROXY False None", out
 
 
+class _WindowsSys:
+    platform = "win32"
+
+    def __getattr__(self, name):
+        return getattr(sys, name)
+
+
+def test_the_windows_mxc_workload_starts_with_the_checkpoint_in_its_environment(
+    asking, monkeypatch
+):
+    import subprocess
+
+    from core.inference import os_sandbox
+
+    def prepare(plan, **kwargs):
+        workload_env = dict(plan.env)
+
+        def launch(_prepared, popen_kwargs):
+            popen_kwargs["env"] = workload_env
+            popen_kwargs.pop("creationflags", None)
+            return subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os; print('EGRESS', os.environ.get('_UNSLOTH_EGRESS_ONLY'))",
+                ],
+                **popen_kwargs,
+            )
+
+        prepared = os_sandbox.PreparedSandboxLaunch(
+            argv = plan.argv,
+            workdir = plan.workdir,
+            env = plan.env,
+            preexec_fn = None,
+            backend = "mxc-test",
+        )
+        prepared.spawn_callback = launch
+        return prepared
+
+    monkeypatch.setattr(tools, "sys", _WindowsSys())
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising = False)
+    monkeypatch.setattr(tools, "_prepare_tool_launch", prepare)
+    for run, source in ((tools._python_exec, "print(1)"), (tools._bash_exec, "echo 1")):
+        out = run(source, None, 30, _SESSION, tool_execution_mode = "auto")
+        assert "EGRESS 127.0.0.1:" in out, out
+
+
 def test_a_checkpoint_that_cannot_start_refuses_the_call(asking, monkeypatch):
     from core.inference import sandbox_egress
 
