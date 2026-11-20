@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogTitle,
@@ -12,7 +13,11 @@ import { triggerShortcut } from "@/features/settings/hooks/use-shortcut";
 import { TOUR_OPEN_EVENT, isTourListening } from "@/features/tour";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
+  Cancel01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
@@ -40,32 +45,26 @@ function whenReady(attempt: () => boolean, timeoutMs = 3000): void {
   window.setTimeout(tick, 120);
 }
 
-/** Drawn once by the frame, so the dots hold still while the steps change under them. */
-function ProgressDots({
+/** Drawn once by the frame, so the bar holds still while the steps change under it. */
+function ProgressBar({
   pages,
   page,
 }: { pages: OnboardingPageId[]; page: OnboardingPageId }) {
   const current = pages.indexOf(page);
   return (
-    <div
-      aria-hidden="true"
-      className={cn(
-        "flex h-1.5 items-center justify-center gap-1.5 transition-opacity duration-300",
-        pages.length < 2 && "opacity-0",
-      )}
-    >
+    <div aria-hidden="true" className="flex flex-1 items-center gap-1.5">
       {pages.map((p, i) => (
         <span
           key={p}
-          className={cn(
-            "h-1.5 rounded-full transition-all duration-300",
-            i === current
-              ? "w-6 bg-control-accent"
-              : i < current
-                ? "w-1.5 bg-muted-foreground/70"
-                : "w-1.5 bg-muted-foreground/25",
-          )}
-        />
+          className="bg-muted-foreground/20 h-1 flex-1 overflow-hidden rounded-full"
+        >
+          <motion.span
+            className="bg-control-accent block h-full rounded-full"
+            initial={false}
+            animate={{ width: i <= current ? "100%" : "0%" }}
+            transition={{ duration: 0.45, ease: EASE_OUT_EXPO }}
+          />
+        </span>
       ))}
     </div>
   );
@@ -163,6 +162,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
       <DialogContent
         ref={cardRef}
         data-onboarding=""
+        showCloseButton={false}
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           primaryRef.current?.focus();
@@ -178,10 +178,32 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
             total: pages.length,
           })}
         </DialogDescription>
-        <div className="flex h-14 shrink-0 items-end justify-center">
-          <ProgressDots pages={pages} page={page} />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 h-56"
+          style={{
+            background:
+              "radial-gradient(60% 100% at 50% 0%, color-mix(in oklab, var(--control-accent) 14%, transparent), transparent)",
+          }}
+        />
+        <div className="relative flex shrink-0 items-center gap-4 pt-5 pr-4 pl-8 sm:pl-10">
+          <ProgressBar pages={pages} page={page} />
+          <DialogClose asChild={true}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground rounded-full"
+              aria-label={t("onboarding.close")}
+            >
+              <HugeiconsIcon
+                icon={Cancel01Icon}
+                className="size-4"
+                strokeWidth={2}
+              />
+            </Button>
+          </DialogClose>
         </div>
-        <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-7 pb-7 sm:px-14">
+        <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-8 pb-8 sm:px-14">
           <AnimatePresence
             mode="wait"
             initial={false}
@@ -219,27 +241,28 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
             </motion.div>
           </AnimatePresence>
         </div>
-        <div className="flex shrink-0 items-center justify-between gap-3 px-6 pt-1 pb-6 sm:px-10 sm:pb-8">
+        <div className="relative flex shrink-0 items-center justify-between gap-3 px-6 pb-6 sm:px-10 sm:pb-8">
           {page === "welcome" ? (
-            <Button
-              variant="ghost"
-              className={cn(PILL, "text-muted-foreground px-5")}
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground px-2 text-sm font-medium transition-colors"
               onClick={skipAll}
             >
               {t("onboarding.skipSetup")}
-            </Button>
+            </button>
           ) : index > 0 ? (
             <Button
-              variant="ghost"
-              className={cn(PILL, "gap-2 pr-5 pl-4")}
+              variant="muted"
+              size="icon-lg"
+              className="size-11 rounded-full"
+              aria-label={t("onboarding.back")}
               onClick={back}
             >
               <HugeiconsIcon
                 icon={ArrowLeft01Icon}
-                className="size-4"
+                className="size-4.5"
                 strokeWidth={2}
               />
-              {t("onboarding.back")}
             </Button>
           ) : (
             <span />

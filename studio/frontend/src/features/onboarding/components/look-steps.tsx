@@ -136,9 +136,9 @@ function ModeCard({
       type="button"
       aria-pressed={active}
       onClick={onPick}
-      className="bg-card hover:bg-muted/60 relative flex flex-col rounded-2xl p-1 text-left ring-1 ring-border transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="bg-muted/50 hover:bg-muted relative flex flex-col rounded-2xl p-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <span className="block aspect-[16/9] overflow-hidden rounded-[0.8rem]">
+      <span className="block aspect-[16/9] overflow-hidden rounded-[0.625rem]">
         {mode.value === "system" ? (
           <span className="flex h-full">
             <span className="h-full w-1/2 overflow-hidden">
@@ -299,7 +299,7 @@ function Wallpapers() {
           void resetChatBackground();
         }}
       >
-        <span className="bg-background absolute inset-0" />
+        <span className="bg-muted absolute inset-0" />
         <HugeiconsIcon
           icon={UnavailableIcon}
           className="text-muted-foreground relative size-4"
@@ -334,7 +334,7 @@ function Wallpapers() {
         busy={busy && picked === "upload"}
         onPick={() => input.current?.click()}
       >
-        <span className="bg-background absolute inset-0" />
+        <span className="bg-muted absolute inset-0" />
         <HugeiconsIcon
           icon={Upload01Icon}
           className="text-muted-foreground relative size-4"

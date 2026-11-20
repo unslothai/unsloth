@@ -5811,6 +5811,7 @@ export const en = {
   },
   onboarding: {
     dialogTitle: "Set up Unsloth",
+    close: "Close",
     back: "Back",
     continue: "Continue",
     skipSetup: "Skip setup",

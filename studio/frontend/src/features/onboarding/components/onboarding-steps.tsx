@@ -83,7 +83,7 @@ function AvatarChoice({
       aria-label={label}
       title={label}
       onClick={onPick}
-      className="bg-background relative flex aspect-square items-center justify-center overflow-hidden rounded-full ring-1 ring-border outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
+      className="bg-muted relative flex aspect-square items-center justify-center overflow-hidden rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
     >
       {children}
       <ChosenRing on={active} className="ring-foreground ring-inset" />
@@ -365,7 +365,7 @@ function Capabilities({ summary }: { summary: ReadySummary }) {
         <span
           key={c.key}
           className={cn(
-            "bg-background flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs shadow-xs",
+            "bg-muted flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs",
             ready[c.key]
               ? "text-foreground"
               : "text-muted-foreground opacity-70",
@@ -398,7 +398,7 @@ function CopyCommand() {
     [],
   );
   return (
-    <div className="bg-background flex items-center gap-2 rounded-xl py-1.5 pr-1.5 pl-3.5 shadow-xs">
+    <div className="bg-muted flex items-center gap-2 rounded-xl py-1.5 pr-1.5 pl-3.5">
       <code className="min-w-0 flex-1 truncate font-mono text-xs">
         {AGENT_COMMAND}
       </code>

@@ -37,7 +37,7 @@ export function Mascot({
   );
 }
 
-/** One surface holding several rows, the way Settings groups them. */
+/** Rows between hairlines, no box: the column itself is the surface. */
 export function Group({
   children,
   className,
@@ -45,7 +45,7 @@ export function Group({
   return (
     <div
       className={cn(
-        "bg-muted/60 divide-border/50 divide-y overflow-hidden rounded-2xl",
+        "divide-border/60 border-border/60 divide-y border-y",
         className,
       )}
     >
@@ -65,7 +65,7 @@ export function Tile({
         tone === "accent" && "bg-control-accent text-control-accent-foreground",
         tone === "done" &&
           "bg-emerald-500/15 text-emerald-600 dark:text-emerald-500",
-        tone === "plain" && "bg-background text-foreground shadow-xs",
+        tone === "plain" && "bg-muted text-foreground",
       )}
     >
       <HugeiconsIcon icon={icon} className="size-4.5" strokeWidth={1.75} />
@@ -89,7 +89,7 @@ export function Row({
   muted?: boolean;
 }) {
   return (
-    <div className="px-5 py-4">
+    <div className="py-4">
       <div className="flex items-center gap-4">
         {lead}
         <div className="min-w-0 flex-1">
