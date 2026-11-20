@@ -2036,6 +2036,12 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 add_mfu_callback(self)
             except Exception as exc:
                 logger.warning(f"Unsloth: could not enable MFU logging ({exc}).")
+        if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+            try:
+                from .utils.run_report import install_memory_report
+                install_memory_report(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable the memory report ({exc}).")
 
     return new_init
 
@@ -2472,6 +2478,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
             print(message)
 
         install_token_budget(self)
+        # Outermost wrapper, so it sees each micro-batch before UNSLOTH_TOKEN_BUDGET splits it.
+        if os.environ.get("UNSLOTH_BATCH_REPORT", "0") != "0":
+            try:
+                from .utils.run_report import install_batch_report
+                install_batch_report(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable the batch report ({exc}).")
 
         # get_peft_model installs a pre-train forward detector for plain LoRA/vision models, but only RL
         # trainers run the reset via prepare_for_training_mode, so wire it into the SFT train() path too,
