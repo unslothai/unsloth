@@ -232,13 +232,16 @@ test("only audio.cpp GGUFs skip the llama.cpp budget; Mac TTS GGUFs load through
   assert.doesNotMatch(src, /unifiedLoadBudgetGb: audioTaskPicker/);
 });
 
-function ggufOnlyMac(inferenceGpu: Record<string, unknown> | undefined) {
+function ggufOnlyMac(
+  inferenceGpu: Record<string, unknown> | undefined,
+  availableGb = 6,
+) {
   snapshot = {
     status: "ready",
     device_backend: "cpu",
     gpu: { available: false, backend: "cpu", devices: [] },
     inference_gpu: inferenceGpu,
-    memory: { total_gb: 16, available_gb: 6 },
+    memory: { total_gb: 16, available_gb: availableGb },
   };
   return {
     training: hooks.useGpuInfo(),
@@ -264,8 +267,11 @@ const METAL_INVENTORY = {
 };
 
 test("a GGUF-only 16 GiB Mac with 6 GiB free rates a 2.2 GB quant by the Metal budget, not half of RAM", () => {
-  const hubFit = (gpu: ReturnType<typeof hooks.useInferenceGpuInfo>) =>
-    classifyGgufFit(2_200_000_000, {
+  const hubFit = (
+    gpu: ReturnType<typeof hooks.useInferenceGpuInfo>,
+    bytes = 2_200_000_000,
+  ) =>
+    classifyGgufFit(bytes, {
       gpuGb: gpu.available ? gpu.memoryTotalGb : undefined,
       systemRamGb:
         gpu.systemRamAvailableGb > 0 ? gpu.systemRamAvailableGb : undefined,
@@ -284,6 +290,13 @@ test("a GGUF-only 16 GiB Mac with 6 GiB free rates a 2.2 GB quant by the Metal b
   // min(10.67 working set, 6 free) * 0.85 = 5.1, floored to 0.25 GiB.
   assert.equal(after.inference.unifiedLoadBudgetGb, 5);
   assert.equal(hubFit(after.inference), "fits");
+  // 4.2 GB needs about 5.5 GiB: past the 5 GiB Metal budget, though the 16 GiB pool alone would pass it.
+  assert.equal(hubFit(after.inference, 4_200_000_000), "marginal");
+});
+
+test("with more free than the Metal working set, the working set caps a GGUF-only Mac's budget", () => {
+  // min(10.67, 12) * 0.85 = 9.07, floored to 0.25 GiB; not 12 * 0.85 = 10.2.
+  assert.equal(ggufOnlyMac(METAL_INVENTORY, 12).inference.unifiedLoadBudgetGb, 9);
 });
 
 test("the unified budget needs an Apple inventory: a Vulkan one on a CPU host stays null", () => {

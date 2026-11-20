@@ -335,3 +335,4 @@ def test_system_route_serves_the_metal_inventory_to_a_cpu_mac(monkeypatch, metal
     gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *a: None))
     assert gpu["available"] is False
     assert inference_gpu["backend"] == ("metal" if metal else "cpu")
+    assert inference_gpu["devices"] == (metal_info["devices"] if metal else [])
