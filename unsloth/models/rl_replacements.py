@@ -3867,9 +3867,9 @@ class _UnslothVllmFrozenSync:
 
 
 @torch.no_grad()
-def _unsloth_vllm_sync_peft_merged(trainer):
-    """TRL's PEFT sync (merged weights under the base-layer names), without mutating the model."""
-    model = trainer.model
+def _unsloth_vllm_iter_peft_merged(model, fix_name = None):
+    """Yield (vLLM name, merged tensor, live param) as TRL's PEFT sync does after merge_adapter, but
+    computed out of place, so the frozen base weights keep their exact bytes."""
     # Plain LoRA: W + sum of deltas in fp32, rounded once. Anything else: PEFT's merge on a copy.
     plain = _unsloth_vllm_plain_lora(model)
     lora_of = {}
@@ -3891,23 +3891,8 @@ def _unsloth_vllm_sync_peft_merged(trainer):
     unserved = tuple(unserved)
     # Structural, not a name match: a base module named q_lora_proj is still a base weight.
     adapter_ids = _unsloth_vllm_adapter_param_ids(model)
-    # TRL 0.18 has no vllm_mode: its in-process engine is the colocated one.
-    mode = getattr(trainer, "vllm_mode", None) or (
-        "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
-    )
-    is_main = getattr(trainer.accelerator, "is_main_process", True)
-    llm_model = None
-    if mode == "colocate":
-        llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
-    frozen_sync = _UnslothVllmFrozenSync(
-        trainer,
-        model,
-        llm_model if mode == "colocate" else trainer.vllm_client,
-        engine = trainer.llm if mode == "colocate" else None,
-        adapted_ids = set(lora_of) | set(groups),
-    )
     # TRL < 0.20 sends the names as they are and has no fixer.
-    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None) or (lambda name, **_: name)
+    fix_name = fix_name or (lambda name, **_: name)
     for full_name, param in model.named_parameters():
         if unserved and full_name.startswith(unserved):
             continue
@@ -3926,6 +3911,38 @@ def _unsloth_vllm_sync_peft_merged(trainer):
             tensor = merged_cache.pop(id(param))
         else:
             tensor = param.data
+        yield name, tensor, param
+
+
+@torch.no_grad()
+def _unsloth_vllm_sync_peft_merged(trainer):
+    """TRL's PEFT sync (merged weights under the base-layer names), without mutating the model."""
+    model = trainer.model
+    # TRL 0.18 has no vllm_mode: its in-process engine is the colocated one.
+    mode = getattr(trainer, "vllm_mode", None) or (
+        "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
+    )
+    is_main = getattr(trainer.accelerator, "is_main_process", True)
+    llm_model = None
+    if mode == "colocate":
+        llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
+    adapted_ids = set()
+    if _unsloth_vllm_plain_lora(model):
+        for module in _unsloth_vllm_lora_layers(model):
+            weight = getattr(module.base_layer, "weight", None)
+            if weight is not None:
+                adapted_ids.add(id(weight))
+    else:
+        adapted_ids = set(_unsloth_vllm_tuner_groups(model))
+    frozen_sync = _UnslothVllmFrozenSync(
+        trainer,
+        model,
+        llm_model if mode == "colocate" else trainer.vllm_client,
+        engine = trainer.llm if mode == "colocate" else None,
+        adapted_ids = adapted_ids,
+    )
+    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None)
+    for name, tensor, param in _unsloth_vllm_iter_peft_merged(model, fix_name):
         if not frozen_sync.keep(name, tensor, param):
             continue
         if mode == "server":
@@ -3938,6 +3955,60 @@ def _unsloth_vllm_sync_peft_merged(trainer):
     elif mode == "colocate":
         trainer.llm.reset_prefix_cache()
     return None
+
+
+def _unsloth_vllm_generation_merges_out_of_place(generation):
+    """TRL >= 0.28 VLLMGeneration: True when the PEFT model is unsharded and mergeable, so the sync
+    can stream merged copies instead of TRL's in-place merge_adapter / unmerge_adapter round trip.
+    Anything else (sharded, quantized, offloaded, unmergeable) keeps TRL's own path."""
+    if os.environ.get("UNSLOTH_VLLM_INPLACE_MERGE", "0") == "1":
+        return False
+    model = getattr(generation, "model", None)
+    if not getattr(model, "peft_config", None):
+        return False
+    state = getattr(getattr(generation, "accelerator", None), "state", None)
+    if state is None or getattr(state, "fsdp_plugin", None) is not None:
+        return False
+    deepspeed_plugin = getattr(state, "deepspeed_plugin", None)
+    if deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3:
+        return False
+    if getattr(getattr(generation, "_dist", None), "is_fsdp", False):
+        return False
+    key = tuple(sorted(_unsloth_vllm_active_adapters(model)))
+    cached = generation.__dict__.get("_unsloth_vllm_out_of_place")
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    ok = (
+        not _unsloth_vllm_quantized(model)
+        and _unsloth_vllm_offloaded(model) is None
+        and not _unsloth_vllm_peft_unsupported(model)
+        and not _unsloth_vllm_shared_targets(model)
+    )
+    generation._unsloth_vllm_out_of_place = (key, ok)
+    return ok
+
+
+def _unsloth_vllm_patch_iter_named_params(generation_cls):
+    """Route VLLMGeneration._iter_named_params through the out-of-place PEFT merge."""
+    original = getattr(generation_cls, "_iter_named_params", None)
+    if original is None or getattr(original, "_unsloth_out_of_place", False):
+        return False
+
+    def _iter_named_params(self):
+        if not _unsloth_vllm_generation_merges_out_of_place(self):
+            yield from original(self)
+            return
+        self._unsloth_vllm_out_of_place_syncs = (
+            getattr(self, "_unsloth_vllm_out_of_place_syncs", 0) + 1
+        )
+        fix_name = getattr(self, "_fix_param_name_to_vllm", None)
+        for name, tensor, _ in _unsloth_vllm_iter_peft_merged(self.model, fix_name):
+            yield name, tensor
+
+    _iter_named_params._unsloth_out_of_place = True
+    _iter_named_params.__wrapped__ = original
+    generation_cls._iter_named_params = _iter_named_params
+    return True
 
 
 def grpo_trainer__move_model_to_vllm(function_name, function):
@@ -6445,7 +6516,7 @@ def _unsloth_vllm_sync_colocate(generation, vllm_model):
     )
     if not sharded:
         model = generation.model
-        # merge_adapter edits the adapted base weights in place: those are always sent.
+        # Adapted base weights arrive merged (fresh copies, or TRL's in-place merge): always sent.
         adapted = ()
         if getattr(model, "peft_config", None) is not None:
             adapted = _unsloth_vllm_tuner_groups(model)
@@ -6724,6 +6795,11 @@ def vllm_generation_init_patch():
         setattr(generate, _UNSLOTH_GENERATE_WRAPPED, True)
         vllm_generation.VLLMGeneration.generate = generate
         return True
+
+    # Independent of the patches below: TRL's PEFT branch merges in place (merge_adapter, then
+    # unmerge_adapter), which rounds twice in bf16 / fp16 and drifts the frozen base every sync.
+    if _unsloth_vllm_patch_iter_named_params(vllm_generation.VLLMGeneration):
+        logger.info("Unsloth: Patched trl VLLMGeneration._iter_named_params")
 
     # Snapshot before patching: a HALF-patched VLLMGeneration is worse than none, since _init_vllm plus sync_weights without the generate-side adapter injection means no weight sync AND no LoRA, i.e. base-model rollouts with no error. If one of the three fails, restore all three.
     method_names = ("_init_vllm", "sync_weights", "generate")
