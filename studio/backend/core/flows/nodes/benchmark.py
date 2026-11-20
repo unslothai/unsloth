@@ -642,6 +642,13 @@ async def _recipe_heldout(
         conversation if isinstance(conversation, str) and conversation in columns else None
     )
     rl = None if named_prompt else _rl_rows(rows, facts)
+    objective = facts.get("rl_objective")
+    if rl is None and not named_prompt and objective in ("grpo", "dpo", "orpo") and rows:
+        ctx.log(
+            f"These rows do not format as the checkpoint's {str(objective).upper()} rows; they "
+            "are scored as SFT rows. Set the prompt and reference columns under Advanced.",
+            "warning",
+        )
     if rl is not None:
         asked, prompt_col = rl, MAPPED_PROMPT
         # Training's prompt carries the row's own system message.

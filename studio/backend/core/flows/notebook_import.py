@@ -479,6 +479,10 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
             reader.approximated.append(
                 f"Reward functions with no library match, left out: {', '.join(left_out)}"
             )
+    objective, task = reader.found.get("objective"), reader.found.get("task")
+    if objective and task not in (None, "text"):
+        # RL rows are text: format_rl_dataset would drop the image or audio column, not train on it.
+        reader.unsupported.add(f"{objective.upper()} on {task} data (Studio trains RL on text only)")
     if reader.found.get("task") == "embedding":
         for loss in sorted(reader.losses - _EMBEDDING_LOSSES):
             reader.unsupported.add(f"embedding training with {loss}")

@@ -1354,3 +1354,30 @@ def test_benchmark_tells_the_loop_how_it_built_each_question(monkeypatch):
         "whole": False,
     }
     assert reported({"prompt": "Capital?", "answer": "Paris"}, {}) == "prompt"
+
+
+def test_rows_that_do_not_format_as_the_rl_checkpoint_say_so(monkeypatch):
+    logged = []
+
+    class _Logging(_Ctx):
+        def log(self, message, level = "info", *a, **k):
+            logged.append((level, message))
+
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        # A DPO checkpoint benchmarked on rows with no chosen/rejected pair.
+        return [{"instruction": "Capital of France?", "response": "Paris"}]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    ctx = _Logging(_routes([]))
+    ctx.inputs["checkpoint"] = {
+        "kind": "checkpoint",
+        "name": "run-1",
+        "rl_objective": "dpo",
+        "rl_mapping": None,
+    }
+    asyncio.run(benchmark.benchmark(ctx))
+    assert any(level == "warning" and "scored as SFT rows" in m for level, m in logged)

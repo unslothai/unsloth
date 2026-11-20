@@ -166,8 +166,11 @@ def test_import_notebook_route(flows_client):
 def test_catalog_marks_what_studio_can_train():
     entry = catalog._entry("Llama3.1_(8B)-Alpaca.ipynb", {}, {})
     assert entry["category"] == "sft" and entry["studio_task"] == "text"
-    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] == "text"
-    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] == "text"
+    # GRPO and preference notebooks count only when the importer accepts them.
+    accepted = catalog._load_rl_importable()
+    assert catalog._entry("Llama3_(8B)-ORPO.ipynb", {}, {}, accepted)["studio_task"] == "text"
+    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {}, accepted)["studio_task"] is None
+    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {}, accepted)["studio_task"] is None
     assert (
         catalog._entry("gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb", {}, {})[
             "studio_task"
@@ -863,3 +866,18 @@ def test_saved_training_settings_keep_the_range_flows_accepted_before():
     }
     params = param_values(SPECS_BY_TYPE["train.finetune"], {"params": saved})
     assert {k: params[k] for k in saved} == saved
+
+
+def test_vision_grpo_is_refused_rather_than_dropping_the_images():
+    vision_grpo = _nb(
+        "from unsloth import FastVisionModel\n"
+        "model, tokenizer = FastVisionModel.from_pretrained('unsloth/Qwen2.5-VL-7B-Instruct')",
+        'SYSTEM_PROMPT = """Answer in <reasoning></reasoning> then <answer></answer>"""',
+        "dataset = load_dataset('AI4Math/MathVista', split = 'testmini')",
+        "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func], "
+        "args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(vision_grpo, "Qwen2_5_7B_VL_GRPO.ipynb")
+    assert doc is None
+    assert any("GRPO on vision data" in line for line in report["unsupported"])

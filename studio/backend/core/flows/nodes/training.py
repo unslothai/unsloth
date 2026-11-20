@@ -945,6 +945,16 @@ def rl_roles(params: dict, objective: str) -> dict:
     return {col: role for role, col in roles.items()}
 
 
+def _reward_weight(value: Any) -> float:
+    # A cleared weight field is the default, not a crash or a reward switched off.
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return 1.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise FlowNodeError(f"A reward weight must be a number, not {value!r}") from None
+
+
 def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
     """The /api/train/start RL fields; returns the GRPO rewards it picked."""
     from core.flows.specs import SPECS_BY_TYPE
@@ -960,7 +970,7 @@ def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
     if objective != "grpo":
         return []
     rewards = [
-        {"name": str(r.get("name") or "").strip(), "weight": float(r.get("weight", 1.0))}
+        {"name": str(r.get("name") or "").strip(), "weight": _reward_weight(r.get("weight"))}
         for r in params.get("rewards") or []
         if isinstance(r, dict) and str(r.get("name") or "").strip()
     ]

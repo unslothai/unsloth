@@ -1814,3 +1814,17 @@ def test_an_rl_alpaca_row_is_benchmarked_with_its_input(monkeypatch, objective):
     }
     # format_rl_dataset asks "instruction\n\ninput"; Benchmark and the Loop rebuild the same.
     assert mapped_question(row, spec) == "Translate to French\n\nThe weather is lovely today."
+
+
+@pytest.mark.parametrize("weight, expected", [("", 1.0), (None, 1.0), ("  ", 1.0), ("2", 2.0), (0, 0.0)])
+def test_a_blank_reward_weight_is_the_default(weight, expected):
+    config = {}
+    rewards = training.rl_config(
+        {"rewards": [{"name": "exact-answer", "weight": weight}]}, "grpo", config
+    )
+    assert rewards == [{"name": "exact-answer", "weight": expected}]
+
+
+def test_a_non_numeric_reward_weight_is_a_node_error():
+    with pytest.raises(FlowNodeError, match = "reward weight must be a number"):
+        training.rl_config({"rewards": [{"name": "exact-answer", "weight": "lots"}]}, "grpo", {})
