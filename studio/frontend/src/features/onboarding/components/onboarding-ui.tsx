@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 
 export function StepHeader({ title, body }: { title: string; body: string }) {
   return (
-    <div className="mb-7 space-y-2 text-center">
+    <div className="mb-10 space-y-3 text-center">
       <h2 className="font-heading text-[1.75rem] leading-[1.15] font-semibold tracking-[-0.02em]">
         {title}
       </h2>
@@ -42,7 +42,7 @@ export function Group({
   children,
   className,
 }: { children: ReactNode; className?: string }) {
-  return <div className={cn("space-y-6", className)}>{children}</div>;
+  return <div className={cn("space-y-8", className)}>{children}</div>;
 }
 
 export function Tile({
@@ -100,7 +100,7 @@ export function Row({
         </div>
         {trailing}
       </div>
-      {below ? <div className="mt-4">{below}</div> : null}
+      {below ? <div className="mt-5">{below}</div> : null}
     </div>
   );
 }

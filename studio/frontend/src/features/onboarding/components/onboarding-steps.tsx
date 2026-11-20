@@ -30,12 +30,8 @@ import { ChosenRing, Group, Mascot, Row, Tile } from "./onboarding-ui";
 const AVATARS = [
   "Sloth emojis/large sloth wave.png",
   "Sloth emojis/large sloth yay.png",
-  "Sloth emojis/large sloth heart.png",
-  "Sloth emojis/large sloth thumbs.png",
   "Sloth emojis/large sloth glasses.png",
-  "Sloth emojis/large sloth cheeky.png",
   "Sloth emojis/sloth headphones.png",
-  "Sloth emojis/UnSloth Sparkling large.png",
 ];
 
 function AvatarChoice({
@@ -56,7 +52,7 @@ function AvatarChoice({
       aria-label={label}
       title={label}
       onClick={onPick}
-      className="bg-muted relative flex aspect-square items-center justify-center overflow-hidden rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
+      className="bg-muted relative flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
     >
       {children}
       <ChosenRing on={active} className="ring-foreground ring-inset" />
@@ -112,17 +108,17 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
             />
           )}
         </motion.div>
-        <h2 className="font-heading mt-4 max-w-full truncate text-[2rem] leading-[1.15] font-semibold tracking-[-0.025em]">
+        <h2 className="font-heading mt-6 max-w-full truncate text-[2rem] leading-[1.15] font-semibold tracking-[-0.025em]">
           {name
             ? t("onboarding.welcome.titleName", { name })
             : t("onboarding.welcome.title")}
         </h2>
-        <p className="text-muted-foreground mt-2 text-[0.9375rem]">
+        <p className="text-muted-foreground mt-3 text-[0.9375rem]">
           {t("onboarding.welcome.body")}
         </p>
       </div>
       <form
-        className="mt-7"
+        className="mt-10"
         onSubmit={(e) => {
           e.preventDefault();
           onSubmit();
@@ -140,8 +136,8 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
           className="h-12 px-5 text-center text-base"
         />
       </form>
-      <div className="mt-5">
-        <div className="grid grid-cols-10 gap-2">
+      <div className="mt-6">
+        <div className="flex items-center justify-center gap-3">
           <AvatarChoice
             active={avatar === null}
             label={t("onboarding.profile.initials")}
@@ -347,8 +343,10 @@ export function DoneStep({
   const name = greetingName(displayName);
   return (
     <div className="my-auto">
-      <Mascot src="Sloth emojis/large sloth yay.png" className="size-18" />
-      <div className="mt-4 mb-7 space-y-2 text-center">
+      <div className="mx-auto flex size-14 items-center justify-center rounded-full bg-control-accent text-control-accent-foreground">
+        <HugeiconsIcon icon={Tick02Icon} className="size-6" strokeWidth={2.5} />
+      </div>
+      <div className="mt-6 mb-10 space-y-2.5 text-center">
         <h2 className="font-heading text-[1.75rem] leading-[1.15] font-semibold tracking-[-0.02em]">
           {name
             ? t("onboarding.done.titleName", { name })

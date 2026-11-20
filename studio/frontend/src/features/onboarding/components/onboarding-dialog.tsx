@@ -178,15 +178,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
             total: pages.length,
           })}
         </DialogDescription>
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 h-56"
-          style={{
-            background:
-              "radial-gradient(60% 100% at 50% 0%, color-mix(in oklab, var(--control-accent) 14%, transparent), transparent)",
-          }}
-        />
-        <div className="relative flex shrink-0 items-center gap-4 pt-5 pr-4 pl-8 sm:pl-10">
+        <div className="relative flex shrink-0 items-center gap-4 pt-6 pr-5 pl-8 sm:pl-10">
           <ProgressBar pages={pages} page={page} />
           <DialogClose asChild={true}>
             <Button
@@ -203,7 +195,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
             </Button>
           </DialogClose>
         </div>
-        <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-8 pb-8 sm:px-14">
+        <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-10 pb-10 sm:px-14">
           <AnimatePresence
             mode="wait"
             initial={false}

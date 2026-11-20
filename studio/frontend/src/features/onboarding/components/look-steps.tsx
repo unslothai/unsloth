@@ -30,7 +30,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useMemo, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import {
   WALLPAPER_PRESETS,
   type WallpaperPreset,
@@ -171,10 +171,9 @@ function ModeCard({
   );
 }
 
-const THUMB_W = 160;
-const THUMB_H = 100;
-const WALLPAPER_W = 2400;
-const WALLPAPER_H = 1500;
+// A flat tone needs no detail: a small canvas is the same wallpaper at a fraction of the storage.
+const WALLPAPER_W = 640;
+const WALLPAPER_H = 400;
 
 function paintTo(
   width: number,
@@ -188,17 +187,6 @@ function paintTo(
   if (!ctx) return null;
   paintWallpaper(ctx, width, height, preset);
   return canvas;
-}
-
-function useThumbnails(): Record<string, string> {
-  return useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const preset of WALLPAPER_PRESETS) {
-      const canvas = paintTo(THUMB_W, THUMB_H, preset);
-      if (canvas) out[preset.id] = canvas.toDataURL("image/png");
-    }
-    return out;
-  }, []);
 }
 
 type Backdrop = "none" | "upload" | string;
@@ -277,7 +265,6 @@ function Swatches() {
 
 function Wallpapers() {
   const t = useT();
-  const thumbs = useThumbnails();
   const hasImage = useBackgroundStore((s) => s.value !== null);
   const busy = useBackgroundStore((s) => s.busy);
   const [picked, setPicked] = useState<Backdrop>(hasImage ? "upload" : "none");
@@ -315,18 +302,10 @@ function Wallpapers() {
           busy={busy && picked === preset.id}
           onPick={() => pickPreset(preset)}
         >
-          {thumbs[preset.id] ? (
-            <img
-              alt=""
-              src={thumbs[preset.id]}
-              className="absolute inset-0 size-full object-cover"
-            />
-          ) : (
-            <span
-              className="absolute inset-0"
-              style={{ backgroundColor: preset.base }}
-            />
-          )}
+          <span
+            className="absolute inset-0"
+            style={{ backgroundColor: preset.color }}
+          />
         </WallpaperTile>
       ))}
       <WallpaperTile
@@ -374,7 +353,7 @@ export function LookStep() {
         title={t("onboarding.look.title")}
         body={t("onboarding.look.body")}
       />
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-3 gap-4">
         {MODES.map((mode) => (
           <ModeCard
             key={mode.value}
@@ -385,7 +364,7 @@ export function LookStep() {
           />
         ))}
       </div>
-      <Group className="mt-8">
+      <Group className="mt-10">
         <Row label={t("onboarding.look.theme")} trailing={<Swatches />} />
         <Row
           label={t("onboarding.scene.wallpaper")}
