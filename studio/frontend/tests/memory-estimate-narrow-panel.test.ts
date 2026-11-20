@@ -233,3 +233,27 @@ test("gluing round-trips the note the row actually builds", () => {
   });
   assert.equal(glueNoteItems(note).replace(new RegExp(NBSP, "g"), " "), note);
 });
+
+test("the first fetch keeps the row's frame instead of rendering nothing", () => {
+  for (const expanded of [false, true]) {
+    const html = render({ estimate: null, loading: true, expanded });
+    assert.match(html, /data-memory-estimate=""/);
+    assert.match(html, /Estimated Memory Usage/);
+    assert.match(html, /data-memory-placeholder=""/);
+    assert.match(html, />GPU<\/span>/);
+    assert.match(html, /Weights[\s\S]*KV cache[\s\S]*Compute buffers/);
+    assert.ok(html.includes(`aria-expanded="${expanded}"`));
+  }
+  assert.match(
+    render({ estimate: null, loading: true, singleMemoryPool: true, isUnifiedMemory: true }),
+    />Unified<\/span>/,
+  );
+});
+
+test("no row once the backend has said it cannot size the model", () => {
+  assert.equal(render({ estimate: null, loading: false }), "");
+  assert.equal(
+    render({ estimate: { ...props.estimate!, available: false }, loading: false }),
+    "",
+  );
+});
