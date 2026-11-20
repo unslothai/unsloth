@@ -801,6 +801,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     prompts_module.router = APIRouter()
     characters_module = ModuleType("routes.characters")
     characters_module.router = APIRouter()
+    characters_module.personas_router = APIRouter()
+    characters_module.chats_router = APIRouter()
     scheduled_tasks_module = ModuleType("routes.scheduled_tasks")
     scheduled_tasks_module.router = APIRouter()
     preview_module = ModuleType("routes.preview")

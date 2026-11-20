@@ -758,7 +758,7 @@ def _injective_id_map(messages: list, markup = None) -> dict:
             if value not in seen:
                 seen.add(value)
                 originals.append(value)
-    if markup is not None and getattr(markup, "nine_char_tool_call_ids", False):
+    if markup is not None and markup.nine_char_tool_call_ids:
         return _nine_char_id_map(originals)
     swept = {original: neutralize_control_markup(original, markup) for original in originals}
     # Reserved first: a rewritten id must never be handed an untouched id's value.

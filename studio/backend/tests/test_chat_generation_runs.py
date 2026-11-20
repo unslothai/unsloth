@@ -1006,7 +1006,7 @@ def test_a_character_reply_keeps_its_speaker_through_a_cancel(chat_home):
         user_message_id = "user-1",
         assistant_message_id = "assistant-1",
         request_payload = _request(),
-        reply_metadata = speaker,
+        roleplay = speaker["roleplay"],
     )
     stored = studio_db.get_chat_message("thread-1", "assistant-1")
     assert stored["metadata"]["roleplay"] == speaker["roleplay"]
@@ -1102,11 +1102,11 @@ def test_a_run_without_a_speaker_hashes_as_before():
         request_payload = _request(),
     )
     assert runs_db.canonical_request(**args) == runs_db.canonical_request(
-        **args, reply_metadata = None
+        **args, roleplay = None
     )
     assert (
         runs_db.canonical_request(**args)[1]
-        != runs_db.canonical_request(**args, reply_metadata = {"roleplay": {"speakerId": "m"}})[1]
+        != runs_db.canonical_request(**args, roleplay = {"speakerId": "m"})[1]
     )
 
 
@@ -1142,7 +1142,7 @@ def test_a_speaker_cannot_overwrite_the_run_fields(chat_home):
         user_message_id = "user-1",
         assistant_message_id = "assistant-1",
         request_payload = _request(),
-        reply_metadata = {"roleplay": {"speakerId": "m"}, "generationRunId": "forged"},
+        roleplay = {"speakerId": "m", "generationRunId": "forged"},
     )
     metadata = studio_db.get_chat_message("thread-1", "assistant-1")["metadata"]
     assert metadata["generationRunId"] == "run-1"

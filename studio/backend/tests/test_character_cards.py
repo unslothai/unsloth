@@ -10,7 +10,7 @@ import zipfile
 import pytest
 from PIL import Image
 
-from core.characters import cards
+from core.characters import cards, placeholder, png_text
 
 V2 = {"spec": "chara_card_v2", "spec_version": "2.0", "data": {"name": "Mira", "description": "d"}}
 
@@ -31,7 +31,7 @@ def _with_chunk(
     body: bytes,
     kind: bytes = b"tEXt",
 ) -> bytes:
-    return png[:-12] + cards._png_chunk(kind, key + b"\x00" + body) + png[-12:]
+    return png[:-12] + png_text.png_chunk(kind, key + b"\x00" + body) + png[-12:]
 
 
 def _charx(card_text: str, members: dict | None = None) -> bytes:
@@ -152,9 +152,9 @@ def test_export_keeps_a_gif_portraits_transparency():
     [("Mara Quill", 12), ("Rin Takeda", 250), ("Zoë 🌙", 330), ("", 12)],
 )
 def test_the_placeholder_uses_the_apps_name_hue(name, hue):
-    assert cards._name_hue(name) == hue
+    assert placeholder._name_hue(name) == hue
     top = Image.open(io.BytesIO(cards.to_png(None, name))).convert("RGB").getpixel((200, 0))
-    assert max(abs(a - b) for a, b in zip(top, cards._hsl_to_rgb(hue, 0.42, 0.62))) <= 2
+    assert max(abs(a - b) for a, b in zip(top, placeholder._hsl_to_rgb(hue, 0.42, 0.62))) <= 2
 
 
 DEEP = '{"name": "A", "description": "d", "x": ' + "[" * 100_000 + "]" * 100_000 + "}"

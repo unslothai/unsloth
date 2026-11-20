@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Characters, personas and character chats.
+"""Characters, personas and character chats, one router each (main.py mounts them in order).
 
 Cards import from PNG (V2 ``chara`` / V3 ``ccv3`` chunks), JSON (V1, V2, V3) or CHARX, and
 export as a PNG carrying both chunks or as V3 JSON.
@@ -13,35 +13,31 @@ import asyncio
 import json
 import re
 from typing import Annotated, Any, Literal, Optional
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject
-from core.characters import cards, starters
+from core.characters import cards, chats, starters
+from models.validators import NotBlank
 from storage import characters_db as db
 from storage import studio_db
+from utils.content_disposition import attachment_disposition
 from utils.image_files import read_limited_body, sniff_image_type
 
-router = APIRouter()
+router = APIRouter(dependencies = [Depends(get_current_subject)])
+personas_router = APIRouter(dependencies = [Depends(get_current_subject)])
+chats_router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 _NOT_FOUND = "Character not found"
 _PERSONA_NOT_FOUND = "Persona not found"
 _TOO_LARGE = "The file is too large."
 
 
-def _not_blank(value: str) -> str:
-    value = value.strip()
-    if not value:
-        raise ValueError("must not be blank")
-    return value
-
-
-Name = Annotated[str, Field(max_length = cards.MAX_SHORT_CHARS), AfterValidator(_not_blank)]
+Name = Annotated[str, Field(max_length = cards.MAX_SHORT_CHARS), NotBlank]
 LongText = Annotated[str, Field(max_length = cards.MAX_FIELD_CHARS)]
 ShortText = Annotated[str, Field(max_length = cards.MAX_SHORT_CHARS)]
-Tag = Annotated[str, Field(max_length = cards.MAX_TAG_CHARS), AfterValidator(_not_blank)]
+Tag = Annotated[str, Field(max_length = cards.MAX_TAG_CHARS), NotBlank]
 Id = Annotated[str, Field(max_length = db.MAX_ID_CHARS)]
 
 
@@ -155,7 +151,7 @@ def _character_or_404(character_id: str) -> dict:
     return character
 
 
-def _public(character: dict) -> dict:
+def _without_card(character: dict) -> dict:
     """The stored card stays server-side; the client edits fields, not the raw card."""
     out = {key: value for key, value in character.items() if key != "card"}
     out["cardSpec"] = (
@@ -164,14 +160,14 @@ def _public(character: dict) -> dict:
     return out
 
 
-def _normalized(fields: dict) -> dict:
+def _with_normalized_book(fields: dict) -> dict:
     # Same shape as an imported book, so the prompt builder and export never see a raw one.
     if fields.get("characterBook"):
-        fields["characterBook"] = cards.normalize_book(fields["characterBook"])
+        return {**fields, "characterBook": cards.normalize_book(fields["characterBook"])}
     return fields
 
 
-def _image_response(data: bytes, media_type: Optional[str]) -> Response:
+def _avatar_response(data: bytes, media_type: Optional[str]) -> Response:
     return Response(
         content = data,
         # The bytes decide: the stored type only says a picture exists.
@@ -185,8 +181,8 @@ def _image_response(data: bytes, media_type: Optional[str]) -> Response:
     )
 
 
-def _checked_image(data: bytes) -> tuple[bytes, str]:
-    checked = cards.checked_portrait(data)
+def _checked_avatar(data: bytes) -> tuple[bytes, str]:
+    checked = cards.checked_avatar(data)
     if checked is None:
         raise HTTPException(
             status_code = 400, detail = "The picture must be a PNG, JPEG, WebP or GIF image."
@@ -195,17 +191,17 @@ def _checked_image(data: bytes) -> tuple[bytes, str]:
 
 
 @router.get("")
-def list_characters(current_subject: str = Depends(get_current_subject)):
+def list_characters():
     starters.seed_starters()
-    return {"characters": [_public(c) for c in db.list_characters()]}
+    return {"characters": [_without_card(c) for c in db.list_characters()]}
 
 
 @router.post("", status_code = 201)
-def create_character(payload: CharacterCreate, current_subject: str = Depends(get_current_subject)):
-    fields = _normalized(payload.model_dump(exclude_none = True))
+def create_character(payload: CharacterCreate):
+    fields = _with_normalized_book(payload.model_dump(exclude_none = True))
     try:
-        return _public(db.create_character(fields))
-    except db.LimitReached as exc:
+        return _without_card(db.create_character(fields))
+    except db.CharacterLimitReached as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
 
 
@@ -213,7 +209,6 @@ def create_character(payload: CharacterCreate, current_subject: str = Depends(ge
 async def import_character(
     request: Request,
     filename: str = Query("", max_length = 255),
-    current_subject: str = Depends(get_current_subject),
 ):
     data = await read_limited_body(request, cards.MAX_CARD_BYTES, _TOO_LARGE)
     try:
@@ -228,10 +223,10 @@ async def import_character(
             avatar = parsed.avatar,
             avatar_type = parsed.avatar_type,
         )
-    except db.LimitReached as exc:
+    except db.CharacterLimitReached as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
     return {
-        "character": _public(character),
+        "character": _without_card(character),
         "format": parsed.source_format,
         "spec": parsed.spec,
         "warnings": parsed.warnings,
@@ -239,88 +234,81 @@ async def import_character(
 
 
 @router.get("/chat-index")
-def chat_index(current_subject: str = Depends(get_current_subject)):
+def chat_index():
     return {"chats": db.chat_index()}
 
 
-@router.get("/personas")
-def list_personas(current_subject: str = Depends(get_current_subject)):
-    return {"personas": db.list_personas()}
-
-
 @router.get("/{character_id}")
-def get_character(character_id: str, current_subject: str = Depends(get_current_subject)):
-    return _public(_character_or_404(character_id))
+def get_character(character_id: str):
+    return _without_card(_character_or_404(character_id))
 
 
 @router.patch("/{character_id}")
 def update_character(
     character_id: str,
     payload: CharacterUpdate,
-    current_subject: str = Depends(get_current_subject),
 ):
     fields = payload.model_dump(exclude_none = True, exclude = {"clear"})
     for cleared in payload.clear:
         fields[cleared] = None
-    updated = db.update_character(character_id, _normalized(fields))
+    updated = db.update_character(character_id, _with_normalized_book(fields))
     if updated is None:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND)
-    return _public(updated)
+    return _without_card(updated)
 
 
 @router.delete("/{character_id}", status_code = 204)
-def delete_character(character_id: str, current_subject: str = Depends(get_current_subject)):
+def delete_character(character_id: str):
     if not db.delete_character(character_id):
         raise HTTPException(status_code = 404, detail = _NOT_FOUND)
     return Response(status_code = 204)
 
 
 @router.post("/{character_id}/duplicate", status_code = 201)
-def duplicate_character(character_id: str, current_subject: str = Depends(get_current_subject)):
+def duplicate_character(character_id: str):
     source = _character_or_404(character_id)
     fields = {k: v for k, v in source.items() if k in CharacterFields.model_fields}
     fields["name"] = f"{source['name']} (copy)"[: cards.MAX_SHORT_CHARS]
     fields["extensions"] = source.get("extensions") or {}
-    avatar = db.read_image("characters", character_id) if source["hasAvatar"] else None
+    avatar = db.read_avatar("characters", character_id) if source["hasAvatar"] else None
     try:
         copy = db.create_character(
             fields, card = source.get("card"), avatar = avatar, avatar_type = source.get("avatarType")
         )
-    except db.LimitReached as exc:
+    except db.CharacterLimitReached as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
-    return _public(copy)
+    return _without_card(copy)
 
 
 @router.get("/{character_id}/avatar")
-def get_character_avatar(character_id: str, current_subject: str = Depends(get_current_subject)):
+def get_character_avatar(character_id: str):
     character = _character_or_404(character_id)
-    data = db.read_image("characters", character_id) if character["hasAvatar"] else None
+    data = db.read_avatar("characters", character_id) if character["hasAvatar"] else None
     if not data:
         raise HTTPException(status_code = 404, detail = "This character has no picture.")
-    return _image_response(data, character["avatarType"])
+    return _avatar_response(data, character["avatarType"])
 
 
 @router.put("/{character_id}/avatar")
 async def put_character_avatar(
     character_id: str,
     request: Request,
-    current_subject: str = Depends(get_current_subject),
 ):
     _character_or_404(character_id)
     data = await read_limited_body(request, cards.MAX_AVATAR_BYTES, _TOO_LARGE)
-    data, media_type = await asyncio.to_thread(_checked_image, data)
+    data, media_type = await asyncio.to_thread(_checked_avatar, data)
     updated = await asyncio.to_thread(db.set_character_avatar, character_id, data, media_type)
     if updated is None:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND)
-    return _public(updated)
+    return _without_card(updated)
 
 
 @router.delete("/{character_id}/avatar")
-def delete_character_avatar(character_id: str, current_subject: str = Depends(get_current_subject)):
+def delete_character_avatar(character_id: str):
     updated = db.set_character_avatar(character_id, None, None)
     if updated is None:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND)
-    return _public(updated)
+    return _without_card(updated)
 
 
 def _download_name(name: str, extension: str) -> str:
@@ -332,12 +320,11 @@ def _download_name(name: str, extension: str) -> str:
 def export_character(
     character_id: str,
     format: Literal["png", "json"] = Query("png"),
-    current_subject: str = Depends(get_current_subject),
 ):
     character = _character_or_404(character_id)
-    filename = _download_name(character["name"], format)
-    ascii_name = filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
-    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+    disposition = attachment_disposition(
+        _download_name(character["name"], format), f"character.{format}"
+    )
     if format == "json":
         body = json.dumps(cards.build_card_v3(character), ensure_ascii = False, indent = 2)
         return Response(
@@ -345,7 +332,7 @@ def export_character(
             media_type = "application/json",
             headers = {"Content-Disposition": disposition},
         )
-    avatar = db.read_image("characters", character_id) if character["hasAvatar"] else None
+    avatar = db.read_avatar("characters", character_id) if character["hasAvatar"] else None
     return Response(
         content = cards.export_png(character, avatar),
         media_type = "image/png",
@@ -354,7 +341,7 @@ def export_character(
 
 
 @router.get("/{character_id}/chats")
-def list_character_chats(character_id: str, current_subject: str = Depends(get_current_subject)):
+def list_character_chats(character_id: str):
     _character_or_404(character_id)
     return {"chats": db.chats_for_character(character_id)}
 
@@ -366,19 +353,23 @@ def _persona_or_404(persona_id: str) -> dict:
     return persona
 
 
-@router.post("/personas", status_code = 201)
-def create_persona(payload: PersonaCreate, current_subject: str = Depends(get_current_subject)):
+@personas_router.get("")
+def list_personas():
+    return {"personas": db.list_personas()}
+
+
+@personas_router.post("", status_code = 201)
+def create_persona(payload: PersonaCreate):
     try:
         return db.create_persona(payload.name, payload.description, payload.isDefault)
-    except db.LimitReached as exc:
+    except db.CharacterLimitReached as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
 
 
-@router.patch("/personas/{persona_id}")
+@personas_router.patch("/{persona_id}")
 def update_persona(
     persona_id: str,
     payload: PersonaUpdate,
-    current_subject: str = Depends(get_current_subject),
 ):
     updated = db.update_persona(persona_id, payload.model_dump(exclude_none = True))
     if updated is None:
@@ -386,53 +377,50 @@ def update_persona(
     return updated
 
 
-@router.delete("/personas/{persona_id}", status_code = 204)
-def delete_persona(persona_id: str, current_subject: str = Depends(get_current_subject)):
+@personas_router.delete("/{persona_id}", status_code = 204)
+def delete_persona(persona_id: str):
     if not db.delete_persona(persona_id):
         raise HTTPException(status_code = 404, detail = _PERSONA_NOT_FOUND)
     return Response(status_code = 204)
 
 
-@router.get("/personas/{persona_id}/avatar")
-def get_persona_avatar(persona_id: str, current_subject: str = Depends(get_current_subject)):
+@personas_router.get("/{persona_id}/avatar")
+def get_persona_avatar(persona_id: str):
     persona = _persona_or_404(persona_id)
-    data = db.read_image("personas", persona_id) if persona["hasAvatar"] else None
+    data = db.read_avatar("personas", persona_id) if persona["hasAvatar"] else None
     if not data:
         raise HTTPException(status_code = 404, detail = "This persona has no picture.")
-    return _image_response(data, persona["avatarType"])
+    return _avatar_response(data, persona["avatarType"])
 
 
-@router.put("/personas/{persona_id}/avatar")
+@personas_router.put("/{persona_id}/avatar")
 async def put_persona_avatar(
     persona_id: str,
     request: Request,
-    current_subject: str = Depends(get_current_subject),
 ):
     _persona_or_404(persona_id)
     data = await read_limited_body(request, cards.MAX_AVATAR_BYTES, _TOO_LARGE)
-    data, media_type = await asyncio.to_thread(_checked_image, data)
+    data, media_type = await asyncio.to_thread(_checked_avatar, data)
     updated = await asyncio.to_thread(db.set_persona_avatar, persona_id, data, media_type)
     if updated is None:
         raise HTTPException(status_code = 404, detail = _PERSONA_NOT_FOUND)
     return updated
 
 
-@router.delete("/personas/{persona_id}/avatar")
-def delete_persona_avatar(persona_id: str, current_subject: str = Depends(get_current_subject)):
+@personas_router.delete("/{persona_id}/avatar")
+def delete_persona_avatar(persona_id: str):
     updated = db.set_persona_avatar(persona_id, None, None)
     if updated is None:
         raise HTTPException(status_code = 404, detail = _PERSONA_NOT_FOUND)
     return updated
 
 
-@router.post("/chats", status_code = 201)
-def create_character_chat(
-    payload: CharacterChatCreate, current_subject: str = Depends(get_current_subject)
-):
+@chats_router.post("", status_code = 201)
+def create_character_chat(payload: CharacterChatCreate):
     if payload.projectId and studio_db.get_chat_project(payload.projectId) is None:
         raise HTTPException(status_code = 400, detail = "Project not found")
     try:
-        created = db.create_character_chat(
+        created = chats.create_character_chat(
             character_ids = payload.characterIds,
             persona_id = payload.personaId,
             user_name = payload.userName,
@@ -442,25 +430,24 @@ def create_character_chat(
         )
     except db.PersonaNotFound:
         raise HTTPException(status_code = 400, detail = _PERSONA_NOT_FOUND) from None
-    except LookupError:
+    except db.CharacterNotFound:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND) from None
-    except db.LimitReached as exc:
+    except db.CharacterLimitReached as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
     return {**created, "scene": db.get_chat_scene(created["threadId"])}
 
 
-@router.get("/chats/{thread_id}")
-def get_chat_scene(thread_id: str, current_subject: str = Depends(get_current_subject)):
+@chats_router.get("/{thread_id}")
+def get_chat_scene(thread_id: str):
     """204 when the chat has no scene (or isn't saved yet), so the client can probe any chat quietly."""
     scene = db.get_chat_scene(thread_id)
     return scene if scene is not None else Response(status_code = 204)
 
 
-@router.put("/chats/{thread_id}")
+@chats_router.put("/{thread_id}")
 def update_chat_scene(
     thread_id: str,
     payload: SceneUpdate,
-    current_subject: str = Depends(get_current_subject),
 ):
     try:
         scene = db.update_chat_scene(
@@ -476,9 +463,9 @@ def update_chat_scene(
         )
     except db.PersonaNotFound:
         raise HTTPException(status_code = 400, detail = _PERSONA_NOT_FOUND) from None
-    except LookupError:
+    except db.CharacterNotFound:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND) from None
-    except (db.LimitReached, db.NoSpeakerLeft) as exc:
+    except (db.CharacterLimitReached, db.CastAllMuted) as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
     if scene is None:
         raise HTTPException(status_code = 404, detail = "Chat not found")

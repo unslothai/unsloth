@@ -3,7 +3,7 @@
 
 """Characters, personas and character chats (a thread plus ``chat_cast`` and ``chat_scene``).
 
-Portraits are files next to studio.db, one per character or persona.
+Avatars are files next to studio.db, one per character or persona.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from core.characters.cards import MAX_GREETINGS, card_data
+from core.characters.cards import EDITABLE_TEXT_FIELDS, camel
 from storage.studio_db import connection as _connect
 from storage.studio_db import (
     delete_chat_threads,
@@ -31,26 +31,20 @@ MAX_PERSONAS = 200
 MAX_CAST = 16
 MAX_ID_CHARS = 64
 
-# Tools stay off in a character chat unless the user turns them on there.
-CHARACTER_CHAT_SETTINGS = {
-    "toolsEnabled": False,
-    "codeToolsEnabled": False,
-    "imageToolsEnabled": False,
-    "webFetchToolsEnabled": False,
-    "deepResearchEnabled": False,
-    "artifactsEnabled": False,
-    "mcpEnabledForChat": False,
-    "ragEnabled": False,
-}
-OPENING_TEXT = "[Start a new chat]"
+class CharacterLimitReached(Exception):
+    """An account's character or persona limit, or a chat's cast limit."""
 
 
-class LimitReached(Exception):
+class CharacterNotFound(LookupError):
     pass
 
 
 class PersonaNotFound(LookupError):
     pass
+
+
+class CastAllMuted(ValueError):
+    """A group change that would leave every member muted."""
 
 
 def _loads(value: Optional[str], fallback: Any) -> Any:
@@ -66,88 +60,63 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii = False)
 
 
-def _image_path(kind: str, item_id: str) -> Path:
+def _avatar_path(kind: str, item_id: str) -> Path:
     if not re.fullmatch(rf"[A-Za-z0-9_-]{{1,{MAX_ID_CHARS}}}", item_id):
         raise ValueError("bad id")
     return account_path(kind) / f"{item_id}.img"
 
 
-def write_image(kind: str, item_id: str, data: bytes) -> None:
-    path = _image_path(kind, item_id)
+def write_avatar(kind: str, item_id: str, data: bytes) -> None:
+    path = _avatar_path(kind, item_id)
     # Only writes make the folder, and never for a deleted account.
     ensure_account_dir(path.parent)
     atomic_write_bytes(path, data)
 
 
-def read_image(kind: str, item_id: str) -> Optional[bytes]:
-    path = _image_path(kind, item_id)
+def read_avatar(kind: str, item_id: str) -> Optional[bytes]:
+    path = _avatar_path(kind, item_id)
     return path.read_bytes() if path.is_file() else None
 
 
-def delete_image(kind: str, item_id: str) -> None:
-    _image_path(kind, item_id).unlink(missing_ok = True)
+def delete_avatar(kind: str, item_id: str) -> None:
+    _avatar_path(kind, item_id).unlink(missing_ok = True)
 
 
-_CHARACTER_COLUMNS = {
-    "name": "name",
-    "description": "description",
-    "personality": "personality",
-    "scenario": "scenario",
-    "firstMes": "first_mes",
-    "mesExample": "mes_example",
-    "systemPrompt": "system_prompt",
-    "postHistoryInstructions": "post_history_instructions",
-    "creatorNotes": "creator_notes",
-    "creator": "creator",
-    "characterVersion": "character_version",
-    "talkativeness": "talkativeness",
-}
+_CHARACTER_COLUMNS = {camel(column): column for column in (*EDITABLE_TEXT_FIELDS, "talkativeness")}
 _CHARACTER_JSON_COLUMNS = {
-    "alternateGreetings": ("alternate_greetings_json", []),
-    "tags": ("tags_json", []),
-    "extensions": ("extensions_json", {}),
+    camel(field): (f"{field}_json", fallback)
+    for field, fallback in (("alternate_greetings", []), ("tags", []), ("extensions", {}))
 }
 _CHARACTER_NULLABLE_JSON = {
-    "depthPrompt": "depth_prompt_json",
-    "characterBook": "character_book_json",
+    camel(field): f"{field}_json" for field in ("depth_prompt", "character_book")
 }
 
 
 def _character_from_row(row: sqlite3.Row, *, full: bool = True) -> dict:
-    character = {
-        "id": row["id"],
-        "name": row["name"],
-        "description": row["description"],
-        "personality": row["personality"],
-        "scenario": row["scenario"],
-        "firstMes": row["first_mes"],
-        "alternateGreetings": _loads(row["alternate_greetings_json"], []),
-        "mesExample": row["mes_example"],
-        "systemPrompt": row["system_prompt"],
-        "postHistoryInstructions": row["post_history_instructions"],
-        "creatorNotes": row["creator_notes"],
-        "creator": row["creator"],
-        "characterVersion": row["character_version"],
-        "tags": _loads(row["tags_json"], []),
-        "talkativeness": row["talkativeness"],
-        "favorite": bool(row["favorite"]),
-        "depthPrompt": _loads(row["depth_prompt_json"], None),
-        "characterBook": _loads(row["character_book_json"], None),
-        "extensions": _loads(row["extensions_json"], {}),
-        "hasAvatar": bool(row["avatar_type"]),
-        "avatarType": row["avatar_type"],
-        "avatarRev": row["avatar_rev"],
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-        "lastChatAt": row["last_active"] or None,
-        "chatCount": row["chat_count"],
-    }
+    character: dict[str, Any] = {"id": row["id"]}
+    character.update({key: row[column] for key, column in _CHARACTER_COLUMNS.items()})
+    for key, (column, fallback) in _CHARACTER_JSON_COLUMNS.items():
+        character[key] = _loads(row[column], fallback)
+    for key, column in _CHARACTER_NULLABLE_JSON.items():
+        character[key] = _loads(row[column], None)
+    character.update(
+        {
+            "favorite": bool(row["favorite"]),
+            "hasAvatar": bool(row["avatar_type"]),
+            "avatarType": row["avatar_type"],
+            "avatarRev": row["avatar_rev"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "lastChatAt": row["last_active"] or None,
+            "chatCount": row["chat_count"],
+        }
+    )
     if full:
         character["card"] = _loads(row["card_json"], None)
     return character
 
 
-_CHAT_COUNT = (
+_ACTIVITY_COLUMNS = (
     "(SELECT COUNT(*) FROM chat_cast c JOIN chat_threads t ON t.id = c.thread_id"
     " WHERE c.character_id = characters.id AND t.archived = 0) AS chat_count,"
     # Recency follows the character's chats, so continuing an old chat moves it up.
@@ -175,7 +144,7 @@ _LIST_COLUMNS = ", ".join(
 def list_characters() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
-            f"SELECT {_LIST_COLUMNS}, {_CHAT_COUNT} FROM characters"
+            f"SELECT {_LIST_COLUMNS}, {_ACTIVITY_COLUMNS} FROM characters"
             " ORDER BY COALESCE(NULLIF(last_active, 0), updated_at) DESC, name"
         ).fetchall()
     return [_character_from_row(row, full = False) for row in rows]
@@ -184,7 +153,7 @@ def list_characters() -> list[dict]:
 def get_character(character_id: str) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute(
-            f"SELECT *, {_CHAT_COUNT} FROM characters WHERE id = ?", (character_id,)
+            f"SELECT *, {_ACTIVITY_COLUMNS} FROM characters WHERE id = ?", (character_id,)
         ).fetchone()
     return _character_from_row(row) if row else None
 
@@ -195,7 +164,7 @@ def get_characters(ids: list[str]) -> list[dict]:
     placeholders = ",".join("?" for _ in ids)
     with _connect() as conn:
         rows = conn.execute(
-            f"SELECT *, {_CHAT_COUNT} FROM characters WHERE id IN ({placeholders})", ids
+            f"SELECT *, {_ACTIVITY_COLUMNS} FROM characters WHERE id IN ({placeholders})", ids
         ).fetchall()
     by_id = {row["id"]: _character_from_row(row) for row in rows}
     return [by_id[i] for i in ids if i in by_id]
@@ -240,7 +209,7 @@ def create_character(
         }
     )
     if avatar:
-        write_image("characters", character_id, avatar)
+        write_avatar("characters", character_id, avatar)
     try:
         with _connect("BEGIN IMMEDIATE") as conn:
             if starter_id is not None:
@@ -251,11 +220,11 @@ def create_character(
                 ).rowcount
                 if not claimed:
                     if avatar:
-                        delete_image("characters", character_id)
+                        delete_avatar("characters", character_id)
                     return None
             (count,) = conn.execute("SELECT COUNT(*) FROM characters").fetchone()
             if count >= MAX_CHARACTERS:
-                raise LimitReached(f"An account can hold up to {MAX_CHARACTERS} characters.")
+                raise CharacterLimitReached(f"An account can hold up to {MAX_CHARACTERS} characters.")
             columns = ", ".join(values)
             conn.execute(
                 f"INSERT INTO characters ({columns}) VALUES ({', '.join('?' for _ in values)})",
@@ -263,7 +232,7 @@ def create_character(
             )
     except BaseException:
         if avatar:
-            delete_image("characters", character_id)
+            delete_avatar("characters", character_id)
         raise
     return get_character(character_id)  # type: ignore[return-value]
 
@@ -287,18 +256,16 @@ def update_character(character_id: str, fields: dict) -> Optional[dict]:
     return get_character(character_id)
 
 
-def _set_avatar(
-    table: str, kind: str, item_id: str, data: Optional[bytes], media_type: Optional[str]
-) -> bool:
+def _set_avatar(table: str, item_id: str, data: Optional[bytes], media_type: Optional[str]) -> bool:
     # File and row change under one write lock, so a racing upload or delete cannot leave
     # one upload's bytes under another's type, or a file with no row.
     with _connect("BEGIN IMMEDIATE") as conn:
         if conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (item_id,)).fetchone() is None:
             return False
         if data:
-            write_image(kind, item_id, data)
+            write_avatar(table, item_id, data)
         else:
-            delete_image(kind, item_id)
+            delete_avatar(table, item_id)
         conn.execute(
             f"UPDATE {table} SET avatar_type = ?, avatar_rev = avatar_rev + 1, updated_at = ? WHERE id = ?",
             (media_type if data else None, now_ms(), item_id),
@@ -309,7 +276,7 @@ def _set_avatar(
 def set_character_avatar(
     character_id: str, data: Optional[bytes], media_type: Optional[str]
 ) -> Optional[dict]:
-    if not _set_avatar("characters", "characters", character_id, data, media_type):
+    if not _set_avatar("characters", character_id, data, media_type):
         return None
     return get_character(character_id)
 
@@ -336,7 +303,7 @@ def delete_character(character_id: str) -> bool:
                     (thread_id, rows[0]["character_id"]),
                 )
     if deleted:
-        delete_image("characters", character_id)
+        delete_avatar("characters", character_id)
     return deleted
 
 
@@ -376,7 +343,7 @@ def create_persona(
     with _connect("BEGIN IMMEDIATE") as conn:
         (count,) = conn.execute("SELECT COUNT(*) FROM personas").fetchone()
         if count >= MAX_PERSONAS:
-            raise LimitReached(f"An account can hold up to {MAX_PERSONAS} personas.")
+            raise CharacterLimitReached(f"An account can hold up to {MAX_PERSONAS} personas.")
         # The first persona is the default, so a new chat always has someone to speak as.
         if count == 0:
             is_default = True
@@ -412,7 +379,7 @@ def update_persona(persona_id: str, fields: dict) -> Optional[dict]:
 def set_persona_avatar(
     persona_id: str, data: Optional[bytes], media_type: Optional[str]
 ) -> Optional[dict]:
-    if not _set_avatar("personas", "personas", persona_id, data, media_type):
+    if not _set_avatar("personas", persona_id, data, media_type):
         return None
     return get_persona(persona_id)
 
@@ -437,192 +404,53 @@ def delete_persona(persona_id: str) -> bool:
         conn.execute("DELETE FROM personas WHERE id = ?", (persona_id,))
         if row["is_default"] and successor_id:
             conn.execute("UPDATE personas SET is_default = 1 WHERE id = ?", (successor_id,))
-    delete_image("personas", persona_id)
+    delete_avatar("personas", persona_id)
     return True
-
-
-_MACRO_PATTERNS = (
-    (re.compile(r"\{\{\s*char\s*\}\}|<BOT>", re.IGNORECASE), "char"),
-    (re.compile(r"\{\{\s*user\s*\}\}|<USER>", re.IGNORECASE), "user"),
-)
-
-
-def fill_names(text: str, char: str, user: str) -> str:
-    for pattern, which in _MACRO_PATTERNS:
-        text = pattern.sub((char if which == "char" else user).replace("\\", "\\\\"), text)
-    return text
-
-
-def _text_content(text: str) -> list[dict]:
-    return [{"type": "text", "text": text}]
-
-
-def chat_title(names: list[str]) -> str:
-    if not names:
-        return "Character chat"
-    if len(names) == 1:
-        return names[0]
-    if len(names) == 2:
-        return f"{names[0]} & {names[1]}"
-    return f"{', '.join(names[:-1])} & {names[-1]}"
-
-
-def _group_only_greetings(character: dict) -> list[str]:
-    card = character.get("card")
-    if not isinstance(card, dict):
-        return []
-    greetings = card_data(card)[0].get("group_only_greetings")
-    if not isinstance(greetings, list):
-        return []
-    return [g for g in greetings if isinstance(g, str)][:MAX_GREETINGS]
-
-
-def _opening_messages(
-    thread_id: str,
-    characters: list[dict],
-    speaker_name: str,
-    greetings: Optional[dict],
-    created: int,
-) -> tuple[list[dict], list[str], str]:
-    def message(parent_id: Optional[str], role: str, text: str, roleplay: dict) -> dict:
-        nonlocal created
-        created += 1
-        return {
-            "id": str(uuid.uuid4()),
-            "threadId": thread_id,
-            "parentId": parent_id,
-            "role": role,
-            "content": _text_content(text),
-            "metadata": {"roleplay": roleplay},
-            "createdAt": created,
-        }
-
-    opening = message(None, "user", OPENING_TEXT, {"kind": "opening"})
-    messages = [opening]
-    greeting_ids: list[str] = []
-    parent_id = opening["id"]
-    for index, character in enumerate(characters):
-        source = [character["firstMes"], *character["alternateGreetings"]]
-        resolved = (greetings or {}).get(character["id"])
-        # The client resolves every macro; this covers API callers that send no greetings.
-        if resolved is None or len(resolved) != len(source):
-            resolved = [fill_names(g, character["name"], speaker_name) for g in source]
-        if len(characters) > 1:
-            # V3 group-only greetings: kept on the stored card, so only names are filled here.
-            resolved = [
-                *resolved,
-                *(
-                    fill_names(g, character["name"], speaker_name)
-                    for g in _group_only_greetings(character)
-                ),
-            ]
-        texts = [(i, g) for i, g in enumerate(resolved) if g and g.strip()]
-        if len(characters) > 1 and index > 0:
-            # A hidden turn marker keeps each member's greeting answering a user turn.
-            marker = message(
-                parent_id,
-                "user",
-                f"[{character['name']}'s turn]",
-                {"kind": "turn", "speakerId": character["id"]},
-            )
-            messages.append(marker)
-            parent_id = marker["id"]
-        if not texts:
-            continue
-        # Alternates first: with no saved branch choice a chat opens on its newest row, which
-        # should be the main greeting, here and on every other device.
-        replies = [
-            message(
-                parent_id,
-                "assistant",
-                text,
-                {
-                    "kind": "reply",
-                    "speakerId": character["id"],
-                    "speakerName": character["name"],
-                    "greeting": source_index,
-                },
-            )
-            for source_index, text in [*texts[1:], texts[0]]
-        ]
-        messages.extend(replies)
-        greeting_ids.append(replies[-1]["id"])
-        parent_id = replies[-1]["id"]
-    return messages, greeting_ids, parent_id
 
 
 def create_character_chat(
     *,
+    thread: dict,
     character_ids: list[str],
     persona_id: Optional[str],
-    user_name: str,
-    project_id: Optional[str] = None,
-    settings: Optional[dict] = None,
-    greetings: Optional[dict[str, list[str]]] = None,
-) -> dict:
-    """Thread, cast, scene and opening turn. Greetings hang under a hidden user turn so alternates are
-    sibling replies and strict chat templates see a user turn first."""
-    requested = list(dict.fromkeys(character_ids))
-    if len(requested) > MAX_CAST:
-        raise LimitReached(f"A chat can have up to {MAX_CAST} characters.")
-    characters = get_characters(requested)
-    # Every requested member must exist: a group must not quietly become a smaller chat.
-    if not characters or len(characters) != len(requested):
-        raise LookupError("character")
-    persona = get_persona(persona_id) if persona_id else None
-    if persona_id and persona is None:
-        raise PersonaNotFound(persona_id)
-    speaker_name = (persona or {}).get("name") or user_name or "User"
-    thread_id = str(uuid.uuid4())
-    now = now_ms()
-    upsert_chat_thread(
-        {
-            "id": thread_id,
-            "title": chat_title([c["name"] for c in characters]),
-            "modelType": "base",
-            "modelId": "",
-            "projectId": project_id,
-            "createdAt": now,
-            "updatedAt": now,
-            "settings": dict(CHARACTER_CHAT_SETTINGS),
-        }
-    )
+    settings: Optional[dict],
+    messages: list[dict],
+) -> None:
+    """Thread, cast, scene and opening messages, all or nothing."""
+    now = thread["createdAt"]
+    upsert_chat_thread(thread)
     try:
         with _connect("BEGIN IMMEDIATE") as conn:
-            # Checked again under the write lock: a delete since the read above would trip a foreign key.
-            placeholders = ",".join("?" for _ in requested)
+            # Checked again under the write lock: a delete since the caller's read would trip a foreign key.
+            placeholders = ",".join("?" for _ in character_ids)
             (known,) = conn.execute(
-                f"SELECT COUNT(*) FROM characters WHERE id IN ({placeholders})", requested
+                f"SELECT COUNT(*) FROM characters WHERE id IN ({placeholders})", character_ids
             ).fetchone()
-            if known != len(requested):
-                raise LookupError("character")
+            if known != len(character_ids):
+                raise CharacterNotFound("character")
             if (
-                persona
-                and conn.execute("SELECT 1 FROM personas WHERE id = ?", (persona["id"],)).fetchone()
+                persona_id
+                and conn.execute("SELECT 1 FROM personas WHERE id = ?", (persona_id,)).fetchone()
                 is None
             ):
-                raise PersonaNotFound(persona["id"])
-            for position, character in enumerate(characters):
+                raise PersonaNotFound(persona_id)
+            for position, character_id in enumerate(character_ids):
                 conn.execute(
                     "INSERT INTO chat_cast (thread_id, character_id, position, muted) VALUES (?, ?, ?, 0)",
-                    (thread_id, character["id"], position),
+                    (thread["id"], character_id, position),
                 )
             conn.executemany(
                 "UPDATE characters SET last_chat_at = ? WHERE id = ?",
-                [(now, c["id"]) for c in characters],
+                [(now, character_id) for character_id in character_ids],
             )
             conn.execute(
                 "INSERT INTO chat_scene (thread_id, persona_id, settings_json, updated_at) VALUES (?, ?, ?, ?)",
-                (thread_id, persona["id"] if persona else None, _dumps(settings or {}), now),
+                (thread["id"], persona_id, _dumps(settings or {}), now),
             )
-        messages, greeting_ids, head_id = _opening_messages(
-            thread_id, characters, speaker_name, greetings, now
-        )
-        sync_chat_messages(thread_id, messages)
+        sync_chat_messages(thread["id"], messages)
     except BaseException:
-        delete_chat_threads([thread_id])
+        delete_chat_threads([thread["id"]])
         raise
-    return {"threadId": thread_id, "greetingIds": greeting_ids, "headId": head_id}
 
 
 def _scene_from_rows(
@@ -655,10 +483,6 @@ def get_chat_scene(thread_id: str) -> Optional[dict]:
             (thread_id,),
         ).fetchall()
     return _scene_from_rows(scene, cast_rows, thread_id)
-
-
-class NoSpeakerLeft(ValueError):
-    """A group change that would leave every member muted."""
 
 
 def _merge_settings(stored: dict, patch: dict) -> dict:
@@ -731,14 +555,14 @@ def update_chat_scene(
                     )
                 }
                 if any(i not in known for i in added):
-                    raise LookupError("character")
+                    raise CharacterNotFound("character")
                 cast.update((i, False) for i in added)
             # A member another tab removed has nothing left to mute.
             cast.update({i: bool(v) for i, v in (mute or {}).items() if i in cast})
             if len(cast) > MAX_CAST:
-                raise LimitReached(f"A chat can have up to {MAX_CAST} characters.")
+                raise CharacterLimitReached(f"A chat can have up to {MAX_CAST} characters.")
             if len(cast) > 1 and all(cast.values()):
-                raise NoSpeakerLeft("A group chat needs at least one character who is not muted.")
+                raise CastAllMuted("A group chat needs at least one character who is not muted.")
             conn.execute("DELETE FROM chat_cast WHERE thread_id = ?", (thread_id,))
             for position, (character_id, muted) in enumerate(cast.items()):
                 conn.execute(

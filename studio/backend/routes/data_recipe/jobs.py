@@ -65,6 +65,7 @@ from models.data_recipe import (
     RecipePayload,
 )
 from utils.client_ip import client_ip
+from utils.content_disposition import attachment_disposition
 from utils.hf_endpoint import client_reachable_endpoint, get_hf_endpoint
 from utils.host_policy import dial_host, self_request_host
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
@@ -651,17 +652,6 @@ def job_dataset(
     }
 
 
-def _content_disposition_attachment(filename: str) -> str:
-    ascii_name = "".join(
-        ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\"} else "_" for ch in filename
-    )
-    if not ascii_name.strip("_"):
-        ascii_name = "dataset.jsonl"
-    from urllib.parse import quote
-
-    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
-
-
 _IN_MEMORY_DOWNLOAD_PAGE_SIZE = 10_000
 
 
@@ -849,7 +839,7 @@ def download_job_dataset(
         file_path,
         media_type = media_type,
         filename = download_name,
-        headers = {"Content-Disposition": _content_disposition_attachment(download_name)},
+        headers = {"Content-Disposition": attachment_disposition(download_name, "dataset.jsonl")},
     )
 
 

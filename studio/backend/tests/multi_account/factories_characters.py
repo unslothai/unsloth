@@ -44,12 +44,13 @@ def seed_persona(account) -> dict[str, str]:
 
 @seeder("character-chat")
 def seed_character_chat(account) -> dict[str, str]:
+    from core.characters import chats
     from storage import characters_db
     from utils.account_context import run_as
 
     def create():
         character = characters_db.create_character({"name": NAME, "firstMes": "hello"})
-        return characters_db.create_character_chat(
+        return chats.create_character_chat(
             character_ids = [character["id"]], persona_id = None, user_name = "matrix"
         )
 
@@ -77,27 +78,27 @@ FACTORIES = {
     ),
     "routes.characters:GET:/{character_id}/export": Factory("character", fragment = None),
     "routes.characters:GET:/{character_id}/chats": Factory("character", fragment = '"chats":[]'),
-    "routes.characters:PATCH:/personas/{persona_id}": Factory(
+    "routes.characters:PATCH:/{persona_id}": Factory(
         "persona", {"description": EDITED}, fragment = EDITED, absent = PERSONA
     ),
-    "routes.characters:DELETE:/personas/{persona_id}": Factory(
+    "routes.characters:DELETE:/{persona_id}": Factory(
         "persona", success = 204, absent = PERSONA
     ),
-    "routes.characters:GET:/personas/{persona_id}/avatar": Factory("persona"),
-    "routes.characters:PUT:/personas/{persona_id}/avatar": Factory(
+    "routes.characters:GET:/{persona_id}/avatar": Factory("persona"),
+    "routes.characters:PUT:/{persona_id}/avatar": Factory(
         "persona", {}, success = 400, reason = _IMAGE
     ),
-    "routes.characters:DELETE:/personas/{persona_id}/avatar": Factory(
+    "routes.characters:DELETE:/{persona_id}/avatar": Factory(
         "persona", fragment = '"hasAvatar":false'
     ),
-    "routes.characters:GET:/chats/{thread_id}": Factory(
+    "routes.characters:GET:/{thread_id}": Factory(
         "character-chat",
         fragment = '"cast"',
         owner = (204,),
         wrong = (204,),
         reason = "a chat without a scene in this account, its own or another's, answers 204 and reveals nothing",
     ),
-    "routes.characters:PUT:/chats/{thread_id}": Factory(
+    "routes.characters:PUT:/{thread_id}": Factory(
         "character-chat", {"settings": {"replyOrder": "list"}}, fragment = '"replyOrder":"list"'
     ),
 }

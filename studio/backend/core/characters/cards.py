@@ -16,16 +16,24 @@ import io
 import json
 import math
 import re
-import struct
 import zipfile
 import zlib
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from core.characters.placeholder import placeholder_png
+from core.characters.png_text import (
+    PNG_SIGNATURE,
+    TEXT_CHUNKS,
+    chunk_key,
+    iter_png_chunks,
+    png_chunk,
+    read_text_chunk,
+    strip_png_text,
+)
 from core.inference.mcp_images import MAX_IMAGE_PIXELS
 from utils.image_files import sniff_image_type
 
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_CARD_BYTES = 40 * 1024 * 1024
 MAX_AVATAR_BYTES = 20 * 1024 * 1024
 MAX_FIELD_CHARS = 200_000
@@ -34,10 +42,9 @@ MAX_SHORT_CHARS = 200
 MAX_GREETINGS = 64
 MAX_TAGS = 64
 MAX_TAG_CHARS = 100
-# Every stored portrait is decoded once on import; this bounds what a browser will later decode.
-MAX_PORTRAIT_PIXELS = MAX_IMAGE_PIXELS
-_TEXT_CHUNKS = (b"tEXt", b"zTXt", b"iTXt")
-_PORTRAIT_FORMATS = {
+# Every stored avatar is decoded once on import; this bounds what a browser will later decode.
+MAX_AVATAR_PIXELS = MAX_IMAGE_PIXELS
+_AVATAR_FORMATS = {
     "PNG": "image/png",
     "JPEG": "image/jpeg",
     "WEBP": "image/webp",
@@ -46,7 +53,7 @@ _PORTRAIT_FORMATS = {
 _CARD_CHUNK_KEYS = ("ccv3", "chara")
 _ARCHIVE_URIS = ("embeded://", "embedded://", "__asset:")
 # Fields Studio edits; everything else in a card's data is carried through untouched.
-_EDITABLE_TEXT_FIELDS = (
+EDITABLE_TEXT_FIELDS = (
     "name",
     "description",
     "personality",
@@ -85,7 +92,7 @@ def _well_formed(value: Any) -> Any:
 
 
 def _json_loads(text: str):
-    # NaN, Infinity and overflowing numbers (1e309) parse in Python but cannot be served back as JSON; read them as null.
+    # NaN, Infinity and 1e309 read as null: they cannot be served back as JSON.
     try:
         return _well_formed(
             json.loads(text, parse_constant = lambda _constant: None, parse_float = _finite)
@@ -110,8 +117,8 @@ class ParsedCard:
     warnings: list[str] = field(default_factory = list)
 
 
-def checked_portrait(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
-    """The portrait as stored and its type: a PNG, JPEG, WebP or GIF that decodes within the pixel limit,
+def checked_avatar(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
+    """The avatar as stored and its type: a PNG, JPEG, WebP or GIF that decodes within the pixel limit,
     PNG text chunks removed. None for anything else, including a decompression bomb."""
     media_type = sniff_image_type(data) if data else None
     if media_type is None:
@@ -122,12 +129,12 @@ def checked_portrait(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
         # Before decoding: Pillow refuses a PNG whose compressed text passes its chunk limit.
         data = strip_png_text(data)
     try:
-        with Image.open(io.BytesIO(data), formats = tuple(_PORTRAIT_FORMATS)) as image:
+        with Image.open(io.BytesIO(data), formats = tuple(_AVATAR_FORMATS)) as image:
             width, height = image.size
             # Phone JPEGs with extra pictures (MPF) open as MPO, which is not an opener of its own.
             found = "JPEG" if image.format == "MPO" else image.format
-            if _PORTRAIT_FORMATS.get(found) != media_type or not (
-                0 < width * height <= MAX_PORTRAIT_PIXELS
+            if _AVATAR_FORMATS.get(found) != media_type or not (
+                0 < width * height <= MAX_AVATAR_PIXELS
             ):
                 return None
             image.load()
@@ -136,81 +143,8 @@ def checked_portrait(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
     return data, media_type
 
 
-def character_fields(parsed: "ParsedCard") -> dict:
-    fields = parsed.fields
-    return {
-        "name": fields["name"],
-        "description": fields["description"],
-        "personality": fields["personality"],
-        "scenario": fields["scenario"],
-        "firstMes": fields["first_mes"],
-        "alternateGreetings": fields["alternate_greetings"],
-        "mesExample": fields["mes_example"],
-        "systemPrompt": fields["system_prompt"],
-        "postHistoryInstructions": fields["post_history_instructions"],
-        "creatorNotes": fields["creator_notes"],
-        "creator": fields["creator"],
-        "characterVersion": fields["character_version"],
-        "tags": fields["tags"],
-        "talkativeness": fields["talkativeness"],
-        "favorite": fields["favorite"],
-        "depthPrompt": fields["depth_prompt"],
-        "characterBook": fields["character_book"],
-        "extensions": fields["extensions"],
-    }
-
-
-def _iter_png_chunks(data: bytes):
-    if not data.startswith(PNG_SIGNATURE):
-        raise CardError("Not a PNG file.")
-    offset = len(PNG_SIGNATURE)
-    while offset + 8 <= len(data):
-        (length,) = struct.unpack(">I", data[offset : offset + 4])
-        kind = data[offset + 4 : offset + 8]
-        start = offset + 8
-        end = start + length
-        if end + 4 > len(data):
-            # Truncated file: stop at what is readable rather than fail the whole card.
-            return
-        yield kind, data[start:end], offset, end + 4
-        offset = end + 4
-        if kind == b"IEND":
-            return
-
-
-def _inflate(data: bytes, budget: list[int]) -> bytes:
-    # Bounded across the whole file: a few KB of zlib can expand to gigabytes, and a PNG can repeat chunks.
-    inflater = zlib.decompressobj()
-    out = inflater.decompress(data, max(budget[0], 1))
-    budget[0] -= len(out)
-    if inflater.unconsumed_tail or not inflater.eof or budget[0] < 0:
-        raise ValueError("compressed text chunk too large or truncated")
-    return out
-
-
-def _chunk_key(body: bytes) -> str:
-    return body.partition(b"\x00")[0].decode("latin-1").lower()
-
-
-def _png_text_chunk(
-    kind: bytes, body: bytes, keys: tuple[str, ...], budget: list[int]
-) -> Optional[tuple[str, bytes]]:
-    """A wanted text chunk's lower-cased key and raw text bytes; other chunks are never inflated."""
-    key = _chunk_key(body)
-    if key not in keys:
-        return None
-    rest = body.partition(b"\x00")[2]
-    try:
-        if kind == b"tEXt":
-            return key, rest
-        if kind == b"zTXt":
-            return key, _inflate(rest[1:], budget)
-        compressed, rest = rest[0], rest[2:]
-        _language, _, rest = rest.partition(b"\x00")
-        _translated, _, text = rest.partition(b"\x00")
-        return key, _inflate(text, budget) if compressed else text
-    except (zlib.error, IndexError, ValueError):
-        return None
+def character_fields(parsed: ParsedCard) -> dict:
+    return {camel(key): value for key, value in parsed.fields.items()}
 
 
 def _decode_card_text(raw: bytes) -> Optional[dict]:
@@ -237,15 +171,17 @@ def _decode_card_text(raw: bytes) -> Optional[dict]:
 
 def read_png_card(data: bytes) -> tuple[Optional[dict], list[str]]:
     """The card JSON in a PNG (ccv3 over chara) and which card chunks it held."""
+    if not data.startswith(PNG_SIGNATURE):
+        raise CardError("Not a PNG file.")
     found: dict[str, dict] = {}
     budget = [MAX_CARD_BYTES]
-    for kind, body, _start, _end in _iter_png_chunks(data):
-        if kind not in _TEXT_CHUNKS:
+    for kind, body, _start, _end in iter_png_chunks(data):
+        if kind not in TEXT_CHUNKS:
             continue
         wanted = tuple(key for key in _CARD_CHUNK_KEYS if key not in found)
         if not wanted:
             break
-        parsed = _png_text_chunk(kind, body, wanted, budget)
+        parsed = read_text_chunk(kind, body, wanted, budget)
         if parsed is None:
             continue
         card = _decode_card_text(parsed[1])
@@ -257,44 +193,29 @@ def read_png_card(data: bytes) -> tuple[Optional[dict], list[str]]:
     return None, sorted(found)
 
 
-def strip_png_text(data: bytes) -> bytes:
-    """The PNG without its text chunks, so a stored portrait does not carry a stale card."""
-    out = bytearray(PNG_SIGNATURE)
-    for kind, _body, start, end in _iter_png_chunks(data):
-        if kind in _TEXT_CHUNKS:
-            continue
-        out.extend(data[start:end])
-    return bytes(out)
-
-
-def _png_chunk(kind: bytes, body: bytes) -> bytes:
-    crc = zlib.crc32(kind + body) & 0xFFFFFFFF
-    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", crc)
-
-
 def embed_card_in_png(png: bytes, chunks: dict[str, dict]) -> bytes:
     """Writes each card as a base64 tEXt chunk, replacing any card chunks already there."""
     out = bytearray(PNG_SIGNATURE)
-    for kind, body, start, end in _iter_png_chunks(png):
+    for kind, body, start, end in iter_png_chunks(png):
         if kind == b"IEND":
             for key, card in chunks.items():
                 encoded = base64.b64encode(json.dumps(card, ensure_ascii = False).encode("utf-8"))
-                out.extend(_png_chunk(b"tEXt", key.encode("latin-1") + b"\x00" + encoded))
+                out.extend(png_chunk(b"tEXt", key.encode("latin-1") + b"\x00" + encoded))
             out.extend(png[start:end])
             return bytes(out)
-        if kind in _TEXT_CHUNKS and _chunk_key(body) in _CARD_CHUNK_KEYS:
+        if kind in TEXT_CHUNKS and chunk_key(body) in _CARD_CHUNK_KEYS:
             continue
         out.extend(png[start:end])
-    raise CardError("The portrait PNG has no end marker.")
+    raise CardError("The avatar PNG has no end marker.")
 
 
 def to_png(image: Optional[bytes], name: str = "") -> bytes:
-    """A PNG of the portrait, or a plain placeholder when there is none or it cannot be decoded."""
-    from PIL import Image, ImageOps
-
+    """A PNG of the avatar, or a plain placeholder when there is none or it cannot be decoded."""
     if image and image.startswith(PNG_SIGNATURE):
         return strip_png_text(image)
     if image:
+        from PIL import Image, ImageOps
+
         try:
             with Image.open(io.BytesIO(image)) as source:
                 source.load()
@@ -307,32 +228,7 @@ def to_png(image: Optional[bytes], name: str = "") -> bytes:
                 return buffer.getvalue()
         except Exception:
             pass
-    # The app's portrait-less tile (portrait.tsx): a gradient in the name's hue.
-    size = (400, 600)
-    hue = _name_hue(name)
-    top = Image.new("RGB", size, _hsl_to_rgb(hue, 0.42, 0.62))
-    bottom = Image.new("RGB", size, _hsl_to_rgb((hue + 28) % 360, 0.46, 0.40))
-    placeholder = Image.composite(bottom, top, Image.linear_gradient("L").resize(size))
-    buffer = io.BytesIO()
-    placeholder.save(buffer, format = "PNG")
-    return buffer.getvalue()
-
-
-_HUES = (12, 28, 160, 190, 215, 250, 280, 330)
-
-
-def _name_hue(name: str) -> int:
-    # nameHue in features/characters/images.ts, so an export matches the tile in the app.
-    value = 0
-    for char in name:
-        value = (value * 31 + ord(char)) & 0xFFFFFFFF
-    return _HUES[value % len(_HUES)]
-
-
-def _hsl_to_rgb(h: float, s: float, light: float) -> tuple[int, int, int]:
-    import colorsys
-    r, g, b = colorsys.hls_to_rgb(h / 360, light, s)
-    return round(r * 255), round(g * 255), round(b * 255)
+    return placeholder_png(name)
 
 
 def read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
@@ -348,11 +244,10 @@ def read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
         EOFError,
         KeyError,
         zlib.error,
-        # A damaged directory seeks to a negative offset or names a member in invalid UTF-8.
         ValueError,
         OSError,
     ) as exc:
-        # Encrypted entries, unknown compression or a damaged archive.
+        # Encrypted entries, unknown compression, or a damaged directory (negative seek, non-UTF-8 name).
         raise CardError("This CHARX archive could not be read.") from exc
 
 
@@ -405,7 +300,7 @@ def _read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
             info = names.get(candidate)
             if info is not None and 0 < info.file_size <= budget:
                 budget -= info.file_size
-                checked = checked_portrait(_read_member(archive, info))
+                checked = checked_avatar(_read_member(archive, info))
                 if checked:
                     icon_bytes = checked[0]
                     break
@@ -596,8 +491,8 @@ def normalize_card(
     return fields
 
 
-_LOGIC = {0: "and_any", 1: "not_all", 2: "not_any", 3: "and_all"}
-_LOGIC_CODE = {name: code for code, name in _LOGIC.items()}
+_SELECTIVE_LOGIC = {0: "and_any", 1: "not_all", 2: "not_any", 3: "and_all"}
+_SELECTIVE_LOGIC_CODE = {name: code for code, name in _SELECTIVE_LOGIC.items()}
 
 
 def _as_list(value: Any) -> list:
@@ -628,12 +523,12 @@ def normalize_book(book: dict) -> dict:
         elif ext_position in (0, 1):
             position = "before_char" if ext_position == 0 else "after_char"
         logic = entry.get("selective_logic")
-        if not (isinstance(logic, str) and logic in _LOGIC_CODE):
+        if not (isinstance(logic, str) and logic in _SELECTIVE_LOGIC_CODE):
             code = ext.get("selectiveLogic", entry.get("selectiveLogic"))
-            if isinstance(code, str) and code in _LOGIC_CODE:
+            if isinstance(code, str) and code in _SELECTIVE_LOGIC_CODE:
                 logic = code
             else:
-                logic = _LOGIC.get(code, "and_any") if type(code) is int else "and_any"
+                logic = _SELECTIVE_LOGIC.get(code, "and_any") if type(code) is int else "and_any"
         case_sensitive = entry.get("case_sensitive")
         if not isinstance(case_sensitive, bool):
             case_sensitive = bool(ext.get("case_sensitive"))
@@ -688,7 +583,7 @@ def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
         card, chunks = read_png_card(data)
         if card is None:
             raise CardError("This PNG has no character card inside it.")
-        checked = checked_portrait(data)
+        checked = checked_avatar(data)
         avatar = checked[0] if checked else None
         source_format = "png"
         warnings = [] if checked else ["The picture could not be read, so the character has none."]
@@ -699,8 +594,8 @@ def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
         card, avatar = read_charx(data)
         source_format = "charx"
         warnings = []
-        if avatar is None and checked_portrait(data):
-            # No icon asset: the cover image in front of the archive is the portrait.
+        if avatar is None and checked_avatar(data):
+            # No icon asset: the cover image in front of the archive is the avatar.
             avatar = to_png(data)
         if avatar is None and _icon_uris(card):
             warnings.append("The picture could not be read, so the character has none.")
@@ -745,8 +640,8 @@ def _base_data(character: dict) -> dict:
 
 
 def _overlay(character: dict, data: dict) -> dict:
-    for key in _EDITABLE_TEXT_FIELDS:
-        data[key] = character.get(_camel(key), "") or ""
+    for key in EDITABLE_TEXT_FIELDS:
+        data[key] = character.get(camel(key), "") or ""
     data["alternate_greetings"] = list(character.get("alternateGreetings") or [])
     data["tags"] = list(character.get("tags") or [])
     extensions = dict(data["extensions"]) if isinstance(data.get("extensions"), dict) else {}
@@ -787,10 +682,10 @@ def _export_book(book: dict) -> dict:
         logic = entry.get("selective_logic")
         if (
             isinstance(logic, str)
-            and logic in _LOGIC_CODE
+            and logic in _SELECTIVE_LOGIC_CODE
             and (logic != "and_any" or "selectiveLogic" in ext)
         ):
-            ext["selectiveLogic"] = _LOGIC_CODE[logic]
+            ext["selectiveLogic"] = _SELECTIVE_LOGIC_CODE[logic]
         if isinstance(entry.get("case_sensitive"), bool) and (
             entry["case_sensitive"] or "case_sensitive" in ext
         ):
@@ -803,7 +698,7 @@ def _export_book(book: dict) -> dict:
     return {**book, "entries": entries}
 
 
-def _camel(key: str) -> str:
+def camel(key: str) -> str:
     head, *rest = key.split("_")
     return head + "".join(part.capitalize() for part in rest)
 
@@ -847,5 +742,5 @@ def export_png(character: dict, avatar: Optional[bytes]) -> bytes:
     try:
         return embed_card_in_png(to_png(avatar, character.get("name") or ""), chunks)
     except CardError:
-        # A damaged portrait (a truncated PNG) still exports, on a plain placeholder.
+        # A damaged avatar (a truncated PNG) still exports, on a plain placeholder.
         return embed_card_in_png(to_png(None, character.get("name") or ""), chunks)

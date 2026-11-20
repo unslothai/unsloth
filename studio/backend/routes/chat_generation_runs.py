@@ -27,6 +27,7 @@ from core.inference.chat_generation_runs import detach_embedded_images
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
+from core.characters.cards import MAX_SHORT_CHARS
 from storage import characters_db
 from utils.api_errors import safe_validation_errors
 from utils.current_date_prompt_settings import (
@@ -94,7 +95,7 @@ class AssistantRoleplay(BaseModel):
     model_config = ConfigDict(extra = "forbid")
     kind: Literal["reply"] = "reply"
     speakerId: str = Field(min_length = 1, max_length = characters_db.MAX_ID_CHARS)
-    speakerName: str = Field(default = "", max_length = 200)
+    speakerName: str = Field(default = "", max_length = MAX_SHORT_CHARS)
     plan: Optional[list[Annotated[str, Field(max_length = characters_db.MAX_ID_CHARS)]]] = Field(
         default = None, max_length = characters_db.MAX_CAST
     )
@@ -391,8 +392,8 @@ async def create_chat_generation_run(
                 user_message_id = payload.userMessageId,
                 assistant_message_id = payload.assistantMessageId,
                 request_payload = sanitized,
-                reply_metadata = (
-                    {"roleplay": payload.assistantRoleplay.model_dump(exclude_none = True)}
+                roleplay = (
+                    payload.assistantRoleplay.model_dump(exclude_none = True)
                     if payload.assistantRoleplay
                     else None
                 ),
