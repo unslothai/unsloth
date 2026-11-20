@@ -1759,6 +1759,9 @@ class GraphedForward:
                     warm_args = warm_kwargs = live = None
                     self._release()
                     return self._eager(eager_args, eager_kwargs)
+            if self.poisoned:
+                # the real warm-up's NVFP4 prewarm failed: like a failed capture, this load runs eager
+                return self._eager(eager_args, eager_kwargs)
             if self.plan is not None and self.stats["captures"] and key not in self._warmed:
                 # A new prompt length: this real step is the new shape's warm-up; the next one records.
                 self._warmed[key] = None
@@ -1908,7 +1911,20 @@ class GraphedForward:
         _flatten((args, kwargs), live)
         from .diffusion_nvfp4_linear import nvfp4_prewarm
 
-        nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
+        try:
+            nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
+        except Exception as exc:  # noqa: BLE001 - as inside a capture: never fails the render
+            self.poison(exc)
+            self.stats["fallbacks"] += 1
+            if self.logger is not None:
+                self.logger.warning(
+                    "diffusion.cuda_graph: NVFP4 prewarm failed on %s (%s: %s); this load runs eager",
+                    type(self.module).__name__,
+                    type(exc).__name__,
+                    exc,
+                )
+            exc.__traceback__ = None
+            return False
         return True
 
     def _statics(self, live: list) -> list:

@@ -2227,6 +2227,25 @@ def test_real_warmup_prewarms_the_nvfp4_layers_before_its_first_step(stub_torch,
     assert handle.stats["captures"] == 1 and handle.poisoned is False
 
 
+def test_a_failed_nvfp4_prewarm_before_the_real_warmup_runs_the_step_eager(stub_torch, monkeypatch):
+    """The prewarm failing before the first real warm-up step is a failed capture, as on the side-stream path: the
+    step returns the eager output and the load runs eager, never the exception."""
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    def boom(*_a, **_k):
+        raise RuntimeError("tactic tuning failed")
+
+    monkeypatch.setattr(nl, "nvfp4_prewarm", boom)
+    module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear())])
+    handle = _armed(module)
+    out = handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
+    assert out is not None and module.calls == 1
+    assert handle.poisoned is True and handle.stats["fallbacks"] == 1
+    for _ in range(cg.WARMUP_ITERS + 1):
+        handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["captures"] == 0 and module.calls == cg.WARMUP_ITERS + 2
+
+
 def test_real_warmup_leaves_unbaked_nvfp4_scales_to_the_capture_refusal(stub_torch, record_prewarm):
     """Activation scales still calibrating: no real warm-up; the step goes to the capture, which refuses the load
     (eager), exactly as on the side-stream path."""
