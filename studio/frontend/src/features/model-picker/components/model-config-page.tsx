@@ -2810,8 +2810,7 @@ type StagedDims = {
   diffusionUnknown?: boolean;
 };
 
-// The Model section unmounts this page when collapsed; without this every reopen re-reads the
-// GGUF header before the memory estimate may even be requested.
+// Collapsing the Model section unmounts this page; without this every reopen re-reads the GGUF header first.
 const stagedDimsCache = new Map<string, StagedDims>();
 
 function rememberStagedDims(dims: StagedDims): void {
