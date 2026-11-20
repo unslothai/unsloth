@@ -31,21 +31,25 @@ const composerBody = (name: string): string => {
 };
 const composerLabels = labels;
 
-test("Chat defaults keeps scrolling and reply stats", () => {
+test("Chat defaults keeps scrolling, reply stats and the minor composer rows", () => {
   const defaults = section("settings.general.chatDefaults");
-  assert.deepEqual(labels(defaults), ["settings.chat.autoScroll"]);
-  assert.match(defaults, /<GenerationStatsUpdatesRow \/>\s+$/);
+  assert.deepEqual(labels(defaults), [
+    "settings.chat.autoScroll",
+    "settings.chat.pastedTextThreshold",
+    "settings.appearance.custom.sentAttachments.label",
+  ]);
+  assert.match(defaults, /<GenerationStatsUpdatesRow \/>/);
+  assert.match(defaults, /<ContextWindowUsageRow \/>/);
   assert.doesNotMatch(defaults, /isOwner/, "the owner limits sit in Replies");
 });
 
-test("Composer groups behavior, pasting, context and appearance in Chat", () => {
+test("Composer groups behavior, formatting, layout and the picker's icon style in Chat", () => {
   const settings = section("composerSettings.title");
   assert.match(settings, /<ComposerSettings embedded=\{true\} \/>/);
   assert.deepEqual(labels(settings), [
-    "settings.chat.pastedTextThreshold",
     "settings.appearance.custom.chatWidth.label",
     "settings.chat.composerPosition",
-    "settings.appearance.custom.sentAttachments.label",
+    "settings.chat.modelSelection.pickerMonochromeIcons",
   ]);
   assert.deepEqual(composerLabels(composerBody("ComposerSettings")), [
     "composerSettings.sendShortcut",
@@ -60,8 +64,12 @@ test("Composer groups behavior, pasting, context and appearance in Chat", () => 
     composerBody("ContextWindowUsageRow"),
     /<SettingsRow label=\{t\("composerSettings\.showContext"\)\}>/,
   );
-  assert.match(settings, /<ContextWindowUsageRow \/>/);
   assert.match(settings, /<ComposerFormatRows \/>/);
+  assert.doesNotMatch(settings, /<ContextWindowUsageRow \/>/);
+  assert.doesNotMatch(
+    section("settings.chat.modelSelection.title"),
+    /pickerMonochromeIcons/,
+  );
   const display = section("settings.chat.groups.display.title");
   assert.doesNotMatch(display, /<ContextWindowUsageRow \/>|<ComposerFormatRows \/>/);
   assert.equal(

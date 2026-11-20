@@ -546,41 +546,6 @@ export function ChatTab() {
         <ComposerSettings embedded={true} />
         <ComposerFormatRows />
         <SettingsRow
-          label={t("settings.chat.pastedTextThreshold")}
-          description={
-            pastedTextMinChars > 0
-              ? t("settings.chat.pastedTextShortDescription", {
-                  count: pastedTextMinChars.toLocaleString(),
-                })
-              : t("settings.chat.pastedTextOffDescription")
-          }
-          hint={t("settings.chat.pastedTextThresholdDescription", {
-            shortcut: plainPasteLabel,
-          })}
-        >
-          <Select
-            value={String(pastedTextMinChars)}
-            onValueChange={(value) => setPastedTextMinChars(Number(value))}
-          >
-            <SelectTrigger
-              className="w-36"
-              aria-label={t("settings.chat.pastedTextThreshold")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PASTED_TEXT_THRESHOLD_CHOICES.map((choice) => (
-                <SelectItem key={choice} value={String(choice)}>
-                  {choice === 0
-                    ? t("settings.chat.pastedTextThresholdOff")
-                    : choice.toLocaleString()}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </SettingsRow>
-        <ContextWindowUsageRow />
-        <SettingsRow
           label={t("settings.appearance.custom.chatWidth.label")}
           description={t("settings.appearance.custom.chatWidth.description")}
         >
@@ -596,12 +561,16 @@ export function ChatTab() {
           <ComposerOutlineSliderRow />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.appearance.custom.sentAttachments.label")}
+          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
           description={t(
-            "settings.appearance.custom.sentAttachments.description",
+            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
           )}
         >
-          <SentAttachmentsSelect />
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+            checked={pickerMonochromeIcons}
+            onCheckedChange={setPickerMonochromeIcons}
+          />
         </SettingsRow>
       </SettingsSection>
 
@@ -641,6 +610,49 @@ export function ChatTab() {
           </div>
         </SettingsRow>
         <GenerationStatsUpdatesRow />
+        <SettingsRow
+          label={t("settings.chat.pastedTextThreshold")}
+          description={
+            pastedTextMinChars > 0
+              ? t("settings.chat.pastedTextShortDescription", {
+                  count: pastedTextMinChars.toLocaleString(),
+                })
+              : t("settings.chat.pastedTextOffDescription")
+          }
+          hint={t("settings.chat.pastedTextThresholdDescription", {
+            shortcut: plainPasteLabel,
+          })}
+        >
+          <Select
+            value={String(pastedTextMinChars)}
+            onValueChange={(value) => setPastedTextMinChars(Number(value))}
+          >
+            <SelectTrigger
+              className="w-36"
+              aria-label={t("settings.chat.pastedTextThreshold")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PASTED_TEXT_THRESHOLD_CHOICES.map((choice) => (
+                <SelectItem key={choice} value={String(choice)}>
+                  {choice === 0
+                    ? t("settings.chat.pastedTextThresholdOff")
+                    : choice.toLocaleString()}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        <ContextWindowUsageRow />
+        <SettingsRow
+          label={t("settings.appearance.custom.sentAttachments.label")}
+          description={t(
+            "settings.appearance.custom.sentAttachments.description",
+          )}
+        >
+          <SentAttachmentsSelect />
+        </SettingsRow>
       </SettingsSection>
 
       <LazyImportBoundary fallback={null}>
@@ -902,18 +914,6 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.modelSelection.title")}>
-        <SettingsRow
-          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-          description={t(
-            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
-          )}
-        >
-          <Switch
-            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-            checked={pickerMonochromeIcons}
-            onCheckedChange={setPickerMonochromeIcons}
-          />
-        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.modelSelection.showMemoryBar")}
           description={t(

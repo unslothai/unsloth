@@ -82,8 +82,11 @@ test("the composer appearance rows live only in Chat's Composer section", () => 
   const start = chat.indexOf('<SettingsSection title={t("composerSettings.title")}>');
   assert.ok(start !== -1);
   const section = chat.slice(start, chat.indexOf("</SettingsSection>", start));
-  for (const control of ["ComposerPositionSliderRow", "ComposerOutlineSliderRow", "ChatWidthSelect", "SentAttachmentsSelect"]) {
+  for (const control of ["ComposerPositionSliderRow", "ComposerOutlineSliderRow", "ChatWidthSelect"]) {
     assert.ok(section.includes(`<${control} />`), `${control} is in Composer`);
     assert.ok(!readSrc("features/settings/tabs/appearance-tab.tsx").includes(control));
   }
+  // Sent attachments moved to Chat defaults; it is still Chat-only.
+  assert.ok(chat.includes("<SentAttachmentsSelect />"));
+  assert.ok(!readSrc("features/settings/tabs/appearance-tab.tsx").includes("SentAttachmentsSelect"));
 });
