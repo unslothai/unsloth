@@ -1975,6 +1975,69 @@ def _latent_cache_over_budget(
     return per_variant_bytes * max(0, total_variants) > budget_bytes
 
 
+# Cards where cuDNN SDPA fwd+bwd matched fp32 as closely as flash / mem-eff at DiT training shapes:
+# A100 (sm80), L4 (sm89), RTX PRO 6000 (sm120), on torch 2.10 and 2.14.
+_MASKED_CUDNN_CAPS = frozenset({(8, 0), (8, 9), (12, 0)})
+_MASKED_CUDNN_MIN_TORCH = (2, 10)
+
+
+def _masked_cudnn_priority(torch, device: Any = None) -> Optional[list]:
+    """SDPA priority flash > cuDNN > mem-eff > rest, or None to keep cuDNN off.
+
+    Flash takes no mask, so a masked call (Krea-2 text padding, LTX-2, Qwen-Image) falls to mem-eff, which
+    cuDNN beats on fwd+bwd 1.4-1.6x on A100, 2.0-2.1x on L4 and 3.0-3.6x on RTX PRO 6000. Unmasked calls stay
+    on flash, which beats cuDNN there. Unmeasured cards (sm90 / sm100, where the FLUX crash was) keep cuDNN off.
+    ``UNSLOTH_DIFFUSION_TRAIN_CUDNN_SDPA=0`` restores the old behaviour."""
+    if os.environ.get("UNSLOTH_DIFFUSION_TRAIN_CUDNN_SDPA", "").strip().lower() in (
+        "0",
+        "false",
+        "off",
+        "no",
+    ):
+        return None
+    get = getattr(torch._C, "_get_sdp_priority_order", None)
+    if get is None or not hasattr(torch._C, "_set_sdp_priority_order"):
+        return None
+    try:
+        major_minor = tuple(int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2])
+        if major_minor < _MASKED_CUDNN_MIN_TORCH:
+            return None
+        if not torch.cuda.is_available():
+            return None
+        # the training card, not whichever card is current
+        dev = torch.device(device) if device is not None else None
+        index = dev.index if dev is not None and dev.type == "cuda" else None
+        if tuple(torch.cuda.get_device_capability(index)) not in _MASKED_CUDNN_CAPS:
+            return None
+        from torch.nn.attention import SDPBackend
+
+        want = [
+            int(SDPBackend.FLASH_ATTENTION),
+            int(SDPBackend.CUDNN_ATTENTION),
+            int(SDPBackend.EFFICIENT_ATTENTION),
+            int(SDPBackend.MATH),
+        ]
+        current = [int(b) for b in get()]
+    except Exception:  # noqa: BLE001 -- any doubt keeps the old pin
+        return None
+    return want + [b for b in current if b not in want]
+
+
+_SDPA_CACHE_TAG = "|unsloth_train_sdpa=flash,cudnn,efficient"
+
+
+def _tag_compile_cache(torch, snap: dict) -> None:
+    """The compile caches key on the traced graph, not on the SDPA priority, so a warm cache would hand back a graph
+    whose attention op was picked under the old pin. A cache key tag keeps the two apart."""
+    cconfig = getattr(getattr(torch, "compiler", None), "config", None)
+    if cconfig is None or not hasattr(cconfig, "cache_key_tag"):
+        return
+    prev = cconfig.cache_key_tag or ""
+    snap["cache_key_tag"] = prev
+    if _SDPA_CACHE_TAG not in prev:
+        cconfig.cache_key_tag = prev + _SDPA_CACHE_TAG
+
+
 def _apply_perf_flags(
     cfg: "DiffusionLoraConfig",
     device: str,
@@ -2001,7 +2064,8 @@ def _apply_perf_flags(
             torch.set_float32_matmul_precision("highest")
         if cudnn_benchmark:
             torch.backends.cudnn.benchmark = True
-        # cuDNN SDPA training is broken for FLUX shapes on torch 2.10 + cu130; pin flash/mem-eff.
+        # cuDNN SDPA training is broken for FLUX shapes on torch 2.10 + cu130 (B200); pin flash/mem-eff,
+        # except on the measured cards, where masked attention moves from mem-eff to cuDNN (see below).
         cuda_backends = getattr(torch.backends, "cuda", None)
         if cuda_backends is not None and hasattr(cuda_backends, "enable_cudnn_sdp"):
             try:
@@ -2009,7 +2073,13 @@ def _apply_perf_flags(
             except Exception:  # noqa: BLE001 -- flag unreadable: skip the tweak entirely
                 snap["cudnn_sdp"] = None
             if snap["cudnn_sdp"]:
-                cuda_backends.enable_cudnn_sdp(False)
+                prio = _masked_cudnn_priority(torch, device)
+                if prio is not None:
+                    snap["sdp_priority"] = list(torch._C._get_sdp_priority_order())
+                    torch._C._set_sdp_priority_order(prio)
+                    _tag_compile_cache(torch, snap)
+                else:
+                    cuda_backends.enable_cudnn_sdp(False)
     except Exception:  # noqa: BLE001 -- perf flags are never fatal
         pass
     return snap
@@ -2028,6 +2098,10 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
 
         if snap.get("matmul_precision"):
             torch.set_float32_matmul_precision(snap["matmul_precision"])
+        if snap.get("sdp_priority"):
+            torch._C._set_sdp_priority_order(snap["sdp_priority"])
+        if snap.get("cache_key_tag") is not None:
+            torch.compiler.config.cache_key_tag = snap["cache_key_tag"]
         # Restore cudnn SDPA state; None means the flag was unreadable at apply time and was left alone.
         cuda_backends = getattr(torch.backends, "cuda", None)
         if (
