@@ -4320,13 +4320,6 @@ export function ComposerModelPicker({
                 hint="Opens on the Audio page"
               />
             ) : null}
-            {row.npu?.local ? (
-              <StatusTag
-                tone="accent"
-                label="Converted"
-                hint={npuRowTooltip(row.npu) ?? undefined}
-              />
-            ) : null}
             {row.partial ? (
               <AmberTag
                 label="Partial"
@@ -4366,7 +4359,8 @@ export function ComposerModelPicker({
             ) : null}
             {row.kind === "npu" && !npuProgress ? (
               <span className="shrink-0 text-ui-12 text-muted-foreground">
-                {NPU_TAG_TEXT[NPU_CATALOG_TAG]}
+                {/* Every row here runs on the NPU; a Q4NX folder from the Export page says where it came from. */}
+                {row.npu?.local ? "Converted" : NPU_TAG_TEXT[NPU_CATALOG_TAG]}
               </span>
             ) : null}
             {npuProgress || (npuOffer && row.npu?.size_gb != null) ? (

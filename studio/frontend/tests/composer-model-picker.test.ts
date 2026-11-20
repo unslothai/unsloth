@@ -288,7 +288,7 @@ test("a Q4NX model converted on the Export page is marked Converted, like the he
   );
   assert.match(
     picker,
-    /\{row\.npu\?\.local \? \(\s+<StatusTag\s+tone="accent"\s+label="Converted"\s+hint=\{npuRowTooltip\(row\.npu\) \?\? undefined\}/,
+    /\{row\.npu\?\.local \? "Converted" : NPU_TAG_TEXT\[NPU_CATALOG_TAG\]\}/,
   );
 });
 
