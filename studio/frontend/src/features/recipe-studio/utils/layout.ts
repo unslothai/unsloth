@@ -29,6 +29,7 @@ function getPipelineRank(config: NodeConfig | undefined): number {
     case "expression":
       return 2;
     case "llm":
+    case "image":
       return 3;
     case "validator":
       return 4;

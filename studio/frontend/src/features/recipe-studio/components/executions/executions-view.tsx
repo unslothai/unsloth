@@ -158,13 +158,18 @@ export function ExecutionsView({
         const imagePreview = resolveImagePreview(rawValue);
         if (imagePreview?.kind === "ready") {
           return (
-            <div>
+            <div className="relative w-fit">
               <img
                 src={imagePreview.src}
                 alt={`${name} preview`}
                 loading="lazy"
                 className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-lg border border-border/60 bg-muted/20 object-contain"
               />
+              {imagePreview.count && (
+                <span className="absolute right-1 bottom-1 rounded-full bg-background/90 px-1.5 text-ui-11 text-muted-foreground">
+                  1 of {imagePreview.count}
+                </span>
+              )}
             </div>
           );
         }

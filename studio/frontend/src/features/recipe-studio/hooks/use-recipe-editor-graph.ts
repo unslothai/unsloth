@@ -68,6 +68,7 @@ type UseRecipeEditorGraphArgs = {
   addSamplerNode: (type: SamplerType, position?: XYPosition, openDialog?: boolean) => void;
   addSeedNode: (type: SeedBlockType, position?: XYPosition, openDialog?: boolean) => void;
   addLlmNode: (type: LlmType, position?: XYPosition, openDialog?: boolean) => void;
+  addImageNode: (position?: XYPosition, openDialog?: boolean) => void;
   addModelProviderNode: (position?: XYPosition, openDialog?: boolean) => void;
   addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
   addToolProfileNode: (position?: XYPosition, openDialog?: boolean) => void;
@@ -91,7 +92,7 @@ type UseRecipeEditorGraphResult = {
   handleDrop: (event: ReactDragEvent<HTMLDivElement>) => void;
   handleAddSamplerFromSheet: (type: SamplerType) => void;
   handleAddSeedFromSheet: (type: SeedBlockType) => void;
-  handleAddLlmFromSheet: (type: LlmType) => void;
+  handleAddLlmFromSheet: (type: LlmType | "image") => void;
   handleAddModelProviderFromSheet: () => void;
   handleAddModelConfigFromSheet: () => void;
   handleAddToolProfileFromSheet: () => void;
@@ -116,6 +117,7 @@ export function useRecipeEditorGraph({
   addSamplerNode,
   addSeedNode,
   addLlmNode,
+  addImageNode,
   addModelProviderNode,
   addModelConfigNode,
   addToolProfileNode,
@@ -241,10 +243,15 @@ export function useRecipeEditorGraph({
         addToolProfileNode(position, false);
         return;
       }
+      if (payload.type === "image") {
+        addImageNode(position, false);
+        return;
+      }
       addLlmNode(payload.type as LlmType, position, false);
     },
     [
       addExpressionNode,
+      addImageNode,
       addLlmNode,
       addMarkdownNoteNode,
       addModelConfigNode,
@@ -283,10 +290,14 @@ export function useRecipeEditorGraph({
   );
 
   const handleAddLlmFromSheet = useCallback(
-    (type: LlmType) => {
+    (type: LlmType | "image") => {
+      if (type === "image") {
+        addImageNode(getViewportCenterPosition());
+        return;
+      }
       addLlmNode(type, getViewportCenterPosition());
     },
-    [addLlmNode, getViewportCenterPosition],
+    [addImageNode, addLlmNode, getViewportCenterPosition],
   );
 
   const handleAddModelProviderFromSheet = useCallback(() => {

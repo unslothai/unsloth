@@ -47,6 +47,7 @@ export function ConfigDialog({
     config?.kind === "llm" ||
     config?.kind === "validator" ||
     config?.kind === "expression" ||
+    config?.kind === "image" ||
     (config?.kind === "seed" &&
       (config.seed_source_type ?? "hf") === "unstructured");
 

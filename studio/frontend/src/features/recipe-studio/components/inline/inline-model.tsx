@@ -2,9 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { ReactElement } from "react";
 import { LocalRecipeModelSelector } from "../../dialogs/models/local-recipe-model-selector";
-import type { ModelConfig, ModelProviderConfig } from "../../types";
+import type {
+  ModelConfig,
+  ModelGeneration,
+  ModelProviderConfig,
+} from "../../types";
 import { InlineField } from "./inline-field";
 
 type InlineModelPatch = Partial<ModelProviderConfig> | Partial<ModelConfig>;
@@ -21,7 +32,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
       return (
         <div className="flex items-center gap-2 px-1 py-0.5">
           <span className="text-xs font-medium text-muted-foreground">
-            Local model (Chat)
+            Local model (Chat and Images)
           </span>
         </div>
       );
@@ -60,6 +71,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
   const localNames = props.localProviderNames ?? new Set<string>();
   const modelConfig = props.config;
   const isLinkedToLocal = localNames.has(modelConfig.provider);
+  const isImage = modelConfig.generation === "image";
   const handleProviderChange = (nextProvider: string) => {
     const nextIsLocal = localNames.has(nextProvider);
     if (isLinkedToLocal !== nextIsLocal) {
@@ -84,6 +96,22 @@ export function InlineModel(props: InlineModelProps): ReactElement {
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
+      <InlineField label="Generates" className="sm:col-span-2">
+        <Select
+          value={isImage ? "image" : "text"}
+          onValueChange={(value) =>
+            props.onUpdate({ generation: value as ModelGeneration })
+          }
+        >
+          <SelectTrigger className="nodrag h-8 w-full text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="text">Text</SelectItem>
+            <SelectItem value="image">Image</SelectItem>
+          </SelectContent>
+        </Select>
+      </InlineField>
       <InlineField label="Provider">
         <Input
           className="nodrag h-8 w-full text-xs"
@@ -93,7 +121,11 @@ export function InlineModel(props: InlineModelProps): ReactElement {
         />
       </InlineField>
       <InlineField label="Model">
-        {isLinkedToLocal ? (
+        {isLinkedToLocal && isImage ? (
+          <p className="flex h-8 items-center px-1 text-xs text-muted-foreground">
+            Loaded image model
+          </p>
+        ) : isLinkedToLocal ? (
           <LocalRecipeModelSelector
             compact={true}
             className="h-8 rounded-full text-xs"
@@ -114,7 +146,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
         ) : (
           <Input
             className="nodrag h-8 w-full text-xs"
-            placeholder="gpt-4o-mini"
+            placeholder={isImage ? "gpt-image-1" : "gpt-4o-mini"}
             value={modelConfig.model}
             onChange={(event) =>
               props.onUpdate({
@@ -126,20 +158,36 @@ export function InlineModel(props: InlineModelProps): ReactElement {
           />
         )}
       </InlineField>
-      <InlineField label="Temperature" className="sm:col-span-2">
-        <Input
-          className="nodrag h-8 w-full text-xs"
-          type="number"
-          placeholder="0.7"
-          value={modelConfig.inference_temperature ?? ""}
-          onChange={(event) =>
-            props.onUpdate({
-              // biome-ignore lint/style/useNamingConvention: api schema
-              inference_temperature: event.target.value,
-            })
-          }
-        />
-      </InlineField>
+      {isImage ? (
+        <InlineField label="Size" className="sm:col-span-2">
+          <Input
+            className="nodrag h-8 w-full text-xs"
+            placeholder="1024x1024"
+            value={modelConfig.image_size ?? ""}
+            onChange={(event) =>
+              props.onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
+                image_size: event.target.value,
+              })
+            }
+          />
+        </InlineField>
+      ) : (
+        <InlineField label="Temperature" className="sm:col-span-2">
+          <Input
+            className="nodrag h-8 w-full text-xs"
+            type="number"
+            placeholder="0.7"
+            value={modelConfig.inference_temperature ?? ""}
+            onChange={(event) =>
+              props.onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
+                inference_temperature: event.target.value,
+              })
+            }
+          />
+        </InlineField>
+      )}
     </div>
   );
 }

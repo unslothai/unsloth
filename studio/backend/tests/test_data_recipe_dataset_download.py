@@ -329,6 +329,7 @@ def test_build_in_memory_job_dataset_download_pages_all_rows(monkeypatch, tmp_pa
             *,
             limit: int,
             offset: int = 0,
+            raw: bool = False,
         ):
             self.calls.append((limit, offset))
             page = self.rows[offset : offset + limit]

@@ -23,6 +23,7 @@ const DONE_UPSTREAM_KINDS: ReadonlySet<NodeConfig["kind"]> = new Set([
   "seed",
   "expression",
   "llm",
+  "image",
   "model_config",
   "model_provider",
   "tool_config",
@@ -61,6 +62,11 @@ function collectTemplateRefs(config: NodeConfig | null): Set<string> {
   }
   if (config.kind === "expression") {
     for (const ref of extractRefs(config.expr ?? "")) {
+      refs.add(ref.trim());
+    }
+  }
+  if (config.kind === "image") {
+    for (const ref of extractRefs(config.prompt)) {
       refs.add(ref.trim());
     }
   }

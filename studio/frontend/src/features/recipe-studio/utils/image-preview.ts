@@ -7,12 +7,14 @@ type PreviewImagePayload = {
   type?: unknown;
   mime?: unknown;
   data?: unknown;
+  count?: unknown;
 };
 
 type UnknownRecord = Record<string, unknown>;
 
 export type ImagePreviewResult =
-  | { kind: "ready"; src: string }
+  // count: images in the cell when a model returned more than one; src is the first.
+  | { kind: "ready"; src: string; count?: number }
   | { kind: "too_large"; estimatedBytes: number };
 
 function normalizeBase64(value: string): string {
@@ -143,6 +145,9 @@ function resolveImagePayloadObject(value: unknown, maxBytes: number): ImagePrevi
     return {
       kind: "ready",
       src: toDataUrlFromBase64(payload.data, mime),
+      ...(typeof payload.count === "number" && payload.count > 1
+        ? { count: payload.count }
+        : {}),
     };
   }
 

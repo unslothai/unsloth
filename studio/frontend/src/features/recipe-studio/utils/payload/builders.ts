@@ -7,6 +7,7 @@ export {
   buildLlmToolConfig,
   buildToolProfilePayload,
 } from "./builders-llm";
+export { buildImageColumn } from "./builders-image";
 export { buildModelConfig, buildModelProvider } from "./builders-model";
 export { buildExpressionColumn, buildProcessors } from "./builders-processors";
 export { buildSamplerColumn } from "./builders-sampler";
