@@ -36,6 +36,7 @@ import {
 import { useOnlineStatus } from "../hooks/use-online-status";
 import {
   type BaseModelSource,
+  type GgufVariantDetail,
   type LocalModelInfo,
   type ModelInventoryFormat,
   DELETABLE_LOCAL_SOURCES,
@@ -61,6 +62,7 @@ import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
+import { CHIP_BASE, CHIP_DEFAULT, QuantBadge } from "./gguf-download-card";
 import {
   CardDeleteButton,
   CardUpdateButton,
@@ -72,7 +74,10 @@ import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
-import { ggufVariantLookupTableBytes } from "@/lib/gguf-fit";
+import {
+  classifyGgufVariantFit,
+  ggufVariantLookupTableBytes,
+} from "@/lib/gguf-fit";
 
 interface LocalOnDeviceCardProps {
   modelId: string;
@@ -309,6 +314,7 @@ export function LocalOnDeviceCard({
   const localGgufPath = path.trim();
   const needsVariantSelection =
     isGguf && requiresVariant && !localGgufPath.toLowerCase().endsWith(".gguf");
+  const folderVariants = needsVariantSelection && source !== "hf_cache";
   const currentVariantState = useGgufVariantFetchState({
     repoId: modelId,
     hfToken,
@@ -367,6 +373,15 @@ export function LocalOnDeviceCard({
   }, [currentVariantState.variants, remoteVariantState.variants]);
   // Same live VRAM budget the memory bar reads, so the quant menu ranks consistently.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
+  const showFitInfo = showMemoryBar && (Boolean(gpuGb) || Boolean(systemRamGb));
+  const fitOf = (variant: GgufVariantDetail) =>
+    classifyGgufVariantFit(variant, {
+      gpuGb,
+      gpuCount,
+      audioCppCardGb,
+      systemRamGb,
+      budgetFraction,
+    });
   const sortedVariants = useMemo(
     () =>
       variants
@@ -498,111 +513,245 @@ export function LocalOnDeviceCard({
       )}
       <div className="hub-download-card">
         <div className="group/dl flex items-center">
-          <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-            <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
-              <DotTag tone="success" label="On device" />
-              <DotTag tone={formatTone} label={formatLabel} />
-              {needsVariantSelection && (
-                <Popover
-                  open={runPending ? false : variantOpen}
-                  onOpenChange={(nextOpen) => {
-                    if (!runPending) setVariantOpen(nextOpen);
-                  }}
-                >
-                  <PopoverTrigger asChild={true}>
-                    <button
-                      type="button"
-                      disabled={currentVariantState.loading || runPending}
-                      className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <span className="truncate">
-                        {currentVariantState.loading
-                          ? "Loading"
-                          : currentVariantState.error
-                            ? "Unavailable"
-                            : selectedVariant
-                              ? ggufVariantDisplayLabel(selectedVariant)
-                              : "Select"}
-                      </span>
-                      {selectedVariant && (
-                        <span className="shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
-                          {formatBytes(selectedVariant.size_bytes)}
+          <div
+            className={cn(
+              "relative flex h-9 min-w-0 flex-1 items-center pr-2",
+              folderVariants ? "gap-1" : "pl-3",
+            )}
+          >
+            {folderVariants ? (
+              <Popover
+                open={runPending ? false : variantOpen}
+                onOpenChange={(nextOpen) => {
+                  if (!runPending) setVariantOpen(nextOpen);
+                }}
+              >
+                <PopoverTrigger asChild={true}>
+                  <button
+                    type="button"
+                    disabled={currentVariantState.loading || runPending}
+                    className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)] dark:data-[state=open]:bg-accent dark:disabled:hover:bg-transparent"
+                  >
+                    <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground max-[360px]:gap-1">
+                      {selectedVariant ? (
+                        <QuantBadge
+                          quant={ggufVariantDisplayLabel(selectedVariant)}
+                          fit={fitOf(selectedVariant)}
+                          lookupTableBytes={ggufVariantLookupTableBytes(
+                            selectedVariant,
+                          )}
+                          showFit={showFitInfo}
+                        />
+                      ) : (
+                        <span className="text-ui-12p5 text-muted-foreground">
+                          {currentVariantState.loading
+                            ? "Loading"
+                            : currentVariantState.error
+                              ? "Unavailable"
+                              : "Select quantization"}
                         </span>
                       )}
-                      <HugeiconsIcon
-                        icon={ChevronDownStandardIcon}
-                        className="size-3 shrink-0"
+                      <DotTag
+                        tone="success"
+                        label="On device"
+                        className="max-sm:border-0 max-sm:px-0"
+                        labelClassName="max-sm:sr-only"
                       />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="start"
-                    side="bottom"
-                    sideOffset={8}
-                    avoidCollisions={false}
-                    className="hub-menu-instant menu-soft-surface w-(--radix-popover-trigger-width) min-w-[min(calc(220px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
-                  >
-                    <div className="max-h-[calc(280px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
-                      {sortedVariants?.map((variant) => {
-                        const label = ggufVariantDisplayLabel(variant);
-                        const isSelected = ggufVariantsMatch(
-                          variant.quant,
-                          selectedQuant,
-                        );
-                        return (
-                          <button
-                            key={variant.filename}
-                            type="button"
-                            onClick={() => {
-                              setSelectedVariantState({
-                                key: variantKey,
-                                quant: variant.quant,
-
-                                preferredFile,
-                                preferredFileIntent,
-                              });
-                              setVariantOpen(false);
-                            }}
-                            className={cn(
-                              "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
-                              isSelected
-                                ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
-                                : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
-                            )}
-                          >
-                            <span className="min-w-0 flex-1 truncate font-mono text-ui-12 text-format-gguf">
-                              {label}
-                            </span>
-                            <span className="flex shrink-0 items-center gap-1.5">
-                              <span className="text-ui-10 text-muted-foreground tabular-nums">
+                      <DotTag
+                        tone={formatTone}
+                        label={formatLabel}
+                        className="max-sm:hidden"
+                      />
+                      {sourceLabel && (
+                        <span className="truncate text-muted-foreground/85">
+                          {sourceLabel}
+                        </span>
+                      )}
+                    </span>
+                    <HugeiconsIcon
+                      icon={ChevronDownStandardIcon}
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                    />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  side="bottom"
+                  sideOffset={8}
+                  avoidCollisions={false}
+                  className="hub-menu-instant menu-soft-surface w-(--radix-popover-trigger-width) min-w-[min(calc(300px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
+                >
+                  <div className="max-h-[calc(344px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
+                    {sortedVariants?.map((variant) => {
+                      const isSelected = ggufVariantsMatch(
+                        variant.quant,
+                        selectedQuant,
+                      );
+                      return (
+                        <button
+                          key={variant.filename}
+                          type="button"
+                          aria-pressed={isSelected}
+                          onClick={() => {
+                            setSelectedVariantState({
+                              key: variantKey,
+                              quant: variant.quant,
+                              preferredFile,
+                              preferredFileIntent,
+                            });
+                            setVariantOpen(false);
+                          }}
+                          className={cn(
+                            "mx-2 flex w-[calc(100%-1rem)] min-w-0 cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
+                            isSelected
+                              ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-accent"
+                              : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)]",
+                          )}
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-2">
+                            <QuantBadge
+                              quant={ggufVariantDisplayLabel(variant)}
+                              fit={fitOf(variant)}
+                              lookupTableBytes={ggufVariantLookupTableBytes(
+                                variant,
+                              )}
+                              showFit={showFitInfo}
+                              variant="menu"
+                              tooltipMode="lazy"
+                            />
+                            <DotTag tone="success" label="On device" />
+                          </span>
+                          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                            <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
+                              <span className="cap-centered">
                                 {formatBytes(variant.size_bytes)}
                               </span>
                             </span>
-                          </button>
-                        );
-                      })}
-                      {!currentVariantState.loading &&
-                        !currentVariantState.error &&
-                        sortedVariants?.length === 0 && (
-                          <div className="px-4 py-2 text-xs text-muted-foreground">
-                            No quantizations found.
-                          </div>
-                        )}
-                      {currentVariantState.error && (
-                        <div className="px-4 py-2 text-xs text-destructive">
-                          {currentVariantState.error}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {!currentVariantState.loading &&
+                      !currentVariantState.error &&
+                      sortedVariants?.length === 0 && (
+                        <div className="px-4 py-2 text-xs text-muted-foreground">
+                          No quantizations found.
                         </div>
                       )}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              )}
-              {source !== "hf_cache" && (
-                <span className="truncate text-muted-foreground/85">
-                  {sourceLabel}
-                </span>
-              )}
-            </span>
+                    {currentVariantState.error && (
+                      <div className="px-4 py-2 text-xs text-destructive">
+                        {currentVariantState.error}
+                      </div>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            ) : (
+              <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
+                <DotTag tone="success" label="On device" />
+                <DotTag tone={formatTone} label={formatLabel} />
+                {needsVariantSelection && (
+                  <Popover
+                    open={runPending ? false : variantOpen}
+                    onOpenChange={(nextOpen) => {
+                      if (!runPending) setVariantOpen(nextOpen);
+                    }}
+                  >
+                    <PopoverTrigger asChild={true}>
+                      <button
+                        type="button"
+                        disabled={currentVariantState.loading || runPending}
+                        className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <span className="cap-centered truncate">
+                          {currentVariantState.loading
+                            ? "Loading"
+                            : currentVariantState.error
+                              ? "Unavailable"
+                              : selectedVariant
+                                ? ggufVariantDisplayLabel(selectedVariant)
+                                : "Select"}
+                        </span>
+                        {selectedVariant && (
+                          <span className="cap-centered shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
+                            {formatBytes(selectedVariant.size_bytes)}
+                          </span>
+                        )}
+                        <HugeiconsIcon
+                          icon={ChevronDownStandardIcon}
+                          className="size-3 shrink-0"
+                        />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="start"
+                      side="bottom"
+                      sideOffset={8}
+                      avoidCollisions={false}
+                      className="hub-menu-instant menu-soft-surface w-(--radix-popover-trigger-width) min-w-[min(calc(220px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
+                    >
+                      <div className="max-h-[calc(280px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
+                        {sortedVariants?.map((variant) => {
+                          const label = ggufVariantDisplayLabel(variant);
+                          const isSelected = ggufVariantsMatch(
+                            variant.quant,
+                            selectedQuant,
+                          );
+                          return (
+                            <button
+                              key={variant.filename}
+                              type="button"
+                              onClick={() => {
+                                setSelectedVariantState({
+                                  key: variantKey,
+                                  quant: variant.quant,
+
+                                  preferredFile,
+                                  preferredFileIntent,
+                                });
+                                setVariantOpen(false);
+                              }}
+                              className={cn(
+                                "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
+                                isSelected
+                                  ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
+                                  : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
+                              )}
+                            >
+                              <span className="min-w-0 flex-1 truncate font-mono text-ui-12 text-format-gguf">
+                                {label}
+                              </span>
+                              <span className="flex shrink-0 items-center gap-1.5">
+                                <span className="text-ui-10 text-muted-foreground tabular-nums">
+                                  {formatBytes(variant.size_bytes)}
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {!currentVariantState.loading &&
+                          !currentVariantState.error &&
+                          sortedVariants?.length === 0 && (
+                            <div className="px-4 py-2 text-xs text-muted-foreground">
+                              No quantizations found.
+                            </div>
+                          )}
+                        {currentVariantState.error && (
+                          <div className="px-4 py-2 text-xs text-destructive">
+                            {currentVariantState.error}
+                          </div>
+                        )}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                )}
+                {source !== "hf_cache" && (
+                  <span className="truncate text-muted-foreground/85">
+                    {sourceLabel}
+                  </span>
+                )}
+              </span>
+            )}
             <div className="ml-auto flex items-center gap-0.5">
               {canUpdate && (
                 <CardUpdateButton

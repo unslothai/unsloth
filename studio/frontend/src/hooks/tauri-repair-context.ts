@@ -35,3 +35,16 @@ export function canUpgradeToFullInstall(
     !repair.isExternalServer
   );
 }
+
+/** Not on a GPU-less host (no video device). On a Mac the MLX floor blocks training only: PyTorch MPS still runs video. */
+export function canUpgradeForVideo(
+  chatOnlyReason: string | null,
+  chatOnlyHint: string | null,
+  verdictMeasured: boolean,
+  repair: TauriRepairController | null,
+  host: { deviceType: string | null; cpuTraining: boolean },
+): boolean {
+  if (host.cpuTraining) return false;
+  const hint = host.deviceType === "mac" ? null : chatOnlyHint;
+  return canUpgradeToFullInstall(chatOnlyReason, hint, verdictMeasured, repair);
+}

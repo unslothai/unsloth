@@ -25,6 +25,16 @@ from core.inference import video_minimax_h3 as VM  # noqa: E402
 from core.inference import video_minimax_h3_sampling as VS  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def _restore_condition_encode(monkeypatch):
+    # install_h3_reference_recipe shims Diffusers' module-level condition encode; keep it to this file's tests
+    try:
+        from diffusers.modular_pipelines.minimax_h3 import encoders
+    except Exception:  # noqa: BLE001 - no H3-capable diffusers: nothing to restore
+        return
+    monkeypatch.setattr(encoders, "encode_vae_condition", encoders.encode_vae_condition)
+
+
 # ---- the reference implementation, literally -------------------------------------------------------------------
 
 
@@ -261,9 +271,14 @@ def test_yuv_frames_go_through_float_rgb(tmp_path, size):
             converted = np.asarray(VM.h3_video_frame_rgb(frame))
         assert converted.shape == (size[1], size[0], 3)
         assert np.abs(converted.astype(int) - expect.astype(int)).max() <= 1
+    # truncated like the reference's LANCZOS helper, not rounded
     assert VM.h3_float_rgb_to_uint8(
-        np.array([0.5 / 255, 1.5 / 255, 254.6 / 255], np.float32)
-    ).tolist() == [0, 2, 255]
+        np.array([0.5 / 255, 1.5 / 255, 254.6 / 255, 1.2, -0.1], np.float32)
+    ).tolist() == [0, 1, 254, 255, 0]
+    sweep = np.random.default_rng(0).random((64, 64, 3), dtype = np.float32)
+    assert np.array_equal(
+        VM.h3_float_rgb_to_uint8(sweep), np.clip(255.0 * sweep, 0, 255).astype(np.uint8)
+    )
 
 
 ASPECTS = [
@@ -314,6 +329,52 @@ def test_resampler_is_torchaudios_default_kernel():
     torchaudio = pytest.importorskip("torchaudio")
     expect = torchaudio.functional.resample(x, 44100, 32000)
     assert torch.allclose(VM.resample_h3_audio(x, 44100, 32000), expect, atol = 1e-6)
+
+
+@pytest.mark.parametrize("rate", [44100, 22050, 12700, 48000, 96000])
+def test_windowed_resampler_matches_the_dense_kernel(monkeypatch, rate):
+    # force the windowed path on rates whose dense kernel is small enough to compare against
+    x = torch.randn(3, 4410, dtype = torch.float64)
+    monkeypatch.setattr(VM, "_H3_RESAMPLE_DENSE_MAX_ELEMENTS", 0)
+    windowed = VM.resample_h3_audio(x, rate, 32000)
+    dense = _ref_resample(x, rate, 32000)
+    assert windowed.shape == dense.shape
+    assert torch.allclose(windowed, dense, rtol = 0, atol = 1e-12)
+    assert torch.allclose(
+        VM.resample_h3_audio(x.float(), rate, 32000),
+        _ref_resample(x.float(), rate, 32000),
+        rtol = 0,
+        atol = 1e-6,
+    )
+
+
+@pytest.mark.parametrize("rate", [44099, 44101, 8001, 32001])
+def test_resampler_memory_does_not_scale_with_the_rate_ratio(rate):
+    # 44,099 Hz shares no factor with 32 kHz: the dense kernel is [32000, 1, 44117] (5.3 GiB per intermediate)
+    # for any clip length. Run on meta tensors and record the largest tensor any op produces.
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class _Largest(TorchDispatchMode):
+        largest = 0
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = func(*args, **(kwargs or {}))
+            for value in out if isinstance(out, (tuple, list)) else (out,):
+                if isinstance(value, torch.Tensor):
+                    _Largest.largest = max(_Largest.largest, value.numel() * value.element_size())
+            return out
+
+    x = torch.empty(2, 1024, device = "meta")
+    with _Largest():
+        out = VM.resample_h3_audio(x, rate, 32000)
+    assert out.shape == (2, math.ceil(np.float32(32000 * 1024 / rate)))
+    assert _Largest.largest < 64 * 2**20
 
 
 def test_output_audio_is_limited_and_trimmed():
@@ -621,6 +682,10 @@ def test_install_is_idempotent_and_scoped():
         "MiniMaxH3KeyframeVaeEncoderStep": 0,
         "MiniMaxH3Ref2VAReferenceEncoderStep": 0,
         "sampler": None,
+        # a bare pipeline has no processor or denoiser; the condition encode shim is module-level
+        "output_truncated": False,
+        "dense_temb_rounded": False,
+        "condition_latent": "mean",
     }
     other = blocks_mod.MiniMaxH3Blocks().init_pipeline()
     assert (

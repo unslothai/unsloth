@@ -44,6 +44,7 @@ import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
 import { backendPathUrl, desktopSignedMediaPath, protectedBackendPath } from "@/lib/api-base";
 import { openLink } from "@/lib/open-link";
+import { videoMimeForName } from "@/lib/video-utils";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
@@ -124,8 +125,10 @@ import {
 import {
   decodeSegment,
   markdownSandboxImageSrc,
+  markdownSandboxVideoSrc,
   sandboxFileForHref,
   sandboxSessionIdFor,
+  sandboxVideoFileForSrc,
   sandboxSessionInSrc,
 } from "./sandbox-files";
 import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
@@ -352,6 +355,57 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   );
 });
 
+function SandboxVideo({ url, label }: { url: string; label: string }) {
+  const { ref, state } = useSandboxImage<HTMLSpanElement>(url, videoMimeForName(url.split(/[?#]/)[0]));
+  return (
+    <span ref={ref} data-streamdown="video-wrapper" className="my-4 block max-w-full">
+      {state.status === "failed" ? (
+        <span className="text-xs text-muted-foreground">Video not available</span>
+      ) : state.status === "loaded" ? (
+        <video
+          src={state.url}
+          controls={true}
+          loop={true}
+          playsInline={true}
+          preload="metadata"
+          aria-label={label || "Video"}
+          className="block h-auto max-h-[min(70dvh,620px)] max-w-full rounded-lg"
+        />
+      ) : (
+        <span
+          role="status"
+          aria-busy="true"
+          aria-label="Loading video…"
+          className="block aspect-video w-full max-w-xl rounded-lg bg-muted/20"
+        />
+      )}
+    </span>
+  );
+}
+
+function useSandboxScope() {
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  return { threadId: remoteId ?? activeThreadId ?? undefined, projectId };
+}
+
+const MarkdownMedia = memo(function MarkdownMedia(props: ComponentProps<"img">) {
+  const scope = useSandboxScope();
+  const video = props.src ? markdownSandboxVideoSrc(props.src, scope) : null;
+  return video ? <SandboxVideo url={video} label={props.alt ?? ""} /> : <MarkdownImage {...props} />;
+});
+
+function SandboxVideoLink({ href, label, children }: { href: string; label: string; children: ReactNode }) {
+  const video = markdownSandboxVideoSrc(href, useSandboxScope());
+  return (
+    <>
+      {video ? <SandboxVideo url={video} label={label} /> : null}
+      {children}
+    </>
+  );
+}
+
 const LINK_CLASS =
   "text-foreground underline underline-offset-2 decoration-foreground/40 hover:decoration-foreground transition-colors cursor-pointer";
 
@@ -360,10 +414,17 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
   const file = href ? sandboxFileForHref(href) : null;
   // Only file links subscribe to the chat's scope; links re-render per streamed token.
   if (href && file !== null) {
-    return (
+    const link = (
       <SandboxFileLink href={href} file={file} dom={dom}>
         {children}
       </SandboxFileLink>
+    );
+    return sandboxVideoFileForSrc(href) !== null ? (
+      <SandboxVideoLink href={href} label={typeof children === "string" ? children : ""}>
+        {link}
+      </SandboxVideoLink>
+    ) : (
+      link
     );
   }
   const backend = href ? protectedBackendPath(href) : null;
@@ -519,7 +580,7 @@ const STREAMDOWN_COMPONENTS = {
   a: MarkdownLink,
   // Module-scoped: Streamdown's memo comparator ignores `components`.
   [SEARCH_IMAGE_TAG]: SearchImageElement,
-  img: MarkdownImage,
+  img: MarkdownMedia,
   table: MarkdownTable,
 };
 const STREAMDOWN_ALLOWED_TAGS = {

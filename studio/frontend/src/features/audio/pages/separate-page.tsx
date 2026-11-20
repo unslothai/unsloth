@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
+import { audioWorkflowTab } from "../workflows";
 import {
   GalleryItemMenu,
   GalleryPinBadge,
@@ -10,7 +12,13 @@ import { Spinner } from "@/components/ui/spinner";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import {
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Download01Icon, FloppyDiskIcon } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, type ReactNode, useEffect, useMemo, useState } from "react";
@@ -36,7 +44,7 @@ import {
   type SeparateGeneration,
 } from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
-import { STEM_SEND_TARGETS } from "../send-targets";
+import { STEM_SAVE_VOICE_TARGET, STEM_SEND_TARGETS } from "../send-targets";
 import { saveAudio } from "../save-audio";
 import {
   SEPARATE_MAX_SECONDS,
@@ -52,7 +60,14 @@ import { useAudioSeparateStore } from "../stores/audio-separate-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import {
   CLIP_ICON_COLUMN,
-  CLIPS_HEADER_LINK,
+  CLIP_ROW,
+  CLIP_ROW_DURATION,
+  CLIP_ROW_ICON,
+  CLIP_ROW_MENU,
+  CLIP_ROW_PIN,
+  CLIP_ROW_SELECT,
+  CLIP_ROW_TILE,
+  ClipsDeleteAll,
   CLIPS_LIST,
   CLIPS_TITLE_INSET,
   CLIPS_TOP_ROW,
@@ -257,6 +272,10 @@ function downloadGroup(group: SeparationGroup) {
 }
 
 /** keyed by group so each mixer starts from its own clock. */
+function stemSendName(title: string, role: string | null | undefined): string {
+  return `${title.replace(/\.[a-z0-9]{2,4}$/i, "")} - ${stemLabel(role ?? "")}`;
+}
+
 function SelectedSeparation({
   group,
   autoFocus,
@@ -319,11 +338,7 @@ function SelectedSeparation({
         onSend={(target, clipId) => {
           const clip = group.stems.find((item) => item.id === clipId);
           if (!clip) return;
-          onSendStem(
-            target,
-            clip,
-            `${group.title.replace(/\.[a-z0-9]{2,4}$/i, "")} - ${stemLabel(clip.role ?? "")}`,
-          );
+          onSendStem(target, clip, stemSendName(group.title, clip.role));
         }}
       />
       {sources.failedIds.length > 0 ? (
@@ -418,7 +433,6 @@ export function SeparateOutput({
   const announcement = lastResult
     ? `Separated into ${lastResult.stems} stem${lastResult.stems === 1 ? "" : "s"}.`
     : "";
-  const picks = modelReady || !onPickModel ? [] : recommendedModels.slice(0, 3);
 
   const pinGroup = (group: SeparationGroup, pinned: boolean) => {
     for (const clip of group.stems) void handleTogglePin(clip.id, pinned);
@@ -460,6 +474,26 @@ export function SeparateOutput({
           : undefined
       }
       noun="clip"
+      leadingItems={
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <HugeiconsIcon icon={FloppyDiskIcon} strokeWidth={1.75} className="size-icon" />
+            Save as voice…
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {group.stems.map((clip) => (
+              <DropdownMenuItem
+                key={clip.id}
+                onSelect={() =>
+                  onSendStem(STEM_SAVE_VOICE_TARGET, clip, stemSendName(group.title, clip.role))
+                }
+              >
+                {stemLabel(clip.role ?? "")}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      }
       active={active}
       pinned={group.pinned}
       archived={false}
@@ -487,18 +521,13 @@ export function SeparateOutput({
       </output>
       <ClipsCard
         label={groups.length > 0 ? "Separations" : "Separate audio"}
-        title={groups.length > 0 ? "Separations" : "Separate audio"}
+        title="Separations"
+        bare={groups.length === 0 && !pendingRun && !selected && !fallbackClip}
         count={groups.length}
         countMore={hasMore}
         action={
           groups.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => void handleClearGallery()}
-              className={CLIPS_HEADER_LINK}
-            >
-              Clear all
-            </button>
+            <ClipsDeleteAll noun="separations" active={active} onConfirm={handleClearGallery} />
           ) : null
         }
       >
@@ -562,30 +591,17 @@ export function SeparateOutput({
           />
         ) : (
           <ClipsCardEmpty
+            icon={audioWorkflowTab("separate").icon}
+            title="Stems will appear here"
             text={
               modelReady
-                ? "Stems land here. Add a track and press Generate."
-                : "Stems land here. Load a separation model, add a track, and press Generate."
+                ? "Add a track and press Generate."
+                : "Load a separation model, add a track, and press Generate."
             }
             actions={
-              picks.length > 0 ? (
-                <div
-                  className="flex flex-wrap justify-center gap-2"
-                  aria-label="Recommended models"
-                >
-                  {picks.map((model) => (
-                    <Button
-                      key={model.id}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onPickModel?.(model.id)}
-                    >
-                      Use {model.name}
-                    </Button>
-                  ))}
-                </div>
-              ) : null
+              modelReady ? null : (
+                <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+              )
             }
           />
         )}
@@ -610,13 +626,13 @@ export function SeparateOutput({
                 // Shell, not a button: the pin badge and dots menu are buttons and cannot nest.
                 <div
                   key={group.groupId}
-                  className="group relative flex items-center gap-1 rounded-md ps-3 pe-1 transition-colors hover:bg-wash-3"
+                  className={CLIP_ROW}
                 >
                   <span
                     aria-hidden="true"
-                    className="grid w-[calc(40px*var(--ui-space-scale,1))] shrink-0 place-items-center text-muted-foreground"
+                    className={CLIP_ROW_TILE}
                   >
-                    <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5" />
+                    <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.75} className={CLIP_ROW_ICON} />
                   </span>
                   <button
                     type="button"
@@ -624,7 +640,7 @@ export function SeparateOutput({
                       const first = group.stems[0];
                       if (first) selectClip(first.id);
                     }}
-                    className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 ps-2 text-left"
+                    className={CLIP_ROW_SELECT}
                   >
                     <span className="grid min-w-0 flex-1 gap-0.5">
                       <span className="truncate text-ui-13" title={group.title}>
@@ -640,18 +656,18 @@ export function SeparateOutput({
                           : `${group.stems.length} of ${group.expectedStems} stems`}
                       </span>
                     </span>
-                    <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+                    <span className={CLIP_ROW_DURATION}>
                       {formatClipDuration(group.durationS)}
                     </span>
                   </button>
                   {group.pinned && (
                     <GalleryPinBadge
                       noun="clip"
-                      className="static shrink-0"
+                      className={CLIP_ROW_PIN}
                       onUnpin={() => pinGroup(group, false)}
                     />
                   )}
-                  {groupMenu(group, "row")}
+                  <span className={CLIP_ROW_MENU}>{groupMenu(group, "row")}</span>
                 </div>
               );
             })}

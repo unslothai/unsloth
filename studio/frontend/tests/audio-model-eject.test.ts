@@ -112,7 +112,7 @@ test("a load confirmed after Audio is hidden is deferred, not sent", () => {
   );
   assert.match(
     source,
-    /if \(!active\) \{[\s\S]*?\n    \}\s*\n\s*\/\/[\s\S]*?replayQueuedTtsPick\(\);/,
+    /if \(!active\) \{[\s\S]*?\n {4}\}\s*\n\s*\/\/[\s\S]*?replayQueuedTtsPick\(\);/,
   );
 });
 

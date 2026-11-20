@@ -7,6 +7,11 @@ Forms (NVIDIA CUDA, each engaged only after a per-device bit-exact check that al
 ``fused`` reproduces torch's ``_fused_rms_norm`` row-kernel reduction order; ``rope`` keeps ``F.rms_norm`` and
 fuses only the rotation. ``UNSLOTH_H3_QK_ROPE_MODE=fused|rope`` forces one. Unchecked shapes / alignments and a
 first call during CUDA graph capture take the stock math.
+
+Rotation rounding: ``eager`` is diffusers' chain (each product and the sum rounded to the activation dtype);
+``once`` is the MiniMax-H3 reference kernel's (the normed values and the rotation table in the activation dtype,
+the rotation ``fma(x1, f01, x0 * f00)`` in float32, one rounding). The video denoiser takes ``once``
+(``UNSLOTH_H3_QK_ROPE_ROUNDING=eager`` restores the diffusers chain); every other caller keeps ``eager``.
 """
 
 from __future__ import annotations
@@ -17,19 +22,31 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 QK_ROPE_ENV = "UNSLOTH_H3_QK_ROPE"
 QK_ROPE_MODE_ENV = "UNSLOTH_H3_QK_ROPE_MODE"
 _OP = "unsloth_h3::qk_norm_rope"
 MODES = ("fused", "rope")
+ROUNDING_EAGER = "eager"
+ROUNDING_ONCE = "once"
+ROUNDINGS = (ROUNDING_EAGER, ROUNDING_ONCE)
+QK_ROPE_ROUNDING_ENV = "UNSLOTH_H3_QK_ROPE_ROUNDING"
+_OP_ONCE = "unsloth_h3::qk_norm_rope_once"
 
 _LOCK = threading.Lock()
 _VERDICTS: dict = {}
-STATS = {"fused": 0, "rope": 0, "stock": 0}
+STATS = {"fused": 0, "rope": 0, "stock": 0, "once_fused": 0, "once_rope": 0, "once_stock": 0}
 
 
 def qk_rope_enabled() -> bool:
     return (os.environ.get(QK_ROPE_ENV) or "1").strip().lower() not in ("0", "off", "false", "no")
+
+
+def video_qk_rope_rounding() -> str:
+    """The rotation rounding the video denoiser installs: the reference kernel's unless overridden."""
+    value = (os.environ.get(QK_ROPE_ROUNDING_ENV) or ROUNDING_ONCE).strip().lower()
+    return value if value in ROUNDINGS else ROUNDING_ONCE
 
 
 def allowed_modes() -> tuple:
@@ -37,10 +54,24 @@ def allowed_modes() -> tuple:
     return (value,) if value in MODES else MODES
 
 
-def reference_qk_norm_rope(x: Any, weight: Any, cos: Any, sin: Any, eps: float) -> Any:
-    """The stock math (RMSNorm then diffusers' ``_apply_rotary_emb``), contiguous."""
+def reference_qk_norm_rope(
+    x: Any,
+    weight: Any,
+    cos: Any,
+    sin: Any,
+    eps: float,
+    rounding: str = ROUNDING_EAGER,
+    exact: bool = False,
+) -> Any:
+    """The unfused math, contiguous: RMSNorm, then diffusers' ``_apply_rotary_emb`` (``eager``) or the reference
+    kernel's single-rounding rotation (``once``; ``exact`` emulates its fma bit for bit, which the device check
+    compares against, while the runtime fallback stays in float32)."""
     import torch.nn.functional as F
-    return _reference_rope(F.rms_norm(x, (x.shape[-1],), weight, eps), cos, sin)
+
+    normed = F.rms_norm(x, (x.shape[-1],), weight, eps)
+    if rounding == ROUNDING_ONCE:
+        return _reference_rope_once(normed, cos, sin, exact = exact)
+    return _reference_rope(normed, cos, sin)
 
 
 def _reference_rope(x: Any, cos: Any, sin: Any) -> Any:
@@ -57,7 +88,35 @@ def _reference_rope(x: Any, cos: Any, sin: Any) -> Any:
     return torch.cat((xr, xp), dim = -1).contiguous()
 
 
+def _reference_rope_once(
+    x: Any,
+    cos: Any,
+    sin: Any,
+    exact: bool = False,
+) -> Any:
+    """Split-half rotation as the reference CUDA kernel computes it: table and inputs in ``x.dtype``, then per pair
+    ``y0 = fma(x1, -sin, x0 * cos)`` and ``y1 = fma(x1, cos, x0 * sin)`` in float32, rounded once to ``x.dtype``.
+    ``exact``: the fma through float64 (a float32 product fits in 48 bits). Otherwise ``addcmul`` in float32: the
+    fallback where the kernel does not run, which can differ from the fma in the last float32 bit."""
+    import torch
+
+    rotary_dim = cos.shape[-1]
+    half = rotary_dim // 2
+    work = torch.float64 if exact and x.device.type != "mps" else torch.float32
+    x0 = x[..., :half].float()
+    x1 = x[..., half:rotary_dim].float()
+    c = cos.to(x.dtype).float()[None, :, None, :]
+    s = sin.to(x.dtype).float()[None, :, None, :]
+    lo = torch.addcmul((x0 * c[..., :half]).to(work), x1.to(work), (-s[..., :half]).to(work))
+    hi = torch.addcmul((x0 * s[..., half:]).to(work), x1.to(work), c[..., half:].to(work))
+    # float64 -> float32 -> x.dtype: the fma's own float32 result, then the kernel's single store rounding
+    return torch.cat(
+        (lo.float().to(x.dtype), hi.float().to(x.dtype), x[..., rotary_dim:]), dim = -1
+    ).contiguous()
+
+
 @lru_cache(maxsize = None)
+@publishes_closure_globals
 def _kernel() -> Any:
     import triton
     import triton.language as tl
@@ -104,6 +163,7 @@ def _kernel() -> Any:
         ROWS: tl.constexpr,  # (token, head) rows per program
         NORM: tl.constexpr,  # False: x is already normed (the stock norm ran), rotate only
         G: tl.constexpr,  # warps of torch's row kernel that hold data: max(1, D // 128)
+        ONCE: tl.constexpr,  # True: the reference kernel's float32 fma rotation, one rounding
     ):
         odt = out_ptr.dtype.element_ty
         pid = tl.program_id(0).to(tl.int64)
@@ -151,11 +211,19 @@ def _kernel() -> Any:
         sn = tl.load(sin_ptr + s[:, None] * cos_stride + cols[None, :], mask = cmask, other = 0.0)
         c = c.to(odt).to(tl.float32)
         sn = sn.to(odt).to(tl.float32)
-        sign = tl.where(cols < HALF, -1.0, 1.0)
-        # eager: x * cos and rot * sin each rounded to the activation dtype, then their sum rounded
-        a = _mul_rn(xn.to(tl.float32), c).to(odt).to(tl.float32)
-        b = _mul_rn(pn.to(tl.float32) * sign[None, :], sn).to(odt).to(tl.float32)
-        roped = _add_rn(a, b).to(odt)
+        if ONCE:
+            # reference kernel: y0 = fma(x1, -sin, x0 * cos), y1 = fma(x1, cos, x0 * sin), rounded once
+            lo = (cols < HALF)[None, :]
+            xf = xn.to(tl.float32)
+            pf = pn.to(tl.float32)
+            first = tl.where(lo, _mul_rn(xf, c), _mul_rn(pf, sn))
+            roped = tl.fma(tl.where(lo, pf, xf), tl.where(lo, -sn, c), first).to(odt)
+        else:
+            sign = tl.where(cols < HALF, -1.0, 1.0)
+            # eager: x * cos and rot * sin each rounded to the activation dtype, then their sum rounded
+            a = _mul_rn(xn.to(tl.float32), c).to(odt).to(tl.float32)
+            b = _mul_rn(pn.to(tl.float32) * sign[None, :], sn).to(odt).to(tl.float32)
+            roped = _add_rn(a, b).to(odt)
         y = tl.where(rot_cols[None, :], roped, xn)
         tl.store(out_ptr + rows[:, None] * D + cols[None, :], y, mask = mask)
 
@@ -192,6 +260,7 @@ def _launch(
     rows_per_program: int = 0,
     warps: int = 0,
     norm: bool = True,
+    rounding: str = ROUNDING_EAGER,
 ) -> Any:
     """One launch: ``norm=True`` the fused form on raw ``x``, ``norm=False`` the rotation of an already-normed ``x``."""
     import torch
@@ -222,6 +291,7 @@ def _launch(
             ROWS = block,
             NORM = bool(norm),
             G = max(1, dim // 128),
+            ONCE = rounding == ROUNDING_ONCE,
             num_warps = int(warps or _WARPS),
         )
     return out
@@ -291,14 +361,24 @@ def _probe_inputs(device: Any, dtype: Any, dim: int, rot: int, seed: int) -> lis
     return out
 
 
-def _run_form(form: str, x: Any, w: Any, cos: Any, sin: Any, eps: float) -> Any:
+def _run_form(
+    form: str,
+    x: Any,
+    w: Any,
+    cos: Any,
+    sin: Any,
+    eps: float,
+    rounding: str = ROUNDING_EAGER,
+) -> Any:
     import torch.nn.functional as F
 
     if form == "fused":
-        return _launch(x, w, cos, sin, eps)
+        return _launch(x, w, cos, sin, eps, rounding = rounding)
     if form == "rope":
-        return _launch(F.rms_norm(x, (x.shape[-1],), w, eps), w, cos, sin, eps, norm = False)
-    return reference_qk_norm_rope(x, w, cos, sin, eps)
+        return _launch(
+            F.rms_norm(x, (x.shape[-1],), w, eps), w, cos, sin, eps, norm = False, rounding = rounding
+        )
+    return reference_qk_norm_rope(x, w, cos, sin, eps, rounding)
 
 
 def _race_ms(
@@ -309,23 +389,30 @@ def _race_ms(
     sin: Any,
     eps: float,
     reps: int = 7,
+    rounding: str = ROUNDING_EAGER,
 ) -> float:
     import torch
 
     for _ in range(2):
-        _run_form(form, x, w, cos, sin, eps)
+        _run_form(form, x, w, cos, sin, eps, rounding)
     times = []
     for _ in range(reps):
         a, b = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
         a.record()
-        _run_form(form, x, w, cos, sin, eps)
+        _run_form(form, x, w, cos, sin, eps, rounding)
         b.record()
         b.synchronize()
         times.append(a.elapsed_time(b))
     return sorted(times)[len(times) // 2]
 
 
-def _check(device: Any, dtype: Any, dim: int, rot: int) -> dict:
+def _check(
+    device: Any,
+    dtype: Any,
+    dim: int,
+    rot: int,
+    rounding: str = ROUNDING_EAGER,
+) -> dict:
     """``{form: matched the eager chain bit for bit on every probe}`` plus ``order``: the passing forms that beat
     the stock chain by more than 2% on a timed probe, fastest first (the stock chain is kept on a tie)."""
     import torch
@@ -333,7 +420,7 @@ def _check(device: Any, dtype: Any, dim: int, rot: int) -> dict:
     passed = {m: True for m in MODES}
     for seed in (11, 12, 13):
         for x, w, cos, sin, eps in _probe_inputs(device, dtype, dim, rot, seed):
-            ref = reference_qk_norm_rope(x, w, cos, sin, eps)
+            ref = reference_qk_norm_rope(x, w, cos, sin, eps, rounding, exact = True)
             for form in MODES:
                 if not passed[form]:
                     continue
@@ -343,7 +430,7 @@ def _check(device: Any, dtype: Any, dim: int, rot: int) -> dict:
                     passed[form] = False
                     continue
                 try:
-                    got = _run_form(form, x, w, cos, sin, eps)
+                    got = _run_form(form, x, w, cos, sin, eps, rounding)
                 except torch.OutOfMemoryError:
                     raise
                 except Exception:  # noqa: BLE001 -- a JIT / launch failure keeps the stock math
@@ -358,7 +445,7 @@ def _check(device: Any, dtype: Any, dim: int, rot: int) -> dict:
         cos, sin = torch.cat((ang, ang), -1).cos(), torch.cat((ang, ang), -1).sin()
         for form in ("stock", *[m for m in MODES if passed[m]]):
             try:
-                ms[form] = round(_race_ms(form, x, w, cos, sin, 1e-5), 5)
+                ms[form] = round(_race_ms(form, x, w, cos, sin, 1e-5, rounding = rounding), 5)
             except torch.OutOfMemoryError:
                 raise
             except Exception:  # noqa: BLE001
@@ -369,28 +456,40 @@ def _check(device: Any, dtype: Any, dim: int, rot: int) -> dict:
     return {**passed, "order": order, "ms": ms}
 
 
-def verdict(x: Any, rot: int) -> Optional[dict]:
-    """``_check`` cached per (device, dtype, head dim, rotary dim); None while capturing a CUDA graph before it ran."""
+def verdict(
+    x: Any,
+    rot: int,
+    rounding: str = ROUNDING_EAGER,
+) -> Optional[dict]:
+    """``_check`` cached per (device, dtype, head dim, rotary dim, rounding); None while capturing a CUDA graph before
+    it ran."""
     import torch
 
     index = x.device.index if x.device.index is not None else torch.cuda.current_device()
-    key = (index, x.dtype, int(x.shape[-1]), int(rot))
+    key = (index, x.dtype, int(x.shape[-1]), int(rot), rounding)
     found = _VERDICTS.get(key)
     if found is not None:
         return found
-    if torch.cuda.is_current_stream_capturing():
-        return None
+    # capture query reads the current device: ask on the operand's card
+    with torch.cuda.device(x.device):
+        if torch.cuda.is_current_stream_capturing():
+            return None
     with _LOCK:
         if key not in _VERDICTS:
             with torch.cuda.device(x.device):
-                _VERDICTS[key] = _check(x.device, x.dtype, int(x.shape[-1]), int(rot))
+                _VERDICTS[key] = _check(x.device, x.dtype, int(x.shape[-1]), int(rot), rounding)
     return _VERDICTS[key]
 
 
-def _mode(x: Any, weight: Any, cos: Any) -> Optional[str]:
+def _mode(
+    x: Any,
+    weight: Any,
+    cos: Any,
+    rounding: str = ROUNDING_EAGER,
+) -> Optional[str]:
     if not (_triton_ok(x) and _supported_layout(x, weight, cos)):
         return None
-    passed = verdict(x, int(cos.shape[-1]))
+    passed = verdict(x, int(cos.shape[-1]), rounding)
     if not passed:
         return None
     allowed = allowed_modes()
@@ -402,18 +501,31 @@ def _mode(x: Any, weight: Any, cos: Any) -> Optional[str]:
     return None
 
 
-def qk_norm_rope_impl(x: Any, weight: Any, cos: Any, sin: Any, eps: float) -> Any:
-    """The exact Triton form the device check passed, the stock math elsewhere."""
+def qk_norm_rope_impl(
+    x: Any,
+    weight: Any,
+    cos: Any,
+    sin: Any,
+    eps: float,
+    rounding: str = ROUNDING_EAGER,
+) -> Any:
+    """The exact Triton form the device check passed, the unfused math elsewhere."""
     import torch
 
-    mode = _mode(x, weight, cos)
+    mode = _mode(x, weight, cos, rounding)
     try:
         if mode == "fused":
-            out = _launch(x, weight, cos, sin, eps)
+            out = _launch(x, weight, cos, sin, eps, rounding = rounding)
         elif mode == "rope":
             import torch.nn.functional as F
             out = _launch(
-                F.rms_norm(x, (x.shape[-1],), weight, eps), weight, cos, sin, eps, norm = False
+                F.rms_norm(x, (x.shape[-1],), weight, eps),
+                weight,
+                cos,
+                sin,
+                eps,
+                norm = False,
+                rounding = rounding,
             )
         else:
             out = None
@@ -421,8 +533,8 @@ def qk_norm_rope_impl(x: Any, weight: Any, cos: Any, sin: Any, eps: float) -> An
         raise
     except Exception:  # noqa: BLE001 -- a failed launch keeps the stock math
         mode, out = None, None
-    STATS[mode or "stock"] += 1
-    return out if out is not None else reference_qk_norm_rope(x, weight, cos, sin, eps)
+    STATS[("once_" if rounding == ROUNDING_ONCE else "") + (mode or "stock")] += 1
+    return out if out is not None else reference_qk_norm_rope(x, weight, cos, sin, eps, rounding)
 
 
 @lru_cache(maxsize = None)
@@ -440,6 +552,18 @@ def qk_norm_rope_op() -> Any:
         return qk_norm_rope_impl(x, weight, cos, sin, eps)
 
     @qk_norm_rope.register_fake
+    def _(x, weight, cos, sin, eps):
+        return x.new_empty(x.shape)
+
+    @torch.library.custom_op(
+        _OP_ONCE,
+        mutates_args = (),
+        schema = "(Tensor x, Tensor weight, Tensor cos, Tensor sin, float eps) -> Tensor",
+    )
+    def qk_norm_rope_once(x, weight, cos, sin, eps):
+        return qk_norm_rope_impl(x, weight, cos, sin, eps, ROUNDING_ONCE)
+
+    @qk_norm_rope_once.register_fake
     def _(x, weight, cos, sin, eps):
         return x.new_empty(x.shape)
 

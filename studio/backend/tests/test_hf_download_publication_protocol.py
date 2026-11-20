@@ -106,12 +106,8 @@ def test_cached_a_finishes_before_later_b_does_not_disown_b(tmp_path):
 
 
 def _schedules(workers, canonical_starts):
-    """All linear extensions of start < transfer-done < verify-result < finish.
-
-    For three workers, remove only label symmetry: first starter is worker 0,
-    second worker 1, third worker 2. All target/outcome assignments still run.
-    Every labelled schedule maps to exactly one of these via worker renaming.
-    """
+    """All linear extensions of start < transfer-done < verify-result < finish; for three workers,
+    canonical starts remove only worker-label symmetry."""
 
     def visit(phases, history):
         if all(phase == 4 for phase in phases):
@@ -136,9 +132,8 @@ def test_every_publication_interleaving(workers, orderings, previous):
     schedules = _schedules(workers, canonical_starts = workers == 3)
     assert len(schedules) == orderings
     checked = 0
-    # The fake transfer records completion; verification independently returns
-    # success, failure, cancellation, or a killed owner. Only the final step may
-    # change a ref; killed attempts leave via the production pruning reducer.
+    # Only the final step may change a ref; killed attempts leave via the production pruning
+    # reducer.
     for assignments in itertools.product(
         itertools.product((_OLD, _NEW), ("ok", "fail", "cancel", "killed")), repeat = workers
     ):
@@ -178,8 +173,7 @@ def test_every_publication_interleaving(workers, orderings, previous):
                         ref = state.published_commit
                     else:
                         assert ref == before  # failure/cancel cannot hide a peer
-                # Independent oracle: scan chronological starts backwards for a
-                # terminal verified success, without using the reducer's sequence.
+                # Oracle: newest verified success among starts, not the reducer's sequence.
                 winner = next((i for i in reversed(started) if i in succeeded), None)
                 expected = previous if winner is None else assignments[winner][0]
                 assert ref == expected, (assignments, schedule, worker, phase)

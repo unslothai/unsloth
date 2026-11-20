@@ -754,8 +754,8 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
 
   assert.equal(
     MCP_SERVERS_API.match(/return trackMcpServerMutation\(/g)?.length,
-    5,
-    "create, update, delete, import, and managed Blender updates must register at the API boundary",
+    6,
+    "create, update, delete, import, and managed Blender and editor updates must register at the API boundary",
   );
   assert.match(
     listApi,
@@ -881,11 +881,11 @@ test("Unsloth Studio is the first preset, any loopback port, and never a custom 
 
 test("an older Decision API settings response cannot replace a newer one", () => {
   const refresh = MCP_COMPOSER_BUTTON.match(
-    /const refresh = useCallback\(([\s\S]*?)\n    \},\n    \[\],\n  \);/,
+    /const refresh = useCallback\(([\s\S]*?)\n {4}\},\n {4}\[\],\n {2}\);/,
   )?.[1];
   assert.ok(refresh);
   const settingsRequest = refresh.match(
-    /loadSystemOneSettings\(\)\.then\(([\s\S]*?)\n      \);/,
+    /loadSystemOneSettings\(\)\.then\(([\s\S]*?)\n {6}\);/,
   )?.[1];
   assert.ok(settingsRequest);
   assert.equal(

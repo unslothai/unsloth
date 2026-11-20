@@ -107,7 +107,7 @@ test("the greyed Train row points at the Install type row, not at Danger zone", 
 
 test("the greyed Train row opens the full install dialog when the upgrade is offered", async () => {
   const source = await readSrcAsync("components/app-sidebar.tsx");
-  const row = /train: \{[\s\S]*?\n    \},\n/.exec(source);
+  const row = /train: \{[\s\S]*?\n {4}\},\n/.exec(source);
   assert.ok(row, "could not find the train nav row");
   // Clickable (not natively disabled) only while the upgrade is offered, and greyed all the same.
   assert.match(row[0], /disabled: trainBlocked && !fullInstall,/);
@@ -115,15 +115,15 @@ test("the greyed Train row opens the full install dialog when the upgrade is off
   assert.match(row[0], /setFullInstallOpen\(true\)/);
   assert.match(row[0], /5 GB/);
   // Never navigates or preloads Train on a Chat only install.
-  assert.match(row[0], /if \(trainBlocked\) \{[\s\S]*?return;\n        \}\n        navigateFromRow/);
-  assert.match(row[0], /onIntent: \(\) => \{\n        if \(trainBlocked\) return;/);
+  assert.match(row[0], /if \(trainBlocked\) \{[\s\S]*?return;\n {8}\}\n {8}navigateFromRow/);
+  assert.match(row[0], /onIntent: \(\) => \{\n {8}if \(trainBlocked\) return;/);
   assert.match(source, /<FullInstallDialog\s+open=\{fullInstallOpen\}/);
   assert.match(en.settings.general.fullInstall.confirmDescription, /at least 5 GB of disk space/);
 });
 
 test("the Train hint and the Export banner both carry an Install Training button", async () => {
   const sidebar = await readSrcAsync("components/app-sidebar.tsx");
-  const row = /train: \{[\s\S]*?\n    \},\n/.exec(sidebar);
+  const row = /train: \{[\s\S]*?\n {4}\},\n/.exec(sidebar);
   assert.ok(row, "could not find the train nav row");
   assert.match(
     row[0],

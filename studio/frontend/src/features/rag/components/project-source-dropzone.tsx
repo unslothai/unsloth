@@ -7,6 +7,7 @@ import {
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
+import { MAX_FOLDER_FILES, filesFromDrop } from "@/lib/dropped-folders";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { FileEmpty02Icon, PlusSignIcon, Cancel01Icon } from "@hugeicons/core-free-icons";
@@ -22,6 +23,7 @@ import { watchIngestion } from "../api/save-markdown-source";
 import {
   RAG_SOURCE_UPLOAD_ACCEPT,
   SUPPORTED_SOURCES_HINT,
+  isSupportedSourceName,
   partitionSupported,
 } from "./source-drop-policy";
 import {
@@ -333,7 +335,29 @@ export function ProjectSourceDropzone({
           e.preventDefault();
           if (disabled) return;
           endDrag();
-          addFiles(Array.from(e.dataTransfer.files ?? []));
+          const claimed = generation.current;
+          addPending(1);
+          void filesFromDrop(e.dataTransfer, isSupportedSourceName)
+            .then(
+              ({ files, truncated, hadFolder }) => {
+                if (!mounted.current || claimed !== generation.current) return;
+                if (hadFolder && files.length === 0) {
+                  toast.info("No supported files in that folder", {
+                    description: SUPPORTED_SOURCES_HINT,
+                  });
+                  return;
+                }
+                if (truncated > 0) {
+                  toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
+                    description:
+                      "The rest were left out. Drop a smaller folder for them.",
+                  });
+                }
+                addFiles(files);
+              },
+              () => toast.error("Couldn't read the dropped folder"),
+            )
+            .finally(() => addPending(-1));
         }}
         className={cn(
           "rounded-2xl border border-border transition-colors dark:border-[rgb(255_255_255/calc(0.1*var(--contrast-edge-gain,1)))]",

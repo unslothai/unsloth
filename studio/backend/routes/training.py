@@ -269,6 +269,13 @@ def _run_finished(backend) -> bool:
     return bool(check()) if callable(check) else False
 
 
+async def _await_finished_worker_exit(backend) -> None:
+    """A run that reported terminal holds the GPU until its worker exits: give that exit the stop grace
+    before a new start reads is_training_active()."""
+    if _run_finished(backend):
+        await asyncio.to_thread(backend.wait_for_finished_worker)
+
+
 def _run_active(backend) -> bool:
     """Liveness minus terminal: a run that reported terminal is done even while its worker
     tears down. The GPU admission guards deliberately keep using is_training_active(), since
@@ -2390,6 +2397,7 @@ async def start_training(
                 except S3DependencyUnavailable as exc:
                     raise HTTPException(status_code = 501, detail = str(exc)) from exc
 
+        await _await_finished_worker_exit(backend)
         if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             _reject_start_request(
@@ -3727,7 +3735,9 @@ async def start_diffusion_training(
 
     # Refuse while an LLM training run holds the GPU (symmetric with start_training).
     try:
-        if get_training_backend().is_training_active():
+        llm_backend = get_training_backend()
+        await _await_finished_worker_exit(llm_backend)
+        if llm_backend.is_training_active():
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -3760,10 +3770,15 @@ async def start_diffusion_training(
                 ),
             )
         config["output_dir"] = str(out_dir)
-        # Persistent cond cache gets the same containment; blank means in-memory, never the outputs root.
+        # Persistent cond cache gets the same containment; blank means the default cache, never the outputs root.
+        from core.training.diffusion_train_extras import cond_cache_is_off
+
         cond_cache = str(config.get("cond_cache_dir") or "").strip()
+        cond_cache_off = cond_cache_is_off(cond_cache)
+        if cond_cache_off:
+            cond_cache = ""
         cond_cache_dir = resolve_output_dir(cond_cache) if cond_cache else None
-        # A cache resolving to the trained-models dir is disabled, not one flat safetensors per latent there.
+        # A cache resolving to the trained-models dir falls back to the default, not one flat safetensors per latent there.
         if cond_cache_dir is not None and Path(cond_cache_dir).resolve() == root:
             cond_cache_dir = None
         config["cond_cache_dir"] = str(cond_cache_dir) if cond_cache_dir is not None else None
@@ -3781,19 +3796,29 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
-    # Only the DiT trainer reads cond_cache_dir; check the RESOLVED family.
+    # The SDXL trainer never reads cond_cache_dir; check the RESOLVED family.
     if cond_cache and normalized_cfg.resolved_family == "sdxl":
         raise HTTPException(
             status_code = 400,
             detail = (
                 "cond_cache_dir is not supported for the sdxl family: its trainer uses a "
                 "per-run in-memory latent cache and would ignore the persistent one. Omit it, "
-                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, qwen-image, "
-                "z-image, krea-2), which reuses conditioning across runs."
+                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, flux.3-klein-base, "
+                "qwen-image, z-image, krea-2) or MiniMax-H3, which reuse conditioning across runs."
             ),
         )
 
-    # H3 restrictions (batch > 1, non-bf16, weighting, compile, cond cache) must 400 before eviction.
+    # Unset: this account's default persistent cache, resolved HERE because the trainer child does not carry the
+    # account context. SDXL keeps its in-memory cache; an off value or UNSLOTH_DIFFUSION_TRAIN_COND_CACHE=0 reaches
+    # the trainer as "off", so it never falls back to a default of its own.
+    if cond_cache_off:
+        config["cond_cache_dir"] = "off"
+    elif config["cond_cache_dir"] is None and normalized_cfg.resolved_family != "sdxl":
+        from core.training.diffusion_train_extras import default_cond_cache_dir
+        default_cache = default_cond_cache_dir()
+        config["cond_cache_dir"] = str(default_cache) if default_cache is not None else "off"
+
+    # H3 restrictions (batch > 1, non-bf16, weighting, compile) must 400 before eviction.
     from core.training.diffusion_train_common import h3_train_unsupported_reason
 
     _h3_reason = h3_train_unsupported_reason(normalized_cfg)
@@ -3857,6 +3882,7 @@ async def start_diffusion_training(
         _assert_trusted_base_model(
             config.get("base_model", ""),
             allow_modular = normalized_cfg.resolved_family in MODULAR_BASE_FAMILIES,
+            family = normalized_cfg.resolved_family,
         )
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))

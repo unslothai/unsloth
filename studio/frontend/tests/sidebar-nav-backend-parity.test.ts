@@ -45,12 +45,12 @@ test("the backend stores every customization field the frontend sends", () => {
 // navRows is keyed by id, so a rename silently un-gates a capability row.
 test("Train and Video are still the capability-gated rows", async () => {
   const source = await readSrcAsync("components/app-sidebar.tsx");
-  const rows = /const navRows: Record<SidebarNavItemId, NavRowDef> = \{([\s\S]*?)\n  \};/.exec(
+  const rows = /const navRows: Record<SidebarNavItemId, NavRowDef> = \{([\s\S]*?)\n {2}\};/.exec(
     source,
   );
   assert.ok(rows, "could not find navRows in app-sidebar.tsx");
   const bodies = new Map<string, string>();
-  const keys = [...rows[1].matchAll(/^    ([a-z]+): \{$/gm)];
+  const keys = [...rows[1].matchAll(/^ {4}([a-z]+): \{$/gm)];
   keys.forEach((key, i) => {
     const start = key.index + key[0].length;
     const end = i + 1 < keys.length ? keys[i + 1].index : rows[1].length;
@@ -82,4 +82,18 @@ test("Train and Video are still the capability-gated rows", async () => {
       `the ${id} row is no longer capability-gated on its own verdict`,
     );
   }
+});
+
+// Records saved before an item existed get the backend's defaults, so they must match; read the real constant.
+test("the backend sidebar menu defaults match the frontend", () => {
+  const source = readText("../../backend/routes/settings.py");
+  const block = /SIDEBAR_MENU_ITEM_DEFAULTS = \{([\s\S]*?)^\}/m.exec(source);
+  assert.ok(block, "could not find SIDEBAR_MENU_ITEM_DEFAULTS in settings.py");
+  // Menu ids are camelCase (darkMode, guidedTour), unlike the lowercase nav ids.
+  const backend = [...block[1].matchAll(/"([A-Za-z]+)":\s*(True|False)/g)].map((m) => ({
+    id: m[1],
+    visible: m[2] === "True",
+  }));
+  // Order matters: the backend appends missing ids in this order.
+  assert.deepEqual(backend, DEFAULT_CUSTOMIZATION.sidebarMenu);
 });

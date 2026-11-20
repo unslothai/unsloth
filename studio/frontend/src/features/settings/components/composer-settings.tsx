@@ -165,6 +165,15 @@ export function ComposerFormatRows() {
           onCheckedChange={prefs.setPlainTextComposer}
         />
       </SettingsRow>
+    </>
+  );
+}
+
+export function RichTextPasteRow() {
+  const t = useT();
+  const prefs = useChatPreferencesStore();
+  return (
+    <>
       <SettingsRow
         label={t("composerSettings.richPaste")}
         badge={<Badge variant="secondary" className="h-4 px-1.5 text-ui-10 text-muted-foreground">{t("shell.beta")}</Badge>}

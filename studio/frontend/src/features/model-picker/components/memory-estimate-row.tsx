@@ -154,6 +154,43 @@ function MemoryBreakdownLine({
   );
 }
 
+function MemoryEstimateHeader({
+  expanded,
+  contentId,
+  onExpandedChange,
+}: {
+  expanded: boolean;
+  contentId: string;
+  onExpandedChange: (next: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onExpandedChange(!expanded)}
+      aria-expanded={expanded}
+      aria-controls={contentId}
+      aria-label={`Estimated Memory Usage: ${expanded ? "Hide" : "Show"} breakdown`}
+      className="group flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-foreground">
+          Estimated Memory Usage
+        </span>
+        <span className="shrink-0 rounded-md bg-[rgb(0_0_0/calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+          Beta
+        </span>
+      </span>
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
+        aria-hidden="true"
+        className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-hover:text-foreground motion-reduce:transition-none ${expanded ? "rotate-0" : "-rotate-90"}`}
+      />
+    </button>
+  );
+}
+
+const PLACEHOLDER_LINES = ["Weights", "KV cache", "Compute buffers"];
+
 export function MemoryEstimateRow({
   estimate,
   loading,
@@ -198,7 +235,43 @@ export function MemoryEstimateRow({
 }) {
   const contentId = useId();
   if (!estimate?.available) {
-    return null;
+    if (!loading) return null;
+    // Same frame as the loaded row, so the panel keeps its shape until the first answer lands.
+    return (
+      <div data-memory-estimate="" className="flex flex-col border-b border-border pb-5">
+        <MemoryEstimateHeader
+          expanded={expanded}
+          contentId={contentId}
+          onExpandedChange={onExpandedChange}
+        />
+        <div aria-busy="true" className="space-y-3">
+          {(singleMemoryPool
+            ? [isUnifiedMemory ? "Unified" : "Shared"]
+            : gpuCapacityGb > 0
+              ? ["GPU", "Total"]
+              : ["RAM"]
+          ).map((label) => (
+            <div
+              key={label}
+              className="flex min-h-8 min-w-0 items-center justify-between gap-3"
+            >
+              <span className="text-ui-13/tight font-medium tracking-nav text-muted-foreground">
+                {label}
+              </span>
+              <span
+                data-memory-placeholder=""
+                className="h-8 w-[calc(96px*var(--ui-space-scale,1))] shrink-0 animate-pulse rounded-full bg-(--panel-input-surface) motion-reduce:animate-none"
+              />
+            </div>
+          ))}
+        </div>
+        <div id={contentId} hidden={!expanded} className="mt-3 space-y-3">
+          {PLACEHOLDER_LINES.map((label) => (
+            <MemoryBreakdownLine key={label} label={label} value="…" muted />
+          ))}
+        </div>
+      </div>
+    );
   }
   const { gpuFit, totalFit, cpuOnly, bounded, advisory } = resolveMemoryFit(
     estimate,
@@ -235,28 +308,11 @@ export function MemoryEstimateRow({
   );
   return (
     <div data-memory-estimate="" className="flex flex-col border-b border-border pb-5">
-      <button
-        type="button"
-        onClick={() => onExpandedChange(!expanded)}
-        aria-expanded={expanded}
-        aria-controls={contentId}
-        aria-label={`Estimated Memory Usage: ${expanded ? "Hide" : "Show"} breakdown`}
-        className="group flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-foreground">
-            Estimated Memory Usage
-          </span>
-          <span className="shrink-0 rounded-md bg-[rgb(0_0_0/calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
-            Beta
-          </span>
-        </span>
-        <HugeiconsIcon
-          icon={ChevronDownStandardIcon}
-          aria-hidden="true"
-          className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-hover:text-foreground motion-reduce:transition-none ${expanded ? "rotate-0" : "-rotate-90"}`}
-        />
-      </button>
+      <MemoryEstimateHeader
+        expanded={expanded}
+        contentId={contentId}
+        onExpandedChange={onExpandedChange}
+      />
       <div
         aria-busy={loading || stale}
         className={`space-y-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}

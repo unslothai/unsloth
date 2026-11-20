@@ -2070,6 +2070,22 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
+    def test_literal_think_tags_in_a_split_answer_stay_answer_text(self, monkeypatch):
+        answer = 'Use re.sub(r"<think>.*?</think>", "", s) to drop the block.'
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": answer, "reasoning_content": "plan"},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = True,
+                supports_reasoning = True,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == answer
+
     def test_reasoning_capable_gguf_keeps_think_tags_visible_when_disabled(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
         body = self._run_with_message(
@@ -2586,6 +2602,24 @@ class TestResponsesStreamAdapter:
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
         assert completed["response"]["output"][1]["content"][0]["text"] == "answer"
 
+    def test_literal_think_tags_after_split_reasoning_stream_as_answer_text(self, monkeypatch):
+        answer = 'Use re.sub(r"<think>.*?</think>", "", s) to drop the block.'
+        chunks = [
+            {"choices": [{"delta": {"reasoning_content": "plan"}}]},
+            {"choices": [{"delta": {"content": answer[:14]}}]},
+            {"choices": [{"delta": {"content": answer[14:]}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
+        assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
+        assert "".join(event["delta"] for event in text_deltas) == answer
+        completed = self._payloads(lines, "response.completed")[0]
+        assert completed["response"]["output"][1]["content"][0]["text"] == answer
+
     def test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible(self, monkeypatch):
         chunks = [
             {"choices": [{"delta": {"content": "show <thi"}}]},
@@ -2949,6 +2983,62 @@ class TestResponsesStreamAdapter:
         assert "tool" not in roles, roles
         assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
         assert "we said 3407" in json.dumps(captured["body"]["messages"])
+
+    def test_saved_memory_reaches_the_direct_stream(self, monkeypatch):
+        import routes.inference as inf_mod
+        from core import chat_memory
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            content = 'data: {"choices": [{"delta": {"content": "ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(
+                200, content = content.encode(), headers = {"content-type": "text/event-stream"}
+            )
+
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            inf_mod.httpx,
+            "AsyncClient",
+            lambda *a, **kw: real_async_client(transport = httpx.MockTransport(handler)),
+        )
+        monkeypatch.setattr(
+            inf_mod,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                context_length = 4096,
+                base_url = "http://llama.test",
+                supports_tools = False,
+                supports_tool_passthrough = False,
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            chat_memory,
+            "context",
+            lambda thread_id, limit: {
+                "text": "remembered: tabs" if thread_id else "",
+                "omitted": 0,
+            },
+        )
+        payload = ResponsesRequest.model_validate(
+            {"input": "hi", "stream": True, "model": "org/M-GGUF", "thread_id": "saved"}
+        )
+
+        async def run():
+            response = await _responses_stream(
+                payload, [ChatMessage(role = "user", content = "hi")], self._Request()
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        assert "remembered: tabs" in json.dumps(captured["body"]["messages"])
 
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
         import routes.inference as inf_mod

@@ -35,7 +35,7 @@ from auth.authentication import (
     subject_for_header_or_query_token,
 )
 from auth.storage import CredentialRotated
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
@@ -67,6 +67,7 @@ from models.data_recipe import (
 from utils.client_ip import client_ip
 from utils.hf_endpoint import client_reachable_endpoint, get_hf_endpoint
 from utils.host_policy import dial_host, self_request_host
+from utils.temporary_file_response import TemporaryFileResponse
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
 logger = get_logger(__name__)
@@ -844,12 +845,12 @@ def download_job_dataset(
             log = logger,
         ) from exc
 
-    background_tasks.add_task(file_path.unlink, missing_ok = True)
-    return FileResponse(
+    return TemporaryFileResponse(
         file_path,
         media_type = media_type,
         filename = download_name,
         headers = {"Content-Disposition": _content_disposition_attachment(download_name)},
+        background = background_tasks,
     )
 
 

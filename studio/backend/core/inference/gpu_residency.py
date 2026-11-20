@@ -825,7 +825,23 @@ def _free_steps(
             logger.warning("gpu_residency: could not release the idle video server: %s", exc)
         if freed and done():
             return freed
-    # 3. The idle image or video model on these GPUs.
+    # 3. An idle image model's resident text encoders: they stream from the host, the model stays loaded. Only for a
+    # load with a known size (an unsized one stops after one step, which must stay the whole model), and only when
+    # the encoders cover a known shortfall.
+    if (
+        (need_mib or short_mib)
+        and arb.DIFFUSION in overlapping()
+        and not any(_media_busy(arb.DIFFUSION))
+    ):
+        try:
+            from core.inference.diffusion_te_residency import lend_from_loaded_engine
+            if lend_from_loaded_engine(reason, at_least_mib = int(short_mib or 0)) > 0:
+                freed.append("image-text-encoders")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("gpu_residency: could not stream the image text encoders: %s", exc)
+        if freed and done():
+            return freed
+    # 4. The idle image or video model on these GPUs.
     for name in overlapping():
         if name in MEDIA_OWNERS and not any(_media_busy(name)) and not foreign_on(name, acting):
             _evict_resident(name, acting, evicted, freed)
@@ -833,7 +849,7 @@ def _free_steps(
                 return freed
     if media_only:
         return freed
-    # 4. Idle chat models kept alongside, least recently used first.
+    # 5. Idle chat models kept alongside, least recently used first.
     if arb.CHAT in overlapping() or owner == arb.CHAT:
         from core.inference import model_slots
 
@@ -850,7 +866,7 @@ def _free_steps(
             _record_evicted([reports[id(victim)] for victim in dropped], evicted, freed)
             if dropped and done():
                 return freed
-    # 5. The active chat model.
+    # 6. The active chat model.
     if owner != arb.CHAT and arb.CHAT in overlapping():
         _evict_resident(arb.CHAT, acting, evicted, freed)
     return freed

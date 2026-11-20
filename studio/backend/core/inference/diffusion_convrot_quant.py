@@ -12,6 +12,7 @@ import types
 from functools import lru_cache
 from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 INT8_ROTQUANT_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT"
 INT8_ROTQUANT_H16_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16"
@@ -21,6 +22,7 @@ _OP_NAMESPACE = "unsloth_studio"
 _ROTQ_OP_NAME = "convrot_act_quant_int8"
 _SWIGLU_OP_NAME = "convrot_swiglu_act_quant_int8"
 _PRODUCER_OP_NAME = "convrot_producer_act_quant_int8"
+_SITU_OP_NAME = "convrot_situ_act_quant_int8"
 
 # (BLOCK_M group rows, BLOCK_K, num_warps, num_stages) per (major, minor); measured end to end. Absent = stock.
 _ROTQ_CONFIG = {
@@ -64,6 +66,11 @@ _PRODUCER_HANDLE: Any = None
 _PRODUCER_VERDICT_OFF: set = (
     set()
 )  # devices whose last load had the switch off (the probe verdict is kept)
+# device index -> rotq_h16x with the SiTU-GLU product (MOSS-Image's down projection) passed its probe
+_SITU_DEVICE: dict = {}
+_SITU_CALLS = [0]
+_SITU_HANDLE: Any = None
+_SITU_OFF: set = set()  # devices whose last arming had the switch off (the probe verdict is kept)
 # 16 group rows per program: fastest (within 2%) on L4; 128 rows overflow 100 KB smem. One masked row per program at
 # K 12288 was 1.2x slower on A100 and spilled on B200.
 _H16_TILE_ROWS = 16
@@ -149,6 +156,7 @@ def _triton_ok() -> bool:
 
 
 @lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernels() -> Optional[types.SimpleNamespace]:
     try:
         import triton
@@ -167,6 +175,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         gf = g.to(tl.float32)
         silu = _rbf16(gf * tl.sigmoid(gf))
         return (silu * v.to(tl.float32)).to(tl.bfloat16)
+
+    @triton.jit
+    def _situ_bf16(g, v):
+        # MOSS-Image SiTU-GLU (4 tanh(g / 4) sigmoid(g)) * (25 tanh(v / 25)), fp32 math, one bf16 rounding
+        gf = g.to(tl.float32)
+        vf = v.to(tl.float32)
+        gate = 4.0 * libdevice.tanh(gf / 4.0) * tl.sigmoid(gf)
+        return (gate * (25.0 * libdevice.tanh(vf / 25.0))).to(tl.bfloat16)
 
     @triton.jit(do_not_specialize = ["M"])
     def rotq_i8(
@@ -479,6 +495,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         sah,
         CAT: tl.constexpr,  # groups below NA come from the attention prefix
         HD: tl.constexpr,  # prefix head width
+        ACT: tl.constexpr,  # 0 SwiGLU, 1 SiTU-GLU
     ):
         # bf16 [TM, 256] of the activation the producer would have written: silu(gate) * value, after the prefix
         offs = tl.arange(0, 256)
@@ -493,12 +510,19 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             mcol = tl.where(mlp, grp - NA, 0)[:, None] * 256 + offs[None, :]
             g = tl.load(g_ptr + row[:, None] * sg + mcol, mask = mlp[:, None], other = 0.0)
             v = tl.load(v_ptr + row[:, None] * sv + mcol, mask = mlp[:, None], other = 0.0)
-            x = tl.where(pre[:, None], xa, _swiglu_bf16(g, v))
+            if ACT == 1:
+                prod = _situ_bf16(g, v)
+            else:
+                prod = _swiglu_bf16(g, v)
+            x = tl.where(pre[:, None], xa, prod)
         else:
             col = grp[:, None] * 256 + offs[None, :]
             g = tl.load(g_ptr + row[:, None] * sg + col, mask = live[:, None], other = 0.0)
             v = tl.load(v_ptr + row[:, None] * sv + col, mask = live[:, None], other = 0.0)
-            x = _swiglu_bf16(g, v)
+            if ACT == 1:
+                x = _situ_bf16(g, v)
+            else:
+                x = _swiglu_bf16(g, v)
         return x
 
     @triton.jit
@@ -543,11 +567,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         CAT: tl.constexpr,
         HD: tl.constexpr,
         TF32X3: tl.constexpr,
+        ACT: tl.constexpr,
     ):
         grp = c * CG + gl
         live = (row < M) & (grp < NG)  # padded one-pass tiles mask the groups past the row
         r = tl.where(live, row, 0)
-        x = _h16x_load(g_ptr, v_ptr, a_ptr, r, grp, live, sg, sv, NA, SEQ, sab, sas, sah, CAT, HD)
+        x = _h16x_load(
+            g_ptr, v_ptr, a_ptr, r, grp, live, sg, sv, NA, SEQ, sab, sas, sah, CAT, HD, ACT
+        )
         return _h16x_rot(x, h, h32, ROWS * CG, TF32X3)
 
     @triton.jit
@@ -575,6 +602,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         CAT: tl.constexpr,
         HD: tl.constexpr,
         TF32X3: tl.constexpr,
+        ACT: tl.constexpr,
     ):
         z = _h16x_chunk(
             c,
@@ -599,6 +627,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             CAT,
             HD,
             TF32X3,
+            ACT,
         )
         m = tl.where(row < M, tl.max(tl.abs(z), axis = 1), 0.0)
         return tl.maximum(amax, tl.max(tl.reshape(m, (ROWS, CG)), axis = 1))
@@ -632,6 +661,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         QMIN: tl.constexpr,
         QMAX: tl.constexpr,
         FP32_SCALE: tl.constexpr,
+        ACT: tl.constexpr,  # 0 SwiGLU, 1 SiTU-GLU
     ):
         z = _h16x_chunk(
             c,
@@ -656,6 +686,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             CAT,
             HD,
             TF32X3,
+            ACT,
         )
         live = (row < M) & (c * CG + gl < NG)
         gidx = tl.where(live, row * NG + c * CG + gl, 0)
@@ -692,6 +723,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         DIV: tl.constexpr,
         EPS: tl.constexpr,
         FP32_SCALE: tl.constexpr,
+        ACT: tl.constexpr,  # 0 SwiGLU, 1 SiTU-GLU
     ):
         # rotq_h16 with the producer's loads in front: strided SwiGLU halves (and an attention prefix in any layout),
         # so the bf16 activation never reaches HBM. Same rotation, amax and rounding as rotq_h16.
@@ -727,6 +759,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 CAT,
                 HD,
                 TF32X3,
+                ACT,
             )
             m = tl.where(row < M, tl.max(tl.abs(z), axis = 1), 0.0)
             amax = tl.max(tl.reshape(m, (ROWS, CG)), axis = 1)
@@ -758,6 +791,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                         CAT,
                         HD,
                         TF32X3,
+                        ACT,
                     )
             else:
                 for c in range(0, NCH):
@@ -785,6 +819,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                         CAT,
                         HD,
                         TF32X3,
+                        ACT,
                     )
         s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
         inv = libdevice.div_rn(tl.full((ROWS,), 1.0, tl.float32), s)
@@ -825,6 +860,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                     QMIN,
                     QMAX,
                     FP32_SCALE,
+                    ACT,
                 )
         else:
             for c in range(0, NCH):
@@ -856,6 +892,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                     QMIN,
                     QMAX,
                     FP32_SCALE,
+                    ACT,
                 )
         srow = pid.to(tl.int64) * ROWS + tl.arange(0, ROWS)
         tl.store(s_ptr + srow, s.to(s_ptr.dtype.element_ty), mask = srow < M)
@@ -906,6 +943,17 @@ def act_quant_v1(x2d: Any) -> tuple:
     )
     q = quantize_affine(x2d, block, scale, zero_point, torch.int8, -127, 127)
     return q, scale
+
+
+def situ_reference(g2d: Any, v2d: Any) -> Any:
+    """MOSS-Image's down-projection input ``(4 tanh(g / 4) sigmoid(g)) * (25 tanh(v / 25))`` in fp32, rounded once to
+    bf16: the compiled block's rounding (Inductor keeps the pointwise chain in fp32)."""
+    import torch
+
+    g, v = g2d.float(), v2d.float()
+    return ((4.0 * torch.tanh(g / 4.0) * torch.sigmoid(g)) * (25.0 * torch.tanh(v / 25.0))).to(
+        torch.bfloat16
+    )
 
 
 def swiglu_reference(g2d: Any, v2d: Any) -> Any:
@@ -1152,11 +1200,17 @@ def producer_layout_ok(prefix: Any, gate: Any, value: Any) -> bool:
     )
 
 
-def producer_reference(prefix: Any, gate: Any, value: Any) -> Any:
-    """The bf16 activation the stock producer writes: ``cat([prefix.flatten, silu(gate) * value], -1)``."""
+def producer_reference(
+    prefix: Any,
+    gate: Any,
+    value: Any,
+    act: int = 0,
+) -> Any:
+    """The bf16 activation the stock producer writes: ``cat([prefix.flatten, silu(gate) * value], -1)`` (act 1: the
+    SiTU-GLU product, no prefix)."""
     import torch
 
-    prod = swiglu_reference(gate, value)
+    prod = situ_reference(gate, value) if act == 1 else swiglu_reference(gate, value)
     if prefix is None:
         return prod
     return torch.cat([prefix.reshape(gate.shape[0], -1), prod], dim = -1)
@@ -1171,8 +1225,10 @@ def _h16x_launch(
     tf32x3: Optional[bool] = None,
     warps: Optional[int] = None,
     pad: Optional[bool] = None,
+    act: int = 0,
 ) -> tuple:
-    """``rotq_h16x`` on a producer accepted by ``producer_layout_ok``: (int8 [M, K], scale [M]). Strides stay
+    """``rotq_h16x`` on a producer accepted by ``producer_layout_ok``: (int8 [M, K], scale [M]). ``act`` 1 builds the
+    SiTU-GLU product instead of SwiGLU (no prefix). Strides stay
     specialized (multiple-of-16 hints keep the loads vectorized); only M and the sequence length are not."""
     import torch
     from .diffusion_convrot import build_convrot_hadamard
@@ -1237,6 +1293,7 @@ def _h16x_launch(
             DIV = div,
             EPS = eps,
             FP32_SCALE = fp32_scale,
+            ACT = int(act),
             num_warps = warps,
             num_stages = 1,
             enable_fp_fusion = False,
@@ -1374,17 +1431,27 @@ def _swiglu_op() -> Any:
     return getattr(getattr(torch.ops, _OP_NAMESPACE), _SWIGLU_OP_NAME)
 
 
-def _producer_run(prefix: Any, gate: Any, value: Any, group: int, v2: bool) -> tuple:
+def _producer_run(
+    prefix: Any,
+    gate: Any,
+    value: Any,
+    group: int,
+    v2: bool,
+    act: int = 0,
+) -> tuple:
     """Op body: ``rotq_h16x`` where it passed its probe, else the stock product (and concat), rotation and quant."""
-    _PRODUCER_CALLS[0] += 1
     kind = "v2" if v2 else "v1"
     index = gate.device.index
-    if group == 256 and _PRODUCER_DEVICE.get(index) and producer_layout_ok(prefix, gate, value):
+    verdicts = _SITU_DEVICE if act == 1 else _PRODUCER_DEVICE
+    (_SITU_CALLS if act == 1 else _PRODUCER_CALLS)[0] += 1
+    if group == 256 and verdicts.get(index) and producer_layout_ok(prefix, gate, value):
         try:
-            return _h16x_launch(prefix, gate, value, kind)
+            return _h16x_launch(prefix, gate, value, kind, act = act)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
-            _PRODUCER_DEVICE[index] = False
-    return rotquant_reference(producer_reference(prefix, gate, value).contiguous(), group, kind)
+            verdicts[index] = False
+    return rotquant_reference(
+        producer_reference(prefix, gate, value, act).contiguous(), group, kind
+    )
 
 
 @lru_cache(maxsize = 1)
@@ -1430,6 +1497,46 @@ def _producer_op() -> Any:
     except Exception:  # noqa: BLE001
         return None
     return getattr(getattr(torch.ops, _OP_NAMESPACE), _PRODUCER_OP_NAME)
+
+
+@lru_cache(maxsize = 1)
+def _situ_op() -> Any:
+    """``unsloth_studio::convrot_situ_act_quant_int8(gate, value, group, v2)``: the rotated, quantized SiTU-GLU product
+    read straight from the projection's halves (opaque to Inductor), or None."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    ns = getattr(torch.ops, _OP_NAMESPACE, None)
+    if ns is not None and hasattr(ns, _SITU_OP_NAME):
+        return getattr(ns, _SITU_OP_NAME)
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return None
+    try:
+
+        @custom_op(
+            f"{_OP_NAMESPACE}::{_SITU_OP_NAME}",
+            mutates_args = (),
+            schema = "(Tensor gate, Tensor value, int group, bool v2) -> (Tensor, Tensor)",
+        )
+        def _convrot_situ_act_quant_int8(gate, value, group, v2):
+            return _producer_run(None, gate, value, group, v2, 1)
+
+        @_convrot_situ_act_quant_int8.register_fake
+        def _(gate, value, group, v2):
+            return (
+                gate.new_empty(gate.shape, dtype = torch.int8),
+                gate.new_empty(
+                    (gate.shape[0],),
+                    dtype = torch.float32
+                    if _rotq_scale_fp32("v2" if v2 else "v1")
+                    else torch.bfloat16,
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    return getattr(getattr(torch.ops, _OP_NAMESPACE), _SITU_OP_NAME)
 
 
 @lru_cache(maxsize = 1)
@@ -1574,6 +1681,16 @@ def _verdict_slot(index: int) -> Optional[tuple]:
         return path.with_name(_VERDICT_FILE), key, fp
     except Exception:  # noqa: BLE001 - no cache: probe
         return None
+
+
+def verdict_file_present() -> bool:
+    """A ConvRot verdict file exists (no key check). Never raises."""
+    try:
+        from . import diffusion_probe_cache as pc
+        path = pc._cache_file() if pc.enabled() else None
+        return path is not None and path.with_name(_VERDICT_FILE).is_file()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _verdict_read(path: Any) -> dict:
@@ -1853,6 +1970,266 @@ def _arm_producer(index: int) -> bool:
     if _PRODUCER_DEVICE[index]:
         _PRODUCER_HANDLE = _producer_op()
     return bool(_PRODUCER_DEVICE[index])
+
+
+# Cold probes compile ~60 Triton kernels serially (48 s of a 97 s L4 load); compiles release the GIL, so warm them
+# on a thread pool first. Probe order and verdicts are unchanged; warm outputs are discarded.
+PROBE_PREWARM_ENV = "UNSLOTH_DIFFUSION_PROBE_PREWARM"
+_PREWARM_MAX_WORKERS = 8
+PREWARM_COUNTS: dict = {}
+
+
+def probe_prewarm_enabled() -> bool:
+    """False only under ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0``."""
+    return _env_mode(PROBE_PREWARM_ENV) != "off"
+
+
+def rotq_probes_pending(index: int) -> bool:
+    """``rotquant_device_config`` would probe card ``index`` (no verdict in this process nor on disk)."""
+    return index not in _ROTQ_DEVICE and _verdict_load(index) is None
+
+
+def producer_probe_pending(index: int) -> bool:
+    """``_arm_producer`` would probe card ``index`` (no in-process verdict and none persisted)."""
+    if index in _PRODUCER_DEVICE:
+        return False
+    stored = _verdict_load(index)
+    return not (isinstance(stored, dict) and isinstance(stored.get("producer"), bool))
+
+
+def _warm_input(
+    m: int,
+    k: int,
+    dev: Any,
+    seed: int = 0,
+) -> Any:
+    """A warm-up operand drawn from its own seeded generator on ``dev``: the warm-up runs before the user's renders,
+    so it must not advance the default (global) RNG of the card or the host."""
+    import torch
+
+    g = torch.Generator(device = dev)
+    g.manual_seed(seed)
+    return (
+        torch.randn(m, k, device = dev, dtype = torch.float32, generator = g).mul_(0.5).to(torch.bfloat16)
+    )
+
+
+def _warm_rotq(dev: Any, m: int, k: int, kind: str, cfg: tuple) -> None:
+    _rotq_launch(_warm_input(m, k, dev), 256, kind, cfg)
+
+
+def _warm_h16(dev: Any, m: int, k: int, kind: str, tf32x3: bool, swiglu: bool) -> None:
+    x = _warm_input(m, k, dev)
+    _h16_launch(x, kind, _warm_input(m, k, dev, seed = 1) if swiglu else None, tf32x3 = tf32x3)
+
+
+def _warm_producer(dev: Any, m: int, pre: Optional[tuple], f: int, kind: str, tf32x3: bool) -> None:
+    import torch
+    prefix, gate, value = _producer_probe_inputs(
+        m, pre, f, torch.Generator(device = "cpu").manual_seed(5), dev
+    )
+    _h16x_launch(prefix, gate, value, kind, tf32x3 = tf32x3)
+
+
+def probe_warm_jobs(
+    index: int,
+    *,
+    rotq: bool = True,
+    producer: bool = False,
+) -> list:
+    """Zero-argument launches matching the cold probes' shapes, kinds and layouts (every candidate tile)."""
+    from functools import partial
+
+    import torch
+
+    if not (
+        torch.cuda.is_available()
+        and not is_rocm_torch(torch)
+        and _triton_ok()
+        and _kernels() is not None
+    ):
+        return []
+    cap = tuple(torch.cuda.get_device_capability(index))
+    dev = torch.device("cuda", index)
+    tf32x3 = cap in _H16_TF32X3_ARCHS  # "tf32x3" is tried first there, else "ieee" only
+    kinds = ("v1", "v2")
+    jobs: list = []
+    want = rotquant_config(cap)
+    if rotq and want is not None and _rotq_op() is not None:
+        cfgs: list = []
+        for cfg in (want, _ROTQ_FALLBACK, *(rule[2] for rule in rotq_k_tiles(cap))):
+            if cfg not in cfgs:
+                cfgs.append(cfg)
+        for cfg in cfgs:
+            for m, k in _ROTQ_PROBE_SHAPES:
+                if _rotq_rows(k, 256, cfg) >= 1:
+                    jobs += [partial(_warm_rotq, dev, m, k, kind, cfg) for kind in kinds]
+        if rotquant_h16_enabled():
+            for m, k in _H16_PROBE_SHAPES:
+                jobs += [partial(_warm_h16, dev, m, k, kind, tf32x3, False) for kind in kinds]
+            if rotquant_swiglu_enabled() and _swiglu_op() is not None:
+                for m, k in _SWIGLU_PROBE_SHAPES:
+                    jobs += [partial(_warm_h16, dev, m, k, kind, tf32x3, True) for kind in kinds]
+    if (
+        producer
+        and want is not None
+        and rotquant_h16_enabled()
+        and rotquant_producer_enabled()
+        and _producer_op() is not None
+    ):
+        for m, pre, f in _PRODUCER_PROBE_SHAPES:
+            jobs += [partial(_warm_producer, dev, m, pre, f, kind, tf32x3) for kind in kinds]
+    return jobs
+
+
+def prewarm_probe_kernels(
+    index: int,
+    *,
+    rotq: bool = True,
+    producer: bool = False,
+    extra: tuple = (),
+    logger: Any = None,
+) -> int:
+    """Run ``extra`` + ``probe_warm_jobs`` on a thread pool; returns launches run. Never raises; skipped in capture/trace."""
+    if not probe_prewarm_enabled():
+        return 0
+    try:
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        import torch
+
+        if torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling():
+            return 0
+        jobs = list(extra) + probe_warm_jobs(index, rotq = rotq, producer = producer)
+        workers = min(_PREWARM_MAX_WORKERS, os.cpu_count() or 1, len(jobs))
+        if workers < 2:
+            return 0
+        t0 = time.perf_counter()
+
+        def run(job: Any) -> bool:
+            try:
+                with torch.cuda.device(index):
+                    job()
+                return True
+            except Exception:  # noqa: BLE001 - the serial probe decides; a warm launch only fills the cache
+                return False
+
+        with ThreadPoolExecutor(
+            max_workers = workers, thread_name_prefix = "unsloth-probe-prewarm"
+        ) as pool:
+            ran = sum(pool.map(run, jobs))
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(torch.device("cuda", index))
+        PREWARM_COUNTS[index] = PREWARM_COUNTS.get(index, 0) + ran
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: compiled %d of %d probe kernels on cuda:%d in %.1f s on %d threads ahead of "
+                "the probes (%s=0 turns this off)",
+                ran,
+                len(jobs),
+                index,
+                time.perf_counter() - t0,
+                workers,
+                PROBE_PREWARM_ENV,
+            )
+        return ran
+    except Exception as exc:  # noqa: BLE001 - a cache warm-up never fails a load
+        if logger is not None:
+            logger.info(
+                "diffusion.int8_gemm: probe prewarm skipped (%s: %s)", type(exc).__name__, exc
+            )
+        return 0
+
+
+_SITU_PROBE_SHAPES = ((65, 256 * 4), (130, 256 * 32))
+# Cards where building the SiTU-GLU product inside the act quant measured faster end to end (MOSS-Image SFT, 1024 px,
+# 25 steps, INT8 default): sm120 (RTX PRO 6000) 4.914 -> 4.859 s/image, sm89 (L4) 30.76 -> 29.45 s/image. On sm80
+# (A100) it measured slower, 8.791 -> 8.985 s/image, so other cards keep the compiled stock SiTU until measured.
+# ``UNSLOTH_DIFFUSION_MOSS_SITU_FUSED=1`` arms it on any card whose probe passes.
+_SITU_ARCHS = ((8, 9), (12, 0))
+SITU_FUSED_ENV = "UNSLOTH_DIFFUSION_MOSS_SITU_FUSED"
+
+
+def situ_arch_ok(cap: Optional[tuple]) -> bool:
+    """The SiTU-GLU producer serves this compute capability by default (or the switch forces it)."""
+    if _env_mode(SITU_FUSED_ENV) == "force":
+        return True
+    return cap is not None and tuple(cap) in _SITU_ARCHS
+
+
+def _situ_probe(index: int) -> bool:
+    """``rotq_h16x`` with the SiTU-GLU product vs ``situ_reference`` then the stock rotation + quant: ``codes_close``
+    on every probe shape, v1 and v2 (the gate / value halves of one projection output, as the block hands them)."""
+    import torch
+
+    dev = torch.device("cuda", index)
+    g = torch.Generator(device = "cpu").manual_seed(7)
+    try:
+        for m, f in _SITU_PROBE_SHAPES:
+            _prefix, gate, value = _producer_probe_inputs(m, None, f, g, dev)
+            # SiTU saturates: values well past its caps (|v| >> 25, |g| >> 4) on top of the probe's spikes
+            value[1, :5] = torch.tensor([-400.0, -60.0, 0.0, 60.0, 400.0], device = dev)
+            if not producer_layout_ok(None, gate, value):
+                return False
+            ref = producer_reference(None, gate, value, 1).contiguous()
+            for kind in ("v1", "v2"):
+                rq, rs = rotquant_reference(ref, 256, kind)
+                q, s = _h16x_launch(None, gate, value, kind, act = 1)
+                if not codes_close(q, s, rq, rs):
+                    return False
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _arm_situ(index: int) -> bool:
+    """Per load, outside any trace, after ``rotq_h16`` was armed on the device: the SiTU-GLU producer's probe (once per
+    device, behind the same switch as the SwiGLU producer, on the cards in ``_SITU_ARCHS`` unless forced); publishes its
+    op handle."""
+    global _SITU_HANDLE
+    if (
+        not rotquant_producer_enabled()
+        or not _H16_DEVICE.get(index)
+        or not situ_arch_ok(_device_cap(index))
+    ):
+        _SITU_OFF.add(index)
+        return False
+    _SITU_OFF.discard(index)
+    if index not in _SITU_DEVICE:
+        ok = False
+        try:
+            ok = _situ_op() is not None and _situ_probe(index)
+        except Exception:  # noqa: BLE001 - the stock SiTU and act quant stay
+            ok = False
+        _SITU_DEVICE[index] = ok
+    if _SITU_DEVICE[index]:
+        _SITU_HANDLE = _situ_op()
+    return bool(_SITU_DEVICE[index])
+
+
+def situ_armed(index: Any) -> bool:
+    """The SiTU-GLU ``rotq_h16x`` serves card ``index`` (its probe passed and the switch was on when armed)."""
+    return _SITU_HANDLE is not None and index not in _SITU_OFF and bool(_SITU_DEVICE.get(index))
+
+
+def convrot_situ_act_quant(gate: Any, value: Any, group: int, v2: bool) -> Optional[tuple]:
+    """``convrot_act_quant`` of MOSS-Image's ``situ(value, gate)`` read from the projection's own halves, so the bf16
+    product never reaches HBM. None when this device / layout / group is not covered: the caller keeps the stock SiTU
+    and its own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time."""
+    if group != 256 or not situ_armed(gate.device.index):
+        return None
+    if not producer_layout_ok(None, gate, value):
+        return None
+    return _SITU_HANDLE(gate, value, group, v2)
+
+
+def situ_call_count() -> int:
+    return _SITU_CALLS[0]
 
 
 def producer_armed(index: Any) -> bool:

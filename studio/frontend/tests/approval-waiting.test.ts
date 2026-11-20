@@ -264,7 +264,7 @@ test("the New Chat item shows the mark instead of its spinner while a chat waits
 test("the open chat is left out of the waiting marks: its card is on screen", () => {
   const sidebar = readSrc("components/app-sidebar.tsx");
   const owner =
-    /const approvalWaitingElsewhere = useMemo\(\(\) => \{[\s\S]*?\n  \}, \[[^\]]*\]\);/.exec(sidebar)?.[0] ?? "";
+    /const approvalWaitingElsewhere = useMemo\(\(\) => \{[\s\S]*?\n {2}\}, \[[^\]]*\]\);/.exec(sidebar)?.[0] ?? "";
   assert.ok(owner, "approvalWaitingElsewhere not found");
   // Only the chat route has an open chat; elsewhere every waiting chat is marked.
   assert.match(owner, /if \(!activeThreadId\) return approvalWaitingThreadIds;/);
@@ -293,7 +293,7 @@ test("Return to Chat opens the newest waiting chat while one waits, else the new
 test("Return to Chat targets a waiting chat whenever the row shows the mark", () => {
   const sidebar = readSrc("components/app-sidebar.tsx");
   const target =
-    /const runningTarget = useMemo\(\(\) => \{[\s\S]*?\n  \}, \[[^\]]*\]\);/.exec(sidebar)?.[0] ?? "";
+    /const runningTarget = useMemo\(\(\) => \{[\s\S]*?\n {2}\}, \[[^\]]*\]\);/.exec(sidebar)?.[0] ?? "";
   assert.ok(target, "runningTarget not found");
   assert.match(target, /returnToChatThreadId\(runningByThreadId, approvalWaitingElsewhere\)/);
   assert.match(target, /\[runningByThreadId, approvalWaitingElsewhere, allChatItems\]/);

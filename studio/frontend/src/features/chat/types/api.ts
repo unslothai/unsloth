@@ -77,7 +77,6 @@ export interface LoadModelRequest {
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
-  max_seq_length_auto_derived?: boolean;
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
@@ -658,7 +657,7 @@ export interface OpenAIChatCompletionsRequest {
   /** Reasoning-class OpenAI models reject these; caller may omit. */
   temperature?: number;
   top_p?: number;
-  max_tokens: number;
+  max_tokens?: number;
   top_k?: number;
   min_p?: number;
   repetition_penalty?: number;

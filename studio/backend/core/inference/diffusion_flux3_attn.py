@@ -10,6 +10,7 @@ import os
 from functools import lru_cache
 from typing import Any, Optional
 
+from . import diffusion_int8_attention as _i8
 from .rocm_bf16 import is_rocm_torch
 
 STRIDED_ATTN_ENV = "UNSLOTH_DIFFUSION_FLUX3_STRIDED_ATTN"
@@ -50,23 +51,39 @@ def strided_processor_class() -> Any:
         # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
+        # the kernel's mode for this processor (diffusion_int8_attention.sink_mode), set with _unsloth_int8
+        _unsloth_int8_sinks = 0
 
-        def __call__(
+        # read by diffusion_flux_convrot_fused._f3_block_ready (shared-quant blocks call unsloth_projected_attention)
+        _unsloth_projected_attention = True
+
+        def _unsloth_route(
             self,
-            attn: Any,
-            hidden_states: Any,
+            tokens: int,
             attention_mask: Any = None,
-            image_rotary_emb: Any = None,
-        ) -> Any:
+        ) -> Optional[tuple]:
+            """(cudnn, int8) for a call this class runs; None: the stock call. Traced: plain reads only."""
             cudnn = _backend_value(self._attention_backend) == _CUDNN
+            # below the INT8 floor: the stock call
+            int8 = self._unsloth_int8 and tokens >= self._unsloth_int8_min_tokens
             if (
                 attention_mask is not None
                 or self._parallel_config is not None
-                or not (cudnn or self._unsloth_int8)
+                or not (cudnn or int8)
             ):
-                return super().__call__(attn, hidden_states, attention_mask, image_rotary_emb)
-            query, key, value = tf3._get_qkv_projections(attn, hidden_states)
+                return None
+            return cudnn, int8
 
+        def _unsloth_attend(
+            self,
+            attn: Any,
+            query: Any,
+            key: Any,
+            value: Any,
+            image_rotary_emb: Any,
+            cudnn: bool,
+            int8: bool,
+        ) -> Any:
             query = query.unflatten(-1, (attn.heads, -1))
             key = key.unflatten(-1, (attn.heads, -1))
             value = value.unflatten(-1, (attn.heads, -1))
@@ -76,15 +93,19 @@ def strided_processor_class() -> Any:
                 attn, query, key, value.dtype, image_rotary_emb, tf3.apply_rotary_emb
             )
             if (
-                self._unsloth_int8
-                and query.shape[1] >= self._unsloth_int8_min_tokens
+                int8
                 # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
                 and not (
                     torch.is_grad_enabled()
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                out = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
+                mode = self._unsloth_int8_sinks
+                out = (
+                    _i8.int8_attention_call(query, key, value, mode)
+                    if mode
+                    else _i8.int8_attention_call(query, key, value)
+                )
                 hidden_states = out.flatten(2, 3)
             else:
                 if cudnn:
@@ -111,6 +132,35 @@ def strided_processor_class() -> Any:
             hidden_states = attn.to_out[0](hidden_states)
             hidden_states = attn.to_out[1](hidden_states)
             return hidden_states
+
+        def unsloth_projected_attention(
+            self,
+            attn: Any,
+            query: Any,
+            key: Any,
+            value: Any,
+            tokens: int,
+            image_rotary_emb: Any = None,
+        ) -> Optional[Any]:
+            """This processor's output for unmasked ``hidden_states`` of ``tokens`` tokens whose projections are
+            ``query`` / ``key`` / ``value`` (the same ops ``__call__`` runs below them); None: the stock call applies."""
+            route = self._unsloth_route(tokens)
+            if route is None:
+                return None
+            return self._unsloth_attend(attn, query, key, value, image_rotary_emb, *route)
+
+        def __call__(
+            self,
+            attn: Any,
+            hidden_states: Any,
+            attention_mask: Any = None,
+            image_rotary_emb: Any = None,
+        ) -> Any:
+            route = self._unsloth_route(hidden_states.shape[1], attention_mask)
+            if route is None:
+                return super().__call__(attn, hidden_states, attention_mask, image_rotary_emb)
+            query, key, value = tf3._get_qkv_projections(attn, hidden_states)
+            return self._unsloth_attend(attn, query, key, value, image_rotary_emb, *route)
 
     return UnslothFlux3StridedAttnProcessor
 
@@ -169,6 +219,8 @@ def _ensure_strided(pipe: Any, target: Any, logger: Any) -> int:
         new._attention_backend = proc._attention_backend
         new._parallel_config = proc._parallel_config
         new._unsloth_probe_dtype = dtype
+        # the processor the module had: a plan that decides torch's attention gives it back (_raise_processor_floor)
+        new._unsloth_stock = proc
         attn.set_processor(new)
         count += 1
     return count
@@ -302,7 +354,8 @@ def verify_cards(
     cards: Any,
     logger: Any = None,
 ) -> int:
-    """Probe each split card (install probed the primary only); any failure restores stock processors. Never raises."""
+    """Probe each split card (install probed the primary only); a failure restores stock on the cuDNN-backed strided
+    processors only, since native-backed ones (INT8 carriers) never make the cuDNN call. Never raises."""
     try:
         import torch
         from diffusers.models.transformers import transformer_flux3 as tf3
@@ -312,7 +365,10 @@ def verify_cards(
             return 0
         cls = strided_processor_class()
         swapped = [
-            m for m in _attention_modules(transformer) if type(getattr(m, "processor", None)) is cls
+            m
+            for m in _attention_modules(transformer)
+            if type(getattr(m, "processor", None)) is cls
+            and _backend_value(getattr(m.processor, "_attention_backend", None)) == _CUDNN
         ]
         if not swapped:
             return 0

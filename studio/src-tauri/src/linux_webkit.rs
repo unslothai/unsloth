@@ -207,7 +207,6 @@ fn compositing_disabled_by(value: &OsStr) -> bool {
 fn paints_on_cpu(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
-    nvidia_driver_loaded: bool,
     gpu: GpuInputs,
 ) -> bool {
     let (major, minor, _) = webkit_version;
@@ -215,15 +214,8 @@ fn paints_on_cpu(
     if gpu.unsafe_flag || gpu.setting == GpuRendering::Off || (major, minor) < (2, 54) {
         return true;
     }
-    // Without FORCE_DMABUF a distribution's disable-nvidia-dmabuf.patch, which we cannot see,
-    // sends NVIDIA hosts to the CPU path.
-    if nvidia_driver_loaded
-        && !env(FORCE_DMABUF)
-            .as_deref()
-            .is_some_and(force_dmabuf_requested)
-    {
-        return true;
-    }
+    // No NVIDIA case: a distribution's disable-nvidia-dmabuf.patch only narrows the transport to
+    // shared memory, as FORCE_SHARED_MEMORY does, and Skia still rasterizes on the GPU there.
     // WebKit disables DMA-BUF unless the value is exactly "0", so an empty value counts.
     let set_unless_zero =
         |name: &str| env(name).is_some_and(|value| value.as_encoded_bytes() != b"0");
@@ -232,6 +224,11 @@ fn paints_on_cpu(
         || env(DISABLE_COMPOSITING)
             .as_deref()
             .is_some_and(compositing_disabled_by)
+}
+
+/// TextureMapper (before Skia in 2.54) blurs later layers into a backdrop-filter: index.css `webkit-legacy-compositor`.
+pub fn legacy_compositor(webkit_version: (u32, u32, u32)) -> bool {
+    webkit_version < (2, 54, 0)
 }
 
 /// Lenient: matching `"0"` byte for byte would strand someone who wrote `false` on the
@@ -678,12 +675,7 @@ pub fn configure_renderer(
         }
     }
     // After claim/release_claimed: the web process inherits exactly this environment.
-    decision.cpu_painting = paints_on_cpu(
-        |name| std::env::var_os(name),
-        webkit_version,
-        nvidia.is_some(),
-        gpu,
-    );
+    decision.cpu_painting = paints_on_cpu(|name| std::env::var_os(name), webkit_version, gpu);
     decision
 }
 
@@ -696,6 +688,21 @@ pub fn old_nvidia_driver_warning(branch: Option<u32>, wayland_session: bool) -> 
     } else {
         branch.to_string()
     })
+}
+
+/// Without compositing WebKit has no threaded scrolling, so its wheel animation runs on the web
+/// process main thread between slow CPU paints: nothing moves, then a large jump (#18259).
+/// `policy_never` is the view's hardware-acceleration-policy; on 2.54+ it stays ALWAYS when only
+/// compositing is off, so the variable is read too.
+pub fn smooth_scrolling_enabled(policy_never: bool) -> bool {
+    smooth_scrolling_with(
+        policy_never,
+        std::env::var_os(DISABLE_COMPOSITING).as_deref(),
+    )
+}
+
+fn smooth_scrolling_with(policy_never: bool, disable_compositing: Option<&OsStr>) -> bool {
+    !policy_never && !disable_compositing.is_some_and(compositing_disabled_by)
 }
 
 /// First line of the NVIDIA kernel module banner, which names its version and flavour.
@@ -2411,9 +2418,18 @@ mod tests {
                     .map(|(_, value)| OsString::from(value))
             },
             webkit_version,
-            nvidia,
             inputs,
         )
+    }
+
+    #[test]
+    fn the_legacy_compositor_is_every_webkitgtk_before_2_54_whatever_paints() {
+        // Not cpu_painting: 2.54 forced onto the CPU (WEBKIT_SKIA_ENABLE_CPU_RENDERING) composites with Skia.
+        assert!(legacy_compositor((2, 52, 6)));
+        assert!(legacy_compositor((2, 53, 92)));
+        assert!(!legacy_compositor((2, 54, 0)));
+        assert!(!legacy_compositor((2, 54, 2)));
+        assert!(!legacy_compositor((3, 0, 0)));
     }
 
     #[test]
@@ -2436,9 +2452,8 @@ mod tests {
                                         // These helpers model driver 580: On must retain the
                                         // X11 compositing fallback, including its image shadows.
                                         (GpuRendering::On, true, "x11") => true,
-                                        // Only On stands the NVIDIA patch down with FORCE_DMABUF.
-                                        (GpuRendering::On, true, _) => false,
-                                        (_, true, _) => true,
+                                        // Auto takes the driver-580 X11 fallback, DISABLE_DMABUF.
+                                        (GpuRendering::Auto, true, "x11") => true,
                                         // An AppImage on Wayland gets DISABLE_DMABUF under Auto.
                                         (GpuRendering::Auto, false, "appimage-wayland") => true,
                                         _ => false,
@@ -2472,7 +2487,6 @@ mod tests {
                                 .map(|(_, value)| OsString::from(value))
                         },
                         version,
-                        true,
                         inputs,
                     );
                     assert_eq!(
@@ -2504,10 +2518,9 @@ mod tests {
             (vec![(FORCE_SHARED_MEMORY, "1")], false, false),
             (vec![(SKIA_CPU_RENDERING, "1")], false, true),
             (vec![(SKIA_CPU_RENDERING, "0")], false, false),
-            // An operator's FORCE_DMABUF keeps NVIDIA on the GPU path; "0" does not.
             (vec![(FORCE_DMABUF, "1")], true, false),
-            (vec![(FORCE_DMABUF, "0")], true, true),
-            (vec![], true, true),
+            (vec![(FORCE_DMABUF, "0")], true, false),
+            (vec![], true, false),
         ] {
             assert_eq!(
                 cpu_painting_on(&on_wayland(&extra), WEBKIT_2_54, nvidia, auto),
@@ -2588,5 +2601,20 @@ mod tests {
             ),
             RenderingPlan::PreserveEnvironment
         );
+    }
+
+    #[test]
+    fn smooth_scrolling_is_off_only_without_compositing() {
+        let off = |value: &str| Some(OsString::from(value));
+        assert!(smooth_scrolling_with(false, None));
+        assert!(smooth_scrolling_with(false, off("0").as_deref()));
+        assert!(smooth_scrolling_with(false, off("").as_deref()));
+        assert!(!smooth_scrolling_with(true, None));
+        for value in ["1", "00", "false"] {
+            assert!(
+                !smooth_scrolling_with(false, off(value).as_deref()),
+                "{value}"
+            );
+        }
     }
 }

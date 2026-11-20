@@ -18,7 +18,7 @@ function lift(pattern: RegExp, what: string): string {
 }
 
 const body = lift(
-  /const retry = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[\]\);/,
+  /const retry = useCallback\(\(\) => \{[\s\S]*?\n {2}\}, \[\]\);/,
   "the retry callback",
 );
 

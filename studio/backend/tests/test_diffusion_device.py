@@ -560,11 +560,20 @@ def _pipe_with(decoder, encoder = None) -> types.SimpleNamespace:
 def _mps_torch() -> types.ModuleType:
     torch = types.ModuleType("torch")
     torch.syncs = 0
+    torch.unqueued_syncs = 0
 
     def _bump():
         torch.syncs += 1
 
-    torch.mps = types.SimpleNamespace(synchronize = _bump)
+    def _unqueued():
+        torch.unqueued_syncs += 1
+
+    def _zeros(*_shape, device):
+        assert device == "mps"
+        return types.SimpleNamespace(cpu = _bump)
+
+    torch.zeros = _zeros
+    torch.mps = types.SimpleNamespace(synchronize = _unqueued)
     return torch
 
 
@@ -584,6 +593,7 @@ def test_vae_sync_runs_after_every_decoder_call_and_keeps_its_output(monkeypatch
     assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(3) == ["out0", "out1", "out2"]
     assert torch.syncs == 3
+    assert torch.unqueued_syncs == 0
 
 
 def test_vae_sync_runs_after_every_encoder_call_too(monkeypatch):
@@ -613,11 +623,52 @@ def test_vae_sync_survives_a_synchronize_that_raises(monkeypatch):
     def _boom():
         raise RuntimeError("Torch not compiled with MPS enabled")
 
-    torch.mps.synchronize = _boom
+    torch.zeros = lambda *_shape, device: _boom()
     monkeypatch.setitem(sys.modules, "torch", torch)
     decoder = _FakeDecoder()
     assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(2) == ["out0", "out1"]
+
+
+def test_vae_sync_survives_another_thread_copying_off_the_device():
+    import subprocess
+    from pathlib import Path
+
+    torch = pytest.importorskip("torch")
+    if not torch.backends.mps.is_available():
+        pytest.skip(reason = "the race needs a real Apple MPS device")
+    script = """
+import threading, time, types, torch
+from core.inference import diffusion_device as dd
+
+held = torch.randn(64, 1024, 1024, device = "mps")
+stop = threading.Event()
+
+def copy_off():
+    while not stop.is_set():
+        held.to("cpu")
+
+decoder = torch.nn.Conv2d(8, 8, 3, padding = 1).to("mps")
+pipe = types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder, encoder = None))
+assert dd.install_vae_sync(pipe, dd.diffusion_device_target_from_torch_device("mps", torch.float32))
+latents = torch.randn(1, 8, 256, 256, device = "mps")
+writer = threading.Thread(target = copy_off, daemon = True)
+writer.start()
+until = time.monotonic() + 5
+with torch.no_grad():
+    while time.monotonic() < until:
+        decoder(latents)
+stop.set()
+writer.join()
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = Path(__file__).resolve().parents[1],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert done.returncode == 0, done.stderr[-400:]
 
 
 def _mask(

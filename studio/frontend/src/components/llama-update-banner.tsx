@@ -505,7 +505,7 @@ export function LlamaUpdateBanner({
       data-testid="llama-update-banner"
     >
       {/* fill the height floor even when the changelog content is short. */}
-      <div className="toast-surface relative flex max-h-[calc(100dvh-2rem-var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+      <div className="toast-surface relative flex max-h-[calc(100dvh-2rem-var(--studio-window-chrome-top,0))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {/* Hides the card until the app is reopened, the same skip What's new offers. */}
         {applying ? null : (
           <button
@@ -684,7 +684,16 @@ function SkippedNotice({
       }}
       data-testid="llama-update-skipped"
     >
-      <div className="toast-surface flex items-center gap-3 rounded-full bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+      <div className="toast-surface relative flex items-center gap-3 rounded-full bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+        <button
+          type="button"
+          onClick={onExpire}
+          aria-label={t("common.close")}
+          className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full border border-border bg-white text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-card"
+          data-testid="llama-update-skipped-close"
+        >
+          <HugeiconsIcon icon={Cancel01Icon} aria-hidden="true" className="size-3" strokeWidth={2.25} />
+        </button>
         {/* <output> carries the implicit status role, so screen readers announce the skip. */}
         <output
           className="block min-w-0 grow truncate text-ui-13 text-foreground"

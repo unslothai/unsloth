@@ -79,7 +79,7 @@ import {
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
-import { ChatHeaderMenu } from "./components/chat-header-menu";
+import { ChatHeaderMenu, ChatTitleMenu } from "./components/chat-header-menu";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -205,6 +205,7 @@ import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
 import { EditProjectDialog } from "./components/edit-project-dialog";
+import { ProjectFolderChip } from "./components/project-folder-chip";
 import {
   buildExternalModelId,
   isDecisionConnection,
@@ -355,6 +356,7 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./components/export-format-items";
 import { providerModelDisplayName, useModelDisplayNamesVersion } from "./model-display-names";
+import { syncThreadScroll, trackThreadScroll } from "./thread-scroll-flag";
 import { lazyWithoutSuspense, preloadWhenIdle } from "@/lib/lazy-without-suspense";
 
 // Not lazy(): a Suspense reveal is held up to 300 ms, which was most of the pane's first open.
@@ -520,6 +522,12 @@ function BrowserOverlay(): ReactElement {
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
     default: module.ProjectSourcesPanel,
+  })),
+);
+
+const ProjectFilesPanel = lazy(() =>
+  import("@/features/chat/components/project-files-panel").then((module) => ({
+    default: module.ProjectFilesPanel,
   })),
 );
 
@@ -1324,7 +1332,10 @@ function ComparePane({
       )}
     >
       {header}
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+      <div
+        ref={trackThreadScroll}
+        data-thread-scroll-host=""
+        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
         <div
           aria-hidden={true}
           className="compare-pane-fade pointer-events-none absolute top-0 left-0 right-(--thread-scrollbar-gutter,10px) z-20 h-6 bg-linear-to-b from-background to-transparent"
@@ -1536,7 +1547,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           }
           borderClassName="border-t border-border/60 lg:border-t-0 lg:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start lg:text-end lg:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <div className="shrink-0 px-3 py-1.5 text-start lg:text-end lg:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
@@ -1649,14 +1660,14 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-(--studio-chat-header-padding-top,11px)",
+        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-(--studio-chat-header-padding-top,11px) compare-pane-header",
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
             : isTauri
               ? "pl-12 pr-3 md:pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
-              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
-          : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0)-var(--sidebar-width-icon,3rem)))]"
+          : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]",
       )}
     >
       <div className="compare-model-picker pointer-events-auto ml-1.5 min-w-0 max-w-[80%]">
@@ -2094,7 +2105,7 @@ function ProjectLanding({
   const [initialActiveThreadId] = useState(
     () => useChatRuntimeStore.getState().activeThreadId,
   );
-  const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
+  const [projectTab, setProjectTab] = useState<"chats" | "sources" | "files">(() =>
     hasProjectSourcesPending(projectId) ? "sources" : "chats",
   );
   // Drop the marker once committed: React may replay the initializer above.
@@ -2418,7 +2429,9 @@ function ProjectLanding({
         </div>
       ) : (
         <div
+          ref={syncThreadScroll}
           data-wallpaper-reading-surface=""
+          data-header-fade-scroller=""
           className="relative flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
           style={
             {
@@ -2435,9 +2448,19 @@ function ProjectLanding({
                   className="size-6.5"
                 />
               </span>
-              <h1 className="min-w-0 flex-1 truncate font-sans text-3xl/tight font-medium tracking-normal text-foreground">
-                {projectName}
-              </h1>
+              <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+                <h1 className="max-w-full truncate font-sans text-3xl/tight font-medium tracking-normal text-foreground">
+                  {projectName}
+                </h1>
+                {currentProject && (
+                  <div className="-ml-2.5 flex max-w-full min-w-0">
+                    <ProjectFolderChip
+                      project={currentProject}
+                      onChange={() => setEditingProject(true)}
+                    />
+                  </div>
+                )}
+              </div>
               <NonModalDropdownMenu
                 side="bottom"
                 align="end"
@@ -2487,6 +2510,14 @@ function ProjectLanding({
               >
                 Sources
               </button>
+              <button
+                type="button"
+                onClick={() => setProjectTab("files")}
+                data-active={projectTab === "files"}
+                className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Files
+              </button>
             </div>
 
             {projectTab === "sources" ? (
@@ -2498,6 +2529,19 @@ function ProjectLanding({
                 }
               >
                 <ProjectSourcesPanel projectId={projectId} />
+              </Suspense>
+            ) : projectTab === "files" ? (
+              <Suspense
+                fallback={
+                  <div className="mt-8 rounded-2xl bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
+                    Loading files…
+                  </div>
+                }
+              >
+                <ProjectFilesPanel
+                  key={`${currentProject?.workingFolder ?? ""}|${currentProject?.workingFolderStatus ?? ""}`}
+                  projectId={projectId}
+                />
               </Suspense>
             ) : (
               <div className="mt-8 flex flex-col gap-1">
@@ -3036,7 +3080,11 @@ export function ChatPage({
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(
     search.project ?? null,
   );
-  const { projects, isLoading: projectsLoading } = useChatProjects();
+  const {
+    projects,
+    isLoading: projectsLoading,
+    loadFailed: projectsLoadFailed,
+  } = useChatProjects();
   const currentProject = currentProjectId
     ? (projects.find((project) => project.id === currentProjectId) ?? null)
     : null;
@@ -3663,6 +3711,14 @@ export function ChatPage({
   const baseAttachmentTargetKey =
     keptBaseViewRef.current?.attachmentTargetKey ?? nativeAttachmentTargetKey;
   const baseBackgrounded = view.mode === "compare";
+  // Sidebar rows, links and Back reach compare without enterCompare; the hidden chat is not the open one.
+  const comparePairId = view.mode === "compare" ? view.pairId : null;
+  useLayoutEffect(() => {
+    if (!active || comparePairId === null) return;
+    const store = useChatRuntimeStore.getState();
+    store.setActiveThreadId(null);
+    store.setContextUsage(null);
+  }, [active, comparePairId]);
 
   // Keyed by project, not a boolean: the hoisted provider is not remounted on project change.
   const projectLandingId =
@@ -4923,6 +4979,8 @@ export function ChatPage({
       {/* Mounted always: its chord must work before MCP is on, and it closes itself on route change. */}
       <McpServersDialogMount />
       <div
+        ref={trackThreadScroll}
+        data-thread-scroll-host=""
         data-chat-content-root=""
         className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
       >
@@ -4931,22 +4989,22 @@ export function ChatPage({
           <div
             aria-hidden
             data-side-panel-inset=""
-            className="chat-header-fade pointer-events-none absolute left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-linear-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0))] top-[calc(var(--studio-content-top-inset,0)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-linear-to-b from-background to-transparent"
           />
         )}
         <div
           data-side-panel-inset=""
           className={cn(
-            "pointer-events-none absolute top-(--studio-content-top-inset,0px) left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] z-40 flex h-(--studio-chat-header-height,48px) shrink-0 items-start bg-background pt-(--studio-chat-header-padding-top,11px) pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-(--studio-content-top-inset,0px) left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0))] z-40 flex h-(--studio-chat-header-height,48px) shrink-0 items-start bg-background pt-(--studio-chat-header-padding-top,11px) pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]",
             isMobile
               ? "pl-12"
               : pinned
                 ? "pl-2"
                 : isTauri
                   ? "pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
-                  : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                  : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-(--thread-scrollbar-gutter,10px) left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-(--thread-scrollbar-gutter,10px) left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]",
           )}
         >
           <div data-wallpaper-chrome-controls="" data-chat-model-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
@@ -4966,6 +5024,9 @@ export function ChatPage({
                   className="size-icon"
                 />
               </Button>
+            )}
+            {view.mode === "single" && !currentProjectId && !incognito && (
+              <ChatTitleMenu threadId={activeThreadId} />
             )}
             {view.mode === "single" && (
               <ChatModelNotice
@@ -4988,15 +5049,21 @@ export function ChatPage({
                   currentProject={currentProject}
                   projects={projects}
                   isLoading={projectsLoading}
+                  loadFailed={projectsLoadFailed}
                   onSelectProject={openProjectLanding}
                   onViewAllProjects={openProjectsList}
                   open={projectPickerOpen}
                   onOpenChange={setProjectPickerOpen}
                 />
                 {currentProject && activeThreadId ? (
-                  <span className="min-w-0 truncate">
-                    {currentChatTitle ?? "New chat"}
-                  </span>
+                  <ChatTitleMenu
+                    threadId={incognito ? null : activeThreadId}
+                    fallback={
+                      <span className="min-w-0 truncate">
+                        {currentChatTitle ?? "New chat"}
+                      </span>
+                    }
+                  />
                 ) : null}
               </nav>
             )}
@@ -5052,7 +5119,7 @@ export function ChatPage({
                 // Keyed like the adapter's run (resolvedThreadId || "__default"), local ids included.
                 liveThreadKey={activeThreadId ?? "__default"}
                 compactUnknownAsIcon={view.mode === "single"}
-                used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
+                used={contextUsage?.recountedTokens ?? contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // A cloud model shows its catalogued window; null when the catalogue has none.
                 total={isExternalModel ? cloudContextWindow : loadedContextLength}
                 cloud={isExternalModel}

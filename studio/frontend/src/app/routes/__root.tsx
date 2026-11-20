@@ -70,7 +70,6 @@ import { useTrainingUnloadGuard } from "@/features/training/hooks/use-training-u
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { LlmCompressorConsentDialog } from "@/features/export/components/llm-compressor-consent-dialog";
 import { useNativePathLeasesSupported } from "@/features/native-intents";
-import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useTypeToActivate } from "@/hooks/use-type-to-activate";
@@ -368,6 +367,7 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/projects",
   "/library",
   "/tasks",
+  "/translate",
   "/hub",
   "/login",
   "/signup",
@@ -599,7 +599,6 @@ function RootLayout() {
   });
 
   const pathLeasesSupported = useNativePathLeasesSupported();
-  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const openingFolder = useOpeningFolder();
   const sidebarMounted = useShortcutAvailable("toggleSidebar", hasAppMenus);
   const findMounted = useShortcutAvailable("findInPage", hasAppMenus);
@@ -626,7 +625,7 @@ function RootLayout() {
       ? () => startNewChat({ incognito: true, standalone: true })
       : null,
     "open-folder":
-      routeShortcutEnabled && pathLeasesSupported && !ragUnavailable && !openingFolder
+      routeShortcutEnabled && pathLeasesSupported && !openingFolder
         ? () =>
             void openFolderAsProject().then((project) => {
               if (!project) return;
@@ -744,7 +743,7 @@ function RootLayout() {
           data-windows-wallpaper-page={windowsWallpaperPage || undefined}
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
           data-wallpaper-media={isImagesRoute || isVideoRoute || isAudioRoute || undefined}
-          className="relative min-h-0! h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
+          className="relative min-h-0! h-[calc(100dvh-var(--studio-titlebar-height,0))] overflow-hidden"
         >
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           {appSidebar}

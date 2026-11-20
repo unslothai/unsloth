@@ -275,7 +275,7 @@ test("the store exposes an unknown state, not just chat-only", async () => {
 // Deferred remains unmeasured; only an active probe should put navigation into a pending state.
 test("a deferred verdict stays unknown without leaving navigation pending", async () => {
   const { readFile } = await import("node:fs/promises");
-  const selector = /capabilitiesUnknown: \(\) => \{([\s\S]*?)\n  \},/.exec(ENV);
+  const selector = /capabilitiesUnknown: \(\) => \{([\s\S]*?)\n {2}\},/.exec(ENV);
   assert.ok(selector, "capabilitiesUnknown is no longer a block the deferred case can live in");
   assert.match(
     selector[1],

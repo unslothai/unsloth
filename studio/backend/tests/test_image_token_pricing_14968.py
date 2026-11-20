@@ -4,6 +4,7 @@
 """Images are charged, not dropped, when a local GGUF chat is fitted and its tool results sized (#14968)."""
 
 import base64
+import contextlib
 import io
 import os
 import sys
@@ -304,3 +305,30 @@ def test_the_prompt_offset_prices_images_like_the_fit_it_is_taken_from():
     # fallback that adds the offset back charges every retained image twice.
     assert "_estimate_countable_message" in offset
     assert "without_unpriced_media" not in offset
+
+
+def test_a_size_the_server_counted_is_priced_at_its_count():
+    backend, shot = _backend(), _image(_png(2112, 1200))
+    backend._image_token_counts = {(2112, 1200): 1102}
+    assert llama_cpp._image_token_price(backend, shot) == 1102
+    assert llama_cpp._image_token_price(_backend(), shot) != 1102
+
+
+def test_the_server_count_is_cached_and_given_up_on_when_unsupported(monkeypatch):
+    backend = llama_cpp.LlamaCppBackend()
+    backend._is_vision = backend._mmproj_accepts_image = True
+    status, posts = [503], []
+
+    def post(url, json):
+        posts.append(url)
+        reply = {"input_tokens": 10 + 100 * (len(json["messages"][0]["content"]) - 1)}
+        return types.SimpleNamespace(status_code = status[0], json = lambda: reply)
+
+    client = contextlib.nullcontext(types.SimpleNamespace(post = post))
+    monkeypatch.setattr(llama_cpp.httpx, "Client", lambda **_kwargs: client)
+    assert backend.image_tokens(64, 64) is None
+    status[0] = 200
+    assert backend.image_tokens(64, 64) == backend.image_tokens(64, 64) == 100
+    status[0] = 404
+    assert backend.image_tokens(96, 64) is None and backend.image_tokens(128, 64) is None
+    assert len(posts) == 4

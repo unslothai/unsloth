@@ -504,7 +504,7 @@ test("surfaces the stylesheet paints take the panel muted text too", () => {
     CSS,
     /html\[data-contrast-adjust\]:not\(\.dark\) \.hub-page \.hub-result-row \{[^}]*var\(--contrast-panel-target, var\(--contrast-target\)\)/,
   );
-  assert.match(HUB_CSS, /^  \.hub-page \.hub-result-row \{[^}]*background-color: var\(--card\)/m);
+  assert.match(HUB_CSS, /^ {2}\.hub-page \.hub-result-row \{[^}]*background-color: var\(--card\)/m);
   assert.match(
     HUB_CSS,
     /html\.dark \.hub-page \.hub-result-row \{\s*background-color: color-mix\(in srgb, var\(--foreground\) [^;]*, var\(--background\)\);/,

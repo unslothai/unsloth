@@ -47,6 +47,7 @@ import {
   ApiIcon,
   Clock01Icon,
   Download01Icon,
+  AiTranslateIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -158,6 +159,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsTab, TranslationKey> = {
   agents: "settings.tabs.agents",
   "keyboard-shortcuts": "settings.tabs.keyboardShortcuts",
   browser: "browser.settingsTitle",
+  "computer-use": "computerUse.settings.title",
   debugging: "settings.tabs.debugging",
   about: "settings.tabs.about",
 };
@@ -191,7 +193,7 @@ export function CommandPalette() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] -translate-y-1/2 w-[calc(635px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 duration-180 ease-[cubic-bezier(0.16,1,0.3,1)] sm:max-w-[calc(635px*var(--ui-space-scale,1))]"
+      className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-[calc(50%+var(--studio-window-chrome-top,0)/2)] -translate-y-1/2 w-[calc(635px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 duration-180 ease-[cubic-bezier(0.16,1,0.3,1)] sm:max-w-[calc(635px*var(--ui-space-scale,1))]"
       overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none"
     >
       <PaletteContent />
@@ -309,6 +311,13 @@ function PaletteContent() {
           >
             <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.tasks")}</span>
+          </PaletteItem>
+          <PaletteItem
+            onSelect={runAndClose(() => void navigate({ to: "/translate" }))}
+            keywords={["translate", "translation", "language"]}
+          >
+            <HugeiconsIcon icon={AiTranslateIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.translate")}</span>
           </PaletteItem>
           <PaletteItem
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}

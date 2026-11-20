@@ -18,6 +18,8 @@ on:
       - 'tests/test_installer_interactive_prompts.py'
       - 'tests/test_installer_systemd.py'
       - 'studio/systemd/unsloth-studio.service.in'
+      - 'tests/test_installer_launchd.py'
+      - 'studio/launchd/ai.unsloth.studio.server.plist.in'
       - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
@@ -45,6 +47,7 @@ on:
       - 'setup*.bat'
       - 'studio/install_*.py'
       - 'studio/systemd/install_user_service.sh'
+      - 'studio/launchd/install_user_agent.sh'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       # The only lane that runs this test; the Windows smoke workflow skips it.
@@ -80,6 +83,7 @@ on:
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_rocm_triton_windows_pairing.ps1'
+      - 'tests/studio/test_rocm_torch_install_failure.ps1'
       - 'tests/studio/test_xpu_triton_windows_swap.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
@@ -126,6 +130,8 @@ on:
       - 'tests/test_installer_interactive_prompts.py'
       - 'tests/test_installer_systemd.py'
       - 'studio/systemd/unsloth-studio.service.in'
+      - 'tests/test_installer_launchd.py'
+      - 'studio/launchd/ai.unsloth.studio.server.plist.in'
       - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
@@ -153,6 +159,7 @@ on:
       - 'setup*.bat'
       - 'studio/install_*.py'
       - 'studio/systemd/install_user_service.sh'
+      - 'studio/launchd/install_user_agent.sh'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       # The only lane that runs this test; the Windows smoke workflow skips it.
@@ -188,6 +195,7 @@ on:
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_rocm_triton_windows_pairing.ps1'
+      - 'tests/studio/test_rocm_torch_install_failure.ps1'
       - 'tests/studio/test_xpu_triton_windows_swap.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
@@ -275,6 +283,7 @@ jobs:
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
           tests/test_installer_systemd.py
+          tests/test_installer_launchd.py
           tests/test_installer_profile_hardening.py
           tests/studio/install/test_keep_install_backcompat_9979.py
           -q -rs
@@ -323,6 +332,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_rocm_triton_windows_pairing.ps1
+      - name: AMD ROCm torch install failure tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_rocm_torch_install_failure.ps1
+      - name: AMD ROCm torch install failure tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_rocm_torch_install_failure.ps1
       - name: Intel XPU triton swap tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_xpu_triton_windows_swap.ps1

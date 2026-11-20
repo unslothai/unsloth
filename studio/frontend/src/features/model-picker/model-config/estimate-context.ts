@@ -1,22 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The context to PRICE, not the displayed one: an unset length loads as 0 (native/fit), so pricing
- *  the 32k display fallback understates the KV cache. Import-free for node strip-types tests. */
-export function resolveEstimateContext(
-  customContextLength: number | null,
-  activeLoadedContext: number | null,
-  skipResidentFallback = false,
-): number {
-  if (skipResidentFallback) {
-    // Manual + Auto layers and builtin presets both resolve to 0; pricing the resident context quotes the old fit.
-    return customContextLength && customContextLength > 0 ? customContextLength : 0;
-  }
-  return customContextLength ?? activeLoadedContext ?? 0;
+/** The context to PRICE: the pin the load sends, else 0, which the backend sizes itself; never the
+ *  displayed fallback or the resident's old fit. Import-free for node strip-types tests. */
+export function resolveEstimateContext(contextPin: number | null): number {
+  return contextPin && contextPin > 0 ? contextPin : 0;
 }
 
-export function resolveMlxEstimateContext(contextPin: number | null): number {
-  return contextPin && contextPin > 0 ? contextPin : 0;
+/** The resident context a same-model GGUF reload keeps on Auto under Manual fixed layers, where
+ *  `--fit off` would launch at the native context; null when it keeps none. `isGguf` is false and
+ *  `activeLoadedContext` null for any load that is not that reload. */
+export function fixedLayerContextPin({
+  isGguf,
+  gpuMemoryMode,
+  gpuLayers,
+  customContextLength,
+  activeLoadedContext,
+}: {
+  isGguf: boolean;
+  gpuMemoryMode: "auto" | "manual";
+  gpuLayers: number | null | undefined;
+  customContextLength: number | null | undefined;
+  activeLoadedContext: number | null | undefined;
+}): number | null {
+  const fixedLayers = gpuMemoryMode === "manual" && gpuLayers != null && gpuLayers >= 0;
+  return isGguf &&
+    fixedLayers &&
+    customContextLength == null &&
+    activeLoadedContext != null &&
+    activeLoadedContext > 0
+    ? activeLoadedContext
+    : null;
 }
 
 export function resolveMlxServedWindow(

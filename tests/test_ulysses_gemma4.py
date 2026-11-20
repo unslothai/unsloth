@@ -464,8 +464,25 @@ def test_gemma4_generic_route_gates(monkeypatch):
     assert "sliding" in _check(model, allow_hybrids = False)
     monkeypatch.undo()
     multimodal = _model("mm_e2b", dtype = torch.float32)
-    with pytest.raises(NotImplementedError, match = "Gemma4VisionAttention is bidirectional"):
-        _manager(2, None, local = 0).attach_attention_hooks(multimodal)
+    # CP batches are text only: vision and audio towers get no CP hooks; text attention does.
+    _manager(2, None, local = 0).attach_attention_hooks(multimodal)
+    hooked = {
+        name
+        for name, module in multimodal.named_modules()
+        if name.endswith("self_attn") and getattr(module, "_unsloth_cp_hooked", False)
+    }
+    towers = {
+        name
+        for name, _ in multimodal.named_modules()
+        if name.endswith("self_attn") and cp._in_media_tower(name)
+    }
+    text = {
+        name
+        for name, _ in multimodal.named_modules()
+        if name.endswith("self_attn") and not cp._in_media_tower(name)
+    }
+    assert towers, "the tiny multimodal Gemma 4 has no vision / audio attention to leave alone"
+    assert hooked == text, (sorted(hooked ^ text), sorted(towers))
     for model_type in ("gemma3_text", "mistral", "qwen2", "gemma4_text"):
         other = types.SimpleNamespace(
             model_type = model_type,

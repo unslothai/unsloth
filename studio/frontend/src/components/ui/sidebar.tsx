@@ -349,6 +349,7 @@ function Sidebar({
         data-slot="sidebar-container"
         data-side={side}
         data-held-out={heldOut || undefined}
+        data-native-cover={heldOut ? "" : undefined}
         // Hover spans panel and edge; only leaving both retracts it.
         onPointerEnter={holdsOut ? () => setPeeking(true) : undefined}
         onPointerLeave={holdsOut ? () => setPeeking(false) : undefined}
