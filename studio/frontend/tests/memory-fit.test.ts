@@ -868,6 +868,8 @@ test("the Context field previews Auto only from a current estimate that the resi
     estimateAvailable: true,
     estimateStale: false,
     isActiveModel: true,
+    otherModelResident: true,
+    multiGpu: false,
     residentKnown: true,
     residentLoadedAuto: true,
     pendingMatchesResident: false,
@@ -881,6 +883,55 @@ test("the Context field previews Auto only from a current estimate that the resi
   );
   assert.equal(previewsAutoFit({ ...base, estimateStale: true }), false, "estimate priced the old settings");
   assert.equal(previewsAutoFit({ ...base, residentKnown: false }), false);
-  assert.equal(previewsAutoFit({ ...base, isActiveModel: false, residentKnown: false }), true);
+  assert.equal(
+    previewsAutoFit({ ...base, isActiveModel: false, residentKnown: false, otherModelResident: false }),
+    true,
+  );
+  assert.equal(
+    previewsAutoFit({ ...base, isActiveModel: false, residentKnown: false }),
+    false,
+    "another model's memory is freed by the load but not priced",
+  );
+  assert.equal(previewsAutoFit({ ...base, multiGpu: true }), false, "the loader picks its own subset");
   assert.equal(previewsAutoFit({ ...base, isGguf: false }), false);
+});
+
+test("an Auto resident's VRAM counts toward the reload's window, capped at the card", async () => {
+  const { resolveAutoFittedContext } = await import(
+    "../src/features/model-picker/model-config/memory-fit.ts"
+  );
+  const estimate: MemoryFitEstimate = {
+    gpuBytes: 20 * GB,
+    totalBytes: 22 * GB,
+    kvEstimable: true,
+    drafterKvUnsized: false,
+    adaptersUnsized: false,
+    moeOffloadUnmodelled: false,
+    contextIsPinned: false,
+    gpuFloorBytes: 6 * GB,
+    gpuFloorCtx: 8192,
+    nCtx: 131072,
+  };
+  const card: MemoryFitCapacity = {
+    gpuCapacityGb: 14,
+    totalCapacityGb: 60,
+    systemRamCapacityGb: 50,
+    freeGpuCapacityGb: 1,
+    freeGpuCapacityKnown: true,
+    usableSystemRamGb: 40,
+    singleMemoryPool: false,
+  };
+  assert.equal(resolveAutoFittedContext(estimate, card), 8192, "no credit: the resident's VRAM");
+  // 1 GB free plus the 12 GB resident unloads first: (13 - 6) / (20 - 6) of the way.
+  const credited = { ...card, reclaimableTotalBytes: 12 * GB, reclaimableGpuBytes: 12 * GB };
+  assert.equal(
+    resolveAutoFittedContext(estimate, credited),
+    Math.floor((8192 + 0.5 * (131072 - 8192)) / 256) * 256,
+  );
+  // An over-credit cannot fit past the card's own budget.
+  const over = { ...credited, reclaimableTotalBytes: 30 * GB, reclaimableGpuBytes: 30 * GB };
+  assert.equal(
+    resolveAutoFittedContext(estimate, over),
+    Math.floor((8192 + (8 / 14) * (131072 - 8192)) / 256) * 256,
+  );
 });

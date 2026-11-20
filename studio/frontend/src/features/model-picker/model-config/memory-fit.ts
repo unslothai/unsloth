@@ -335,12 +335,18 @@ export function previewsAutoFit(state: {
   estimateAvailable: boolean;
   estimateStale: boolean;
   isActiveModel: boolean;
+  /** Another local model holds memory the load frees first, by an amount not priced here. */
+  otherModelResident: boolean;
+  /** The loader takes the fewest cards that hold the model, which pooled free VRAM cannot see. */
+  multiGpu: boolean;
   residentKnown: boolean;
   residentLoadedAuto: boolean;
   pendingMatchesResident: boolean;
 }): boolean {
-  if (!state.isGguf || !state.estimateAvailable || state.estimateStale) return false;
-  if (!state.isActiveModel) return true;
+  if (!state.isGguf || !state.estimateAvailable || state.estimateStale || state.multiGpu) {
+    return false;
+  }
+  if (!state.isActiveModel) return !state.otherModelResident;
   return (
     state.residentKnown && !(state.residentLoadedAuto && state.pendingMatchesResident)
   );
@@ -374,9 +380,11 @@ export function resolveAutoFittedContext(
   const reclaimed = capacity.singleMemoryPool
     ? reclaimableTotal
     : Math.min(reclaimableBytes(capacity.reclaimableGpuBytes), reclaimableTotal);
+  const credited =
+    availableGb +
+    Math.max(0, reclaimed / 1024 ** 3 - reclaimableBytes(capacity.freeGpuReserveDeficitGb));
   const budget =
-    (availableGb +
-      Math.max(0, reclaimed / 1024 ** 3 - reclaimableBytes(capacity.freeGpuReserveDeficitGb))) *
+    (capacity.gpuCapacityGb > 0 ? Math.min(credited, capacity.gpuCapacityGb) : credited) *
     1024 ** 3;
   const nativeBytes = capacity.singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes;
   const floorBytes =

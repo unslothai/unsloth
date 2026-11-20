@@ -64,6 +64,7 @@ import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
   gpuLayersPatch,
+  isExternalModelId,
   moeCpuOffloadApplies,
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
@@ -153,6 +154,7 @@ import {
   resolveReclaimableMemoryCredit,
 } from "../model-config/memory-fit";
 import {
+  autoFitSettings,
   resolveResidentEstimateRequest,
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
@@ -2847,6 +2849,9 @@ export function ModelConfigPage({
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
   const residentModelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  const localModelResident = useChatRuntimeStore(
+    (s) => Boolean(s.params.checkpoint) && !isExternalModelId(s.params.checkpoint),
+  );
   const residentEstimateSettings = useChatRuntimeStore(
     useShallow(selectResidentEstimateSettings),
   );
@@ -3732,24 +3737,30 @@ export function ModelConfigPage({
     !residentEstimate.stale
       ? residentEstimate.estimate
       : null;
-  const reclaimableCredit = resolveReclaimableMemoryCredit(
-    reclaimableEstimate,
-    { ids: loadedGpuIds, indexKind: loadedGpuIndexKind },
-    {
-      ids: runtimeConfig.selectedGpuIds ?? null,
-      indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
-    },
-    {
-      cpuFallback: loadedCpuFallback,
-      devices: gpuDevices,
-      gpuPlacementKnown:
-        residentEstimateRequest?.gpuMemoryMode === "manual" &&
-        residentEstimateRequest.gpuLayers != null &&
-        residentEstimateRequest.gpuLayers >= 0 &&
-        !loadedLlamaExtraArgs?.length,
-      appleUnifiedMemory: isAppleUnifiedMemory,
-    },
+  const reclaimableCreditFor = (gpuPlacementKnown: boolean) =>
+    resolveReclaimableMemoryCredit(
+      reclaimableEstimate,
+      { ids: loadedGpuIds, indexKind: loadedGpuIndexKind },
+      {
+        ids: runtimeConfig.selectedGpuIds ?? null,
+        indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
+      },
+      {
+        cpuFallback: loadedCpuFallback,
+        devices: gpuDevices,
+        gpuPlacementKnown,
+        appleUnifiedMemory: isAppleUnifiedMemory,
+      },
+    );
+  const reclaimableCredit = reclaimableCreditFor(
+    residentEstimateRequest?.gpuMemoryMode === "manual" &&
+      residentEstimateRequest.gpuLayers != null &&
+      residentEstimateRequest.gpuLayers >= 0 &&
+      !loadedLlamaExtraArgs?.length,
   );
+  // The fit warning withholds an Auto resident's VRAM, but the reload frees it before fitting;
+  // resolveAutoFittedContext caps the credited budget at the card.
+  const autoFitReclaimableCredit = reclaimableCreditFor(true);
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
   // A pin can only use the cards it names, so judge the fit against those.
@@ -3765,6 +3776,10 @@ export function ModelConfigPage({
     if (governing.length === 0) return false;
     return governing.every((device) => device.unifiedMemory === true);
   }, [gpuDevices, pinnedGpuIds, isAppleUnifiedMemory]);
+  const governingGpuCount =
+    pinnedGpuIds && pinnedGpuIds.length > 0
+      ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index)).length
+      : gpuDevices.length;
   // The budget slider caps per-GPU use; seeded with VRAM_FRACTION_DEFAULT, which loads apply
   // until the async read lands (or on an older backend).
   const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] =
@@ -3859,13 +3874,15 @@ export function ModelConfigPage({
       estimateAvailable: memoryEstimate.estimate.available,
       estimateStale: memoryEstimate.stale,
       isActiveModel,
-      residentKnown: residentEstimateRequest != null,
+      otherModelResident: localModelResident,
+      multiGpu: !singleMemoryPool && governingGpuCount > 1,
+      residentKnown: reclaimableEstimate != null,
       residentLoadedAuto: (loadedConfig?.customContextLength ?? null) == null,
       pendingMatchesResident:
         residentEstimateRequest != null &&
         memoryEstimateRequest != null &&
-        estimateKey({ ...memoryEstimateRequest, nCtx: null }) ===
-          estimateKey({ ...residentEstimateRequest, nCtx: null }),
+        estimateKey(autoFitSettings(memoryEstimateRequest)) ===
+          estimateKey(autoFitSettings(residentEstimateRequest)),
     })
       ? resolveAutoFittedContext(
           memoryEstimate.estimate,
@@ -3880,8 +3897,8 @@ export function ModelConfigPage({
             usableSystemRamKnown: inferenceGpu.systemRamAvailableKnown,
             systemRamReserveDeficitGb: memorySystemRamReserveDeficitGb,
             singleMemoryPool,
-            reclaimableTotalBytes: reclaimableCredit.totalBytes,
-            reclaimableGpuBytes: reclaimableCredit.gpuBytes,
+            reclaimableTotalBytes: autoFitReclaimableCredit.totalBytes,
+            reclaimableGpuBytes: autoFitReclaimableCredit.gpuBytes,
           },
           { appleUnifiedMemory: isAppleUnifiedMemory },
         )
