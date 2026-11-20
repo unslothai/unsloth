@@ -128,10 +128,12 @@ def _checksum(weight):
         size = flat.element_size()
         if size == 2:
             flat = flat.view(torch.int16)
-        elif size == 4:
-            flat = flat.view(torch.int32)
         elif size == 1:
             flat = flat.view(torch.uint8)
+        else:
+            # 4 bytes as one int32 word, 8-byte dtypes (float64) as two: the bits, never a value conversion
+            # (float64 weights below 1 in magnitude all converted to 0, so every such weight matched).
+            flat = flat.view(torch.int32)
         total = 0
         for start in range(0, flat.numel(), _CHUNK):
             part = flat[start : start + _CHUNK].to(torch.int64).remainder_(_PRIME)
