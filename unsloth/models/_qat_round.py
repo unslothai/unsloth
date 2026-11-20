@@ -267,6 +267,11 @@ def _round_into(module, quantizer, weight):
     return True
 
 
+def _recipe(quantizer):
+    """The fake quantizer's type and config (dtype, granularity, mapping, ...): which grid its weight was rounded to."""
+    return f"{type(quantizer).__name__}:{getattr(quantizer, 'config', None)!r}"
+
+
 def _mark_rounded(module, state_dict, prefix, local_metadata):
     """state_dict hook on a rounded module: mark its weight as rounded while it still holds the rounded values."""
     quantizer = module._modules.get("weight_fake_quantizer")
@@ -287,7 +292,7 @@ def _mark_rounded(module, state_dict, prefix, local_metadata):
     try:
         if record.checksum is None or record.checksum[0] != state:
             record.checksum = (state, _checksum(weight))
-        local_metadata[_META] = record.checksum[1]
+        local_metadata[_META] = tuple(record.checksum[1]) + (_recipe(quantizer),)
     except Exception:
         pass
 
@@ -316,7 +321,12 @@ def _before_load(
             # The rounded weight state_dict() marked, unchanged since (any edit or replacement changes the
             # checksum; checked before any dtype cast, which the checksum includes), still exact in this
             # module's dtype, or the rounded values this module already holds.
-            marked = isinstance(marker, (tuple, list)) and list(_checksum(incoming)) == list(marker)
+            # The marker also names the fake quantization recipe: values rounded on another grid (an int8
+            # model's state_dict loaded into an int4 one) are not rounded for this module.
+            marked = isinstance(marker, (tuple, list)) and list(marker) == [
+                *_checksum(incoming),
+                _recipe(quantizer),
+            ]
             converted = incoming.to(device = weight.device, dtype = weight.dtype)
             if marked and converted.dtype != incoming.dtype:
                 marked = torch.equal(converted.to(incoming.dtype), incoming.to(converted.device))
