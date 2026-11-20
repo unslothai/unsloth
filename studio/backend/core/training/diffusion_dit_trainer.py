@@ -3805,6 +3805,14 @@ def _train_dit(
             swapping = swap_info["swapped_blocks"] > 0
             _emit(
                 on_event,
+                "block_swap",
+                **{
+                    k: swap_info[k]
+                    for k in ("swapped_blocks", "total_blocks", "host_gib", "pinned_gib")
+                },
+            )
+            _emit(
+                on_event,
                 "warning",
                 message = (
                     f"block_swap: {swap_info['swapped_blocks']} of {swap_info['total_blocks']} blocks stream from "

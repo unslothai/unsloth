@@ -68,6 +68,54 @@ def block_swap_error(
     return None
 
 
+def _cuda_device_facts() -> tuple[str, bool]:
+    """("cuda" | "cpu", integrated) for this host. Never raises."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "cpu", False
+    except Exception:  # noqa: BLE001 -- no torch: no CUDA
+        return "cpu", False
+    try:
+        from core.inference.host_pinning import device_is_integrated
+        return "cuda", bool(device_is_integrated("cuda"))
+    except Exception:  # noqa: BLE001 -- unclassifiable: discrete
+        return "cuda", False
+
+
+def block_swap_start_error(cfg: Any, device_facts = None) -> Optional[str]:
+    """Why the start route must refuse the REQUEST's block_swap (not the env var) before evicting residents, or None.
+    Same gates the DiT trainer applies after the load, plus the families whose trainer has no swap path."""
+    raw = getattr(cfg, "block_swap", None)
+    raw = "" if raw is None else str(raw).strip().lower()
+    if raw in _OFF:
+        return None
+    if raw != "auto":
+        try:
+            if int(raw) <= 0:
+                return None
+        except ValueError:
+            return f"block_swap={raw!r}: use 'off', 'auto' or a number of blocks."
+    from core.training.diffusion_train_common import _DIT_TRAIN_FAMILIES, dit_fp16_fallback
+
+    family = str(getattr(cfg, "resolved_family", "") or "").strip().lower()
+    if family not in _DIT_TRAIN_FAMILIES:
+        return (
+            f"block_swap is not available for the {family or 'unknown'} family: only the DiT trainer "
+            f"({', '.join(sorted(_DIT_TRAIN_FAMILIES))}) streams blocks from host RAM. Turn block_swap off."
+        )
+    if dit_fp16_fallback(family):
+        return "block_swap needs a GPU with bf16: this one trains the nf4 fp16 fallback. Turn block_swap off."
+    device, integrated = device_facts if device_facts is not None else _cuda_device_facts()
+    return block_swap_error(
+        raw,
+        str(getattr(cfg, "base_precision", "") or "").strip().lower(),
+        device,
+        bool(getattr(cfg, "gradient_checkpointing", True)),
+        integrated = integrated,
+    )
+
+
 def swap_block_lists(transformer) -> list:
     """(name, ModuleList) for every list of the model's repeated blocks (FLUX: double + single stream)."""
     import torch

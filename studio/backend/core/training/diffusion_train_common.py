@@ -1202,6 +1202,12 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # Compile: SDXL and DiT trainers, except where the GPU lacks bf16 or the trainer cannot compile.
                 "supports_compile": supports_compile or name == "sdxl",
+                # The DiT trainer streams a bf16 base's blocks from host RAM; block_swap is refused elsewhere.
+                "supports_block_swap": bool(
+                    name in _DIT_TRAIN_FAMILIES
+                    and "bf16" in fam_modes
+                    and not dit_fp16_fallback(name)
+                ),
                 # save_steps is refused for checkpointless families, so hide the control.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
                 # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
