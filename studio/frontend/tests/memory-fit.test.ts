@@ -773,18 +773,21 @@ test("Auto's window refits when a cheaper KV cache leaves more of the free memor
     nCtx: 262144,
     cacheTypeKv,
   });
-  const f16 = resolveAutoFittedContext(auto(8 * GB, "f16"), capacity);
-  const q8 = resolveAutoFittedContext(auto(4 * GB, "q8_0"), capacity);
+  const apple = { appleUnifiedMemory: true };
+  const f16 = resolveAutoFittedContext(auto(8 * GB, "f16"), capacity, apple);
+  const q8 = resolveAutoFittedContext(auto(4 * GB, "q8_0"), capacity, apple);
   assert.ok(f16 != null && q8 != null);
-  assert.ok(f16 > 256 && f16 < 262144, `${f16}`);
+  assert.ok(f16 > 256 && f16 < 65536, `${f16}`);
   assert.ok(q8 > f16 * 1.9, `q8_0 ${q8} vs f16 ${f16}`);
   assert.equal(f16 % 256, 0);
-  // Enough free memory: the native window stands. Too little: the loader's floor.
-  assert.equal(resolveAutoFittedContext(auto(8 * GB, "f16"), { ...capacity, freeGpuCapacityGb: 20 }), 262144);
-  assert.equal(
-    resolveAutoFittedContext(auto(8 * GB, "f16"), { ...capacity, freeGpuCapacityGb: 0, reclaimableTotalBytes: 0 }),
-    256,
-  );
+  // Metal Auto stops at 65,536 and, when nothing fits, launches at 8192 rather than the 256 floor.
+  const roomy = { ...capacity, freeGpuCapacityGb: 20 };
+  const full = { ...capacity, freeGpuCapacityGb: 0, reclaimableTotalBytes: 0 };
+  assert.equal(resolveAutoFittedContext(auto(8 * GB, "f16"), roomy, apple), 65536);
+  assert.equal(resolveAutoFittedContext(auto(8 * GB, "f16"), full, apple), 8192);
+  assert.equal(resolveAutoFittedContext({ ...auto(8 * GB, "f16"), nCtx: 4096 }, full, apple), 4096);
+  // Off Apple (a shared-memory APU) the native window stands.
+  assert.equal(resolveAutoFittedContext(auto(8 * GB, "f16"), roomy), 262144);
   // A pinned context or an unsized cache has no window to predict; nor does an unknown free figure.
   assert.equal(resolveAutoFittedContext({ ...auto(8 * GB, "f16"), contextIsPinned: true }, capacity), null);
   assert.equal(resolveAutoFittedContext({ ...auto(8 * GB, "f16"), kvEstimable: false }, capacity), null);

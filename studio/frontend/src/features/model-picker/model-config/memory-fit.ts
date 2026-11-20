@@ -325,6 +325,9 @@ export function resolveMemoryFit(
 }
 
 const AUTO_CONTEXT_STEP = 256;
+// Metal Auto (llama_cpp.py): capped at _APPLE_AUTO_CTX; min(_FIT_MIN_CTX, native) when nothing fits.
+const APPLE_AUTO_CONTEXT_CAP = 65536;
+const APPLE_NOTHING_FITS_CONTEXT = 8192;
 
 /** Whether the Context field previews Auto's fit, rather than the resident's window or a default.
  *  A resident Auto load with the same fit-moving settings already answered; a stale estimate
@@ -352,6 +355,7 @@ export function previewsAutoFit(state: {
 export function resolveAutoFittedContext(
   estimate: MemoryFitEstimate,
   capacity: MemoryFitCapacity,
+  { appleUnifiedMemory = false }: { appleUnifiedMemory?: boolean } = {},
 ): number | null {
   const nativeCtx = estimate.nCtx ?? 0;
   const floorCtx = estimate.gpuFloorCtx ?? 0;
@@ -385,13 +389,16 @@ export function resolveAutoFittedContext(
       ? (estimate.floorTotalBytes as number)
       : nativeBytes - Math.max(0, estimate.gpuBytes - (estimate.gpuFloorBytes as number));
   const shrinkable = Math.max(0, nativeBytes - floorBytes);
-  if (nativeBytes <= budget) return nativeCtx;
-  if (floorBytes >= budget || shrinkable === 0) return floorCtx;
+  const ceiling = appleUnifiedMemory ? Math.min(nativeCtx, APPLE_AUTO_CONTEXT_CAP) : nativeCtx;
+  if (nativeBytes <= budget) return ceiling;
+  if (floorBytes >= budget || shrinkable === 0) {
+    return appleUnifiedMemory ? Math.min(nativeCtx, APPLE_NOTHING_FITS_CONTEXT) : floorCtx;
+  }
   const fitted =
     floorCtx + ((budget - floorBytes) / shrinkable) * (nativeCtx - floorCtx);
   return Math.max(
     floorCtx,
-    Math.min(nativeCtx, Math.floor(fitted / AUTO_CONTEXT_STEP) * AUTO_CONTEXT_STEP),
+    Math.min(ceiling, Math.floor(fitted / AUTO_CONTEXT_STEP) * AUTO_CONTEXT_STEP),
   );
 }
 

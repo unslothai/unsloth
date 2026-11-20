@@ -3867,20 +3867,24 @@ export function ModelConfigPage({
         estimateKey({ ...memoryEstimateRequest, nCtx: null }) ===
           estimateKey({ ...residentEstimateRequest, nCtx: null }),
     })
-      ? resolveAutoFittedContext(memoryEstimate.estimate, {
-          gpuCapacityGb: memoryGpuCapacityGb,
-          totalCapacityGb: memoryTotalCapacityGb,
-          systemRamCapacityGb: inferenceGpu.systemRamTotalGb,
-          freeGpuCapacityGb: memoryFreeGpuCapacityGb,
-          freeGpuCapacityKnown: memoryFreeGpuCapacityKnown,
-          freeGpuReserveDeficitGb: memoryFreeGpuReserveDeficitGb,
-          usableSystemRamGb: memoryUsableSystemRamGb,
-          usableSystemRamKnown: inferenceGpu.systemRamAvailableKnown,
-          systemRamReserveDeficitGb: memorySystemRamReserveDeficitGb,
-          singleMemoryPool,
-          reclaimableTotalBytes: reclaimableCredit.totalBytes,
-          reclaimableGpuBytes: reclaimableCredit.gpuBytes,
-        })
+      ? resolveAutoFittedContext(
+          memoryEstimate.estimate,
+          {
+            gpuCapacityGb: memoryGpuCapacityGb,
+            totalCapacityGb: memoryTotalCapacityGb,
+            systemRamCapacityGb: inferenceGpu.systemRamTotalGb,
+            freeGpuCapacityGb: memoryFreeGpuCapacityGb,
+            freeGpuCapacityKnown: memoryFreeGpuCapacityKnown,
+            freeGpuReserveDeficitGb: memoryFreeGpuReserveDeficitGb,
+            usableSystemRamGb: memoryUsableSystemRamGb,
+            usableSystemRamKnown: inferenceGpu.systemRamAvailableKnown,
+            systemRamReserveDeficitGb: memorySystemRamReserveDeficitGb,
+            singleMemoryPool,
+            reclaimableTotalBytes: reclaimableCredit.totalBytes,
+            reclaimableGpuBytes: reclaimableCredit.gpuBytes,
+          },
+          { appleUnifiedMemory: isAppleUnifiedMemory },
+        )
       : null;
 
   const storedRecord = useStoredPerModelConfig(configId, target.ggufVariant);
