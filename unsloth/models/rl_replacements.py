@@ -3751,8 +3751,7 @@ def _unsloth_vllm_bump_weights_epoch(engine):
 
 
 def _unsloth_vllm_watch_weight_resets(engine):
-    """Count the events that drop the engine's weights: sleep(level >= 2) discards them and
-    collective_rpc("reload_weights") reloads the checkpoint from disk."""
+    """Count weight drops: sleep(level >= 2) and collective_rpc("reload_weights")."""
     if engine is None or getattr(engine, "_unsloth_vllm_weights_epoch", None) is not None:
         return
     engine._unsloth_vllm_weights_epoch = 0
@@ -3778,11 +3777,8 @@ def _unsloth_vllm_watch_weight_resets(engine):
 
 
 class _UnslothVllmFrozenSync:
-    """Frozen weights without an adapter never change, so once the engine holds them they are
-    not sent again. Keyed by vLLM name: the last tensor sent under a name must be this same
-    parameter, at the same storage and version, or it is sent. Everything is sent again after
-    the engine drops its weights (sleep level 2, reload_weights) or when the receiver changes.
-    UNSLOTH_VLLM_SYNC_FROZEN_WEIGHTS = 1 sends every weight every sync."""
+    """Send frozen non-adapter weights once per vLLM name (same param, storage, version); resend
+    after a weight drop or receiver change. UNSLOTH_VLLM_SYNC_FROZEN_WEIGHTS = 1 disables."""
 
     def __init__(
         self,
@@ -3824,7 +3820,6 @@ class _UnslothVllmFrozenSync:
         tensor,
         param = None,
     ):
-        """True to send (name, tensor); param is the source parameter when the caller knows it."""
         if self.state is None:
             return True
         nbytes = tensor.numel() * tensor.element_size()
@@ -6407,8 +6402,7 @@ def _unsloth_vllm_sync_colocate(generation, vllm_model):
     """TRL's colocate sync calls load_weights once per tensor, and every call rebuilds vLLM's
     parameter lookup (~0.4 ms each). Hand over the same (name, tensor) references in a few calls:
     no copies, and each weight_loader runs on the same data, so vLLM's weights are bit-identical.
-    UNSLOTH_VLLM_WEIGHT_SYNC_BUCKET_MB = 0 restores the per-tensor loop. Frozen weights without
-    an adapter are sent once, not every sync (_UnslothVllmFrozenSync)."""
+    UNSLOTH_VLLM_WEIGHT_SYNC_BUCKET_MB = 0 restores the per-tensor loop."""
     weights = generation._iter_named_params()
     cap = _vllm_weight_sync_bucket_bytes()
     state = getattr(getattr(generation, "accelerator", None), "state", None)

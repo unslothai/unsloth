@@ -19,8 +19,6 @@ from tests.test_grpo_move_model_to_vllm_sync import (
 
 
 class _Engine(_WeightRecorder):
-    """Fake vLLM model: keeps the last tensor loaded under each name, counts bytes."""
-
     def __init__(self):
         super().__init__()
         self.state = {}
@@ -138,7 +136,6 @@ def test_frozen_weights_sent_once_and_engine_matches_full_sync(vllm_mode):
         sent_bytes.append(engine.bytes - before_bytes)
         names = engine.loaded[before_names:]
         if step > 0:
-            # Only the LoRA-bearing projections: q_proj and v_proj in 2 layers.
             assert sorted(names) == sorted(
                 f"model.layers.{i}.self_attn.{p}.weight"
                 for i in range(2)
@@ -202,7 +199,6 @@ def test_unfrozen_or_edited_frozen_weight_is_sent():
     method(trainer)
     norm = model.base_model.model.model.norm.weight
     head = model.base_model.model.lm_head.weight
-    # In place edit of a frozen weight bumps its version.
     with torch.no_grad():
         norm.mul_(2)
     head.requires_grad_(True)
@@ -211,7 +207,6 @@ def test_unfrozen_or_edited_frozen_weight_is_sent():
     names = engine.loaded[before:]
     assert "model.norm.weight" in names and "lm_head.weight" in names
     _assert_same_state(engine.state, _full_sync_state(model, "colocate"))
-    # Trainable weights are sent every sync, even unchanged.
     before = len(engine.loaded)
     method(trainer)
     assert "lm_head.weight" in engine.loaded[before:]
@@ -230,8 +225,7 @@ def test_opt_out_sends_everything(monkeypatch):
 
 
 def test_modules_to_save_toggle_resends_the_original_head():
-    # The served copy (trainable) and original_module (frozen) share one vLLM name: whichever was
-    # sent last decides, so switching back to the frozen original must send it again.
+    # Served copy and original_module share a vLLM name: switching back must resend.
     peft = pytest.importorskip("peft")
     torch.manual_seed(0)
     base = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.Linear(8, 4))
@@ -258,7 +252,6 @@ def test_modules_to_save_toggle_resends_the_original_head():
 
 
 def _iter_named_params_like_trl(generation):
-    # trl main generation/vllm_generation.py VLLMGeneration._iter_named_params, single process.
     model = generation.model
     if hasattr(model, "merge_adapter"):
         model.merge_adapter()
@@ -283,8 +276,7 @@ def _generation(model, sharded = False):
         llm = _LLM(engine),
         accelerator = types.SimpleNamespace(state = state),
     )
-    # What a full sync gives, from the same pass (TRL's in-place merge drifts a bf16 base, so a
-    # second pass would not reproduce it).
+    # Same pass: TRL's in-place merge drifts a bf16 base, so a second pass would differ.
     generation.full = {}
 
     def _iter_named_params():
