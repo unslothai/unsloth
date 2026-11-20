@@ -60,6 +60,11 @@ class RawTextDataLoader:
         extension = Path(file_path).suffix.lower()
         return SUPPORTED_FORMATS.get(extension, "plain_text")
 
+    @staticmethod
+    def supports_file(file_path):
+        """Check if the file's extension maps to a format this loader parses."""
+        return Path(file_path).suffix.lower() in SUPPORTED_FORMATS
+
     def load_from_file(
         self,
         file_path,

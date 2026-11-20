@@ -305,7 +305,11 @@ def run(args):
             dataset = _load_raw_text_file(
                 RawTextDataLoader, tokenizer, is_mlx, args, args.raw_text_file
             )
-        elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
+        elif RawTextDataLoader.supports_file(args.dataset) and (
+            os.path.isfile(args.dataset)
+            or os.path.isabs(args.dataset)
+            or args.dataset.startswith(("./", "../"))
+        ):
             dataset = _load_raw_text_file(RawTextDataLoader, tokenizer, is_mlx, args, args.dataset)
         else:
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
