@@ -1660,7 +1660,7 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)] compare-pane-header",
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
