@@ -3614,9 +3614,7 @@ def upload_to_huggingface(
                 os.path.join(tfevents_dir, "*out.tfevents*"),
             )
             for ftevent_file in ftevent_files:
-                path_in_repo = os.path.relpath(ftevent_file, tfevents_dir).replace(
-                    os.sep, "/"
-                )
+                path_in_repo = os.path.relpath(ftevent_file, tfevents_dir).replace(os.sep, "/")
                 hf_api.upload_file(
                     path_or_fileobj = ftevent_file,
                     path_in_repo = path_in_repo,
@@ -3635,7 +3633,6 @@ def upload_to_huggingface(
 
         if create_config:
             import tempfile
-
             temp_config = tempfile.NamedTemporaryFile(
                 mode = "w", encoding = "utf-8", suffix = ".json", delete = False
             )

@@ -53,9 +53,7 @@ def hub(monkeypatch):
 
 
 def _model():
-    return SimpleNamespace(
-        config = SimpleNamespace(_name_or_path = "unsloth/tiny", model_type = "llama")
-    )
+    return SimpleNamespace(config = SimpleNamespace(_name_or_path = "unsloth/tiny", model_type = "llama"))
 
 
 def _tfevents(h):
@@ -93,10 +91,7 @@ def test_tfevents_inside_export_dir_upload_with_posix_path(hub, tmp_path, monkey
     )
 
     tfevents = _tfevents(hub)
-    assert sorted(tfevents) == [
-        "events.out.tfevents.1.host",
-        "runs/events.out.tfevents.2.host",
-    ]
+    assert sorted(tfevents) == ["events.out.tfevents.1.host", "runs/events.out.tfevents.2.host"]
     for repo_path in tfevents:
         assert not repo_path.startswith("/")
         assert "\\" not in repo_path
