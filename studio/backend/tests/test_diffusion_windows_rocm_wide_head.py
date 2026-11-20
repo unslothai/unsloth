@@ -252,3 +252,61 @@ def test_a_rejected_half_head_honours_the_half_math_switch(monkeypatch, half_mat
     assert out.dtype == torch.bfloat16
     ref = torch.nn.functional.scaled_dot_product_attention(q.float(), k.float(), v.float())
     torch.testing.assert_close(out.float(), ref, atol = 2e-2, rtol = 2e-2)
+
+
+@pytest.mark.allow_network
+def test_the_sdxl_trainer_routes_its_vae_attention_before_encoding_latents(
+    tmp_path, monkeypatch, rocm
+):
+    """The SDXL LoRA loop encodes its training latents through the pipeline's VAE: on ROCm its attention takes the
+    same routed exact path as the DiT trainers and inference, before the first encode."""
+    pytest.importorskip("diffusers")
+    pytest.importorskip("peft")
+    from huggingface_hub import snapshot_download
+    from PIL import Image
+
+    from core.training import diffusion_lora_trainer as trainer
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    try:
+        base = snapshot_download("hf-internal-testing/tiny-stable-diffusion-xl-pipe")
+    except Exception as exc:  # noqa: BLE001 -- offline CI
+        pytest.skip(f"tiny SDXL pipe unavailable: {exc}")
+    data = tmp_path / "data"
+    data.mkdir()
+    Image.new("RGB", (64, 64), (200, 40, 30)).save(data / "img0.png")
+    (data / "img0.txt").write_text("a tile")
+    (tmp_path / "catalog").mkdir()
+    monkeypatch.setattr("core.inference.diffusion_lora.loras_dir", lambda: tmp_path / "catalog")
+    monkeypatch.setattr(trainer, "_assert_trusted_base_model", lambda *a, **k: None)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", None)
+    seen = []
+    real_patch = C.patch_attention_modules
+    monkeypatch.setattr(
+        C, "patch_attention_modules", lambda vae, *a: seen.append(vae) or real_patch(vae, *a)
+    )
+    from diffusers.models.autoencoders.vae import Encoder
+
+    encoded_after = []
+    real_forward = Encoder.forward
+    monkeypatch.setattr(
+        Encoder,
+        "forward",
+        lambda self, *a, **k: encoded_after.append(bool(seen)) or real_forward(self, *a, **k),
+    )
+    cfg = DiffusionLoraConfig(
+        base_model = base,
+        model_family = "sdxl",
+        data_dir = str(data),
+        output_dir = str(tmp_path / "out"),
+        resolution = 64,
+        train_steps = 1,
+        learning_rate = 1e-3,
+        lora_rank = 4,
+        seed = 0,
+        compile_transformer = "off",
+    )
+    trainer.run_diffusion_lora_training(cfg, on_event = lambda _e: None)
+    assert len(seen) == 1 and type(seen[0]).__name__ == "AutoencoderKL"
+    assert any(getattr(m, "_unsloth_vae_attn_chunked", False) for m in seen[0].modules())
+    assert encoded_after and all(encoded_after), "every latent encode ran after the routing"
