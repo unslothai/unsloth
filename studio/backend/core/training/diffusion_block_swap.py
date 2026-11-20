@@ -5,7 +5,8 @@
 
 Frozen weights of some repeated blocks live in pinned host RAM and stream to the GPU one block ahead on a side stream
 (unsloth_zoo.block_swap.BlockSwap: the host copy is authoritative, so nothing is ever copied back, and the
-checkpoint recompute prefetches in reverse). Every block must be checkpointed, so the checkpointing budget is off.
+checkpoint recompute prefetches in reverse). Swapped blocks are always checkpointed; the checkpointing budget plans
+the resident blocks into the room the swap freed.
 """
 
 from __future__ import annotations
@@ -280,6 +281,10 @@ def install_dit_block_swap(
     plan = plan_swap(block_bytes, request, need, depth_plan)
     swapped = [mod[i] for (_, mod), idx in zip(lists, plan) for i in idx]
     _place_rest(transformer, swapped, dev)
+    from core.training.diffusion_gc_budget import SWAPPED_ATTR
+
+    for block in swapped:
+        setattr(block, SWAPPED_ATTR, True)
     swappers = []
     try:
         for (_, mod), idx in zip(lists, plan):
@@ -292,6 +297,8 @@ def install_dit_block_swap(
     except Exception as exc:
         for s in swappers:
             s.remove()
+        for block in swapped:
+            block.__dict__.pop(SWAPPED_ATTR, None)
         raise ValueError(f"block_swap could not keep the blocks in host RAM: {exc}") from exc
     LAST_SWAPPERS[:] = swappers
     transformer._unsloth_block_swaps = swappers
@@ -322,6 +329,40 @@ def compile_swapped_blocks(
         for block in mod:
             block.forward = torch.compile(block.forward, fullgraph = fullgraph, dynamic = dynamic)
             n += 1
+    return n
+
+
+def swap_pool_growth_bytes(transformer) -> int:
+    """Device bytes the swappers' slot pools may still grow by (prefetch_depth "auto" adds a slot per signature while
+    copies stall, up to zoo's max depth): the checkpointing budget leaves this room free. 0 once settled or unknown."""
+    total = 0
+    try:
+        from unsloth_zoo import block_swap as zoo_swap
+        max_depth = int(getattr(zoo_swap, "_AUTO_MAX_DEPTH", 4))
+    except Exception:  # noqa: BLE001 -- no zoo: nothing installed
+        return 0
+    for s in getattr(transformer, "_unsloth_block_swaps", None) or ():
+        try:
+            if not getattr(s, "_auto", False) or getattr(s, "_settled", True):
+                continue
+            grow = max(0, max_depth - int(s.depth))
+            slot = max((b.nbytes() for b in s.blocks), default = 0)
+            total += grow * slot * max(1, len(getattr(s, "free", {}) or {}))
+        except Exception:  # noqa: BLE001 -- unreadable swapper: reserve nothing for it
+            continue
+    return int(total)
+
+
+def reset_block_swaps(transformer) -> int:
+    """After an out-of-memory error mid-step: give every slot back and arm the first blocks, so the rerun starts from
+    a clean pool (no block left resident or marked as held by the failed graph). Returns the swappers reset."""
+    n = 0
+    for s in getattr(transformer, "_unsloth_block_swaps", None) or ():
+        try:
+            s.reset()
+            n += 1
+        except Exception:  # noqa: BLE001 -- the next forward's steal path still recovers the slots
+            pass
     return n
 
 

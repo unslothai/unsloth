@@ -25,6 +25,8 @@ import os
 from typing import Any, Optional
 
 GC_MODE_ENV = "UNSLOTH_DIFFUSION_GC_MODE"
+# Set on a block whose frozen weights block swap streams from host RAM (diffusion_block_swap).
+SWAPPED_ATTR = "_unsloth_block_swapped"
 # Free memory kept back after the plan: allocator fragmentation, the CUDA workspace, a preview round's VAE decode.
 _MARGIN_MIN_BYTES = 2 << 30
 _MARGIN_FRACTION = 0.10
@@ -220,6 +222,10 @@ class BudgetedCheckpoint:
 
     def __call__(self, function: Any, *args: Any, **kwargs: Any) -> Any:
         owner = _owner(function)
+        if getattr(owner, SWAPPED_ATTR, False):
+            # A block-swapped block streams its weights from host RAM: kept activations would hold them on the card
+            # until backward, so it is always checkpointed and never measured or planned.
+            return self.base(function, *args, **kwargs)
         idx = self._block_index(owner)
         if self.probing and not self.disabled:
             cls = type(owner).__name__
