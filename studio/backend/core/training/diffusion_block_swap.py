@@ -45,6 +45,12 @@ def block_swap_request(cfg: Any) -> Optional[Union[int, str]]:
     return n if n > 0 else None
 
 
+def block_swap_explicit_off(cfg: Any) -> bool:
+    """cfg.block_swap says "off" or 0 outright (not unset): no swap at all, not even auto's int8-band swap."""
+    raw = getattr(cfg, "block_swap", None)
+    return raw is not None and str(raw).strip() != "" and str(raw).strip().lower() in _OFF
+
+
 def block_swap_error(
     request,
     base_precision: str,

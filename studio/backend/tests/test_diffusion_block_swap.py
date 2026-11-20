@@ -264,3 +264,20 @@ def test_an_explicit_off_from_the_api_overrides_the_env(monkeypatch):
     for off in ("off", "0"):
         assert bs.block_swap_request(_config_from_dict({**base, "block_swap": off})) is None
     assert bs.block_swap_request(_config_from_dict(base)) == "auto"
+
+
+def test_explicit_off_is_told_apart_from_unset():
+    for off in ("off", "0", 0, "none"):
+        assert bs.block_swap_explicit_off(_cfg(block_swap = off))
+    for unset in (None, "", "auto", 4):
+        assert not bs.block_swap_explicit_off(_cfg(block_swap = unset))
+    assert not bs.block_swap_explicit_off(_cfg())
+
+
+def test_trainer_skips_the_auto_band_swap_on_an_explicit_off():
+    import inspect
+
+    import core.training.diffusion_dit_trainer as dt
+
+    src = inspect.getsource(dt)
+    assert "not block_swap_explicit_off(cfg)" in src
