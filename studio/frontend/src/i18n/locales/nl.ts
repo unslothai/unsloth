@@ -1150,6 +1150,7 @@ export const nl = {
       customizeProfileMenu: "Profielmenu aanpassen",
       newBadge: "Nieuw",
       export: "Exporteren",
+      pinned: "Vastgezet",
       recents: "Recent",
       noChatsYet: "Nog geen chats",
       noChats: "Geen chats",
@@ -1233,6 +1234,10 @@ export const nl = {
       deleteProjectsFilesDescription:
         "De werkruimtemap van elk project wordt van de schijf verwijderd.",
       countSelected: "{count} geselecteerd",
+      selectChats: "Chats selecteren",
+      selectAllChats: "Alle chats selecteren",
+      deselectAllChats: "Alle chats deselecteren",
+      clearSelection: "Selectie wissen",
       pinChats: "Chats vastzetten",
       unpinChats: "Chats losmaken",
       archiveChats: "Chats archiveren",

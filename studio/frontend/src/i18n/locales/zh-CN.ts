@@ -1033,6 +1033,7 @@ export const zhCN = {
       customizeProfileMenu: "自定义个人资料菜单",
       newBadge: "新",
       export: "导出",
+      pinned: "已置顶",
       recents: "最近",
       noChatsYet: "暂无对话",
       noChats: "无对话",
@@ -1115,6 +1116,10 @@ export const zhCN = {
       deleteProjectsFilesDescription:
         "每个项目的工作区文件夹会从磁盘中删除。",
       countSelected: "已选择 {count} 个",
+      selectChats: "选择对话",
+      selectAllChats: "选择所有对话",
+      deselectAllChats: "取消选择所有对话",
+      clearSelection: "清除选择",
       pinChats: "置顶对话",
       unpinChats: "取消置顶",
       archiveChats: "归档对话",

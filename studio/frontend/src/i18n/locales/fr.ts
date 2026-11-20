@@ -1039,6 +1039,7 @@ export const fr = {
       customizeProfileMenu: "Personnaliser le menu du profil",
       newBadge: "Nouveau",
       export: "Exporter",
+      pinned: "Épinglées",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
       noChats: "Aucune discussion",
@@ -1121,6 +1122,10 @@ export const fr = {
       deleteProjectsFilesDescription:
         "Le dossier de travail de chaque projet est retiré du disque.",
       countSelected: "{count} sélectionnés",
+      selectChats: "Sélectionner les discussions",
+      selectAllChats: "Tout sélectionner",
+      deselectAllChats: "Tout désélectionner",
+      clearSelection: "Effacer la sélection",
       pinChats: "Épingler les discussions",
       unpinChats: "Détacher les discussions",
       archiveChats: "Archiver les discussions",

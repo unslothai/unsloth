@@ -1086,6 +1086,7 @@ export const th = {
       customizeProfileMenu: "ปรับแต่งเมนูโปรไฟล์",
       newBadge: "ใหม่",
       export: "ส่งออก",
+      pinned: "ปักหมุดแล้ว",
       recents: "ล่าสุด",
       noChatsYet: "ยังไม่มีแชท",
       noChats: "ไม่มีแชท",
@@ -1169,6 +1170,10 @@ export const th = {
       deleteProjectsFilesDescription:
         "โฟลเดอร์พื้นที่ทำงานของแต่ละโปรเจกต์จะถูกนำออกจากดิสก์",
       countSelected: "เลือกแล้ว {count} รายการ",
+      selectChats: "เลือกแชท",
+      selectAllChats: "เลือกแชททั้งหมด",
+      deselectAllChats: "ยกเลิกการเลือกแชททั้งหมด",
+      clearSelection: "ล้างการเลือก",
       pinChats: "ปักหมุดแชท",
       unpinChats: "เลิกปักหมุดแชท",
       archiveChats: "เก็บแชทถาวร",

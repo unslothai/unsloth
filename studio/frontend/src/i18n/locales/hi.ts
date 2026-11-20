@@ -1039,6 +1039,7 @@ export const hi = {
       customizeProfileMenu: "प्रोफ़ाइल मेनू कस्टमाइज़ करें",
       newBadge: "नया",
       export: "एक्सपोर्ट",
+      pinned: "पिन की गई",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
       noChats: "कोई चैट नहीं",
@@ -1121,6 +1122,10 @@ export const hi = {
       deleteProjectsFilesDescription:
         "हर प्रोजेक्ट का कार्यक्षेत्र फ़ोल्डर डिस्क से हटा दिया जाता है।",
       countSelected: "{count} चुने गए",
+      selectChats: "चैट चुनें",
+      selectAllChats: "सभी चैट चुनें",
+      deselectAllChats: "सभी चैट का चयन हटाएँ",
+      clearSelection: "चयन साफ़ करें",
       pinChats: "चैट पिन करें",
       unpinChats: "चैट अनपिन करें",
       archiveChats: "चैट संग्रहित करें",

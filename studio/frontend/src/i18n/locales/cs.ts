@@ -1139,6 +1139,7 @@ export const cs = {
       customizeProfileMenu: "Přizpůsobit nabídku profilu",
       newBadge: "Nové",
       export: "Export",
+      pinned: "Připnuté",
       recents: "Nedávné",
       noChatsYet: "Zatím žádné chaty",
       noChats: "Žádné chaty",
@@ -1223,6 +1224,10 @@ export const cs = {
       deleteProjectsFilesDescription:
         "Složka pracovního prostoru každého projektu bude odstraněna z disku.",
       countSelected: "Vybráno: {count}",
+      selectChats: "Vybrat chaty",
+      selectAllChats: "Vybrat všechny chaty",
+      deselectAllChats: "Zrušit výběr všech chatů",
+      clearSelection: "Vymazat výběr",
       pinChats: "Připnout chaty",
       unpinChats: "Odepnout chaty",
       archiveChats: "Archivovat chaty",

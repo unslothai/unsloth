@@ -103,8 +103,23 @@ test("a chat row reserves one gutter, whatever its state", () => {
 test("double-clicking a chat title opens the Rename chat dialog", () => {
   assert.match(
     APP_SIDEBAR,
-    /onDoubleClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);\n\s*event\.stopPropagation\(\);\n\s*openRenameChat\(item\);\n\s*\}\}/,
+    /onDoubleClick=\{[\s\S]*?if \(!selectingHere\) openRenameChat\(item\);/
   );
+});
+
+test("selection mode toggles a row on a plain click and exposes a bulk bar", () => {
+  assert.match(APP_SIDEBAR, /if \(selectMode \|\| additive\) \{/);
+  assert.match(APP_SIDEBAR, /className="sidebar-header-action is-selection-toggle"/);
+  assert.match(APP_SIDEBAR, /icon=\{CheckmarkSquare02Icon\}/);
+  assert.match(APP_SIDEBAR, /icon=\{ListChecksIcon\}/);
+  assert.match(APP_SIDEBAR, /t\("shell\.navigation\.pinned"\)/);
+  assert.equal((APP_SIDEBAR.match(/className="sidebar-header-action is-selection-toggle"/g) ?? []).length, 2);
+  assert.match(APP_SIDEBAR, /\{renderSelectionBar\(\)\}/);
+  assert.match(APP_SIDEBAR, /openChatItem\(item, \{ keepSelection: selectMode \}\)/);
+});
+
+test("bulk chat deletion is one request, not a per-row loop", () => {
+  assert.match(APP_SIDEBAR, /await deleteChatItems\(\n\s*items,/);
 });
 
 test("a chat row marks itself read or unread from its own menu", () => {

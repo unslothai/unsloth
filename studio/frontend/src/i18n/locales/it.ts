@@ -918,6 +918,7 @@ export const it = {
       customizeProfileMenu: "Personalizza menu profilo",
       newBadge: "Novità",
       export: "Esporta",
+      pinned: "Fissate",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
       noChats: "Nessuna chat",
@@ -1000,6 +1001,10 @@ export const it = {
       deleteProjectsFilesDescription:
         "La cartella dello spazio di lavoro di ogni progetto viene rimossa dal disco.",
       countSelected: "{count} selezionate",
+      selectChats: "Seleziona chat",
+      selectAllChats: "Seleziona tutte le chat",
+      deselectAllChats: "Deseleziona tutte le chat",
+      clearSelection: "Cancella selezione",
       pinChats: "Fissa le chat",
       unpinChats: "Rimuovi le chat fissate",
       archiveChats: "Archivia le chat",

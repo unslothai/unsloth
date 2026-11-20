@@ -1037,6 +1037,7 @@ export const ja = {
       customizeProfileMenu: "プロフィールメニューをカスタマイズ",
       newBadge: "新機能",
       export: "エクスポート",
+      pinned: "ピン留め",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
       noChats: "チャットなし",
@@ -1119,6 +1120,10 @@ export const ja = {
       deleteProjectsFilesDescription:
         "各プロジェクトのワークスペースフォルダーがディスクから削除されます。",
       countSelected: "{count} 件選択中",
+      selectChats: "チャットを選択",
+      selectAllChats: "すべてのチャットを選択",
+      deselectAllChats: "すべてのチャットの選択を解除",
+      clearSelection: "選択を解除",
       pinChats: "チャットをピン留め",
       unpinChats: "ピン留めを解除",
       archiveChats: "チャットをアーカイブ",
