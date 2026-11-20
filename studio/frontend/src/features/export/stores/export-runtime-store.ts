@@ -430,6 +430,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       } catch {
         baseline = null;
       }
+      // The backend has no op to stop during the preflight, so honor a cancel before dispatch.
+      if (!isCurrent()) throw new Error("Export run superseded");
+      if (get().cancelRequested) throw new ExportCanceledError();
       try {
         const resp = await post();
         return {
