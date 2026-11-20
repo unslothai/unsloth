@@ -159,6 +159,8 @@ def install_frozen_prefix_skip(model):
         _release(active)
 
     def _pre(module, args, kwargs):
+        if torch.compiler.is_compiling():
+            return None  # inside the caller's torch.compile: hook registration cannot be traced
         _restore()
         if (
             state["disabled"]
@@ -193,6 +195,8 @@ def install_frozen_prefix_skip(model):
         return None
 
     def _post(module, args, output):
+        if torch.compiler.is_compiling():
+            return None
         active = state["active"]
         _restore()
         if active is None or output is None:
