@@ -96,3 +96,67 @@ def test_cuda_codes_byte_identical():
         assert torch.equal(
             fq.quantize_static(x, s).view(torch.uint8), fq.reference(x, s).view(torch.uint8)
         )
+
+
+def _fake_cards(monkeypatch, capturing_on):
+    """Card 0 current; ``is_current_stream_capturing`` answers for whichever card is selected."""
+    import contextlib
+
+    selected = [0]
+
+    @contextlib.contextmanager
+    def device(index):
+        prev, selected[0] = selected[0], int(getattr(index, "index", index))
+        try:
+            yield
+        finally:
+            selected[0] = prev
+
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "device", device)
+    monkeypatch.setattr(
+        torch.cuda, "is_current_stream_capturing", lambda: selected[0] in capturing_on
+    )
+
+
+def test_cold_check_never_runs_inside_a_capture(monkeypatch):
+    # The cold check syncs the host; inside a recording it must not run, and no verdict (pass or fail) is recorded,
+    # so the first eager call outside the capture still verifies the card.
+    monkeypatch.setattr(fq, "_STATE", {"verified": {}, "calls": 0, "reason": ""})
+    monkeypatch.setattr(fq, "triton", object())
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (8, 9))
+    calls = []
+
+    def verify(device):
+        calls.append(device)
+        if capture_on:
+            raise RuntimeError("operation not permitted when stream is capturing")
+        return True
+
+    monkeypatch.setattr(fq, "_verify", verify)
+    capture_on = {1}
+    _fake_cards(monkeypatch, capture_on)
+    dev = torch.device("cuda", 1)
+    assert not fq.ready(dev)  # recording on the operand's card while card 0 is current
+    assert calls == [] and fq._STATE["verified"] == {}
+    capture_on.clear()
+    assert fq.ready(dev) and len(calls) == 1 and fq._STATE["verified"] == {1: True}
+
+
+def test_gemm_probe_never_runs_inside_a_capture(monkeypatch):
+    lin = _linear()
+    probed = []
+    monkeypatch.setattr(mo, "_GEMM_PROBE", {})
+    monkeypatch.setattr(mo, "fp8_gemm_runs", lambda **k: probed.append(k))
+    _fake_cards(monkeypatch, {1})
+
+    class _X:
+        is_cuda = True
+        shape = (4, 32)
+        device = torch.device("cuda", 1)
+
+    from types import SimpleNamespace
+
+    holder = SimpleNamespace(weight_q = SimpleNamespace(is_cuda = True), act = lin.act)
+    assert type(lin)._gemm(holder, _X()) is False
+    assert probed == [] and mo._GEMM_PROBE == {}
