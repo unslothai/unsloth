@@ -216,3 +216,15 @@ def test_cached_hub_previews_keep_the_loader_dates(tmp_path):
     _write_jsonl(path, [{"when": "1945-05-08"}])
     dataset, _ = local._stream_file_preview_slice(path, 10)
     assert str(dataset[0]["when"]) == "1945-05-08 00:00:00"
+
+
+def test_dated_preview_fills_its_rows_past_a_byte_bounded_chunk(tmp_path, monkeypatch):
+    import utils.datasets.json_rows as json_rows
+
+    monkeypatch.setattr(json_rows, "_CHUNK_BYTES", 1)
+    path = tmp_path / "train.jsonl"
+    path.write_bytes(
+        b"\xef\xbb\xbf" + b"".join(b'{"when": "1945-05-0%d"}\n' % i for i in range(1, 6))
+    )
+    dataset, _ = local._stream_file_preview_slice(path, 3, dates_as_written = True)
+    assert dataset["when"] == ["1945-05-01", "1945-05-02", "1945-05-03"]

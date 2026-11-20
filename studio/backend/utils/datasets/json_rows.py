@@ -70,7 +70,12 @@ def has_timestamp(data_type):
 
 
 def head_rows(path, count):
-    return next(_row_chunks(path, count), []) if count > 0 else []
+    rows = []
+    for chunk in _row_chunks(path, count) if count > 0 else ():
+        rows.extend(chunk[: count - len(rows)])
+        if len(rows) >= count:
+            break
+    return rows
 
 
 def timestamps_as_strings(data_type):
