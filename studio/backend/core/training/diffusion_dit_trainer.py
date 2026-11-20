@@ -4140,7 +4140,7 @@ def _train_dit(
             if gc_budget is not None and not gc_budget.planned and canvases is not None:
                 # Bucketed runs: the plan is measured on this step's canvas and scaled to the largest bucket.
                 gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idxs))
-            if replay is not None and gc_budget.can_retry:
+            if replay is not None and gc_budget.records_inputs:
                 replay.record(inputs)
             oom = False
             try:

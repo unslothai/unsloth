@@ -11,6 +11,10 @@ recompute (same kernels, same inputs, so loss and gradients are unchanged). An o
 
 ``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA (not ROCm); ``plain`` checkpoints every block
 and ``partial`` every Nth, as before.
+
+The blocks that stay checkpointed keep their long attention outputs (a selective checkpoint policy), so the backward
+recompute skips those kernels: a few percent of the card buys most of the attention forward. The plan charges every
+block for them and credits a kept block with its own. ``UNSLOTH_DIFFUSION_GC_SAVE_ATTENTION=0`` recomputes them.
 """
 
 from __future__ import annotations
@@ -73,8 +77,97 @@ def _memory_allocated() -> int:
     return torch.cuda.memory_allocated()
 
 
+SAVE_ATTENTION_ENV = "UNSLOTH_DIFFUSION_GC_SAVE_ATTENTION"
+# Attention calls with at least this many keys keep their outputs; shorter ones (Wan's 512-token text cross-attention)
+# cost little to recompute next to the bytes they would hold.
+_SAVE_ATTENTION_MIN_KEYS = 1024
+
+
+def _attention_ops() -> frozenset:
+    import torch
+    names = (
+        "_scaled_dot_product_flash_attention",
+        "_scaled_dot_product_efficient_attention",
+        "_scaled_dot_product_cudnn_attention",
+        "_scaled_dot_product_flash_attention_for_cpu",
+    )
+    return frozenset(
+        getattr(torch.ops.aten, n).default for n in names if hasattr(torch.ops.aten, n)
+    )
+
+
+def _attention_bytes(args: tuple) -> int:
+    """Bytes an attention kernel's kept outputs hold: the output (query shape, value head size) and an fp32
+    logsumexp per query row."""
+    q = args[0] if args else None
+    v = args[2] if len(args) > 2 else None
+    if getattr(q, "ndim", 0) < 2:
+        return 0
+    rows = q.numel() // q.shape[-1]
+    head = v.shape[-1] if getattr(v, "ndim", 0) >= 2 else q.shape[-1]
+    return rows * head * q.element_size() + rows * 4
+
+
+def save_attention_context_fn(on_save: Optional[Any] = None) -> Optional[Any]:
+    """``context_fn`` for a non-reentrant checkpoint that keeps long attention outputs (output, logsumexp, rng state)
+    and recomputes every other op, or None: off (``UNSLOTH_DIFFUSION_GC_SAVE_ATTENTION=0``) or a torch whose selective
+    checkpoint modes would push compiled blocks back to eager (they must ignore compile internals)."""
+    if (os.environ.get(SAVE_ATTENTION_ENV, "") or "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return None
+    try:
+        import torch.utils.checkpoint as ck
+
+        ignores = getattr(
+            getattr(ck, "_CachingTorchDispatchMode", None), "ignore_compile_internals", None
+        )
+        if not callable(ignores) or not ignores():
+            return None
+        ops = _attention_ops()
+        save, recompute = ck.CheckpointPolicy.MUST_SAVE, ck.CheckpointPolicy.PREFER_RECOMPUTE
+        create = ck.create_selective_checkpoint_contexts
+    except Exception:  # noqa: BLE001 -- no selective checkpointing: plain recompute
+        return None
+    if not ops:
+        return None
+
+    def policy(ctx: Any, op: Any, *args: Any, **kwargs: Any) -> Any:
+        if op in ops:
+            key = args[1] if len(args) > 1 else None
+            if getattr(key, "ndim", 0) >= 2 and key.shape[-2] >= _SAVE_ATTENTION_MIN_KEYS:
+                # torch 2.10 / 2.11 ask again during the recompute: count the first pass only.
+                if on_save is not None and not getattr(ctx, "is_recompute", False):
+                    on_save(_attention_bytes(args))
+                return save
+        return recompute
+
+    return functools.partial(create, policy)
+
+
 class _Checkpoint:
-    """The non-reentrant checkpoint the plain path uses, block kwargs bound (non-reentrant would read debug / context_fn)."""
+    """The non-reentrant checkpoint the plain path uses, block kwargs bound (non-reentrant would read debug / context_fn).
+    ``save_attention``: the backward recompute reuses the first pass's long attention outputs instead of rerunning
+    the kernels; everything else is recomputed as before."""
+
+    def __init__(self, save_attention: bool = False):
+        # First-pass attention outputs kept so far (count, bytes): the memory a rerun without them would give back.
+        self.saved_attention = 0
+        self.saved_attention_bytes = 0
+        self.context_fn = save_attention_context_fn(self._on_save) if save_attention else None
+
+    def _on_save(self, nbytes: int) -> None:
+        self.saved_attention += 1
+        self.saved_attention_bytes += int(nbytes)
+
+    def drop_saved_attention(self) -> bool:
+        """Recompute attention again from the next call on; returns whether outputs were being kept."""
+        had = self.context_fn is not None and self.saved_attention > 0
+        self.context_fn = None
+        return had
 
     def __call__(self, function: Any, *args: Any, **kwargs: Any) -> Any:
         import torch.utils.checkpoint as ck
@@ -82,6 +175,8 @@ class _Checkpoint:
         fn = getattr(ck, "_unsloth_pristine_checkpoint", None) or ck.checkpoint
         if kwargs:
             function = functools.partial(function, **kwargs)
+        if self.context_fn is not None:
+            return fn(function, *args, use_reentrant = False, context_fn = self.context_fn)
         return fn(function, *args, use_reentrant = False)
 
 
@@ -89,7 +184,7 @@ class BudgetedCheckpoint:
     """``gradient_checkpointing_func`` for a diffusers model: checkpoints every block except those in ``keep``."""
 
     def __init__(self, base: Optional[Any] = None):
-        self.base = base or _Checkpoint()
+        self.base = base or _Checkpoint(save_attention = True)
         self.keep: frozenset = frozenset()
         self.probing = True
         self.planned = False
@@ -99,6 +194,9 @@ class BudgetedCheckpoint:
         self.block_proxy: dict[int, int] = {}
         # Kept bytes per proxy element, measured on the first block of each class.
         self.class_cost: dict[str, float] = {}
+        # Attention-output bytes per proxy element a checkpointed block of the class keeps (0: none kept). Step 1's
+        # peak holds them for every checkpointed block, so a block that keeps everything gives them back.
+        self.class_attention: dict[str, float] = {}
         self.kept_bytes = 0
         # Largest canvas area seen while measuring (bucketed runs only).
         self.probe_area: Optional[int] = None
@@ -129,9 +227,20 @@ class BudgetedCheckpoint:
             self.block_proxy[idx] = max(self.block_proxy.get(idx, 0), _proxy_numel(args, kwargs))
             if cls not in self.class_cost:
                 return self._measure(cls, idx, function, args, kwargs)
+            if cls not in self.class_attention:
+                return self._measure_attention(cls, idx, function, args, kwargs)
         if idx in self.keep and not self.disabled:
             return function(*args, **kwargs)
         return self.base(function, *args, **kwargs)
+
+    def _measure_attention(
+        self, cls: str, idx: int, function: Any, args: tuple, kwargs: dict
+    ) -> Any:
+        before = getattr(self.base, "saved_attention_bytes", 0)
+        out = self.base(function, *args, **kwargs)
+        kept = max(0, getattr(self.base, "saved_attention_bytes", 0) - before)
+        self.class_attention[cls] = kept / max(1, self.block_proxy.get(idx, 0))
+        return out
 
     def _measure(self, cls: str, idx: int, function: Any, args: tuple, kwargs: dict) -> Any:
         before = _memory_allocated()
@@ -144,10 +253,13 @@ class BudgetedCheckpoint:
         self.probe_area = max(self.probe_area or 0, int(area))
 
     def estimate(self, idx: int) -> int:
-        cost = self.class_cost.get(self.block_class.get(idx, ""))
+        """Bytes keeping the block adds over checkpointing it (less the attention outputs it would keep anyway)."""
+        cls = self.block_class.get(idx, "")
+        cost = self.class_cost.get(cls)
         if cost is None:
             return -1
-        return int(cost * self.block_proxy.get(idx, 0))
+        cost -= self.class_attention.get(cls, 0.0)
+        return max(0, int(cost * self.block_proxy.get(idx, 0)))
 
     def plan(
         self,
@@ -225,16 +337,35 @@ class BudgetedCheckpoint:
         return True
 
     def fall_back(self) -> bool:
-        changed = not self.disabled and (bool(self.keep) or self.probing)
+        changed = not self.disabled and (bool(self.keep) or self.probing or self._saving_attention)
         self.disabled = True
         self.probing = False
         self.keep = frozenset()
+        drop = getattr(self.base, "drop_saved_attention", None)
+        if callable(drop):
+            drop()
         return changed
 
     @property
+    def _saving_attention(self) -> bool:
+        return (
+            getattr(self.base, "context_fn", None) is not None
+            and getattr(self.base, "saved_attention", 0) > 0
+        )
+
+    @property
     def can_retry(self) -> bool:
-        """A fully checkpointed rerun would use less memory than this step: measuring, or blocks kept."""
-        return not self.disabled and (self.probing or bool(self.keep))
+        """A fully checkpointed rerun would use less memory than this step: measuring, blocks kept, or attention
+        outputs kept for the checkpointed blocks."""
+        return not self.disabled and (self.probing or bool(self.keep) or self._saving_attention)
+
+    @property
+    def records_inputs(self) -> bool:
+        """Record a step's inputs for a rerun: ``can_retry``, or attention saving on before its first kept output (a
+        long attention call in this step can make ``can_retry`` true mid-step, after the inputs went unrecorded)."""
+        return self.can_retry or (
+            not self.disabled and getattr(self.base, "context_fn", None) is not None
+        )
 
     @property
     def total_blocks(self) -> int:
@@ -389,7 +520,7 @@ class BudgetedSteps:
         budget = self.budget
         if budget is None:
             return fn(*inputs)
-        if budget.can_retry:
+        if budget.records_inputs:
             self.replay.record(inputs)
         try:
             return fn(*inputs)
