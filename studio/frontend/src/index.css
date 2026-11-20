@@ -7233,12 +7233,12 @@ html[data-glass] .wallpaper-preview[data-wallpaper-conversation] .wallpaper-prev
 }
 /* The user's bubble takes the conversation composer's tint, and code blocks the panes' darker
    reading floor. No blur: the thread viewport's mask is a backdrop root, so a backdrop-filter here
-   would frost only the reading wash. */
+   would frost only the reading wash. --glass-on (0 at strength 0%) clears both. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-user-message-content {
-  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) + 9%) * var(--glass-opacity, 1))), transparent);
+  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) + 9%) * var(--glass-opacity, 1) * var(--glass-on, 1))), transparent);
 }
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root [data-streamdown="code-block"] {
-  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-pane-floor)) + 9%) * var(--glass-opacity, 1))), transparent);
+  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-pane-floor)) + 9%) * var(--glass-opacity, 1) * var(--glass-on, 1))), transparent);
 }
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before,
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],

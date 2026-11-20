@@ -287,6 +287,9 @@ test("glass tints the user's bubble and thread code blocks like the composer, wi
 	assert.match(code, /var\(--glass-composer-fill\)[^;]*var\(--glass-pane-floor\)\) \+ 9%\)/);
 	// The thread viewport's mask is a backdrop root, so a blur here would frost only the wash.
 	for (const block of [bubble, code]) assert.doesNotMatch(block, /backdrop-filter/);
+	// Strength 0% clears both; with no --glass-on set, the fill is unchanged.
+	for (const block of [bubble, code])
+		assert.match(block, /\* var\(--glass-opacity, 1\) \* var\(--glass-on, 1\)\)\), transparent\)/);
 });
 
 test("glass frosts sticky bars in panels and popups, floating buttons, and softens shared shadows", () => {
