@@ -30,7 +30,7 @@ Download the native Unsloth Desktop app for your operating system:
     <td><b>Link</b></td>
   </tr>
   <tr>
-    <td><b>Windows</b></td>
+    <td><b>Windows (x64 and ARM64)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows.exe'>Download</a></td>
   </tr>
   <tr>
@@ -48,10 +48,6 @@ Download the native Unsloth Desktop app for your operating system:
   <tr>
     <td><b>Linux (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
-  </tr>
-  <tr>
-    <td><b>Windows (ARM64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
 
@@ -139,7 +135,7 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
     <td><b>Link</b></td>
   </tr>
   <tr>
-    <td><b>Windows</b></td>
+    <td><b>Windows (x64 and ARM64)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows.exe'>Download</a></td>
   </tr>
   <tr>
@@ -157,10 +153,6 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
   <tr>
     <td><b>Linux (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
-  </tr>
-  <tr>
-    <td><b>Windows (ARM64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
 

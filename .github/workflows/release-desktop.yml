@@ -29,7 +29,7 @@ env:
     Desktop app for Unsloth.
 
     **macOS**: Download `Unsloth-Desktop-MacOS.dmg` (Apple Silicon).
-    **Windows**: Download `Unsloth-Desktop-Windows.exe`, or `Unsloth-Desktop-Windows-ARM64.exe` on a Windows on ARM machine.
+    **Windows**: Download `Unsloth-Desktop-Windows.exe` for both x64 and ARM64 PCs.
     **Linux x64**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
     **Linux ARM64**: Download `Unsloth-Desktop-Ubuntu-ARM64.deb` for Ubuntu 24.04 or newer on aarch64, such as a DGX Spark. `Unsloth-Desktop-ARM64.app.tar.gz` is macOS-only.
 
@@ -491,8 +491,7 @@ jobs:
     name: Build ${{ matrix.label }}
     needs: prepare-version
     runs-on: ${{ matrix.platform }}
-    # All signing secrets are read only by this job; the environment makes them gateable once
-    # required reviewers are configured in repo settings.
+    # The release-signing environment gates the jobs that sign desktop binaries.
     environment: release-signing
     timeout-minutes: 60
 
@@ -777,10 +776,10 @@ jobs:
         if: matrix.platform == 'windows-latest'
         # pwsh: the retry parameters below need PowerShell 6+.
         shell: pwsh
-        env:
+        env: &signing-cli-source
           TRUSTED_SIGNING_CLI_URL: "https://github.com/Levminer/artifact-signing-cli/releases/download/0.10.0/trusted-signing-cli.exe"
           TRUSTED_SIGNING_CLI_SHA256: "8c9d750ca582891a7433925dcf302d5d3761fbed757b46c4bf5b417562dccb0e"
-        run: |
+        run: &install-signing-cli |
           $ErrorActionPreference = "Stop"
           $dir = Join-Path $env:RUNNER_TEMP "trusted-signing-cli"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -805,7 +804,7 @@ jobs:
       - name: Verify trusted-signing-cli
         if: matrix.platform == 'windows-latest'
         shell: pwsh
-        run: |
+        run: &verify-signing-cli |
           $ErrorActionPreference = "Stop"
           Write-Output "PATH: $env:PATH"
 
@@ -1013,7 +1012,7 @@ jobs:
       - name: Sign the bundled install script
         if: matrix.platform == 'windows-latest'
         shell: pwsh
-        env:
+        env: &azure-signing
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -1061,7 +1060,7 @@ jobs:
         shell: pwsh
         env:
           ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
-        run: |
+        run: &defender-scan |
           $ErrorActionPreference = 'Continue'
 
           $atp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
@@ -1371,9 +1370,9 @@ jobs:
         shell: pwsh
         env:
           ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
-        run: |
+        run: &microsoft-packet |
           $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json) |
-                   Where-Object { $_ -like '*-setup.exe' }
+                   Where-Object { $_ -like '*.exe' }
           $md = @(
             '## Microsoft submission packet',
             '',
@@ -1421,7 +1420,7 @@ jobs:
         shell: bash
         env:
           ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_linux_arm64.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
-          # Both Windows legs emit -setup.exe into one merged dir; x64 keeps the historical name.
+          # The native installers feed the updater and the combined Windows download.
           MATRIX_ARTIFACT: ${{ matrix.artifact }}
         run: |
           set -euo pipefail
@@ -1451,7 +1450,7 @@ jobs:
           windows_name = (
               f'{base_name}-Windows-ARM64'
               if os.environ.get('MATRIX_ARTIFACT') == 'windows-arm64'
-              else f'{base_name}-Windows'
+              else f'{base_name}-Windows-x64'
           )
           # Both Linux legs bundle a deb and, since in-app Debian updates, its updater
           # signature. publish-release merges every leg's artifact into one directory, so
@@ -1506,6 +1505,81 @@ jobs:
           compression-level: 0
           retention-days: 1
 
+  windows-installer:
+    name: Package Windows installer
+    needs: [prepare-version, build]
+    runs-on: windows-latest
+    environment: release-signing
+    timeout-minutes: 30
+    env:
+      APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.prepare-version.outputs.desktop_release_tag }}
+          persist-credentials: false
+      - name: Download the two verified native installers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: desktop-release-windows-*
+          path: native
+          merge-multiple: true
+      - name: Install trusted-signing-cli
+        shell: pwsh
+        env: *signing-cli-source
+        run: *install-signing-cli
+      - name: Verify trusted-signing-cli
+        shell: pwsh
+        run: *verify-signing-cli
+      - name: Fetch NSIS
+        shell: pwsh
+        run: .github/scripts/prefetch-tauri-windows-tools.ps1 -TauriCliVersion 'tauri-cli 2.10.1'
+      - name: Package and sign both architectures
+        id: package
+        shell: pwsh
+        env: *azure-signing
+        run: |
+          # x64.nsh calls the System plugin to read the native machine type.
+          $plugin = "$env:LOCALAPPDATA/tauri/NSIS/Plugins/x86-unicode/System.dll"
+          $output = "$env:RUNNER_TEMP/Unsloth-Desktop-Windows.exe"
+          studio/src-tauri/windows/sign-with-trusted-signing.ps1 -Path $plugin
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .github/scripts/build-windows-universal.ps1 -X64 native/Unsloth-Desktop-Windows-x64.exe -Arm64 native/Unsloth-Desktop-Windows-ARM64.exe -Version $env:APP_VERSION -Output $output
+          studio/src-tauri/windows/sign-with-trusted-signing.ps1 -Path $output
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .github/scripts/assert-bundle-signed.ps1 -Path $output
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "paths=$(ConvertTo-Json -AsArray -InputObject $output -Compress)" >> $env:GITHUB_OUTPUT
+      - name: Scan the signed combined installer with Defender
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          ARTIFACT_PATHS: ${{ steps.package.outputs.paths }}
+        run: *defender-scan
+      - name: Prepare Microsoft submission packet
+        if: always() && steps.package.outcome == 'success'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.package.outputs.paths }}
+        run: *microsoft-packet
+      - name: Preserve combined installer scan evidence
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ms-submission-packet-windows-universal
+          path: ${{ runner.temp }}/ms-submission-packet.md
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: desktop-release-windows-universal
+          path: ${{ runner.temp }}/Unsloth-Desktop-Windows.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
   # Only this job gets write access; builds hand off signed files via artifacts.
   publish-release:
     name: Publish desktop release
@@ -1513,7 +1587,7 @@ jobs:
     # below restores the `needs: build` gate.
     needs: [prepare-version]
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: write  # create the versioned Release and replace updater-channel metadata
       actions: read    # the waiter reads this run's job list
@@ -1592,7 +1666,14 @@ jobs:
             fi
             if [ "$PENDING" -eq 0 ]; then
               echo "all ${#LEGS[@]} build legs finished and succeeded"
-              break
+              if [ "${LEGS[0]}" = 'Package Windows installer' ]; then
+                break
+              fi
+              # The packaging job is created after the build matrix succeeds.
+              LEGS=('Package Windows installer')
+              STARTUP_DEADLINE=$(( $(date +%s) + 15 * 60 ))
+              DEADLINE=$(( $(date +%s) + 35 * 60 ))
+              continue
             fi
             if [ "$(date +%s)" -gt "$DEADLINE" ]; then
               echo "ERROR: timed out waiting for the build matrix; ${PENDING} leg(s) still running" >&2
@@ -1632,7 +1713,8 @@ jobs:
               f'{base_name}-Ubuntu-ARM64.deb',
               f'{base_name}-Ubuntu-ARM64.deb.sig',
               f'{base_name}-Windows.exe',
-              f'{base_name}-Windows.exe.sig',
+              f'{base_name}-Windows-x64.exe',
+              f'{base_name}-Windows-x64.exe.sig',
               f'{base_name}-Windows-ARM64.exe',
               f'{base_name}-Windows-ARM64.exe.sig',
           }
@@ -1753,9 +1835,9 @@ jobs:
           debian = entry('-Ubuntu.deb.sig')
           debian_arm64 = entry('-Ubuntu-ARM64.deb.sig')
           # Both Windows bundles end in .exe.sig, and exactly_one() refuses an ambiguous
-          # match, so name them in full. -Windows.exe.sig does not match -Windows-ARM64.exe.sig
+          # match, so name them in full. -Windows-x64.exe.sig does not match -Windows-ARM64.exe.sig
           # under endswith, which is what keeps the two entries distinct.
-          windows = entry('-Windows.exe.sig')
+          windows = entry('-Windows-x64.exe.sig')
           windows_arm64 = entry('-Windows-ARM64.exe.sig')
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
           metadata = {
@@ -1994,6 +2076,7 @@ jobs:
               'Unsloth-Desktop-Ubuntu.deb',
               'Unsloth-Desktop-Ubuntu-ARM64.deb',
               'Unsloth-Desktop-Windows.exe',
+              'Unsloth-Desktop-Windows-x64.exe',
               'Unsloth-Desktop-Windows-ARM64.exe',
           }
           missing = sorted(required - names)
