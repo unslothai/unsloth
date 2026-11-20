@@ -240,6 +240,7 @@ def _routed(
     calls = []
     # Automatic mode only routes where a frame can exist: under Unsloth's smart checkpoint.
     monkeypatch.setattr(torch.utils.checkpoint, "CheckpointFunction", G.UnslothCheckpointFunction)
+    monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", 16)
     monkeypatch.setattr(ad, "_saved_attention_call", lambda fn, *t: calls.append(1) or fn(*t))

@@ -1771,10 +1771,15 @@ def _auto_saves_attention(config, context) -> bool:
 
 
 def _unsloth_checkpoint_installed_now() -> bool:
-    return (
+    # zoo makes frames only under its smart checkpoint, and in automatic mode only while the setting is
+    # still "auto": UNSLOTH_GC_SAVE_ATTENTION=0 set after import turns frames off but not this routing.
+    if (
         getattr(torch.utils.checkpoint.CheckpointFunction, "__name__", "")
-        == "UnslothCheckpointFunction"
-    )
+        != "UnslothCheckpointFunction"
+    ):
+        return False
+    setting = os.environ.get("UNSLOTH_GC_SAVE_ATTENTION", "auto").strip().lower() or "auto"
+    return setting == "auto"
 
 
 # Dynamo cannot read a Function class's name; patched once at get_peft_model, before any trace.

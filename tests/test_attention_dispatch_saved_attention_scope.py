@@ -21,6 +21,7 @@ H, KV, D, S = 4, 2, 16, 32
 @pytest.fixture
 def auto_mode(monkeypatch):
     # What unsloth_zoo's automatic mode gives on a measured GPU, with a threshold below S.
+    monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", 16)
     monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
@@ -122,3 +123,13 @@ def test_explicit_setting_is_unchanged(monkeypatch, auto_mode):
     # UNSLOTH_GC_SAVE_ATTENTION=1 (min_seq None) keeps routing every training call, as before.
     monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
     assert _graph_breaks() >= 1
+
+
+@pytest.mark.parametrize("setting", ["0", "false"])
+def test_kill_switch_set_after_import_stops_routing(monkeypatch, auto_mode, setting):
+    # zoo creates no frame once the setting leaves "auto": the routed call would be a break for nothing.
+    _smart_checkpoint(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", setting)
+    assert ad._auto_saves_attention(*_context(S)) is False
+    monkeypatch.setattr(block, "_IN_COMPILED_REGION", [True])
+    assert _graph_breaks() == 0
