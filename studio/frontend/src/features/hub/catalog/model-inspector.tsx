@@ -54,6 +54,10 @@ import {
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
 import { hasMlxCardTag, isMlxId } from "../lib/format-filters";
+import {
+  hubFilterForCapability,
+  type HubCapabilityFilter,
+} from "../lib/model-capabilities";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -432,6 +436,7 @@ export type ModelInspectorRuntime = {
 export type ModelInspectorActions = {
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
+  onSearchCapability?: (capability: HubCapabilityFilter) => void;
   onRun?: (
     selection: HubModelRunSelection,
     mediaPage: ReturnType<typeof studioPageForTask> | "audio",
@@ -473,6 +478,7 @@ export const ModelInspector = memo(function ModelInspector({
   const {
     onInventoryChange,
     onSearchHub,
+    onSearchCapability,
     onRun,
     runConfigPending = false,
   } = actions;
@@ -682,9 +688,24 @@ export const ModelInspector = memo(function ModelInspector({
           )}
           {model.private && <AccessChip label="Private" />}
           {gatedAccess && <AccessChip label="Gated" />}
-          {model.capabilities.map((capability) => (
-            <CapabilityPill key={capability.key} capability={capability} />
-          ))}
+          {model.capabilities.map((capability) => {
+            const hubFilter = hubFilterForCapability(capability.key, {
+              id: model.id,
+              tags: model.tags,
+              pipelineTag: model.pipelineTag ?? model.task ?? undefined,
+            });
+            return (
+              <CapabilityPill
+                key={capability.key}
+                capability={capability}
+                onClick={
+                  hubFilter && onSearchCapability
+                    ? () => onSearchCapability(hubFilter)
+                    : undefined
+                }
+              />
+            );
+          })}
           {!isDataset && model.baseModel && baseModelSearchTerm && (
             <BaseModelSearchChip
               baseModel={model.baseModel}

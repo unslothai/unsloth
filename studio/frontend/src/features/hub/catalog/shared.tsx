@@ -169,20 +169,15 @@ export function CapabilityPill({
   capability,
   iconOnly = false,
   tooltip = true,
+  onClick,
 }: {
   capability: Capability;
   iconOnly?: boolean;
   tooltip?: boolean;
+  onClick?: () => void;
 }) {
-  const pill = (
-    <span
-      aria-label={iconOnly ? capability.label : undefined}
-      className={cn(
-        "inline-flex h-6 shrink-0 items-center rounded-full text-ui-11p5 font-medium",
-        iconOnly ? "w-6 justify-center px-0" : "gap-1.5 px-2.5",
-        CAPABILITY_TONE[capability.key],
-      )}
-    >
+  const content = (
+    <>
       {capability.key === "reasoning" ? (
         <BulbIcon className="size-3 shrink-0" />
       ) : (
@@ -193,6 +188,32 @@ export function CapabilityPill({
         />
       )}
       {!iconOnly && capability.label}
+    </>
+  );
+  const pillClass = cn(
+    "inline-flex h-6 shrink-0 items-center rounded-full text-ui-11p5 font-medium",
+    iconOnly ? "w-6 justify-center px-0" : "gap-1.5 px-2.5",
+    CAPABILITY_TONE[capability.key],
+    onClick && "cursor-pointer transition-colors hover:brightness-95",
+  );
+  const pill = onClick ? (
+    <button
+      type="button"
+      aria-label={`Search ${capability.label} models`}
+      className={pillClass}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+    >
+      {content}
+    </button>
+  ) : (
+    <span
+      aria-label={iconOnly ? capability.label : undefined}
+      className={pillClass}
+    >
+      {content}
     </span>
   );
   if (!iconOnly || !tooltip) return pill;

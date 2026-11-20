@@ -40,6 +40,113 @@ export const HUB_CAPABILITY_FILTERS: readonly HubCapabilityFilter[] = [
   "video-gen",
 ];
 
+const CAPABILITY_SEARCH_TERMS: ReadonlyArray<{
+  terms: readonly string[];
+  filter: HubCapabilityFilter;
+}> = [
+  {
+    terms: [
+      "text-to-speech",
+      "text to speech",
+      "text-to-audio",
+      "tts",
+      "asr",
+      "speech",
+      "transcription",
+      "audio",
+    ],
+    filter: "audio",
+  },
+  {
+    terms: [
+      "text-to-video",
+      "image-to-video",
+      "video generation",
+      "video-gen",
+      "video",
+    ],
+    filter: "video-gen",
+  },
+  {
+    terms: [
+      "text-to-image",
+      "image-to-image",
+      "image generation",
+      "image-gen",
+      "image",
+    ],
+    filter: "image-gen",
+  },
+  { terms: ["embeddings", "embedding"], filter: "embedding" },
+  { terms: ["reasoning", "thinking"], filter: "reasoning" },
+  { terms: ["vision", "visual", "multimodal", "vlm"], filter: "vision" },
+  { terms: ["text only", "text-only"], filter: "text" },
+];
+
+function searchTermPattern(term: string): RegExp {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|\\s)${escaped}(?=$|\\s)`, "i");
+}
+
+/** Extracts capability words from a Hub query while leaving model or uploader terms searchable. */
+export function parseHubCapabilityQuery(query: string): {
+  query: string;
+  capabilities: HubCapabilityFilter[];
+} {
+  let remaining = query.trim();
+  const capabilities: HubCapabilityFilter[] = [];
+  for (const entry of CAPABILITY_SEARCH_TERMS) {
+    let matched = false;
+    for (const term of entry.terms) {
+      const pattern = searchTermPattern(term);
+      if (!pattern.test(remaining)) continue;
+      remaining = remaining.replace(pattern, " ");
+      matched = true;
+      break;
+    }
+    if (matched && !capabilities.includes(entry.filter)) {
+      capabilities.push(entry.filter);
+    }
+  }
+  return { query: remaining.replace(/\s+/g, " ").trim(), capabilities };
+}
+
+/** Removes one recognized capability phrase while preserving the rest of a Hub query. */
+export function removeHubCapabilityFromQuery(
+  query: string,
+  capability: HubCapabilityFilter,
+): string {
+  const entry = CAPABILITY_SEARCH_TERMS.find(
+    (item) => item.filter === capability,
+  );
+  if (!entry) return query;
+  for (const term of entry.terms) {
+    const pattern = searchTermPattern(term);
+    if (pattern.test(query)) {
+      return query.replace(pattern, " ").replace(/\s+/g, " ").trim();
+    }
+  }
+  return query;
+}
+
+/** Maps a detail-page capability pill to the Hub filter that can represent it. */
+export function hubFilterForCapability(
+  key: CapabilityKey,
+  model: { id: string; tags?: string[]; pipelineTag?: string } = { id: "" },
+): HubCapabilityFilter | null {
+  if (
+    key === "vision" ||
+    key === "audio" ||
+    key === "embedding" ||
+    key === "reasoning"
+  ) {
+    return key;
+  }
+  if (key !== "diffusion") return null;
+  const kinds = generationKinds(model.tags, model.pipelineTag, model.id);
+  return kinds.video ? "video-gen" : kinds.image ? "image-gen" : null;
+}
+
 const VIDEO_GEN_TAGS = new Set([
   "text-to-video",
   "image-to-video",
