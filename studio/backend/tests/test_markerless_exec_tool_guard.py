@@ -112,6 +112,11 @@ def test_wrapped_update_memory_call_still_runs():
     text = '<|tool_call>call:update_memory{scope:<|"|>personal<|"|>,key:<|"|>k<|"|>,value:<|"|>v<|"|>}<tool_call|>'
     calls = parse_tool_calls_from_text(text, enabled_tool_names = {"update_memory"})
     assert [c["function"]["name"] for c in calls] == ["update_memory"]
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "scope": "personal",
+        "key": "k",
+        "value": "v",
+    }
 
 
 @pytest.mark.parametrize("enabled", [None, MCP_ENABLED])
