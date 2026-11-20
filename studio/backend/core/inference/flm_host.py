@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The slice of lemond's API Studio uses, served from Studio's Python over AMD-signed flm.exe.
-
-lemond.exe is unsigned, so Smart App Control may refuse it; flm.exe (FastFlowLM 1.0.13+) is signed.
-LemonadeServer starts this script with lemond's arguments and environment, and npu_backend talks
-to it unchanged: catalog (`flm list --json`), pull, load (`flm serve`), unload, delete, health, and
-a proxy for chat. Standard library plus httpx.
-"""
+"""The slice of lemond's API Studio uses, served from Studio's Python over AMD-signed flm.exe
+(lemond.exe is unsigned, so Smart App Control may refuse it). Started with lemond's arguments."""
 
 from __future__ import annotations
 
