@@ -3009,6 +3009,8 @@ class TestAnAutoContextIsMarkedShrinkable:
         floor = ri._gguf_memory_breakdown(config, wide, n_ctx = floor_ctx, **request_fields)
         shorter = ri._gguf_memory_breakdown(config, wide, n_ctx = 256, **request_fields)
         assert shorter.gpu_bytes < resp.gpu_floor_bytes == floor.gpu_bytes < resp.gpu_bytes
+        # The client interpolates Auto's window between the two prices, so it needs both contexts.
+        assert resp.gpu_floor_ctx == floor_ctx
 
     def test_a_native_context_under_the_fit_floor_has_nothing_to_shrink(
         self, tmp_path, monkeypatch
@@ -3021,6 +3023,7 @@ class TestAnAutoContextIsMarkedShrinkable:
         resp = _estimate(model_path = gguf)
         assert resp.context_is_pinned is False
         assert resp.gpu_floor_bytes == resp.gpu_bytes
+        assert resp.gpu_floor_ctx == resp.n_ctx == 4096
 
     @pytest.mark.parametrize(
         ("request_fields", "env_ctx", "fit_ctx_supported"),
@@ -3048,6 +3051,7 @@ class TestAnAutoContextIsMarkedShrinkable:
         assert resp.available is True
         assert resp.context_is_pinned is True, (request_fields, env_ctx)
         assert resp.gpu_floor_bytes is None
+        assert resp.gpu_floor_ctx is None
 
     @pytest.mark.parametrize(("fit_ctx_supported", "floor_ctx"), [(True, 8192), (False, 4096)])
     def test_manual_ignores_the_fit_variables_its_launch_clears(

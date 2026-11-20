@@ -142,13 +142,14 @@ import {
   mlxOffloadFromSlider,
   mlxOffloadModePatch,
   mlxOffloadSliderValue,
+  resolveAutoFittedContext,
   resolveReclaimableMemoryCredit,
 } from "../model-config/memory-fit";
 import {
   resolveResidentEstimateRequest,
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
-import { useMemoryEstimate } from "../hooks/use-memory-estimate";
+import { estimateKey, useMemoryEstimate } from "../hooks/use-memory-estimate";
 import { usePrefillOptionAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,
@@ -572,6 +573,7 @@ function GgufContextLengthSetting({
   max,
   nativeContextLength,
   activeLoadedContext,
+  autoFitted = null,
   inputRef,
   onChange,
   renderWarning,
@@ -579,6 +581,8 @@ function GgufContextLengthSetting({
 }: {
   value: number;
   autoValue: number;
+  /** Auto's window for the pending settings, when it differs from what is loaded. */
+  autoFitted?: number | null;
   min: number;
   max: number;
   nativeContextLength: number | null;
@@ -630,6 +634,9 @@ function GgufContextLengthSetting({
           {isAuto && activeLoadedContext != null
             ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
             : ""}
+          {isAuto && autoFitted != null && autoFitted !== activeLoadedContext
+            ? ` With these settings and the memory free now, Auto would select about ${autoFitted.toLocaleString()} tokens.`
+            : ""}
           {nativeContextLength != null
             ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
             : ""}
@@ -656,9 +663,11 @@ function GgufContextLengthSetting({
         thumbValueText={(v) =>
           !(isMaxPosition(v) && value === 0)
             ? `${(isMaxPosition(v) ? max : v).toLocaleString()} tokens`
-            : activeLoadedContext != null
-              ? `Auto, currently ${autoValue.toLocaleString()} tokens`
-              : "Auto"
+            : autoFitted != null
+              ? `Auto, about ${autoValue.toLocaleString()} tokens`
+              : activeLoadedContext != null
+                ? `Auto, currently ${autoValue.toLocaleString()} tokens`
+                : "Auto"
         }
       />
     ) : null;
@@ -3830,6 +3839,32 @@ export function ModelConfigPage({
       // A ROCm APU's memory_total_gb is a BIOS window onto RAM, not the pool size.
       unifiedPoolReportedAsGpuMemory: isAppleUnifiedMemory,
     });
+  // What Auto would fit to with the pending settings. A resident loaded with these same settings
+  // already answered that, so its own window stands until something that moves the fit changes.
+  const pendingFitMatchesResident =
+    residentEstimateRequest != null &&
+    memoryEstimateRequest != null &&
+    estimateKey({ ...memoryEstimateRequest, nCtx: null }) ===
+      estimateKey({ ...residentEstimateRequest, nCtx: null });
+  const autoFittedContext =
+    target.isGguf &&
+    memoryEstimate.estimate?.available &&
+    !(isActiveModel && (pendingFitMatchesResident || residentEstimateRequest == null))
+      ? resolveAutoFittedContext(memoryEstimate.estimate, {
+          gpuCapacityGb: memoryGpuCapacityGb,
+          totalCapacityGb: memoryTotalCapacityGb,
+          systemRamCapacityGb: inferenceGpu.systemRamTotalGb,
+          freeGpuCapacityGb: memoryFreeGpuCapacityGb,
+          freeGpuCapacityKnown: memoryFreeGpuCapacityKnown,
+          freeGpuReserveDeficitGb: memoryFreeGpuReserveDeficitGb,
+          usableSystemRamGb: memoryUsableSystemRamGb,
+          usableSystemRamKnown: inferenceGpu.systemRamAvailableKnown,
+          systemRamReserveDeficitGb: memorySystemRamReserveDeficitGb,
+          singleMemoryPool,
+          reclaimableTotalBytes: reclaimableCredit.totalBytes,
+          reclaimableGpuBytes: reclaimableCredit.gpuBytes,
+        })
+      : null;
 
   const storedRecord = useStoredPerModelConfig(configId, target.ggufVariant);
   const matchesStored =
@@ -4540,11 +4575,12 @@ export function ModelConfigPage({
               value={contextIsAuto ? 0 : contextValue}
               autoValue={Math.min(
                 Math.max(
-                  activeLoadedContext ?? AUTO_OFFLOAD_CONTEXT_LENGTH,
+                  autoFittedContext ?? activeLoadedContext ?? AUTO_OFFLOAD_CONTEXT_LENGTH,
                   minContext,
                 ),
                 maxContext,
               )}
+              autoFitted={autoFittedContext}
               min={minContext}
               max={maxContext}
               nativeContextLength={nativeContextLength}

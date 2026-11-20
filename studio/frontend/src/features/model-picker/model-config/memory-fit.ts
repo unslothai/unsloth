@@ -64,6 +64,8 @@ export interface MemoryFitEstimate {
   /** False when the loader will shrink the priced context to fit. Absent reads as pinned. */
   contextIsPinned?: boolean;
   gpuFloorBytes?: number | null;
+  /** The context `gpuFloorBytes` is priced at. */
+  gpuFloorCtx?: number | null;
   floorCanOffload?: boolean;
   nCtx?: number;
 }
@@ -318,6 +320,54 @@ export function resolveMemoryFit(
       contextShrinks,
     }),
   };
+}
+
+const AUTO_CONTEXT_STEP = 256;
+
+/** The window Auto would fit to with these settings and the memory free now, or null when the
+ *  estimate cannot say. Interpolated between the floor and native prices: both are the loader's
+ *  own sizing, and KV and the context-linear compute share grow linearly between them. */
+export function resolveAutoFittedContext(
+  estimate: MemoryFitEstimate,
+  capacity: MemoryFitCapacity,
+): number | null {
+  const nativeCtx = estimate.nCtx ?? 0;
+  const floorCtx = estimate.gpuFloorCtx ?? 0;
+  if (
+    !hasContextFloor(estimate) ||
+    !estimate.kvEstimable ||
+    !(floorCtx > 0) ||
+    !Number.isFinite(nativeCtx) ||
+    !Number.isFinite(estimate.gpuBytes) ||
+    !Number.isFinite(estimate.totalBytes) ||
+    (!capacity.singleMemoryPool && estimate.gpuBytes === 0)
+  ) {
+    return null;
+  }
+  if (nativeCtx <= floorCtx) return nativeCtx;
+  const { freeGpuCapacityGb: availableGb, freeGpuCapacityKnown: known } = capacity;
+  if (!Number.isFinite(availableGb) || availableGb < 0 || (availableGb === 0 && !known)) {
+    return null;
+  }
+  const reclaimableTotal = reclaimableBytes(capacity.reclaimableTotalBytes);
+  const reclaimed = capacity.singleMemoryPool
+    ? reclaimableTotal
+    : Math.min(reclaimableBytes(capacity.reclaimableGpuBytes), reclaimableTotal);
+  const budget =
+    (availableGb +
+      Math.max(0, reclaimed / 1024 ** 3 - reclaimableBytes(capacity.freeGpuReserveDeficitGb))) *
+    1024 ** 3;
+  const shrinkable = Math.max(0, estimate.gpuBytes - (estimate.gpuFloorBytes as number));
+  const nativeBytes = capacity.singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes;
+  const floorBytes = nativeBytes - shrinkable;
+  if (nativeBytes <= budget) return nativeCtx;
+  if (floorBytes >= budget || shrinkable === 0) return floorCtx;
+  const fitted =
+    floorCtx + ((budget - floorBytes) / shrinkable) * (nativeCtx - floorCtx);
+  return Math.max(
+    floorCtx,
+    Math.min(nativeCtx, Math.floor(fitted / AUTO_CONTEXT_STEP) * AUTO_CONTEXT_STEP),
+  );
 }
 
 interface AdvisoryVerdicts {

@@ -22530,6 +22530,7 @@ async def estimate_memory(
             gpu_floor_bytes = (
                 None if floor is None else min(int(floor.gpu_bytes), int(breakdown.gpu_bytes))
             ),
+            gpu_floor_ctx = None if floor is None else int(getattr(floor, "n_ctx", 0) or 0),
             floor_can_offload = context_floor is not None and context_floor.can_offload,
             context_is_pinned = context_floor is None,
             moe_offload_unmodelled = bool(

@@ -1458,6 +1458,9 @@ class EstimateMemoryResponse(BaseModel):
         description = "gpu_bytes at the shortest context the loader's fit settles for; "
         "past it the launch offloads layers instead. Set only when context_is_pinned is false.",
     )
+    gpu_floor_ctx: Optional[int] = Field(
+        None, description = "The context gpu_floor_bytes is priced at; set with it."
+    )
     floor_can_offload: bool = Field(
         False,
         description = "Whether a load still over the card at the floor moves layers to the "
@@ -1570,6 +1573,9 @@ class MemoryEstimate(BaseModel):
         "which leaves what no context reduction frees (drafter weights, flat compute "
         "buffers, recurrent rollback state), and the Load Model panel's loader fit floor, "
         "past which the launch offloads layers instead. None when it was not computed.",
+    )
+    gpu_floor_ctx: Optional[int] = Field(
+        None, description = "The context gpu_floor_bytes is priced at; set with it."
     )
     floor_can_offload: bool = Field(
         False,
