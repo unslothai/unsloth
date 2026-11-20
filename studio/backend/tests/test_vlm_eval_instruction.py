@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A vision dataset without a question column trains on one fixed prompt; the eval split and the row order must not change it."""
+
+import ast
+from pathlib import Path
+
+import pytest
+from datasets import Dataset
+from PIL import Image
+
+from utils.datasets import format_and_template_dataset, llm_assist
+
+HELPER_SENTENCE = "Describe what this picture shows."
+MEDICAL = "Analyze this medical image and describe the key findings."
+LATEX = "Convert this image to LaTeX notation."
+
+
+@pytest.fixture(autouse = True)
+def _helper_writes_one_sentence(monkeypatch):
+    monkeypatch.setattr(
+        llm_assist,
+        "llm_generate_vlm_instruction",
+        lambda **kwargs: {"instruction": HELPER_SENTENCE, "confidence": 0.85},
+    )
+
+
+def _format(
+    captions,
+    dataset_name,
+    vlm_instruction = None,
+):
+    ds = Dataset.from_dict(
+        {"image": [Image.new("RGB", (8, 8))] * len(captions), "caption": captions}
+    )
+    info = format_and_template_dataset(
+        ds,
+        model_name = "unsloth/Qwen2.5-VL-3B-Instruct",
+        tokenizer = None,
+        is_vlm = True,
+        dataset_name = dataset_name,
+        vlm_instruction = vlm_instruction,
+    )
+    assert info["success"], info["errors"]
+    return info
+
+
+def _prompts(info):
+    return {
+        next(part["text"] for part in row["messages"][0]["content"] if part["type"] == "text")
+        for row in info["dataset"]
+    }
+
+
+def test_eval_split_reuses_the_train_instruction():
+    train = _format(["Radiograph shows a lytic lesion.", "Axial view of the knee."], "org/scans")
+    eval_ = _format(
+        ["Sagittal view of the spine.", "Coronal slice of the wrist."],
+        "org/scans",
+        vlm_instruction = train.get("vlm_instruction"),
+    )
+
+    assert _prompts(train) == {MEDICAL}
+    assert _prompts(eval_) == {MEDICAL}
+
+
+@pytest.mark.parametrize(
+    "captions, dataset_name, expected",
+    [
+        (["Axial view of the knee.", "Radiograph shows a lytic lesion."], "org/scans", MEDICAL),
+        # Row 0 also holds a long word, so the OCR hint ties LaTeX on it; only row 0 matches OCR.
+        ([r"\displaystyle \frac{a}{b}", "x^{2}", r"\sqrt{y}"], "org/latex_ocr", LATEX),
+    ],
+)
+def test_instruction_does_not_hinge_on_the_first_row(captions, dataset_name, expected):
+    # A max_steps run shuffles train by random_seed before formatting, which picks the first row.
+    assert _prompts(_format(captions, dataset_name)) == {expected}
+
+
+def test_question_column_rows_report_no_fixed_instruction():
+    ds = Dataset.from_dict(
+        {
+            "image": [Image.new("RGB", (8, 8))] * 2,
+            "question": ["What bone is this?", "Is it broken?"],
+            "answer": ["Femur.", "No."],
+        }
+    )
+    info = format_and_template_dataset(
+        ds, model_name = "unsloth/Qwen2.5-VL-3B-Instruct", tokenizer = None, is_vlm = True
+    )
+
+    assert info["vlm_instruction"] is None
+    assert _prompts(info) == {"What bone is this?", "Is it broken?"}
+
+
+@pytest.mark.parametrize(
+    "module, train_result", [("trainer.py", "dataset_info"), ("worker.py", "vlm_info")]
+)
+def test_training_formats_the_eval_split_with_the_train_instruction(module, train_result):
+    source = Path(__file__).resolve().parents[1] / "core" / "training" / module
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source.read_text(encoding = "utf-8")))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "format_and_template_dataset"
+        and getattr(node.args[0], "id", None) == "eval_dataset"
+        and not any(
+            k.arg == "is_vlm" and getattr(k.value, "value", None) is False for k in node.keywords
+        )
+    ]
+    assert calls
+    for call in calls:
+        keywords = {k.arg: k.value for k in call.keywords}
+        assert "vlm_instruction" in keywords
+        names = {n.id for n in ast.walk(keywords["vlm_instruction"]) if isinstance(n, ast.Name)}
+        assert train_result in names
