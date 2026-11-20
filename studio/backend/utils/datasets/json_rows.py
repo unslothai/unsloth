@@ -7,6 +7,7 @@ import json
 import os
 
 _CHUNK_ROWS = 10_000
+_CHUNK_BYTES = 16 << 20
 
 
 def _row_chunks(path, size = _CHUNK_ROWS):
@@ -22,13 +23,14 @@ def _row_chunks(path, size = _CHUNK_ROWS):
             for start in range(0, len(rows), size):
                 yield rows[start : start + size]
             return
-        rows = []
+        rows, chunk_bytes = [], 0
         for line in file:
             if line.strip():
                 rows.append(json.loads(line))
-                if len(rows) == size:
+                chunk_bytes += len(line)
+                if len(rows) == size or chunk_bytes >= _CHUNK_BYTES:
                     yield rows
-                    rows = []
+                    rows, chunk_bytes = [], 0
         if rows:
             yield rows
 
@@ -104,5 +106,10 @@ def json_rows_dataset(files, cache_dir = None):
     # Size and mtime key the cache, so an edited file is reread.
     stats = [(str(path), os.stat(path).st_size, os.stat(path).st_mtime_ns) for path in files]
     return Dataset.from_generator(
-        _rows, features = features, cache_dir = cache_dir, gen_kwargs = {"files": stats}
+        _rows,
+        features = features,
+        cache_dir = cache_dir,
+        gen_kwargs = {"files": stats},
+        # Long-context rows: a 1000-row writer batch held ~0.5 GB where the json loader held none.
+        writer_batch_size = 100,
     )
