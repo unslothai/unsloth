@@ -110,7 +110,7 @@ def test_the_policy_text_alone_is_recognised(backend, popen):
 )
 def test_other_spawn_errors_are_a_plain_npu_error(backend, popen, exc):
     popen(exc)
-    with pytest.raises(nb.NpuError, match = "Lemonade could not start") as info:
+    with pytest.raises(nb.NpuError, match = "The NPU runtime could not start") as info:
         backend._ensure_running()
     assert info.value.__cause__ is exc
     assert "Smart App Control" not in str(info.value)
