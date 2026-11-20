@@ -552,15 +552,34 @@ export function discoverUsesFallback(
   return hubQuery === "" || hubResultCount === 0;
 }
 
-/** Only Discover rows (`recommended`) use a size, so only they cost a file listing. */
-export function hubSizeIds(
-  results: readonly { id: string; isGguf: boolean }[],
+/** Discover rows that need a file listing for their size: the listing's dtype counts already size a
+ * plain checkpoint, not packed MLX weights. */
+export function hubSizeIds<
+  T extends { id: string; isGguf: boolean; estimatedSizeBytes?: number },
+>(
+  results: readonly T[],
   recommended: readonly { id: string }[],
+  isMlx: (result: T) => boolean = () => true,
 ): string[] {
   const rows = new Set(recommended.map((m) => m.id.toLowerCase()));
   return results.flatMap((r) =>
-    !r.isGguf && rows.has(r.id.toLowerCase()) ? [r.id] : [],
+    !r.isGguf &&
+    rows.has(r.id.toLowerCase()) &&
+    (!r.estimatedSizeBytes || isMlx(r))
+      ? [r.id]
+      : [],
   );
+}
+
+/** Discover lists plain safetensors on a Mac, and under the Safetensors filter on any host that runs
+ * them; a chat-only host runs GGUF only. */
+export function discoverListsCheckpoints(
+  isMac: boolean,
+  formatFilter: string,
+  chatOnly: boolean,
+  isMlx: boolean,
+): boolean {
+  return isMac || (formatFilter === "safetensors" && !chatOnly && !isMlx);
 }
 
 /** Reads `items` with at most `workers` in flight; stops taking new ones once `live()` is false. */
