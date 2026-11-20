@@ -43,6 +43,7 @@ from core.training.diffusion_block_swap import (
     block_swap_request,
     compile_swapped_blocks,
     install_dit_block_swap,
+    reset_block_swaps,
 )
 from core.training.diffusion_gc_budget import (
     StepReplay,
@@ -3827,8 +3828,8 @@ def _train_dit(
     gc_budget = None
     if cfg.gradient_checkpointing:
         # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
-        # Block swap needs every block checkpointed, so no budget.
-        gc_budget = None if swapping else enable_budgeted_checkpointing(transformer, device)
+        # With block swap the swapped blocks stay checkpointed and only resident blocks are planned.
+        gc_budget = enable_budgeted_checkpointing(transformer, device)
         if gc_budget is None:
             enable_diffusion_gradient_checkpointing(transformer, mode = _checkpoint_mode(swapping))
     cast_training_params(transformer, dtype = torch.float32)
@@ -4184,6 +4185,8 @@ def _train_dit(
                     from_plan = True,
                 )
             optimizer.zero_grad(set_to_none = True)
+            if swapping:
+                reset_block_swaps(transformer)
             gc.collect()
             _empty_device_cache(device)
             # Restart the peak: step 1's cache plan reads it, and the failed peak would plan the cache to nothing.
