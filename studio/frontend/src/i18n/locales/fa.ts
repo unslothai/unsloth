@@ -3115,7 +3115,7 @@ export const fa = {
         modelsFolderKeywords:
           "پوشه مدل‌ها مسیر مکان دانلود کش فضای ذخیره‌سازی دیسک درایو جابه‌جایی models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         projectsFolder: {
-          label: "پوشهٔ پروژه‌ها",
+          label: "محل پیش‌فرض برای پروژه‌های جدید",
           description: "محل ایجاد فضای کاری پروژه‌های جدید. پروژه‌های موجود در محل فعلی خود باقی می‌مانند.",
           chooseTitle: "انتخاب پوشهٔ پروژه‌ها",
           chooseAction: "استفاده برای پروژه‌های جدید",

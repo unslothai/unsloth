@@ -2949,7 +2949,7 @@ export const ja = {
           action: "キャッシュを確認",
         },
         projectsFolder: {
-          label: "プロジェクトフォルダ",
+          label: "新しいプロジェクトのデフォルトの保存先",
           description: "新しいプロジェクトの作業フォルダを作成する場所です。既存のプロジェクトの場所は変わりません。",
           chooseTitle: "プロジェクトフォルダを選択",
           chooseAction: "新しいプロジェクトに使用",

@@ -1490,8 +1490,8 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
             exc,
             500,
             f"Could not create the project folder {exc.path}. Check that the "
-            "folder is available and writable. For new projects, choose another "
-            "Projects folder in Settings > System > Storage, or set UNSLOTH_STUDIO_PROJECTS_HOME.",
+            "folder is available and writable. Change 'Default location for new projects' in "
+            "Settings > System > Storage, or set UNSLOTH_STUDIO_PROJECTS_HOME.",
             event = "chat_history.create_project_workspace_failed",
             log = logger,
         ) from exc

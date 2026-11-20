@@ -2981,7 +2981,7 @@ export const ptBR = {
           action: "Ver caches",
         },
         projectsFolder: {
-          label: "Pasta de projetos",
+          label: "Local padrão para novos projetos",
           description: "Onde são criados os espaços de trabalho dos novos projetos. Os projetos existentes permanecem no mesmo local.",
           chooseTitle: "Escolher pasta de projetos",
           chooseAction: "Usar para novos projetos",

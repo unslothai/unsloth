@@ -2961,7 +2961,7 @@ export const ko = {
           action: "캐시 확인",
         },
         projectsFolder: {
-          label: "프로젝트 폴더",
+          label: "새 프로젝트의 기본 위치",
           description: "새 프로젝트의 작업 공간이 생성되는 위치입니다. 기존 프로젝트는 현재 위치에 유지됩니다.",
           chooseTitle: "프로젝트 폴더 선택",
           chooseAction: "새 프로젝트에 사용",

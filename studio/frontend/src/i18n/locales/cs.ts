@@ -3145,7 +3145,7 @@ export const cs = {
         modelsFolderKeywords:
           "složka modelů adresář cesta umístění stahování stažené mezipaměť úložiště disk jednotka přesunout models folder directory path location download downloads cache storage drive move relocate hugging face",
         projectsFolder: {
-          label: "Složka projektů",
+          label: "Výchozí umístění pro nové projekty",
           description: "Místo pro vytváření pracovních složek nových projektů. Stávající projekty zůstanou na svém místě.",
           chooseTitle: "Vybrat složku projektů",
           chooseAction: "Použít pro nové projekty",

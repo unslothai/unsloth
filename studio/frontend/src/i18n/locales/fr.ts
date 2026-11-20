@@ -2997,7 +2997,7 @@ export const fr = {
           action: "Voir les caches",
         },
         projectsFolder: {
-          label: "Dossier des projets",
+          label: "Emplacement par défaut des nouveaux projets",
           description: "Emplacement des espaces de travail des nouveaux projets. Les projets existants restent à leur emplacement actuel.",
           chooseTitle: "Choisir le dossier des projets",
           chooseAction: "Utiliser pour les nouveaux projets",

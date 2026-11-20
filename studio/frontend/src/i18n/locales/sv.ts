@@ -3047,7 +3047,7 @@ export const sv = {
         modelsFolderKeywords:
           "modellkatalog modellmapp katalog mapp sökväg plats hämtning hämtningar cache lagring disk enhet flytta hugging face models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         projectsFolder: {
-          label: "Projektmapp",
+          label: "Standardplats för nya projekt",
           description: "Här skapas arbetsytor för nya projekt. Befintliga projekt ligger kvar på sina nuvarande platser.",
           chooseTitle: "Välj projektmapp",
           chooseAction: "Använd för nya projekt",

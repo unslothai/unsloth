@@ -3007,7 +3007,7 @@ export const th = {
         modelsFolderKeywords:
           "โฟลเดอร์โมเดล ไดเรกทอรี พาธ ตำแหน่ง ดาวน์โหลด แคช พื้นที่จัดเก็บ ดิสก์ ไดรฟ์ ย้าย models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         projectsFolder: {
-          label: "โฟลเดอร์โปรเจกต์",
+          label: "ตำแหน่งเริ่มต้นสำหรับโปรเจกต์ใหม่",
           description: "ตำแหน่งที่สร้างพื้นที่ทำงานสำหรับโปรเจกต์ใหม่ โปรเจกต์ที่มีอยู่จะยังคงอยู่ที่เดิม",
           chooseTitle: "เลือกโฟลเดอร์โปรเจกต์",
           chooseAction: "ใช้สำหรับโปรเจกต์ใหม่",

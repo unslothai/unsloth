@@ -2923,7 +2923,7 @@ export const en = {
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         projectsFolder: {
-          label: "Projects folder",
+          label: "Default location for new projects",
           description: "Where new project workspaces are created. Existing projects stay where they are.",
           chooseTitle: "Choose projects folder",
           chooseAction: "Use for new projects",

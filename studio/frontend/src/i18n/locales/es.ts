@@ -2994,7 +2994,7 @@ export const es = {
           action: "Revisar cachés",
         },
         projectsFolder: {
-          label: "Carpeta de proyectos",
+          label: "Ubicación predeterminada para nuevos proyectos",
           description: "Donde se crean los espacios de trabajo de los nuevos proyectos. Los proyectos existentes permanecen en su ubicación.",
           chooseTitle: "Elegir carpeta de proyectos",
           chooseAction: "Usar para nuevos proyectos",

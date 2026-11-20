@@ -2972,7 +2972,7 @@ export const he = {
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face תיקייה מודלים הורדות אחסון דיסק",
         projectsFolder: {
-          label: "תיקיית פרויקטים",
+          label: "מיקום ברירת המחדל לפרויקטים חדשים",
           description: "המיקום שבו נוצרות סביבות העבודה של פרויקטים חדשים. פרויקטים קיימים נשארים במקומם.",
           chooseTitle: "בחירת תיקיית פרויקטים",
           chooseAction: "שימוש עבור פרויקטים חדשים",

@@ -2931,7 +2931,7 @@ export const zhCN = {
           action: "查看缓存",
         },
         projectsFolder: {
-          label: "项目文件夹",
+          label: "新项目的默认位置",
           description: "用于创建新项目工作区的位置。现有项目仍保留在原位置。",
           chooseTitle: "选择项目文件夹",
           chooseAction: "用于新项目",

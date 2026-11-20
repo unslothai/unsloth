@@ -3124,7 +3124,7 @@ export const tr = {
         modelsFolderKeywords:
           "modeller klasör dizin yol konum indir indirmeler önbellek depolama disk sürücü taşı yer değiştir hugging face models folder",
         projectsFolder: {
-          label: "Proje klasörü",
+          label: "Yeni projeler için varsayılan konum",
           description: "Yeni proje çalışma alanlarının oluşturulduğu konum. Mevcut projeler bulundukları yerde kalır.",
           chooseTitle: "Proje klasörünü seç",
           chooseAction: "Yeni projeler için kullan",

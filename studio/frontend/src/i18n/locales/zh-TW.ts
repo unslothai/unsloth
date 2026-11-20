@@ -2992,7 +2992,7 @@ export const zhTW = {
         modelsFolderKeywords:
           "模型 資料夾 目錄 路徑 位置 下載 快取 儲存空間 磁碟 移動 搬移 models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         projectsFolder: {
-          label: "專案資料夾",
+          label: "新專案的預設位置",
           description: "建立新專案工作區的位置。現有專案仍保留在原位置。",
           chooseTitle: "選擇專案資料夾",
           chooseAction: "用於新專案",

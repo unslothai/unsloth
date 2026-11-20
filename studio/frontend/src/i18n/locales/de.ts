@@ -2932,7 +2932,7 @@ export const de = {
         modelsFolderKeywords:
           "Modelle Ordner Verzeichnis Pfad Speicherort Download Downloads Cache Speicher Festplatte Laufwerk verschieben ändern hugging face",
         projectsFolder: {
-          label: "Projektordner",
+          label: "Standardspeicherort für neue Projekte",
           description: "Hier werden Arbeitsordner für neue Projekte erstellt. Bestehende Projekte bleiben an ihrem bisherigen Ort.",
           chooseTitle: "Projektordner auswählen",
           chooseAction: "Für neue Projekte verwenden",

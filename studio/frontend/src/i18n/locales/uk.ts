@@ -3152,7 +3152,7 @@ export const uk = {
         modelsFolderKeywords:
           "папка моделей каталог шлях розташування завантаження кеш сховище диск перемістити models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         projectsFolder: {
-          label: "Папка проєктів",
+          label: "Типове розташування для нових проєктів",
           description: "Місце створення робочих папок нових проєктів. Наявні проєкти залишаться на своїх місцях.",
           chooseTitle: "Вибрати папку проєктів",
           chooseAction: "Використовувати для нових проєктів",

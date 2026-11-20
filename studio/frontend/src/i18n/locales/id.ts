@@ -3130,7 +3130,7 @@ export const id = {
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face folder model direktori jalur lokasi unduh unduhan penyimpanan pindahkan",
         projectsFolder: {
-          label: "Folder proyek",
+          label: "Lokasi default untuk proyek baru",
           description: "Tempat ruang kerja proyek baru dibuat. Proyek yang sudah ada tetap di lokasinya.",
           chooseTitle: "Pilih folder proyek",
           chooseAction: "Gunakan untuk proyek baru",

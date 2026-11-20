@@ -3168,7 +3168,7 @@ export const nl = {
         modelsFolderKeywords:
           "modellenmap map directory pad locatie downloaden downloads cache opslag schijf station verplaatsen hugging face",
         projectsFolder: {
-          label: "Projectmap",
+          label: "Standaardlocatie voor nieuwe projecten",
           description: "Hier worden werkruimten voor nieuwe projecten aangemaakt. Bestaande projecten blijven op hun huidige locatie.",
           chooseTitle: "Projectmap kiezen",
           chooseAction: "Gebruiken voor nieuwe projecten",

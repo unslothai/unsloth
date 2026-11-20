@@ -3163,7 +3163,7 @@ export const pl = {
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face modele folder katalog ścieżka lokalizacja pobieranie pamięć podręczna dysk przenieś",
         projectsFolder: {
-          label: "Folder projektów",
+          label: "Domyślna lokalizacja nowych projektów",
           description: "Miejsce tworzenia obszarów roboczych nowych projektów. Istniejące projekty pozostaną w swoich lokalizacjach.",
           chooseTitle: "Wybierz folder projektów",
           chooseAction: "Użyj dla nowych projektów",

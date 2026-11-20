@@ -3128,7 +3128,7 @@ export const vi = {
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face thư mục mô hình đường dẫn vị trí tải xuống bộ nhớ đệm lưu trữ ổ đĩa di chuyển",
         projectsFolder: {
-          label: "Thư mục dự án",
+          label: "Vị trí mặc định cho các dự án mới",
           description: "Nơi tạo không gian làm việc cho các dự án mới. Các dự án hiện có vẫn giữ nguyên vị trí.",
           chooseTitle: "Chọn thư mục dự án",
           chooseAction: "Dùng cho các dự án mới",

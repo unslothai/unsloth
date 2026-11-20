@@ -2814,7 +2814,7 @@ export const it = {
         modelsFolderKeywords:
           "cartella modelli directory percorso posizione download scaricati cache archiviazione disco unità spostare sposta hugging face models folder path storage",
         projectsFolder: {
-          label: "Cartella dei progetti",
+          label: "Posizione predefinita per i nuovi progetti",
           description: "Dove vengono creati gli spazi di lavoro dei nuovi progetti. I progetti esistenti rimangono nella loro posizione.",
           chooseTitle: "Scegli la cartella dei progetti",
           chooseAction: "Usa per i nuovi progetti",
