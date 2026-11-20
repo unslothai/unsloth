@@ -3024,10 +3024,10 @@ def _encode_prompts_cached(spec, pipe, to_encode, device, pcache):
     return [hits[cap] for cap in to_encode]
 
 
-def _rekey_conditioning_cache(pcache, reopen, embeds: dict):
-    """The cache under its namespace read again now the conditioners are on disk, holding ``embeds``. A first run
-    reads the source revision before its download ("unresolved"), so without this the next run, which reads the real
-    revision, misses everything this run wrote."""
+def _rekey_conditioning_cache(pcache, reopen):
+    """The cache under its namespace read again now the conditioners are on disk. A first run reads the source
+    revision before its download ("unresolved"), and a fetch can move ``refs/main``; reopening before any encode
+    keeps this run from serving, or carrying over, entries another revision's weights produced."""
     if pcache is None:
         return None
     try:
@@ -3039,12 +3039,13 @@ def _rekey_conditioning_cache(pcache, reopen, embeds: dict):
         getattr(pcache, "text_encoder", ""),
     ):
         return pcache
-    for cap, emb in embeds.items():
-        try:
-            fresh.put(fresh.text_key(cap), emb)
-        except Exception:  # noqa: BLE001 -- disk-full etc.: the run still trains
-            pass
     return fresh
+
+
+def _encode_prompts_after_load(spec, pipe, texts, device, pcache, reopen):
+    """(cache, embeddings) for a cold load: re-key first, then read and write under the loaded weights' namespace."""
+    pcache = _rekey_conditioning_cache(pcache, reopen)
+    return pcache, _encode_prompts_cached(spec, pipe, texts, device, pcache)
 
 
 def _load_warm_conditioning(
@@ -3510,6 +3511,11 @@ def _train_dit(
         "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
     ) not in ("1", "true")
 
+    from .diffusion_train_extras import effective_cond_cache_dir  # noqa: PLC0415
+
+    # Unset = the default directory (on unless UNSLOTH_DIFFUSION_TRAIN_COND_CACHE=0); "off" = none.
+    pcache_dir = effective_cond_cache_dir(getattr(cfg, "cond_cache_dir", None))
+
     def _open_pcache():
         # Namespace on the CHECKPOINT: keys carry only content, so caches would cross models.
         from .diffusion_train_extras import source_revision  # noqa: PLC0415
@@ -3518,14 +3524,14 @@ def _train_dit(
         conditioning_key = getattr(spec, "conditioning_key", None)
         encoder = conditioning_key(fetch_cfg) if conditioning_key else ""
         return PersistentConditioningCache(
-            cfg.cond_cache_dir,
+            pcache_dir,
             namespace,
             cfg.resolution,
             **({"text_encoder": encoder} if encoder else {}),
         )
 
     pcache = None
-    if getattr(cfg, "cond_cache_dir", None):
+    if pcache_dir:
         try:
             pcache = _open_pcache()
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
@@ -3579,10 +3585,11 @@ def _train_dit(
         with report_model_load_progress(on_event):
             pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
         extra = [t for t in sample_texts if t not in to_encode]
-        encoded = _encode_prompts_cached(spec, pipe, to_encode + extra, device, pcache)
+        pcache, encoded = _encode_prompts_after_load(
+            spec, pipe, to_encode + extra, device, pcache, _open_pcache
+        )
         caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
         all_embeds = dict(zip(to_encode + extra, encoded))
-        pcache = _rekey_conditioning_cache(pcache, _open_pcache, all_embeds)
         sample_embeds = {t: all_embeds[t] for t in sample_texts}
         _free_text_encoders(pipe)
         gc.collect()

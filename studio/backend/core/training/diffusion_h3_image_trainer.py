@@ -222,17 +222,31 @@ def _hub_root(cfg, patterns) -> Path:
     )
 
 
+def text_encoder_repo(root: Path) -> str:
+    """The conditioner repo the base's model_index names (the released default when it names none)."""
+    from core.inference.diffusion_minimax_h3_image import H3_IMAGE_TEXT_ENCODER_REPO, _read_json
+
+    index = _read_json(root / "model_index.json") if (root / "model_index.json").is_file() else {}
+    entry = index.get("text_encoder")
+    te_repo = None
+    if isinstance(entry, list) and len(entry) > 2 and isinstance(entry[2], dict):
+        te_repo = entry[2].get("pretrained_model_name_or_path")
+    return te_repo or H3_IMAGE_TEXT_ENCODER_REPO
+
+
+def text_encoder_scheme() -> str:
+    """int8 (default) or bf16: the two encode different embeddings, so the cache keys them apart."""
+    scheme = (os.environ.get(TEXT_ENCODER_ENV) or "int8").strip().lower()
+    return "int8" if scheme == "int8" else "bf16"
+
+
 def load_text_encoder(cfg, root: Path):
     """(encoder on the host, tokenizer, processor). Module-level so tests hand in a tiny conditioner."""
     import torch
     from transformers import AutoTokenizer
 
     from core.inference.diffusion import hub_cache_dir
-    from core.inference.diffusion_minimax_h3_image import (
-        H3_IMAGE_TEXT_ENCODER_REPO,
-        _read_json,
-        load_h3_image_text_encoder,
-    )
+    from core.inference.diffusion_minimax_h3_image import load_h3_image_text_encoder
 
     tokenizer = AutoTokenizer.from_pretrained(str(root / "tokenizer"))
     processor = None
@@ -242,16 +256,10 @@ def load_text_encoder(cfg, root: Path):
             processor = AutoProcessor.from_pretrained(str(root / "processor"))
         except Exception:  # noqa: BLE001 - text-only captions do not need it on transformers 4.x
             processor = None
-    index = _read_json(root / "model_index.json") if (root / "model_index.json").is_file() else {}
-    entry = index.get("text_encoder")
-    te_repo = None
-    if isinstance(entry, list) and len(entry) > 2 and isinstance(entry[2], dict):
-        te_repo = entry[2].get("pretrained_model_name_or_path")
-    scheme = (os.environ.get(TEXT_ENCODER_ENV) or "int8").strip().lower()
     encoder, _engaged = load_h3_image_text_encoder(
-        "int8" if scheme == "int8" else None,
+        "int8" if text_encoder_scheme() == "int8" else None,
         dtype = torch.bfloat16,
-        text_encoder_repo = te_repo or H3_IMAGE_TEXT_ENCODER_REPO,
+        text_encoder_repo = text_encoder_repo(root),
         hf_token = cfg.hf_token,
         cache_dir = hub_cache_dir(),
         local_files_only = False,
@@ -526,6 +534,162 @@ def _free_gb(device) -> Optional[float]:
     return None
 
 
+# Bump when what a picture entry holds (or how it is encoded) changes.
+_H3_IMAGE_LATENT_CACHE_VERSION = "1"
+
+
+def _open_h3_image_cache(cfg, root: Path, on_event):
+    """The persistent conditioning cache for this run, or None (switched off, or unusable: never fatal)."""
+    from core.inference.diffusion_minimax_h3_image import H3_IMAGE_TEXT_ENCODER_LAYER
+    from core.training.diffusion_train_extras import (
+        PersistentConditioningCache,
+        compact_cache_namespace,
+        effective_cond_cache_dir,
+        source_revision,
+    )
+
+    cache_dir = effective_cond_cache_dir(getattr(cfg, "cond_cache_dir", None))
+    if not cache_dir:
+        return None
+    try:
+        repo = getattr(cfg, "fetch_base_model", None) or cfg.base_model
+        namespace = compact_cache_namespace(
+            H3_IMAGE_TRAIN_FAMILY, cfg.base_model, source_revision(repo)
+        )
+        # The conditioner is its own repo: its revision, the int8 / bf16 scheme and the read layer key captions.
+        te_repo = text_encoder_repo(root)
+        encoder = compact_cache_namespace(
+            "qwen3vl",
+            te_repo,
+            source_revision(te_repo),
+            text_encoder_scheme(),
+            f"hs{H3_IMAGE_TEXT_ENCODER_LAYER}",
+        )
+        return PersistentConditioningCache(
+            cache_dir, namespace, cfg.resolution, text_encoder = encoder
+        )
+    except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
+        _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
+        return None
+
+
+def _picture_key(pcache, path: str, resolution: int) -> Optional[str]:
+    """The canvas follows from the picture's own size (in its bytes) and the resolution; None when uncached."""
+    if pcache is None:
+        return None
+    try:
+        return pcache.entry_key(
+            "h3img", _H3_IMAGE_LATENT_CACHE_VERSION, str(path), f"r{int(resolution)}"
+        )
+    except OSError:
+        # load_picture raises the real error for an unreadable picture.
+        return None
+
+
+def _cache_get(pcache, key):
+    if pcache is None or key is None:
+        return None
+    try:
+        return pcache.get(key)
+    except Exception:  # noqa: BLE001 -- an unreadable entry is a miss
+        return None
+
+
+def _cache_put(pcache, key, tensors) -> None:
+    if pcache is None or key is None:
+        return
+    try:
+        pcache.put(key, tensors)
+    except Exception:  # noqa: BLE001 -- disk-full etc.: the run still trains
+        pass
+
+
+def _prepare_h3_image_conditioning(
+    cfg, root, paths, texts, device, on_event, _check_stop, *, need_vae
+):
+    """(embeds_by_text, per-picture (mean, std), vae or None), or None on a stop request.
+
+    Captions and sample prompts are served from the persistent cache when present; the conditioner loads only for
+    the misses, so a warm run never loads it. The VAE loads for latent misses and for the preview decode. Loads and
+    encodes run RNG-isolated, so a warm run and a cold run hand the same training streams on."""
+    from core.inference import diffusion_minimax_h3_image as h3i
+    from core.training.diffusion_samples import isolated_sampling
+
+    pcache = _open_h3_image_cache(cfg, root, on_event)
+    embeds_by_text: dict = {}
+    if pcache is not None:
+        for text in texts:
+            hit = _cache_get(pcache, pcache.text_key(text))
+            if hit is not None:
+                embeds_by_text[text] = hit[0]
+    missing = [t for t in texts if t not in embeds_by_text]
+    if missing:
+        with isolated_sampling(device, False):
+            encoder, tokenizer, processor = load_text_encoder(cfg, root)
+            encoder.to(device)
+            # A first run reads the conditioner revision before its download: write under the real one,
+            # dropping anything served under a namespace the load has moved away from.
+            if pcache is not None:
+                fresh = _open_h3_image_cache(cfg, root, on_event)
+                if fresh is not None and (fresh.family, fresh.text_encoder) != (
+                    pcache.family,
+                    pcache.text_encoder,
+                ):
+                    pcache = fresh
+                    embeds_by_text.clear()
+                    for text in texts:
+                        hit = _cache_get(pcache, pcache.text_key(text))
+                        if hit is not None:
+                            embeds_by_text[text] = hit[0]
+                    missing = [t for t in texts if t not in embeds_by_text]
+            encoded = encode_captions(encoder, tokenizer, processor, missing, device)
+        for text in missing:
+            embeds_by_text[text] = encoded[text]
+            if pcache is not None:
+                _cache_put(pcache, pcache.text_key(text), (encoded[text],))
+        release_text_encoder(encoder)
+        del encoder
+        _empty(device)
+    embeds_by_text = {t: embeds_by_text[t] for t in texts}
+    _emit(on_event, "preparing", stage = "encode_prompts", done = len(texts), total = len(texts))
+    if _check_stop():
+        return None
+
+    # Phase 2: VAE posterior stats per picture (the VAE stays on the host afterwards for the preview decode).
+    entries: dict = {}
+    if pcache is not None:
+        for i, path in enumerate(paths):
+            hit = _cache_get(pcache, _picture_key(pcache, path, cfg.resolution))
+            if hit is not None:
+                entries[i] = tuple(hit)
+    vae = None
+    if len(entries) < len(paths) or need_vae:
+        with isolated_sampling(device, False):
+            vae = h3i.load_h3_image_vae(root)
+    cache = []
+    if len(entries) < len(paths):
+        vae.to(device)
+    for i, path in enumerate(paths):
+        entry = entries.get(i)
+        if entry is None:
+            picture = load_picture(path, cfg.resolution)
+            with isolated_sampling(device, False):
+                entry = encode_latent_stats(vae, picture, device)
+            _cache_put(pcache, _picture_key(pcache, path, cfg.resolution), entry)
+        cache.append(entry)
+        _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = len(paths))
+        if _check_stop():
+            return None
+    if vae is not None:
+        vae.to("cpu")
+    if not need_vae:
+        del vae
+        vae = None
+        gc.collect()
+    _empty(device)
+    return embeds_by_text, cache, vae
+
+
 def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
     import torch
     import torch.nn.functional as F
@@ -559,32 +723,13 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
         return str(out_dir)
 
     root = _hub_root(cfg, h3i.H3_IMAGE_BASE_PATTERNS)
-    encoder, tokenizer, processor = load_text_encoder(cfg, root)
-    encoder.to(device)
     texts = list(dict.fromkeys(captions + list(sample_plan.prompts if sample_plan else ())))
-    embeds_by_text = encode_captions(encoder, tokenizer, processor, texts, device)
-    _emit(on_event, "preparing", stage = "encode_prompts", done = len(texts), total = len(texts))
-    release_text_encoder(encoder)
-    del encoder
-    _empty(device)
-    if _check_stop():
+    prepared = _prepare_h3_image_conditioning(
+        cfg, root, paths, texts, device, on_event, _check_stop, need_vae = sample_plan is not None
+    )
+    if prepared is None:
         return _stopped_early()
-
-    # Phase 2: VAE posterior stats per picture (the VAE stays on the host afterwards for the preview decode).
-    vae = h3i.load_h3_image_vae(root)
-    vae.to(device)
-    cache = []
-    for i, path in enumerate(paths):
-        picture = load_picture(path, cfg.resolution)
-        cache.append(encode_latent_stats(vae, picture, device))
-        _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = len(paths))
-        if _check_stop():
-            return _stopped_early()
-    vae.to("cpu")
-    if sample_plan is None:
-        del vae
-        vae = None
-    _empty(device)
+    embeds_by_text, cache, vae = prepared
 
     # Phase 3: the DiT, frozen, with the adapter on the trunk.
     dense_adaln = mode == "continuous"
