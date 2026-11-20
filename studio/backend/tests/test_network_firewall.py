@@ -938,6 +938,16 @@ def test_the_static_host_screen_steps_aside_when_the_proxy_decides(store):
     assert tools._check_code_safety(metadata, network_confined = True) is not None
 
 
+def test_a_nested_python_program_gets_the_same_host_screen(store):
+    nested = (
+        "import subprocess\n"
+        "subprocess.run(['python', '-c', "
+        "\"import requests; requests.get('https://example.org/data')\"])\n"
+    )
+    assert tools._check_code_safety(nested) is not None
+    assert tools._check_code_safety(nested, network_confined = True) is None
+
+
 def test_network_code_is_not_asked_about_twice_under_the_rules(store):
     computed = {"code": "import requests\nurl = input()\nrequests.get(url)\n"}
     unlisted = {"code": "import requests\nrequests.get('https://example.org/data')\n"}

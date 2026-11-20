@@ -22136,7 +22136,12 @@ def _check_code_safety(
         for command in info.get("shell_commands", ()):
             payload = _nested_python_payload(command)
             if payload:
-                nested = _check_code_safety(payload, host_approved = host_approved, _depth = _depth + 1)
+                nested = _check_code_safety(
+                    payload,
+                    host_approved = host_approved,
+                    network_confined = network_confined,
+                    _depth = _depth + 1,
+                )
                 if nested is not None:
                     return nested
     if not safe:
