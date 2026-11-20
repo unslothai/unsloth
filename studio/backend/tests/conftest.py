@@ -269,6 +269,12 @@ def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _cpu_test_host_is_not_a_cpu_only_studio(monkeypatch):
+    # The CPU-only GGUF rule would refuse mocked GPU-path loads here; tests of the rule delete this env.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK", "1")
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # Windows hosts would map real drive letters; MXC tests opt back in.
     monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
