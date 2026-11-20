@@ -53,7 +53,7 @@ test("moving left or typing a number creates a custom context", () => {
 test("the Auto number editor opens at the fitted or safe offload context", () => {
   assert.match(
     panelCode,
-    /autoLoadedContext \?\? AUTO_OFFLOAD_CONTEXT_LENGTH/,
+    /activeLoadedContext \?\? AUTO_OFFLOAD_CONTEXT_LENGTH/,
   );
   // A changed setting refits at load, so the loaded window stops standing in for Auto.
   assert.match(

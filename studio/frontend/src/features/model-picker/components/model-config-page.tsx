@@ -4565,7 +4565,7 @@ export function ModelConfigPage({
               value={contextIsAuto ? 0 : contextValue}
               autoValue={Math.min(
                 Math.max(
-                  autoLoadedContext ?? AUTO_OFFLOAD_CONTEXT_LENGTH,
+                  activeLoadedContext ?? AUTO_OFFLOAD_CONTEXT_LENGTH,
                   minContext,
                 ),
                 maxContext,
