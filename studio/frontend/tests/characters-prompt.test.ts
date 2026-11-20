@@ -282,6 +282,8 @@ test("a card's own wrapper tags are hidden on screen so the block inside renders
   const text = "Look.\n\n<stats>\n```\nHP: 10\n```\n</stats>\n<details>\nkept\n</details>";
   assert.equal(tidyCharacterDisplay(text), "Look.\n\n\n```\nHP: 10\n```\n\n<details>\nkept\n</details>");
   assert.equal(tidyCharacterDisplay("a <b>bold</b> line"), "a <b>bold</b> line");
+  const audio = 'Here.\n\n<audio-player src="data:audio/wav;base64,UklGRg==" />';
+  assert.equal(tidyCharacterDisplay(audio), audio, "an audio-output reply keeps its player");
 });
 
 test("opening retries keep the first member, notes skip a trailing reply, code keeps its tags", () => {

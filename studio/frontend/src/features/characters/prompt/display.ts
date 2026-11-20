@@ -9,6 +9,9 @@ const HTML_TAGS = new Set([
   "tbody", "td", "tfoot", "th", "thead", "tr", "u", "ul", "var", "wbr",
 ]);
 
+// Studio's own markup in a reply: an audio-output model's reply is one <audio-player /> line.
+const STUDIO_TAGS = new Set(["audio-player"]);
+
 /** Display only: drops a card's own wrapper-tag lines (<stats>), which Markdown treats as raw HTML that swallows the block. */
 export function tidyCharacterDisplay(text: string): string {
   if (!text.includes("<")) return text;
@@ -27,7 +30,7 @@ export function tidyCharacterDisplay(text: string): string {
       if (fence !== null || /^( {4}|\t)/.test(line)) return line;
       // (?![\w-]) keeps [^<>]* from re-reading the name, which made a long unclosed "<name" quadratic.
       const tag = /^ {0,3}<\/?([a-z][\w-]*)(?![\w-])[^<>]*>[ \t]*$/i.exec(line)?.[1];
-      return tag && !HTML_TAGS.has(tag.toLowerCase()) ? "" : line;
+      return tag && !HTML_TAGS.has(tag.toLowerCase()) && !STUDIO_TAGS.has(tag.toLowerCase()) ? "" : line;
     })
     .join("\n");
 }
