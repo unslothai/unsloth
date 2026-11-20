@@ -21,7 +21,7 @@ const vars = new Map<string, string>();
 const { applyCustomizationToDocument, DEFAULT_CUSTOMIZATION } = await import(
   "../src/features/settings/stores/appearance-custom-store.ts"
 );
-const { COLOR_THEMES, FLAVOR_THEME_IDS } = await import(
+const { COLOR_THEMES, FLAVOR_THEME_IDS, HALLOWEEN_THEME_IDS } = await import(
   "../src/features/settings/lib/color-themes.ts"
 );
 
@@ -61,7 +61,7 @@ const withAccent = (accent: string) => ({
 });
 
 test("custom accents stay readable on each flavor theme's own surfaces", () => {
-  for (const id of FLAVOR_THEME_IDS) {
+  for (const id of [...FLAVOR_THEME_IDS, ...HALLOWEEN_THEME_IDS]) {
     for (const mode of ["light", "dark"] as const) {
       const { background, surface } = COLOR_THEMES[id][mode];
       assert.ok(surface, `${id} ${mode} has no surface`);
