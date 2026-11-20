@@ -76,10 +76,8 @@ def _scheduler(llm_engine):
 
 
 def _track_preemptions(scheduler):
-    # vLLM counts preemptions per request (`Request.num_preemptions`, every V1 release) but sums them into
-    # vllm:num_preemptions_total only with log_stats, which an in-process LLM leaves off. Bank each request's count
-    # when the scheduler drops it, so banked + live requests is that same monotonic total. Installed once per
-    # scheduler: the engine outlives each trainer's server.
+    # vllm:num_preemptions_total needs log_stats (off in-process): bank per-request counts on free so the total
+    # stays monotonic. Once per scheduler, since the engine outlives each server.
     if scheduler is None or hasattr(scheduler, "_unsloth_preemptions_freed"):
         return
     free_blocks = getattr(scheduler, "_free_blocks", None)
@@ -591,9 +589,8 @@ class UnslothAsyncVLLMServer:
         lines.append(f"vllm:num_requests_running{{{labels}}} {float(load['running'])}")
         lines.append(f"vllm:num_requests_waiting{{{labels}}} {float(load['waiting'])}")
         if load["preemptions"] is not None:
-            # TRL logs the per-poll delta as rollout/vllm_preemption_count.
             lines.append(f"vllm:num_preemptions_total{{{labels}}} {float(load['preemptions'])}")
-        # The engine thread's own counters, kept host-side per step (no device sync); TRL ignores them.
+        # Host-side engine counters (no device sync); TRL ignores them.
         stats = load["stats"]
         for name, key in (
             ("requests_finished_total", "requests"),

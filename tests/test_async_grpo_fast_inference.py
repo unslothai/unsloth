@@ -598,8 +598,7 @@ class _Request:
 
 
 class _PreemptingScheduler:
-    """The parts of vLLM's V1 Scheduler the preemption count reads: `requests`, `Request.num_preemptions` and
-    `_free_blocks`, the one place a finished request leaves `requests`."""
+    """vLLM V1 Scheduler subset: `requests`, `Request.num_preemptions`, `_free_blocks`."""
 
     def __init__(self):
         self.kv_cache_manager = types.SimpleNamespace(usage = 0.5)
@@ -635,14 +634,12 @@ def test_metrics_export_a_monotonic_preemption_total_across_finished_requests():
         a.request_id, b.request_id = "a", "b"
         scheduler.requests.update(a = a, b = b)
         assert _metric(_scrape(server), "vllm:num_preemptions_total") == [3.0]
-        # A finished request's preemptions stay counted after the scheduler drops it.
         scheduler._free_blocks(a)
         assert scheduler.freed == 1 and "a" not in scheduler.requests
         assert _metric(_scrape(server), "vllm:num_preemptions_total") == [3.0]
         b.num_preemptions += 1
         scheduler._free_blocks(b)
         assert _metric(_scrape(server), "vllm:num_preemptions_total") == [4.0]
-        # A second server on the same engine keeps the same counter, not a second wrapper.
         second = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
         try:
             c = _Request(5)
@@ -657,7 +654,7 @@ def test_metrics_export_a_monotonic_preemption_total_across_finished_requests():
 
 
 def test_metrics_omit_preemptions_without_a_countable_scheduler(served):
-    # The fake engine's scheduler has no `_free_blocks`: no line beats a total that is not monotonic.
+    # No `_free_blocks`: omit rather than emit a non-monotonic total.
     server, _ = served
     text = _scrape(server)
     assert "num_preemptions_total" not in text
@@ -733,7 +730,6 @@ def test_trl_control_loop_reports_preemptions_from_this_server():
         asyncio.run(run())
     finally:
         server.stop()
-    # Each poll sees the preemptions banked since the previous one (1, then 2), not the always-0 of a missing line.
     assert [p["rollout/vllm_preemption_count"] for p in pushed] == [0.0, 1.0, 2.0]
 
 
