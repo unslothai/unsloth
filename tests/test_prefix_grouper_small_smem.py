@@ -219,3 +219,13 @@ def test_compile_check_skips_the_failing_compile(kernel, monkeypatch, capsys):
     with pytest.raises(kernel.PrefixGrouperCompileError):  # later calls fail fast, same reason
         kernel.flex_shared_prefix_attention(Q, K, K, seg, block_mask = object())
     assert runs == []
+
+
+def test_user_tile_overrides_go_through_the_compile_check(kernel, monkeypatch):
+    # PG_FLEX_BF16_BLOCK_M / _N set by the user: try their tiles instead of skipping up front.
+    _limits(monkeypatch, kernel, {"meta": T4})
+    q = torch.empty(1, 2, 4, 128, dtype = torch.float16, device = "meta")
+    assert kernel._small_smem_skip_reason(q) is not None
+    monkeypatch.setattr(kernel, "_BF16_BLOCK_M", 32)
+    monkeypatch.setattr(kernel, "_BF16_BLOCK_N", 32)
+    assert kernel._small_smem_skip_reason(q) is None

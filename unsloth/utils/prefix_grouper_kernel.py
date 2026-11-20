@@ -511,6 +511,9 @@ def _small_smem_skip_reason(q) -> Optional[str]:
     skip the failing compile (about 3 minutes on T4) and keep the packed path."""
     if _SMALL_SMEM_OPT_IN or torch.version.hip is not None:
         return None
+    # User tile overrides (PG_FLEX_BF16_BLOCK_M / _N) go through the real compile check instead.
+    if (_BF16_BLOCK_M, _BF16_BLOCK_N) != (128, 64):
+        return None
     if q.dtype not in (torch.float16, torch.bfloat16) or q.shape[-1] < 128:
         return None
     if not _small_smem(q.device):
