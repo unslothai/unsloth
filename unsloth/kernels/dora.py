@@ -49,8 +49,6 @@ def _plain_2d(t):
 
 
 _HALF = (torch.float16, torch.bfloat16)
-# aten::mm.dtype (16-bit inputs, float32 output) exists on CUDA in recent torch only.
-_MM_OUT_DTYPE = hasattr(torch.ops.aten.mm, "dtype") and getattr(torch.version, "hip", None) is None
 _CHUNK_BYTES = 64 * 1024 * 1024
 
 
@@ -59,12 +57,97 @@ def _rank_dtype(device):
     return torch.float32 if device.type == "mps" else torch.float64
 
 
+triton = None
+if torch.version.cuda is not None:
+    try:
+        import triton
+        import triton.language as tl
+        from triton.language.extra.cuda import libdevice
+    except ImportError:
+        triton = None
+
+
+if triton is not None:
+
+    @triton.jit
+    def _dora_cross_kernel(
+        A,
+        W,
+        OUT,
+        M: tl.constexpr,
+        N: tl.constexpr,
+        K: tl.constexpr,
+        AM: tl.constexpr,
+        AK: tl.constexpr,
+        WN: tl.constexpr,
+        WK: tl.constexpr,
+        BM: tl.constexpr,
+        BN: tl.constexpr,
+        BK: tl.constexpr,
+        SPLITS: tl.constexpr,
+    ):
+        m = (tl.program_id(0) * BM + tl.arange(0, BM)).to(tl.int64)
+        n = (tl.program_id(1) * BN + tl.arange(0, BN)).to(tl.int64)
+        k = (tl.program_id(2) * BK + tl.arange(0, BK)).to(tl.int64)
+        acc = tl.full((BM, BN), 0, tl.float32)
+        for _ in range(tl.cdiv(K, BK * SPLITS)):
+            a = tl.load(
+                A + m[:, None] * AM + k[None, :] * AK, (m[:, None] < M) & (k[None, :] < K), 0
+            )
+            w = tl.load(
+                W + k[:, None] * WK + n[None, :] * WN, (k[:, None] < K) & (n[None, :] < N), 0
+            )
+            a_hi = a.to(w.dtype)
+            part = tl.dot(a_hi, w)
+            if a.dtype != w.dtype:
+                a_lo = (a.to(tl.float32) - a_hi.to(tl.float32)).to(w.dtype)
+                part = libdevice.add_rn(part, tl.dot(a_lo, w))
+            # A plain += lets Triton fold the running sum back into the tensor-core accumulator.
+            acc = libdevice.add_rn(acc, part)
+            k += BK * SPLITS
+        dest = OUT + (tl.program_id(2) * M + m[:, None]) * N + n[None, :]
+        tl.store(dest, acc, (m[:, None] < M) & (n[None, :] < N))
+
+
+def _cuda_cross_term(A, weight):
+    m, k = A.shape
+    n = weight.shape[0]
+    if not (m and n and k):
+        return A.new_zeros((m, n), dtype = torch.float32)
+    bm, bn, bk = 16, 64, 32
+    grid_m, grid_n = triton.cdiv(m, bm), triton.cdiv(n, bn)
+    # Small ranks expose few output tiles. Split K only until there are enough blocks to run.
+    splits = min(triton.cdiv(k, bk), triton.cdiv(128, grid_m * grid_n))
+    out = A.new_empty((splits, m, n), dtype = torch.float32)
+    with torch.cuda.device(A.device):
+        _dora_cross_kernel[(grid_m, grid_n, splits)](
+            A,
+            weight,
+            out,
+            m,
+            n,
+            k,
+            *A.stride(),
+            *weight.stride(),
+            bm,
+            bn,
+            bk,
+            splits,
+        )
+    return out.sum(0) if splits > 1 else out[0]
+
+
 def _cross_term_fp32(weight, lora_A_weight):
     """(W A^T)^T as (r, d_out) float32 with float32 accumulation, A at its stored precision.
 
-    A float32 A is split into two 16-bit parts (hi + lo) stacked into one (2r, d_in) operand, so W is read once and
-    every product is exact; the GEMM writes float32, never a rounded 16-bit cross term.
+    Split a float32 adapter into high and low parts so the 16-bit dot products retain its precision.
     """
+    if (
+        triton is not None
+        and weight.is_cuda
+        and torch.cuda.get_device_capability(weight.device)[0] >= 8
+    ):
+        return _cuda_cross_term(lora_A_weight, weight)
     lowp = weight.dtype
     r = lora_A_weight.shape[0]
     A_hi = lora_A_weight.to(lowp)
@@ -74,16 +157,13 @@ def _cross_term_fp32(weight, lora_A_weight):
         A_2 = torch.cat((A_hi, A_lo))
     else:
         A_2 = A_hi
-    if _MM_OUT_DTYPE and weight.is_cuda:
-        WA = torch.mm(A_2, weight.t(), out_dtype = torch.float32)
-    else:
-        # 16-bit values are exact in float32 (and in TF32); upcast W in bounded row chunks.
-        A_f = A_2.float()
-        rows = max(1, _CHUNK_BYTES // (4 * weight.shape[1]))
-        WA = torch.cat(
-            [F.linear(A_f, weight[i : i + rows].float()) for i in range(0, weight.shape[0], rows)],
-            dim = 1,
-        )
+    # 16-bit values are exact in float32 (and in TF32); upcast W in bounded row chunks.
+    A_f = A_2.float()
+    rows = max(1, _CHUNK_BYTES // (4 * weight.shape[1]))
+    WA = torch.cat(
+        [F.linear(A_f, weight[i : i + rows].float()) for i in range(0, weight.shape[0], rows)],
+        dim = 1,
+    )
     return WA[:r] + WA[r:] if split else WA
 
 
