@@ -74,6 +74,8 @@ export const LENS_HOSTS = [
 	".menu-soft-surface",
 	".menu-soft-surface-up",
 	".dropdown-surface",
+	".find-bar-surface",
+	".glass-float-surface",
 	'[data-sonner-toast][data-styled="true"]',
 	".toast-surface",
 	'[data-auth-wallpaper] > [data-slot="card"]',
